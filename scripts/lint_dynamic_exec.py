@@ -214,9 +214,12 @@ def _constructor_name(function: ast.AST, shadowed = None, aliases = None) -> str
     if isinstance(function, ast.IfExp):
         # `(str if flag else format)(f"...")` preserves the source whichever arm runs,
         # the same reasoning the sink resolver applies to a conditional callee.
-        if isinstance(function.test, ast.Constant):
-            taken = function.body if function.test.value else function.orelse
-            return _constructor_name(taken, shadowed, aliases)
+        decided = _constant_truth(function.test)
+        if decided is not None:
+            # `_constant_truth` rather than a bare `ast.Constant`, which is what
+            # `_sink_name` already uses: `not True` and `True and False` are decidable
+            # too, and requiring a plain constant reported the arm that cannot run.
+            return _constructor_name(function.body if decided else function.orelse, shadowed, aliases)
         return (
             _constructor_name(function.body, shadowed, aliases)
             or _constructor_name(function.orelse, shadowed, aliases)
@@ -1330,6 +1333,20 @@ def _constant_truth(test: ast.AST):
     if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
         inner = _constant_truth(test.operand)
         return None if inner is None else not inner
+    if isinstance(test, ast.BoolOp):
+        # `True and False` is decidable, and reading it as unknown left a walrus in a
+        # comprehension filter that never runs looking like it had bound its target.
+        # Short-circuit rules: `and` is False as soon as one operand is, and True only
+        # when every one is; `or` mirrors it. An undecidable operand before a deciding
+        # one leaves the whole thing undecided, which is the safe answer.
+        decisive = isinstance(test.op, ast.Or)
+        for operand in test.values:
+            decided = _constant_truth(operand)
+            if decided is None:
+                return None
+            if decided is decisive:
+                return decisive
+        return not decisive
     return None
 
 
@@ -2065,7 +2082,13 @@ class _Visitor(ast.NodeVisitor):
                 self.tainted[-1].pop(child.id, None)
         iterated = self._literal_elements(node.iter)
         if iterated:
-            reasons = [_is_interpolated(element) for element in iterated]
+            # Resolved against the taint map, as the assignment path is: an element
+            # that is an already tainted NAME - `for source in [payload]` - carries
+            # that name's reason instead of binding the target as clean.
+            reasons = [
+                _is_interpolated(element, self.tainted[-1].get, self._is_shadowed, self._alias)
+                for element in iterated
+            ]
             self._bind(node.target, next((r for r in reasons if r is not None), None))
             # A tuple target takes each element APART, so the whole-element reason
             # says nothing about it. Aggregated across elements, first reason wins,
@@ -2127,7 +2150,7 @@ class _Visitor(ast.NodeVisitor):
             # the opposite body - so the body's own binding, already applied above,
             # stands instead.
             last = literal[-1]
-            self._bind(node.target, _is_interpolated(last))
+            self._bind(node.target, _is_interpolated(last, self.tainted[-1].get, self._is_shadowed, self._alias))
             self._bind_unpacked(node.target, last)
         if not literal:
             # Nothing is known about what the target holds afterwards, and an empty
@@ -2173,7 +2196,19 @@ class _Visitor(ast.NodeVisitor):
             for statement in node.orelse:
                 self.visit(statement)
 
-    visit_AsyncFor = visit_For
+    def visit_AsyncFor(self, node):
+        """`async for` over a written-out list, tuple, set or dict never runs.
+
+        Checked against CPython: it raises `TypeError: 'async for' requires an object
+        with __aiter__ method, got list` before entering the body. Aliasing this to
+        `visit_For` inferred iterations from those literals and reported a sink that
+        cannot execute. The literal is still visited, since it is evaluated.
+        """
+        if self._literal_elements(node.iter):
+            self.visit(node.iter)
+            self.visit(node.target)
+            return
+        self.visit_For(node)
 
     @staticmethod
     def _rebinds(body, target) -> bool:
@@ -2316,6 +2351,25 @@ class _Visitor(ast.NodeVisitor):
         if node.msg is not None and _constant_truth(node.test) is not True:
             self.visit(node.msg)
 
+    def visit_While(self, node: ast.While):
+        """A literal test decides the suite, as `visit_If` already does for `if`.
+
+        `while False: run = print` never runs, so recording that shadow suppressed a
+        call to the builtin that really does happen. Its `else` runs instead, and a
+        truthy literal keeps the body and skips the `else`, which cannot run without a
+        `break`. An undecidable test keeps both, unchanged.
+        """
+        self.visit(node.test)
+        decided = _constant_truth(node.test)
+        if decided is None:
+            for statement in node.body:
+                self.visit(statement)
+            for statement in node.orelse:
+                self.visit(statement)
+            return
+        for statement in (node.body if decided else node.orelse):
+            self.visit(statement)
+
     def visit_TypeAlias(self, node):
         """`type run = int` rebinds the name for the rest of the scope."""
         bound = getattr(node, "name", None)
@@ -2405,10 +2459,17 @@ class _Visitor(ast.NodeVisitor):
             # binds the exception object, so unwrapping `str(...)` as a conversion was
             # a false failure on code that cannot be made to pass. Same set the
             # parameters, imports and other binding forms already use.
-            if node.name in _BUILTIN_NAMES or self._alias(node.name):
+            # `self._binds_over_sink` rather than a bare-name lookup: a constructor
+            # or a `functools.partial` alias lives under a prefixed key, so
+            # `from builtins import str as text; except E as text:` left the
+            # `constructor:text` entry standing and the handler body was reported for
+            # a call that raises before it reaches the sink.
+            if self._binds_over_sink(node.name):
                 self.shadowed_sinks[-1].add(node.name)
-                self.sink_aliases[-1].pop(node.name, None)
-                self.sink_aliases[-1].pop(f"module:{node.name}", None)
+                for table in (self.sink_aliases, self.collected_aliases):
+                    table[-1].pop(node.name, None)
+                    for prefix in ("module:", "constructor:", "partial:", "functools:"):
+                        table[-1].pop(f"{prefix}{node.name}", None)
         for statement in node.body:
             self.visit(statement)
         if node.name is not None:
@@ -3302,7 +3363,14 @@ class _Visitor(ast.NodeVisitor):
         # turned a mixed literal into a shadow that hid it. The sink NAME, not just
         # "yes": a fresh name like `run` has to be registered as an alias for what it
         # holds, or the call in the body resolves to nothing at all.
-        found = next((sink for sink in resolved if sink is not None), None)
+        # A SINK first, and a constructor only when no element is one. Taking the
+        # first non-None hid `for run in [builtins.str, builtins.exec]`: the second
+        # iteration necessarily calls the builtin, but `run` was recorded as the
+        # conversion and the call in the body resolved to nothing.
+        found = next(
+            (sink for sink in resolved if sink is not None and not sink.startswith("constructor:")),
+            None,
+        ) or next((sink for sink in resolved if sink is not None), None)
         if found is not None:
             answer[target.id] = found.rpartition(".")[2]
         return answer
@@ -3457,6 +3525,13 @@ class _Visitor(ast.NodeVisitor):
             # both read as shadows and `exec(s(f"..."))` stopped being unwrapped.
             level = self._binding_level(target.id)
             self.shadowed_sinks[level].discard(target.id)
+            # The name can only hold ONE thing, so an earlier sink or module entry for
+            # it has to go: `run = builtins.exec; run = builtins.str` leaves `run` the
+            # conversion, and the surviving sink entry made the next call read as the
+            # builtin and fail the gate on code that only builds a string.
+            for table in (self.sink_aliases, self.collected_aliases):
+                table[level].pop(target.id, None)
+                table[level].pop(f"module:{target.id}", None)
             # Stored under a prefixed key in the alias table `_alias` already walks,
             # the same way the `builtins` module alias is kept under `module:`.
             self.sink_aliases[level][f"constructor:{target.id}"] = constructor
@@ -3700,7 +3775,12 @@ class _Visitor(ast.NodeVisitor):
                 self.tainted[-1].pop(name, None)
             generated = self._literal_elements(generator.iter)
             if generated:
-                reasons = [_is_interpolated(element) for element in generated]
+                # Same resolution the loop form uses: a tainted name among the
+                # elements carries its reason into the comprehension target.
+                reasons = [
+                    _is_interpolated(element, self.tainted[-1].get, self._is_shadowed, self._alias)
+                    for element in generated
+                ]
                 self._bind(generator.target, next((r for r in reasons if r is not None), None))
                 # A tuple target takes each element APART, so the whole-element reason
                 # above says nothing about it. Reasons are aggregated across elements

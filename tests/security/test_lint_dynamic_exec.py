@@ -194,6 +194,9 @@ def test_an_unjustified_allowlist_entry_fails(tmp_path):
 
 # The callee is written some other way and still resolves to the builtin.
 _SINK_IS_STILL_RESOLVED = {
+    'a mixed literal loop keeps the sink over the constructor': 'import builtins\ndef f(name):\n    for run in [builtins.str, builtins.exec]:\n        run(f"import {name}")\n',
+    'a statically false while never takes the builtin away': 'import builtins\ndef f(name, condition):\n    run = builtins.exec\n    while False:\n        run = print\n    run(f"import {name}")\n',
+    'a decidable boolean filter binds no comprehension walrus': 'import builtins\ndef f(name):\n    run = builtins.exec\n    [(run := print) for _ in [0] if True and False]\n    run(f"import {name}")\n',
     'a dict constructor literal answers get on the callee side': 'def f(name):\n    dict(run = exec).get("run")(f"import {name}")\n',
     'functools under a module alias still binds the sink': 'import functools as ft\ndef f(name):\n    ft.partial(exec, f"import {name}")()\n',
     'nullcontext hands its argument to the with target': 'import contextlib, builtins\ndef f(name):\n    with contextlib.nullcontext(builtins.exec) as run:\n        run(f"import {name}")\n',
@@ -303,6 +306,7 @@ def test_a_source_that_survives_its_wrapper_is_reported(description, tmp_path):
 
 # One level of local indirection: an alias of a name that holds a built string.
 _TAINT_TRAVELS_THROUGH_A_BINDING = {
+    'a literal loop element carries the taint it holds': 'def f(name):\n    payload = f"import {name}"\n    for source in [payload]:\n        exec(source)\n',
     'a short-circuited walrus never clears the taint': 'def f(name):\n    payload = f"import {name}"\n    False and (payload := "pass")\n    exec(payload)\n',
     'the final loop body wins over the last element': 'def f(name):\n    for payload in ["pass"]:\n        payload = f"import {name}"\n    exec(payload)\n',
     'a walrus alias carries the taint': 'def f(name):\n    payload = f"import {name}"\n    (alias := payload)\n    exec(alias)\n',
@@ -322,6 +326,10 @@ def test_taint_carried_through_a_binding_is_reported(description, tmp_path):
 
 # Shadowed, unreachable, unbound or unable to build a string at all.
 _NOTHING_REACHES_THE_SINK = {
+    'a folded unary condition drops the constructor arm': 'def f(name):\n    exec((str if not True else print)(f"import {name}"))\n',
+    'an except target takes a prefixed alias away': 'from builtins import str as text\ndef f(name):\n    try:\n        pass\n    except Exception as text:\n        exec(text(f"import {name}"))\n',
+    'async for cannot iterate a synchronous literal': 'async def f(name):\n    async for payload in [f"import {name}"]:\n        exec(payload)\n',
+    'a constructor assignment clears the earlier sink': 'import builtins\ndef f(name):\n    run = builtins.exec\n    run = builtins.str\n    run(f"import {name}")\n',
     'str of visibly bytes is a repr, not the text': 'def f(name):\n    exec(str(f"import {name}".encode()))\n',
     'a zero repetition builds an empty string': 'def f(name):\n    exec(f"import {name}" * 0)\n',
     'a negative repetition builds an empty string': 'def f(name):\n    exec(f"import {name}" * -1)\n',
