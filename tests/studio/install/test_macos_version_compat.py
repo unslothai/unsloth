@@ -332,10 +332,42 @@ class TestLooksLikeMacosLoaderFailure:
             "usage: llama-quantize [--help] model-f32.gguf",
             "error: failed to load model 'foo.gguf'",
             "main: build = 10639 (f6f92fe)",
+            # DYLD_PRINT_LIBRARIES narrates a perfectly healthy load under the
+            # same prefix a failure uses, so the prefix alone cannot be the test.
+            "dyld[4711]: /usr/lib/libSystem.B.dylib\ndyld[4711]: /usr/lib/libc++.1.dylib",
         ],
     )
     def test_ordinary_program_output_is_not_a_loader_failure(self, text):
         assert not ILP.looks_like_macos_loader_failure(text)
+
+
+class TestTheProbeEnvironment:
+    def test_dyld_diagnostics_are_kept_out_of_the_probe(self, tmp_path, monkeypatch):
+        """A user's DYLD_PRINT_* would otherwise be echoed into the output the
+        probe reads, and llama-quantize's nonzero --version would turn that
+        narration into a rejection."""
+        monkeypatch.setenv("DYLD_PRINT_LIBRARIES", "1")
+        monkeypatch.setenv("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib")
+        seen = {}
+
+        bin_dir = tmp_path / "build" / "bin"
+        bin_dir.mkdir(parents = True)
+        server = bin_dir / "llama-server"
+        server.write_text("#!/bin/sh\nexit 0\n")
+        server.chmod(0o755)
+
+        def capture(command, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return Result()
+
+        monkeypatch.setattr(ILP, "run_capture", capture)
+        ILP.macos_dyld_load_issues([server], tmp_path, make_macos_host((15, 5)))
+        assert "DYLD_PRINT_LIBRARIES" not in seen
+        assert "DYLD_INSERT_LIBRARIES" not in seen
 
 
 def _fake_macos_releases(tags):

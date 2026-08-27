@@ -5218,10 +5218,12 @@ def looks_like_macos_loader_failure(text: str) -> bool:
     lowered = text.lower()
     if any(marker in lowered for marker in _MACOS_LOADER_FAILURE_MARKERS):
         return True
-    # dyld prefixes its own diagnostics, with or without a pid: "dyld: ..." on
-    # older releases, "dyld[41694]: ..." on current ones.
-    if re.search(r"^\s*dyld(\[\d+\])?:", text, re.MULTILINE):
-        return True
+    # Deliberately no bare "dyld[pid]:" prefix rule. DYLD_PRINT_LIBRARIES and
+    # friends make dyld narrate every image it loads under that same prefix, on a
+    # run that reached main perfectly well -- which, paired with llama-quantize's
+    # nonzero --version, would reject a healthy bundle for anyone who happens to
+    # have the diagnostic set. The prefix says who is speaking, not that anything
+    # went wrong; the markers above say what went wrong.
     return looks_like_macos_incompatibility(text)
 
 
@@ -5277,6 +5279,12 @@ def macos_dyld_load_issues(
             continue
         seen.add(resolved)
         env = binary_env(binary_path, install_dir, host)
+        # The probe reads dyld's output, so keep the user's dyld diagnostics out
+        # of it: DYLD_PRINT_LIBRARIES narrates every image loaded, and
+        # DYLD_INSERT_LIBRARIES can fail on its own account and blame the bundle.
+        for noisy in [k for k in env if k.startswith("DYLD_PRINT_")]:
+            env.pop(noisy, None)
+        env.pop("DYLD_INSERT_LIBRARIES", None)
         try:
             result = run_capture([str(binary_path), "--version"], timeout = 60, env = env)
         except Exception as exc:
@@ -6936,6 +6944,20 @@ def existing_install_matches_choice(
     if host.is_linux:
         try:
             preflight_linux_installed_binaries(
+                [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
+                install_dir,
+                host,
+            )
+        except Exception:
+            return False
+    # The same check on the macOS side, and the one that reaches the users who
+    # matter most here: a bundle that cannot load is usually ALREADY installed by
+    # the time the installer learns to reject it. Without this, re-running the
+    # installer sees a matching fingerprint, reuses the broken tree and fails at
+    # first launch again. Returning False re-installs instead.
+    elif host.is_macos:
+        try:
+            preflight_macos_installed_binaries(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
