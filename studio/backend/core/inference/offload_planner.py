@@ -968,6 +968,8 @@ def _cost_gate(
     *,
     quantised: bool,
     kv_bytes_floor: int,
+    host_bytes: int = 0,
+    host_ram_bytes: Optional[int] = None,
 ) -> tuple[Optional[Plan], float, float]:
     """An abstaining Plan when ``--fit on`` is as good as this spill, else None.
 
@@ -984,6 +986,37 @@ def _cost_gate(
     plan = _spill_placement(layout, chosen, spill_lm_head)
     if not plan.host_groups:
         return None, 0.0, 0.0
+
+    # A spill the host cannot hold in RAM is the one configuration measured to be
+    # unambiguously worse than letting llama.cpp fit the model, so it is refused
+    # before any cost comparison rather than scored.
+    #
+    # The cost model cannot see this. It prices host bytes at host bandwidth,
+    # which is right only while they are IN host memory; past that they are read
+    # from disk, and the planner also loses ``--load-mode none`` (mmap can page,
+    # a no-mmap load cannot), which is where most of its measured advantage came
+    # from in the first place. On a 12.67 GiB box the planner ran at 0.31x and
+    # 0.23x of the fitter on generation, and its dense placement failed to load
+    # at all -- twice, reproducibly, with
+    #
+    #   ... preferred buffer type CUDA0, using CUDA_Host instead   then   Killed
+    #
+    # while ``--fit on`` completed both times on the same host.
+    if host_ram_bytes is not None:
+        spendable = max(0, host_ram_bytes - opts.host_ram_headroom_bytes)
+        if host_bytes > spendable:
+            return (
+                Plan(
+                    n_ctx = n_ctx,
+                    reason = (
+                        f"the spill needs {host_bytes / GIB:.2f} GiB of host RAM and only "
+                        f"{spendable / GIB:.2f} GiB is spendable, so it would page from disk "
+                        "without even the mmap that makes that survivable; left to --fit on"
+                    ),
+                ),
+                0.0,
+                0.0,
+            )
     fallback = _fit_fallback_placement(
         layout,
         opts,
@@ -1070,6 +1103,9 @@ def _finish(
             budget,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
+            host_bytes = layout.token_embd_bytes + sum(b.spillable_bytes for b in chosen)
+            + (layout.lm_head_bytes if spill_lm_head else 0),
+            host_ram_bytes = host_ram_bytes,
         )
         if declined is not None:
             return declined

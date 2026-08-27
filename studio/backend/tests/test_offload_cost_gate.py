@@ -242,3 +242,48 @@ def test_the_dense_fallback_does_move_whole_layers_and_the_cache_with_them():
     assert any(
         g.name.startswith("kv") for g in placement.host_groups
     ), "a dense fit drags the moved layers' cache to host with them"
+
+
+def test_a_spill_larger_than_host_ram_is_refused_outright():
+    """The one configuration measured to be unambiguously worse than the fitter.
+
+    Refused before any cost comparison, because the cost model cannot see it: it
+    prices host bytes at host bandwidth, which holds only while they are IN host
+    memory. Past that they come from disk, and the planner also loses
+    ``--load-mode none`` -- mmap can page, a no-mmap load cannot -- which is
+    where most of its measured advantage came from.
+
+    On a 12.67 GiB host the planner ran at 0.31x and 0.23x of ``--fit on`` on
+    generation, and its dense placement failed to load at all, twice, while the
+    fitter completed both times on the same box.
+    """
+    layout = dense_layout()
+    card = [14848 * 1024 * 1024]
+    roomy = plan_placement(
+        layout, card, 94 * GIB, 32768,
+        opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0),
+    )
+    assert roomy.spills_anything, "with RAM to spare this cell is planned"
+
+    cramped = plan_placement(
+        layout, card, 8 * GIB, 32768,
+        opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0),
+    )
+    assert not cramped.spills_anything
+    assert "host RAM" in cramped.reason and "--fit on" in cramped.reason
+
+
+def test_the_ram_refusal_counts_the_bytes_the_load_really_puts_on_the_host():
+    """token_embd is host-resident on every launch, spilled or not.
+
+    Leaving it out would let a plan sit just under the limit on paper and go over
+    it in practice, which is the direction that costs a load rather than a rung.
+    """
+    layout = dense_layout()
+    opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0)
+    # Sized so the spill alone fits but the spill plus token_embd does not.
+    plan = plan_placement(layout, [14848 * 1024 * 1024], 16 * GIB, 32768, opts = opts)
+    if not plan.spills_anything:
+        assert "host RAM" in plan.reason
+        needed = float(plan.reason.split("needs ")[1].split(" GiB")[0])
+        assert needed >= layout.token_embd_bytes / GIB
