@@ -1844,10 +1844,12 @@ function PromptListDetail({
 
   const name = draft?.name ?? entry.name;
   const items = draft?.items ?? entry.items;
-  // Keyed by row id, so this resets when another list is selected, which is
-  // what should happen: the choice is about the list in front of you.
-  const [askedForEditor, setAskedForEditor] = useState(false);
-  const editorMounted = askedForEditor || items.length <= EDITOR_ROW_LIMIT;
+  // Decided once per list and latched: this pane is keyed by row id, so selecting
+  // another list re-decides it, but Add prompt taking a 100-item list to 101 must
+  // not unmount the editor out from under the caret.
+  const [editorMounted, setEditorMounted] = useState(
+    () => items.length <= EDITOR_ROW_LIMIT,
+  );
   const dirty = draft !== undefined;
   const savable = items.filter((t) => t.trim()).length > 0;
 
@@ -1968,7 +1970,7 @@ function PromptListDetail({
             </p>
             <button
               type="button"
-              onClick={() => setAskedForEditor(true)}
+              onClick={() => setEditorMounted(true)}
               className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
             >
               <PencilIcon className="size-3.5" />Edit all {items.length} prompts

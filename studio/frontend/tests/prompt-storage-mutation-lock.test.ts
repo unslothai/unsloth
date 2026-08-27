@@ -295,9 +295,16 @@ test("an oversized list waits to be asked before mounting its editor", async () 
   assert.match(source, /const EDITOR_ROW_LIMIT = \d+;/);
   const limit = Number(/const EDITOR_ROW_LIMIT = (\d+);/.exec(source)?.[1]);
   assert.ok(limit > 0 && limit < 500, `${limit} is not a limit that avoids the freeze`);
+  // Latched, not recomputed: Add prompt on a list at the limit would otherwise
+  // take it past and unmount the editor the user is typing in.
   assert.match(
     source,
-    /const editorMounted = askedForEditor \|\| items\.length <= EDITOR_ROW_LIMIT;/,
+    /const \[editorMounted, setEditorMounted\] = useState\(\n\s+\(\) => items\.length <= EDITOR_ROW_LIMIT,\n\s+\);/,
+  );
+  assert.doesNotMatch(
+    source,
+    /const editorMounted = \w+ \|\| items\.length <= EDITOR_ROW_LIMIT;/,
+    "the mount decision is recomputed from the live length again",
   );
   // Deferring the editor must not narrow what a save, run or export carries.
   for (const readsFullItems of [
