@@ -861,8 +861,8 @@ def _frames_for_seconds(seconds: float, defaults: dict) -> int:
     step = max(1, int(defaults.get("frame_step") or 1))
     offset = max(1, int(defaults.get("frame_offset") or 1))
     wanted = max(offset, int(round(seconds * fps)))
-    k = int(round((wanted - offset) / step))
-    return max(offset, k * step + offset)
+    k = max(1, int(round((wanted - offset) / step)))
+    return k * step + offset
 
 
 def _format_seconds(value: float) -> str:

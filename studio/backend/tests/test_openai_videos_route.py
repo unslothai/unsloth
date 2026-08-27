@@ -58,7 +58,8 @@ def test_frames_for_seconds_snaps_to_the_lattice():
     ltx = {"fps": 24, "frame_step": 8, "frame_offset": 1}
     assert _frames_for_seconds(5.0, ltx) == 121
     assert _frames_for_seconds(4.0, ltx) == 97
-    assert _frames_for_seconds(0.01, ltx) == 1
+    assert _frames_for_seconds(0.01, ltx) == 9
+    assert _frames_for_seconds(0.2, ltx) == 9
     h3 = {"fps": 24, "frame_step": 17, "frame_offset": 5}
     assert (_frames_for_seconds(5.0, h3) - 5) % 17 == 0
 
