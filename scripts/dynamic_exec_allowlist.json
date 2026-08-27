@@ -7,7 +7,8 @@
       "sink": "exec",
       "kind": "f-string",
       "hash": "02c93361a59d02a7",
-      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out."
+      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out.",
+      "origin": "f9f3e360"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -15,7 +16,8 @@
       "sink": "exec",
       "kind": "f-string",
       "hash": "48b77ebd764afeec",
-      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out."
+      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out.",
+      "origin": "f9f3e360"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -23,7 +25,8 @@
       "sink": "eval",
       "kind": "f-string via `config_filename`",
       "hash": "6f65bd10ad34f535",
-      "reason": "`config_filename` is built from `model_architectures`, a hardcoded list of 9 names literal in this file (line 2059). No downloaded or user value reaches it, and the whole loop is skipped on transformers >= 5.0.0."
+      "reason": "`config_filename` is built from `model_architectures`, a hardcoded list of 9 names literal in this file (line 2059). No downloaded or user value reaches it, and the whole loop is skipped on transformers >= 5.0.0.",
+      "origin": "0e8937c3"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -39,7 +42,8 @@
       "sink": "exec",
       "kind": ".join() via `BitsAndBytesConfig__init__` via `BitsAndBytesConfig__init__`",
       "hash": "97ca7ce74cdac597",
-      "reason": "Self-generated source: `BitsAndBytesConfig__init__` is `inspect.getsource` of the INSTALLED transformers `BitsAndBytesConfig.__init__`, dedented by a measured indent and renamed with a literal replacement. Nothing from a config, a download or the environment is spliced in."
+      "reason": "Self-generated source: `BitsAndBytesConfig__init__` is `inspect.getsource` of the INSTALLED transformers `BitsAndBytesConfig.__init__`, dedented by a measured indent and renamed with a literal replacement. Nothing from a config, a download or the environment is spliced in.",
+      "origin": "2880cbf7"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -47,7 +51,8 @@
       "sink": "exec",
       "kind": "f-string",
       "hash": "a1ca0b42925e7071",
-      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out."
+      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out.",
+      "origin": "f9f3e360"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -63,7 +68,8 @@
       "sink": "exec",
       "kind": "f-string",
       "hash": "d452fc2117e42b99",
-      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out."
+      "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out.",
+      "origin": "f9f3e360"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -209,7 +215,8 @@
       "sink": "exec",
       "kind": "f-string via `push_to_hub_text`",
       "hash": "a2cfaff818bc9d0a",
-      "reason": "`push_to_hub_text` is a template built from `inspect.signature` and `__doc__` of the INSTALLED push_to_hub. Self-generated source, same category as the other compiler sites: nothing downloaded or user supplied is interpolated."
+      "reason": "`push_to_hub_text` is a template built from `inspect.signature` and `__doc__` of the INSTALLED push_to_hub. Self-generated source, same category as the other compiler sites: nothing downloaded or user supplied is interpolated.",
+      "origin": "ba4ec519"
     },
     {
       "path": "unsloth/save.py",
@@ -249,7 +256,8 @@
       "sink": "exec",
       "kind": ".join() via `function` via `function`",
       "hash": "16b70ffbbdbad15f",
-      "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it."
+      "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it.",
+      "origin": "de33c182"
     },
     {
       "path": "unsloth/tokenizer_utils.py",
@@ -297,7 +305,8 @@
       "sink": "exec",
       "kind": ".join() via `function` via `function` via `function`",
       "hash": "f9d16814a82a1e43",
-      "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it."
+      "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it.",
+      "origin": "de33c182"
     },
     {
       "path": "unsloth/trainer.py",
