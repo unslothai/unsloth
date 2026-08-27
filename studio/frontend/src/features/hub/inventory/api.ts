@@ -56,6 +56,7 @@ export interface CachedGgufRepo {
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
 }
@@ -77,6 +78,7 @@ export interface CachedModelRepo {
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -107,6 +109,7 @@ export interface LocalModelInfo {
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;

@@ -365,10 +365,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     ) < CHAT_ADAPTER.index("if (runtime.deepResearchEnabled && threadAlreadyResearched)")
     research = _between(
         CHAT_ADAPTER,
-        "if (\n        runtime.deepResearchEnabled",
-        "const sandboxSessionId",
+        "const startDeepResearch = async function*",
+        "const deepResearchHandoff",
     )
-    assert "const liveRuntime = useChatRuntimeStore.getState()" in research
+    assert "const sendTimeRuntime = runtime" in research
+    assert "const liveRuntime = useChatRuntimeStore.getState()" not in research
     assert "...queuedRunSettings" in research
     auto_load_merge = _between(
         CHAT_ADAPTER,
@@ -412,7 +413,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
     assert "trackQueuedSettings: false" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel(abortSignal)") >= 2
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in CHAT_ADAPTER
+    assert "await resolveQueuedEmptyLocalModel(abortSignal)" in CHAT_ADAPTER
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
     assert "beginModelLoading()" in CHAT_ADAPTER
     assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER
@@ -693,8 +695,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (
-        "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
-        in CHAT_ADAPTER
+        "useChatRuntimeStore.getState().activeThreadId ===\n"
+        "          (usageThreadKey ?? activeThreadIdAtRunStart)" in CHAT_ADAPTER
     )
     assert (
         "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"
@@ -702,11 +704,37 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
     assert ".setThreadContextUsage(usageThreadKey, usage)" in CHAT_ADAPTER
-    assert (
-        "usageThreadIsVisible &&\n"
-        "            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint"
-        in CHAT_ADAPTER
+    assert re.search(
+        r"usageThreadIsVisible\s*&&\s*"
+        r"useChatRuntimeStore\.getState\(\)\.params\.checkpoint\s*===\s*params\.checkpoint",
+        CHAT_ADAPTER,
     )
+
+
+def test_base64_media_turns_stay_on_the_legacy_stream():
+    candidate = _between(
+        CHAT_ADAPTER,
+        "const generationCandidate = Boolean(",
+        ");",
+    )
+    assert "!imageBase64" in candidate
+    assert "!audioBase64" in candidate
+    assert "!videoBase64" in candidate
+
+
+def test_continuations_stay_on_the_legacy_stream():
+    """Continue yields its seeded partial before the request starts.
+
+    That autosave can reach storage before durable admission does, and admission refuses a
+    placeholder that already has content with a 409, which is not one of the errors that
+    falls back to the legacy stream. So the turn would fail outright rather than generate.
+    """
+    candidate = _between(
+        CHAT_ADAPTER,
+        "const generationCandidate = Boolean(",
+        ");",
+    )
+    assert "!continuation" in candidate
 
 
 def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():

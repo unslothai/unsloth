@@ -179,6 +179,32 @@ def _names_gguf(model: str) -> bool:
     return "gguf" in re.split(r"[^a-z0-9]+", model.lower())
 
 
+# Suffixes unsloth puts on an unquantized re-upload; the GGUF sits on the base
+# name (embeddinggemma-300m-qat-q8_0-unquantized -> embeddinggemma-300m-GGUF).
+_QUANT_SUFFIX_RE = re.compile(r"(?:-qat)?(?:-q\d+_\d+[a-z]*)?-unquantized$", re.I)
+
+
+def gguf_repo_candidates(model: str) -> list[str]:
+    """Repos that may hold ``model``'s GGUF, in preference order. Shared by the
+    loader and the settings resolve endpoint so they cannot pick different repos."""
+    if "RAG_EMBED_GGUF_REPO" in os.environ:
+        return [EMBED_GGUF_REPO]
+    if _names_gguf(model):
+        return [model]
+    owner, _, name = model.rpartition("/")
+    out = [f"{model}-GGUF"]
+    base = _QUANT_SUFFIX_RE.sub("", name)
+    if base != name:
+        out.append(f"{owner}/{base}-GGUF" if owner else f"{base}-GGUF")
+    out.append(model)
+    return list(dict.fromkeys(out))
+
+
+def gguf_repo_is_explicit() -> bool:
+    """Whether one GGUF repository was explicitly pinned for every embedder."""
+    return "RAG_EMBED_GGUF_REPO" in os.environ
+
+
 def gguf_repo_for_embedding_model(model: str) -> str:
     """GGUF repo for ``model``, honoring an explicit companion override."""
     if "RAG_EMBED_GGUF_REPO" in os.environ:
@@ -198,12 +224,34 @@ def default_gguf_repo() -> str:
 def effective_gguf_repo() -> str:
     """GGUF repo for the llama-server backend, tracking the effective model.
 
-    An explicit ``RAG_EMBED_GGUF_REPO`` env always wins. Otherwise any custom
-    model (saved in Settings or via ``RAG_EMBEDDING_MODEL``) maps to its
-    ``-GGUF`` companion repo (the unsloth convention the default pair follows),
-    or is used as-is when it already names a GGUF repo.
+    An explicit ``RAG_EMBED_GGUF_REPO`` env always wins, then the repo the picker
+    resolved and stored for this model (which need not follow any naming rule),
+    then the ``-GGUF`` companion convention.
     """
-    return gguf_repo_for_embedding_model(effective_embedding_model())
+    return effective_gguf_repo_for_embedding_model(effective_embedding_model())
+
+
+def effective_gguf_repo_for_embedding_model(model: str) -> str:
+    """GGUF repo the loader/identity use for ``model``.
+
+    The resolved repo is part of the vector space identity, not merely a load
+    location: two different conversions of the same source model need separate
+    tags or their document/query vectors can be mixed.
+    """
+    if "RAG_EMBED_GGUF_REPO" in os.environ:
+        return EMBED_GGUF_REPO
+    try:
+        from utils.embedding_model_settings import get_stored_gguf_repo, remembered_gguf_repo
+        stored = get_stored_gguf_repo(model)
+        if stored is None:
+            # One stored record, so saving another model takes this one's repo
+            # away while a job pinned to it is still ingesting; the derived name
+            # would move that job's identity mid-run and split one document set
+            # across two tags. The memo is what this process last saw for it.
+            stored = remembered_gguf_repo(model)
+    except Exception:  # noqa: BLE001 - store unavailable: fall back to the convention
+        stored = None
+    return stored or gguf_repo_for_embedding_model(model)
 
 
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this

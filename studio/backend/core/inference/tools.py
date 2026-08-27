@@ -4560,8 +4560,12 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
 # search_conversation only reads this chat's own past turns, so auto mode would otherwise
-# prompt for approval on every call.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
+# prompt for approval on every call. deep_research runs no code and reaches nothing either: it
+# only reports that the user's own armed research is starting, and without it here
+# is_high_risk_tool_call's unknown-name default would prompt on every handoff.
+_ALWAYS_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "search_conversation", "deep_research"}
+)
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -9960,6 +9964,58 @@ ALL_TOOLS = [
     SEARCH_CONVERSATION_TOOL,
 ]
 
+# Deliberately an ordinary tool with an ordinary result. Studio runs three tool loops -- one for
+# llama.cpp, one for safetensors, one for external providers -- and only a plain result behaves
+# the same in all three. The client starts the run off the tool events every loop already
+# publishes, so nothing here needs to know a research run exists.
+#
+# Never in ALL_TOOLS: it is offered only when the composer armed research.
+#
+# The client keys the handoff on this opening rather than on tool_end alone: a denied, skipped,
+# truncated or budget-exhausted call is closed by the same event, and only the result says the
+# call actually ran.
+DEEP_RESEARCH_STARTED_MARKER = "Deep Research has started"
+DEEP_RESEARCH_STARTED = (
+    f"{DEEP_RESEARCH_STARTED_MARKER} on that question. Reply with one short sentence saying you "
+    "are looking into it. Do not answer the question yourself and do not call this tool again; "
+    "the researched report arrives separately."
+)
+
+DEEP_RESEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "deep_research",
+        "description": (
+            "Start Deep Research on the user's question: a multi-step web investigation that "
+            "gathers current sources and writes a cited report, replacing your reply. The user "
+            "turned this on because they want researched answers, so call it for any question "
+            "about the world -- facts, events, laws, products, papers, prices, comparisons, "
+            "anything that may have changed since your training -- even when you think you know "
+            "the answer. Do not answer such questions from memory.\n"
+            "Do not call it for a message with no question in it, such as a hello or a thanks, or "
+            "for a request to write or transform text the user supplied.\n"
+            "If the topic is too vague to research well, do not call this yet: ask one short "
+            "clarifying question, then call it once the user has narrowed it down.\n"
+            "The question you pass is what gets researched, so make it specific and "
+            "self-contained: fold in what the conversation established rather than repeating "
+            "the user's words."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The specific, self-contained question to research. Not the user's raw "
+                        "message unless it already reads as one."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole
 # request, so validate up front and skip with a warning.
@@ -10268,6 +10324,10 @@ def execute_tool(
             ),
             name,
         )
+    if name == "deep_research":
+        if not str(arguments.get("question") or "").strip():
+            return "Error: deep_research needs a question to investigate."
+        return DEEP_RESEARCH_STARTED
     if name == "web_search":
         return _fit_result_to_room(
             _web_search(
@@ -10936,6 +10996,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    budget: int | None = None
+    # The window the budget was sized against, so `_text_token_cost` only trusts
+    # a GGUF actually serving this same window.
+    ctx_tokens = (
+        _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
+    )
 
     # Whole-document mode: a thread-attached file under budget is injected in
     # full. A KB selection is exclusive so whole-doc never preempts it; project
@@ -10944,11 +11010,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if whole_doc_requested:
         try:
             budget = _whole_doc_budget(rag_scope, conversation)
-
-            whole = whole_document_context(
-                scope_thread_id = thread_id,
-                max_tokens = budget,
-            )
+            whole = whole_document_context(scope_thread_id = thread_id, max_tokens = budget)
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG whole-document context failed: %s", exc)
             whole = None
@@ -10975,22 +11037,87 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         text = merged_text
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
-    if text is None and enabled:
+    def _fits(candidate_text, max_tokens) -> bool:
+        # None means the estimate itself failed, so there is nothing to enforce.
+        # Zero is the opposite: a measured "no room left".
+        if max_tokens is None:
+            return True
+        if max_tokens <= 0:
+            return False
+        # Priced by the serving GGUF when it can, doubled when it cannot. The
+        # doubling is what stops dense ASCII (source, minified JSON, hashes, all
+        # nearer two characters per token) being charged the English four.
+        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
+
+    def _trim(hit_text, hit_sources, max_tokens):
+        """Drop passages from the tail until the rendered block fits, else None.
+
+        Re-renders only when something is dropped, so an untrimmed result comes
+        back exactly as retrieval built it.
+
+        None when not even the top passage fits: the block joins the current
+        turn, which the window may not evict, so an overflowing injection fails
+        the request rather than degrading the answer. Losing the attachment is
+        what this branch exists to prevent, but main already loses it here, and
+        that beats an error instead of an answer.
+        """
+        kept, rendered = list(hit_sources), hit_text
+        while len(kept) > 1 and not _fits(rendered, max_tokens):
+            kept = kept[:-1]
+            rendered = render_sources(kept)
+        return (rendered, kept) if _fits(rendered, max_tokens) else None
+
+    def retrieve(*, max_tokens = None, **scope):
+        found = search_for_autoinject(query = query, top_k = top_k, **scope)
+        return _trim(found[0], found[1], max_tokens) if found else None
+
+    # An oversized thread attachment is mandatory grounding: with auto-injection
+    # off, search it alone, without the optional-auto relevance floor, then add
+    # project context if the combination still fits. The budget binds on that
+    # path only -- with auto-injection on this stays the single combined
+    # unbudgeted search, so a small context cannot silently switch RAG off.
+    if text is None and (enabled or whole_doc_requested):
         try:
-            found = search_for_autoinject(
-                query = query,
-                scope_kb_id = rag_scope.get("kb_id"),
-                scope_thread_id = rag_scope.get("thread_id"),
-                scope_project_id = rag_scope.get("project_id"),
-                top_k = top_k,
-                min_dense_score = floor,
-                **_scope_retrieval_kwargs(rag_scope),
-            )
+            if whole_doc_requested and not enabled:
+                found = retrieve(
+                    max_tokens = budget,
+                    scope_thread_id = thread_id,
+                    min_dense_score = None,
+                    **_scope_retrieval_kwargs(rag_scope),
+                )
+                project_id = rag_scope.get("project_id")
+                if found and project_id:
+                    # Isolated like the whole-document companion above: an
+                    # unavailable project index must not send the shared handler
+                    # below into discarding thread grounding already in hand.
+                    try:
+                        proj = retrieve(
+                            scope_project_id = project_id,
+                            min_dense_score = floor,
+                            **_scope_retrieval_kwargs(rag_scope),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("RAG project retrieval (fallback companion) failed: %s", exc)
+                        proj = None
+                    if proj:
+                        # Trim the combination, not the project alone, which was
+                        # never entitled to the whole budget. The tail is all
+                        # project, so what fits beside the thread result survives.
+                        merged = found[1] + proj[1]
+                        found = _trim(render_sources(merged), merged, budget) or found
+            else:
+                found = retrieve(
+                    scope_kb_id = rag_scope.get("kb_id"),
+                    scope_thread_id = thread_id,
+                    scope_project_id = rag_scope.get("project_id"),
+                    min_dense_score = floor,
+                    **_scope_retrieval_kwargs(rag_scope),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
         if not found:
-            logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+            logger.info("RAG auto-inject: no matching passage; skipping")
             return None
         text, sources = found
     if text is None:

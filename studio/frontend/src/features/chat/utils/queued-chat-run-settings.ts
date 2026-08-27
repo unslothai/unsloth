@@ -38,6 +38,9 @@ const QUEUED_SETTING_KEYS = [
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
+  "autoCompactEnabled",
+  "contextPolicy",
+  "compactionHeadroomRatio",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
