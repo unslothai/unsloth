@@ -357,6 +357,38 @@ def test_generate_progress_route_logs_backend_snapshot(client, monkeypatch):
     ]
 
 
+def test_generate_resets_the_progress_stream_before_the_run(client, monkeypatch):
+    # Milestones are keyed on the previous poll, so a run that starts at or above where the
+    # last one stopped reads as the same run and logs nothing. The video route already
+    # rearms; the image one must too, and before generate() so no poll can precede it.
+    client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+            "base_repo": "unsloth/Z-Image-base",
+        },
+    )
+    order = []
+    monkeypatch.setattr(
+        inference_routes,
+        "reset_media_generation_progress",
+        lambda media: order.append(("reset", media)),
+    )
+    real_save = gallery_module.save
+
+    def _probe_save(image, meta):
+        order.append(("generated", "image"))
+        return real_save(image, meta)
+
+    monkeypatch.setattr(gallery_module, "save", _probe_save)
+
+    gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+
+    assert gen.status_code == 200
+    assert order == [("reset", "image"), ("generated", "image")]
+
+
 def test_load_rejects_untrusted_base_repo(client):
     # A trusted GGUF paired with an untrusted remote base_repo is rejected at the route, so a client cannot make the server fetch an arbitrary companion repo.
     r = client.post(

@@ -36,6 +36,7 @@ from loggers import get_logger
 from loggers.media_progress import (
     log_media_generation_progress,
     log_media_load_progress,
+    reset_media_generation_progress,
     reset_media_load_progress,
 )
 import asyncio
@@ -30035,6 +30036,10 @@ async def generate_diffusion_image(
     )
 
     backend = get_active_diffusion_engine()
+    # Ahead of the run, like the video route: generate-progress milestones are keyed on the
+    # previous poll, and a run that starts at or above where the last one stopped would
+    # otherwise read as the same one and log nothing.
+    reset_media_generation_progress("image")
     try:
         result = await asyncio.to_thread(
             backend.generate,
@@ -30681,6 +30686,7 @@ async def _generate_openai_images(
 
         # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
         steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        reset_media_generation_progress("image")
         try:
             result = await asyncio.to_thread(
                 backend.generate,
