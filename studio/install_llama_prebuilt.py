@@ -5244,9 +5244,7 @@ def macos_dyld_load_issues(
         seen.add(resolved)
         env = binary_env(binary_path, install_dir, host)
         try:
-            result = run_capture(
-                [str(binary_path), "--version"], timeout = 60, env = env
-            )
+            result = run_capture([str(binary_path), "--version"], timeout = 60, env = env)
         except Exception as exc:
             # A timeout or a refusal to spawn is not evidence of a bad link, and
             # calling it one would reject a healthy bundle on a loaded machine.

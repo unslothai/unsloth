@@ -213,7 +213,13 @@ class TestMacosDyldLoadProbe:
     whose libggml-rpc.0.dylib wanted /usr/lib/librdma.dylib passed preflight, was
     logged "prebuilt installed and validated", and then died on first launch."""
 
-    def _bundle(self, tmp_path, *, exit_code, message = ""):
+    def _bundle(
+        self,
+        tmp_path,
+        *,
+        exit_code,
+        message = "",
+    ):
         bin_dir = tmp_path / "build" / "bin"
         bin_dir.mkdir(parents = True)
         # A real spawnable file, not a Mach-O sample: the point is to reach dyld.
@@ -231,9 +237,7 @@ class TestMacosDyldLoadProbe:
             message = "dyld: Library not loaded: /usr/lib/librdma.dylib",
         )
         with pytest.raises(PrebuiltFallback, match = "does not load on this host"):
-            ILP.preflight_macos_installed_binaries(
-                binaries, install_dir, make_macos_host((15, 5))
-            )
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
     def test_the_message_names_the_library(self, tmp_path):
         install_dir, binaries = self._bundle(
@@ -242,9 +246,7 @@ class TestMacosDyldLoadProbe:
             message = "dyld: Library not loaded: /usr/lib/librdma.dylib",
         )
         with pytest.raises(PrebuiltFallback) as caught:
-            ILP.preflight_macos_installed_binaries(
-                binaries, install_dir, make_macos_host((15, 5))
-            )
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
         # Without the name the operator gets an exit code and no lead to follow.
         assert "librdma" in str(caught.value)
 
@@ -259,7 +261,6 @@ class TestMacosDyldLoadProbe:
         binaries[0].chmod(0o644)
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
-
     def test_the_referencing_dylib_survives_into_the_message(self, tmp_path):
         """dyld names the library AND the dylib that asked for it. The second half
         is what says libggml-rpc rather than llama-server is at fault, so keep
@@ -271,9 +272,7 @@ class TestMacosDyldLoadProbe:
         )
         install_dir, binaries = self._bundle(tmp_path, exit_code = 1, message = real)
         with pytest.raises(PrebuiltFallback) as caught:
-            ILP.preflight_macos_installed_binaries(
-                binaries, install_dir, make_macos_host((15, 5))
-            )
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
         message = str(caught.value)
         assert "librdma" in message
         assert "libggml-rpc" in message
