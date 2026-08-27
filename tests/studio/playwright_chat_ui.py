@@ -65,6 +65,14 @@ PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
+# Emulate a slow CPU, so a fat build machine renders like the 4 vCPU boxes
+# plenty of users and every Kaggle session actually run. Not decoration: the
+# rapid-submit step passes here unthrottled and fails at 4x and 8x, and that is
+# how the parked-send bug this driver kept reporting on Kaggle was finally
+# reproduced away from it. Off unless set, so an ordinary lane is byte for byte
+# unchanged. Chromium only -- it is delivered over CDP.
+CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
+
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
@@ -660,6 +668,13 @@ with sync_playwright() as p:
             launch_kwargs["channel"] = PLAYWRIGHT_CHANNEL
     elif PLAYWRIGHT_CHANNEL:
         fail("STUDIO_PLAYWRIGHT_CHANNEL requires chromium")
+    if CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER != "chromium":
+        # Refused here rather than at the call: `new_cdp_session` is Chromium
+        # only, so firefox/webkit would abort mid-run with a Playwright error
+        # about CDP that says nothing about the option that caused it. Both are
+        # supported browsers, so this pairing is reachable from the documented
+        # environment alone.
+        fail(f"STUDIO_UI_CPU_THROTTLE requires chromium, not {PLAYWRIGHT_BROWSER}")
     browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
@@ -684,16 +699,9 @@ with sync_playwright() as p:
     # 60s default (was 30s): the macos-14 runners are slow enough that
     # renders/webfonts/lazy routes routinely crowd 30s.
     page.set_default_timeout(60_000)
-    # Emulate a slow CPU, so a fat build machine renders like the 4 vCPU boxes
-    # plenty of users and every Kaggle session actually run. Not decoration:
-    # the rapid-submit step passes here unthrottled and fails at 4x and 8x, and
-    # that is how the parked-send bug this driver kept reporting on Kaggle was
-    # finally reproduced away from it. Off unless set, so an ordinary lane is
-    # byte for byte unchanged.
-    _throttle = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
-    if _throttle > 1:
-        ctx.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": _throttle})
-        info(f"CPU throttled {_throttle}x")
+    if CPU_THROTTLE > 1:
+        ctx.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE})
+        info(f"CPU throttled {CPU_THROTTLE}x")
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
     console_errors: list[str] = []
