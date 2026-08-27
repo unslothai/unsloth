@@ -46,7 +46,12 @@ from hub.services.models.common import (
 # ``utils`` (not ``utils.models``) to avoid the eager model-config/checkpoint
 # imports in ``utils/models/__init__.py``.
 from utils.paths.path_utils import is_appledouble_metadata
-from utils.hidden_models import is_curated_stt_repo_id, is_hidden_model
+from utils.audio_tokens import detect_local_tts_audio_type
+from utils.hidden_models import (
+    is_curated_stt_repo_id,
+    is_curated_tts_repo_id,
+    is_hidden_model,
+)
 
 logger = get_logger(__name__)
 
@@ -378,6 +383,7 @@ def _cache_inventory_fields(
     hidden_infra: bool = False,
     companion: bool = False,
     stt_only: bool = False,
+    tts_only: bool = False,
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
@@ -425,6 +431,11 @@ def _cache_inventory_fields(
     # is what auto-load and the chat picker filter on, neither of which looks at the task.
     if stt_only or is_curated_stt_repo_id(repo_id):
         capabilities["supports_vision"] = False
+        capabilities["can_chat"] = False
+    # Same rule for the speech-emitting half of the Audio page. The codec probe in
+    # _local_transformers_can_chat covers uncurated safetensors copies; a GGUF repo ships
+    # no tokenizer_config to probe, so the curated ids answer for those.
+    if tts_only or is_curated_tts_repo_id(repo_id):
         capabilities["can_chat"] = False
     if hidden_infra:
         capabilities["can_chat"] = False
@@ -600,15 +611,26 @@ def _scan_cached_gguf(
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 last_modified = _repo_gguf_last_modified(repo_info)
+                row_task = _cached_row_task(
+                    repo_info,
+                    gguf = True,
+                    selected = gguf_identity.load_snapshot or gguf_snapshot,
+                )
+                row_audio_type = None
+                if row_task == "text-to-speech":
+                    try:
+                        from hub.services.models import catalog_classification
+                        row_audio_type = catalog_classification._repo_gguf_audio_type(
+                            repo_info, gguf_identity.load_snapshot or gguf_snapshot
+                        )
+                    except Exception:
+                        pass
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
-                    "task": _cached_row_task(
-                        repo_info,
-                        gguf = True,
-                        selected = gguf_identity.load_snapshot or gguf_snapshot,
-                    ),
+                    "task": row_task,
+                    "audio_type": row_audio_type,
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
@@ -637,6 +659,7 @@ def _scan_cached_gguf(
                         repo_info = repo_info,
                         # Visible infra variants remain management-only.
                         hidden_infra = is_hidden_infra,
+                        tts_only = row_task == "text-to-speech",
                     )
                 )
                 # Only the winning cache root loads, so the loser's vision flag must not carry over.
@@ -973,6 +996,9 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     config = _read_json_object(snapshot / "config.json")
     if _is_whisper_model_config(config):
         result["_hidden_stt"] = True
+    tts_audio_type = detect_local_tts_audio_type(snapshot)
+    if tts_audio_type is not None:
+        result["_tts_audio_type"] = tts_audio_type
     quant_method = (
         config.get("quantization_config", {}).get("quant_method")
         if isinstance(config.get("quantization_config"), dict)
@@ -1065,6 +1091,8 @@ def _scan_cached_models(
                     else _cached_model_local_metadata(repo_path, load_snapshot)
                 )
                 is_whisper_stt = local_metadata.pop("_hidden_stt", False)
+                tts_audio_type = local_metadata.pop("_tts_audio_type", None)
+                is_tts = tts_audio_type is not None
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
@@ -1096,7 +1124,9 @@ def _scan_cached_models(
                     if is_whisper_stt
                     else (
                         "text-to-speech"
-                        if local_metadata.get("pipeline_tag") == "text-to-speech"
+                        # The probe answers for a repo whose card says nothing, so the
+                        # Audio page, which selects by task, still lists it.
+                        if is_tts or local_metadata.get("pipeline_tag") == "text-to-speech"
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
                 )
@@ -1112,6 +1142,7 @@ def _scan_cached_models(
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
+                    "audio_type": tts_audio_type,
                     "partial": snapshot_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
@@ -1160,6 +1191,7 @@ def _scan_cached_models(
                         hidden_infra = is_hidden_infra,
                         companion = bool(row["companion"]),
                         stt_only = bool(is_whisper_stt),
+                        tts_only = is_tts,
                     )
                 )
                 if _prefer_cache_row(row, existing):

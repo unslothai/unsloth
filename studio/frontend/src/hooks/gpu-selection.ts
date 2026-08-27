@@ -15,6 +15,14 @@ export interface SystemGpuDevice {
    *  these with a discrete card, and a pin naming only the discrete card can
    *  still spill to host RAM. */
   sharedMemory: boolean;
+  /** host-backed portion of memoryTotalGb when sharedMemory is true. */
+  sharedMemoryHostBackedGb?: number | null;
+  /** This device and the host are ONE pool (Apple Silicon, a ROCm APU), so its
+   *  VRAM is not memory beside system RAM. Per device for the same reason
+   *  sharedMemory is: a pin naming only a discrete card on a mixed machine does
+   *  not share anything, and judging it against a host-wide flag threw away the
+   *  system RAM that pin can really spill into. */
+  unifiedMemory?: boolean;
   /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
   /** Whether the separate DiffusionGemma runner can use this physical ID. */

@@ -39,7 +39,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from core._torchao_stub import is_stubbed
+from core._torchao_stub import is_stubbed, torch_is_rocm
 from core.training.diffusion_train_common import (
     AUTO_FLOW_SHIFT_FAMILIES,
     DEFAULT_LORA_FILENAME,
@@ -543,6 +543,13 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
                 f"Use base_precision='nf4' or 'auto'."
             )
+        # Mirror the pre-eviction ROCm guard inside the trainer child.
+        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm():
+            raise ValueError(
+                f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
+                "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use base_precision='nf4', "
+                "'bf16', or 'auto'."
+            )
         # int8 has no runtime fallback, so an explicit int8 against a missing torchao (or the Windows-ROCm stub) would leave the
         # transformer dense with compile disabled. The auto pick and /info gate on a FUNCTIONAL torchao; do the same here.
         if mode == "int8" and not has_functional_torchao():
@@ -579,7 +586,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
     capability = None
     has_fp8 = False
     # int8 has no runtime fallback, so gate the auto pick on a FUNCTIONAL torchao: find_spec("torchao") is satisfied by the Windows-ROCm stub whose quantize_ is a no-op.
-    has_torchao = has_functional_torchao()
+    # Auto must not select a torchao mode on ROCm.
+    has_torchao = has_functional_torchao() and not torch_is_rocm()
     if device == "cuda":
         try:
             import torch

@@ -814,7 +814,7 @@ export const fr = {
         embeddingModel: "Modèle d'embedding",
         embeddingModelDescription:
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
-        searchPlaceholder: "Rechercher des modèles d'embedding",
+        searchPlaceholder: "Rechercher n'importe quel modèle sur HF",
         reindexWarning:
           "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
         emptyError:
@@ -823,7 +823,24 @@ export const fr = {
         saveError: "Échec de l'enregistrement du modèle d'embedding.",
         saved: "Modèle d'embedding enregistré.",
         saveAnyway: "Enregistrer quand même",
-        resetAction: "Rétablir la valeur par défaut",
+        recommended: "Recommandé",
+        onDevice: "Sur l'appareil",
+        searching: "Recherche sur Hugging Face…",
+        checking: "Vérification…",
+        noResults: "Aucun modèle d'embedding trouvé",
+        download: "Télécharger",
+        unload: "Décharger",
+        unloadFailed: "Impossible de décharger le modèle d'embedding",
+        downloadingStatus: "Téléchargement…",
+        notDownloaded: "Non téléchargé",
+        notDownloadedSized: "Non téléchargé · {size}",
+        loaded: "Chargé",
+        downloading: "Téléchargement de {model}",
+        downloadingDescription:
+          "La progression s'affiche dans le panneau des téléchargements. L'indexation l'utilisera une fois terminé.",
+        downloadFailed: "Impossible de démarrer le téléchargement",
+        downloadConflict: "Reprenez ce téléchargement depuis le Hub",
+        downloadBusy: "Téléchargement déjà en cours",
       },
       storage: {
         sectionTitle: "Stockage",
@@ -1216,6 +1233,7 @@ export const fr = {
         processMemory: "Mémoire du processus",
         notInstalled: "Non installé",
         unknown: "Inconnu",
+        vramWithShared: "{vram} de VRAM + {shared} de mémoire partagée",
       },
     },
     agents: {
@@ -1245,6 +1263,15 @@ export const fr = {
       docs: "Documentation",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth.",
       subagent: {
@@ -1337,6 +1364,9 @@ export const fr = {
         showAllQuantizations: "Afficher toutes les quantifications",
         showAllQuantizationsDescription:
           "Activé : affiche toutes les quantifications de « On Device », y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
+        showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
+        showMemoryBarDescription:
+          "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
       },
       menu: {
         title: "Menu du chat",
@@ -1363,10 +1393,33 @@ export const fr = {
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
         "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+      autoCompact: "Compacter automatiquement les longues discussions",
+      autoCompactDescription:
+        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
+      compactionStyle: "Lorsque le contexte est plein",
+      compactionStyleDescription:
+        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
+      compactionStyleInherit: "Utiliser la valeur du serveur",
+      compactionStyleCheckpoint: "Réinitialiser la discussion",
+      compactionStyleRollingDefault:
+        "Supprimer les anciens tours (~25 % d’espace supplémentaire)",
+      compactionStyleRolling10:
+        "Supprimer les anciens tours (~10 % d’espace supplémentaire)",
+      compactionStyleRolling5:
+        "Supprimer les anciens tours (~5 % d’espace supplémentaire)",
+      compactionStyleRollingNone:
+        "Supprimer les anciens tours (sans réduction supplémentaire)",
+      autoCompactKeywords:
+        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+      },
+      tools: {
+        collapseByDefault: "Replier l’activité des outils par défaut",
+        collapseByDefaultDescription:
+          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
       },
       webSearch: {
         title: "Recherche web",
@@ -2401,5 +2454,14 @@ export const fr = {
       datasetStreaming: "Jeu de données : streaming (pas de téléchargement complet)",
       modelWeights: "Poids du modèle",
     },
+  },
+  modelMemory: {
+    readout:
+      "Poids {model} + contexte {context} = {total} sur {budget} de VRAM utilisable",
+    readoutWithSpec:
+      "Poids {model} + KV {kv} + brouillon MTP {spec} = {total} sur {budget} de VRAM utilisable",
+    kvRate: "KV réservé, ~{rate}/token",
+    oomLikely: "Avec les réglages actuels, un dépassement de mémoire est probable",
+    tooLarge: "Plus volumineux que la VRAM, sera déchargé sur le CPU. Une quantification plus petite est plus rapide",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
