@@ -1018,6 +1018,7 @@ const OLLAMA_REASONING_EFFORT_LEVELS = [
   "medium",
   "high",
 ] as const;
+const OLLAMA_GPT_OSS_REASONING_EFFORT_LEVELS = ["low", "medium", "high"] as const;
 
 // vLLM / Ollama have no per-model reasoning signal on OpenAI-compat — pin via
 // the connection's "reasoning model" toggle. Ollama speaks reasoning_effort
@@ -1053,6 +1054,17 @@ function resolveConnectionLevelReasoning(
   if (normalizedProvider === "ollama") {
     if (!ollamaReasoningModelIsPinned(modelId, options.reasoningModelIds)) {
       return null;
+    }
+    const modelName = modelId.split("/").at(-1) ?? modelId;
+    if (modelName === "gpt-oss" || modelName.startsWith("gpt-oss:")) {
+      return {
+        ...withReasoningEffortStyle({
+          supportsReasoning: true,
+          supportsReasoningOff: false,
+          reasoningEffortLevels: OLLAMA_GPT_OSS_REASONING_EFFORT_LEVELS,
+        }),
+        reasoningAlwaysOn: true,
+      };
     }
     return withReasoningEffortStyle({
       supportsReasoning: true,

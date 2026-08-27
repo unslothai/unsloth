@@ -248,6 +248,19 @@ test("Ollama only advertises Thinking for models pinned on the connection", () =
   );
 });
 
+test("Ollama GPT-OSS reasoning stays on and only offers supported levels", () => {
+  for (const model of ["gpt-oss:20b", "registry.ollama.ai/library/gpt-oss:120b"]) {
+    const caps = getExternalReasoningCapabilities("ollama", model, {
+      isReasoningProvider: true,
+      reasoningModelIds: [model],
+    });
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.reasoningAlwaysOn, true, model);
+    assert.equal(caps.supportsReasoningOff, false, model);
+    assert.deepEqual([...caps.reasoningEffortLevels], ["low", "medium", "high"], model);
+  }
+});
+
 test("Ollama save persists an explicit per-model pin, including none", () => {
   assert.deepEqual(
     reasoningFieldsForProviderSave(
