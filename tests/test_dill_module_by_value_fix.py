@@ -324,21 +324,20 @@ def test_the_widening_only_covers_modules_that_import_back():
     # that landed in one.
     package_dir = os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or ""))
     roots = (os.path.dirname(package_dir),)  # the package's install root
-    installed = (
-        frozenset({os.path.realpath(sys.modules["json"].__file__ or ""), "/x.py"}),
-        frozenset(),
+    installed = frozenset(
+        {os.path.realpath(sys.modules["json"].__file__ or ""), "/x.py"}
     )
     real = sys.modules["json"]
-    assert _dill_module_is_importable_by_name(real, *installed)
+    assert _dill_module_is_importable_by_name(real, installed)
 
     orphan = types.ModuleType("not_in_sys_modules")
     orphan.__spec__ = types.SimpleNamespace(name = "not_in_sys_modules", origin = "/x.py")
-    assert not _dill_module_is_importable_by_name(orphan, *installed)
+    assert not _dill_module_is_importable_by_name(orphan, installed)
 
     no_spec = types.ModuleType("json_lookalike")
     sys.modules["json_lookalike"] = no_spec
     try:
-        assert not _dill_module_is_importable_by_name(no_spec, *installed)
+        assert not _dill_module_is_importable_by_name(no_spec, installed)
     finally:
         del sys.modules["json_lookalike"]
 
@@ -355,7 +354,7 @@ def test_the_widening_only_covers_modules_that_import_back():
         previous = sys.modules.get(hostile)
         sys.modules[hostile] = fake
         try:
-            assert not _dill_module_is_importable_by_name(fake, *installed), (
+            assert not _dill_module_is_importable_by_name(fake, installed), (
                 f"{hostile} would be pickled by reference, which changes dill's "
                 "contract for the user's own code"
             )
@@ -369,9 +368,9 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(
-            namespace_like, *installed
-        ), "a module with no file backing it is not safely importable by name"
+        assert not _dill_module_is_importable_by_name(namespace_like, installed), (
+            "a module with no file backing it is not safely importable by name"
+        )
     finally:
         del sys.modules["namespace_like"]
 
@@ -494,13 +493,13 @@ def test_a_project_module_outside_the_install_root_keeps_its_by_value_state():
     sys.modules["pretend_project"] = project
     sys.modules["pretend_colocated"] = colocated
     try:
-        installed = (frozenset({"/opt/layer/python/pretend_library.py"}), frozenset())
-        assert _dill_module_is_importable_by_name(library, *installed)
-        assert not _dill_module_is_importable_by_name(project, *installed), (
+        installed = frozenset({"/opt/layer/python/pretend_library.py"})
+        assert _dill_module_is_importable_by_name(library, installed)
+        assert not _dill_module_is_importable_by_name(project, installed), (
             "a project module outside the install root would be pickled by "
             "reference, so its mutable state would drop out of the fingerprint"
         )
-        assert not _dill_module_is_importable_by_name(colocated, *installed), (
+        assert not _dill_module_is_importable_by_name(colocated, installed), (
             "a co-located project module no distribution recorded would be "
             "pickled by reference, so `config.VALUE = 2` would stop changing "
             "the fingerprint and datasets would serve a stale cached result"
@@ -528,6 +527,10 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     (root / "withtop-1.0.dist-info" / "top_level.txt").write_text(
         "pkgone\n\n# comment\n", encoding = "utf-8"
     )
+    # The single module that name resolves to. Without it on disk the fallback
+    # has nothing to claim, which is the point: a name is honoured only where
+    # it really is one file.
+    (root / "pkgone.py").write_text("X = 1\n", encoding = "utf-8")
     (root / "onlyrecord-1.0.dist-info").mkdir()
     (root / "onlyrecord-1.0.dist-info" / "RECORD").write_text(
         "ns/cloud/__init__.py,sha256=x,10\n"
@@ -549,7 +552,7 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     (root / "eggy.egg-info" / "installed-files.txt").write_text("../eggmod.py\n", encoding = "utf-8")
     (root / "myproj.py").write_text("VALUE = 1\n", encoding = "utf-8")
 
-    files, dirs = _dill_distribution_paths(str(root))
+    files = _dill_distribution_paths(str(root))
     rel = {os.path.relpath(f, str(root)) for f in files}
 
     assert "ns/cloud/__init__.py".replace("/", os.sep) in rel
@@ -565,24 +568,63 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     assert "myproj.py" not in rel, "a file no distribution recorded is claimed"
     assert not any("dist-info" in r or ".data" in r or "__pycache__" in r for r in rel)
 
-    # top_level.txt is the fallback, and it can only name a whole directory.
-    assert os.path.realpath(str(root / "pkgone")) in dirs
+    # top_level.txt is the fallback, and it is honoured only where the name
+    # resolves to ONE file. A package name cannot say which of the directory's
+    # contents were installed, so it is declined rather than guessed.
     assert "pkgone.py" in rel
+    assert not any(r == "pkgone" or r.startswith("pkgone" + os.sep) for r in rel), (
+        "a top_level.txt package name claimed the whole directory, so a "
+        "co-located module inside it counts as dependency-owned"
+    )
 
     assert "bothns/cloud.py".replace("/", os.sep) in rel
-    assert os.path.realpath(str(root / "bothns")) not in dirs, (
+    assert not any(
+        r == "bothns" or (r.startswith("bothns" + os.sep) and r != os.path.join("bothns", "cloud.py"))
+        for r in rel
+    ), (
         "a distribution that ships both RECORD and top_level.txt had its name "
         "fallback applied too, so the whole directory is claimed and a "
         "co-located module inside it counts as dependency-owned"
     )
 
     # A shared namespace is exactly what the name-based version could not do.
-    assert os.path.realpath(str(root / "ns")) not in dirs, (
+    assert not any(r == "ns" for r in rel), (
         "the namespace directory is claimed wholesale, so a co-located "
         "ns/myconfig.py would be treated as dependency-owned"
     )
 
-    assert _dill_distribution_paths(str(tmp_path / "absent")) == (set(), set())
+    assert _dill_distribution_paths(str(tmp_path / "absent")) == set()
+
+
+def test_a_top_level_package_name_alone_claims_nothing(tmp_path):
+    """`top_level.txt` with no file list can only be honoured for one file.
+
+    `dill` -> `dill.py` is unambiguous. `google` names a directory whose
+    contents the metadata cannot account for, so honouring it would put a
+    co-located `google/myconfig.py` on the dependency side -- the same hole a
+    top-level name leaves anywhere else, arriving through the fallback. The
+    package case is declined, so the worst outcome is the original loud
+    PicklingError rather than a silently pinned fingerprint.
+    """
+    from unsloth.import_fixes import _dill_distribution_paths
+
+    root = tmp_path / "layer"
+    (root / "google").mkdir(parents = True)
+    (root / "google" / "cloud.py").write_text("X = 1\n", encoding = "utf-8")
+    (root / "google" / "myconfig.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    (root / "single.py").write_text("X = 1\n", encoding = "utf-8")
+    (root / "legacy-1.0.egg-info").mkdir()
+    (root / "legacy-1.0.egg-info" / "top_level.txt").write_text(
+        "google\nsingle\n", encoding = "utf-8"
+    )
+
+    files = _dill_distribution_paths(str(root))
+    rel = {os.path.relpath(f, str(root)) for f in files}
+    assert "single.py" in rel, "an unambiguous single-module name was dropped"
+    assert not any(r.startswith("google") for r in rel), (
+        "the package name was honoured, so google/myconfig.py is claimed by "
+        "metadata that never mentioned it"
+    )
 
 
 def test_a_project_module_under_a_shared_namespace_stays_by_value(tmp_path):
@@ -608,7 +650,7 @@ def test_a_project_module_under_a_shared_namespace_stays_by_value(tmp_path):
         module.__spec__ = types.SimpleNamespace(name = name, origin = str(root / "ns" / filename))
         sys.modules[name] = module
         try:
-            assert _dill_module_is_importable_by_name(module, *installed) is expected, (
+            assert _dill_module_is_importable_by_name(module, installed) is expected, (
                 f"{name} landed on the wrong side; a shared namespace's first "
                 "component says nothing about who installed the submodule"
             )
@@ -638,18 +680,15 @@ def test_metadata_in_one_root_cannot_vouch_for_a_file_in_another(tmp_path):
     (b / "other.py").write_text("X = 1\n", encoding = "utf-8")
     (b / "config.py").write_text("VALUE = 1\n", encoding = "utf-8")
 
-    files, dirs = set(), set()
+    installed = set()
     for root in (a, b):
-        found_files, found_dirs = _dill_distribution_paths(str(root))
-        files |= found_files
-        dirs |= found_dirs
-    installed = (files, dirs)
+        installed |= _dill_distribution_paths(str(root))
 
     module = types.ModuleType("config")
     module.__spec__ = types.SimpleNamespace(name = "config", origin = str(b / "config.py"))
     sys.modules["config"] = module
     try:
-        assert not _dill_module_is_importable_by_name(module, *installed), (
+        assert not _dill_module_is_importable_by_name(module, installed), (
             "the project config.py in layer B is claimed by layer A's config "
             "distribution, so changes to it stop changing the fingerprint"
         )

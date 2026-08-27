@@ -5645,17 +5645,16 @@ def _dill_install_root(origin):
     return parent or None
 
 
-def _dill_under(path, directory):
-    """Is `path` `directory` itself, or inside it? Both already resolved."""
-    return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
-
-
 def _dill_distribution_paths(root):
     """The FILES some installed distribution put into `root`, as real paths.
 
-    Returned as `(files, dirs)`: the exact paths a distribution recorded, and
-    the coarser per-name directories left over for one that recorded no file
-    list at all.
+    Only files a distribution RECORDED, never a directory. A directory cannot
+    say which of its contents were installed, so claiming one would put a
+    co-located `google/myconfig.py` on the dependency side of a `google`
+    distribution -- the same hole a top-level NAME leaves, arriving through the
+    fallback instead. A distribution whose metadata names a single top-level
+    MODULE is unambiguous, because that is one file; a package name is not, and
+    is skipped.
 
     Being under the directory is NOT the question. `pip install --target .` and
     a Lambda deployment bundle put dependencies into the application's own
@@ -5674,12 +5673,12 @@ def _dill_distribution_paths(root):
     real distributions' real modules -- without ever having to guess which
     underscore is metadata.
     """
-    files, dirs = set(), set()
+    files = set()
     try:
         entries = os.listdir(root)
         root_real = os.path.realpath(root)
     except Exception:
-        return files, dirs
+        return files
     prefix = root_real.rstrip(os.sep) + os.sep
 
     def add(base, rel):
@@ -5721,9 +5720,12 @@ def _dill_distribution_paths(root):
             break
         if listed:
             continue
-        # No file list anywhere: fall back to the declared top-level names.
-        # Coarser, and it cannot separate a shared namespace from a project
-        # module inside it, but it is all this distribution said.
+        # No file list anywhere. `top_level.txt` names can only be honoured
+        # where they resolve to ONE file: `dill` -> `dill.py` is unambiguous,
+        # while `google` names a directory whose contents this metadata cannot
+        # account for. The package case is declined rather than guessed, so the
+        # worst outcome is the original loud PicklingError instead of a
+        # silently pinned fingerprint.
         top_level = os.path.join(meta, "top_level.txt")
         try:
             with open(top_level, encoding = "utf-8") as f:
@@ -5732,18 +5734,18 @@ def _dill_distribution_paths(root):
                     if not name or name.startswith("#"):
                         continue
                     name = name.replace("/", ".").split(".")[0]
-                    dirs.add(os.path.realpath(os.path.join(root, name)))
-                    files.add(os.path.realpath(os.path.join(root, name + ".py")))
+                    # Honoured only where the name really is one file on
+                    # disk. A package name resolves to a directory instead,
+                    # whose contents this metadata cannot account for, so it
+                    # claims nothing.
+                    if os.path.isfile(os.path.join(root, name + ".py")):
+                        add(root, name + ".py")
         except Exception:
             continue
-    return files, dirs
+    return files
 
 
-def _dill_module_is_importable_by_name(
-    module,
-    files = (),
-    dirs = (),
-):
+def _dill_module_is_importable_by_name(module, files = ()):
     """Whether pickling `module` BY REFERENCE is valid AND in scope.
 
     Valid exactly when an unpickler can get the same object back with
@@ -5751,11 +5753,11 @@ def _dill_module_is_importable_by_name(
     does for every one of these modules.
 
     In scope only when the module's own FILE is one an installed distribution
-    recorded. `files` and `dirs` hold absolute resolved paths, so several
-    off-prefix roots can be collected into one pair without any of them
-    vouching for another: two Lambda layers may each carry a `config.py`, and
-    the two paths are simply different. Only the misplaced LIBRARIES are moved
-    back to the behaviour they would have in an ordinary install.
+    recorded. `files` holds absolute resolved paths, so several off-prefix
+    roots can be collected into one set without any of them vouching for
+    another: two Lambda layers may each carry a `config.py`, and the two paths
+    are simply different. Only the misplaced LIBRARIES are moved back to the
+    behaviour they would have in an ordinary install.
 
     Deliberately narrow in three further ways: the module must be the live
     entry in `sys.modules` under its own name, must be file-backed, and
@@ -5770,15 +5772,12 @@ def _dill_module_is_importable_by_name(
     if spec is None or getattr(spec, "name", None) != name:
         return False
     origin = getattr(spec, "origin", None)
-    if not origin or not (files or dirs):
+    if not origin or not files:
         return False
     try:
-        real = os.path.realpath(origin)
+        return os.path.realpath(origin) in files
     except Exception:
         return False
-    if real in files:
-        return True
-    return any(_dill_under(real, directory) for directory in dirs)
 
 
 def fix_dill_module_by_value_pickling():
@@ -5834,28 +5833,21 @@ def fix_dill_module_by_value_pickling():
     # contributes nothing, so the patch declines rather than fall back to
     # "everything under the directory is a dependency" -- a loud crash beats a
     # stale cache.
-    owned_files, owned_dirs = set(), set()
+    owned_files = set()
     for root in roots:
-        files, dirs = _dill_distribution_paths(root)
-        owned_files |= files
-        owned_dirs |= dirs
-    if not (owned_files or owned_dirs):
+        owned_files |= _dill_distribution_paths(root)
+    if not owned_files:
         return False
 
     @functools.wraps(original)
-    def _is_builtin_module(
-        module,
-        _original = original,
-        _files = frozenset(owned_files),
-        _dirs = frozenset(owned_dirs),
-    ):
+    def _is_builtin_module(module, _original = original, _files = frozenset(owned_files)):
         try:
             if _original(module):
                 return True
         except Exception:
             return False
         try:
-            return _dill_module_is_importable_by_name(module, _files, _dirs)
+            return _dill_module_is_importable_by_name(module, _files)
         except Exception:
             return False
 
