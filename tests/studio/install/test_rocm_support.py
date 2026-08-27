@@ -605,17 +605,18 @@ class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
 
     @pytest.fixture(autouse = True)
-    def _no_kernel_topology(self):
-        """Hide KFD topology: these cases describe a host by its ROCm USERLAND readings.
+    def _isolate_host(self, monkeypatch):
+        """Describe the host by mocks alone: hide KFD topology and any ambient GPU mask.
 
-        _runtime_gfx_target falls back to /sys/class/kfd when the userland probe answers
-        nothing, and that sysfs read is filtered by no mock and no visible-device mask. On a
-        real AMD test machine it reports a GPU none of these cases asked for, so a case that
-        pins _detect_amd_gfx_codes (or leaves it to return nothing on a CI runner) silently
-        gets a different route. Same environment leak the _infer_linux_amd_gfx_arch and
-        _detect_windows_gfx_arch mocks below already guard against. Cases that mean to
-        exercise the fallback patch it themselves and win, since a decorator is applied
-        inside the fixture."""
+        Both are read by _runtime_gfx_target and neither is covered by the per-case mocks.
+        KFD sysfs is filtered by nothing, so on a real AMD test machine it supplies a GPU no
+        case asked for; and an inherited empty HIP/ROCR/CUDA mask means "no GPU", which
+        suppresses the very reroute a case is asserting. Both are environment leaks of the
+        same family the _infer_linux_amd_gfx_arch and _detect_windows_gfx_arch mocks below
+        already guard against, and a masked CI job hits both at once. Cases that mean to
+        exercise either set it themselves and win, since that happens inside this fixture."""
+        for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_mask, raising = False)
         with patch.object(stack_mod, "_kfd_gfx_targets", return_value = []):
             yield
 
@@ -1472,9 +1473,13 @@ class TestGfx906LegacyReroute:
     hosts already on gfx906-capable wheels are left alone."""
 
     @pytest.fixture(autouse = True)
-    def _no_kernel_topology(self):
-        """Hide KFD topology, for the reason given on TestEnsureRocmTorch: a real AMD test
-        machine's sysfs would otherwise supply a GPU these gfx906 cases did not ask for."""
+    def _isolate_host(self, monkeypatch):
+        """Hide KFD topology and any ambient GPU mask, for the reason given on
+        TestEnsureRocmTorch: a real AMD test machine's sysfs would otherwise supply a GPU
+        these gfx906 cases did not ask for, and an inherited empty mask would suppress the
+        reroute they assert."""
+        for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_mask, raising = False)
         with patch.object(stack_mod, "_kfd_gfx_targets", return_value = []):
             yield
 

@@ -371,23 +371,29 @@ def test_kfd_topology_answers_when_neither_userland_probe_is_installed():
     "mask", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
 )
 @pytest.mark.parametrize("value", ["", "-1"])
-def test_a_mask_that_selects_no_gpu_is_not_undone_by_kfd(mask, value):
-    """An empty (or -1) visible-device mask selects NO GPU, and KFD is filtered by none.
+@pytest.mark.parametrize("probe", [(), ("gfx1103",)])
+def test_a_mask_that_selects_no_gpu_takes_no_reroute(mask, value, probe):
+    """An empty (or -1) visible-device mask selects NO GPU, whichever source answers.
 
     _visible_devices_pinned and _pick_visible_index both document "" and "-1" as a
-    deliberate choice of no device rather than an unset variable, so the userland probe
-    coming back empty under such a mask means the user said none -- not that this host
-    lacks a ROCm userland, which is what the fallback is for. Without this the kernel
-    hands the reroute a card the user just removed: containers and CI commonly export an
-    empty mask, and /sys/class/kfd stays fully populated behind it."""
-    calls = _run_install(gfx_devices = (), kfd = ("gfx1103",), env = {mask: value})
+    deliberate choice of no device rather than an unset variable, and NO source here is
+    filtered the way honouring that would need: only ROCR_VISIBLE_DEVICES reaches
+    rocminfo, amd-smi reads the driver, KFD reads sysfs. So the probe answering is not
+    evidence the GPU is visible, which is why both the empty and the populated probe are
+    parametrized -- a guard keyed on an empty probe passes the first and misses the
+    second. Containers and CI commonly export an empty mask over a fully populated
+    /sys/class/kfd. The host still gets ROCm torch from the generic index."""
+    calls = _run_install(gfx_devices = probe, kfd = ("gfx1103",), env = {mask: value})
     assert f"{_AMD}/gfx110X-all/" not in calls, calls
+    assert _GENERIC in calls, calls
 
 
-def test_a_mask_naming_a_device_still_reaches_kfd():
+def test_a_mask_naming_a_device_still_reroutes():
     """The guard is only for a mask that selects nothing: one that names an ordinal leaves
-    a runtime-only host exactly as it was."""
+    both the runtime-only and the probed host exactly as they were."""
     calls = _run_install(gfx_devices = (), kfd = ("gfx1103",), env = {"HIP_VISIBLE_DEVICES": "0"})
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+    calls = _run_install(gfx_devices = ("gfx1103",), env = {"HIP_VISIBLE_DEVICES": "0"})
     assert f"{_AMD}/gfx110X-all/" in calls, calls
 
 
@@ -736,3 +742,55 @@ def test_an_unreadable_family_never_forces_a_reinstall(family, owns):
     )
     assert _GENERIC not in calls, calls
     assert _AMD not in calls, calls
+
+
+# ── the three host shapes the reroutes reach only once a second signal is missing ──
+
+_ROCM_ARCH_TORCH_210 = stack_mod._TORCH_PROBE_MARKER + "2.10.0+rocm7.13.0|7.13|\n"
+
+
+def test_a_gfx906_dgpu_never_deposes_a_routable_apu():
+    """gfx906's only route is _runtime_target_is_gfx906, which fires solely when gfx906 is
+    the ONE detected arch. So naming it the runtime target on a mixed host installs a
+    rocm7.x wheel whose BLAS has no gfx906 kernels and strands both cards; the APU keeps
+    the selection and gfx906 keeps its UNSLOTH_ROCM_GFX_ARCH opt-in."""
+    calls = _run_install(gfx_devices = ("gfx1103", "gfx906"))
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+    assert "rocm6.3" not in calls and _GENERIC not in calls, calls
+    # Alone it still takes the legacy route, so the exclusion is scoped to the mixed host.
+    assert "rocm6.3" in _run_install(gfx_devices = ("gfx906",), rocm_version = (7, 1))
+
+
+def test_a_sub_211_build_of_the_right_family_is_still_repaired():
+    """A matching family is the right SHAPE, not a working build: on the 2.11-floor leaves a
+    sub-2.11 wheel carries the _grouped_mm bug, and an unreadable ROCm version routes
+    gfx1152 through the missing-kernel branch rather than the Strix one, so this is the only
+    floor such a host meets."""
+    calls = _run_install(
+        gfx_devices = ("gfx1152",), inferred = "gfx1152", rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH_210, installed_family = "gfx1152",
+    )
+    assert f"{_AMD}/gfx1152/" in calls and "torch>=2.11.0,<2.12.0" in calls, calls
+
+
+def test_at_the_floor_the_matching_family_is_still_skipped():
+    """The other half of the same gate: at or above 2.11 the family match still wins, so an
+    up-to-date host does not re-download the multi-GB stack on every update."""
+    calls = _run_install(
+        gfx_devices = ("gfx1152",), inferred = "gfx1152", rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx1152",
+    )
+    assert f"{_AMD}/gfx1152/" not in calls, calls
+    assert "torch already runs on the gfx1152 wheels" in _run_install.printed
+
+
+def test_a_stale_family_is_repaired_when_no_generic_tag_resolves():
+    """Demoting rocm_torch_ready hands the job to the generic fallback, which resolves no tag
+    at all when the host ROCm version is unreadable -- the shape of a host running the
+    wheels' own bundled runtime. The branch would announce a reinstall, install nothing, and
+    leave the family it just called incompatible in place on every update."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200",), inferred = "gfx1200", rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx110x-all",
+    )
+    assert f"{_AMD}/gfx120X-all/" in calls, calls
