@@ -797,7 +797,7 @@ export const hi = {
         embeddingModel: "एम्बेडिंग मॉडल",
         embeddingModelDescription:
           "आपके दस्तावेज़ों को इंडेक्स और खोजने के लिए उपयोग किया जाने वाला Hugging Face मॉडल या स्थानीय पथ। डिफ़ॉल्ट {defaultModel} है।",
-        searchPlaceholder: "एम्बेडिंग मॉडल खोजें",
+        searchPlaceholder: "HF पर कोई भी मॉडल खोजें",
         reindexWarning:
           "केवल नए इंडेक्स किए गए दस्तावेज़ों को प्रभावित करता है। मॉडल बदलने के बाद मौजूदा दस्तावेज़ फिर से अपलोड करें।",
         emptyError: "एक Hugging Face मॉडल id या स्थानीय पथ दर्ज करें।",
@@ -805,7 +805,24 @@ export const hi = {
         saveError: "एम्बेडिंग मॉडल सहेजने में विफल।",
         saved: "एम्बेडिंग मॉडल सहेजा गया।",
         saveAnyway: "फिर भी सहेजें",
-        resetAction: "डिफ़ॉल्ट पर रीसेट करें",
+        recommended: "अनुशंसित",
+        onDevice: "डिवाइस पर",
+        searching: "Hugging Face पर खोज रहे हैं…",
+        checking: "जाँच रहे हैं…",
+        noResults: "कोई एम्बेडिंग मॉडल नहीं मिला",
+        download: "डाउनलोड करें",
+        unload: "अनलोड करें",
+        unloadFailed: "एम्बेडिंग मॉडल अनलोड नहीं हो सका",
+        downloadingStatus: "डाउनलोड हो रहा है…",
+        notDownloaded: "डाउनलोड नहीं हुआ",
+        notDownloadedSized: "डाउनलोड नहीं हुआ · {size}",
+        loaded: "लोड हो गया",
+        downloading: "{model} डाउनलोड हो रहा है",
+        downloadingDescription:
+          "प्रगति डाउनलोड पैनल में दिखती है। पूरा होने पर इंडेक्सिंग इसका उपयोग करेगी।",
+        downloadFailed: "डाउनलोड शुरू नहीं हो सका",
+        downloadConflict: "इस डाउनलोड को Hub से फिर से शुरू करें",
+        downloadBusy: "डाउनलोड पहले से चल रहा है",
       },
       storage: {
         sectionTitle: "स्टोरेज",
@@ -895,7 +912,7 @@ export const hi = {
         tokensIn: "भेजे गए टोकन",
         tokensOut: "बनाए गए टोकन",
         totalTokens: "कुल टोकन",
-        studioChatTokens: "Studio Chat टोकन",
+        studioChatTokens: "Unsloth Chat टोकन",
         apiTokens: "API टोकन",
         cachedTokens: "कैश किए गए टोकन",
         cachedValue: "{tokens} (इनपुट का {percent}%)",
@@ -1192,6 +1209,7 @@ export const hi = {
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
         unknown: "अज्ञात",
+        vramWithShared: "{vram} VRAM + {shared} साझा मेमोरी",
       },
     },
     agents: {
@@ -1221,6 +1239,15 @@ export const hi = {
       docs: "दस्तावेज़",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
       subagent: {
@@ -1310,6 +1337,9 @@ export const hi = {
         showAllQuantizations: "सभी क्वांटाइज़ेशन दिखाएँ",
         showAllQuantizationsDescription:
           "चालू: “On Device” के सभी क्वांटाइज़ेशन की सूची दिखेगी, जिनमें डाउनलोड न किए गए क्वांटाइज़ेशन भी शामिल हैं। बंद: केवल डाउनलोड किए गए क्वांटाइज़ेशन दिखेंगे।",
+        showMemoryBar: "VRAM उपयोग बार दिखाएँ",
+        showMemoryBarDescription:
+          "हर डाउनलोड किए गए मॉडल की पंक्ति के नीचे उसका अनुमानित VRAM उपयोग दिखाएँ: वेट्स, जिस कॉन्टेक्स्ट लंबाई पर वह लोड होगा उस पर KV कैश, और स्पेकुलेटिव ड्राफ़्ट के लिए आरक्षित मेमोरी।",
       },
       menu: {
         title: "चैट मेन्यू",
@@ -1345,7 +1375,7 @@ export const hi = {
         title: "वेब खोज",
         images: "वेब खोज से छवियाँ दिखाएँ",
         imagesDescription:
-          "वेब खोज को छवियाँ लौटाने दें और उत्तर में सूचीबद्ध हर चीज़ के लिए एक छवि लाएँ। थंबनेल Studio द्वारा लाए और छोटे किए जाते हैं, इसलिए ब्राउज़र कभी छवि होस्ट से संपर्क नहीं करता।",
+          "वेब खोज को छवियाँ लौटाने दें और उत्तर में सूचीबद्ध हर चीज़ के लिए एक छवि लाएँ। थंबनेल Unsloth द्वारा लाए और छोटे किए जाते हैं, इसलिए ब्राउज़र कभी छवि होस्ट से संपर्क नहीं करता।",
       },
       artifacts: {
         title: "Canvas",
@@ -1366,7 +1396,7 @@ export const hi = {
       exportingAction: "एक्सपोर्ट हो रहा है...",
       exportConversations: "हाल के और प्रोजेक्ट एक्सपोर्ट करें",
       exportConversationsDescription:
-        "हाल के या हाल के और प्रोजेक्ट चैट को Raw JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग।",
+        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",
@@ -2332,5 +2362,14 @@ export const hi = {
       datasetStreaming: "डेटासेट: स्ट्रीमिंग (कोई पूर्ण डाउनलोड नहीं)",
       modelWeights: "मॉडल वेट्स",
     },
+  },
+  modelMemory: {
+    readout:
+      "वेट्स {model} + कॉन्टेक्स्ट {context} = {budget} उपयोग-योग्य VRAM में से {total}",
+    readoutWithSpec:
+      "वेट्स {model} + KV {kv} + MTP ड्राफ़्ट {spec} = {budget} उपयोग-योग्य VRAM में से {total}",
+    kvRate: "KV आरक्षित, ~{rate}/टोकन",
+    oomLikely: "मौजूदा सेटिंग्स के साथ मेमोरी कम पड़ सकती है",
+    tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

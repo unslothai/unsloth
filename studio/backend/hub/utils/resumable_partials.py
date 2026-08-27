@@ -134,9 +134,9 @@ def _probe_dir(hub_cache: Optional[Path | str] = None) -> Optional[Path]:
     ``constants.HF_HUB_CACHE`` is resolved at import and moving the cache in Settings does not
     rewrite the live process (see ``hub/services/download_lifecycle.py``), so probing it would
     judge a different filesystem than the partial lands on. The constant is the fallback for
-    callers outside Studio.
+    callers outside Unsloth.
 
-    *hub_cache* names a specific root instead. Studio remembers several, and a partial sitting in
+    *hub_cache* names a specific root instead. Unsloth remembers several, and a partial sitting in
     one of them is governed by that root's filesystem, not by whichever is currently selected.
     """
     root = None
@@ -146,8 +146,8 @@ def _probe_dir(hub_cache: Optional[Path | str] = None) -> Optional[Path]:
         try:
             from utils.hf_cache_settings import active_hf_hub_cache
             root = Path(active_hf_hub_cache())
-        except Exception as exc:  # noqa: BLE001 - outside Studio, use the library's own view
-            logger.debug("resumable partials: no Studio cache setting (%s)", exc)
+        except Exception as exc:  # noqa: BLE001 - outside Unsloth, use the library's own view
+            logger.debug("resumable partials: no Unsloth cache setting (%s)", exc)
     if root is None:
         try:
             from huggingface_hub import constants

@@ -1274,7 +1274,7 @@ def _ltx23_assembly_stubs(monkeypatch, tmp_path):
         ):
             _FakeLTX2Pipeline.last_config_kwargs = {
                 "local_files_only": local_files_only,
-                # Pinned to Studio's LIVE root: unset, this resolves through huggingface_hub's
+                # Pinned to Unsloth's LIVE root: unset, this resolves through huggingface_hub's
                 # import-time constant, which a mid-session cache-folder change leaves stale.
                 "cache_dir": cache_dir,
             }
@@ -2449,7 +2449,7 @@ def _plan_api(monkeypatch, repos):
             return _PlanInfo(repos[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
-    # These tests describe their cache state explicitly; never let a developer's real Studio
+    # These tests describe their cache state explicitly; never let a developer's real Unsloth
     # cache make an entry disappear from an otherwise hermetic plan.
     from core.inference.diffusion import DiffusionBackend
 
@@ -3680,7 +3680,7 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
     """The second load on a Linux CUDA host. The first one installed the CPU prebuilt (upstream
     publishes no Linux CUDA asset for the pinned tag), and from then on ensure_sd_cpp_binary finds
     that binary and returns it whatever accelerator it is asked for -- so the fallback below it was
-    skipped, native_device stayed "cuda", and Studio kept the VIDEO claim and applied GPU offload
+    skipped, native_device stayed "cuda", and Unsloth kept the VIDEO claim and applied GPU offload
     policy while sd-cli ran wholly on the CPU. This is the common path, not an edge case."""
     from core.inference import gpu_arbiter
     from core.inference import video as video_mod
@@ -4255,7 +4255,7 @@ def test_h3_modular_load_pins_the_component_loads_to_the_studio_cache(fake_runti
     load_components forwards its extra kwargs through ComponentSpec.load into each component's
     from_pretrained. Without cache_dir those ~145 GB of Hub-pinned components resolve against the
     HF_HUB_CACHE snapshot taken at import time, while the scoped pre-download stages into the
-    cache folder Studio currently points at, and the two really can differ (it is a live setting).
+    cache folder Unsloth currently points at, and the two really can differ (it is a live setting).
     """
     from core.inference.video import hub_cache_dir
 
@@ -5063,7 +5063,7 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
 
 
 def test_every_video_fetch_resolves_both_cache_roots():
-    """The plan probe accepts a file cached under EITHER root (Studio's cache folder is a
+    """The plan probe accepts a file cached under EITHER root (Unsloth's cache folder is a
     setting, so a pre-move download sits under huggingface_hub's import-time root) and stages
     neither. So every fetch on the load path has to resolve both roots as well, or the file the
     planner skipped is re-pulled inside the load, outside the manager's progress, cancel and disk
@@ -5098,7 +5098,7 @@ def _unified_snapshot(total_gib):
 def test_unified_memory_refuses_an_oversized_video_load(fake_runtime, monkeypatch):
     """A 16 GiB Mac loading LTX-2 (about 65 GiB of weights): the planner has no offload tier to
     fall back to on unified memory and PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 removes the
-    allocator's limit, so without this refusal the OS kills Studio with no Python exception.
+    allocator's limit, so without this refusal the OS kills Unsloth with no Python exception.
     _run_load stringifies this onto load_progress, so the text is what the UI toasts."""
     import core.inference.video as video_mod
 
@@ -6373,7 +6373,7 @@ def test_h3_reference_video_trim_tolerates_a_container_longer_than_its_video():
     """A trim taken from the container duration may reach just past the video track.
 
     A container reports its longest track, so a file whose audio outruns its video reads as
-    longer than it can show, and a browser hands Studio that duration. The last frame is held
+    longer than it can show, and a browser hands Unsloth that duration. The last frame is held
     across the shortfall instead of refusing a clip that decodes fine untrimmed.
     """
     pytest.importorskip("av")
@@ -7103,7 +7103,7 @@ def test_h3_ref2va_partition_refuses_a_reference_less_request(monkeypatch):
 
 
 def test_h3_vae_trim_keeps_the_encoder_for_the_workflows_that_encode():
-    """The encoder drop is gated on t2va, and neither workflow Studio loads is text-only.
+    """The encoder drop is gated on t2va, and neither workflow Unsloth loads is text-only.
 
     fl2va encodes its keyframes and ref2va its references, both through this VAE, so dropping the
     encoder half would break image conditioning outright. The decoder pre-cast -- the larger of

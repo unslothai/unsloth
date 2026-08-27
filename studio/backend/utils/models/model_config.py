@@ -17,6 +17,15 @@ from utils.paths import (
     resolve_export_dir,
 )
 from utils.utils import without_hf_auth
+from utils.training_runs import (
+    base_model_from_run_dir_name as _base_model_from_dir_name,
+)
+from utils.audio_tokens import (
+    AUDIO_TOKENIZER_CONFIG_PATHS as _AUDIO_TOKENIZER_CONFIG_PATHS,
+    classify_audio_tokens as _check_token_patterns,
+    is_audio_input_type,
+    may_hold_audio_tokens as _may_hold_audio_tokens,
+)
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
     mmproj_accepts_image,
@@ -1142,36 +1151,6 @@ def _is_vision_model_uncached(
         return None
 
 
-_AUDIO_MODEL_TYPES = {
-    "higgs_audio_v2": "higgs_tts2",
-    "moss_tts_local": "moss_tts_local",
-    "moss_tts_nano": "moss_tts_nano",
-    "higgs_multimodal_qwen3": "higgs_tts3",
-    "minimax_music3": "minimax_music3",
-}
-
-_CURATED_AUDIO_REPOS = {
-    "bosonai/higgs-tts-2-3b-base": "higgs_tts2",
-    "openmoss-team/moss-tts-local-transformer-v1.5": "moss_tts_local",
-    "openmoss-team/moss-tts-nano-100m": "moss_tts_nano",
-    "multimodalart/higgs-audio-v3-tts-4b-transformers": "higgs_tts3",
-    "minimaxai/minimax-music3": "minimax_music3",
-}
-
-VALID_AUDIO_TYPES = (
-    "snac",
-    "csm",
-    "bicodec",
-    "dac",
-    "higgs_tts2",
-    "moss_tts_local",
-    "moss_tts_nano",
-    "higgs_tts3",
-    "minimax_music3",
-    "whisper",
-    "audio_vlm",
-)
-
 # Keyed like the vision cache so an unauthenticated/offline/other-revision miss can't poison.
 _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 
@@ -1182,73 +1161,6 @@ _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 # restart: the base gets downloaded, or a training run finishes writing its output.
 _AUDIO_OFFLINE_MISS_TTL_S = 60.0
 _audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
-
-
-def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
-    """Whether more than ``threshold`` tokens start with ``prefix``.
-
-    Equivalent to ``sum(...) > threshold`` but stops at the answer. Summing counted every
-    one of Orpheus's 28k codes to decide a question settled by the first 10,001.
-    """
-    count = 0
-    for token in tokens:
-        if token.startswith(prefix):
-            count += 1
-            if count > threshold:
-                return True
-    return False
-
-
-# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
-# ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
-# generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
-# stray <|audio|>; audio_vlm first typed it as audio-input, leaving is_audio False.
-_AUDIO_TOKEN_PATTERNS = {
-    "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
-    "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
-    "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
-    "dac": lambda tokens: (
-        "<|audio_start|>" in tokens
-        and "<|audio_end|>" in tokens
-        and "<|text_start|>" in tokens
-        and "<|text_end|>" in tokens
-    ),
-    "snac": lambda tokens: _count_prefix_exceeds(tokens, "<custom_token_", 10000),
-    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|> (not csm's
-    # <|AUDIO|>). Neither carries a codebook, so nothing above shadows them.
-    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
-}
-# Every substring a pattern above needs. A tokenizer_config whose text contains NONE of
-# these cannot match any pattern, whatever it holds, so the answer is settled without
-# parsing it. That matters because an ordinary text checkpoint carries a large
-# tokenizer_config and json.loads of it was the bulk of a cold /loras scan.
-# MUST cover every pattern: _AUDIO_TOKEN_PATTERNS is lambdas, so this cannot be derived
-# from them, and a codec added there without its marker here would silently stop being
-# detected. test_audio_token_detection.py fails if the two drift.
-_AUDIO_TOKEN_MARKERS = (
-    "<|AUDIO|>",  # csm
-    "<|startoftranscript|>",  # whisper
-    "<|bicodec_",  # bicodec
-    "<|audio_start|>",  # dac
-    "<custom_token_",  # snac
-    "<audio_soft_token>",  # audio_vlm (Gemma 3n)
-    "<|audio|>",  # audio_vlm (Gemma 4)
-)
-
-
-def _may_hold_audio_tokens(raw: str) -> bool:
-    """Whether a tokenizer_config's raw text is worth parsing.
-
-    Conservative: a false True only costs the parse that would have happened anyway.
-    A false False would misclassify, which is why the markers are pinned by a test.
-    """
-    return any(marker in raw for marker in _AUDIO_TOKEN_MARKERS)
-
-
-_AUDIO_TOKENIZER_CONFIG_PATHS = (
-    "tokenizer_config.json",
-    "LLM/tokenizer_config.json",
-)
 
 
 def detect_audio_type(
@@ -1296,7 +1208,11 @@ def detect_audio_type_checked(
     if not model_name:
         return None, True
 
-    curated_type = _CURATED_AUDIO_REPOS.get(str(model_name).strip().lower())
+    try:
+        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS
+        curated_type = NATIVE_AUDIO_MODEL_IDS.get(str(model_name).strip().lower())
+    except Exception:
+        curated_type = None
     if curated_type:
         return curated_type, True
 
@@ -1413,16 +1329,6 @@ def _detect_audio_from_tokenizer(
     retries; a successful read with no audio tokens is a definitive None.
     """
 
-    def _check_token_patterns(tok_config: dict) -> Optional[str]:
-        added = tok_config.get("added_tokens_decoder", {})
-        if not added:
-            return None
-        token_contents = [v.get("content", "") for v in added.values()]
-        for audio_type, check_fn in _AUDIO_TOKEN_PATTERNS.items():
-            if check_fn(token_contents):
-                return audio_type
-        return None
-
     read_any = False  # parsed at least one tokenizer_config -> a None is definitive
 
     # 1) Selected local directory or local HF cache first (works for gated/offline models)
@@ -1529,11 +1435,6 @@ def _detect_audio_from_tokenizer(
 
     # No audio tokens: definitive unless every attempt failed transiently.
     return None, (read_any or not transient)
-
-
-def is_audio_input_type(audio_type: Optional[str]) -> bool:
-    """True if an audio_type accepts audio input: whisper (ASR), audio_vlm (Gemma3n)."""
-    return audio_type in ("whisper", "audio_vlm")
 
 
 def _is_mmproj(filename: str) -> bool:
@@ -3482,14 +3383,10 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
         # TODO: reading base_model from training_args.bin is disabled -- torch.load defaults to
         # weights_only=True (torch >= 2.6), which rejects pickled TrainingArguments.
 
-        dir_name = checkpoint_path_obj.name
-        if dir_name.startswith("unsloth_"):
-            parts = dir_name.split("_")
-            if len(parts) >= 2:
-                model_parts = parts[1:-1]
-                base_model = "unsloth/" + "_".join(model_parts)
-                logger.info("Detected base model from directory name: %s", base_model)
-                return base_model
+        base_model = _base_model_from_dir_name(checkpoint_path_obj.name)
+        if base_model:
+            logger.info("Detected base model from directory name: %s", base_model)
+            return base_model
 
         logger.warning(f"Could not detect base model for checkpoint: {checkpoint_path}")
         return None
@@ -3521,14 +3418,10 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         # weights_only=True and is a remote-code sink for third-party LoRAs; needs a trust check.
 
         # Last resort: parse from dir name (unsloth_<model>_<timestamp>)
-        dir_name = lora_path_obj.name
-        if dir_name.startswith("unsloth_"):
-            parts = dir_name.split("_")
-            if len(parts) >= 2:
-                model_parts = parts[1:-1]  # Skip "unsloth" and timestamp
-                base_model = "unsloth/" + "_".join(model_parts)
-                logger.info(f"Detected base model from directory name: {base_model}")
-                return base_model
+        base_model = _base_model_from_dir_name(lora_path_obj.name)
+        if base_model:
+            logger.info(f"Detected base model from directory name: {base_model}")
+            return base_model
 
         logger.warning(f"Could not detect base model for LoRA: {lora_path}")
         return None

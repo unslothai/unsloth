@@ -27,6 +27,7 @@ export type PresetOwnedParams = Pick<
   | "maxTokens"
   | "systemPrompt"
   | "systemVariables"
+  | "seed"
 >;
 
 export const BUILTIN_PRESETS: Preset[] = [
@@ -111,6 +112,8 @@ export function getPresetOwnedParams(
     maxTokens: params.maxTokens,
     systemPrompt: params.systemPrompt ?? "",
     systemVariables: params.systemVariables ?? "",
+    // Normalised, so a preset saved before the field existed never reads as modified.
+    seed: params.seed ?? null,
   };
 }
 
@@ -129,7 +132,8 @@ export function isSamePresetConfig(
     left.presencePenalty === right.presencePenalty &&
     left.maxTokens === right.maxTokens &&
     left.systemPrompt === right.systemPrompt &&
-    left.systemVariables === right.systemVariables
+    left.systemVariables === right.systemVariables &&
+    left.seed === right.seed
   );
 }
 

@@ -95,6 +95,7 @@ export interface LocalInventoryRow {
   adapterType?: string | null;
   trainingMethod?: string | null;
   task?: string | null;
+  audioType?: string | null;
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;

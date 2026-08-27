@@ -9,7 +9,7 @@ import type { TranslationKey } from "@/i18n";
  * `useShortcut(id, ...)` where the action runs.
  *
  * Order is the render order and decides who owns a contested chord, so the
- * most reached-for actions come first. An action only earns a row when Studio
+ * most reached-for actions come first. An action only earns a row when Unsloth
  * has the feature behind it.
  */
 export type ShortcutId =

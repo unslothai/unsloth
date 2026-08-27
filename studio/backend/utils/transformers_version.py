@@ -53,6 +53,10 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 
+# Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
+# cannot pin a transformers version into sys.modules before the sidecar is activated.
+from utils.training_runs import base_model_from_run_dir_name
+
 logger = get_logger(__name__)
 
 
@@ -574,10 +578,9 @@ def recorded_local_base(model_name) -> "tuple[str | None, bool]":
                     return base, False
         # Only reachable without a Hub call when there is no adapter_config.json; with one,
         # the resolver tries get_base_model_from_lora first, which needs_hub already covers.
-        if not adapter_cfg and root.name.startswith("unsloth_") and _has_adapter_weights(root):
-            parts = root.name.split("_")
-            if len(parts) >= 2:
-                return "unsloth/" + "_".join(parts[1:-1]), False
+        base = base_model_from_run_dir_name(root.name)
+        if base and not adapter_cfg and _has_adapter_weights(root):
+            return base, False
         return None, adapter_cfg
     except Exception:
         return None, True
@@ -650,16 +653,14 @@ def _resolve_base_model(model_name: str) -> str:
             )
 
     # adapter_model-only LoRA: no config, so parse the unsloth_<model>_<timestamp> dir name.
-    if local_path.name.startswith("unsloth_") and _has_adapter_weights(local_path):
-        parts = local_path.name.split("_")
-        if len(parts) >= 2:  # unsloth_<model...>_<timestamp>
-            base = "unsloth/" + "_".join(parts[1:-1])
-            logger.info(
-                "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
-                model_name,
-                base,
-            )
-            return base
+    base = base_model_from_run_dir_name(local_path.name)
+    if base and _has_adapter_weights(local_path):
+        logger.info(
+            "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
+            model_name,
+            base,
+        )
+        return base
 
     return model_name
 

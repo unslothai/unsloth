@@ -38,6 +38,7 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     last_modified: row.lastModified ?? undefined,
     has_vision: row.capabilities.supportsVision,
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
     has_variant_state: row.hasVariantState ?? false,
   };
 }
@@ -69,6 +70,7 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
     model_format: row.modelFormat,
     updated_at: row.updatedAt,
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
   };
 }
 

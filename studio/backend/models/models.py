@@ -253,7 +253,7 @@ class LocalModelInfo(BaseModel):
     )
     audio_type: Optional[str] = Field(
         None,
-        description = "Detected local audio architecture used by Audio runtime policy",
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
     )
 
 

@@ -294,6 +294,7 @@ type NavRowDef = {
 
 type ConversationExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -308,7 +309,7 @@ const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
 // Whether cmd or ctrl adds a row to the selection. This is the user's own
-// keyboard, not the host Studio runs on, so it reads the browser rather than
+// keyboard, not the host Unsloth runs on, so it reads the browser rather than
 // the platform store: a Mac browser on a Linux host still uses cmd. Ctrl is
 // left alone on macOS, where ctrl click is the right click chord.
 const SELECT_WITH_META =
@@ -342,7 +343,8 @@ const CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ConversationExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   { label: CONVERSATION_MARKDOWN_LABEL, format: CONVERSATION_MARKDOWN_FORMAT },
@@ -358,6 +360,8 @@ async function exportConversationByFormat(
   switch (format) {
     case "raw-jsonl":
       return exports.exportConversationRawJsonl(threadId);
+    case "messages-jsonl":
+      return exports.exportConversationMessagesJsonl(threadId);
     case "csv":
       return exports.exportConversationCsv(threadId);
     case "sharegpt-jsonl":

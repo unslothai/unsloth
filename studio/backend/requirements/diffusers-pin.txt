@@ -1,4 +1,4 @@
-# The Diffusers revision Studio is built against. THE single source of truth for it:
+# The Diffusers revision Unsloth is built against. THE single source of truth for it:
 # no other requirements file may name diffusers, and a test in
 # tests/studio/install/test_diffusers_pin.py enforces that.
 #

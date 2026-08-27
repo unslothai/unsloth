@@ -163,7 +163,7 @@ class LocalModelInfo(BaseModel):
     )
     audio_type: Optional[str] = Field(
         None,
-        description = "Detected local audio architecture used by Audio runtime policy",
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
     )
     base_model: Optional[str] = Field(
         None,
@@ -243,6 +243,7 @@ class CachedRepoBase(BaseModel):
     # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
     # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
+    audio_type: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
