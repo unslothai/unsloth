@@ -394,6 +394,45 @@ def test_desktop_password_setup_does_not_block_keyless_access(monkeypatch):
         assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
 
 
+def test_setup_is_still_owed_after_keyless_access(monkeypatch):
+    """Admitting a keyless caller must not settle the password setup it skipped.
+
+    The UI routes to /change-password off ``/api/auth/status``, which takes no auth
+    dependency, and off the 403 detail that a browser session still gets. Keyless
+    reaches neither, so both have to keep reporting the setup as outstanding.
+    """
+    from routes.auth import auth_status
+
+    seed_user(must_change_password = True)
+    set_keyless_api_access("inference")
+    assert subject_of(request_for()) == storage.DEFAULT_ADMIN_USERNAME
+
+    assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
+    assert auth_status().requires_password_change is True
+
+    # The literal frontend/src/features/auth/api.ts matches to redirect the UI.
+    record = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    token = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME, secret = record[2])
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(bearer_request(token))
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail == "Password change required"
+
+
+def test_browser_guards_hold_before_password_setup():
+    """A page on another site stays out while the seeded password is still in place.
+
+    The gate this file stops applying to keyless callers was incidentally doubling
+    for these on a fresh install, so they are checked on their own footing here.
+    """
+    seed_user(must_change_password = True)
+    set_keyless_api_access("inference")
+    for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "none"},
+                    {"Host": "evil.example"}):
+        assert not keyless_request_allowed(request_for(headers = headers))
+    assert keyless_request_allowed(request_for(headers = {"Sec-Fetch-Site": "same-origin"}))
+
+
 def test_protected_side_effect_guards_remain_wired():
     import inspect
     from routes import auth, inference, mcp_servers, preview, rag, training_history, video
