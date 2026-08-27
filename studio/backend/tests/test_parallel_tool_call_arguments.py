@@ -683,7 +683,5 @@ def test_a_second_call_that_differs_anywhere_still_opens_its_own():
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, "alpha", '{"a":2}', call_id = "call_b")])
 
-    reported = [
-        (call["id"], call["function"]["arguments"]) for call in turn.calls()
-    ]
+    reported = [(call["id"], call["function"]["arguments"]) for call in turn.calls()]
     assert reported == [("call_0_0", '{"a":1}'), ("call_b", '{"a":2}')]

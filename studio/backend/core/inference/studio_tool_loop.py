@@ -769,9 +769,7 @@ class _Turn:
             # the opening delta disagrees, or the next call's announced early,
             # and merging it gave the closed call "alphabeta" and the new call
             # no name at all, so neither ran.
-            defers_to_next_call = (
-                slot_is_closed and not opens_next_call and not resends_this_call
-            )
+            defers_to_next_call = slot_is_closed and not opens_next_call and not resends_this_call
             suppress_name = False
             suppress_extra = False
             if defers_to_next_call:
