@@ -516,6 +516,10 @@ def fit_checkpoint_context(
     keeps_boundary: bool = False,
     can_reset: bool = False,
     searchable: bool = True,
+    # Signature compatibility with `fit_rolling_context`. A checkpoint reset already
+    # drops to the latest turn plus X; an extra bite of the window would only shrink
+    # the standing-instruction block, which is the half worth keeping.
+    headroom_ratio: Optional[float] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
 
