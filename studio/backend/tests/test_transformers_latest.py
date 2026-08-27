@@ -1501,8 +1501,10 @@ def test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
 
-    for remapped in ("unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
-                     "unsloth/Muse-Glimmer-30B-bnb-4bit"):
+    for remapped in (
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+        "unsloth/Muse-Glimmer-30B-bnb-4bit",
+    ):
         assert tl.check_upgrade_for_model(remapped) is None
 
     # Same suffix, different owner: not remapped, so it still goes to transformers.
