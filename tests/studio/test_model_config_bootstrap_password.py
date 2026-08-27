@@ -56,10 +56,10 @@ def test_every_first_boot_driver_asserts_the_seed_never_reached_the_browser():
         "playwright_model_config.py",
     ):
         src = (REPO / "tests/studio" / name).read_text(encoding = "utf-8")
-        assert "fill_bootstrap_current_password" in src, (
-            f"{name} does not use the shared first-boot helper"
-        )
-        assert '#current-password' not in src, (
+        assert (
+            "fill_bootstrap_current_password" in src
+        ), f"{name} does not use the shared first-boot helper"
+        assert "#current-password" not in src, (
             f"{name} still locates #current-password directly; route it through "
             "fill_bootstrap_current_password so the no-injection assertion runs"
         )
