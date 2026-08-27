@@ -149,6 +149,7 @@ jobs:
             tests/studio/test_install_phase_timing.py \
             tests/studio/test_mac_bundled_job_phases.py \
             tests/studio/test_mac_host_offload_optin.py \
+            tests/studio/test_model_config_bootstrap_password.py \
             tests/studio/test_settings_smoke_covers_every_tab.py \
             tests/studio/test_playwright_install_avoids_with_deps.py \
             tests/studio/test_macos_slots_per_commit.py \
