@@ -328,3 +328,61 @@ test("the panel tells the resolver which kind of unified memory it has", () => {
       "signal here takes a ROCm APU's carved window as the machine's ceiling.",
   );
 });
+
+test("a Linux APU beside a discrete card is not independent VRAM", () => {
+  // The third and last face of the same reporting split. `.every()` correctly
+  // made a mixed set non-unified, so the ceiling became `dedicated + RAM` -- and
+  // `dedicated` was computed from `sharedMemory` ALONE, which a Linux ROCm APU
+  // reports as false. Its 48 GiB window was therefore added to the 128 GiB of RAM
+  // that already contains it.
+  //
+  // Measured: 190.08 GiB on a machine holding 128, i.e. 46.56 GiB of capacity
+  // that does not exist, in the direction that admits a load.
+  const APU = { memoryTotalGb: 48, sharedMemory: false, unifiedMemory: true };
+  const DGPU = { memoryTotalGb: 16, sharedMemory: false, unifiedMemory: false };
+  const mixed = [APU, DGPU];
+  const r = resolveMemoryCapacityGb({
+    pinnedDevices: mixed,
+    hostDevices: mixed,
+    hostGpuTotalGb: 64,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 128,
+    gpuBudgetFraction: 0.97,
+    unifiedMemory: false,
+    unifiedPoolReportedAsGpuMemory: false,
+  });
+  // Only the discrete card is memory BESIDE system RAM: 16 * 0.97 + 128.
+  assert.equal(r.totalCapacityGb, 143.52);
+  assert.ok(
+    r.totalCapacityGb <= 128 + 16,
+    `the ceiling cannot exceed RAM plus the one real card; got ${r.totalCapacityGb}`,
+  );
+});
+
+test("the unified flag is read from the device, not just shared_memory", () => {
+  // The two flags must be interchangeable for capacity, since the backend picks
+  // between them by platform: Windows sends shared_memory, Linux sends
+  // unified_memory, for the same silicon. If these two ever disagree, one
+  // platform is being charged differently from the other for identical hardware.
+  const base = {
+    pinnedDevices: [] as never[],
+    hostGpuTotalGb: 48,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 96,
+    gpuBudgetFraction: 0.97,
+    unifiedMemory: false,
+  };
+  const viaShared = resolveMemoryCapacityGb({
+    ...base,
+    hostDevices: [{ memoryTotalGb: 48, sharedMemory: true }],
+  });
+  const viaUnified = resolveMemoryCapacityGb({
+    ...base,
+    hostDevices: [{ memoryTotalGb: 48, sharedMemory: false, unifiedMemory: true }],
+  });
+  assert.deepEqual(
+    viaUnified,
+    viaShared,
+    "Windows and Linux must price the same APU identically",
+  );
+});

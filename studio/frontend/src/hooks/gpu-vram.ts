@@ -111,6 +111,25 @@ export interface MemoryCapacityDevice {
   memoryTotalGb: number;
   sharedMemory: boolean;
   sharedMemoryHostBackedGb?: number | null;
+  /** The backend's per-device `unified_memory`, for a ROCm APU.
+   *
+   *  Separate from `sharedMemory` because the backend reports them separately and
+   *  they do not coincide: `hardware.py` sets `shared_memory` only on Windows, so
+   *  on Linux the very same APU arrives as `unified_memory: true,
+   *  shared_memory: false`. Reading only `sharedMemory` there counts the APU's
+   *  carved window as VRAM standing BESIDE system RAM, when it is a view INTO it.
+   *
+   *  Both flags mean the same thing for capacity, which is why
+   *  `sharesHostMemory` below folds them together rather than either one being
+   *  taught about the other. */
+  unifiedMemory?: boolean;
+}
+
+/** Whether this device's memory is a view into host RAM rather than beside it.
+ *  The one question capacity cares about; the two flags are how the backend
+ *  happens to report it on two platforms. */
+function sharesHostMemory(device: MemoryCapacityDevice): boolean {
+  return device.sharedMemory || device.unifiedMemory === true;
 }
 
 function budgetedGpuMemoryGb(
@@ -128,7 +147,7 @@ function budgetedGpuMemoryGb(
         ? device.memoryTotalGb
         : 0;
     const deviceCapacity = total * budget;
-    if (!device.sharedMemory) {
+    if (!sharesHostMemory(device)) {
       dedicated += deviceCapacity;
       continue;
     }
@@ -219,7 +238,10 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const pinnedTotals = gpuMemoryTotalsGb(
     input.pinnedDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      shared_memory: device.sharedMemory,
+      // Folded, not passed through: a Linux ROCm APU reports shared_memory false
+      // and unified_memory true, and counting its carved window as dedicated VRAM
+      // added 46.56 GiB of capacity that is already inside system RAM.
+      shared_memory: sharesHostMemory(device),
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );
@@ -260,7 +282,10 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const capacityDeviceTotals = gpuMemoryTotalsGb(
     capacityDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      shared_memory: device.sharedMemory,
+      // Folded, not passed through: a Linux ROCm APU reports shared_memory false
+      // and unified_memory true, and counting its carved window as dedicated VRAM
+      // added 46.56 GiB of capacity that is already inside system RAM.
+      shared_memory: sharesHostMemory(device),
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );

@@ -79,8 +79,20 @@ export function classifyGgufFit(
       : DEFAULT_VRAM_BUDGET_FRACTION;
   const budget = gpuGb * fraction;
   if (required <= budget) return "fits";
+  // Raw card, deliberately. This band means "over your budget, still card-sized",
+  // which is the only thing that distinguishes it from `fits`: scoring it against
+  // `budget` too would make it unreachable, since `required <= budget` has already
+  // returned above. It is a warning tier, not a claim that the load will be
+  // admitted.
   if (required <= gpuGb) return "marginal";
-  const combined = gpuGb + (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
+  // The budget, though. Once layers spill, what the GPU can still contribute is
+  // what it is ALLOWED to hold, and the reserve is exactly what the model and KV
+  // cache may not use ("the fit reserves a slice of every card that the model and
+  // KV cache may not use", vram_budget_settings.py). Crediting the raw card here
+  // invented capacity the loader will not give: on a 24 GiB card with 16 GiB of
+  // RAM at the legal minimum 0.80, quants from 23 to 26 GiB were badged `partial`
+  // when the budget leaves them no way to load.
+  const combined = budget + (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
   if (required <= combined) return "partial";
   return "oom";
 }

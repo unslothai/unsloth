@@ -277,3 +277,49 @@ test("the badge's call sites read the live fraction", async () => {
     `expected the fraction at the badge, the sort and the menu; found ${passes.length}`,
   );
 });
+
+test("the offload band credits the budget, not the whole card", async () => {
+  // Once layers spill, what the GPU can still hold is what it is ALLOWED to hold.
+  // The reserve is precisely what the model and KV cache may not use, so adding
+  // the raw card to the RAM allowance invented capacity the loader will not give.
+  //
+  // Driven at 0.80, the LEGAL minimum (VRAM_FRACTION_MIN in
+  // vram_budget_settings.py). The originally reported example used 0.50, which
+  // the settings route rejects, so the real defect is smaller than it looked --
+  // 4.8 GiB of phantom GPU on a 24 GiB card -- and still large enough to mislabel
+  // four whole quant sizes.
+  const { classifyGgufFit, requiredGgufMemoryGb } = await import(
+    "../src/lib/gguf-fit.ts"
+  );
+  const input = { gpuGb: 24, systemRamGb: 16, budgetFraction: 0.8 };
+  for (const sizeGb of [23, 24, 25, 26]) {
+    const bytes = sizeGb * 1024 ** 3;
+    const required = requiredGgufMemoryGb(bytes);
+    // Beyond what budget plus offloadable RAM can hold: 19.2 + 8 = 27.2.
+    assert.ok(required > 27.2, `fixture ${sizeGb} must exceed the real ceiling`);
+    assert.equal(
+      classifyGgufFit(bytes, input),
+      "oom",
+      `a ${sizeGb} GiB quant needs ${required.toFixed(2)} GiB, and 0.80 of a ` +
+        "24 GiB card plus half of 16 GiB of RAM cannot hold it",
+    );
+  }
+});
+
+test("marginal stays on the raw card, or the band cannot be reached", async () => {
+  // Deliberately NOT scored against the budget. `fits` already returns for
+  // everything at or under the budget, so scoring this against the budget too
+  // would make the branch dead code. The band means "over your budget, still
+  // card-sized", which is a warning and not a promise of admission.
+  const { classifyGgufFit } = await import("../src/lib/gguf-fit.ts");
+  // 20 GiB needs 24.00 GiB: over 0.80 of the card (19.2) and exactly at the card.
+  assert.equal(
+    classifyGgufFit(20 * 1024 ** 3, {
+      gpuGb: 24,
+      systemRamGb: 16,
+      budgetFraction: 0.8,
+    }),
+    "marginal",
+    "a load between the budget and the card must still be reachable",
+  );
+});
