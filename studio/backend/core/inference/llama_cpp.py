@@ -3335,6 +3335,33 @@ _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
 
 
+def _spilled_decode_threads() -> int:
+    """How many threads a spilled decode actually gets.
+
+    PHYSICAL cores, not logical. Studio deliberately leaves ``--threads`` unset
+    (see the note next to the flag), and an unset ``--threads`` makes llama.cpp
+    size its pool from ``common_cpu_get_num_math``, which counts physical cores
+    and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
+    hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
+    host had twice the cores the child would ever use, and the generation
+    penalty came out about half of what a spill really costs there.
+
+    psutil is already a dependency of this backend (studio/backend/run.py). If it
+    cannot answer, fall back to the logical count rather than guessing a ratio:
+    SMT is common but not universal, and halving a machine that has no SMT would
+    trade one wrong answer for another.
+    """
+    try:
+        import psutil
+
+        physical = psutil.cpu_count(logical = False)
+        if physical and physical > 0:
+            return int(physical)
+    except Exception:
+        pass
+    return os.cpu_count() or 1
+
+
 def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
     """Drop each ``flag value`` pair naming one of ``flags``."""
     out: list[str] = []
@@ -25085,9 +25112,15 @@ class LlamaCppBackend:
             opts = PlanOptions(
                 overhead_bytes_per_device = (
                     int(inputs.get("soft_overhead") or 0)
-                    + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
                     + int(inputs.get("ctx_compute_per_device") or 0)
                 ),
+                # Charged for the devices AFTER the first, matching every other
+                # use of this constant in this file (:18664, :18922, and the
+                # `n > 1` guards at :18761 and :19186). Added to the flat
+                # per-device term it also came off device 0, which withheld a GiB
+                # of a single card that no split was ever going to allocate --
+                # phantom deficit the planner covered by spilling real blocks.
+                pipeline_overhead_bytes = self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024,
                 # Module-level, unlike the line above, so not reachable through self.
                 host_ram_headroom_bytes = _HOST_RAM_HEADROOM_MIB * 1024 * 1024,
                 # -nkvo is not a reason to decline: it moves the cache and the
@@ -25103,7 +25136,7 @@ class LlamaCppBackend:
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.
                 host = HostProfile(
-                    threads = os.cpu_count() or 1,
+                    threads = _spilled_decode_threads(),
                     # Wired, not defaulted. On a unified-memory APU the credited
                     # "VRAM" IS system RAM, so an -ot spill frees no device memory
                     # and only buys the CPU backend's slower read path. The planner

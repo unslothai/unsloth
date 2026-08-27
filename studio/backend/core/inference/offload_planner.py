@@ -102,6 +102,15 @@ class PlanOptions:
     # target GGUF's tensor table. Subtracting from the budget also reaches
     # max_context_for. 0 keeps the pure-layout behaviour.
     extra_resident_bytes: int = 0
+    # The fixed per-device cost of a LAYER SPLIT, charged once for every device
+    # after the first. Separate from overhead_bytes_per_device because it is not
+    # per-device in the same sense: the first device's share is already folded
+    # into the compute buffer above, which is why every other site in
+    # llama_cpp.py applies it as ``max(0, n_gpus - 1) * ...`` and skips it
+    # entirely at k=1. Folded into the flat per-device term instead, it withheld
+    # a GiB of a single card that nothing was ever going to allocate, which is
+    # deficit the planner then spilled real blocks to cover.
+    pipeline_overhead_bytes: int = 0
     # Host RAM this planner refuses to spend, so a spill does not push the box
     # into swap.
     host_ram_headroom_bytes: int = 2 * GIB
@@ -161,9 +170,11 @@ class Plan:
 
 def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions) -> int:
     """Total creditable VRAM: every device pays the fixed per-device overhead,
-    then the pool pays once for whatever sits on a card outside the layout."""
+    the split pays for each device AFTER the first, then the pool pays once for
+    whatever sits on a card outside the layout."""
     pooled = sum(max(0, v - opts.overhead_bytes_per_device) for v in vram_bytes_per_device)
-    return pooled - max(0, opts.extra_resident_bytes)
+    split = max(0, len(vram_bytes_per_device) - 1) * max(0, opts.pipeline_overhead_bytes)
+    return pooled - split - max(0, opts.extra_resident_bytes)
 
 
 def _select_blocks(

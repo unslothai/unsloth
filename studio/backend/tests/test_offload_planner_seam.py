@@ -342,7 +342,10 @@ def test_a_moe_load_spills_expert_tensors_not_dense_ffn():
 def test_lm_head_is_only_spilled_after_ffn():
     """43% of generation on its own, 16% on top of an already host-bound step, so
     it is never the first rung."""
-    tight = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = 5632)
+    # 4608, not 5632: the planner no longer withholds a pipeline GiB from a
+    # SINGLE card, so the old figure left a deficit the FFN alone covered and
+    # lm_head was never reached.
+    tight = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = 4608)
     assert tight is not None
     assert tight.spilled_lm_head is True
     assert tight.spilled_blocks, "lm_head is never the first rung"
@@ -375,7 +378,9 @@ def test_a_floor_that_does_not_fit_emits_no_flags():
     just said does not fit. Checking `insufficient` on the returned plan passes
     either way and proves nothing.
     """
-    got = _plan(_Stub(), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 4 * 1024)
+    # A GiB tighter than before, for the single-card pipeline reserve this no
+    # longer charges; the case is still "no rung fits".
+    got = _plan(_Stub(), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 3 * 1024)
     assert got is not None
     assert got.insufficient
     assert LlamaCppBackend._spill_plan_flags_for(got) == []
@@ -743,8 +748,8 @@ def test_the_planner_gets_the_budget_the_fit_tested_not_raw_free():
     -ot overrides, and then appends --fit off over the result.
     """
     stub = _Stub()
-    on_free = _plan(stub, free_mib = 15 * 1024)
-    on_budget = _plan(stub, free_mib = 15 * 1024, usable_mib = 13 * 1024)
+    on_free = _plan(stub, free_mib = 14 * 1024)
+    on_budget = _plan(stub, free_mib = 14 * 1024, usable_mib = 13 * 1024)
 
     assert on_free is not None and on_budget is not None
     assert on_free.spills_anything and on_budget.spills_anything
@@ -759,8 +764,8 @@ def test_the_projector_and_mtp_reserve_reach_the_planner():
     already judged not to fit, and the launch then follows that with --fit off.
     """
     stub = _Stub()
-    without = _plan(stub, free_mib = 15 * 1024)
-    with_extra = _plan(stub, free_mib = 15 * 1024, extra_gpu = 2 * GIB)
+    without = _plan(stub, free_mib = 14 * 1024)
+    with_extra = _plan(stub, free_mib = 14 * 1024, extra_gpu = 2 * GIB)
 
     assert without is not None and with_extra is not None
     assert without.spills_anything and with_extra.spills_anything
@@ -867,8 +872,8 @@ def test_an_engaged_draft_charges_the_excluded_mtp_blocks():
     stub = _Stub()
     stub._excluded_bytes = 3 * GIB
 
-    idle = _plan(stub, free_mib = 15 * 1024, mtp = False)
-    drafting = _plan(stub, free_mib = 15 * 1024, mtp = True)
+    idle = _plan(stub, free_mib = 14 * 1024, mtp = False)
+    drafting = _plan(stub, free_mib = 14 * 1024, mtp = True)
 
     assert idle is not None and drafting is not None
     assert idle.spills_anything and drafting.spills_anything
@@ -880,8 +885,8 @@ def test_an_ordinary_model_is_unaffected_by_the_draft_flag():
     model that has no MTP head."""
     stub = _Stub()
     assert stub._excluded_bytes == 0
-    idle = _plan(stub, free_mib = 15 * 1024, mtp = False)
-    drafting = _plan(stub, free_mib = 15 * 1024, mtp = True)
+    idle = _plan(stub, free_mib = 14 * 1024, mtp = False)
+    drafting = _plan(stub, free_mib = 14 * 1024, mtp = True)
     assert idle.spilled_blocks == drafting.spilled_blocks
 
 
@@ -1233,7 +1238,11 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
         model_size = 21 * GIB,
         kv = 2 * GIB,
         extra_gpu = 3 * GIB,
-        gpus = [(0, 10 * 1024), (1, 3 * 1024)],
+        # 9 GiB, not 10: the split reserve is charged once for the SECOND card
+        # now rather than to both, so the old pair left a deficit a PARTIAL spill
+        # covered, and a partial multi-GPU spill abstains before it ever reaches
+        # the per-device check this test is about.
+        gpus = [(0, 9 * 1024), (1, 3 * 1024)],
     )
     # Before this abstain the same inputs produced a real plan -- every block
     # spilled, -ngl -1 --fit off emitted -- with the whole 3 GiB booked on
@@ -1605,3 +1614,96 @@ def test_the_seam_passes_the_flash_state_and_cache_type_to_the_kv_vector():
         }
         assert getattr(passed.get("flash_attn"), "id", None) == "planned_flash_attn"
         assert getattr(passed.get("cache_type_kv"), "id", None) == "cache_type_kv"
+
+
+# ------------------------------- the two inputs the planner was getting wrong
+
+
+def test_a_single_card_pays_no_split_reserve():
+    """The pipeline reserve is a LAYER-SPLIT cost, so one card owes none of it.
+
+    Every other use of _PIPELINE_PER_DEVICE_OVERHEAD_MIB in llama_cpp.py applies
+    it as ``max(0, n_gpus - 1) *`` or guards it behind ``n > 1``; the planner
+    folded it into its flat per-device term, so it came off device 0 as well.
+    That withheld a GiB of a single card no split was ever going to allocate, and
+    the planner then spilled real blocks to cover the deficit it had invented --
+    the "spilled into headroom that was there" cells in #9861.
+
+    Asserted through the plan rather than by reading the constant: a load sized
+    to fit in exactly the disputed GiB must come back resident.
+    """
+    from core.inference.offload_planner import ContextPolicy, PlanOptions, plan_placement
+
+    layout = _Stub()._tensor_spill_layout("/models/stub.gguf")
+    opts = PlanOptions(
+        overhead_bytes_per_device = 0,
+        pipeline_overhead_bytes = 1 * GIB,
+        context_policy = ContextPolicy.NEVER_REDUCE,
+    )
+    resident = sum(b.resident_bytes for b in layout.blocks) + layout.token_embd_bytes
+    spillable = sum(b.spillable_bytes for b in layout.blocks)
+    need = resident + spillable + layout.lm_head_bytes
+
+    one = plan_placement(layout, [need + 512 * MIB], 64 * GIB, 4096, opts = opts)
+    assert not one.spills_anything, (
+        "a single card paid a split reserve it does not owe, so a load that fits "
+        f"was spilled anyway: {one.reason}"
+    )
+
+    # The term is not simply deleted: it is charged once per device AFTER the
+    # first. Asserted on the budget arithmetic directly, because the plan-level
+    # answer for two cards is dominated by the partial-spill abstain and would
+    # read the same whether the reserve was charged or not.
+    from core.inference.offload_planner import _usable_vram
+
+    card = 8 * GIB
+    assert _usable_vram([card], opts) == card
+    assert _usable_vram([card, card], opts) == 2 * card - 1 * GIB
+    assert _usable_vram([card, card, card], opts) == 3 * card - 2 * GIB
+
+
+def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
+    """Spilled decode gets physical cores, so the penalty must be priced on them.
+
+    Studio leaves --threads unset on purpose, and an unset --threads makes
+    llama.cpp size its pool from common_cpu_get_num_math, which counts physical
+    cores. Passing os.cpu_count() told the cost model a 6-core / 12-thread
+    desktop had 12, and the generation penalty came out roughly half of what a
+    spill really costs there.
+    """
+    import core.inference.llama_cpp as llama_mod
+
+    assert llama_mod._spilled_decode_threads() >= 1
+
+    class _FakePsutil:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 12 if logical else 6
+
+    import sys
+    saved = sys.modules.get("psutil")
+    sys.modules["psutil"] = _FakePsutil
+    try:
+        assert llama_mod._spilled_decode_threads() == 6, "logical count reached the cost model"
+    finally:
+        if saved is None:
+            del sys.modules["psutil"]
+        else:
+            sys.modules["psutil"] = saved
+
+    # A host that cannot answer falls back rather than guessing a ratio: halving
+    # a machine with no SMT would trade one wrong answer for another.
+    class _NoAnswer:
+        @staticmethod
+        def cpu_count(logical = True):
+            return None
+
+    sys.modules["psutil"] = _NoAnswer
+    try:
+        import os as _os
+        assert llama_mod._spilled_decode_threads() == (_os.cpu_count() or 1)
+    finally:
+        if saved is None:
+            del sys.modules["psutil"]
+        else:
+            sys.modules["psutil"] = saved
