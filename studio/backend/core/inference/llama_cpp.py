@@ -2847,6 +2847,15 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 _FIT_MIN_CTX = 8192
 _FIT_FLOOR_MIN_CTX = 256
 
+# llama.cpp's OWN reduction floor: common_params.fit_params_min_ctx, 4096
+# (common/common.h), the smallest context its --fit step will shrink a request to.
+# Named because the paragraph above spends the whole justification for _FIT_MIN_CTX on
+# it: -c 8192 is safe to hand a Mac only as a ceiling the child's fitter can still come
+# down from, and this is how far down. A launch that hands over 8192 with the fitter
+# NOT running has no such backstop, so it must hand over this number itself rather than
+# the ceiling that assumed one.
+_LLAMA_FIT_MIN_CTX = 4096
+
 # Auto only reaches this path when no discrete-GPU subset can hold the model.
 # llama.cpp must offload layers to host RAM either way, so prefer a context that
 # remains useful for chat. Separate from _FIT_MIN_CTX: that value is also a search
@@ -7922,6 +7931,8 @@ class LlamaCppBackend:
         caller_owns_budget: bool,
         native_ctx: Optional[int],
         max_available_ctx: Optional[int] = None,
+        *,
+        fitter_runs: bool = True,
     ) -> int:
         """Context to start at when Metal would otherwise be sent "-c 0", else 0.
 
@@ -7940,22 +7951,39 @@ class LlamaCppBackend:
         llama-server's "Compute error." at decode (#5118, #6529). Floor to the
         same ``_FIT_MIN_CTX`` the cap falls back to without a KV estimate.
 
+        ``fitter_runs`` is whether the child's own --fit step will actually run, and
+        both the exemption and the floor VALUE depend on it. _FIT_MIN_CTX sits above
+        llama.cpp's own ``fit_params_min_ctx`` on purpose: 8192 is defensible on a Mac
+        only because it is a request the fitter can still reduce, down to 4096. Turn
+        the fitter off and that backstop is gone, and this arm would hand a machine
+        with room for 4096 but not 8192 a context nothing can bring down -- a startup
+        failure or a "Compute error." at decode, the very thing the floor exists to
+        prevent. So a launch with no fitter is floored at ``_LLAMA_FIT_MIN_CTX``, the
+        number the fitter would have reduced to, rather than at the ceiling that
+        assumed one. Conservative on purpose: --fit off is a flag the user typed, and
+        overriding it to keep our own invented floor would be Unsloth taking back a
+        setting the user asked for, on the path where they most likely asked for it
+        because the fitter misbehaves on their host.
+
         Exemptions: no Metal budget (0 off Apple Silicon, so this is inert
-        there); ``auto_fit``, which omits -c so --fit sizes it, and which the
-        caller passes only while --fit will actually run; and
+        there); ``auto_fit``, which omits -c so --fit sizes it, and which is
+        therefore honoured only while ``fitter_runs`` -- the conjunction is taken
+        here rather than trusted to the caller, since without it the exemption hands
+        the child no -c and no fitter, which is llama.cpp's native length; and
         ``caller_owns_budget``, a manual mode with a fixed layer count where the
         user owns memory management. That last is read off the REQUEST, because
         the paravirtual CPU pin rewrites every placement to manual/0 first and
         would make a plain Auto request look caller-owned.
         """
-        if effective_ctx > 0 or auto_fit or caller_owns_budget:
+        if effective_ctx > 0 or (auto_fit and fitter_runs) or caller_owns_budget:
             return 0
         if not LlamaCppBackend._apple_metal_memory_budget_bytes():
             return 0
+        floor = _FIT_MIN_CTX if fitter_runs else _LLAMA_FIT_MIN_CTX
         # Never above a ceiling the cap already worked out: on the exception path
         # max_available_ctx survives the reset, and its KV-based answer can sit
         # below the floor. Floating back up would re-create the over-commit.
-        return min(_FIT_MIN_CTX, native_ctx or _FIT_MIN_CTX, max_available_ctx or _FIT_MIN_CTX)
+        return min(floor, native_ctx or floor, max_available_ctx or floor)
 
     @staticmethod
     def _metal_drops_zero_ctx_override(
@@ -9326,6 +9354,7 @@ class LlamaCppBackend:
         cpu_cmd: Iterable[str],
         env: Optional[Mapping[str, str]],
         avail_mib: Optional[int],
+        pageable_note: Optional[str] = None,
     ) -> None:
         """Re-price the host memory advisory once a Vulkan crash is replayed on CPU.
 
@@ -9360,9 +9389,21 @@ class LlamaCppBackend:
         re-priced text rather than rebuilt, so a reprice cannot describe the override in
         different words than the launch site did.
 
+        ``pageable_note`` is the override ``_prepare_cpu_fallback_launch`` decided on
+        the REPLAY, which the preflight message cannot have carried: a launch that fit
+        in VRAM was priced as pageable-enough and left the user's unmapped mode alone,
+        and only the replay's own footprint (no VRAM credited) turns it into a full
+        host allocation. Both notes cannot be set at once -- if the preflight had
+        already overridden, the replay it built from is mapped and the second pricing
+        finds nothing to rewrite -- so this appends rather than replaces. Priced against
+        the same ``avail_mib`` the rewrite used, so the advisory cannot describe an
+        unmapped load the same pool reading has just made mapped.
+
         A no-op unless the notice the route would hand back is the one this path can
         speak for: an opt-out that silenced it (the re-pricing call honours it too), or
-        any other notice first-notice-wins kept, is left exactly as it is.
+        any other notice first-notice-wins kept, is left exactly as it is. The note
+        follows the message: an override on a silenced load stays in the log alone,
+        exactly as it does on the main launch path.
         """
         repriced = self._launch_host_shortfall_message(
             cpu_cmd,
@@ -9371,14 +9412,18 @@ class LlamaCppBackend:
             child_has_no_gpu = True,
             avail_mib = avail_mib,
         )
+        note = pageable_note or ""
         current = self._last_load_warning
         if current is None:
             # The model fit in VRAM, so nothing warned; on CPU it fits nowhere but disk.
-            self._record_load_warning(repriced)
+            self._record_load_warning((repriced + note) if repriced else None)
             return
         if not host_msg or not current.startswith(host_msg) or not repriced:
+            # Nothing here can be re-priced, but an override still changed the child:
+            # say so on whatever notice first-notice-wins kept.
+            self._amend_load_warning(pageable_note)
             return
-        self._last_load_warning = repriced + current[len(host_msg) :]
+        self._last_load_warning = repriced + current[len(host_msg) :] + note
         logger.info(
             "Re-priced the host memory advisory for the CPU replay: it runs with no "
             "GPU, so the whole model is charged to system RAM."
@@ -16065,7 +16110,19 @@ class LlamaCppBackend:
         server_caps: Mapping[str, object],
         *,
         drop_full_offload_threads: bool = False,
-    ) -> Optional[tuple[list[str], Optional[str]]]:
+        avail_mib: Optional[int] = None,
+    ) -> Optional[tuple[list[str], Optional[str], Optional[str]]]:
+        """Build the CPU replay, or None when this install cannot host one.
+
+        Returns ``(argv, cwd, pageable_note)``. The note is the sentence
+        ``_page_an_oversized_unmapped_load`` produces when it had to override an
+        unmapped load mode, for the caller to put in front of the user; None when
+        nothing was rewritten.
+
+        ``avail_mib`` is the host pool the preflight read, carried down so the rewrite
+        below and ``_reprice_after_cpu_only_fallback`` price the replay against the same
+        number and cannot reach opposite conclusions about the same child.
+        """
         # Staging only removes GPU backends; a non-Vulkan install would report a
         # Vulkan crash that never happened.
         if not self._is_vulkan_backend(binary):
@@ -16084,6 +16141,33 @@ class LlamaCppBackend:
                 "Load mode: dropping the fit's --load-mode none for the CPU "
                 "fallback; it runs entirely from host RAM."
             )
+        # A user's own "--load-mode none" / "--no-mmap" survives that strip, by design,
+        # and on this rung it is no longer the mode they were priced for: the replay
+        # appends "--gpu-layers 0 --fit off --device none", so nothing credits VRAM and
+        # the child holds the WHOLE model in host RAM. Unmapped that is one allocation
+        # of the whole file rather than a mapping the kernel pages, i.e. an OOM kill on
+        # a host that cannot hold it -- which the main launch path would have rewritten
+        # before spawning. So price the replay on its OWN footprint (never the preflight
+        # verdict, which credited a GPU placement this argv has just deleted) and apply
+        # the same override.
+        _priced_replay = replay
+        replay, pageable_note = self._page_an_oversized_unmapped_load(
+            replay,
+            env,
+            # honor_opt_out=False for the same reason _launch_is_oversized reads it that
+            # way: UNSLOTH_ALLOW_HOST_OFFLOAD silences a message and must never withdraw
+            # the rewrite that makes the load possible.
+            lambda: bool(
+                self._launch_host_shortfall_message(
+                    _priced_replay,
+                    (),
+                    env,
+                    child_has_no_gpu = True,
+                    avail_mib = avail_mib,
+                    honor_opt_out = False,
+                )
+            ),
+        )
         cpu_binary = self._cpu_isolated_binary(binary)
         if cpu_binary is None:
             return None
@@ -16093,7 +16177,7 @@ class LlamaCppBackend:
         replay[0] = cpu_binary
         # Staging covers only the executable and libraries, so keep Unsloth's working
         # directory: relative paths in user extra args resolve against it.
-        return replay, None
+        return replay, None, pageable_note
 
     def _cpu_isolated_binary(self, binary: Optional[str]) -> Optional[str]:
         """Stage managed llama.cpp without GPU backend libraries.
@@ -19834,15 +19918,19 @@ class LlamaCppBackend:
                     )
                 _metal_floor = self._metal_zero_ctx_floor(
                     effective_ctx,
-                    # Auto-layers earns its exemption by leaving the context to --fit,
-                    # so it only holds while --fit actually runs. Extras land after
-                    # Unsloth's own "--fit on" and win, and a "--fit off" there would
-                    # otherwise leave a command with no -c and no fitter, which is
-                    # llama.cpp's native context.
-                    auto_fit and fit_is_effectively_on(extra_args),
+                    auto_fit,
                     _caller_owns_budget,
                     self._context_length,
                     max_available_ctx,
+                    # Whether the child's own fitter runs at all, which decides both the
+                    # Auto-layers exemption and how far the floor may reach. Every branch
+                    # that can reach the floor emits "--fit on" or nothing (llama.cpp
+                    # defaults it on); the one branch that emits "--fit off" is manual
+                    # with a fixed layer count, which _caller_owns_budget exempts. So the
+                    # only ways off here are the user's own, and both are read: extras
+                    # land after Unsloth's flag and win, and LLAMA_ARG_FIT is applied
+                    # before argv when argv sets nothing.
+                    fitter_runs = fit_is_effectively_on(extra_args, os.environ),
                 )
                 if _metal_floor:
                     effective_ctx = _metal_floor
@@ -21732,6 +21820,9 @@ class LlamaCppBackend:
                         env,
                         server_caps,
                         drop_full_offload_threads = _drop_full_offload_threads,
+                        # The same host pool the preflight and the reprice below read,
+                        # so the rewrite and the advisory answer one question once.
+                        avail_mib = _preflight_avail_mib,
                     )
                     if prepared is None:
                         return False
@@ -21741,7 +21832,7 @@ class LlamaCppBackend:
                         # remove; take it back here.
                         self._cleanup_cpu_fallback_runtime()
                         return False
-                    replay, _spawn_cwd = prepared
+                    replay, _spawn_cwd, _cpu_pageable_note = prepared
 
                     logger.warning(
                         "The auto-selected Vulkan backend hard-crashed during "
@@ -21774,7 +21865,12 @@ class LlamaCppBackend:
                     # make, and a later "Don't reserve system RAM" would demand a
                     # pointless reload. From _last_spawn_cmd, the argv that really
                     # started, so this cannot undo a record a --fit retry wrote.
-                    if self._fit_load_mode_flags:
+                    #
+                    # Or the pageable override rewrote a mode this replay no longer runs
+                    # with: the record has to describe the argv that started, whichever
+                    # of the two changed it, or the reload comparator judges this child
+                    # against a mode it does not have.
+                    if self._fit_load_mode_flags or _cpu_pageable_note:
                         self._memory_state = resolve_effective_memory_state(_last_spawn_cmd, env)
                     intent = self._apply_cpu_fallback_state(
                         intent,
@@ -21805,6 +21901,7 @@ class LlamaCppBackend:
                         cpu_cmd = _last_spawn_cmd,
                         env = env,
                         avail_mib = _preflight_avail_mib,
+                        pageable_note = _cpu_pageable_note,
                     )
                     logger.warning(
                         "llama-server loaded successfully on CPU after the "
@@ -21880,19 +21977,28 @@ class LlamaCppBackend:
                             env,
                             server_caps,
                             drop_full_offload_threads = _drop_full_offload_threads,
+                            avail_mib = _preflight_avail_mib,
                         )
                         if prepared is None:
                             _raise_terminal_load_failure(
                                 "The prior Vulkan CPU fallback could not be reconstructed; run "
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
-                        cmd, _spawn_cwd = prepared
+                        cmd, _spawn_cwd, _replay_pageable_note = prepared
                         # Same reason as the crash path, recomputed from the stripped
                         # `cmd` before anything spawns. The arch-crash rung re-derives it
                         # from `cmd` too, so the _mem_policy_for_cmd snapshot it restores
-                        # cannot put the stale pair back.
-                        if self._fit_load_mode_flags:
+                        # cannot put the stale pair back. The pageable override rewrites
+                        # the same field, so either one having fired makes the record stale.
+                        if self._fit_load_mode_flags or _replay_pageable_note:
                             self._memory_state = resolve_effective_memory_state(cmd, env)
+                        # The preflight above priced and, where needed, rewrote the argv
+                        # this replay was built FROM; an override settled here is news it
+                        # could not have carried. Appended to whatever notice is recorded,
+                        # the same way the APU preflight's override reaches the message,
+                        # and a no-op on a load whose warning the opt-out silenced, which
+                        # keeps the log line as its only record.
+                        self._amend_load_warning(_replay_pageable_note)
                         # Same normalization the crash path applies, so a client that
                         # sent only the flag cannot leave a CPU-only server reporting
                         # an Auto/GPU placement (which then fails holds_no_vram).

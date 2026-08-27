@@ -3327,6 +3327,116 @@ def test_the_cpu_reprice_carries_the_pageable_override_note_it_did_not_revert(
     assert warning.count("memory mapping instead") == 1, warning
 
 
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_a_replay_that_loses_its_vram_is_repaged_before_it_spawns(
+    tmp_path, monkeypatch, extra_args
+):
+    """20 GB of weights on a 24 GB card, loaded unmapped by request, on a 12 GB host.
+
+    The preflight leaves the mode alone and is right to: nothing spills, so there is no
+    shortfall and an unmapped load that fits is exactly what was asked for. Then Vulkan
+    hard-crashes and the replay appends "--gpu-layers 0 --fit off --device none", which
+    credits it no VRAM at all. The same 20 GB now has to come out of a 12 GB host, and
+    unmapped that is one allocation of the whole file rather than a mapping that pages:
+    an OOM kill, not a slow load. So the replay is priced on its own footprint and
+    repaged before it spawns, exactly as the main launch path would have done.
+    """
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = extra_args)
+
+    gpu_attempt, replay = captured["cmds"][0], captured["cmds"][-1]
+    assert _unmapped_tokens(gpu_attempt) == list(extra_args), (
+        f"the fitting GPU launch lost the mode it asked for: {gpu_attempt}"
+    )
+    assert not _unmapped_tokens(replay), (
+        f"the CPU replay holds the whole model in host RAM unmapped: {replay}"
+    )
+    # The advisory has to describe the child that is running: the whole model against
+    # host RAM, and the override that is why it can page at all.
+    warning = backend.last_load_warning or ""
+    assert "About 20 GB" in warning, warning
+    assert warning.count("memory mapping instead") == 1, warning
+    # And the record the reload comparator reads, or the next Apply judges this child
+    # against a mode it no longer runs.
+    assert backend._memory_state == (False, False), backend._memory_state
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_a_replay_the_host_can_actually_hold_keeps_the_mode_it_was_asked_for(
+    tmp_path, monkeypatch, extra_args
+):
+    """The control. Same crash, same replay with no VRAM credited, but a 64 GB host
+    holds all 20 GB outright. Nothing is oversized, so loading unmapped is the
+    legitimate choice it always was and no override and no warning are invented."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 64 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = extra_args)
+
+    replay = captured["cmds"][-1]
+    assert _unmapped_tokens(replay) == list(
+        extra_args
+    ), f"the CPU replay lost the mode the user asked for: {replay}"
+    assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_the_opt_out_silences_the_replay_warning_without_licensing_the_oom(
+    tmp_path, monkeypatch
+):
+    """UNSLOTH_ALLOW_HOST_OFFLOAD is warning-scoped, the same contract the main launch
+    path holds it to: it hides the message, it does not hand the child a load it cannot
+    complete. So the replay is still repaged and the override is still logged."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--no-mmap"])
+
+    assert not _unmapped_tokens(captured["cmds"][-1]), captured["cmds"][-1]
+    assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_an_effective_lock_survives_the_replay_override_as_a_mapped_one(
+    tmp_path, monkeypatch
+):
+    """force_pageable_load's own rule, reached through this rung: "keep this in RAM" is
+    honoured over a mapping the kernel can fall back on, so --load-mode mlock becomes
+    mmap+mlock rather than losing the lock."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(
+        backend, gguf, extra_args = ["--load-mode", "mlock"]
+    )
+
+    replay = captured["cmds"][-1]
+    assert not _unmapped_tokens(replay), replay
+    assert "mmap+mlock" in replay, replay
+
+
+def test_a_shadowed_lock_is_not_resurrected_by_the_replay_override(tmp_path, monkeypatch):
+    """The other half of that rule. "--mlock --no-mmap" already runs unlocked, so
+    dropping only the selector would page-lock the whole oversized mapping into the RAM
+    this override exists to keep pageable."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(
+        backend, gguf, extra_args = ["--mlock", "--no-mmap"]
+    )
+
+    replay = captured["cmds"][-1]
+    assert not _unmapped_tokens(replay), replay
+    assert "--mlock" not in replay and "mmap+mlock" not in replay, replay
+
+
 def test_the_cpu_reprice_reads_the_pool_the_preflight_saw_not_the_one_the_model_is_in(
     tmp_path, monkeypatch
 ):
