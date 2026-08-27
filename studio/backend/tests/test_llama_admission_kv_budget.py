@@ -532,3 +532,57 @@ class TestToolLoopsReserveTheirUpperBound:
             tools = [{"type": "function", "function": {"name": "lookup"}}],
         )
         assert self._cost(payload) < 2048
+
+
+class TestCancellingTheBlockingHeadReopensTheLine:
+    """A cancelled head owns nothing, so nothing else re-runs admission for it.
+
+    FIFO parks the line behind an oversized waiter, and a release re-runs
+    admission. A cancel frees no slot and no tokens, so the waiters behind it sat
+    on a free budget until unrelated traffic arrived, which never happens on a
+    queue whose only lease is parked awaiting tool approval.
+    """
+
+    def test_a_smaller_waiter_runs_once_the_oversized_head_is_cancelled(self):
+        async def scenario():
+            queue = LlamaAdmissionQueue("cancel-head")
+            head_room = await _reserve(queue, capacity = 4, tokens = 1000, budget = 2048)
+            assert head_room.lease_nowait() is not None
+
+            blocked = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
+            behind = await _reserve(queue, capacity = 4, tokens = 500, budget = 2048)
+            # 1000 + 1500 > 2048, and FIFO holds the 500 behind it.
+            assert blocked.lease_nowait() is None
+            assert behind.lease_nowait() is None
+
+            blocked.cancel()
+            # No other queue traffic: the cancel itself must reopen the line.
+            await asyncio.sleep(0)
+            assert behind.lease_nowait() is not None
+
+            snapshot = queue.snapshot()
+            assert snapshot.queued == 0
+            assert snapshot.active == 2
+            assert snapshot.committed == 1500
+
+        _run(scenario())
+
+    def test_cancelling_a_waiter_that_is_not_the_head_admits_nobody_early(self):
+        """The line is still FIFO: losing a tail waiter must not skip the head."""
+
+        async def scenario():
+            queue = LlamaAdmissionQueue("cancel-tail")
+            active = await _reserve(queue, capacity = 4, tokens = 1000, budget = 2048)
+            assert active.lease_nowait() is not None
+
+            head = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
+            tail = await _reserve(queue, capacity = 4, tokens = 500, budget = 2048)
+            assert head.lease_nowait() is None
+
+            tail.cancel()
+            await asyncio.sleep(0)
+            # The oversized head is still oversized, so it stays queued.
+            assert head.lease_nowait() is None
+            assert queue.snapshot().queued == 1
+
+        _run(scenario())

@@ -215,18 +215,21 @@ test("a nested scroller is gated by the outermost one as well", () => {
   assert.equal(band(ahead, onScreen), true, "so a fence one window below it still pre-warms");
 });
 
-test("the flag defaults off, and off means today's behaviour", () => {
+test("the mode is decided in one place, and `off` still means the pre-default behaviour", () => {
+  // The table itself is RUN row by row in `tests/code-fence-mode.test.ts`. What this file pins is
+  // that this module grows no second opinion, and that `off` still switches the whole hook out.
   assert.ok(
-    SOURCE.includes('return raw === "1" || raw === "defer"'),
-    "the mode is decided from the flag value",
+    SOURCE.includes('export { type FenceMode, resolveFenceMode, SHIP_DEFAULT } from "./code-fence-mode";'),
+    "the mode module is the single source of the decision",
   );
   assert.ok(
-    /:\s*"off";/.test(SOURCE),
-    "any value that is not an understood mode must fall through to off",
+    !/raw === "defer"|SHIP_DEFAULT: FenceMode|const raw =/.test(SOURCE),
+    "no copy of the decision table may live here as well",
   );
   assert.ok(
-    MARKDOWN_TEXT.includes('useFenceReached(host, mode !== "off", Boolean(isIncomplete))'),
-    "with the flag off every fence must render immediately, exactly as it does today",
+    /useFenceReached\(\s*host,\s*mode !== "off",\s*Boolean\(isIncomplete\),/.test(MARKDOWN_TEXT),
+    "with the mode off every fence must render immediately, exactly as it did before the default " +
+      "moved",
   );
 });
 
@@ -302,9 +305,11 @@ test("the gate does not mount a wrapper element of its own", () => {
 });
 
 test("the tokenize arm is measurement only and is not reachable from a boolean flag", () => {
+  // The selection rule, and every shape that must NOT reach it, is exercised in
+  // `tests/code-fence-mode.test.ts`. Here: no route into the arm except that resolved mode.
   assert.ok(
-    SOURCE.includes('raw === "tokenize"'),
-    "the tokenize arm is selected by an explicit string, never by a truthy flag",
+    !/"tokenize"/.test(SOURCE),
+    "this module must not name the measurement arm at all; it only consumes a resolved mode",
   );
   assert.ok(
     MARKDOWN_TEXT.includes('const pretokenize = mode === "tokenize" && !reached'),
@@ -312,32 +317,84 @@ test("the tokenize arm is measurement only and is not reachable from a boolean f
   );
 });
 
-test("there is no print machinery left to leak", () => {
-  // A `beforeprint` path that latched every mounted fence, warmed grammars at idle and flushed
-  // twice was removed after it was measured: synchronous dispatch and read in one task, 53 of 56
-  // blocks still printed on streamdown's raw fallback at every delay out to twenty seconds. The
-  // shipped build is fully highlighted after about three seconds. Neither a warm grammar nor a
-  // second flushSync makes an effect-driven, lazily imported highlighter produce tokens inside
-  // the synchronous print task.
-  //
-  // Three review rounds went on leaks inside that machinery. This test exists so it does not come
-  // back without a measurement showing it works.
-  for (const gone of ["flushSync", "printListeners", "claimChunkWarm", "beforeprint"]) {
+test("a print upgrades the whole document, and never puts it back", () => {
+  // An earlier `beforeprint` path was removed after 53 of 56 blocks still printed on streamdown's
+  // raw fallback out to twenty seconds. The latch was not the problem: what it renders is, since
+  // the highlighted body asks for tokens from a PASSIVE effect and the plugin answers `null` while
+  // a grammar loads. `latchNow` closes both halves, warming then flushing twice. Keep both.
+  for (const door of ["beforeprint", 'matchMedia?.("print")']) {
     assert.ok(
-      !new RegExp(`(addEventListener|const|let)[^\\n]*${gone}`).test(SOURCE),
-      `${gone} was removed because it did not work; re-adding it needs a measurement first`,
+      SOURCE.includes(door),
+      `${door} is one of the two ways a document reaches a printer, and both must be covered`,
     );
   }
   assert.ok(
-    !/warmedGrammars|pendingGrammars/.test(MARKDOWN_TEXT),
-    "the grammar warm-up was removed with the rest of the print path",
+    !/addEventListener\(\s*"afterprint"/.test(SOURCE),
+    "reverting on afterprint would be exactly the bidirectional edge this design removes",
+  );
+  // A PRINT IS NOT A SESSION-WIDE SWITCH. As a module-global `printed` folded into every future
+  // fence's `reached` it measured, at the 100K rung: print once, navigate away in-app and back,
+  // and the thread remounts with 0 of 56 fences deferred, 41,410 spans and 61,747 elements instead
+  // of 53, 2,458 and 22,794. One Ctrl+P turned the default off for the rest of the tab.
+  assert.ok(
+    /const reached = !enabled \|\| !CAN_OBSERVE \|\| streaming \|\| latched;/.test(SOURCE),
+    "no print state may be folded into a fence's reached: a fence mounted after a print was not " +
+      "on the printed page and has nothing to latch for",
+  );
+  assert.ok(
+    /const upgradeEverythingForPrint = \(\): void => \{\s*latchNow\(\[\.\.\.unreached\]\);\s*\};/
+      .test(SOURCE),
+    "a print latches exactly what is unreached when it happens, and every print does it again",
   );
 });
 
-test("the print limitation is written down where it is decided", () => {
+test("an upgrade taken inside one task warms, flushes, and flushes again", () => {
+  // Dropping any one of the three puts a plain frame back on a jump, or a colourless fence on a
+  // printed page.
+  const latchNow = SOURCE.slice(SOURCE.indexOf("const latchNow"));
+  const body = latchNow.slice(0, latchNow.indexOf("\n};"));
+  assert.ok(body.includes("gate.warm(true)"), "the tokens have to exist before the swap renders");
   assert.ok(
-    SOURCE.includes("PRINT: NOT HANDLED") && SOURCE.includes("53 of 56"),
-    "the measured limitation belongs next to the code that causes it, with its number",
+    body.indexOf("gate.warm(true)") < body.indexOf("flushSync"),
+    "warming after the flush is warming after the paint",
+  );
+  assert.equal(
+    body.split("flushSync").length - 1,
+    3,
+    "an outer flush holds the update priority discrete; one inner flush commits the swap and the "
+      + "second runs the passive effect that colours it",
+  );
+  assert.ok(
+    body.includes("gate.poke()"),
+    "react only runs pending passive effects when it has sync work, so the second flush needs some",
+  );
+});
+
+test("a jump is recognised from the lookahead, not from a tuned number", () => {
+  // `REACH_MARGIN` grows the band by one root height, so a scroll of at most one height can only
+  // reveal fences already reached: the pass runs exactly when the movement beat the lookahead. A
+  // literal pixel threshold would be a number nobody could derive or maintain.
+  assert.ok(
+    /Math\.abs\(top - before\) <= height/.test(SOURCE),
+    "the jump test compares the movement against the root height the margin is one of",
+  );
+  assert.ok(
+    !/[^a-zA-Z_]\d{2,}\s*(?:px)?\s*[;)]/.test(SOURCE.slice(SOURCE.indexOf("const onScroll"), SOURCE.indexOf("const watchScrolling"))),
+    "no pixel constant may appear in the jump test",
+  );
+});
+
+test("nothing is watched once there is nothing left to defer", () => {
+  // This change claims a reached fence carries no residual per-scroll cost. The one shared
+  // capturing listener must therefore be removed when the last fence latches.
+  assert.ok(
+    /document\.addEventListener\("scroll", onScroll, \{ capture: true, passive: true \}\)/.test(SOURCE),
+    "one capturing, passive listener sees scrolling on nested panes as well as on the thread",
+  );
+  assert.ok(
+    /unreached\.size > 0/.test(SOURCE) &&
+      /document\.removeEventListener\("scroll", onScroll/.test(SOURCE),
+    "the listener is removed when the register empties",
   );
 });
 
@@ -405,5 +462,135 @@ test("token coalescing was measured at zero and is not carried as code", () => {
   assert.ok(
     existsSync(new URL("../scripts/coal-span-census.mjs", import.meta.url)),
     "the cited reproducer must exist in this repository",
+  );
+});
+
+test("the idle pre-warm drives the tokenizer over real text, not an empty string", () => {
+  /*
+   * Loading a grammar is cheap; running it over text the first time is not, and `""` never does
+   * the second. With deferral on the whole one-off cost therefore landed in one frame on the fence
+   * the reader scrolled to: 1200 and 1085 ms at the 100K rung on WebKitGTK, against 183 and 190 ms
+   * on real text. Asserted at the source because the invariant is structural, and the alternative
+   * is a benchmark noticing it two days later, which is how it was found.
+   */
+  const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
+  const body = warm.slice(0, warm.indexOf("\n};"));
+  assert.ok(
+    body.includes("gate.warm(true)"),
+    "warming on an empty string leaves the first real tokenization to happen during a scroll",
+  );
+  // The only surviving `gate.warm(false)` is the eager grammar-load pass, which runs BEFORE the
+  // real warm and is deliberately not gated on size. Nothing may reach `warm(false)` afterwards.
+  assert.match(
+    body,
+    /grammarsLoaded\.add\(language\);\s*gate\.warm\(false\);[\s\S]*gate\.warm\(true\)/,
+    "an unconditional false warm in place of the real one is the regression this test catches",
+  );
+  assert.equal(
+    (body.match(/gate\.warm\(false\)/g) ?? []).length,
+    1,
+    "one false warm, in the load pass; a second one means a language can be marked warmed on nothing",
+  );
+  // Anti-vacuity: renamed or restructured, the checks above would pass on an empty slice.
+  assert.ok(body.length > 60 && body.includes("grammarsWarmed"), "found the real warmGrammars body");
+});
+
+test("a speculative warm is capped, and the cap is the shared one", () => {
+  /*
+   * The chat renderer never applies MAX_HIGHLIGHT_CHARS: `markdown-text.tsx` supplies the code
+   * plugin unconditionally and `FenceBlock` warms the whole body, so a real-text warm would
+   * tokenize an arbitrarily large off-screen fence, and `code-plugin.ts`'s `evict` keeps the last
+   * fence whatever its size. The latch is demanded work and stays uncapped; this half is
+   * speculative, so it is bounded.
+   */
+  assert.match(
+    SOURCE,
+    /import \{ MAX_HIGHLIGHT_CHARS \} from "@\/lib\/markdown-plugins";/,
+    "the cap must be the shared constant, not a second copy that can drift",
+  );
+  assert.ok(
+    !/const MAX_HIGHLIGHT_CHARS\s*=/.test(SOURCE),
+    "a local redefinition would let this cap drift away from the one every other reader uses",
+  );
+  assert.ok(
+    /gate\.chars === 0 \|\| gate\.chars > MAX_HIGHLIGHT_CHARS/.test(SOURCE),
+    "the warm must consult the fence's size before tokenizing it",
+  );
+  // An EMPTY fence trims to "", so warming it teaches the grammar nothing and would still mark the
+  // language done, leaving every later fence in it to tokenize on the scroll path.
+  assert.match(
+    SOURCE,
+    /if \(gate\.chars === 0 \|\| gate\.chars > MAX_HIGHLIGHT_CHARS\) continue;/,
+    "both cases must `continue`, so the language is left unwarmed for a fence that can warm it",
+  );
+  // The other half: the latch must NOT have grown a cap.
+  const latch = SOURCE.slice(SOURCE.indexOf("const latchNow"));
+  assert.ok(
+    !latch.slice(0, latch.indexOf("\n};")).includes("MAX_HIGHLIGHT_CHARS"),
+    "a fence the reader has actually reached is highlighted whatever its size",
+  );
+  assert.match(
+    MARKDOWN_TEXT,
+    /useFenceReached\([\s\S]{0,200}?trimmedLength\(source\),/,
+    "the hook can only cap what the caller tells it about, and `warm` tokenizes the TRIMMED body",
+  );
+});
+
+test("the idle warm yields between languages", () => {
+  /*
+   * requestIdleCallback only controls when a callback STARTS, and WebKitGTK has none at all, so
+   * this venue takes the setTimeout fallback and cannot even do that. A warm tokenizes
+   * synchronously once its grammar is loaded, so every language in one callback is one unyieldable
+   * block: 746 ms for the 100K rung's five languages driven through shiki, worst single 334 ms.
+   *
+   * The LOADS are the other half and must NOT be yielded: 500 ms x N on that fallback would leave
+   * a jump or a print inside the window with an unloaded grammar, which is the plain-fallback
+   * frame this whole pre-warm exists to prevent.
+   */
+  const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
+  const body = warm.slice(0, warm.indexOf("\n};"));
+  assert.match(
+    body,
+    /gate\.warm\(true\);[\s\S]*scheduleGrammarWarm\(\);[\s\S]*return;/,
+    "one tokenization per task: warm, re-schedule, and leave the rest to the next idle slot",
+  );
+  // Everything before the second loop, which is the one that tokenizes.
+  const loadPass = body.slice(0, body.indexOf("grammarsWarmed.has"));
+  assert.ok(
+    !loadPass.includes("scheduleGrammarWarm") && !loadPass.includes("return;"),
+    "the grammar loads all start in the first pass; yielding them costs the jump and the print",
+  );
+  assert.ok(
+    !loadPass.includes("MAX_HIGHLIGHT_CHARS") && !loadPass.includes("gate.chars"),
+    "a load ignores size: it tokenizes nothing, and an over-cap language still needs its grammar",
+  );
+  assert.ok(
+    body.includes("grammarsWarmed.add(language)"),
+    "the chain terminates only because each task marks one more language done",
+  );
+});
+
+test("the warm dedupes on the grammar, not on the spelling", async () => {
+  /*
+   * `grammarsWarmed` keyed the raw fence tag while `code.highlight` lower-cases and resolves
+   * aliases, so a thread mixing ```py and ```python warmed one grammar twice -- and after this PR
+   * each spelling is a real tokenization of a different fence, not the old empty-string cache hit.
+   */
+  const { normalizeLanguage } = await import(
+    "../src/components/assistant-ui/code-plugin.ts"
+  );
+  // Run the identity rather than describe it: aliases, overrides and case all collapse.
+  for (const [tag, canonical] of [["py", "python"], ["Python", "python"], ["JS", "javascript"],
+                                  ["c++", "cpp"], ["bash", "shellscript"], ["text", "text"]]) {
+    assert.equal(normalizeLanguage(tag), canonical, tag);
+  }
+  assert.match(
+    SOURCE,
+    /const grammarOf = \(gate: FenceGate\): string =>\s*normalizeLanguage\(gate\.language \?\? "text"\);/,
+    "the warm sets must be keyed by the same identity the highlighter uses",
+  );
+  assert.ok(
+    CODE_PLUGIN.includes("export const normalizeLanguage"),
+    "one definition, exported, so the two keyings cannot drift apart",
   );
 });

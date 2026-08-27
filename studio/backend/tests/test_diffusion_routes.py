@@ -1575,7 +1575,7 @@ def test_the_plan_refuses_an_impossible_precision_before_anything_is_staged(clie
 
 def test_the_plan_does_not_probe_the_gpu_while_training_holds_it(client, monkeypatch):
     """An UNCACHED scheme sends assert_precision_available into a quantise-and-matmul smoke
-    probe, which initialises CUDA and allocates in the Studio process. /images/load refuses
+    probe, which initialises CUDA and allocates in the Unsloth process. /images/load refuses
     outright while a trainer is running, for exactly that reason -- but the UI asks for the
     plan first, so the probe ran before that guard had a say. Staging files needs no GPU, so
     the plan is answered; the load still refuses the same pick afterwards."""
@@ -1691,6 +1691,41 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert len(seen["loras"] or []) == 1
 
 
+def test_download_plan_suppresses_only_the_verdict_while_training_runs(client, monkeypatch):
+    # The panel stages exactly what this endpoint reports, so the plan has to keep counting the
+    # files the load will fetch even while a trainer holds the card. Only the oversized-memory
+    # refusal is suppressed: it needs a device reading nobody should take mid-training, and the
+    # load-time check still runs. Turning the whole probe off instead would silently drop the
+    # hosted DiT prequant and the pre-cast encoder from the plan.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+    from routes import inference as routes_inference
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    body = {
+        "model_path": "unsloth/FLUX.1-dev-GGUF",
+        "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+        "model_kind": "gguf",
+        "transformer_quant": "fp8",
+    }
+
+    for training, expected in ((True, False), (False, True)):
+        monkeypatch.setattr(routes_inference, "_training_is_active", lambda: training)
+        assert client.post("/api/inference/images/download-plan", json = body).status_code == 200
+        assert seen["memory_verdict"] is expected, training
+        # The file scope is never the thing that changes with training state.
+        assert "allow_device_probe" not in seen, training
+
+
 def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, monkeypatch):
     # Through the ROUTE, not the planner: the response model is what the picker actually reads, and
     # a field the planner sets but the model does not declare is dropped silently on serialization.
@@ -1781,7 +1816,7 @@ def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
         "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
         "downloaded without it. Accept its licence at "
         "https://huggingface.co/black-forest-labs/FLUX.1-dev, then add a Hugging Face token "
-        "that has access in Studio settings and try again."
+        "that has access in Unsloth settings and try again."
     )
 
     def _plan(model_path, **kwargs):

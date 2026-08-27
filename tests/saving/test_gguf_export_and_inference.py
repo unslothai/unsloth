@@ -26,10 +26,16 @@ import torch
 
 from unsloth import FastLanguageModel
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason = "GGUF export smoke test needs a GPU to train + merge",
-)
+# Downloads two checkpoints, merges them and shells out to llama.cpp. The skipif
+# already keeps it off a GPU-less runner; `gpu` is what keeps it out of a default
+# `pytest tests/` on a machine that HAS a GPU. CI runs it under `-m gpu`.
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        not torch.cuda.is_available(),
+        reason = "GGUF export smoke test needs a GPU to train + merge",
+    ),
+]
 
 MODEL = os.environ.get("UNSLOTH_GGUF_TEST_MODEL", "unsloth/Qwen2.5-0.5B-Instruct")
 PHRASE = "BANANAPHONE42"

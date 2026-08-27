@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image quality-vs-quant harness for the Studio diffusion backend.
+"""Image quality-vs-quant harness for the Unsloth diffusion backend.
 
 The accuracy analogue of the KLD workflow: hold the prompt + seed fixed, render a
 grid with a high-fidelity reference quant (default BF16), then render the same grid
@@ -471,7 +471,7 @@ def _selftest() -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description = "Image quality-vs-quant harness for the Studio diffusion backend.",
+        description = "Image quality-vs-quant harness for the Unsloth diffusion backend.",
         formatter_class = argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(

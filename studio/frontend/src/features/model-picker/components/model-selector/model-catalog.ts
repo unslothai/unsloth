@@ -498,7 +498,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
   },
   // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is
   // neither in _AUDIO_TOKEN_PATTERNS nor in AudioCodecManager, so a curated row here
-  // loaded and then failed at generation with "not a supported TTS model". Studio can
+  // loaded and then failed at generation with "not a supported TTS model". Unsloth can
   // still TRAIN Llasa (unsloth_Llasa-3B.yaml); this catalog only feeds the Generate
   // picker. Re-add both rows together with an xcodec2 decoder.
   {
