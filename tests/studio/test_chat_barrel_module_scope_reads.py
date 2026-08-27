@@ -28,9 +28,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "studio/frontend/src"
 
-_BARREL_IMPORT = re.compile(
-    r"""import\s*\{(?P<names>[^}]*)\}\s*from\s*["']@/features/chat["']"""
-)
+_BARREL_IMPORT = re.compile(r"""import\s*\{(?P<names>[^}]*)\}\s*from\s*["']@/features/chat["']""")
 # Top-level `const X = ...;` / `let X = ...;` only: a leading space would make it
 # a nested declaration, and those run when their enclosing function is called.
 _MODULE_SCOPE_BINDING = re.compile(r"^(?:const|let)\s+(\w+)\s*=\s*(.*?);", re.M | re.S)
