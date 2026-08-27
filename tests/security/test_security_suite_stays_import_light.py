@@ -320,12 +320,9 @@ def test_a_renamed_loader_helper_is_still_recognised(tmp_path):
     tests would then vanish from the light run.
     """
     spellings = {
-        "aliased importlib helper":
-            'from importlib import import_module as load\ntorch = load("torch")\n',
-        "aliased builtin":
-            'from builtins import __import__ as bring\ntorch = bring("torch")\n',
-        "aliased importorskip":
-            'from pytest import importorskip as need\ntorch = need("torch")\n',
+        "aliased importlib helper": 'from importlib import import_module as load\ntorch = load("torch")\n',
+        "aliased builtin": 'from builtins import __import__ as bring\ntorch = bring("torch")\n',
+        "aliased importorskip": 'from pytest import importorskip as need\ntorch = need("torch")\n',
     }
     for description, source in spellings.items():
         sample = tmp_path / "sample.py"
