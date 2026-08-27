@@ -1966,21 +1966,26 @@ function useStudioRuntimeAdapters(
               sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // Echo the backend's stored metadata verbatim on autosave: merging
-          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
-          // server never persisted, so _research_message_would_change sees a diff and
-          // rejects every streamed/snapshot update with 409.
-          const metadata = preserveServerManaged
-            ? existingMetadata
-            : incomingMetadata;
+          // The backend owns this message and refuses client edits, and every field the save
+          // would send was just read back from it, so the request is answered 409 every time.
+          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs
+          // from the `ensureStoredChatThread` inside `saveStoredChatMessage`. Returning here
+          // drops both.
+          //
+          // `parentId` is the one field not echoed back, so a reparent could differ. It is
+          // dropped either way: the server rejects the whole request, so it never landed here.
+          if (preserveServerManaged) {
+            await throwIfHistoryWasCleared(remoteId);
+            return;
+          }
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content: preserveServerManaged ? existingMessage!.content : content,
+            content,
             ...(attachments.length > 0 && { attachments }),
-            ...(metadata && { metadata }),
+            ...(incomingMetadata && { metadata: incomingMetadata }),
             createdAt,
           });
           await throwIfHistoryWasCleared(remoteId);
