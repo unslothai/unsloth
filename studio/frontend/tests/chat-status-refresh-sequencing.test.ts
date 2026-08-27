@@ -62,11 +62,31 @@ test("the eviction branch is behind the same guard", () => {
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
 });
 
-test("refresh leaves residency untouched while a load is in flight", () => {
-  assert.match(
+test("ordinary refresh does not defer all residency work during a load", () => {
+  assert.doesNotMatch(
     SYNC,
-    /if \(\(statusRes\.loading\?\.length \?\? 0\) > 0\) return;/,
+    /if \([^\n]*statusLoading[^\n]*\) return;/,
+    "the mount and send waiters own settlement; generic hydration must still publish residency",
   );
+});
+
+test("a completed UI load still publishes residency while holding its lease", () => {
+  const selectionGuard = SYNC.slice(
+    SYNC.indexOf("const selectionChanged"),
+    SYNC.indexOf("const statusLoading"),
+  );
+  assert.match(selectionGuard, /selectedCheckpoint !== selectedAtStart/);
+  assert.doesNotMatch(
+    selectionGuard,
+    /modelLoading/,
+    "the load lease must not suppress the successful load's own settled refresh",
+  );
+
+  const activeBranch = SYNC.slice(
+    SYNC.indexOf("if (\n      chatActiveModel"),
+    SYNC.indexOf("} else if (", SYNC.indexOf("if (\n      chatActiveModel")),
+  );
+  assert.match(activeBranch, /applyActiveModelStatusToStore\(statusRes,/);
 });
 
 test("the mount observer adopts only a settled model", () => {

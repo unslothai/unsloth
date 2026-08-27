@@ -175,7 +175,10 @@ test("another runtime loading re-reads the chat status", () => {
     /if \(loading \|\| runtime === "chat"\) return;/,
     "the settle-only guard is what left the picker naming an evicted model",
   );
-  assert.match(hook, /void refresh\(\{ includeLoras: false \}\)/);
+  assert.match(
+    hook,
+    /void refresh\(\{\s*includeLoras: false,\s*externalChatSlotLoad: runtime === "tts",\s*\}\)/,
+  );
   // And the branch it feeds still clears residency.
   assert.match(hook, /residentCheckpoint: null,/);
 });

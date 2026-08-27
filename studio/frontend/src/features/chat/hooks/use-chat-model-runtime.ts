@@ -437,6 +437,8 @@ async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
   preserveIdleUnloaded?: boolean;
+  /** A TTS load owns the chat slot even though Chat did not start the load. */
+  externalChatSlotLoad?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
@@ -466,18 +468,16 @@ async function syncInferenceStatusToStore(options?: {
     const selectedCheckpoint =
       useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-    const selectionChanged =
-      selectedCheckpoint !== selectedAtStart ||
-      useChatRuntimeStore.getState().modelLoading;
-    // Status is transitional while a load is present. Keep the last settled
-    // residency until a later refresh or the mount observer sees it finish.
-    if ((statusRes.loading?.length ?? 0) > 0) return;
+    const selectionChanged = selectedCheckpoint !== selectedAtStart;
+    const statusLoading = (statusRes.loading?.length ?? 0) > 0;
     // The local selection is re-derived from this status on every mount, so adopting a
     // TTS model made it the chat model without the user picking it. Read the slot as
     // empty and the eviction branch below clears the stale pick, as it does for an
     // image or video load.
     const chatActiveModel =
-      statusRes.active_model && !isSpeechOnlyStatus(statusRes);
+      statusRes.active_model &&
+      !isSpeechOnlyStatus(statusRes) &&
+      !(statusLoading && options?.externalChatSlotLoad);
     if (
       chatActiveModel &&
       !isExternalSelectionActive &&
@@ -546,7 +546,7 @@ async function syncInferenceStatusToStore(options?: {
       if (
         (wasResident || isSpeechOnlyStatus(statusRes)) &&
         selectedCheckpoint &&
-        !modelLoading
+        (!modelLoading || options?.externalChatSlotLoad)
       ) {
         // Already the clean id the header shows: resolveInferenceCheckpointId
         // put it there, not a load path.
@@ -687,6 +687,7 @@ export function useChatModelRuntime() {
       signal?: AbortSignal;
       includeLoras?: boolean;
       preserveIdleUnloaded?: boolean;
+      externalChatSlotLoad?: boolean;
     }) => {
       await syncInferenceStatusToStore(options);
       if (options?.waitForServerModel) {
@@ -712,7 +713,10 @@ export function useChatModelRuntime() {
         // image or video load POST, before the download starts, so waiting for
         // the load to finish left the picker and the header naming a model that
         // had already gone and that 400s on send, for the whole download.
-        void refresh({ includeLoras: false });
+        void refresh({
+          includeLoras: false,
+          externalChatSlotLoad: runtime === "tts",
+        });
       }),
     [refresh],
   );
