@@ -8,6 +8,8 @@ import {
   type LockSet,
   acquire,
   release,
+  sameListDraft,
+  samePromptDraft,
 } from "../src/features/chat/prompt-storage/mutation-lock.ts";
 
 const empty: LockSet = new Set<string>();
@@ -71,4 +73,58 @@ test("the detail panes do not own a mutation lock", async () => {
       `${prop} should reach both PromptDetail and PromptListDetail`,
     );
   }
+});
+
+// Codex, on the first version of the lock: reading the outcome of a functional
+// updater straight after scheduling it is not sound, because React may defer the
+// updater. The caller then skips the request while the id still gets acquired
+// later during render, with no finally left to release it, and the row's Save and
+// Delete stay disabled for good. The ref is the authority for that reason.
+test("the lock decides from the ref, not from a scheduled updater", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /const mutatingRef = useRef<ReadonlySet<string>>/);
+  assert.match(
+    source,
+    /const \[held, started\] = acquire\(mutatingRef\.current, id\);/,
+    "the lock is decided from state again, which can be stale",
+  );
+  assert.doesNotMatch(
+    source,
+    /let started = false;/,
+    "the deferred-updater pattern is back",
+  );
+});
+
+// A save is async and the editor stays usable while it runs, so clearing the
+// draft on success can discard whatever was typed in the meantime.
+test("a draft that moved on while saving is not cleared", () => {
+  const submitted = { name: "notes", text: "first" };
+  assert.equal(samePromptDraft({ ...submitted }, submitted), true);
+  assert.equal(
+    samePromptDraft({ name: "notes", text: "first, then more" }, submitted),
+    false,
+    "the newer edit would be thrown away",
+  );
+  assert.equal(
+    samePromptDraft({ name: "renamed", text: "first" }, submitted),
+    false,
+  );
+});
+
+test("list drafts compare by items, not by identity", () => {
+  const submitted = { name: "l", items: ["a", "b"] };
+  assert.equal(sameListDraft({ name: "l", items: ["a", "b"] }, submitted), true);
+  assert.equal(sameListDraft({ name: "l", items: ["a", "c"] }, submitted), false);
+  assert.equal(
+    sameListDraft({ name: "l", items: ["a", "b", "c"] }, submitted),
+    false,
+    "an item appended while saving would be thrown away",
+  );
+  assert.equal(sameListDraft({ name: "l", items: ["a"] }, submitted), false);
 });

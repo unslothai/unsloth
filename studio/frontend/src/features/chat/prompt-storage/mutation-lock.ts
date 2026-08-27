@@ -24,3 +24,26 @@ export function release(held: LockSet, id: string): LockSet {
   next.delete(id);
   return next;
 }
+
+// A save is async and the editor stays usable while it runs, so by the time the
+// PUT resolves the draft may have moved on. Clearing it unconditionally throws
+// away whatever was typed meanwhile, which is newer than the server's copy and
+// is the user's most recent intent. Only clear what was actually sent.
+
+export function samePromptDraft(
+  a: { name: string; text: string },
+  b: { name: string; text: string },
+): boolean {
+  return a.name === b.name && a.text === b.text;
+}
+
+export function sameListDraft(
+  a: { name: string; items: readonly string[] },
+  b: { name: string; items: readonly string[] },
+): boolean {
+  return (
+    a.name === b.name &&
+    a.items.length === b.items.length &&
+    a.items.every((item, i) => item === b.items[i])
+  );
+}

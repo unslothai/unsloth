@@ -40,7 +40,12 @@ import {
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
-import { acquire, release } from "./mutation-lock";
+import {
+  acquire,
+  release,
+  sameListDraft,
+  samePromptDraft,
+} from "./mutation-lock";
 import { Tick02Icon } from "@/lib/tick-icon";
 import {
   type ReactElement,
@@ -1487,6 +1492,7 @@ function PromptDetail({
   onExport,
   onRefresh,
   onDeleted,
+  onSaved,
   pending,
   runMutation,
 }: {
@@ -1497,6 +1503,7 @@ function PromptDetail({
   onExport: (entry: PromptEntry) => void;
   onRefresh: () => void;
   onDeleted: (deletedId: string) => void;
+  onSaved: (submitted: PromptDraft) => void;
   pending: boolean;
   runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
@@ -1526,6 +1533,9 @@ function PromptDetail({
   const handleSave = useCallback(async () => {
     const trimText = text.trim();
     if (!trimText) return;
+    // Snapshot what is going to the server. The editor stays usable while the
+    // request is in flight, so the draft can move on before it resolves.
+    const submitted: PromptDraft = { name, text };
     await runMutation(entry.id, async () => {
       try {
         await savePromptEntry({
@@ -1534,7 +1544,7 @@ function PromptDetail({
           text: trimText,
           updatedAt: now(),
         });
-        onDraftChange(undefined);
+        onSaved(submitted);
         onRefresh();
       } catch (err) {
         toast.error("Could not save prompt", {
@@ -1542,7 +1552,7 @@ function PromptDetail({
         });
       }
     });
-  }, [entry, name, text, onDraftChange, onRefresh, runMutation]);
+  }, [entry, name, text, onSaved, onRefresh, runMutation]);
 
   const handleDelete = useCallback(async () => {
     await runMutation(entry.id, async () => {
@@ -1741,6 +1751,7 @@ function PromptListDetail({
   onExport,
   onRefresh,
   onDeleted,
+  onSaved,
   pending,
   runMutation,
 }: {
@@ -1751,6 +1762,7 @@ function PromptListDetail({
   onExport: (entry: PromptListEntry) => void;
   onRefresh: () => void;
   onDeleted: (deletedId: string) => void;
+  onSaved: (submitted: ListDraft) => void;
   pending: boolean;
   runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
@@ -1781,6 +1793,8 @@ function PromptListDetail({
   const handleSave = useCallback(async () => {
     const filtered = items.filter((t) => t.trim());
     if (filtered.length === 0) return;
+    // See PromptDetail: the editor stays usable while the request is in flight.
+    const submitted: ListDraft = { name, items };
     await runMutation(entry.id, async () => {
       try {
         await savePromptList({
@@ -1789,7 +1803,7 @@ function PromptListDetail({
           items: filtered,
           updatedAt: now(),
         });
-        onDraftChange(undefined);
+        onSaved(submitted);
         onRefresh();
       } catch (err) {
         toast.error("Could not save list", {
@@ -1797,7 +1811,7 @@ function PromptListDetail({
         });
       }
     });
-  }, [entry, name, items, onDraftChange, onRefresh, runMutation]);
+  }, [entry, name, items, onSaved, onRefresh, runMutation]);
 
   const handleDelete = useCallback(async () => {
     await runMutation(entry.id, async () => {
@@ -2076,22 +2090,54 @@ export function PromptStorageDialog({
   const [mutatingIds, setMutatingIds] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
+  // The ref is the authority, not the state. A functional updater is not
+  // guaranteed to run during setState, so reading the outcome straight after
+  // scheduling one can see a stale answer, skip the request, and still acquire
+  // the id later during render with nothing left to release it. The state
+  // exists only so the buttons re-render.
+  const mutatingRef = useRef<ReadonlySet<string>>(new Set<string>());
   const runMutation = useCallback(
     async (id: string, fn: () => Promise<void>) => {
-      let started = false;
-      setMutatingIds((prev) => {
-        const [next, took] = acquire(prev, id);
-        started = took;
-        return next;
-      });
+      const [held, started] = acquire(mutatingRef.current, id);
       // The buttons are disabled while locked, but a second caller reaching here
       // anyway must not run and must not clear the first one's lock.
       if (!started) return;
+      mutatingRef.current = held;
+      setMutatingIds(held);
       try {
         await fn();
       } finally {
-        setMutatingIds((prev) => release(prev, id));
+        mutatingRef.current = release(mutatingRef.current, id);
+        setMutatingIds(mutatingRef.current);
       }
+    },
+    [],
+  );
+
+  // Only drop the draft if it still holds what the request carried. Anything
+  // typed while the save was in flight is newer than the server's copy and is
+  // the user's most recent intent, so it stays and the row stays dirty.
+  const clearPromptDraftIfSaved = useCallback(
+    (id: string, submitted: PromptDraft) => {
+      setPromptDrafts((prev) => {
+        const current = prev.get(id);
+        if (!current || !samePromptDraft(current, submitted)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+    },
+    [],
+  );
+  const clearListDraftIfSaved = useCallback(
+    (id: string, submitted: ListDraft) => {
+      setListDrafts((prev) => {
+        const current = prev.get(id);
+        if (!current || !sameListDraft(current, submitted)) return prev;
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
     },
     [],
   );
@@ -2504,6 +2550,9 @@ export function PromptStorageDialog({
                     onDeleted={(deletedId) =>
                       setSelectedPromptId((prev) => (prev === deletedId ? null : prev))
                     }
+                    onSaved={(submitted) =>
+                      clearPromptDraftIfSaved(selectedPrompt.id, submitted)
+                    }
                     pending={mutatingIds.has(selectedPrompt.id)}
                     runMutation={runMutation}
                   />
@@ -2539,6 +2588,9 @@ export function PromptStorageDialog({
                     onRefresh={refreshLists}
                     onDeleted={(deletedId) =>
                       setSelectedListId((prev) => (prev === deletedId ? null : prev))
+                    }
+                    onSaved={(submitted) =>
+                      clearListDraftIfSaved(selectedList.id, submitted)
                     }
                     pending={mutatingIds.has(selectedList.id)}
                     runMutation={runMutation}
