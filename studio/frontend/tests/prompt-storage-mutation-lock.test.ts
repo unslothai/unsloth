@@ -263,11 +263,11 @@ test("a create resets its draft only if it still holds what was sent", async () 
   // The created path must not run the Cancel callback, which discards outright.
   assert.doesNotMatch(
     source,
-    /onCreated\(id, submitted\);\n\s+onClose\(\);/,
+    /onCreated\([^)]*\);\n\s+onClose\(\);/,
     "the created path closes through Cancel again, which resets unconditionally",
   );
   assert.equal(
-    source.split("onCreated(id, submitted);").length - 1,
+    source.split("onCreated(id, submitted, mounted.current);").length - 1,
     2,
     "both create paths should hand the submitted snapshot up",
   );
@@ -306,4 +306,32 @@ test("an oversized list waits to be asked before mounting its editor", async () 
   ]) {
     assert.ok(source.includes(readsFullItems), `truncated: ${readsFullItems}`);
   }
+});
+
+// A create outlives the form that started it, and completion used to clear the
+// search, move the selection and close whatever New form was open by then.
+test("a finished create only moves the view its own form still owns", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(
+    source.split("onCreated(id, submitted, mounted.current);").length - 1,
+    2,
+    "a create path does not say whether its form is still on screen",
+  );
+  assert.equal(
+    source.split("if (!fromOpenForm) return;").length - 1,
+    2,
+    "a completion still navigates after the user left the form",
+  );
+  // The draft still resets on a match, wherever the user went.
+  const [, afterGuard] = source.split("const selectCreatedPrompt");
+  assert.ok(
+    afterGuard.indexOf("setNewPromptDraft(") < afterGuard.indexOf("if (!fromOpenForm) return;"),
+    "the guard skips the draft reset, leaving a saved prompt marked unsaved",
+  );
 });

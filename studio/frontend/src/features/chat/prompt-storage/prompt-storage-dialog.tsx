@@ -1732,13 +1732,18 @@ function NewPromptForm({
   onDraftChange: (draft: PromptDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
-  onCreated: (id: string, submitted: PromptDraft) => void;
+  onCreated: (id: string, submitted: PromptDraft, fromOpenForm: boolean) => void;
   creating: boolean;
   create: (fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
   const { name, text } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setText = (value: string) => onDraftChange({ ...draft, text: value });
+  // A create outlives the form that started it. Selecting a row, switching tabs
+  // or reopening New all unmount this one, and reopening mounts a different one,
+  // so this answers "is the form the user is looking at still mine".
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const handleSave = useCallback(
     () =>
@@ -1769,9 +1774,9 @@ function NewPromptForm({
         // Await the refresh first, or the keep-a-row-selected effect runs
         // against a list without the new id and bounces the selection off it.
         await onRefresh();
-        // The parent selects the new row, hides this form, and resets the draft
-        // only if it still holds what was sent.
-        onCreated(id, submitted);
+        // The parent resets the draft if it still holds what was sent, and moves
+        // the view to the new row only while this form is still the one on screen.
+        onCreated(id, submitted, mounted.current);
       }),
     [name, text, create, onRefresh, onCreated],
   );
@@ -2045,13 +2050,16 @@ function NewPromptListForm({
   onDraftChange: (draft: ListDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
-  onCreated: (id: string, submitted: ListDraft) => void;
+  onCreated: (id: string, submitted: ListDraft, fromOpenForm: boolean) => void;
   creating: boolean;
   create: (fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
   const { name, items } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setItems = (value: string[]) => onDraftChange({ ...draft, items: value });
+  // See NewPromptForm.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const handleSave = useCallback(
     () =>
@@ -2079,7 +2087,7 @@ function NewPromptListForm({
         }
         // See NewPromptForm: select only once the refreshed list contains the id.
         await onRefresh();
-        onCreated(id, submitted);
+        onCreated(id, submitted, mounted.current);
       }),
     [name, items, create, onRefresh, onCreated],
   );
@@ -2285,23 +2293,33 @@ export function PromptStorageDialog({
   // The draft resets only when it still holds what was sent. The fields stay
   // editable while the create is out, and Cancel can start a fresh one, so an
   // unconditional reset discards text that never reached the server.
-  const selectCreatedPrompt = useCallback((id: string, submitted: PromptDraft) => {
-    setSearchQuery("");
-    setSelectedPromptId(id);
-    setNewPromptDraft((prev) =>
-      samePromptDraft(prev, submitted) ? emptyPromptDraft() : prev,
-    );
-    setShowNewPrompt(false);
-  }, []);
+  const selectCreatedPrompt = useCallback(
+    (id: string, submitted: PromptDraft, fromOpenForm: boolean) => {
+      setNewPromptDraft((prev) =>
+        samePromptDraft(prev, submitted) ? emptyPromptDraft() : prev,
+      );
+      // The user left the form while the request was out, so they are looking at
+      // something else on purpose. Take the refresh, leave the view alone.
+      if (!fromOpenForm) return;
+      setSearchQuery("");
+      setSelectedPromptId(id);
+      setShowNewPrompt(false);
+    },
+    [],
+  );
 
-  const selectCreatedList = useCallback((id: string, submitted: ListDraft) => {
-    setSearchQuery("");
-    setSelectedListId(id);
-    setNewListDraft((prev) =>
-      sameListDraft(prev, submitted) ? emptyListDraft() : prev,
-    );
-    setShowNewList(false);
-  }, []);
+  const selectCreatedList = useCallback(
+    (id: string, submitted: ListDraft, fromOpenForm: boolean) => {
+      setNewListDraft((prev) =>
+        sameListDraft(prev, submitted) ? emptyListDraft() : prev,
+      );
+      if (!fromOpenForm) return;
+      setSearchQuery("");
+      setSelectedListId(id);
+      setShowNewList(false);
+    },
+    [],
+  );
 
   const filteredPrompts = useMemo(() => {
     const all = promptEntries ?? [];
