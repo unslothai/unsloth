@@ -144,55 +144,44 @@ export function joinContinuation(
 /**
  * The merge a resumed turn applies to its cumulative text, streaming and at the end.
  *
- * Both repairs above are decided by looking at the whole continuation, so run per arrival
- * both change their minds as it grows: `stripContinuationOverlap` rewrites the join once a
- * longer overlap starts matching, and `isRestart` cannot fire at all until the continuation
- * reaches RESTART_PROBE characters, at which point it drops the partial entirely. That made
- * the published text NON-MONOTONIC. Driven character by character over a 1602-character
- * partial, the restart branch took it from 1649 characters to 48 in one arrival.
+ * The bug this fixes is `isRestart` running per arrival. It cannot fire until the continuation
+ * reaches RESTART_PROBE characters, and the moment it does it publishes the continuation ALONE.
+ * Over a 1602-character partial that took the value from 1649 characters to 48 in one arrival,
+ * measured character by character. That is not only a visible collapse: Stop persists the last
+ * STREAMED yield, because assistant-ui drops what a run yields after an abort and the terminal
+ * merge sits behind `!abortSignal.aborted`, so stopping in that window SAVED the 48 characters
+ * and discarded the whole partial the user was reading.
  *
- * Nothing downstream renders a retraction gracefully, so an arrival carrying a short prefix
- * of the one before it is a pane that visibly loses its content and gets it back.
+ * `streaming` exists for exactly this and production never passed it. It suppresses the restart
+ * check, which needs more text than early chunks carry, and leaves the overlap trim, which only
+ * ever removes text the continuation itself repeated. So a streamed merge keeps the partial and
+ * the new text, always, and a genuine restart is collapsed once at the end where the evidence
+ * for it is complete.
  *
- * Repairing only at the end does not work either: assistant-ui drops what a run yields after
- * an abort, so Stop persists the last STREAMED yield, and the terminal merge sits behind
- * `!abortSignal.aborted`. An unrepaired live value therefore SAVES `partial + repeated tail`,
- * and the Continue built on it replays that duplicate.
+ * Two things were tried first and are recorded because both were worse:
  *
- * So the merge WAITS for the repair to become decidable instead of dropping it. Neither
- * decision can change once the continuation reaches `min(partial.length, MAX_OVERLAP)`: a
- * matching overlap stays matching as more text arrives, so the trim only ever grows and is
- * capped there, and `isRestart` reads a fixed RESTART_PROBE-character prefix. Measured over
- * all three shapes (clean, repeated tail, restart), the trim never decreases and both answers
- * are constant from that point.
+ *   * repairing ONLY at the end. That saves `partial + repeated tail` on Stop, so a Continue
+ *     built on it replays the duplicate. It swapped a display bug for a stored one.
+ *   * holding the partial until the trim could no longer change (at `min(partial.length,
+ *     MAX_OVERLAP)`). Monotonic, but Stop inside that window persisted the STALE PARTIAL and
+ *     discarded every newly generated character, which is worse than either.
  *
- * Until then the merge publishes the partial alone rather than a join it may have to take
- * back. After it, the answer is stable and the continuation only grows, so every publish is a
- * superset of the last AND carries the repair.
- *
- * There is deliberately no latch. An earlier draft cached the decision, but re-deriving it per
- * call is equivalent precisely BECAUSE it is stable past `settleAt`, and a mutation that
- * removed the cache changed no test. State that buys nothing is state that can go stale.
- *
- * One deliberate exception: a genuine restart replaces the partial with the new answer, which
- * is shorter. That is one transition at the settle point, not a per-arrival oscillation, and it is the
- * correct thing to show; appending a restart to the partial would read as a stutter.
+ * The overlap trim can still shift the join by up to MAX_OVERLAP characters as a longer overlap
+ * starts matching, so a publish is not strictly monotonic. That is bounded, rare, confined to
+ * external-provider continuations, and never loses text. It is deliberately not worth holding
+ * generated output back to avoid.
  */
 export function createContinuationMerger(
   partial: string,
   repair: boolean,
 ): (cumulative: string, options?: { final?: boolean }) => string {
-  const settleAt = Math.min(partial.length, MAX_OVERLAP);
-
   return (cumulative, { final = false } = {}) => {
     if (!partial || !repair) {
       return cumulative;
     }
-    const continuation = cumulative.slice(partial.length);
-    if (!final && continuation.length < settleAt) {
-      return partial;
-    }
-    return joinContinuation(partial, continuation);
+    return joinContinuation(partial, cumulative.slice(partial.length), {
+      streaming: !final,
+    });
   };
 }
 
