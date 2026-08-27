@@ -532,3 +532,25 @@ def test_metadata_parked_with_a_resent_name_stays_with_the_closed_call():
     assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
     assert entries[0]["extra_content"] == {"own": "A", "resent": 1}
     assert entries[1].get("extra_content") is None
+
+
+def test_a_discarded_resend_does_not_lend_its_place_to_the_next_call():
+    # The moment belongs to the announcement. Once the parked name is read as
+    # the closed call's resent, the call that opens here was not announced
+    # then, so keeping that moment would run it ahead of a call the stream
+    # really did open first, and a finite budget would reject the earlier one.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "A", '{"a":1}')])
+    turn.merge_structured([_delta(0, "A_long", None)])
+    turn.merge_structured([_delta(1, "C", '{"c":3}')])
+    turn.merge_structured([_delta(0, "B", '{"b":2}')])
+
+    assert [call["function"]["name"] for call in turn.calls()] == ["A", "C", "B"]
+
+    # An announcement that is accepted still keeps its place.
+    kept = _Turn()
+    kept.merge_structured([_delta(0, "A", '{"a":1}')])
+    kept.merge_structured([_delta(0, "B", None)])
+    kept.merge_structured([_delta(1, "C", '{"c":3}')])
+    kept.merge_structured([_delta(0, None, '{"b":2}')])
+    assert [call["function"]["name"] for call in kept.calls()] == ["A", "B", "C"]

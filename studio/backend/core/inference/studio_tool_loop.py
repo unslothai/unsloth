@@ -925,6 +925,11 @@ class _Turn:
         if resent and not (opening_name.startswith(parked) or parked.startswith(opening_name)):
             if extra and held is not None:
                 held["extra_content"] = {**held.get("extra_content", {}), **extra}
+            # The moment goes with the announcement. This call was not the one
+            # announced then, so it takes the moment its arguments arrived;
+            # keeping the resend's would run it ahead of calls the stream
+            # really did open first.
+            self.pending_seq_by_index.pop(index, None)
             return "", None
         return parked, extra
 
