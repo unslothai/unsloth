@@ -45,6 +45,11 @@ from utils.upload_limits import (
     upload_limit_label,
 )
 from utils.xet_notice_settings import reserve_xet_notice
+from utils.chat_preferences_settings import (
+    get_show_model_disclaimer,
+    migrate_show_model_disclaimer,
+    set_show_model_disclaimer,
+)
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
@@ -608,6 +613,18 @@ class XetNoticeResponse(BaseModel):
     limit: int
 
 
+class ChatPreferencesPayload(BaseModel):
+    show_model_disclaimer: StrictBool
+
+
+class ChatPreferencesMigrationPayload(BaseModel):
+    show_model_disclaimer: Optional[StrictBool] = None
+
+
+class ChatPreferencesResponse(BaseModel):
+    show_model_disclaimer: bool
+
+
 class ModelMemoryPayload(BaseModel):
     # None leaves the stored value untouched, so the switches save independently.
     keep_resident: Optional[bool] = None
@@ -876,6 +893,12 @@ def _download_transport_response(mode: str | None = None) -> DownloadTransportRe
         xet_unavailable_reason = caps.xet.reason,
         auto_resolves_to = caps.auto_resolves_to,
         auto_reason = caps.auto_reason,
+    )
+
+
+def _chat_preferences_response(enabled: bool | None = None) -> ChatPreferencesResponse:
+    return ChatPreferencesResponse(
+        show_model_disclaimer = (get_show_model_disclaimer() if enabled is None else enabled)
     )
 
 
@@ -1160,6 +1183,47 @@ def post_xet_notice_reserve(
             log = logger,
         ) from exc
     return XetNoticeResponse(**result)
+
+
+@router.get("/chat-preferences", response_model = ChatPreferencesResponse)
+def get_chat_preferences(
+    current_subject: str = Depends(get_current_subject),
+) -> ChatPreferencesResponse:
+    return _chat_preferences_response()
+
+
+@router.put("/chat-preferences", response_model = ChatPreferencesResponse)
+def update_chat_preferences(
+    payload: ChatPreferencesPayload, current_subject: str = Depends(get_current_subject)
+) -> ChatPreferencesResponse:
+    try:
+        enabled = set_show_model_disclaimer(payload.show_model_disclaimer)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not save chat preferences."),
+            event = "settings.update_chat_preferences_failed",
+            log = logger,
+        ) from exc
+    return _chat_preferences_response(enabled)
+
+
+@router.post("/chat-preferences/migrate", response_model = ChatPreferencesResponse)
+def migrate_chat_preferences(
+    payload: ChatPreferencesMigrationPayload, current_subject: str = Depends(get_current_subject)
+) -> ChatPreferencesResponse:
+    try:
+        enabled = migrate_show_model_disclaimer(payload.show_model_disclaimer)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not migrate chat preferences."),
+            event = "settings.migrate_chat_preferences_failed",
+            log = logger,
+        ) from exc
+    return _chat_preferences_response(enabled)
 
 
 @router.get("/model-memory", response_model = ModelMemoryResponse)
