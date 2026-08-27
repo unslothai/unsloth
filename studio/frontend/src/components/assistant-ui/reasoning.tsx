@@ -50,8 +50,18 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  type PinState,
+  createPinState,
+  detachByUser,
+  notePinnedTo,
+  observeScroll,
+  shouldAutoScroll,
+} from "./reasoning-autoscroll";
 const ANIMATION_DURATION = 200;
-const AUTO_SCROLL_THRESHOLD_PX = 24;
+// Keys that move a scroller up. Space alone pages DOWN, so only shift+space would
+// belong here and it arrives as key " " either way; left out rather than guessed at.
+const UPWARD_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 
 export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
   variants: {
@@ -248,55 +258,86 @@ function ReasoningText({
   ...props
 }: ComponentProps<"div"> & { streaming?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const shouldAutoScrollRef = useRef(true);
-  const detachedFromBottomRef = useRef(false);
-  const lastScrollTopRef = useRef(0);
+  const pinStateRef = useRef<PinState>(createPinState(0, 0));
 
   useEffect(() => {
     if (!(streaming && scrollRef.current)) {
       return;
     }
     const el = scrollRef.current;
+    // scrollHeight - clientHeight, not scrollHeight. The old pin wrote scrollHeight
+    // and only landed on the bottom because engines clamp it, and that clamp is
+    // exactly what the detach heuristic could not see the cause of.
+    const maxScrollTop = () => Math.max(0, el.scrollHeight - el.clientHeight);
     const updateAutoScroll = () => {
-      const currentScrollTop = el.scrollTop;
-      if (currentScrollTop < lastScrollTopRef.current) {
-        detachedFromBottomRef.current = true;
-      }
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (
-        detachedFromBottomRef.current &&
-        distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
-      ) {
-        detachedFromBottomRef.current = false;
-      }
-      shouldAutoScrollRef.current = !detachedFromBottomRef.current;
-      lastScrollTopRef.current = currentScrollTop;
+      pinStateRef.current = observeScroll(
+        pinStateRef.current,
+        el.scrollTop,
+        maxScrollTop(),
+      );
     };
+    // Intent comes from input events ONLY; see reasoning-autoscroll.ts for why a
+    // scrollTop decrease cannot be read as intent. That makes this list the whole
+    // surface, so every way of scrolling up by hand has to appear here or the user
+    // gets yanked back to the bottom mid-read.
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) {
-        detachedFromBottomRef.current = true;
-        shouldAutoScrollRef.current = false;
+        pinStateRef.current = detachByUser(pinStateRef.current);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (UPWARD_KEYS.has(event.key)) {
+        pinStateRef.current = detachByUser(pinStateRef.current);
+      }
+    };
+    // Touch drag and scrollbar drag produce no wheel and no key. Both start with a
+    // pointer down on the scroller, so while one is held a scroll that moves up is
+    // the user by construction. Released on pointerup and on pointercancel, which a
+    // touch drag leaving the element does fire.
+    let pointerHeld = false;
+    const handlePointerDown = () => {
+      pointerHeld = true;
+    };
+    const releasePointer = () => {
+      pointerHeld = false;
+    };
+    const handleScrollUpWhileHeld = () => {
+      if (pointerHeld && el.scrollTop < pinStateRef.current.lastScrollTop) {
+        pinStateRef.current = detachByUser(pinStateRef.current);
       }
     };
     const observer = new MutationObserver(() => {
-      if (shouldAutoScrollRef.current) {
-        el.scrollTop = el.scrollHeight;
+      if (shouldAutoScroll(pinStateRef.current)) {
+        const target = maxScrollTop();
+        el.scrollTop = target;
+        pinStateRef.current = notePinnedTo(pinStateRef.current, target);
       }
     });
+    // Order matters: the held-pointer check reads lastScrollTop, so it has to run
+    // before updateAutoScroll overwrites it with the current position.
+    el.addEventListener("scroll", handleScrollUpWhileHeld);
     el.addEventListener("scroll", updateAutoScroll);
     el.addEventListener("wheel", handleWheel, { passive: true });
+    el.addEventListener("keydown", handleKeyDown);
+    el.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    el.addEventListener("pointerup", releasePointer, { passive: true });
+    el.addEventListener("pointercancel", releasePointer, { passive: true });
     observer.observe(el, {
       childList: true,
       subtree: true,
       characterData: true,
     });
-    lastScrollTopRef.current = el.scrollTop;
-    detachedFromBottomRef.current = false;
+    pinStateRef.current = createPinState(el.scrollTop, maxScrollTop());
     updateAutoScroll();
     return () => {
       observer.disconnect();
+      el.removeEventListener("scroll", handleScrollUpWhileHeld);
       el.removeEventListener("scroll", updateAutoScroll);
       el.removeEventListener("wheel", handleWheel);
+      el.removeEventListener("keydown", handleKeyDown);
+      el.removeEventListener("pointerdown", handlePointerDown);
+      el.removeEventListener("pointerup", releasePointer);
+      el.removeEventListener("pointercancel", releasePointer);
     };
   }, [streaming]);
 
