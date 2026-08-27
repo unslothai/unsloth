@@ -1786,11 +1786,24 @@ def _runtime_gfx_target(
     if not gfx_devices:
         # The kernel's own topology: one entry per GPU node, in node order.
         gfx_devices = _kfd_gfx_targets()
+        # With no userland reading to distrust, the spoof check above declined -- but the
+        # runtime is still spoofed, and the reroutes below install wheels carrying code
+        # for the physical arch alone (#7331). amdkfd writes gfx_target_version itself and
+        # ROCr never touches it, which _hsa_spoofed_physical_gfx already calls decisive,
+        # so a single-arch kernel reading that the override contradicts IS the corroborated
+        # spoof: report it, and the callers clear the variable before installing.
+        if physical_gfx is None and len(set(gfx_devices)) == 1:
+            _override_arch = _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION"))
+            if _override_arch is not None and _override_arch != gfx_devices[0]:
+                physical_gfx = gfx_devices[0]
     if not gfx_devices and inferred_linux_gfx:
         # Nothing enumerated a device, so the #7305 precedence (a runtime-visible arch
         # outranks the product name) has nothing left to protect. Honour what the user
         # named, as _runtime_target_is_gfx906 and _detect_windows_gfx_arch already do.
         gfx_devices = [inferred_linux_gfx]
+    # Only rocminfo is renumbered by a visible-device mask, and only by
+    # ROCR_VISIBLE_DEVICES, so a list it already filtered must not be indexed a second
+    # time (_detect_amd_gfx_codes records which probe answered, for exactly this).
     rocr_applied = (
         _LAST_AMD_GFX_PROBE == "rocminfo" and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
     )
@@ -3198,11 +3211,13 @@ def _ensure_rocm_torch() -> None:
         ":"
     )[0] == "gfx906"
 
-    # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
-    # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1
-    # segfaults in _grouped_mm). See _strix_needs_amd_arch_index for the floor gate.
-    _strix_override_url: "str | None" = None
-    _strix_override_pkgs: "tuple[str, str, str] | None" = None
+    # Where the two AMD per-gfx reroutes below deposit their choice. Strix Halo / Point
+    # (gfx1151 / gfx1150) need torch from AMD's per-gfx index (2.11+rocm7.13) because any
+    # generic pytorch.org rocm index lacks the fixes (ROCm 7.1 segfaults in _grouped_mm);
+    # see _strix_needs_amd_arch_index for that floor gate. The second reroute has no floor
+    # and fires for an arch the generic wheel carries no kernels for at all.
+    _arch_index_url: "str | None" = None
+    _arch_index_pkgs: "tuple[str, str, str] | None" = None
     # An explicit ROCm pin wins; otherwise both reroutes share one hardware probe.
     # Skipped once the inferred-arch install above has run: it resolves its index from
     # the same arch these reroutes would, so torch is already on those wheels and
@@ -3224,8 +3239,8 @@ def _ensure_rocm_torch() -> None:
                 _amd_mirror = (
                     os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
                 ).rstrip("/")
-                _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
-                _strix_override_pkgs = (
+                _arch_index_url = f"{_amd_mirror}/{_selected_gfx}/"
+                _arch_index_pkgs = (
                     "torch>=2.11.0,<2.12.0",
                     # Pin companions to the 2.11.x range: the exclusive --index-url could
                     # otherwise resolve a build for a different torch major (ABI mismatch).
@@ -3236,7 +3251,8 @@ def _ensure_rocm_torch() -> None:
                     f"   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
                     f"   Routing torch install to AMD's arch-specific index\n"
-                    f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
+                    f"   ({_strip_index_url_credentials(_arch_index_url)}) which serves\n"
+                    f"   torch 2.11.0+rocm7.13.0\n"
                     f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
                     f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
                 )
@@ -3256,7 +3272,7 @@ def _ensure_rocm_torch() -> None:
 
         # If the generic wheel lacks the runtime target, replace it from AMD's per-arch index.
         # This branch has no ROCm-version floor because generic wheels never carried these targets.
-        if _strix_override_url is None:
+        if _arch_index_url is None:
             _missing_kernels = {g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g)}
             if _missing_kernels:
                 _leaf = (
@@ -3282,13 +3298,13 @@ def _ensure_rocm_torch() -> None:
                     _amd_mirror = (
                         os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
                     ).rstrip("/")
-                    _strix_override_url = f"{_amd_mirror}/{_leaf}/"
+                    _arch_index_url = f"{_amd_mirror}/{_leaf}/"
                     # Keep older per-arch builds valid while bounding companion versions,
                     # except on the leaves whose sub-2.11 builds carry the _grouped_mm bug.
                     # The Strix reroute floors those at 2.11 and the generic branch floors
                     # the same list, but an unreadable ROCm version reads as 0.0, which is
                     # below the Strix floor, so gfx1152 reaches this branch instead.
-                    _strix_override_pkgs = (
+                    _arch_index_pkgs = (
                         _ROCM_TORCH_PKG_SPECS["rocm7.2"]
                         if _leaf.lower() in _ROCM_GFX_TORCH211_LEAVES
                         else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
@@ -3297,7 +3313,8 @@ def _ensure_rocm_torch() -> None:
                         f"   {_runtime_gfx} is the runtime target, and no pytorch.org ROCm wheel\n"
                         f"   carries kernels for it -- torch would load but fault on its first\n"
                         f"   GPU operation. Routing the torch install to AMD's arch-specific\n"
-                        f"   index ({_strix_override_url}), which does.\n"
+                        f"   index ({_strip_index_url_credentials(_arch_index_url)}),\n"
+                        f"   which does.\n"
                     )
                     # Let the runtime report the native target carried by these wheels.
                     if _physical_gfx is not None:
@@ -3324,7 +3341,7 @@ def _ensure_rocm_torch() -> None:
         _runtime_is_gfx906
         and _gfx906_needs_legacy_index(ver)
         and _explicit_rocm_torch_index_url() is None
-        and _strix_override_url is None
+        and _arch_index_url is None
     )
     if _gfx906_override:
         _safe_print(
@@ -3337,17 +3354,18 @@ def _ensure_rocm_torch() -> None:
             f"   requires a source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd).\n"
         )
 
-    # The Strix override must fire even when has_hip_torch is True: an existing
-    # torch.version.hip == "7.1" is exactly the broken combo it repairs.
-    if _strix_override_url is not None and _strix_override_pkgs is not None:
-        index_url = _strix_override_url
-        _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
+    # Either reroute must fire even when has_hip_torch is True: an existing
+    # torch.version.hip == "7.1" is exactly the broken combo they repair. The
+    # missing-kernel route declines above when torch already runs on its leaf.
+    if _arch_index_url is not None and _arch_index_pkgs is not None:
+        index_url = _arch_index_url
+        _torch_pkg, _vision_pkg, _audio_pkg = _arch_index_pkgs
         _safe_print(
-            f"   Strix arch-specific override -- installing torch from "
+            f"   AMD per-gfx index override -- installing torch from "
             f"{_strip_index_url_credentials(index_url)}"
         )
         pip_install(
-            "ROCm torch (Strix arch-specific)",
+            f"ROCm torch (AMD per-gfx index, {_torch_index_leaf(index_url)})",
             "--force-reinstall",
             "--no-cache-dir",
             _torch_pkg,

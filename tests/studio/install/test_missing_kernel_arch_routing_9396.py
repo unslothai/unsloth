@@ -8,7 +8,9 @@ Torch, hardware probes, and pip are mocked; the generic wheel architecture list 
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 from pathlib import Path
@@ -102,10 +104,14 @@ def _run_install(
         ):
             if _stale not in _env:
                 os.environ.pop(_stale, None)
+        _out = io.StringIO()
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = probe):
-                stack_mod._ensure_rocm_torch()
+                with contextlib.redirect_stdout(_out):
+                    stack_mod._ensure_rocm_torch()
+        _run_install.hsa_override_after = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
     _run_install.probes = probes
+    _run_install.printed = _out.getvalue()
     return str(pip.call_args_list) + str(pip_try.call_args_list)
 
 
@@ -124,6 +130,9 @@ def test_an_arch_with_no_generic_kernels_routes_to_the_amd_index(gfx, leaf):
     calls = _run_install(gfx_devices = (gfx,))
     assert f"{_AMD}/{leaf}/" in calls, calls
     assert _GENERIC not in calls, calls
+    # The carrier is shared with the Strix reroute, so the label has to name the leaf
+    # actually installed; a 780M laptop reading "Strix" is the installer lying to it.
+    assert f"AMD per-gfx index, {leaf.lower()}" in calls, calls
 
 
 def test_no_nameable_arch_is_left_without_kernels():
@@ -411,6 +420,9 @@ def test_torch_already_on_the_right_per_arch_wheels_is_not_reinstalled():
     )
     assert _AMD not in calls, calls
     assert _GENERIC not in calls, calls
+    # Skipping the torch install must still leave rocm_torch_ready set, or the AMD
+    # bitsandbytes repair every `studio update` exists for stops running too.
+    assert "bitsandbytes" in calls, calls
 
 
 @pytest.mark.parametrize("family", [None, "gfx103x-all"])
@@ -439,3 +451,67 @@ def test_a_leaf_that_needs_torch_211_keeps_its_floor():
     assert f"{_AMD}/gfx1152/" in calls, calls
     assert "torch>=2.11.0,<2.12.0" in calls, calls
     assert "torch>=2.4,<2.12.0" not in calls, calls
+
+
+# ── the spoofed runtime the per-arch wheels cannot survive ───────────────────
+
+
+def test_a_kfd_only_spoofed_host_clears_the_override_before_installing():
+    """HSA_OVERRIDE_GFX_VERSION=11.0.0 with no rocminfo and no amd-smi: the spoof check
+    has no userland reading to distrust and declines, but amdkfd writes
+    gfx_target_version itself, so a single-arch kernel reading the override contradicts
+    is the corroborated spoof. Leaving the variable set hands the gfx1151-only wheels a
+    device the runtime still calls gfx1100, which faults exactly as #7331 did."""
+    calls = _run_install(
+        gfx_devices = (),
+        kfd = ("gfx1151",),
+        inferred = "gfx1151",
+        env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    assert f"{_AMD}/gfx1151/" in calls, calls
+    assert _run_install.hsa_override_after is None, _run_install.hsa_override_after
+
+
+def test_an_override_naming_the_real_arch_is_left_alone_on_the_kfd_path():
+    """11.5.1 names gfx1151, which is what the kernel reports: nothing is being masked."""
+    _run_install(
+        gfx_devices = (),
+        kfd = ("gfx1151",),
+        inferred = "gfx1151",
+        env = {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"},
+    )
+    assert _run_install.hsa_override_after == "11.5.1"
+
+
+def test_a_mixed_kernel_reading_never_clears_the_override():
+    """Two arches means the single-GPU premise the correction rests on does not hold."""
+    _run_install(
+        gfx_devices = (),
+        kfd = ("gfx1151", "gfx1100"),
+        inferred = "gfx1151",
+        env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    assert _run_install.hsa_override_after == "11.0.0"
+
+
+# ── what the banners are allowed to print ────────────────────────────────────
+
+
+_SECRET_MIRROR = "https://user:s3cr3t-token@mirror.example/whl"
+
+
+def test_the_missing_kernel_banner_redacts_mirror_credentials():
+    """UNSLOTH_AMD_ROCM_MIRROR can carry userinfo, and installer output reaches CI logs."""
+    calls = _run_install(gfx_devices = ("gfx1103",), env = {"UNSLOTH_AMD_ROCM_MIRROR": _SECRET_MIRROR})
+    assert "mirror.example/whl/gfx110X-all/" in calls, calls
+    assert "s3cr3t-token" not in _run_install.printed, _run_install.printed
+
+
+def test_the_strix_banner_redacts_mirror_credentials():
+    """Same carrier, same banner rule: the reroute this one shares its variables with."""
+    _run_install(
+        gfx_devices = ("gfx1151",),
+        inferred = "gfx1151",
+        env = {"UNSLOTH_AMD_ROCM_MIRROR": _SECRET_MIRROR},
+    )
+    assert "s3cr3t-token" not in _run_install.printed, _run_install.printed
