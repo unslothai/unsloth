@@ -379,6 +379,41 @@ function moduleScopeFunctions(source: ts.SourceFile): Map<string, ts.Node> {
   return functions;
 }
 
+/**
+ * Source position where this body first suspends, or null if it never does.
+ *
+ * Nested functions are skipped: an `await` inside a callback declared here does
+ * not suspend the function that declares it.
+ */
+function firstSuspensionPos(body: ts.Node): number | null {
+  let earliest: number | null = null;
+  const visit = (node: ts.Node): void => {
+    if (node !== body && isVarScope(node) && !ts.isSourceFile(node)) return;
+    const suspends =
+      ts.isAwaitExpression(node) ||
+      ((ts.isForOfStatement(node) && node.awaitModifier !== undefined));
+    if (suspends && (earliest === null || node.getStart() < earliest)) {
+      earliest = node.getStart();
+    }
+    node.forEachChild(visit);
+  };
+  visit(body);
+  return earliest;
+}
+
+/** Walk only the part of a body that runs before `limit`. */
+function visitUntil(
+  body: ts.Node,
+  limit: number,
+  visit: (node: ts.Node, deferred: boolean) => void,
+): void {
+  const walk = (node: ts.Node): void => {
+    if (node.getStart() >= limit) return;
+    visit(node, false);
+  };
+  body.forEachChild(walk);
+}
+
 function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
   if (names.size === 0) return [];
 
@@ -411,8 +446,16 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
       const target = functions.get(node.expression.text);
       if (target && !entered.has(target) && !isShadowed(node.expression)) {
         entered.add(target);
-        const body = (target as ts.FunctionLikeDeclaration).body;
-        if (body) visit(body, false);
+        const fn = target as ts.FunctionLikeDeclaration;
+        // Calling a generator only builds an iterator; nothing in the body runs
+        // until someone advances it, which is never during module load.
+        if (fn.body && !fn.asteriskToken) {
+          const suspendsAt = firstSuspensionPos(fn.body);
+          // An async function runs synchronously up to its first await and
+          // resumes in a later microtask, so only the part before it is eager.
+          if (suspendsAt === null) visit(fn.body, false);
+          else visitUntil(fn.body, suspendsAt, visit);
+        }
       }
     }
     const next = deferred || defersEvaluation(node);
@@ -531,11 +574,32 @@ function barrelBearingModules(
     for (const [file, text] of sources) {
       if (bearing.has(file)) continue;
       const source = parse(file, text);
+      // `import { K } from barrel; export { K }` re-exports the same live
+      // binding as `export { K } from barrel`, just spelled in two statements,
+      // so the local names have to be known before the exports are read.
+      const imported = barrelValueNames(source, (spec) => {
+        if (spec === BARREL) return true;
+        const target = resolve(spec, file);
+        return target !== null && bearing.has(target);
+      });
       for (const statement of source.statements) {
         if (!ts.isExportDeclaration(statement)) continue;
-        const specifier = statement.moduleSpecifier;
-        if (!specifier || !ts.isStringLiteral(specifier)) continue;
         if (isErasedEdge(statement)) continue;
+        const specifier = statement.moduleSpecifier;
+        if (!specifier) {
+          const clause = statement.exportClause;
+          if (!clause || !ts.isNamedExports(clause)) continue;
+          // The LOCAL name is what was imported; `export { K as J }` still
+          // hands out the barrel's binding under a new name.
+          const reExports = clause.elements.some(
+            (element) => !element.isTypeOnly && imported.has((element.propertyName ?? element.name).text),
+          );
+          if (!reExports) continue;
+          bearing.add(file);
+          changed = true;
+          break;
+        }
+        if (!ts.isStringLiteral(specifier)) continue;
         const target = resolve(specifier.text, file);
         if (specifier.text === BARREL || (target && bearing.has(target))) {
           bearing.add(file);
@@ -715,6 +779,14 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nconst read = () => K;\nconst v = read();\n`,
     ],
     [
+      "async body before the first await",
+      `import { K } from "${BARREL}";\nasync function read() { const a = K; await x; }\nread();\n`,
+    ],
+    [
+      "await only inside a nested callback does not suspend",
+      `import { K } from "${BARREL}";\nasync function read() { const g = async () => { await x; }; return K; }\nread();\n`,
+    ],
+    [
       "eager call two functions deep",
       `import { K } from "${BARREL}";\nfunction inner() { return K; }\nfunction outer() { return inner(); }\nconst v = outer();\n`,
     ],
@@ -823,6 +895,14 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nfunction read() { return K; }\nexport const f = () => read();\n`,
     ],
     [
+      "called generator only builds an iterator",
+      `import { K } from "${BARREL}";\nfunction* read() { yield K; }\nread();\n`,
+    ],
+    [
+      "async body after the first await",
+      `import { K } from "${BARREL}";\nasync function read() { await x; return K; }\nread();\n`,
+    ],
+    [
       "self-recursive function is not followed forever",
       `import { K } from "${BARREL}";\nfunction loop() { return loop(); }\nconst v = loop();\n`,
     ],
@@ -892,4 +972,20 @@ test("an erased re-export does not make a module a bridge", () => {
   ]);
   const bearing = barrelBearingModules(sources, makeResolver(sources));
   assert.ok(!bearing.has(bridge), "a type-only re-export carries no runtime binding");
+});
+
+test("an import-then-export bridge carries barrel bindings too", () => {
+  const bridge = path.join(SRC, "fake", "twostep.ts");
+  const aliased = path.join(SRC, "fake", "aliased.ts");
+  const copy = path.join(SRC, "fake", "copy.ts");
+  const sources = new Map<string, string>([
+    [bridge, `import { K } from "${BARREL}";\nexport { K };\n`],
+    [aliased, `import { K } from "${BARREL}";\nexport { K as J };\n`],
+    // A fresh binding initialized from the import, not the barrel's own.
+    [copy, `import { K } from "${BARREL}";\nexport const J = K;\n`],
+  ]);
+  const bearing = barrelBearingModules(sources, makeResolver(sources));
+  assert.ok(bearing.has(bridge), "import-then-export re-exports the live binding");
+  assert.ok(bearing.has(aliased), "renaming on the way out changes nothing");
+  assert.ok(!bearing.has(copy), "export const is a copy, not the barrel's binding");
 });
