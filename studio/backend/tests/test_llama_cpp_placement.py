@@ -139,6 +139,19 @@ def _launch(backend, gguf, **load_kwargs):
     return captured
 
 
+def _launch_warns(backend, gguf, **load_kwargs):
+    """A load whose weights outgrow fast memory: it LAUNCHES, and says so.
+
+    These cases used to raise. They do not any more: the spill is mmap'd, so the
+    weights page in from disk instead of failing, and refusing cost users a load that
+    llama.cpp itself supports. The advisory is the whole remaining contract, so assert
+    it rather than only that the launch survived.
+    """
+    captured = _launch(backend, gguf, **load_kwargs)
+    assert "does not fit in GPU memory" in (backend.last_load_warning or "")
+    return captured
+
+
 def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
     backend, gguf = _backend(
         tmp_path,
@@ -1607,7 +1620,7 @@ def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **k
     return backend, gguf
 
 
-def test_weights_larger_than_vram_plus_ram_are_refused(tmp_path, monkeypatch):
+def test_weights_larger_than_vram_plus_ram_still_load_with_a_warning(tmp_path, monkeypatch):
     """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free needs
     about 8.5 GB of host RAM, which a 10 GB host cannot hold. Unrefused, the mmap'd
     remainder thrashes until the OS kills Unsloth and the desktop session."""
@@ -1615,8 +1628,7 @@ def test_weights_larger_than_vram_plus_ram_are_refused(tmp_path, monkeypatch):
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf)
+    _launch_warns(backend, gguf)
 
 
 def test_the_same_load_on_a_large_ram_host_still_launches(tmp_path, monkeypatch):
@@ -1662,8 +1674,7 @@ def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, m
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf)
+    _launch_warns(backend, gguf)
 
 
 def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path, monkeypatch):
@@ -1725,8 +1736,7 @@ def test_vulkan_igpu_backing_bound_preserves_placement_and_host_headroom(
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
     if not admitted:
-        with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-            _launch(backend, gguf)
+        _launch_warns(backend, gguf)
         return
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -1760,8 +1770,7 @@ def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf, **placement)
+    _launch_warns(backend, gguf, **placement)
 
 
 def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, monkeypatch):
@@ -1787,8 +1796,7 @@ def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, mon
     manual = {"gpu_memory_mode": "manual", "gpu_layers": 33}
 
     backend, gguf = _mixed()
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf, extra_args = ["--device", "Vulkan0"], **manual)
+    _launch_warns(backend, gguf, extra_args = ["--device", "Vulkan0"], **manual)
 
     backend, gguf = _mixed()
     assert _launch(backend, gguf, extra_args = ["--device", "Vulkan1"], **manual)["cmd"]
@@ -1810,14 +1818,13 @@ def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_p
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(
-            backend,
-            gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 33,
-            extra_args = ["--device", "Vulkan1"],
-        )
+    _launch_warns(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--device", "Vulkan1"],
+    )
 
 
 @pytest.mark.parametrize(
@@ -1839,15 +1846,14 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(
-            backend,
-            gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 33,
-            gpu_ids = [0, 1],
-            **split,
-        )
+    _launch_warns(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        gpu_ids = [0, 1],
+        **split,
+    )
 
 
 def _mixed_vulkan(tmp_path, monkeypatch, memory):
@@ -1876,14 +1882,13 @@ def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkey
     backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
 
     # Both devices pinned, so the split mode is the only thing left to decide.
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(
-            backend,
-            gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 33,
-            extra_args = ["--device", "Vulkan0,Vulkan1", *extras],
-        )
+    _launch_warns(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--device", "Vulkan0,Vulkan1", *extras],
+    )
 
 
 def test_an_unpinned_launch_beside_a_discrete_card_leaves_the_heap_uncredited(
@@ -1892,8 +1897,7 @@ def test_an_unpinned_launch_beside_a_discrete_card_leaves_the_heap_uncredited(
     """llama.cpp drops integrated GPUs when its own device list finds a discrete one."""
     backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0), (1, 6 * 1024, 8 * 1024)])
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33)
+    _launch_warns(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33)
 
 
 def test_a_pin_still_reaches_the_heap_beside_a_discrete_card(tmp_path, monkeypatch):
@@ -1939,8 +1943,10 @@ def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
         LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 8 * 1024)
     )
 
-    with pytest.raises(RuntimeError, match = "unified-memory APU"):
-        _launch(backend, gguf)
+    # The cgroup ceiling still governs what the message prices, it just no longer
+    # stops the load: the launch goes ahead carrying the APU advisory.
+    _launch(backend, gguf)
+    assert "unified-memory APU" in (backend.last_load_warning or "")
 
 
 def test_a_card_resident_model_is_not_refused_by_a_container_ceiling(tmp_path, monkeypatch):
@@ -2015,21 +2021,23 @@ def test_the_guard_reads_the_model_the_child_opens(tmp_path, monkeypatch):
         return real_size(path)
 
     backend._get_gguf_size_bytes = _record
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf)
+    _launch_warns(backend, gguf)
 
     assert str(gguf) in seen
 
 
-def test_the_env_escape_loads_a_variant_the_guard_refuses(tmp_path, monkeypatch):
-    """The picker still offers a variant `classifyGgufFit` calls "oom", and no load
-    field carries a force, so an unconditional refusal leaves that selection with no way
-    through. UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains, and the refusal names it."""
-    refused, gguf = _offload_backend(
+def test_the_env_escape_is_now_a_no_op_that_only_silences_the_warning(tmp_path, monkeypatch):
+    """UNSLOTH_ALLOW_HOST_OFFLOAD was the opt-out from a refusal that no longer exists.
+
+    Both arms must load. Unset, the load carries the advisory; set, it loads just the
+    same and says nothing, which is the coherent remainder of what someone setting it
+    was asking for. Kept honoured so existing scripts and docs keep working."""
+    warned, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
-    with pytest.raises(RuntimeError, match = "UNSLOTH_ALLOW_HOST_OFFLOAD=1"):
-        _launch(refused, gguf)
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    assert "--fit" in _launch(warned, gguf)["cmd"]
+    assert "does not fit in GPU memory" in (warned.last_load_warning or "")
 
     allowed_dir = tmp_path / "allowed"
     allowed_dir.mkdir()
@@ -2038,6 +2046,28 @@ def test_the_env_escape_loads_a_variant_the_guard_refuses(tmp_path, monkeypatch)
     )
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
     assert "--fit" in _launch(allowed, gguf2)["cmd"]
+    assert allowed.last_load_warning is None
+
+
+def test_a_wildly_oversized_model_still_loads(tmp_path, monkeypatch):
+    """The regression this change exists for.
+
+    A 67.6 GB quant on a 14.5 GiB card with 51 GB of RAM -- the Colab T4 high-RAM
+    shape, measured -- used to come back as HTTP 400 from /api/inference/load, on a
+    model llama.cpp itself will run straight off the mmap. No shortfall may ever block
+    a load again, however large the gap: the launch happens, and the cost is reported
+    rather than enforced."""
+    backend, gguf = _offload_backend(
+        tmp_path,
+        gguf_gb = 67.6,
+        free_mib = 14_848,
+        avail_mib = 51_000,
+        monkeypatch = monkeypatch,
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    assert _launch(backend, gguf)["cmd"], "the oversized load never spawned llama-server"
+    assert "does not fit in GPU memory" in (backend.last_load_warning or "")
 
 
 def _load_intent(gguf, **kwargs):
@@ -2071,7 +2101,7 @@ def test_the_route_precheck_refuses_before_the_gpu_handoff(tmp_path, monkeypatch
     )
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
 
-    verdict = backend.host_offload_refusal_for_intent(_load_intent(gguf))
+    verdict = backend.host_offload_warning_for_intent(_load_intent(gguf))
     assert verdict is not None and "does not fit in GPU memory" in verdict
 
 
@@ -2092,7 +2122,7 @@ def test_the_route_precheck_credits_capacity_the_handoff_is_about_to_reclaim(tmp
         monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 64_000, vram_free_mib = 900
     )
 
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
 
 
 def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeypatch):
@@ -2104,17 +2134,17 @@ def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeyp
     )
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
 
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf, hf_repo = "org/repo")) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf, hf_repo = "org/repo")) is None
     # an igpu or a MIG/vGPU line reports total 0, so the ceiling is unknown
     backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 0)]
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = None)
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
 
 
 def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
@@ -2246,8 +2276,7 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
         monkeypatch = monkeypatch,
     )
     cpu_build._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: True
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(cpu_build, gguf2)
+    _launch_warns(cpu_build, gguf2)
 
 
 def test_an_empty_gpu_pool_abstains(tmp_path, monkeypatch):

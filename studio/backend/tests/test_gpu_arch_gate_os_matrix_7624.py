@@ -1247,11 +1247,12 @@ class TestArchCrashRetryEnv:
             capture = capture,
         )
 
-        assert launches, "the first launch was refused, so the retry is not what was tested"
-        assert not [
-            env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"
-        ], "the respawn on the narrowed pool was not refused"
-        assert "does not fit in GPU memory" in str(capture.get("error"))
+        assert launches, "the first launch never ran, so the retry is not what was tested"
+        # The repricing is the point, not a block: the respawn goes ahead on the
+        # narrowed pool and carries the advisory the narrowed pool produced.
+        assert "does not fit in GPU memory" in (
+            capture["backend"].last_load_warning or ""
+        ), "the retry did not reprice the spill against the narrowed pool"
 
 
 class TestManualSplitLaunchesRespectTheGate:
@@ -1737,7 +1738,7 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
 
-    def test_a_surviving_apu_still_refuses(self, tmp_path, monkeypatch, probe_env):
+    def test_a_surviving_apu_still_warns(self, tmp_path, monkeypatch, probe_env):
         """The waiver is scoped to survivors that are all discrete. A build
         covering both cards leaves the APU in play, so the refusal stands."""
         torch = self._apu_and_dgpu(monkeypatch)
@@ -1754,12 +1755,12 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
             apu_ram_stub = self._shortfall_stub(calls),
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
-        assert launches == [], "an oversized APU load reached the child"
-        assert "only about 8 GB" in str(capture.get("error"))
+        assert launches, "the oversized APU load never reached the child"
+        assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
 
-    def test_the_forced_cpu_host_still_refuses(self, tmp_path, monkeypatch, probe_env):
+    def test_the_forced_cpu_host_still_warns(self, tmp_path, monkeypatch, probe_env):
         """Every card gated out means the weights load into system RAM after all,
-        so the guard the gate has no survivor to answer with keeps its refusal."""
+        so the guard the gate has no survivor to answer with still prices it."""
         torch = self._apu_and_dgpu(monkeypatch)
         calls: list = []
         capture: dict = {}
@@ -1774,8 +1775,8 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
             apu_ram_stub = self._shortfall_stub(calls),
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
-        assert launches == [], "an oversized CPU-bound load reached the child"
-        assert "only about 8 GB" in str(capture.get("error"))
+        assert launches, "the oversized CPU-bound load never reached the child"
+        assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
 
 
 class TestArchCrashRetryOntoAnApu:
@@ -2023,7 +2024,7 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
             vendor = "amd",
         )
 
-    def test_an_oversized_model_is_refused_instead_of_respawned(
+    def test_an_oversized_model_is_respawned_with_a_warning(
         self, tmp_path, monkeypatch, probe_env
     ):
         torch = self._dgpu_then_apu(monkeypatch)
@@ -2051,15 +2052,16 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         # The dGPU is pinned first, so the pre-launch guard never asks (it is
         # gated on the selection wanting unified memory) and the crash happens.
         assert launches, "the first spawn never ran"
-        assert all(
-            env.get("ROCR_VISIBLE_DEVICES") != "1" for _c, env in launches
-        ), "the retry respawned onto the APU without the RAM preflight"
+        # The preflight still runs against the APU the retry lands on, and still prices
+        # the projector with the weights. It no longer stops the respawn.
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         assert calls[0][0] == 20 * 1024**3
-        assert "only about 8 GB" in str(capture.get("error"))
+        assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
+        # capture["error"] is now whatever the simulated HIP crash left behind, not the
+        # RAM guard, so asserting the guard's text on it would only re-test the mock.
 
     def test_a_model_that_fits_still_retries_onto_the_apu(self, tmp_path, monkeypatch, probe_env):
-        """The guard refuses a shortfall, it does not block the fallback. With
+        """The guard warns on a shortfall, it does not block the fallback. With
         room to spare the retry runs exactly as before."""
         torch = self._dgpu_then_apu(monkeypatch)
         calls: list = []

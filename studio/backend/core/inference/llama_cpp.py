@@ -5001,6 +5001,10 @@ class LlamaCppBackend:
         """
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        # Advisory memory notice from the load in flight, for the route to hand back on
+        # LoadResponse. Reset by _begin_load_warnings so one load's notice can never be
+        # reported against the next.
+        self._last_load_warning: Optional[str] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
         # Snapshot of the exact file(s) handed to the resident process. A local
@@ -8956,13 +8960,15 @@ class LlamaCppBackend:
         avail_mib: Optional[int] = None,
         shared_gpu_ids: Iterable[int] = (),
     ) -> Optional[str]:
-        """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
+        """Warning when the weights alone do not fit in free VRAM plus available RAM.
+
+        Advisory only. Nothing here blocks a load: callers log this and launch anyway.
 
         Weights only, against the whole free pool, is a strict lower bound on what the
         launch must hold: the KV cache, projector, drafter and compute buffers all add
         to it, and a layer or device pin only narrows the VRAM actually reachable. So
         every term this leaves out moves the estimate down, never up, and no missing
-        term can turn an allowed load into a refused one. That is what keeps the check
+        term can turn a quiet load into a warned one. That is what keeps the check
         a floor with no placement modelling to keep in step with llama.cpp.
 
         Read from the finished argv, so the model path is the one the child opens. An
@@ -8971,8 +8977,10 @@ class LlamaCppBackend:
         placement it already knows reaches no card, rather than one it could not read:
         there the whole model is host-resident and takes no VRAM credit.
 
-        UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright, so a user who accepts the
-        paging can still load a variant the picker offers.
+        UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright. DEPRECATED: it was the opt-out
+        back when this refused a load, and now that nothing is refused its only
+        remaining effect is to silence the warning. Still honoured so existing scripts
+        and docs keep working.
 
         ``avail_mib`` overrides the host figure for a caller that runs before the resident
         owners are released; the launch reads what is available now. ``shared_gpu_ids``
@@ -9031,10 +9039,14 @@ class LlamaCppBackend:
         avail_mib: Optional[int],
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[str]:
-        """On a unified-memory APU, return a user-facing refusal when the weights
-        cannot fit in available system RAM (else None). Weights only: KV/context
-        auto-reduce, so counting them too would refuse loads that would succeed.
-        None avail (unknown RAM) never refuses."""
+        """On a unified-memory APU, return a user-facing WARNING when the weights
+        do not fit in available system RAM (else None). Weights only: KV/context
+        auto-reduce, so counting them too would warn about loads that are fine.
+        None avail (unknown RAM) never warns.
+
+        Advisory, never a refusal. The load goes ahead and llama.cpp reports whatever
+        actually happens, rather than Studio predicting a failure and pre-empting it.
+        """
         if avail_mib is None:
             return None
         need_mib = model_size_bytes / (1024 * 1024)
@@ -9043,9 +9055,10 @@ class LlamaCppBackend:
         return (
             f"This model needs about {need_mib / 1024:.0f} GB but only about "
             f"{avail_mib / 1024:.0f} GB of memory is available. On a unified-memory "
-            "APU the weights load into system RAM, so a larger model is stopped by "
-            "the OS mid-load. Use a smaller or more quantized GGUF, or free memory "
-            "(on WSL, raise the memory limit in .wslconfig)."
+            "APU the weights load into system RAM, so the OS may stop the load. "
+            "Loading anyway. If it does not complete, use a smaller or more "
+            "quantized GGUF, or free memory (on WSL, raise the memory limit in "
+            ".wslconfig)."
         )
 
     @staticmethod
@@ -9054,12 +9067,17 @@ class LlamaCppBackend:
         avail_mib: Optional[int],
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[str]:
-        """On a discrete GPU, return a user-facing refusal when the part of a load
-        that misses VRAM cannot fit in available system RAM (else None). The spill is
-        mmap'd, so an oversized one thrashes the mapping instead of failing, until the
-        OS kills the app. Priced against free VRAM with no margin subtracted, so it
-        under-states the spill and only an unambiguous shortfall refuses. None avail
-        (unknown RAM), and anything VRAM-resident, never refuse."""
+        """On a discrete GPU, return a user-facing WARNING when the part of a load
+        that misses VRAM does not fit in available system RAM (else None). Priced
+        against free VRAM with no margin subtracted, so it under-states the spill and
+        only an unambiguous shortfall warns. None avail (unknown RAM), and anything
+        VRAM-resident, never warn.
+
+        Advisory, never a refusal. The spill is mmap'd, so the weights page in from
+        disk rather than failing to load: on fast storage that is a deliberate way to
+        run a quant larger than the machine's fast memory, and this check has no idea
+        how fast the backing store is. It reports the cost; the user decides.
+        """
         if offload_bytes <= 0 or avail_mib is None:
             return None
         need_mib = offload_bytes / (1024 * 1024)
@@ -9073,10 +9091,38 @@ class LlamaCppBackend:
             f"from system RAM. Only about {avail_mib / 1024:.0f} GB is available and "
             f"{headroom_mib / 1024:.0f} GB of that is kept free for the rest of the "
             f"system, leaving about {usable_gb} GB usable. The weights are memory-mapped, "
-            "so the machine pages them in and out until it stops responding and the OS "
-            "kills the app. Use a smaller or more quantized GGUF, free memory, or set "
-            "UNSLOTH_ALLOW_HOST_OFFLOAD=1 to load it anyway."
+            "so the machine pages them in from disk as it runs. Loading anyway: expect "
+            "slow generation, and slower still on a hard disk than on an SSD. A smaller "
+            "or more quantized GGUF, or more free memory, would run faster."
         )
+
+    @property
+    def last_load_warning(self) -> Optional[str]:
+        """Advisory notice from the most recent load, or None. Read by the route."""
+        return self._last_load_warning
+
+    def _begin_load_warnings(self) -> None:
+        """Drop the previous load's advisory notice.
+
+        Called at the point a load commits to a launch. Without it a warned load
+        followed by a comfortable one would report the first load's notice against the
+        second, which reads as a bug in whichever model happened to be second.
+        """
+        self._last_load_warning = None
+
+    def _record_load_warning(self, message: Optional[str]) -> None:
+        """Log an advisory memory notice and keep it for the route to hand back.
+
+        Deliberately never raises. These notices replace what used to be a refusal:
+        an oversized GGUF mmaps and pages from disk instead of failing, so the load is
+        the user's call to make. First notice of a load wins, since the earliest one
+        priced the whole pool while later ones see a narrowed selection.
+        """
+        if not message:
+            return
+        logger.warning(message)
+        if self._last_load_warning is None:
+            self._last_load_warning = message
 
     def _fits_without_paging(
         self,
@@ -11377,24 +11423,24 @@ class LlamaCppBackend:
             logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
         return None
 
-    def host_offload_refusal_for_intent(self, intent) -> Optional[str]:
-        """The host-RAM verdict for a resolved load intent, or None.
+    def host_offload_warning_for_intent(self, intent) -> Optional[str]:
+        """The host-RAM advisory for a resolved load intent, or None.
 
-        ``_launch_host_shortfall_message`` stays authoritative, since it reads the finished
-        argv, but it runs after the ROUTE has evicted a resident Images/Video pipeline via
-        ``acquire_for(CHAT)`` and cancelled the running generations. Asking here first spares
-        both, exactly as the non-chat header check above does.
+        Advisory, never a refusal: the route logs this and loads anyway. Asking here
+        rather than only at launch means the notice can be attached to the load
+        response, since ``_launch_host_shortfall_message`` runs deep inside
+        ``load_model`` after the ROUTE has evicted a resident Images/Video pipeline via
+        ``acquire_for(CHAT)`` and cancelled the running generations.
 
         Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
         resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
         a host KV cache, CPU-offloaded weights and locked mappings, host RAM as well, and the
         route and ``load_model`` reclaim all of it after this runs. Pricing against the free
-        readings would refuse a switch to a model the reclaimed machine holds easily. Each
+        readings would warn about a switch to a model the reclaimed machine holds easily. Each
         total is the ceiling on what the launch can ever see, and every narrowing the launch
         applies to the pool (the ROCm arch gate, the Vulkan discrete preference, a ``gpu_ids``
         pin) only shrinks it further, so this charges no more than the launch copy and can
-        refuse nothing the launch would allow. What survives is the pick no reclaim can
-        rescue, which is the one worth catching before the teardown.
+        warn about nothing the launch would call comfortable.
 
         Only a local path is priced. An HF repo may not be downloaded yet, and resolving one
         here would start a download the route has not committed to.
@@ -16044,6 +16090,7 @@ class LlamaCppBackend:
         load_cancel_event: Optional[threading.Event] = None,
     ) -> bool:
         """Start llama-server from one immutable load intent."""
+        self._begin_load_warnings()
 
         def _load_cancelled() -> bool:
             return self._cancel_event.is_set() or bool(
@@ -19395,20 +19442,19 @@ class LlamaCppBackend:
                     # gpu_indices is None for a launch nothing pinned, so the guard
                     # priced every visible card, including an APU the gate is about to
                     # drop and whose shared pool the narrowed child never touches.
-                    # Re-ask for the set the child will actually see. Refusal branch
+                    # Re-ask for the set the child will actually see. Warned branch
                     # only, so a passing launch pays for no probe; an empty answer
-                    # keeps the refusal.
+                    # keeps the warning.
                     if _ram_msg and gpu_indices is None and not gpu_ids:
                         _gated_pin = self._arch_gate_survivors(binary)
                         if _gated_pin and not self._amd_apu_wants_unified_memory(_gated_pin):
                             logger.info(
-                                "Skipping the APU RAM refusal: the arch gate pins "
+                                "Skipping the APU RAM warning: the arch gate pins "
                                 "this launch to discrete GPU(s) %s.",
                                 _gated_pin,
                             )
                             _ram_msg = None
-                    if _ram_msg:
-                        raise RuntimeError(_ram_msg)
+                    self._record_load_warning(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names. A projector passed only via
@@ -20907,8 +20953,7 @@ class LlamaCppBackend:
                     ),
                     shared_gpu_ids = _shared_gpu_ids,
                 )
-                if _offload_msg:
-                    raise RuntimeError(_offload_msg)
+                self._record_load_warning(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
@@ -21538,26 +21583,23 @@ class LlamaCppBackend:
                         # selection, discrete on this arm by construction, so it never
                         # fired. The mirror shape (crash on the dGPU, retry on the
                         # unified-memory sibling) makes the respawn the first load into
-                        # system RAM. Unchecked, an oversized GGUF is OOM-killed
-                        # mid-load instead of getting the refusal the same host gives
-                        # when the APU is picked first.
+                        # system RAM, so price it here too and say so. Advisory only:
+                        # the respawn goes ahead either way.
                         if model_size is not None and _retry_wants_unified:
-                            _retry_ram_msg = self._apu_ram_shortfall_message(
-                                model_size + _mmproj_pinned_bytes,
-                                self._available_system_memory_mib(),
+                            self._record_load_warning(
+                                self._apu_ram_shortfall_message(
+                                    model_size + _mmproj_pinned_bytes,
+                                    self._available_system_memory_mib(),
+                                )
                             )
-                            if _retry_ram_msg:
-                                self._kill_process()
-                                raise RuntimeError(_retry_ram_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
-                        _retry_offload_msg = self._launch_host_shortfall_message(
-                            cmd,
-                            [row for row in _detected_gpus if row[0] in set(_remaining)],
-                            env,
+                        self._record_load_warning(
+                            self._launch_host_shortfall_message(
+                                cmd,
+                                [row for row in _detected_gpus if row[0] in set(_remaining)],
+                                env,
+                            )
                         )
-                        if _retry_offload_msg:
-                            self._kill_process()
-                            raise RuntimeError(_retry_offload_msg)
                         logger.warning(
                             f"llama-server crashed with a HIP kernel-image error on "
                             f"GPU(s) {_crashed} -- the llama.cpp build has no kernels "
