@@ -396,13 +396,16 @@ def test_studio_evaluated_unions_do_not_grow():
     # Name the files that are NEW against the recorded set, not the whole list. A bare
     # count told you only that 37 exceeded 35, and the full list was truncated at 2000
     # chars, so finding the two additions meant re-running the scan on an older checkout
-    # and diffing by hand. The count still governs the assertion, so a swap (one file
-    # fixed, one added) cannot slip through on set membership alone.
+    # and diffing by hand. Membership governs the assertion alongside the count: a swap
+    # that fixes one recorded file and adds one new one leaves the count equal, so a
+    # count alone would pass it, and the new file is the one thing this test exists to
+    # stop. The count stays because it also catches net growth that adds nothing new,
+    # which happens when a recorded file is fixed without being dropped from the list.
     added = [p for p in offenders if p not in STUDIO_UNION_DEBT_FILES]
     removed = [p for p in sorted(STUDIO_UNION_DEBT_FILES) if p not in offenders]
-    assert len(offenders) <= len(STUDIO_UNION_DEBT_FILES), (
-        f"{len(offenders)} studio files now evaluate PEP 604 unions on the floor, up from "
-        f"{len(STUDIO_UNION_DEBT_FILES)}. Add `from __future__ import annotations` to "
+    assert not added and len(offenders) <= len(STUDIO_UNION_DEBT_FILES), (
+        f"{len(offenders)} studio files now evaluate PEP 604 unions on the floor, against "
+        f"{len(STUDIO_UNION_DEBT_FILES)} recorded. Add `from __future__ import annotations` to "
         "these, do not raise the ratchet:\n  "
         + "\n  ".join(added or offenders)
         + (
