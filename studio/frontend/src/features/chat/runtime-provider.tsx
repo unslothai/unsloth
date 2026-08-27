@@ -94,6 +94,7 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationNeedsRecovery,
+  isLiveGenerationRun,
   generationRawContent,
   loadGenerationOverlaySnapshot,
   recoveredContentToImport,
@@ -743,6 +744,11 @@ function scheduleGenerationRecovery(
   const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
   const runId = metadata.generationRunId;
   if (typeof runId !== "string" || !generationNeedsRecovery(metadata)) return;
+  // This tab is streaming the run itself. Following it from storage as well gives the reply
+  // two writers, and the follower is always behind, so it imports a lagging prefix over the
+  // live text. It also costs a PUT and a full re-parse per chunk against the same backend the
+  // model is saturating.
+  if (isLiveGenerationRun(runId)) return;
   const existingRecovery = generationRecoveries.get(runId);
   if (existingRecovery) {
     existingRecovery.views.add(aui);
