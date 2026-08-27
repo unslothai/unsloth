@@ -69,7 +69,12 @@ def _shadowed_name(path: str) -> str:
 
 
 def drop_shadowed_appledouble_names(
-    files: list[str], *, subject_key: Callable[[str], object] | None = None
+    # Optional[...] rather than `| None`: this module has no `from __future__ import
+    # annotations`, so its annotations are evaluated at import, and PEP 604 unions are a
+    # TypeError on the declared 3.9 floor. tests/test_python39_compatibility.py gates it.
+    files: list[str],
+    *,
+    subject_key: Optional[Callable[[str], object]] = None,
 ) -> list[str]:
     """*files* without the ``._`` entries whose subject is present in the same listing.
 
@@ -130,6 +135,65 @@ def normalize_path(path: str) -> str:
 
     # Already Unix-style or relative
     return path.replace("\\", "/")
+
+
+def wsl_automount_root() -> str:
+    """DrvFs root WSL maps Windows drives under, with a trailing slash.
+
+    Set via ``/etc/wsl.conf`` ``[automount] root``, so hard-coding ``/mnt/``
+    mistranslates drive paths on a host that moved it (``root = /`` puts C: at ``/c/``).
+    """
+    default = "/mnt/"
+    if not _IS_WSL:
+        return default
+    try:
+        import configparser
+
+        parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
+        parser.read("/etc/wsl.conf", encoding = "utf-8")
+        root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
+    except Exception:
+        return default
+    if not root:
+        return default
+    return root if root.endswith("/") else f"{root}/"
+
+
+_WSL_AUTOMOUNT_ROOT: str = wsl_automount_root()
+
+
+def _looks_windows_shaped(path: str) -> bool:
+    """True for a drive-letter path (``C:\\x``, ``c:/x``) or a UNC path (``\\\\host\\share``)."""
+    if path.startswith("\\\\"):
+        return True
+    return len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/")
+
+
+def host_normalize_path(path: str) -> str:
+    """Normalize a path this process is about to open, honouring ``[automount] root``.
+
+    Not :func:`normalize_path`: that hard-codes ``/mnt/`` to predict where the model
+    *loader* will look, while a path read from another tool's config is stat-ed here.
+
+    Separators are rewritten only when the path is Windows-shaped, or on Windows itself
+    where a backslash cannot be anything else. Everywhere else, WSL included, a path that
+    names no drive is a POSIX path, and a backslash in it is a legal filename character:
+    rewriting it would silently lose a directory that has one in its name.
+    """
+    if not path:
+        return path
+
+    if _looks_windows_shaped(path):
+        if _IS_WSL and path[1:2] == ":":
+            drive = path[0].lower()
+            rest = path[3:].replace("\\", "/")
+            return f"{_WSL_AUTOMOUNT_ROOT}{drive}/{rest}"
+        return path.replace("\\", "/")
+
+    if os.name == "nt":
+        return path.replace("\\", "/")
+
+    return path
 
 
 def is_local_path(path: str) -> bool:

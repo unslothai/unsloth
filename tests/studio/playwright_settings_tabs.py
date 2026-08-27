@@ -40,7 +40,9 @@ TABS = [
     "connections",
     "data",
     "api-keys",
+    "remote-lan",
     "agents",
+    "keyboard-shortcuts",
     "debugging",
     "about",
 ]
@@ -163,7 +165,7 @@ def click_tab_and_observe(page, tab: str) -> dict:
 def require_harness(page) -> None:
     """Fail with the cause rather than a selector timeout if the page has moved on.
 
-    Vite dev proxies /api to 127.0.0.1:8888. With a real Studio listening there and no
+    Vite dev proxies /api to 127.0.0.1:8888. With a real Unsloth listening there and no
     token, those calls come back 401 and the app's auth handling navigates, which takes
     the harness's window with it. Every later step then times out on a dialog that cannot
     exist. This is not the dialog's doing: it happens on main too, where the harness is
@@ -172,7 +174,7 @@ def require_harness(page) -> None:
     if not page.evaluate("() => !!window.__settingsSmoke"):
         raise RuntimeError(
             "the harness page is gone (window.__settingsSmoke undefined). This smoke page "
-            f"is served by vite on {PORT} and proxies /api to 127.0.0.1:8888; a Studio "
+            f"is served by vite on {PORT} and proxies /api to 127.0.0.1:8888; an Unsloth "
             "listening there answers 401 and the app navigates away. Run this without a "
             "backend on 8888."
         )
@@ -275,6 +277,17 @@ def run_chunk_fail(page) -> None:
     settle_panel(page)
     click_forced(page.locator('[data-testid="settings-tab-general"]'), timeout = 15000)
     settle_panel(page)
+    # Read the nav size instead of hardcoding it. The invariant is that blocking a
+    # panel does not collapse the dialog, not that the dialog has any particular
+    # number of tabs -- and the hardcoded 12 outlived its truth: the
+    # keyboard-shortcuts page made it 13 and this smoke started failing with
+    # "took the dialog down" while reporting dialog: True, which reads like an
+    # error-handling regression and was a stale constant.
+    nav_before = page.evaluate(
+        "() => document.querySelectorAll('[data-testid^=\"settings-tab-\"]').length"
+    )
+    if nav_before < 2:
+        fail(f"the settings nav was already empty before blocking anything ({nav_before})")
     click_forced(page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]'), timeout = 15000)
     page.wait_for_timeout(3000)
     state = page.evaluate(
@@ -305,8 +318,11 @@ def run_chunk_fail(page) -> None:
             f"blocking the {CHUNK_FAIL} panel unmounted the app: the throw reached the "
             "harness root boundary, and the real app has none"
         )
-    if not state["dialog"] or state["nav"] != 12:
-        fail(f"blocking the {CHUNK_FAIL} panel took the dialog down ({state})")
+    if not state["dialog"] or state["nav"] != nav_before:
+        fail(
+            f"blocking the {CHUNK_FAIL} panel took the dialog down "
+            f"(nav was {nav_before} before, {state})"
+        )
     else:
         log("the dialog and its twelve nav entries survived")
     # Another tab must still work.

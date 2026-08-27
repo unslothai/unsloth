@@ -126,7 +126,7 @@ def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> str:
 
     Always a name, never None, so "detect" and "chosen" can never be confused.
     A value this build does not recognize is returned verbatim: it was written by
-    a newer Studio, and every reader here treats it as a choice to leave alone
+    a newer Unsloth, and every reader here treats it as a choice to leave alone
     rather than as an absent one to overwrite.
     """
     if not marker:

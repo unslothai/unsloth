@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-GPU arbiter for Studio's heavy GPU consumers.
+"""Single-GPU arbiter for Unsloth's heavy GPU consumers.
 
 The chat backends, diffusion, and video share one GPU. Before taking it each calls
 ``acquire_for(owner)``, which evicts the current other owner so two large models never sit in VRAM
@@ -67,7 +67,20 @@ def _evict_video() -> None:
 _EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
 
 
-def acquire_for(owner: str, register: Optional[Callable[[], Any]] = None) -> Any:
+class GpuOwnerBusyError(RuntimeError):
+    """Raised when an ownership transfer is configured to refuse eviction."""
+
+    def __init__(self, owner: str):
+        self.owner = owner
+        super().__init__(f"GPU is owned by {owner}")
+
+
+def acquire_for(
+    owner: str,
+    register: Optional[Callable[[], Any]] = None,
+    *,
+    allow_evict: bool = True,
+) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
 
     ``register``, if given, runs under the arbiter lock right after ownership transfers and its
@@ -81,6 +94,8 @@ def acquire_for(owner: str, register: Optional[Callable[[], Any]] = None) -> Any
         raise ValueError(f"unknown GPU owner: {owner!r}")
     with _lock:
         if _owner is not None and _owner != owner:
+            if not allow_evict:
+                raise GpuOwnerBusyError(_owner)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
         _owner = owner

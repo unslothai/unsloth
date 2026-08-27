@@ -106,6 +106,16 @@ def set_lan_connector_active(active: bool) -> None:
     _lan_connector_active = bool(active)
 
 
+def tunnel_connector_active() -> bool:
+    """True while a tunnel is publishing this server past the local network."""
+    return _remote_connector_active
+
+
+def lan_connector_active() -> bool:
+    """True while a runtime LAN listener is serving the local network."""
+    return _lan_connector_active
+
+
 def remote_connector_active() -> bool:
     """True while any connector can carry a request from beyond loopback."""
     return _remote_connector_active or _lan_connector_active

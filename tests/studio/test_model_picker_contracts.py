@@ -13,6 +13,7 @@ backend pytest checks (which prove the backend logic).
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -43,10 +44,139 @@ def _split_args(captured: str) -> list[str]:
     return args
 
 
+def _code_only(source: str) -> str:
+    """``source`` with comments removed and whitespace collapsed.
+
+    A name discussed in prose is not a call. This file's own comments name the
+    functions they explain, so a scan that skipped this would match the sentence.
+    """
+    source = re.sub(r"/\*.*?\*/", " ", source, flags = re.S)
+    source = re.sub(r"//[^\n]*", " ", source)
+    return " ".join(source.split())
+
+
+def _call_arguments(text: str, callee: str) -> list[str]:
+    """The argument text of each ``callee(...)`` call in ``text``, parens balanced.
+
+    Per call, so a contract about what every call passes cannot be satisfied by a
+    matching property somewhere else in the file, nor broken by one. An optional
+    generic parameter list is skipped, since ``f<string>(...)`` is the same call.
+    """
+    calls = []
+    for match in re.finditer(rf"\b{re.escape(callee)}\s*(?:<[^>]*>)?\s*\(", text):
+        depth, start = 0, match.end() - 1
+        for index in range(start, len(text)):
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    calls.append(text[start + 1 : index])
+                    break
+        else:
+            raise AssertionError(f"unbalanced parentheses after {callee} at {start}")
+    return calls
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
     return path.read_text(encoding = "utf-8")
+
+
+# The frontend greps below have no parser to hand. The backend does, and a rule read out
+# of the parse tree survives the edits that are not about it: a formatter that splits a
+# set literal one name per line, a reordering, a renamed neighbour. Each helper raises
+# rather than returning empty when it cannot find what it was pointed at, so a rule that
+# moves reddens here instead of passing vacuously.
+def _backend_function(rel: str, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """The definition of ``name`` in backend file ``rel``."""
+    tree = ast.parse(_read_backend(rel), filename = rel)
+    found = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+    assert len(found) == 1, f"{rel} defines {len(found)} functions named {name}, want 1"
+    return found[0]
+
+
+def _backend_class(rel: str, name: str) -> ast.ClassDef:
+    """The definition of class ``name`` in backend file ``rel``."""
+    tree = ast.parse(_read_backend(rel), filename = rel)
+    found = [
+        node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == name
+    ]
+    assert len(found) == 1, f"{rel} defines {len(found)} classes named {name}, want 1"
+    return found[0]
+
+
+def _model_dump_exclusions(rel: str, function: str) -> set[str]:
+    """The names the one ``model_dump(exclude = {...})`` inside ``function`` leaves out.
+
+    Exactly one such call, or the answer would be a union across calls and dropping a
+    name from the one that matters could hide behind another.
+    """
+    excluded: list[set[str]] = []
+    for node in ast.walk(_backend_function(rel, function)):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "model_dump"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "exclude":
+                continue
+            assert isinstance(keyword.value, ast.Set), f"{function}: exclude is not a set literal"
+            names = {
+                element.value
+                for element in keyword.value.elts
+                if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            }
+            assert len(names) == len(
+                keyword.value.elts
+            ), f"{function}: exclude holds a name this check cannot read statically"
+            excluded.append(names)
+    assert (
+        len(excluded) == 1
+    ), f"{rel}:{function} has {len(excluded)} model_dump(exclude = ...) calls, want 1"
+    return excluded[0]
+
+
+def _annotated_field(rel: str, class_name: str, field: str) -> tuple[str, object]:
+    """``(annotation, default)`` for ``field: <annotation> = <default>`` on ``class_name``."""
+    for statement in _backend_class(rel, class_name).body:
+        if not isinstance(statement, ast.AnnAssign):
+            continue
+        if not (isinstance(statement.target, ast.Name) and statement.target.id == field):
+            continue
+        assert isinstance(
+            statement.value, ast.Constant
+        ), f"{class_name}.{field} no longer defaults to a literal"
+        return ast.unparse(statement.annotation), statement.value.value
+    raise AssertionError(f"{rel}:{class_name} declares no field named {field}")
+
+
+def _forwarded_keywords(rel: str, function: str, obj: str) -> set[str]:
+    """Keyword arguments passed as ``name = <obj>.name`` anywhere inside ``function``.
+
+    Same name on both sides, so this says the value reached the callee unmodified and
+    under its own name, which is the part a caller downstream depends on.
+    """
+    forwarded = set()
+    for node in ast.walk(_backend_function(rel, function)):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            value = keyword.value
+            if (
+                keyword.arg
+                and isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == obj
+                and value.attr == keyword.arg
+            ):
+                forwarded.add(keyword.arg)
+    return forwarded
 
 
 def _brace_matched_body(text: str, declaration: str) -> str:
@@ -115,6 +245,45 @@ def test_model_config_page_floors_the_context_ceiling():
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" in src
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
+
+
+def test_auto_offload_context_matches_picker_custom_seed():
+    """Custom's safe seed must track the backend Auto offload context."""
+    frontend = _read("features/model-picker/components/model-config-page.tsx")
+    backend = _read_backend("core/inference/llama_cpp.py")
+    frontend_value = re.search(r"\bAUTO_OFFLOAD_CONTEXT_LENGTH\s*=\s*(\d+)", frontend)
+    backend_value = re.search(r"\b_AUTO_OFFLOAD_CTX\s*=\s*(\d+)", backend)
+    assert frontend_value is not None
+    assert backend_value is not None
+    assert frontend_value.group(1) == backend_value.group(1)
+
+
+def test_ui_safe_zone_anchor_tracks_the_auto_offload_context():
+    """The published ceiling and the context Auto runs must come from one constant.
+
+    ``max_context_length`` is the threshold the chat settings sheet warns above.
+    When no GPU subset fits, Auto runs at ``_AUTO_OFFLOAD_CTX`` and the ceiling is
+    anchored in the same branch. A literal there drifts the moment the constant
+    moves, and the symptom is every Auto load warning about a context Auto chose
+    for itself, so pin the reference rather than the value.
+    """
+    backend = _read_backend("core/inference/llama_cpp.py")
+    anchor = re.search(
+        r"max_available_ctx\s*=\s*min\(\s*([A-Za-z_0-9]+)\s*,\s*native_ctx_for_cap",
+        backend,
+    )
+    assert anchor is not None, "the no-fit UI safe-zone anchor moved or was renamed"
+    assert anchor.group(1) == "_AUTO_OFFLOAD_CTX"
+
+
+def test_auto_offload_context_is_not_below_the_fit_floor():
+    """Raising the Auto offload context is placement-neutral only above the fit
+    floor: below it, the offload re-check starts awarding GPU residency again."""
+    backend = _read_backend("core/inference/llama_cpp.py")
+    auto = re.search(r"\b_AUTO_OFFLOAD_CTX\s*=\s*(\d+)", backend)
+    floor = re.search(r"\b_FIT_MIN_CTX\s*=\s*(\d+)", backend)
+    assert auto is not None and floor is not None
+    assert int(auto.group(1)) >= int(floor.group(1))
 
 
 def test_compare_load_clears_stale_native_lease():
@@ -893,11 +1062,7 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     """An explicit customContextLength that equals the native ceiling is still a user
     override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert (
-        "const contextAtDefault = !target.isGguf || "
-        "(config.customContextLength == null && "
-        "(nativeContextLength == null || contextValue === nativeContextLength));" in src
-    )
+    assert "const contextAtDefault = !target.isGguf || config.customContextLength == null;" in src
     # The old form that ignored an explicit pin equal to native must not return.
     assert (
         "(nativeContextLength == null ? config.customContextLength == null : "
@@ -1082,7 +1247,7 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
 def test_legacy_migration_is_idempotent_and_non_destructive():
     """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
     is invoked on every store read, so it must be idempotent: repeated reads, browser
-    reloads, and Studio restarts must never re-migrate, duplicate records, or overwrite
+    reloads, and Unsloth restarts must never re-migrate, duplicate records, or overwrite
     a newer per-model config."""
     raw = _read("features/model-picker/model-config/per-model-config.ts")
     src = " ".join(raw.split())
@@ -2218,7 +2383,21 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     # A swap under this tab resets the controls too, but through the seed, not a blanket
     # null after it: the batch echo is the REQUESTED size, so clearing it here would also
     # discard the value just adopted from the new model and revert it on the next Reload.
-    assert status.count("modelChanged: slotsModelChanged,") == 2
+    # EVERY seed is told the same thing from the same local, so none of them can drift
+    # apart. Checked per call site rather than as a count: the llama-server tuning knobs
+    # deliberately reuse this seed, so a hardcoded number fails the next time the group
+    # grows while saying nothing about drift, and a whole-file count of `modelChanged`
+    # would both break on an unrelated one elsewhere and let an unrelated one stand in
+    # for a seed that omitted the property.
+    # Comments stripped first: this file discusses `resolveBatchSizeSeed (modelChanged)`
+    # in prose, and a scan that counted that sentence as a call site would fail on a
+    # wording change.
+    seed_args = _call_arguments(_code_only(src), "resolveBatchSizeSeed")
+    assert len(seed_args) >= 2, "the batch pair alone should be two seeds"
+    for args in seed_args:
+        assert (
+            "modelChanged: slotsModelChanged," in args
+        ), f"a resolveBatchSizeSeed call is not told modelChanged from slotsModelChanged: {args}"
     assert "{ nBatch: null, nUbatch: null }" not in status
     # The remembered override is re-adopted only when the echo proves it.
     assert (
@@ -2443,7 +2622,7 @@ def test_api_reach_copy_is_limited_to_gguf_models():
     GGUFs only."""
     src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
     assert "{(target.apiLoadable ?? target.isGguf)" in src
-    assert "Saved settings apply everywhere Studio loads this model." in src
+    assert "Saved settings apply everywhere Unsloth loads this model." in src
 
 
 def test_backfill_includes_a_standalone_gguf_with_no_variant():
@@ -2486,7 +2665,7 @@ def test_override_writes_are_ordered_per_model():
 
 
 def test_backfill_skips_future_schema_local_records():
-    """loadPerModelConfig refuses to apply a record written by a newer Studio and eviction
+    """loadPerModelConfig refuses to apply a record written by a newer Unsloth and eviction
     refuses to drop one, because this client cannot interpret that schema."""
     src = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     listing = src[src.index("export function listPerModelConfigs()") :]
@@ -2658,11 +2837,18 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
     # Ordinary saves must stay unconditional, or a settings edit would never land.
     assert "syncModelOverride" in api and "fill_absent_fields: true" in api
 
-    route = _read_backend("routes/settings.py")
-    assert "fill_absent_fields: bool = False" in route, "the rule this mirrors"
-    assert "fill_absent_fields = payload.fill_absent_fields," in route
+    # Read out of the route's parse tree, not its text. The rule is which names the route
+    # declares, forwards and excludes; a set literal reflowed one name per line by the
+    # formatter, or a name added beside them, is not a change to it.
+    route = "routes/settings.py"
+    handler = "update_openai_auto_switch_override"
+    assert _annotated_field(route, "ModelOverridePayload", "fill_absent_fields") == (
+        "bool",
+        False,
+    ), "the rule this mirrors"
+    assert "fill_absent_fields" in _forwarded_keywords(route, handler, "payload")
     # A write mode must not leak into saved fields, or model_id-only removal stops working.
-    assert '"remove", "fill_absent_fields"' in route
+    assert {"remove", "fill_absent_fields"} <= _model_dump_exclusions(route, handler)
 
     # The merge is the server's, in the write's transaction: a client-side one reopens the race.
     db = _read_backend("storage/studio_db.py")
@@ -2682,8 +2868,14 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     )
     assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
     assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
-    # The loadable identifier, as every other status reader records it.
-    assert "checkpointId: resolveInferenceCheckpointId(status)," in hub
+    # The loadable identifier, as every other status reader records it -- except for a
+    # speech model, which chat cannot adopt at all. speechOnly rides beside the null so
+    # the helper can tell it from the empty slot the idle-unload rule is about.
+    assert (
+        "checkpointId: isSpeechOnlyStatus(status) ? null "
+        ": resolveInferenceCheckpointId(status), "
+        "speechOnly: isSpeechOnlyStatus(status)," in hub
+    )
     assert "setCheckpoint(status.active_model" not in hub
     chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert "return status.model_identifier ?? status.active_model;" in chat, "the rule this mirrors"
@@ -2910,7 +3102,9 @@ def test_an_empty_status_is_read_against_the_idle_unload_setting():
     # A failed read keeps the last answer. The default is disarmed, which is the side
     # that clears the checkpoint, so falling back to it would drop a live selection.
     assert ".catch(() => idleUnloadArmed.current)" in hub
-    assert "if (state.idleUnloadArmed) { return false; }" in adopt
+    # An Audio load taking the single slot is not an idle eviction: nothing stashes the
+    # chat model, so the exemption must not swallow that case.
+    assert "if (state.idleUnloadArmed && !status.speechOnly) { return false; }" in adopt
     assert "actions.clearCheckpoint?.();" in adopt
 
 
@@ -3186,7 +3380,7 @@ def test_autoload_local_rows_follow_the_picker_policy():
 
 
 def test_default_model_download_is_visible_and_cancellable():
-    """On a genuinely empty device Studio still fetches a model, but as a managed
+    """On a genuinely empty device Unsloth still fetches a model, but as a managed
     download with progress and a Cancel, never an inline pull inside /load."""
     src = _read("features/chat/api/chat-adapter.ts")
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
@@ -3255,16 +3449,22 @@ def test_indexed_local_loads_are_remembered_without_bypassing_leases():
     assert "token" not in store.lower().replace("isPathLikeId", "")
 
 
-def test_autoload_skips_image_and_video_rows():
-    """The backend tags a row with a task only for image/video models, and the
-    picker routes those away on click. A background load has no routing step."""
+def test_autoload_skips_rows_chat_cannot_answer():
+    """The backend tags a row with a task only for the models that own another page,
+    and the picker routes those away on click. A background load has no routing step.
+    The audio tasks are here because the chat route answers a turn on a speech model by
+    synthesizing the prompt rather than refusing it, so nothing downstream catches it."""
     src = _read("features/chat/api/chat-adapter.ts")
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-to-image"' in tasks
     assert '"text-to-video"' in tasks
     assert '"image-diffusion-unsupported"' in tasks
+    assert '"text-to-speech"' in tasks
+    assert '"text-to-audio"' in tasks
+    assert '"audio-to-audio"' in tasks
+    assert '"automatic-speech-recognition"' in tasks
     policy = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in policy
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in policy
 
 
 def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
@@ -3361,14 +3561,26 @@ def test_variant_scans_take_the_run_signal():
 
 def test_cached_rows_classify_chat_capability_too():
     """The same encoder gate the scan-folder rows get; cached rows built their
-    capabilities from file format alone."""
+    capabilities from file format alone. Both halves are pinned separately, since
+    the gate is now nested rather than one `and`, and the call must read the
+    snapshot the load resolves to rather than any other revision."""
     src = _read_backend("hub/services/models/cache_inventory.py")
     assert "_local_transformers_can_chat" in src
     fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
     assert "can_chat_override" in fields
-    assert (
-        'model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None' in fields
-    )
+    assert 'model_format in {"safetensors", "checkpoint"}' in fields
+    assert "classify_snapshot is not None" in fields
+    assert "_local_transformers_can_chat(classify_snapshot)" in fields
+
+
+def test_cached_codec_evidence_enriches_an_existing_hub_result():
+    """Search results outrank cached metadata, but they must not erase a decoder
+    discovered from the local tokenizer files for the same repo."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    evidence = src.split("const hubEvidenceById = useMemo", 1)[1]
+    evidence = evidence.split("const capsById = useMemo", 1)[0]
+    assert evidence.count("const existing = map.get(c.repo_id);") == 2
+    assert evidence.count("audioType: existing.audioType ?? c.audio_type") == 2
 
 
 def test_every_load_target_comparison_uses_the_same_case_rules():
@@ -3394,16 +3606,16 @@ def test_the_default_variant_lookup_takes_the_run_signal():
     assert helper.index("} catch {") < helper.index("abortSignal?.throwIfAborted();")
 
 
-def test_cached_rows_get_the_same_image_and_video_gate_as_local_rows():
-    """Cached diffusion repos carry their task on the row and report can_chat
-    true on file format alone."""
+def test_cached_rows_get_the_same_non_chat_gate_as_local_rows():
+    """Cached diffusion and speech repos carry their task on the row and report can_chat
+    true on file format alone. Both inventories, or one of them still offers the row."""
     src = _read("features/chat/api/chat-adapter.ts")
     cached = src.split("function isChattableCachedRepo", 1)[1].split("\n}\n", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")' in cached
+    assert 'NON_CHAT_TASKS.has(repo.task ?? "")' in cached
     local = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in local
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in local
     # A chat GGUF is tagged text-generation, so the gate is a list, not "has a task".
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-generation"' not in tasks
 
 
@@ -3460,7 +3672,7 @@ def test_non_chat_conditional_generation_is_excluded_before_the_suffix_check():
 
 def test_format_gates_wait_for_the_server_reported_platform():
     """The store's initial chatOnly is a browser guess: a Mac browser on a remote
-    Linux Studio would hide every local safetensors model."""
+    Linux Unsloth would hide every local safetensors model."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate

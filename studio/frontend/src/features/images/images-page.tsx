@@ -601,7 +601,7 @@ function SliderField({
   );
 }
 
-// Matches the field-label style used across Studio (export/chat settings).
+// Matches the field-label style used across Unsloth (export/chat settings).
 function Field({
   label,
   hint,
@@ -1167,7 +1167,14 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
-export function ImagesPage({ active = true }: { active?: boolean }) {
+export function ImagesPage({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
+  const initialReadySent = useRef(false);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const imageModels = useImageModels(hostClass);
@@ -1761,11 +1768,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     })();
   }, [selected, ensureSrc]);
 
-  useEffect(() => {
-    void loadGallery();
-  }, [loadGallery]);
-
-
   // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
   // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
   // archived image keeps both, since the archived view shows the same thumbnail.
@@ -2088,10 +2090,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Re-sync model status when the tab becomes active: the model may have been evicted while off-tab.
   useEffect(() => {
     if (!active) return;
+    if (initialReadySent.current) {
+      void refreshStatus();
+      return;
+    }
+    let cancelled = false;
     void (async () => {
-      await refreshStatus();
+      await Promise.all([
+        refreshStatus(),
+        (async () => {
+          await loadGallery();
+          const initialSelection =
+            galleryCache.images.find(
+              (image) => image.id === galleryCache.selectedId,
+            ) ?? galleryCache.images[0];
+          if (initialSelection) await ensureSrc(initialSelection);
+        })(),
+      ]);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
     })();
-  }, [active, refreshStatus]);
+    return () => {
+      cancelled = true;
+    };
+  }, [active, ensureSrc, loadGallery, onInitialReady, refreshStatus]);
 
   // Ejected from the loaded models indicator, which does not run handleUnload:
   // without this the controls keep offering to generate on a freed runtime, and
@@ -3547,7 +3570,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               (d) =>
                 [
                   String(d.index),
-                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GB` : ""}`,
+                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GiB` : ""}`,
                 ] as [string, string],
             ),
           ]}

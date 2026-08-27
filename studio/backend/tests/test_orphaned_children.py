@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""No child outlives the Studio that spawned it.
+"""No child outlives the Unsloth that spawned it.
 
 The chain this closes: a tool call runs under a shell wrapper, the kill path
 reaped only the wrapper on Windows, and the orphaned venv python then made
@@ -140,7 +140,7 @@ def test_update_gate_blocks_on_a_single_orphan(tmp_path):
 
 @pytest.mark.skipif(IS_WINDOWS, reason = "contrast case for POSIX")
 def test_update_gate_is_a_noop_on_posix(tmp_path):
-    """On Linux/macOS nothing checks for a running Studio before an update."""
+    """On Linux/macOS nothing checks for a running Unsloth before an update."""
     from unsloth_cli import _studio_runtime_gate
     _studio_runtime_gate.ensure_managed_environment_is_idle(tmp_path / "anything")
 
@@ -190,7 +190,7 @@ def test_macos_style_orphans_are_recorded_and_reaped(tmp_path, monkeypatch):
         record = records / f"{os.getpid()}.json"
         assert record.is_file(), "the child was not recorded"
 
-        # Pretend a previous Studio wrote this and died. The identity is what
+        # Pretend a previous Unsloth wrote this and died. The identity is what
         # decides, not the pid: a dead pid is recycled fast on a busy machine
         # (macOS especially), and an owner whose start time no longer matches is
         # a different process, so its recorded children are orphans.
@@ -230,7 +230,7 @@ def test_liveness_probe_does_not_kill_what_it_probes():
 
 
 def test_a_second_studio_does_not_erase_the_first_record(tmp_path, monkeypatch):
-    """Two Studios can share a home; one record per owner keeps both tracked."""
+    """Two Unsloth instances can share a home; one record per owner keeps both tracked."""
     from utils import process_lifetime as pl
 
     records = tmp_path / "children"
@@ -240,7 +240,7 @@ def test_a_second_studio_does_not_erase_the_first_record(tmp_path, monkeypatch):
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         pl.adopt_pid(child.pid)
-        # A sibling Studio's record, written under its own pid.
+        # A sibling Unsloth's record, written under its own pid.
         import json
 
         other = records / "424242.json"
@@ -261,7 +261,7 @@ def test_a_second_studio_does_not_erase_the_first_record(tmp_path, monkeypatch):
 
 
 def test_a_live_owner_is_never_reaped(tmp_path, monkeypatch):
-    """Two Studios at once must not kill each other's children."""
+    """Two Unsloth instances at once must not kill each other's children."""
     from utils import process_lifetime as pl
 
     monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
@@ -395,7 +395,7 @@ def test_a_group_outliving_its_leader_is_still_reaped(tmp_path, monkeypatch):
 
 
 def test_a_child_sharing_studios_group_is_never_recorded():
-    """Recording that group would make the sweep kill Studio and every sibling."""
+    """Recording that group would make the sweep kill Unsloth and every sibling."""
     from utils import process_lifetime as pl
 
     if pl._is_windows():
@@ -415,7 +415,7 @@ def test_a_child_sharing_studios_group_is_never_recorded():
 def test_ctrl_c_is_passed_on_by_the_console_handler():
     """Ctrl+C and Ctrl+Break must report "not handled" so Python's own signal
     handler still runs. Returning True (or raising inside the ctypes callback,
-    where the BOOL result is then undefined) would leave Studio unstoppable."""
+    where the BOOL result is then undefined) would leave Unsloth unstoppable."""
     import run
 
     assert run._console_event_is_shutdown(0) is False  # CTRL_C_EVENT
@@ -513,7 +513,7 @@ def test_a_confirmed_shutdown_still_clears_the_record(tmp_path, monkeypatch):
 
 
 def test_a_live_owner_survives_an_unreadable_identity(tmp_path, monkeypatch):
-    """A `ps` that failed for a moment must not cost a running Studio its
+    """A `ps` that failed for a moment must not cost a running Unsloth its
     sidecars."""
     import json
 
@@ -542,7 +542,7 @@ def test_a_live_owner_survives_an_unreadable_identity(tmp_path, monkeypatch):
             lambda pid: None if pid == os.getppid() else real(pid),
         )
         assert pl.reap_recorded_children() == []
-        assert child.poll() is None, "a live Studio's child was killed"
+        assert child.poll() is None, "a live Unsloth's child was killed"
     finally:
         _kill(child.pid)
 
@@ -1039,7 +1039,7 @@ def test_a_zombie_owner_does_not_shield_its_children(tmp_path, monkeypatch):
     )
 
     pl.reap_recorded_children(timeout = 1.0)
-    assert terminated == [9501], "a zombie Studio kept its orphans alive"
+    assert terminated == [9501], "a zombie Unsloth kept its orphans alive"
 
 
 def test_a_group_that_cannot_be_taken_keeps_its_record(tmp_path, monkeypatch):
@@ -1721,7 +1721,7 @@ def test_a_validation_server_left_running_stays_recorded(monkeypatch):
 
 
 def test_the_installer_announces_and_groups_its_validation_server():
-    """The other half of the handoff, in the script Studio runs."""
+    """The other half of the handoff, in the script Unsloth runs."""
     source = (Path(__file__).resolve().parents[2] / "install_llama_prebuilt.py").read_text(
         encoding = "utf-8"
     )
