@@ -212,6 +212,99 @@ def clear_bootstrap_password() -> None:
             print(message, file = sys.stderr, flush = True)
 
 
+def _undelivered_credential_path() -> "os.PathLike[str]":
+    """Path of the undelivered-credential sentinel, resolved from DB_PATH.
+
+    Computed per call rather than cached at import so it follows a relocated
+    DB_PATH (tests, UNSLOTH_STUDIO_HOME) exactly as the auth DB does.
+    """
+    return DB_PATH.parent / ".credential_undelivered"
+
+
+def mark_credential_undelivered(username: str) -> None:
+    """Record that the live admin password was committed but never shown.
+
+    Auto-generation commits the new password BEFORE writing it to a console, so a
+    terminal that dies in between leaves a live credential nobody has ever seen.
+    The launch then fails closed -- but on the NEXT launch must_change_password is
+    already 0, so the gate would sail past its checks and publish a Studio that no
+    one, operator included, can log into. This sentinel is what lets the retry see
+    that state and keep failing closed.
+
+    Contents are the committed ``password_hash``: PBKDF2 of a 24-byte urlsafe
+    token, so it is not a credential and grants nothing, but it identifies WHICH
+    password went undelivered. That is what makes the sentinel self-healing --
+    ``unsloth studio reset-password`` (or any later change) rewrites the hash, so
+    the stale sentinel stops matching even if it could not be deleted. A plain
+    existence flag would instead brick every future launch on the one machine
+    where the unlink failed (Windows AV, read-only auth dir).
+
+    Best-effort: the password is already committed, so a write failure must not
+    fail the launch. It only costs the retry its guard, which is exactly today's
+    behaviour, so failing to mark is never worse than not marking at all.
+    """
+    record = None
+    try:
+        record = get_user_and_secret(username)
+    except Exception:
+        record = None
+    if record is None:
+        return
+    path = _undelivered_credential_path()
+    try:
+        ensure_dir(path.parent)
+        path.write_text(record[1], encoding = "utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def clear_credential_undelivered() -> None:
+    """Drop the sentinel once the credential has actually reached the operator.
+
+    Best-effort: a surviving file is not a lockout, because
+    ``credential_undelivered`` also requires the recorded hash to still be the
+    live one, and the operator can change the password to clear it.
+    """
+    try:
+        _undelivered_credential_path().unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
+def credential_undelivered(username: str) -> bool:
+    """True when the live admin password is one that was committed but never shown.
+
+    Requires BOTH the sentinel and a hash match, so it answers "is the CURRENT
+    password the undelivered one?" rather than "did a delivery ever fail?". Any
+    later password change makes it False. A sentinel that cannot be read, is
+    empty (a torn write), or names a superseded hash is stale: delete it and
+    report False, which restores the unguarded behaviour rather than refusing a
+    launch we cannot justify refusing.
+    """
+    path = _undelivered_credential_path()
+    try:
+        if not path.is_file():
+            return False
+        recorded = path.read_text(encoding = "utf-8").strip()
+    except OSError:
+        return False
+    if recorded:
+        try:
+            record = get_user_and_secret(username)
+        except Exception:
+            # Cannot read the admin row to compare. Do not delete the sentinel on
+            # a transient DB error, and do not refuse on an unproven match.
+            return False
+        if record is not None and hmac.compare_digest(recorded, record[1]):
+            return True
+    clear_credential_undelivered()
+    return False
+
+
 def _hash_token(token: str) -> str:
     """SHA-256 hash helper for refresh token storage.
 

@@ -225,6 +225,59 @@ def test_start_cloudflare_tunnel_refuses_without_a_display_channel(monkeypatch):
     assert storage.requires_password_change(admin) is True
 
 
+def test_start_cloudflare_tunnel_refuses_after_an_undelivered_rotation(monkeypatch):
+    # The retry case. A previous run rotated the password and then failed to
+    # render the card, so it refused. must_change_password is 0 now, so every
+    # other check in this path passes and the link would go up for an account
+    # whose password nobody -- operator included -- has ever seen. The sentinel
+    # is the only thing that can still tell.
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda *a, **k: False)
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.trycloudflare.com",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) is None       # first run: refuses
+    assert storage.requires_password_change(admin) is False  # ...but it committed
+    assert storage.credential_undelivered(admin) is True
+
+    assert colab.start_cloudflare_tunnel(8888) is None       # retry: still refuses
+    assert started["called"] is False
+
+
+def test_undelivered_sentinel_clears_on_the_next_password_change(monkeypatch):
+    # Self-healing is what keeps the guard from bricking the install: it matches
+    # on the committed hash, so `unsloth studio reset-password` releases it even
+    # if the sentinel file itself could not be removed.
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda *a, **k: False)
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert storage.credential_undelivered(admin) is True
+
+    storage.update_password(admin, "operator-chosen-123", revoke_refresh_tokens = True)
+    assert storage.credential_undelivered(admin) is False
+
+
+def test_undelivered_sentinel_ignores_a_hash_it_does_not_match():
+    # A leftover file naming a superseded password must not refuse a launch: it
+    # no longer describes the live credential, so it is stale, not a warning.
+    admin = _seed_admin(must_change_password = False)
+    storage.mark_credential_undelivered(admin)
+    assert storage.credential_undelivered(admin) is True
+
+    storage.update_password(admin, "operator-chosen-123", revoke_refresh_tokens = True)
+    storage.mark_credential_undelivered(admin)
+    sentinel = Path(storage._undelivered_credential_path())
+    sentinel.write_text("deadbeef" * 8, encoding = "utf-8")
+    assert storage.credential_undelivered(admin) is False
+    assert sentinel.exists() is False
+
+
 def test_display_channel_active_false_without_a_kernel():
     # The real probe under pytest: IPython may be importable, but there is no
     # ipykernel-backed shell, so the channel must read as inactive.
