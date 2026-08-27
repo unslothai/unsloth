@@ -79,25 +79,22 @@ GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
 # Substring of the picker row for the model whose run settings this drives.
 #
-# Defaulted from GGUF_REPO rather than to a bare family name, and that is not cosmetic:
-# the row lookup takes `.first`, so a hint that also matches a NON-GGUF sibling opens
-# whichever the picker happens to order first. On a cache holding both
-# `gemma-3-270m-it-GGUF` and `gemma-3-270m-it-unsloth-bnb-4bit`, "gemma-3-270m" opened the
-# bnb-4bit safetensors panel -- which has no Context Length control and no memory row at
-# all, because the row is GGUF-only -- and the whole suite then reported the feature
-# missing. The repo's own name cannot collide that way.
+# From GGUF_REPO rather than a bare family name, and not cosmetically: the row lookup
+# takes `.first`, so a hint matching a NON-GGUF sibling opens whichever the picker orders
+# first. On a cache holding both `gemma-3-270m-it-GGUF` and
+# `gemma-3-270m-it-unsloth-bnb-4bit`, "gemma-3-270m" opened the bnb-4bit safetensors
+# panel -- no Context Length control, no memory row, the row being GGUF-only -- and the
+# suite reported the feature missing. The repo's own name cannot collide that way.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT") or GGUF_REPO.rsplit("/", 1)[-1]
-# Context Lengths to drive the four re-prices with. Each has to be valid (>=128, a
-# multiple of 128, under the model's ceiling) and, crucially, DIFFERENT from whatever the
-# control is showing at the time.
+# Context Lengths for the four re-prices. Each must be valid (>=128, a multiple of 128,
+# under the model's ceiling) and DIFFERENT from what the control is showing at the time.
 #
-# That last part is a real property of the control, not a precaution. The box reads "Auto"
-# until it has focus and then reveals the context the load would fit to -- 8192 on
-# gemma-3-270m here -- and typing the number already displayed commits no onChange, so the
-# request key never moves and no re-price happens at all. Measured: typing 8192 into a box
-# showing 8192 produced zero requests and the box fell back to "Auto"; every other value
-# produced one. So the value is chosen at the moment of typing, against what the box says,
-# from this pool rather than fixed per step.
+# That last part is a property of the control, not a precaution: the box reads "Auto"
+# until focused and then reveals the context the load would fit to (8192 here), and
+# typing the number already displayed commits no onChange, so the request key never moves
+# and no re-price happens. Measured: typing 8192 into a box showing 8192 produced zero
+# requests; every other value produced one. Hence chosen at the moment of typing, against
+# what the box says, rather than fixed per step.
 CTX_CANDIDATES = [
     int(part)
     for part in os.environ.get("STUDIO_CTX_CANDIDATES", "6144,5120,4096,3072,2048,1536").split(",")
@@ -679,12 +676,23 @@ with sync_playwright() as p:
             page.wait_for_timeout(200)
         return estimate_visible() == present
 
+    def _readable(raw: str | None) -> str:
+        """`inner_text` with the row's layout glue normalised back to plain spaces.
+
+        The breakdown captions join their items with U+00A0 so a narrow panel breaks
+        between "262,144 tokens" and "4 slots" rather than inside either. That is a
+        line-breaking detail and not something a reader distinguishes, but it does
+        defeat a plain `"6,144 tokens" in text` check, so every assertion below reads
+        the caption the way it looks rather than the way it is encoded.
+        """
+        return (raw or "").replace(" ", " ").strip()
+
     def header_text() -> str:
         button = estimate_button()
         if button is None:
             return ""
         try:
-            return (button.locator("xpath=..").inner_text() or "").strip()
+            return _readable(button.locator("xpath=..").inner_text())
         except Exception:
             return ""
 
@@ -704,7 +712,7 @@ with sync_playwright() as p:
         if _count(panel) == 0:
             return ""
         try:
-            return (panel.inner_text() or "").strip()
+            return _readable(panel.inner_text())
         except Exception:
             return ""
 
@@ -1030,18 +1038,17 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 6. A 404 from a backend predating the route also HIDES it (HARD).
     #
-    # LAST, and it has to be last. A non-OK answer stops the panel re-pricing for the rest
-    # of its life: measured here, after one 404 the Context Length control keeps taking new
-    # values and committing them -- 3072, 2048, 1536, each held by the box -- and NO further
-    # POST /api/inference/estimate-memory is ever made, on any of them. `available: false`
-    # does not do that; the panel re-prices normally after one, which is why the restore
-    # gate above sits with the unavailable case and not with this one.
+    # LAST, and it has to be. A non-OK answer stops the panel re-pricing for the rest of
+    # its life: measured here, after one 404 the Context Length control keeps taking and
+    # committing values -- 3072, 2048, 1536 -- and no further POST is ever made.
+    # `available: false` does not do that, which is why the restore gate above sits with
+    # the unavailable case rather than this one.
     #
-    # It costs nothing in the situation this gate is about, a backend predating the route,
-    # since every answer there would be a 404 anyway and the row is meant to stay hidden.
-    # It is only reachable by an endpoint that fails and then recovers. Ordering around it
-    # rather than asserting it: this suite is about the row, and pinning the freeze here
-    # would be pinning behaviour nobody has decided on.
+    # Harmless in the situation this gate is about, since a backend predating the route
+    # answers 404 to everything and the row is meant to stay hidden; it is only reachable
+    # by an endpoint that fails and then recovers. Ordered around rather than asserted:
+    # this suite is about the row, and pinning the freeze would pin behaviour nobody has
+    # decided on.
     # ─────────────────────────────────────────────────────
     step("HTTP 404 hides the row")
     _mode[0] = "http404"
