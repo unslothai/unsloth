@@ -3189,7 +3189,13 @@ def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avai
     return backend, gguf
 
 
-def _launch_with_vulkan_cpu_replay(backend, gguf, *, crash = True, **load_kwargs):
+def _launch_with_vulkan_cpu_replay(
+    backend,
+    gguf,
+    *,
+    crash = True,
+    **load_kwargs,
+):
     """Every launch that can still reach a GPU dies of a signal, which is what a broken
     Vulkan backend does; only the device-less replay comes up healthy. Written against
     the argv rather than the attempt number so the intermediate rungs (the --flash-attn
@@ -3247,9 +3253,7 @@ def _launch_with_vulkan_cpu_replay(backend, gguf, *, crash = True, **load_kwargs
     return captured
 
 
-def test_a_model_that_fits_vram_but_not_ram_is_warned_once_it_lands_on_cpu(
-    tmp_path, monkeypatch
-):
+def test_a_model_that_fits_vram_but_not_ram_is_warned_once_it_lands_on_cpu(tmp_path, monkeypatch):
     """20 GB of weights on a 24 GB card: nothing spills, so the preflight has nothing
     to say. The Vulkan backend then crashes and the replay runs on no GPU at all, so
     the whole 20 GB has to come out of a 12 GB host and pages from disk for the rest of
@@ -3280,9 +3284,9 @@ def test_a_gpu_placement_warning_does_not_survive_onto_the_cpu_child(tmp_path, m
     _launch_with_vulkan_cpu_replay(backend, gguf)
 
     warning = backend.last_load_warning or ""
-    assert "About 20 GB" in warning, (
-        f"the CPU-only child still reports the dead GPU placement's spill: {warning!r}"
-    )
+    assert (
+        "About 20 GB" in warning
+    ), f"the CPU-only child still reports the dead GPU placement's spill: {warning!r}"
     assert "About 12 GB" not in warning, warning
 
 
