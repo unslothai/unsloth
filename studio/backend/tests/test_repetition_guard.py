@@ -72,3 +72,33 @@ def test_it_fails_open_on_anything_it_cannot_read(value):
 
 def test_a_long_run_of_one_character_is_not_mistaken_for_content():
     assert is_repetition_dominated("x" * 5000)
+
+
+_A_RULE = "-" * 80
+
+
+def test_a_horizontal_rule_does_not_condemn_the_answer_around_it():
+    """Occurrences have to be counted without overlap, or one run counts as many.
+
+    An 80-character rule contains 21 identical 60-character windows, which alone clears
+    `_MIN_REPEAT_COUNT`. The answer it divides is real work, and abandoning it mid-stream
+    over one line of markdown is the failure this guard exists to avoid causing.
+    """
+    text = (
+        "Here is the plan for the game loop, written out before any code so the shape is "
+        "clear.\n" + _A_RULE + "\nThe bird accelerates downward each frame and the pipes "
+        "scroll leftward at a constant rate. Collision runs against a bounding circle, "
+        "which keeps near-misses forgiving. Score increments as the bird passes a pipe's "
+        "trailing edge, and the difficulty ramps by narrowing the gap rather than by "
+        "raising the speed, so the controls stay learnable throughout the run.\n"
+    )
+
+    assert len(text) > MIN_FRAGMENT_LENGTH
+    assert is_repetition_dominated(text) is False
+
+
+def test_a_genuine_echo_of_the_same_window_is_still_caught():
+    """The non-overlap rule must not cost the guard the case it was ported for."""
+    text = "Let me check the file once more to be sure of its contents.\n" * 40
+
+    assert is_repetition_dominated(text) is True

@@ -119,6 +119,20 @@ def _texts(events, kind: str) -> list[str]:
     return [event["text"] for event in events if event.get("type") == kind]
 
 
+
+def _run_no_tools(backend, **kwargs):
+    """Drives the FINAL generation, the pass taken once the tool loop is done."""
+    return list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
+            tools = [],
+            max_tool_iterations = 0,
+            enable_thinking = True,
+            **kwargs,
+        )
+    )
+
+
 def _truncated_thought_then(*later: list[str]) -> list[list[str]]:
     return [
         [_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()],
@@ -353,3 +367,220 @@ def test_a_clean_reasoning_only_stop_is_left_alone(monkeypatch):
     _run(backend)
 
     assert len(payloads) == 1
+
+
+def test_the_final_pass_continues_a_reasoning_only_stop(monkeypatch):
+    """The in-loop continuation cannot reach this pass, which runs after the loop breaks.
+
+    A turn that spends its last permitted tool call, or a one-shot tool that sets
+    `force_final_answer`, produces its answer here. If that generation spends the window
+    thinking, the user gets an empty message and no indication anything went wrong: the
+    exact failure the in-loop continuation exists to prevent, on the path it does not
+    cover.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()],
+            [_sse({"content": "Here is the answer."}), _done()],
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 2, "the final pass returned an empty message"
+    assert payloads[1]["messages"][-1]["role"] == "user"
+    assert payloads[1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "Here is the answer." in "".join(_texts(events, "content"))
+
+
+def test_the_final_pass_says_so_when_thinking_never_converges(monkeypatch):
+    """Giving up silently is the original defect. The user needs something to act on."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()]
+            for _ in range(_MAX_LENGTH_CONTINUATIONS + 2)
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == _MAX_LENGTH_CONTINUATIONS + 1
+    assert "".join(_texts(events, "content")).strip(), "the turn ended showing nothing"
+
+
+def test_a_final_pass_that_answers_is_left_alone(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse({"reasoning_content": _LONG_THOUGHT}),
+                _sse({"content": "Done."}),
+                _finish("stop"),
+                _done(),
+            ]
+        ],
+        payloads,
+    )
+
+    _run_no_tools(backend)
+
+    assert len(payloads) == 1
+
+
+def _effort_backend(monkeypatch, streams, payloads):
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._supports_reasoning = True
+    backend._reasoning_style = "reasoning_effort"
+    return backend
+
+
+def test_an_explicit_effort_does_not_survive_the_continuation(monkeypatch):
+    """For this style an explicit effort WINS over enable_thinking.
+
+    `_request_reasoning_kwargs` returns the caller's "high" and never reaches the
+    enable_thinking branch, so turning thinking off for the retry changed nothing that
+    llama-server could see and the retry re-ran the turn that had just spent the whole
+    window thinking. The second failure then looked identical to the first.
+    """
+
+    payloads: list[dict] = []
+    backend = _effort_backend(
+        monkeypatch,
+        _truncated_thought_then([_sse({"content": "Here is the game."}), _done()]),
+        payloads,
+    )
+
+    _run(backend, reasoning_effort = "high")
+
+    assert payloads[0]["chat_template_kwargs"] == {"reasoning_effort": "high"}
+    # "low", not "none": this style covers models that cannot actually disable
+    # reasoning, and that is the convention the non-continuation path already uses.
+    assert payloads[1]["chat_template_kwargs"] == {"reasoning_effort": "low"}
+
+
+def test_the_caller_effort_comes_back_once_a_turn_gets_somewhere(monkeypatch):
+    """It was dropped to break ONE stall, not for the rest of the request."""
+
+    payloads: list[dict] = []
+    backend = _effort_backend(
+        monkeypatch,
+        [
+            [_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_0",
+                                "type": "function",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": json.dumps({"query": "flappy bird"}),
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _done(),
+            ],
+            [_sse({"content": "Here is the game."}), _done()],
+        ],
+        payloads,
+    )
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "a result",
+    )
+
+    _run(backend, reasoning_effort = "high")
+
+    assert payloads[1]["chat_template_kwargs"] == {"reasoning_effort": "low"}
+    assert payloads[2]["chat_template_kwargs"] == {"reasoning_effort": "high"}
+
+
+def _tool_call_sse(index: int) -> str:
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": f"call_{index}",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": json.dumps({"query": f"q{index}"}),
+                    },
+                }
+            ]
+        }
+    )
+
+
+def test_a_request_that_never_stalls_keeps_the_bound_it_always_had(monkeypatch):
+    """The credit is granted as continuations happen, not reserved up front.
+
+    The loop bound moved from a `range(...)` to an explicit counter to make room for
+    them. A request with no stall must be unaffected by that: same number of model
+    calls, same tool budget, nothing extra.
+    """
+
+    streams = [[_tool_call_sse(i), _done()] for i in range(6)]
+    streams.append([_sse({"content": "Done."}), _done()])
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "a result",
+    )
+
+    _run(backend, max_tool_iterations = 3)
+
+    # Three tool rounds, then the tool-free final pass. Unchanged by the conversion.
+    assert len(payloads) == 4
+
+
+def test_a_stall_does_not_eat_the_tool_budget(monkeypatch):
+    """The defect the credit exists for: at a small budget the retries spent it all.
+
+    Codex's scenario, built literally. `max_tool_iterations=1` and `MAX_ACT_REPROMPTS=3`
+    give the loop five slots. Three plan-without-action turns take three of them, two
+    truncated reasoning turns take the other two, and the model has still not issued its
+    call: control falls through to the tool-free final pass and the action the user asked
+    for is never performed, though no real tool iteration was ever spent.
+    """
+
+    streams = [
+        # Short, with an intent signal and no tool call: each earns a re-prompt. Distinct,
+        # because a nudge that gets the same answer back stops the sequence.
+        [_sse({"content": "I will search for the prices now."}), _done()],
+        [_sse({"content": "I am going to look that up for you."}), _done()],
+        [_sse({"content": "Let me check the current listings."}), _done()],
+        [_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()],
+        [_sse({"reasoning_content": _LONG_THOUGHT + " more"}), _finish("length"), _done()],
+        [_tool_call_sse(0), _done()],
+        [_sse({"content": "Done."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[str] = []
+
+    def _execute(name, arguments, **_kwargs):
+        calls.append(name)
+        return "a result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
+
+    _run(backend, max_tool_iterations = 1, nudge_tool_calls = True)
+
+    assert calls == ["web_search"], "the stall spent the one tool iteration"

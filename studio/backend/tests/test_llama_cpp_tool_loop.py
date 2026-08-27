@@ -6425,3 +6425,101 @@ def test_an_oversized_call_is_run_and_compacted_rather_than_refused(monkeypatch)
     replayed = json.dumps(payloads[-1]["messages"], default = str)
     assert oversized not in replayed, "the arguments were replayed after the call ran"
     assert "arguments you sent" in replayed
+
+
+_BIG_BODY = "<!DOCTYPE html>" + "x" * 9000
+
+
+def _two_edits_in_one_turn():
+    return [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_big",
+                        "type": "function",
+                        "function": {
+                            "name": "edit_file",
+                            "arguments": json.dumps(
+                                {
+                                    "path": "game.html",
+                                    "old_string": "",
+                                    "new_string": _BIG_BODY,
+                                }
+                            ),
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_small",
+                        "type": "function",
+                        "function": {
+                            "name": "edit_file",
+                            "arguments": json.dumps(
+                                {
+                                    "path": "game.html",
+                                    "old_string": "TODO",
+                                    "new_string": "done",
+                                }
+                            ),
+                        },
+                    },
+                ]
+            }
+        ),
+        _done(),
+    ]
+
+
+def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeypatch):
+    """Compaction rebuilds the messages, which silently detaches the local handle.
+
+    The run-then-compact rescue rewrites `conversation` in place. The loop was still
+    holding the assistant message it built BEFORE that, so the next call in the same
+    batch appended its `tool_call` to a dict no longer in the list while its RESULT was
+    appended to the list. The model then received a `tool` message answering a call it
+    could not see, which some templates reject outright and the rest render as an
+    unexplained result.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [_two_edits_in_one_turn(), [_sse({"content": "Done."}), _done()]],
+        payloads,
+    )
+
+    # Price the turn off the replayed JSON: the big call does not fit, the receipt does.
+    def fake_count_chat_tokens(messages, *_args, **_kwargs):
+        return len(json.dumps(messages, default = str)) // 2
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count_chat_tokens)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Wrote game.html",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Write the game"}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tool_iterations = 4,
+        )
+    )
+
+    sent = payloads[-1]["messages"]
+    announced = {
+        call.get("id")
+        for message in sent
+        if message.get("role") == "assistant"
+        for call in (message.get("tool_calls") or [])
+    }
+    answered = {
+        message.get("tool_call_id") for message in sent if message.get("role") == "tool"
+    }
+
+    assert answered, "no tool result reached the model at all"
+    assert answered <= announced, f"results with no visible call: {answered - announced}"
+    # And the compaction still happened: the body is not replayed.
+    assert _BIG_BODY not in json.dumps(sent)

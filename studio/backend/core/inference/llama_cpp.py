@@ -56,6 +56,8 @@ from core.inference.context_window import (
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
     estimate_messages_tokens,
+    _reply_floor,
+    estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
@@ -1290,6 +1292,16 @@ _MIN_USEFUL_RESULT_TOKENS = 64
 # the arguments varied on every one of the 18 calls observed here, so an argument-keyed
 # guard would have watched the whole thing happen.
 _MAX_IDENTICAL_TOOL_RESULTS = 3
+
+
+# The tail `_fit_result_to_room` appends when a result did not fit. A result carrying it
+# is the WINDOW's answer, not the tool's, so two calls with different arguments that both
+# end here are not two different answers -- they are the same dead end reached twice.
+_WINDOW_NOTICE_MARKER = "chars for the model;"
+
+
+def _is_window_notice(result: str) -> bool:
+    return _WINDOW_NOTICE_MARKER in result
 # How far back the classifier looks for llama.cpp's argument-parsing error. It
 # prints one and exits, so it is always at the end; generous enough to survive a
 # usage hint printed after it, small enough that a 10 MB unterminated line (which
@@ -24319,6 +24331,14 @@ class LlamaCppBackend:
         # produces something visible.
         _length_continuations = 0
         _effective_enable_thinking = enable_thinking
+        # Dropped alongside it, because for the `reasoning_effort` style an explicit
+        # effort WINS over enable_thinking: `_request_reasoning_kwargs` returns the
+        # caller's "high" and never reaches the enable_thinking branch, so turning
+        # thinking off would re-run the turn that just spent the window thinking.
+        # Cleared rather than pinned to a level, so the existing thinking-off
+        # convention for this style applies -- "low" for the models that cannot
+        # actually disable reasoning.
+        _effective_reasoning_effort = reasoning_effort
         # Restored once a turn gets somewhere: it is turned on to stitch ONE answer
         # back together, not for the rest of the request.
         _caller_continue_final_message = continue_final_message
@@ -24335,7 +24355,20 @@ class LlamaCppBackend:
         from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
 
         _markup_cache = _sweep_cache()
-        for iteration in range(max_tool_iterations + _extra):
+        # A continuation re-enters this loop, so without a credit it is charged to the
+        # caller's TOOL budget. At max_tool_iterations=1, three plan-without-action
+        # re-prompts and two truncated reasoning turns exhaust the loop before the model
+        # ever issues its call, and the tool-free final pass then cannot perform the
+        # action that was asked for -- the turn fails having spent no tool iteration at
+        # all. Granted as they happen rather than reserved up front, so a request that
+        # never stalls keeps exactly the bound it has always had.
+        _continuation_credits = 0
+        _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        iteration = -1
+        while True:
+            iteration += 1
+            if iteration >= max_tool_iterations + _extra + _continuation_credits:
+                break
             if cancel_event is not None and cancel_event.is_set():
                 return
             # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
@@ -24372,7 +24405,7 @@ class LlamaCppBackend:
             )
 
             _reasoning_kw = self._request_reasoning_kwargs(
-                _effective_enable_thinking, reasoning_effort, preserve_thinking
+                _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
             )
             _preflight_context_length = None
             _preflight_succeeded = False
@@ -25365,7 +25398,12 @@ class LlamaCppBackend:
                                 )
                                 append_assistant_turn(
                                     conversation,
-                                    {"role": "assistant", "content": _partial_answer},
+                                    # Unstripped: `strip()` would make the replayed prefix
+                                    # differ from the text already streamed, and the next
+                                    # delta is concatenated onto the STREAMED one. Inside a
+                                    # code block that eats the newline and indentation the
+                                    # continuation is about to build on.
+                                    {"role": "assistant", "content": content_accum},
                                     continue_final_message = True,
                                 )
                                 continue_final_message = True
@@ -25376,6 +25414,8 @@ class LlamaCppBackend:
                                 _it_c = _iter_timings or {}
                                 _accumulated_predicted_ms += _it_c.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_c.get("predicted_n", 0)
+                                if _continuation_credits < _MAX_CONTINUATION_CREDITS:
+                                    _continuation_credits += 1
                                 yield {"type": "status", "text": ""}
                                 yield {
                                     "type": "status",
@@ -25397,6 +25437,7 @@ class LlamaCppBackend:
                             # Thinking off for the retry. Leaving it on re-runs the turn that
                             # just failed, and the second failure looks identical to the first.
                             _effective_enable_thinking = False
+                            _effective_reasoning_effort = None
                             logger.info(
                                 "Turn ended inside its reasoning (%d chars, finish_reason "
                                 "length); continuing %d/%d with thinking off",
@@ -25425,6 +25466,8 @@ class LlamaCppBackend:
                             _accumulated_predicted_n += _it_l.get("predicted_n", 0)
                             # Blank first so the route resets its text cursor, as the
                             # re-prompt below does; otherwise the retry reads as a hang.
+                            if _continuation_credits < _MAX_CONTINUATION_CREDITS:
+                                _continuation_credits += 1
                             yield {"type": "status", "text": ""}
                             yield {"type": "status", "text": _CONTINUE_AFTER_LENGTH_STATUS}
                             continue
@@ -25656,6 +25699,7 @@ class LlamaCppBackend:
                 # same reason: it was turned off to break one stall, not for the request.
                 _length_continuations = 0
                 _effective_enable_thinking = enable_thinking
+                _effective_reasoning_effort = reasoning_effort
                 continue_final_message = _caller_continue_final_message
                 _accumulated_completion_tokens += (
                     _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
@@ -25858,13 +25902,27 @@ class LlamaCppBackend:
                     # Set when the gate chose to RUN an oversized call rather than
                     # refuse it, on the strength of what compacting it will reclaim.
                     _compact_after_execution = False
+                    # The exact count of the prompt that compaction WILL produce, kept so
+                    # the result budget below is priced against it.
+                    _compacted_turn_tokens: Optional[int] = None
                     if self._effective_context_length:
                         _room_target = prompt_budget(self._effective_context_length, max_tokens)
                         # Cheap gate first. The exact count is a template render plus a
                         # tokenizer pass over the whole conversation, and this runs per
                         # call; a thread with room to spare must not pay for it. The
                         # estimate only decides whether to ASK, never whether to refuse.
-                        if estimate_messages_tokens_dense(conversation) > 0.7 * _room_target:
+                        # Conservative, not the flat dense estimate. That one still
+                        # charges ASCII four characters a token, and base64 tokenises
+                        # near one, so a ~6 KB encoded `edit_file` payload prices at a
+                        # quarter of its real cost and slips under this threshold at a
+                        # 4096 window -- the exact check is skipped, the tool runs, and
+                        # the write lands before the next request is rejected. Erring
+                        # high here only costs an extra count; erring low costs the
+                        # whole gate.
+                        if (
+                            estimate_messages_tokens_conservative(conversation)
+                            > 0.7 * _room_target
+                        ):
                             # Priced with a STAND-IN tool message for the call about to
                             # run, not on the conversation as it stands. A chat template
                             # renders an assistant turn's `tool_calls` only once a `tool`
@@ -25962,6 +26020,7 @@ class LlamaCppBackend:
                                         _after_tokens,
                                     ):
                                         _compact_after_execution = True
+                                        _compacted_turn_tokens = _after_tokens
                                         logger.info(
                                             "Running %s despite a %d-token turn: compacting "
                                             "its own arguments afterwards brings the next "
@@ -26129,8 +26188,17 @@ class LlamaCppBackend:
                                 # already carries the fit's exact tokenizer count, so it
                                 # needs no correction, while the estimate that stands in
                                 # for it undercounts CJK and emoji by about half.
+                                # The gate decided to run this call BECAUSE compacting
+                                # its own arguments makes the next prompt fit, and it
+                                # already counted that prompt exactly. Pricing the result
+                                # against the uncompacted conversation instead hands a
+                                # large `python`, `terminal` or file call a near-zero
+                                # budget and throws its output away, in the one case where
+                                # the room is about to be there.
                                 _spent = (
-                                    _exact_prompt_tokens
+                                    _compacted_turn_tokens
+                                    if _compact_after_execution and _compacted_turn_tokens
+                                    else _exact_prompt_tokens
                                     if _exact_prompt_tokens is not None
                                     else estimate_messages_tokens_dense(conversation)
                                     + (
@@ -26316,8 +26384,10 @@ class LlamaCppBackend:
                     )
                     # The window priced this result at nothing before the call ran, so the
                     # model is told now rather than after three calls prove it.
+                    _result_was_starved = False
                     if _starved_call[0] and isinstance(result, str):
                         _starved_call[0] = False
+                        _result_was_starved = True
                         logger.info(
                             "%s ran with a result budget below %d; telling the model the "
                             "window cannot carry the result",
@@ -26334,9 +26404,25 @@ class LlamaCppBackend:
                     # keys on the result for the same reason and never fires while results
                     # are still changing, which is what makes this safe for polling.
                     if isinstance(result, str):
+                        # The arguments are part of the key UNLESS the result is one the
+                        # window itself produced. A tool that answers every distinct
+                        # mutation with `OK` is making progress, and the nudge below --
+                        # which says different arguments will not change the answer -- can
+                        # talk it out of the operations it has left. A starved result is
+                        # the opposite: it is the notice, not the tool's answer, so the
+                        # arguments are exactly what must NOT be part of the key. That was
+                        # the observed turn, where 18 calls read different line ranges of
+                        # one file and got the same 109-char truncation notice each time.
                         _result_key = (
                             decision.tool_name,
                             hashlib.sha1(result.encode("utf-8", "replace")).hexdigest(),
+                            None
+                            if _result_was_starved or _is_window_notice(result)
+                            else hashlib.sha1(
+                                json.dumps(decision.arguments, sort_keys = True, default = str).encode(
+                                    "utf-8", "replace"
+                                )
+                            ).hexdigest(),
                         )
                         if _result_key == _last_tool_result_key[0]:
                             _identical_result_runs[0] += 1
@@ -26383,6 +26469,22 @@ class LlamaCppBackend:
                             _before_len,
                             len(json.dumps(conversation, default = str)),
                         )
+                        # The compaction rebuilds the messages rather than mutating them,
+                        # so the local handle now points at a dict that is no longer in
+                        # `conversation`. One assistant turn can carry several calls, and
+                        # the next one in the batch appends its tool_call to this handle
+                        # while its RESULT goes to `conversation`: the model would receive
+                        # a tool result answering a call it cannot see. Rebind to the live
+                        # message carrying this call.
+                        for _msg in conversation:
+                            if _msg.get("role") != "assistant":
+                                continue
+                            if any(
+                                (_tc or {}).get("id") == decision.tool_call_id
+                                for _tc in (_msg.get("tool_calls") or [])
+                            ):
+                                assistant_msg = _msg
+                                break
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
@@ -26731,6 +26833,53 @@ class LlamaCppBackend:
         # tokens, stopped inside drawBird() with the game left half-written.
         _final_length_continuations = 0
         _continue_final = False
+        _final_replayed_chars = 0
+
+        def _continuation_would_be_served() -> bool:
+            """Whether the retry's own prompt still fits, now that the partial is in it.
+
+            The first pass reached `finish_reason: length` by consuming the physical
+            context, so appending everything it produced makes the next prompt roughly
+            context-sized. Reopening the stream without asking gets it rejected before a
+            single extra token arrives, which is worse than stopping: the user keeps the
+            partial either way, and one of the two paths also shows an error.
+
+            A count that cannot be taken is not a refusal. Failing open here restores the
+            behaviour this continuation had before the check, which is the safe side.
+            """
+            if not self._effective_context_length:
+                return True
+            try:
+                _tokens = self.count_chat_tokens(
+                    stream_payload["messages"],
+                    None,
+                    None,
+                    strict = True,
+                    chat_template_kwargs = stream_payload.get("chat_template_kwargs"),
+                    continue_final_message = bool(
+                        stream_payload.get("continue_final_message")
+                    ),
+                )
+            except Exception:
+                logger.debug("final continuation: prompt count failed", exc_info = True)
+                return True
+            # NOT `turn_is_servable`: that charges `_RESULT_NOTICE_RESERVE`, the room a
+            # truncated TOOL RESULT needs for its notice, and a continuation has no tool
+            # result. Borrowing it here refuses continuations that would have been served
+            # and produced text, which is the working behaviour this check exists beside,
+            # not instead of. llama-server admits a prompt on size alone, so that is the
+            # line, minus only enough room to answer in.
+            _floor = _reply_floor(self._effective_context_length)
+            if _tokens + _floor <= self._effective_context_length:
+                return True
+            logger.info(
+                "Final continuation would not be served (%d tokens of a %d-token "
+                "window); keeping the partial answer instead",
+                _tokens,
+                self._effective_context_length,
+            )
+            return False
+
         while True:
             try:
                 with self._open_chat_stream_with_respawn_retry(
@@ -26879,17 +27028,138 @@ class LlamaCppBackend:
                             _final_length_continuations,
                             _MAX_LENGTH_CONTINUATIONS,
                         )
+                        # Only what is NEW since the last replay. `_last_emitted` is
+                        # cumulative across attempts, and the helper PREPENDS the trailing
+                        # assistant text, so handing it the cumulative value a second time
+                        # yields "fragment1 + fragment1 + continuation1".
                         _append_assistant_turn(
                             stream_payload["messages"],
-                            {"role": "assistant", "content": _last_emitted},
+                            {
+                                "role": "assistant",
+                                "content": _last_emitted[_final_replayed_chars:],
+                            },
                             continue_final_message = True,
                         )
+                        _final_replayed_chars = len(_last_emitted)
                         stream_payload["continue_final_message"] = True
-                        _stream_done = False
-                        _metadata_finish_reason = None
-                        _continue_final = True
-                        yield {"type": "status", "text": ""}
-                        yield {"type": "status", "text": _CONTINUE_TRUNCATED_ANSWER_STATUS}
+                        # Folded in before the next stream overwrites them, else the
+                        # reported usage counts only the last fragment.
+                        _fu_f = (
+                            _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
+                            or {}
+                        )
+                        _accumulated_completion_tokens += _fu_f.get("completion_tokens", 0)
+                        _it_f = _metadata_timings or {}
+                        _accumulated_predicted_ms += _it_f.get("predicted_ms", 0)
+                        _accumulated_predicted_n += _it_f.get("predicted_n", 0)
+                        if _continuation_would_be_served():
+                            _stream_done = False
+                            _metadata_finish_reason = None
+                            _continue_final = True
+                            yield {"type": "status", "text": ""}
+                            yield {
+                                "type": "status",
+                                "text": _CONTINUE_TRUNCATED_ANSWER_STATUS,
+                            }
+                        else:
+                            _meta = _build_metadata_event(
+                                _metadata_usage, _metadata_timings, _metadata_finish_reason
+                            )
+                            if _meta is not None:
+                                yield _meta
+                    elif (
+                        _metadata_finish_reason == "length"
+                        and not _last_emitted.strip()
+                        and reasoning_text.strip()
+                    ):
+                        # The other half of the same failure, and the one the in-loop
+                        # continuation cannot reach: this pass runs AFTER the loop has
+                        # broken, so a turn that spends its last tool call here and then
+                        # thinks until the window is gone renders as an empty message.
+                        # `force_final_answer` from a one-shot tool lands here too.
+                        if _final_length_continuations < _MAX_LENGTH_CONTINUATIONS:
+                            from core.inference.chat_template_helpers import (  # noqa: PLC0415
+                                append_assistant_turn as _append_assistant_turn,
+                            )
+
+                            _final_length_continuations += 1
+                            logger.info(
+                                "Final pass ended inside its reasoning (%d chars); "
+                                "continuing %d/%d with thinking off",
+                                len(reasoning_text),
+                                _final_length_continuations,
+                                _MAX_LENGTH_CONTINUATIONS,
+                            )
+                            _append_assistant_turn(
+                                stream_payload["messages"],
+                                {
+                                    "role": "assistant",
+                                    "content": _unfinished_thought_progress(reasoning_text),
+                                },
+                                continue_final_message = bool(
+                                    stream_payload.get("continue_final_message")
+                                ),
+                            )
+                            stream_payload["messages"].append(
+                                {"role": "user", "content": _continue_after_length_message()}
+                            )
+                            # The retry ends on a USER turn, so the flag from any earlier
+                            # answer continuation no longer describes this payload.
+                            stream_payload.pop("continue_final_message", None)
+                            _off_kw = self._request_reasoning_kwargs(
+                                False, None, preserve_thinking
+                            )
+                            if _off_kw is not None:
+                                stream_payload["chat_template_kwargs"] = _off_kw
+                            else:
+                                stream_payload.pop("chat_template_kwargs", None)
+                            _fu_r = (
+                                _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
+                                or {}
+                            )
+                            _accumulated_completion_tokens += _fu_r.get("completion_tokens", 0)
+                            _it_r = _metadata_timings or {}
+                            _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                            if _continuation_would_be_served():
+                                _stream_done = False
+                                _metadata_finish_reason = None
+                                _continue_final = True
+                                yield {"type": "status", "text": ""}
+                                yield {
+                                    "type": "status",
+                                    "text": _CONTINUE_AFTER_LENGTH_STATUS,
+                                }
+                            else:
+                                yield {"type": "status", "text": ""}
+                                yield {
+                                    "type": "content",
+                                    "text": _thinking_exhausted_message(
+                                        self._effective_context_length
+                                    ),
+                                }
+                                _meta = _build_metadata_event(
+                                    _metadata_usage,
+                                    _metadata_timings,
+                                    _metadata_finish_reason,
+                                )
+                                if _meta is not None:
+                                    yield _meta
+                        else:
+                            # Allowance spent and still nothing on screen. Saying so is
+                            # the point: an empty message gives the user nothing to act on.
+                            yield {"type": "status", "text": ""}
+                            yield {
+                                "type": "content",
+                                "text": _thinking_exhausted_message(
+                                    self._effective_context_length
+                                ),
+                            }
+                            _meta = _build_metadata_event(
+                                _metadata_usage, _metadata_timings, _metadata_finish_reason
+                            )
+                            if _meta is not None:
+                                yield _meta
                     else:
                         _meta = _build_metadata_event(
                             _metadata_usage, _metadata_timings, _metadata_finish_reason

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence
 from urllib.parse import urlparse
@@ -36,6 +37,10 @@ _CANONICAL_HEAL_ARG = {
 UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 
 
+# Anything that ends a JSON token. A tail free of all of them never finished arriving.
+_JSON_STRUCTURAL = frozenset(',:{}[]" \t\n\r')
+
+
 def _looks_like_broken_json(raw: str) -> bool:
     """Whether this text was MEANT to be a JSON object and stopped before finishing.
 
@@ -54,8 +59,46 @@ def _looks_like_broken_json(raw: str) -> bool:
     try:
         json.loads(text)
     except json.JSONDecodeError as error:
-        return error.msg.startswith("Unterminated string") or error.pos >= len(text)
+        if error.msg.startswith("Unterminated string") or error.pos >= len(text):
+            return True
+        # A value cut mid-token reports at the token's START, not at the end of input, so
+        # the two tests above miss `{"flag":tru` (Expecting value) and `{"n":1e`
+        # (Expecting ',' delimiter). What they share is that everything from the failure
+        # to the end is one unfinished token: no delimiter, no quote, no space.
+        #
+        # Excluded: a bad PROPERTY NAME. After `{` a bare word is malformed rather than
+        # cut off, which is what keeps `{oops` and `{not json at all` healable.
+        if error.msg.startswith("Expecting property name"):
+            return False
+        # Excluded for the opposite reason: a COMPLETE document with something after it.
+        # `{"a": 1} trailing` decodes fully and then finds junk, so nothing was lost.
+        if error.msg.startswith("Extra data"):
+            return False
+        remainder = text[error.pos :]
+        return bool(remainder) and not any(ch in _JSON_STRUCTURAL for ch in remainder)
     return False
+
+
+def _single_string_argument(function: Mapping) -> "str | None":
+    """That function's one required string argument, or None when it has anything else."""
+    parameters = function.get("parameters")
+    if not isinstance(parameters, Mapping):
+        return None
+    properties = parameters.get("properties")
+    required = parameters.get("required")
+    if not isinstance(properties, Mapping) or not isinstance(required, list):
+        return None
+    required_names = [item for item in required if isinstance(item, str)]
+    if len(required_names) != 1:
+        return None
+    key = required_names[0]
+    schema = properties.get(key)
+    if not isinstance(schema, Mapping):
+        return None
+    kind = schema.get("type")
+    if kind == "string" or (isinstance(kind, list) and "string" in kind):
+        return key
+    return None
 
 
 def _healable_keys_from_schemas() -> "dict[str, str]":
@@ -72,28 +115,20 @@ def _healable_keys_from_schemas() -> "dict[str, str]":
         from core.inference.tools import ALL_TOOLS  # noqa: PLC0415 -- cycle at import time
     except Exception:  # noqa: BLE001 -- healing must never break a chat
         return {}
+    return _healable_keys_from(ALL_TOOLS)
+
+
+def _healable_keys_from(tools) -> "dict[str, str]":
     keys: dict[str, str] = {}
-    for tool in ALL_TOOLS or []:
+    for tool in tools or []:
         function = tool.get("function") if isinstance(tool, Mapping) else None
         if not isinstance(function, Mapping):
             continue
         name = str(function.get("name") or "")
-        parameters = function.get("parameters")
-        if not name or not isinstance(parameters, Mapping):
+        if not name:
             continue
-        properties = parameters.get("properties")
-        required = parameters.get("required")
-        if not isinstance(properties, Mapping) or not isinstance(required, list):
-            continue
-        required_names = [item for item in required if isinstance(item, str)]
-        if len(required_names) != 1:
-            continue
-        key = required_names[0]
-        schema = properties.get(key)
-        if not isinstance(schema, Mapping):
-            continue
-        kind = schema.get("type")
-        if kind == "string" or (isinstance(kind, list) and "string" in kind):
+        key = _single_string_argument(function)
+        if key is not None:
             keys[name] = key
     return keys
 
@@ -101,14 +136,25 @@ def _healable_keys_from_schemas() -> "dict[str, str]":
 _HEAL_ARG_CACHE: "dict[str, str] | None" = None
 
 
-def _heal_arg_key(tool_name: str) -> "str | None":
-    """The argument a bare string should become, or None when there isn't one."""
+def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
+    """The argument a bare string should become, or None when there isn't one.
+
+    ``tool_schemas`` is the REQUEST's tool array. MCP tools are discovered at runtime and
+    so are absent from `ALL_TOOLS`; without them an MCP tool with one required string
+    argument lost the auto-healing every other single-string tool has, and a bare string
+    reached `execute_tool` as the unparsed sentinel instead.
+    """
     global _HEAL_ARG_CACHE
     if tool_name in _CANONICAL_HEAL_ARG:
         return _CANONICAL_HEAL_ARG[tool_name]
     if _HEAL_ARG_CACHE is None:
         _HEAL_ARG_CACHE = _healable_keys_from_schemas()
-    return _HEAL_ARG_CACHE.get(tool_name)
+    key = _HEAL_ARG_CACHE.get(tool_name)
+    if key is not None or not tool_schemas:
+        return key
+    # Not cached: the request's tools belong to the request, and caching them by name
+    # would let one chat's MCP server decide another chat's healing.
+    return _healable_keys_from(tool_schemas).get(tool_name)
 
 
 def _unreadable_arguments_summary(fragment: str) -> dict[str, str]:
@@ -305,6 +351,7 @@ def coerce_tool_arguments(
     *,
     heal: bool,
     tool_name: str = "",
+    tool_schemas = None,
 ) -> CoercedArguments:
     """Normalize model-emitted ``function.arguments`` to a dictionary."""
     if isinstance(raw_args, Mapping):
@@ -326,7 +373,11 @@ def coerce_tool_arguments(
             # model read its own file back as `{"code":"html = ...` and spent the rest of
             # the turn convinced the sandbox had mangled it. Same defect `edit_file` had;
             # having a single string argument only hid it.
-            key = None if _looks_like_broken_json(raw_args) else _heal_arg_key(tool_name)
+            key = (
+                None
+                if _looks_like_broken_json(raw_args)
+                else _heal_arg_key(tool_name, tool_schemas)
+            )
             if key is not None:
                 return CoercedArguments({key: raw_args}, True)
             # No single argument this text could be. Inventing one used to default to
@@ -636,6 +687,7 @@ class ToolLoopController:
             function.get("arguments", {}),
             heal = self._auto_heal_tool_calls,
             tool_name = tool_name,
+            tool_schemas = self._tools,
         )
         key = canonical_tool_call_key(tool_name, coerced.arguments)
         mcp = mcp_display_parts(tool_name)

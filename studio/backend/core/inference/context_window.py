@@ -418,7 +418,7 @@ def _compacted_arguments(
     # literal default silently kept the OLD wording on this path while the executed and
     # refused paths moved to the new one -- the same receipt the model misread as tool
     # output, still being emitted by the most common caller.
-    phrase = phrase or _COMPLETED_PHRASE
+    phrase = phrase or _completed_phrase_for(name)
     if not isinstance(arguments, str) or len(arguments) < _ARG_COMPACTION_FLOOR_CHARS:
         return None
     try:
@@ -426,10 +426,14 @@ def _compacted_arguments(
     except Exception:
         # Unparseable arguments still cost the window, and a call that has already run
         # cannot be re-issued from them, so the size alone is an honest receipt.
+        #
+        # Worded from `phrase` like every other receipt. Hardcoding "after the call ran"
+        # meant a REFUSED call with 1024+ characters of malformed JSON was replayed as
+        # having run, next to the tool message saying nothing was written: two
+        # contradictory accounts of the same call, one of which invites the model to
+        # reason from a side effect that never happened.
         return json.dumps(
-            {
-                "_unsloth_compacted": f"{len(arguments)} chars of arguments elided after the call ran"
-            },
+            {"_unsloth_compacted": f"{len(arguments)} chars {phrase.format(where = '')}"},
             ensure_ascii = False,
         )
     if not isinstance(parsed, dict):
@@ -483,6 +487,21 @@ _REFUSED_PHRASE = (
 # Three messages discouraging a re-read and one inviting it is worse than either rule
 # alone, and the re-read is the loop that cost eighteen calls in one turn.
 _COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided to save room. Not tool output; the file on disk holds it."
+# The same receipt for a tool that writes no file. `python`, `terminal`, the search
+# tools and every MCP tool are selected by size and by having been answered, exactly
+# like `edit_file`, so a 2000-character `code` argument was handed a receipt saying it
+# was "already written" and that "the file on disk holds it" -- a file the model can
+# then set out to read, or reason from as persisted, when nothing was persisted at all.
+_COMPLETED_NO_FILE_PHRASE = (
+    "of arguments you sent, elided to save room; the call already ran. Not tool output, "
+    "and nothing was written to disk"
+)
+# Tools whose completed call really does leave the content in a file.
+_FILE_WRITING_TOOLS = frozenset({"edit_file"})
+
+
+def _completed_phrase_for(name: str) -> str:
+    return _COMPLETED_PHRASE if name in _FILE_WRITING_TOOLS else _COMPLETED_NO_FILE_PHRASE
 
 
 def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[dict]:
@@ -500,7 +519,10 @@ def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[
     recovered, ending in a one-character reply. Running the call and compacting it costs
     the same tokens once and leaves the file written.
     """
-    return _compact_one_call(messages, call_id, _COMPLETED_PHRASE)
+    # None, not the constant: the receipt is chosen per tool, so a completed `python`
+    # call is not told its arguments are on disk. `edit_file` still gets the wording
+    # this path was built and proven against.
+    return _compact_one_call(messages, call_id, None)
 
 
 def compact_refused_tool_arguments(messages: list[dict], call_id: str) -> list[dict]:
@@ -521,14 +543,50 @@ def compact_refused_tool_arguments(messages: list[dict], call_id: str) -> list[d
     return _compact_one_call(messages, call_id, _REFUSED_PHRASE)
 
 
-def _compact_one_call(messages: list[dict], call_id: str, phrase: str) -> list[dict]:
-    """Rewrite exactly one call's arguments to a receipt worded by `phrase`."""
+def _last_index_with_call(messages: list[dict], call_id: str) -> int:
+    """Where the call this result answers actually is.
+
+    Tool-call IDs are NOT unique across a conversation. The textual parsers number from
+    `call_0` with an offset that starts at zero on every turn, and the structured
+    fallback does the same when the server omits an ID, so a five-round turn holds
+    several `call_0`s. Rewriting every match would relabel an earlier successful call as
+    refused, or an earlier refused one as already written -- a receipt describing a
+    different call's fate, which is worse than not compacting at all.
+
+    Both callers act on the call just decided, so the last match is the right one.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        if any(
+            isinstance(call, dict) and str(call.get("id") or "") == str(call_id)
+            for call in calls
+        ):
+            return index
+    return -1
+
+
+def _compact_one_call(
+    messages: list[dict], call_id: str, phrase: Optional[str] = None
+) -> list[dict]:
+    """Rewrite exactly one call's arguments to a receipt worded by `phrase`.
+
+    `None` leaves the wording to the tool, which is what a COMPLETED call wants: only
+    the file tools may say the content is on disk.
+    """
     if not call_id:
         return messages
+    target = _last_index_with_call(messages, call_id)
+    if target < 0:
+        return messages
     out: list[dict] = []
-    for message in messages:
+    for index, message in enumerate(messages):
         calls = message.get("tool_calls")
-        if message.get("role") != "assistant" or not isinstance(calls, list) or not calls:
+        if index != target or not isinstance(calls, list) or not calls:
             out.append(message)
             continue
         new_calls: list[dict] = []
@@ -548,6 +606,27 @@ def _compact_one_call(messages: list[dict], call_id: str, phrase: str) -> list[d
             changed = True
         out.append({**message, "tool_calls": new_calls} if changed else message)
     return out
+
+
+# A `role=tool` reply proves an ANSWER, not an execution. The approval gate answers a
+# declined call with exactly such a message, and an unreadable call is answered without
+# running either. Compacting those to the completed receipt tells the model a file was
+# written that the user refused, which it may then report or reason from.
+_DID_NOT_RUN_MARKERS = (
+    "the user declined to run this tool call",
+    "could not be read",
+    "nothing ran",
+    "nothing was run",
+    "nothing was written",
+)
+
+
+def _reply_shows_execution(content: object) -> bool:
+    """Whether this tool reply is the result of a call that actually ran."""
+    if not isinstance(content, str):
+        return True
+    head = content[:200].strip().lower()
+    return not any(marker in head for marker in _DID_NOT_RUN_MARKERS)
 
 
 def compact_completed_tool_arguments(
@@ -572,7 +651,7 @@ def compact_completed_tool_arguments(
     for message in messages:
         if message.get("role") == "tool":
             call_id = message.get("tool_call_id")
-            if call_id:
+            if call_id and _reply_shows_execution(message.get("content")):
                 answered.add(str(call_id))
     if not answered:
         return messages, 0

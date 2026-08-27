@@ -325,3 +325,178 @@ def test_a_clean_final_stop_is_never_continued(monkeypatch):
     _run_no_tools(backend)
 
     assert len(payloads) == 1
+
+
+_SECOND_HALF = (
+    ", 0, Math.PI * 2);\n  ctx.fill();\n"
+    + "".join(
+        f"  pipes[{i}].x -= speed * {i % 5 + 1};\n  if (pipes[{i}].x < -60) recycle({i});\n"
+        for i in range(40)
+    )
+    + "  requestAnimationFrame(fr"
+)
+
+
+def _usage(completion_tokens: int) -> str:
+    return (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": completion_tokens},
+            }
+        )
+        + "\n"
+    )
+
+
+def _metadata(events) -> dict:
+    return [event for event in events if event.get("type") == "metadata"][-1]
+
+
+def test_the_final_continuation_replays_each_fragment_once(monkeypatch):
+    """`_append_assistant_turn` PREPENDS onto the trailing assistant text.
+
+    So handing it the cumulative answer on the second continuation writes the first
+    fragment in twice, and the model resumes from a prompt whose own output is doubled.
+    Only what is new since the last replay may be sent.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [_sse({"content": _SECOND_HALF}), _finish("length"), _done()],
+            [_sse({"content": "ame);\n</script>\n</html>"}), _done()],
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 3
+    replayed = payloads[2]["messages"][-1]["content"]
+    assert replayed == _HALF_AN_ANSWER + _SECOND_HALF
+    assert replayed.count("<!DOCTYPE html>") == 1
+    # And the user is shown each fragment once as well. Content events are CUMULATIVE
+    # here, not deltas, so the last one is the whole answer.
+    shown = _texts(events, "content")[-1]
+    assert shown.count("<!DOCTYPE html>") == 1
+    assert shown.endswith("</html>")
+
+
+def test_usage_is_kept_across_final_continuations(monkeypatch):
+    """Each attempt's usage is overwritten by the next, so it has to be folded in first.
+
+    Left unfolded, a three-attempt answer reports the tokens of its last fragment alone
+    and the tokens-per-second readout beside it is computed from the same short window.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _usage(700), _finish("length"), _done()],
+            [_sse({"content": _SECOND_HALF}), _usage(500), _finish("length"), _done()],
+            [_sse({"content": "ame);\n</script>\n</html>"}), _usage(30), _done()],
+        ],
+        payloads,
+    )
+
+    usage = _metadata(_run_no_tools(backend))["usage"]
+
+    assert usage["completion_tokens"] == 700 + 500 + 30
+
+
+def test_the_replayed_prefix_keeps_the_whitespace_it_was_cut_on(monkeypatch):
+    """Stripping the replay makes it differ from what was already streamed.
+
+    The next delta is concatenated onto the STREAMED text, not onto the replay, so a
+    stripped replay silently drops the newline and indentation the continuation is
+    about to build on. Inside a code block that is the difference between a line
+    starting where it should and starting flush against the previous one.
+    """
+
+    cut_on_whitespace = _HALF_AN_ANSWER + "\n  "
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": cut_on_whitespace}), _finish("length"), _done()],
+            [_sse({"content": "ctx.fill();\n</script>\n</html>"}), _done()],
+        ],
+        payloads,
+    )
+
+    _run(backend)
+
+    assert payloads[1]["messages"][-1]["content"] == cut_on_whitespace
+
+
+def test_a_continuation_that_would_be_rejected_is_not_sent(monkeypatch):
+    """The first pass hit `length` by consuming the physical context.
+
+    Appending everything it produced makes the retry's prompt roughly context-sized, so
+    reopening the stream gets it rejected before a single extra token arrives. The user
+    keeps the partial either way; only one of the two paths also shows an error.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": " never sent"}), _done()]),
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_args, **_kwargs: 4096)
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 1
+    # And the work already streamed is still the answer.
+    assert "<!DOCTYPE html>" in "".join(_texts(events, "content"))
+
+
+def test_a_count_that_cannot_be_taken_is_not_a_refusal(monkeypatch):
+    """Failing open restores what this path did before the check, which is the safe side."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+
+    def _no_count(*_args, **_kwargs):
+        raise RuntimeError("llama-server is not loaded")
+
+    monkeypatch.setattr(backend, "count_chat_tokens", _no_count)
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 2
+    assert "</html>" in "".join(_texts(events, "content"))
+
+
+def test_a_continuation_with_room_to_answer_in_is_still_sent(monkeypatch):
+    """The gate must refuse only what llama-server would refuse.
+
+    Its first form borrowed `turn_is_servable`, which charges the reserve a truncated
+    TOOL RESULT needs for its notice. A continuation has no tool result, so that bar
+    refused prompts that would have been served and gone on to produce text -- breaking
+    the very continuation it was added to protect. 3800 of a 4096 window leaves 296, and
+    the reply floor is 256.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_args, **_kwargs: 3800)
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 2, "a continuation with room to answer in was refused"
+    assert "</html>" in "".join(_texts(events, "content"))

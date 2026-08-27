@@ -129,8 +129,12 @@ def test_broken_json_is_not_healed_even_for_a_single_string_tool():
         # Fails at char 1, with the rest of the text still to go: not a cut-off call.
         "{not json at all",
         "{oops",
-        # Complete JSON with something after it -- broken, but nothing was lost.
+        # Complete JSON with something after it -- broken, but nothing was lost. The
+        # generalisation below keys on "the tail is one unfinished token", and `trailing`
+        # is exactly that shape, so "Extra data" has to be excluded by name.
         '{"a": 1} trailing',
+        '{"a": 1} tail',
+        '[1,2] rest',
     ],
 )
 def test_text_that_merely_opens_with_a_brace_still_heals(raw):
@@ -155,6 +159,13 @@ def test_text_that_merely_opens_with_a_brace_still_heals(raw):
         '{"a": 1,',  # stops after a comma
         '{"a": ',  # stops before a value
         '[{"a":1},',  # stops inside an array
+        # Cut inside a bare LITERAL rather than a string. These report at the token's
+        # start, not at the end of input, so an end-of-input test alone misses them and
+        # the fragment gets healed into an argument.
+        '{"flag":tru',  # Expecting value
+        '{"a":nul',
+        '{"n":1e',  # Expecting ',' delimiter
+        '{"n":12.',
     ],
 )
 def test_a_call_that_ran_out_of_input_is_never_healed(raw):
@@ -273,3 +284,77 @@ def test_the_model_is_told_python_arguments_were_cut_off():
     assert "could not be read" in result
     assert "cut off" in result
     assert "nothing ran" in result
+
+
+_MCP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "mcp__notes__search",
+        "parameters": {
+            "type": "object",
+            "properties": {"phrase": {"type": "string"}},
+            "required": ["phrase"],
+        },
+    },
+}
+
+
+def test_an_mcp_tool_with_one_string_argument_is_healed_from_the_request_schemas():
+    """MCP tools are discovered at runtime, so `ALL_TOOLS` cannot know them.
+
+    Deriving the key from the static catalogue alone silently withdrew healing from
+    every MCP tool: a bare string reached `execute_tool` as the unparsed sentinel and
+    was answered as a call that could not be read, though nothing was wrong with it.
+    """
+    coerced = coerce_tool_arguments(
+        "quarterly report",
+        heal = True,
+        tool_name = "mcp__notes__search",
+        tool_schemas = [_MCP_TOOL],
+    )
+
+    assert coerced.healed is True
+    assert coerced.arguments == {"phrase": "quarterly report"}
+
+
+def test_the_request_schemas_are_not_cached_across_chats():
+    """One chat's MCP server must not decide another chat's healing."""
+    coerce_tool_arguments(
+        "quarterly report",
+        heal = True,
+        tool_name = "mcp__notes__search",
+        tool_schemas = [_MCP_TOOL],
+    )
+
+    coerced = coerce_tool_arguments("quarterly report", heal = True, tool_name = "mcp__notes__search")
+
+    assert coerced.healed is False
+
+
+def test_a_truncated_mcp_call_is_still_not_healed():
+    """Knowing the key must not resurrect the defect the guard was added for."""
+    coerced = coerce_tool_arguments(
+        _TRUNCATED,
+        heal = True,
+        tool_name = "mcp__notes__search",
+        tool_schemas = [_MCP_TOOL],
+    )
+
+    assert coerced.healed is False
+    assert coerced.arguments == {UNPARSED_ARGUMENTS_KEY: _TRUNCATED}
+
+
+def test_the_controller_hands_its_own_tools_to_the_healer():
+    from core.inference.tool_loop_controller import ToolLoopController  # noqa: PLC0415
+
+    controller = ToolLoopController(tools = [_MCP_TOOL])
+
+    decision = controller.prepare_call(
+        {
+            "id": "call_0",
+            "type": "function",
+            "function": {"name": "mcp__notes__search", "arguments": "quarterly report"},
+        }
+    )
+
+    assert decision.arguments == {"phrase": "quarterly report"}

@@ -52,12 +52,19 @@ def is_repetition_dominated(text: str) -> bool:
     # Sliding exact-repeat windows, for echoes that do not align to line boundaries.
     needed = max(_MIN_REPEAT_COUNT, math.ceil(length * _DOMINANCE_RATIO / _REPEAT_WINDOW))
     counts: dict[str, int] = {}
+    # Occurrences must not overlap, or a single run of one character counts as many. A
+    # 64-character rule inside a 400-character answer yields five overlapping 60-character
+    # windows and tripped the threshold at 16 percent coverage, abandoning a valid answer.
+    covered_to: dict[str, int] = {}
     for index in range(length - _REPEAT_WINDOW + 1):
         key = text[index : index + _REPEAT_WINDOW]
+        if index < covered_to.get(key, 0):
+            continue
         seen = counts.get(key, 0) + 1
         if seen >= needed:
             return True
         counts[key] = seen
+        covered_to[key] = index + _REPEAT_WINDOW
     return False
 
 

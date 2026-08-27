@@ -266,3 +266,26 @@ def test_a_repeat_that_stops_repeating_resets(monkeypatch):
     results = _tool_results(_run(backend))
 
     assert not any("it will not change" in r for r in results)
+
+
+def test_distinct_calls_answered_with_the_same_acknowledgement_are_left_alone(monkeypatch):
+    """A generic `OK` is not a dead end, and the nudge would talk the model out of the
+    work it has left.
+
+    Some tools answer every distinct mutation with the same short string. Keyed on the
+    result alone, three successful writes to three different records read as one answer
+    repeated, and the model is then told that different arguments will not change it.
+    The window's OWN notices keep the result-only key, which is the case this guard was
+    built for and is covered above.
+    """
+
+    streams = [[_call(f"record-{i}", i), _done()] for i in range(_MAX_IDENTICAL_TOOL_RESULTS + 1)]
+    streams.append([_sse({"content": "All three updated."}), _done()])
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
+
+    results = _tool_results(_run(backend))
+
+    assert results, "no tool ran"
+    assert not any("it will not change" in r for r in results)

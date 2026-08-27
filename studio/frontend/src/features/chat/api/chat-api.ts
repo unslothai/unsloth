@@ -45,6 +45,7 @@ import {
   runBoundedVariantsRequest,
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
+import { maxTokensIsTheLimit } from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
@@ -1425,6 +1426,10 @@ export async function* streamChatCompletions(
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
   let sawReasoningContent = false;
+  // Reported by the server on the final chunk. Needed to tell the two walls apart: a
+  // finite Max Tokens below the context length does not mean Max Tokens is what stopped
+  // the generation.
+  let promptTokens: number | null = null;
 
   const throwIfReasoningOnlyLength = () => {
     if (
@@ -1436,9 +1441,11 @@ export async function* streamChatCompletions(
       // "Max", so a payload value equal to it is indistinguishable from unset here -- and
       // both mean the same thing to the user: the setting is not the lever.
       throw new GenerationLengthError(
-        payload.max_tokens !== undefined
-          && payload.max_tokens !== null
-          && payload.max_tokens < (loadedContextLength ?? Number.POSITIVE_INFINITY),
+        maxTokensIsTheLimit({
+          cap: payload.max_tokens ?? null,
+          contextLength: loadedContextLength ?? null,
+          promptTokens,
+        }),
       );
     }
   };
@@ -1526,6 +1533,10 @@ export async function* streamChatCompletions(
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
+        }
+        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        if (typeof parsedUsage?.prompt_tokens === "number") {
+          promptTokens = parsedUsage.prompt_tokens;
         }
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (

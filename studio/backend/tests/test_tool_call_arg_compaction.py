@@ -358,3 +358,200 @@ def test_a_receipt_cannot_be_mistaken_for_the_tools_output():
     assert "Not tool output" in replayed
     # The tool's real result is the one record of what happened and is never touched.
     assert "Created a.html" in replayed
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # The approval gate's own wording, verbatim.
+        "The user declined to run this tool call.",
+        # The unreadable-arguments guard: the call never reached the tool.
+        "Error: edit_file arguments were cut off after 82 characters and could not be "
+        "read, so nothing ran. Resend as complete JSON.",
+        "Error: edit_file arguments are not valid JSON, so nothing ran.",
+    ],
+)
+def test_a_call_that_never_ran_keeps_its_arguments(reply):
+    """A `role=tool` reply proves an ANSWER, not an execution.
+
+    The completed receipt says the content is "already written" and tells the model to
+    re-read the file. Handing that to a call the user DECLINED, or one whose arguments
+    could not be read, states a write that never happened. The model then reports the
+    file as done, or reads a path that does not exist and disbelieves the tool.
+    """
+    messages = _thread("x" * 8000)
+    messages[-1]["content"] = reply
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 0
+    assert fitted is messages
+    assert "already written" not in json.dumps(fitted)
+
+
+def test_an_ordinary_result_is_still_compacted_beside_one_that_did_not_run():
+    """The guard must cost only the calls that never ran, not disable compaction."""
+    body = "x" * 8000
+    messages = _thread(body)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c2", "edit_file", path = "b.py", new_string = "y" * 8000)],
+        }
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": "c2",
+            "name": "edit_file",
+            "content": "The user declined to run this tool call.",
+        }
+    )
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1
+    assert body not in json.dumps(fitted[1])
+    assert "y" * 8000 in json.dumps(fitted[3])
+
+
+def _reused_id_thread():
+    """Two turns, both numbering from `call_0`, which is what the parsers really emit."""
+    return [
+        {"role": "user", "content": "Write the file"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("call_0", "edit_file", path = "first.html", new_string = "a" * 4000)],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "edit_file",
+            "content": "Wrote first.html",
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("call_0", "edit_file", path = "second.html", new_string = "b" * 4000)],
+        },
+    ]
+
+
+def test_compaction_does_not_reach_back_to_an_older_call_of_the_same_id():
+    """Tool-call IDs are not unique across a conversation.
+
+    The textual parsers number from `call_0` with an offset that starts at zero on every
+    turn, and the structured fallback does the same when the server omits an ID, so a
+    multi-round turn holds several `call_0`s. Rewriting every match hands an earlier
+    call a receipt describing a LATER call's fate.
+    """
+    messages = _reused_id_thread()
+    messages.append(
+        {"role": "tool", "tool_call_id": "call_0", "name": "edit_file", "content": "Wrote second.html"}
+    )
+
+    fitted = compact_executed_call_arguments(messages, "call_0")
+
+    assert "b" * 4000 not in json.dumps(fitted[3]), "the current call was not compacted"
+    assert "a" * 4000 in json.dumps(fitted[1]), "an earlier call of the same id was rewritten"
+
+
+def test_a_refusal_does_not_relabel_an_earlier_success_as_refused():
+    """The worse direction: a receipt that states a write which DID happen never did."""
+    messages = _reused_id_thread()
+    messages.append(
+        {"role": "tool", "tool_call_id": "call_0", "name": "edit_file", "content": "Not enough context"}
+    )
+
+    fitted = compact_refused_tool_arguments(messages, "call_0")
+
+    assert "refused before it ran" in json.dumps(fitted[3])
+    assert "refused before it ran" not in json.dumps(fitted[1])
+    assert "a" * 4000 in json.dumps(fitted[1])
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal", "web_search", "mcp__server__tool"])
+def test_a_tool_that_writes_no_file_is_not_told_its_arguments_are_on_disk(tool_name):
+    """Selection is by size and by having been answered, which is every tool, not just
+    the file ones. A 4000-character `code` argument was handed the `edit_file` receipt,
+    telling the model the content was already written and that the file on disk holds
+    it, so it could go looking for a file nothing had created."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", tool_name, code = "print(1)\n" * 500)],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": tool_name, "content": "1"},
+    ]
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1, "the arguments still have to be spent; only the wording changes"
+    replayed = json.dumps(fitted)
+    assert "on disk" not in replayed.replace("nothing was written to disk", "")
+    assert "already written" not in replayed
+    assert "the call already ran" in replayed
+
+
+def test_the_file_receipt_is_unchanged_for_edit_file():
+    """The wording this path was proven against live must not move."""
+    messages = _thread("<!DOCTYPE html>" + "x" * 8000)
+
+    fitted, _ = compact_completed_tool_arguments(messages)
+
+    replayed = _replayed_arguments(fitted)
+    assert "already written to flappy-bird.html" in replayed
+    assert "the file on disk holds it" in replayed
+
+
+def test_a_refused_call_with_malformed_arguments_is_not_replayed_as_having_run():
+    """The parse-error fallback had the wording hardcoded, so it contradicted the reply.
+
+    The `tool` message beside it says nothing was written; the receipt said the call ran.
+    Two accounts of one call, and the one the model can act on is the wrong one.
+    """
+    broken = '{"path":"a.html","new_string":"' + "z" * 4000  # never closes
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "edit_file", "arguments": broken},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Not enough context"},
+    ]
+
+    fitted = compact_refused_tool_arguments(messages, "c1")
+
+    replayed = json.dumps(fitted)
+    assert "z" * 4000 not in replayed
+    assert "refused before it ran" in replayed
+    assert "after the call ran" not in replayed
+
+
+@pytest.mark.parametrize(
+    "tool_name, lever",
+    [
+        ("edit_file", "ask for a smaller file"),
+        ("python", "run a shorter program"),
+        ("terminal", "run a shorter command"),
+        # Not a file, not a program, and not guessable: the neutral line.
+        ("mcp__server__tool", "ask for less in one call"),
+    ],
+)
+def test_the_refusal_offers_a_lever_the_tool_actually_has(tool_name, lever):
+    """The gate runs for every enabled tool, so "ask for a smaller file" was reaching
+    calls with no file in them, where it is advice the user cannot act on."""
+    message = describe_unservable_tool_call(tool_name, 4119, 4096)
+
+    assert lever in message
+    if tool_name != "edit_file":
+        assert "smaller file" not in message

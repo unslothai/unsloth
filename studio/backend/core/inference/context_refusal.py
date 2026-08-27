@@ -269,6 +269,20 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     )
 
 
+# What the user can actually shorten, per tool. Anything absent gets the neutral line:
+# an MCP tool's payload is not a file and not a program, and guessing at it is worse
+# than saying the one thing that is true of every tool.
+_TOOL_LEVERS = {
+    "edit_file": "ask for a smaller file",
+    "python": "run a shorter program",
+    "terminal": "run a shorter command",
+    "render_html": "render a smaller page",
+    "web_search": "ask a narrower question",
+    "search_knowledge_base": "ask a narrower question",
+    "search_conversation": "ask a narrower question",
+}
+
+
 def describe_unservable_tool_call(
     tool_name: str,
     request_tokens: int,
@@ -302,7 +316,12 @@ def describe_unservable_tool_call(
             f"Arguments from {compacted_calls} earlier tool {calls} were already compacted "
             "to make room. "
         )
+    # The gate runs for EVERY enabled tool, so the file wording was reaching an oversized
+    # `python`, `terminal`, web or MCP call and telling the user to ask for a smaller
+    # file when no file was involved -- advice that cannot make the actual program,
+    # command or payload any smaller. `edit_file` keeps the line it was written for.
+    lever = _TOOL_LEVERS.get(tool_name, "ask for less in one call")
     return (
         head + tried + "Nothing was written. Increase the Context Length in Model settings, "
-        "or ask for a smaller file, then try again."
+        f"or {lever}, then try again."
     )
