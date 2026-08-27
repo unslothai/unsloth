@@ -4735,6 +4735,18 @@ _PAGEABLE_OVERRIDE_NOTE = (
     "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
     "mapping instead."
 )
+# What memory_warning says when the text-only fallback removed the CPU-pinned projector
+# whose bytes were what made the load oversized, on a launch that had already had its
+# unmapped load mode overridden for that shortfall. The override is REPORTED and not
+# taken back: the argv was rewritten and spawned, and force_pageable_load rewrote the
+# shared child env in place, so the running server is memory-mapped whatever this says.
+_PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
+    "This model was set to load without memory mapping, and with its vision projector "
+    "in system RAM it was too large to load that way, so Unsloth loaded it with memory "
+    "mapping instead. The projector then failed to start and this session is text-only, "
+    "which the weights alone would have fit. The running server keeps the memory "
+    "mapping it started with; load the model again to run it as you asked."
+)
 _CGROUP_ROOT = "/sys/fs/cgroup"
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
 
@@ -9192,9 +9204,16 @@ class LlamaCppBackend:
         return self._last_load_warning
 
     def _begin_load_warnings(self) -> None:
-        """Drop the previous load's advisory notice, at the point a load commits to a
-        launch. Without it a warned load followed by a comfortable one would report the
-        first load's notice against the second."""
+        """Drop the previous load's advisory notice, at the point a load commits to
+        replacing the resident server. Without it a warned load followed by a
+        comfortable one would report the first load's notice against the second.
+
+        Called from the Phase 1 teardown, not from the top of ``load_model``: an
+        attempt rejected before that point leaves the old child serving, and its
+        advisory has to survive with it (the route still answers ``already_loaded``
+        from that child). The arch-crash retry calls it again for the same reason in
+        reverse -- the placement everything was priced against is the one that just
+        died."""
         self._last_load_warning = None
 
     def _record_load_warning(self, message: Optional[str]) -> None:
@@ -9223,6 +9242,74 @@ class LlamaCppBackend:
         """
         if note and self._last_load_warning:
             self._last_load_warning += note
+
+    def _reprice_after_dropping_pinned_projector(
+        self,
+        *,
+        apu_msg: Optional[str],
+        host_msg: Optional[str],
+        model_size: Optional[int],
+        pinned_bytes: int,
+        avail_mib: Optional[int],
+    ) -> None:
+        """Re-price the APU RAM advisory once a text-only retry drops a CPU-pinned
+        vision projector.
+
+        The APU preflight charges ``model_size + _mmproj_pinned_bytes``, because a
+        projector pinned to the CPU loads into the same system RAM as the weights. When
+        that projector then fails to start and the retry strips ``--mmproj``, the child
+        that came up healthy never read those bytes: the recorded shortfall describes a
+        load nothing is running. Priced again without them, so the notice matches what
+        the serving process actually holds -- rewritten to the smaller need if the
+        weights alone still do not fit, handed to the discrete guard's notice if that
+        one also found a shortfall, and otherwise dropped.
+
+        What is NOT undone is the pageable-load override. It rewrote the argv and, in
+        ``force_pageable_load``, the shared child env in place, and the child was
+        spawned from both long before this runs, so the server IS memory-mapped and
+        nothing here can change that; reverting it would need yet another respawn of a
+        process that just came up healthy, on the recovery rung that exists because this
+        model has already failed to start once. So an override that the reprice shows
+        was not needed is reported rather than reverted: whatever note the message
+        carried is kept, and a load whose only remaining news is the override says that
+        and nothing else.
+
+        A no-op unless the projector was actually charged and the APU advisory is
+        actually what the route would hand back -- an opt-out that silenced it, or any
+        other notice that first-notice-wins kept, is left exactly as it is.
+        """
+        if not apu_msg or pinned_bytes <= 0 or model_size is None or avail_mib is None:
+            return
+        current = self._last_load_warning
+        if not current or not current.startswith(apu_msg):
+            return
+        # Whatever _amend_load_warning appended (the pageable-override note), carried
+        # over rather than rebuilt, so a reprice cannot describe the override in
+        # different words than the launch site did.
+        suffix = current[len(apu_msg) :]
+        # ``avail_mib`` is the figure the PREFLIGHT read, carried down rather than taken
+        # again here. By this point the text-only child is healthy and holding the
+        # weights, so a fresh reading is the pool minus the very model being priced:
+        # it would charge ``model_size`` against ``avail - model_size`` and report a
+        # shortfall for a load that demonstrably just started. Same pool, one term
+        # removed, is the only comparison that answers the question being asked.
+        repriced = self._apu_ram_shortfall_message(model_size, avail_mib)
+        if repriced:
+            self._last_load_warning = repriced + suffix
+        elif host_msg:
+            # The discrete guard priced the same launch and lost first-notice-wins.
+            # It reads the model path off the argv and never charged the projector,
+            # so dropping the projector leaves its verdict standing.
+            self._last_load_warning = host_msg + suffix
+        elif suffix.strip():
+            self._last_load_warning = _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+        else:
+            self._last_load_warning = None
+        logger.info(
+            "Text-only fallback dropped the CPU-pinned vision projector (%.0f MiB); "
+            "re-priced the host memory advisory against the weights alone.",
+            pinned_bytes / (1024 * 1024),
+        )
 
     def _fits_without_paging(
         self,
@@ -11527,11 +11614,11 @@ class LlamaCppBackend:
         """The host-RAM advisory for a resolved load intent, or None.
 
         Advisory, never a refusal: the route LOGS this and loads anyway. It does not
-        reach the load response -- ``load_model`` calls ``_begin_load_warnings`` on its
-        first line, after this runs, so anything recorded here would be erased; the
-        response carries the launch-time notice instead. What this buys is a line in the
-        log before ``acquire_for(CHAT)`` evicts a resident Images/Video pipeline, rather
-        than only from deep inside ``load_model`` once that teardown has happened.
+        reach the load response -- it records nothing, and ``load_model`` clears the
+        previous notice at its teardown anyway; the response carries the launch-time
+        notice instead. What this buys is a line in the log before ``acquire_for(CHAT)``
+        evicts a resident Images/Video pipeline, rather than only from deep inside
+        ``load_model`` once that teardown has happened.
 
         Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
         resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
@@ -16191,7 +16278,6 @@ class LlamaCppBackend:
         load_cancel_event: Optional[threading.Event] = None,
     ) -> bool:
         """Start llama-server from one immutable load intent."""
-        self._begin_load_warnings()
 
         def _load_cancelled() -> bool:
             return self._cancel_event.is_set() or bool(
@@ -16596,8 +16682,22 @@ class LlamaCppBackend:
                 return False
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
+            # The previous load's advisory is dropped HERE, at the one point this call
+            # commits to replacing the resident server, rather than on the first line of
+            # load_model. Everything above can stand down with that server still serving
+            # (the update-in-progress refusal, the duplicate-load fast path, an
+            # unenumerated Vulkan pin, a diffusion or non-chat refusal, a cancel), and
+            # clearing on the way past retired the advisory of a child that keeps
+            # running -- so the next `already_loaded` answered memory_warning: null for
+            # an oversized model that is still paging from disk. Placing the reset at
+            # the teardown rather than restoring it on each rejected path is what keeps
+            # that true for early returns added later: this is the line that separates
+            # "the old child survives" from "the old child is gone", so a new stand-down
+            # above it is covered by construction and needs no bookkeeping of its own.
+            # Nothing between the top of load_model and this point records a warning.
             _replaying_cpu_fallback = intent.cpu_fallback
             with self._lock:
+                self._begin_load_warnings()
                 self._kill_process()
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
@@ -19532,6 +19632,16 @@ class LlamaCppBackend:
                 # abstains, while the RAM this launch actually loads into cannot hold
                 # them. "none" and "mlock" do not mmap, so that is an OOM kill.
                 _apu_ram_oversized = False
+                # The two shortfall notices this load recorded, kept verbatim (and
+                # un-amended) so the text-only fallback further down can re-price them
+                # once it drops the CPU-pinned projector whose bytes they charged. Both
+                # are re-stated by the arch-crash retry, which starts its own warning
+                # scope, so what these hold is always the pair behind the notice the
+                # route would hand back right now.
+                _apu_ram_msg: Optional[str] = None
+                _host_ram_msg: Optional[str] = None
+                # The RAM figure those notices were priced against, kept with them.
+                _apu_avail_mib: Optional[int] = None
 
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
@@ -19543,12 +19653,17 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and self._amd_apu_wants_unified_memory(gpu_indices)
                 ):
+                    # Read ONCE and kept, because the text-only fallback re-prices this
+                    # same decision much later, with the weights already resident. A
+                    # second live reading there would be the pool MINUS the model the
+                    # reprice is asking about, which double-charges it.
+                    _apu_avail_mib = self._available_system_memory_mib()
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
                         # this guard exists to stop an oversize load being OOM-killed
                         # mid-read, so it has to weigh the projector either way.
                         model_size + _mmproj_pinned_bytes,
-                        self._available_system_memory_mib(),
+                        _apu_avail_mib,
                     )
                     # gpu_indices is None for a launch nothing pinned, so the guard
                     # priced every visible card, including an APU the gate is about to
@@ -19582,6 +19697,7 @@ class LlamaCppBackend:
                             "UNSLOTH_ALLOW_HOST_OFFLOAD set: not recording the APU RAM advisory."
                         )
                         _ram_msg = None
+                    _apu_ram_msg = _ram_msg
                     self._record_load_warning(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
@@ -21081,6 +21197,9 @@ class LlamaCppBackend:
                     child_has_no_gpu = _child_has_no_gpu,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
+                # Snapshotted BEFORE the override note is appended below, so a re-price
+                # that promotes this notice appends that note once rather than twice.
+                _host_ram_msg = _offload_msg
 
                 def _launch_is_oversized() -> bool:
                     """Whether SOMETHING about to launch does not fit, warning aside.
@@ -21781,6 +21900,13 @@ class LlamaCppBackend:
                         # coming, reads them as its shortfall condition and amends
                         # whichever one first-notice-wins recorded.
                         self._begin_load_warnings()
+                        # ...and the re-price snapshots go with the scope they describe:
+                        # the preflight's pair priced the crashed placement, so leaving
+                        # them standing would let the text-only fallback re-price the
+                        # notice this block is about to record against the wrong pool.
+                        _apu_ram_msg = None
+                        _host_ram_msg = None
+                        _apu_avail_mib = None
                         # The APU RAM preflight upstream ran against the CRASHED
                         # selection. The mirror shape (crash on the dGPU, retry on the
                         # unified-memory sibling) makes the respawn the first load into
@@ -21788,19 +21914,22 @@ class LlamaCppBackend:
                         # ahead either way.
                         _retry_apu_msg = None
                         if model_size is not None and _retry_wants_unified:
+                            _apu_avail_mib = self._available_system_memory_mib()
                             _retry_apu_msg = self._apu_ram_shortfall_message(
                                 model_size + _mmproj_pinned_bytes,
-                                self._available_system_memory_mib(),
+                                _apu_avail_mib,
                             )
                             # Same contract as the preflight above: the opt-out takes
                             # the message and nothing else. _retry_apu_msg itself stays
                             # set, so _retry_is_oversized below still sees the
                             # shortfall and the pageable rewrite still happens.
                             if not self._host_offload_warning_opted_out():
+                                _apu_ram_msg = _retry_apu_msg
                                 self._record_load_warning(_retry_apu_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
                         _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
                         _retry_host_msg = self._launch_host_shortfall_message(cmd, _retry_rows, env)
+                        _host_ram_msg = _retry_host_msg
                         self._record_load_warning(_retry_host_msg)
                         logger.warning(
                             f"llama-server crashed with a HIP kernel-image error on "
@@ -22370,6 +22499,21 @@ class LlamaCppBackend:
                             self._start_llama_process(cmd, env)
                             if self._wait_for_health(timeout = 600.0):
                                 healthy = True
+                                # The child that serves this session never read the
+                                # CPU-pinned projector, so the host-memory advisory the
+                                # APU preflight charged it against is now describing a
+                                # load nothing is running. Priced again here, and not at
+                                # the strip above, because a failed text-only retry can
+                                # still replay the ORIGINAL vision argv on CPU further
+                                # down -- projector and all -- and that child does load
+                                # the bytes. Only a healthy text-only server is evidence.
+                                self._reprice_after_dropping_pinned_projector(
+                                    apu_msg = _apu_ram_msg,
+                                    host_msg = _host_ram_msg,
+                                    model_size = model_size,
+                                    pinned_bytes = _mmproj_pinned_bytes,
+                                    avail_mib = _apu_avail_mib,
+                                )
                             else:
                                 # Read the exit code before _kill_process() clears it, so
                                 # an OS-killed text-only retry still gets the OOM message.

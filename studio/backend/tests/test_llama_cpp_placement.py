@@ -9,6 +9,7 @@ import os
 import struct
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 from unittest.mock import patch
@@ -2876,3 +2877,207 @@ def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, m
     warning = backend.last_load_warning or ""
     assert "does not fit in GPU memory" in warning
     assert warning.count("memory mapping instead") == 1, warning
+
+
+# ── Repricing after the text-only fallback drops a CPU-pinned projector ────────
+# The APU preflight charges model_size + the projector the launch pinned to CPU,
+# because both land in the same system RAM. When llama-server then fails on the
+# projector and the retry strips --mmproj, the child that serves the session never
+# reads those bytes: the advisory the route hands back described a load that is not
+# running, and could have been the only reason an unmapped launch was remapped.
+_PROJECTOR_ABORT_OUT = (
+    "srv    load_model: loading model 'model.gguf'\n"
+    "clip.cpp:4391: Unknown projector type\n"
+)
+
+
+def _apu_pinned_projector_backend(tmp_path, monkeypatch, *, gguf_gb, mmproj_gb, avail_mib):
+    """An APU whose weights fit in RAM on their own and only overflow it once the
+    CPU-pinned vision projector is charged alongside them."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = gguf_gb, avail_mib = avail_mib, monkeypatch = monkeypatch
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+    backend._mmproj_vram_bytes = lambda _path: int(mmproj_gb * 1024**3)
+    return backend, gguf
+
+
+def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
+    """Every spawn that still carries --mmproj aborts on the projector; the text-only
+    retry comes up healthy. Mirrors the real recovery: the session ends up serving a
+    child that loaded the weights and nothing else."""
+    captured = {"cmds": []}
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        captured["cmds"].append(list(cmd))
+        captured["cmd"] = list(cmd)
+        captured["env"] = kwargs.get("env") or dict(os.environ)
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None):
+        launched = captured["cmds"][-1] if captured["cmds"] else []
+        if "--mmproj" in launched:
+            backend._stdout_lines = _PROJECTOR_ABORT_OUT.splitlines()
+            return False
+        backend._stdout_lines = []
+        return True
+
+    backend._wait_for_health = fake_health
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                is_vision = True,
+                **load_kwargs,
+            )
+        )
+    return captured
+
+
+@pytest.mark.parametrize("unmapped", [False, True], ids = ["pageable", "unmapped"])
+def test_the_text_only_fallback_reprices_the_projector_it_dropped(tmp_path, monkeypatch, unmapped):
+    """40 GB of weights fit the 44 GB this APU can spare; the 8 GB projector pinned
+    beside them does not, so the preflight warns (and, unmapped, remaps the load).
+    The projector then fails to start and the session serves text-only, holding only
+    the weights -- which fit. The advisory has to describe THAT child.
+
+    The override is not taken back. Its argv and its env reached the child long before
+    this point, so the running server is memory-mapped whatever the message says; an
+    override that turns out to have been unnecessary is reported, not un-reported.
+    """
+    backend, gguf = _apu_pinned_projector_backend(
+        tmp_path, monkeypatch, gguf_gb = 40.0, mmproj_gb = 8.0, avail_mib = 46 * 1024
+    )
+    extra_args = ["--no-mmproj-offload"] + (["--no-mmap"] if unmapped else [])
+
+    captured = _launch_with_text_only_fallback(backend, gguf, extra_args = extra_args)
+
+    assert "--mmproj" in captured["cmds"][0], captured["cmds"][0]
+    assert "--mmproj" not in captured["cmds"][-1], captured["cmds"][-1]
+    warning = backend.last_load_warning or ""
+    assert "unified-memory APU" not in warning, (
+        "the response still warns about a shortfall the resident model does not have: "
+        f"{warning}"
+    )
+    if unmapped:
+        # The one thing that IS still true of the running child.
+        assert "memory mapping instead" in warning, warning
+    else:
+        assert backend.last_load_warning is None, warning
+
+
+def test_the_reprice_reads_the_pool_the_preflight_saw_not_the_one_the_model_is_in(
+    tmp_path, monkeypatch
+):
+    """The reprice asks "would the weights alone have fit?", so it has to weigh them
+    against the RAM that was free BEFORE they were loaded.
+
+    By the time it runs, the text-only child is healthy and holding the weights, so
+    system RAM has fallen by roughly their size. Re-reading it there charges
+    ``model_size`` against ``avail - model_size`` and finds a shortfall for a model
+    that demonstrably just started: the load would keep an advisory saying it does not
+    fit while it is serving. Modelled here by dropping the pool between the preflight
+    and the fallback, which a fixed ``avail_mib`` in the other tests cannot express.
+    """
+    backend, gguf = _apu_pinned_projector_backend(
+        tmp_path, monkeypatch, gguf_gb = 40.0, mmproj_gb = 8.0, avail_mib = 46 * 1024
+    )
+    # 46 GB free at the preflight; the resident 40 GB of weights leave 6 GB by the time
+    # the text-only retry is healthy. Only the first reading is the one being repriced.
+    readings = iter([46 * 1024])
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: next(readings, 6 * 1024)),
+    )
+
+    _launch_with_text_only_fallback(backend, gguf, extra_args = ["--no-mmproj-offload"])
+
+    assert backend.last_load_warning is None, (
+        "the reprice charged the weights against a pool they are already occupying, so "
+        f"a model that started fine still warns it does not fit: {backend.last_load_warning}"
+    )
+
+
+def test_a_projector_the_weights_alone_still_outgrow_keeps_its_warning(tmp_path, monkeypatch):
+    """The control. Same fallback, but the weights on their own are already too big
+    for this APU, so dropping the projector changes nothing the user needs to know and
+    the advisory stays."""
+    backend, gguf = _apu_pinned_projector_backend(
+        tmp_path, monkeypatch, gguf_gb = 64.6, mmproj_gb = 8.0, avail_mib = 46 * 1024
+    )
+
+    _launch_with_text_only_fallback(backend, gguf, extra_args = ["--no-mmproj-offload"])
+
+    assert "unified-memory APU" in (backend.last_load_warning or "")
+
+
+# ── The resident advisory outlives an attempt that never touched the server ───
+def _load_rejected(backend, intent, **load_kwargs):
+    """Run a load that is expected to stand down before the Phase 1 teardown, and
+    report nothing about it: what the caller asserts is the server left behind."""
+    try:
+        return backend.load_model(intent, **load_kwargs)
+    except (RuntimeError, ValueError, FileNotFoundError):
+        return False
+
+
+def test_a_rejected_load_leaves_the_resident_advisory_alone(tmp_path, monkeypatch):
+    """An oversized model is serving, and its advisory is the only thing telling the
+    user why generation crawls. A load that is refused before the teardown leaves that
+    child running, so retiring its notice reported memory_warning: null for a model
+    that is still paging -- including on the very next already_loaded answer."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+
+    resident = _launch(backend, gguf)
+    assert resident["cmd"]
+    warned = backend.last_load_warning
+    assert "unified-memory APU" in (warned or "")
+
+    # 1. The in-app update refusal: the first check in load_model, above everything.
+    backend._llama_update_in_progress = True
+    assert not _load_rejected(
+        backend, GgufLoadIntent(gguf_path = str(gguf), model_identifier = "other")
+    )
+    backend._llama_update_in_progress = False
+    assert backend.last_load_warning == warned, (
+        "the update refusal retired the advisory of a server it never touched: "
+        f"{backend.last_load_warning}"
+    )
+
+    # 2. A cancel that lands before the teardown, on a different model.
+    cancelled = threading.Event()
+    cancelled.set()
+    assert not _load_rejected(
+        backend,
+        GgufLoadIntent(gguf_path = str(gguf), model_identifier = "other"),
+        load_cancel_event = cancelled,
+    )
+    assert backend.last_load_warning == warned, (
+        f"the cancelled load retired the resident advisory: {backend.last_load_warning}"
+    )
+
+    # 3. ...and the already_loaded fast path still carries it, which is what the route
+    # reads for memory_warning on a repeat /load.
+    assert backend.load_model(GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test"))
+    assert backend.last_load_warning == warned, (
+        f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
+    )
