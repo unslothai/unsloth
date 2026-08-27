@@ -528,7 +528,8 @@ def test_no_card_is_ever_asked_to_hold_more_than_it_has(tmp_path):
     # inherits the ambient CUDA_VISIBLE_DEVICES exactly as the Studio lanes do,
     # and asserting it against a card index tests the box this ran on.
     pinned = [
-        p for p in stub.papermill
+        p
+        for p in stub.papermill
         if p["notebook"] not in {f"t4_{LEGS[n].name}.ipynb" for n in ALL_LEGS if LEGS[n].all_cards}
     ]
     assert set(p["cuda"] for p in pinned) == {"0", "1"}, stub.papermill
@@ -686,9 +687,7 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
     # Studio lanes above; asserting it against a card index tests the box the
     # suite ran on rather than the scheduler.
     unpinned = {f"t4_{LEGS[n].name}.ipynb" for n in ALL_LEGS if LEGS[n].all_cards}
-    leg_cards = [
-        c["cuda"] for n, c in calls.items() if n.startswith("t4_") and n not in unpinned
-    ]
+    leg_cards = [c["cuda"] for n, c in calls.items() if n.startswith("t4_") and n not in unpinned]
     assert len(leg_cards) == len(ALL_LEGS) - len(unpinned), calls
     assert set(leg_cards) == {"0", "1"}, leg_cards
     # Every all-card leg really did run, and really did run unpinned. Without

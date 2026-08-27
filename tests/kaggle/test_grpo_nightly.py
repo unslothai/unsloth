@@ -63,9 +63,7 @@ def _nightly_legs():
     # bypass a few lines above reads `github.event_name == 'schedule' && 'true'`
     # and a loose pattern picks THAT up: the first version of this helper
     # reported the nightly leg set as ["true"].
-    match = re.search(
-        r"LEG_LIST:.*github\.event_name == 'schedule' && '([a-z_,]+)'", TEXT
-    )
+    match = re.search(r"LEG_LIST:.*github\.event_name == 'schedule' && '([a-z_,]+)'", TEXT)
     assert match, "the schedule selects no leg list at all"
     return [name for name in match.group(1).split(",") if name]
 

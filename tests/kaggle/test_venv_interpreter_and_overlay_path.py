@@ -72,10 +72,7 @@ def _driver_source() -> str:
         payloads,
         per_run_timeout = 3600,
         vram_source = {f"t4_{legs.LEGS[n].name}.ipynb": legs.LEGS[n] for n in names},
-        overlays = {
-            f"t4_{legs.LEGS[n].name}.ipynb": tuple(legs.LEGS[n].overlay)
-            for n in names
-        },
+        overlays = {f"t4_{legs.LEGS[n].name}.ipynb": tuple(legs.LEGS[n].overlay) for n in names},
     )
     return "".join("".join(c["source"]) for c in driver["cells"])
 
@@ -84,12 +81,13 @@ def _driver_source() -> str:
 # Defect one: the interpreter
 # --------------------------------------------------------------------------
 
+
 def test_the_venv_is_built_on_the_drivers_own_interpreter():
     """`--system-site-packages` on a different python version is a silent
     no-op, so the flag alone is not the guard. The interpreter is."""
     source = _driver_source()
     body = source.split("def _make_venv(")[1].split("def run_one(")[0]
-    cmd = re.search(r'venv_cmd = \[([^\]]*)\]', body)
+    cmd = re.search(r"venv_cmd = \[([^\]]*)\]", body)
     assert cmd, "the uv venv command is no longer a literal list; re-read this rule"
     assert '"--python"' in cmd.group(1) and "sys.executable" in cmd.group(1), (
         "uv venv runs without --python, so uv's `managed` python-preference "
@@ -115,14 +113,15 @@ def test_the_resulting_python_version_is_REPORTED():
         "the _VENV record does not carry the venv's python version, so the "
         "next wrong-interpreter run is again only visible by inference"
     )
-    assert "sys.version_info" in body, (
-        "nothing compares the venv against the driver's own interpreter"
-    )
+    assert (
+        "sys.version_info" in body
+    ), "nothing compares the venv against the driver's own interpreter"
 
 
 # --------------------------------------------------------------------------
 # Defect two: the overlay directory, driven against the real dill predicate
 # --------------------------------------------------------------------------
+
 
 def _overlay_dir_from_generated_source() -> pathlib.Path:
     """Evaluate the driver's OWN `_ov_dir` expression.
@@ -131,10 +130,7 @@ def _overlay_dir_from_generated_source() -> pathlib.Path:
     it fails when the generated expression changes.
     """
     source = _driver_source()
-    line = [
-        ln.strip() for ln in source.splitlines()
-        if ln.strip().startswith("_ov_dir = ")
-    ]
+    line = [ln.strip() for ln in source.splitlines() if ln.strip().startswith("_ov_dir = ")]
     assert len(line) == 1, f"expected one _ov_dir assignment, found {len(line)}"
     scope = {
         "VENV_ROOT": pathlib.Path("/tmp/t4ci_venvs"),
@@ -196,6 +192,6 @@ def test_the_overlay_target_flag_uses_that_directory():
         "the overlay install no longer targets _ov_dir, so the directory the "
         "rules above check is not where packages land"
     )
-    assert 'env["PYTHONPATH"] = str(_ov_dir)' in source, (
-        "the overlay is installed somewhere the payload never reads"
-    )
+    assert (
+        'env["PYTHONPATH"] = str(_ov_dir)' in source
+    ), "the overlay is installed somewhere the payload never reads"
