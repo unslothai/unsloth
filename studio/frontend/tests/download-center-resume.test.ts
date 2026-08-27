@@ -49,6 +49,8 @@ test("a failed or cancelled row offers Resume in Downloads", () => {
   assert.match(PANEL, /aria-label="Resume download"/);
   assert.match(PANEL, /resumeRequestFromJob/);
   assert.match(PANEL, /downloadManager.requestStart/);
+  // Playwright and AppImage cancel/retry smokes wait on this exact copy.
+  assert.match(PANEL, /Cancelled\. Partial files kept\./);
 });
 
 test("failed and cancelled jobs are persisted so a restart can resume them", () => {
