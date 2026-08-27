@@ -49,4 +49,11 @@ __all__ = [
 ]
 
 # Bind the re-export so the import-hoist verifier counts it as used.
-_ = (rag_router, video_router, research_runs_router, chat_generation_runs_router, unforgettable_router, youtube_router)
+_ = (
+    rag_router,
+    video_router,
+    research_runs_router,
+    chat_generation_runs_router,
+    unforgettable_router,
+    youtube_router,
+)
