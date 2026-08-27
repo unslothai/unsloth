@@ -767,8 +767,11 @@ def test_a_sub_211_build_of_the_right_family_is_still_repaired():
     gfx1152 through the missing-kernel branch rather than the Strix one, so this is the only
     floor such a host meets."""
     calls = _run_install(
-        gfx_devices = ("gfx1152",), inferred = "gfx1152", rocm_version = None,
-        torch_probe = _ROCM_ARCH_TORCH_210, installed_family = "gfx1152",
+        gfx_devices = ("gfx1152",),
+        inferred = "gfx1152",
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH_210,
+        installed_family = "gfx1152",
     )
     assert f"{_AMD}/gfx1152/" in calls and "torch>=2.11.0,<2.12.0" in calls, calls
 
@@ -777,8 +780,11 @@ def test_at_the_floor_the_matching_family_is_still_skipped():
     """The other half of the same gate: at or above 2.11 the family match still wins, so an
     up-to-date host does not re-download the multi-GB stack on every update."""
     calls = _run_install(
-        gfx_devices = ("gfx1152",), inferred = "gfx1152", rocm_version = None,
-        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx1152",
+        gfx_devices = ("gfx1152",),
+        inferred = "gfx1152",
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx1152",
     )
     assert f"{_AMD}/gfx1152/" not in calls, calls
     assert "torch already runs on the gfx1152 wheels" in _run_install.printed
@@ -790,7 +796,10 @@ def test_a_stale_family_is_repaired_when_no_generic_tag_resolves():
     wheels' own bundled runtime. The branch would announce a reinstall, install nothing, and
     leave the family it just called incompatible in place on every update."""
     calls = _run_install(
-        gfx_devices = ("gfx1200",), inferred = "gfx1200", rocm_version = None,
-        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx110x-all",
+        gfx_devices = ("gfx1200",),
+        inferred = "gfx1200",
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
     )
     assert f"{_AMD}/gfx120X-all/" in calls, calls
