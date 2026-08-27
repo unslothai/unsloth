@@ -165,9 +165,7 @@ _QUOTED_HEADER_PAIR_RE = re.compile(
 )
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!"
-    + _PYTHON_BYTES_PREFIX
-    + r"[\"'])"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
     r"(?P<val>[^\"'\s,}\]]+)"
 )
 _QUOTED_FLAG_RE = re.compile(
@@ -270,9 +268,7 @@ _COOKIE_RE = re.compile(
 # Exact secret keys mask every non-empty value. Preserve only explicit null
 # sentinels, which communicate that no credential was configured.
 _NON_SECRET_SENTINELS = frozenset({"none", "null"})
-_SEMICOLON_FIELD_BOUNDARY_RE = re.compile(
-    r";(?=\s*[A-Za-z_][A-Za-z0-9_.-]*\s*[:=])"
-)
+_SEMICOLON_FIELD_BOUNDARY_RE = re.compile(r";(?=\s*[A-Za-z_][A-Za-z0-9_.-]*\s*[:=])")
 _YAML_BLOCK_MARKER_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?|[+-])?")
 _PRIVATE_KEY_BLOCK_RE = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?"
