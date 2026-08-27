@@ -1297,6 +1297,21 @@ def _infer_linux_amd_gfx_arch() -> "str | None":
     return _linux_amd_gfx_from_lspci()
 
 
+def _index_url_join(base: str, leaf: str) -> str:
+    """Append a path segment to a wheel index URL, keeping any query / fragment.
+
+    A mirror can carry its token in the query -- that is exactly what
+    _strip_index_url_credentials strips before printing -- and rstrip + concat then buries
+    the leaf inside it: "https://m/whl?token=x" + "gfx110X-all" becomes
+    "https://m/whl?token=x/gfx110X-all/", which asks for /whl and hides the arch in the
+    token. Splits on the FIRST of "?" or "#", so a URL carrying both keeps them in order.
+    """
+    _head, _sep, _tail = base.partition("?")
+    if not _sep:
+        _head, _sep, _tail = base.partition("#")
+    return f"{_head.rstrip('/')}/{leaf}/{_sep}{_tail}"
+
+
 def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     """Return the AMD per-arch pip index URL for a gfx arch (Linux + Windows).
 
@@ -1310,10 +1325,8 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
     if arch_family is None:
         return None
-    base = (os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl").rstrip(
-        "/"
-    )
-    return f"{base}/{arch_family}/"
+    base = os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
+    return _index_url_join(base, arch_family)
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
@@ -1321,7 +1334,7 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
     if arch_family is None:
         return None
-    return f"{_ROCM_WINDOWS_INDEX_BASE}/{arch_family}/"
+    return _index_url_join(_ROCM_WINDOWS_INDEX_BASE, arch_family)
 
 
 def _rocm_family_token(text: str) -> "str | None":
@@ -3255,10 +3268,9 @@ def _ensure_rocm_torch() -> None:
         if _detected_strix:
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
-                _amd_mirror = (
-                    os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
-                ).rstrip("/")
-                _arch_index_url = f"{_amd_mirror}/{_selected_gfx}/"
+                # One owner for the mirror env var and the arch-to-leaf map, shared with
+                # the inferred-arch install above and the missing-kernel route below.
+                _arch_index_url = _amd_arch_index_url(_selected_gfx)
                 _arch_index_pkgs = (
                     "torch>=2.11.0,<2.12.0",
                     # Pin companions to the 2.11.x range: the exclusive --index-url could
@@ -3318,10 +3330,7 @@ def _ensure_rocm_torch() -> None:
                         f"keeping it.\n"
                     )
                 elif _leaf is not None:
-                    _amd_mirror = (
-                        os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
-                    ).rstrip("/")
-                    _arch_index_url = f"{_amd_mirror}/{_leaf}/"
+                    _arch_index_url = _amd_arch_index_url(_runtime_gfx)
                     # Keep older per-arch builds valid while bounding companion versions,
                     # except on the leaves whose sub-2.11 builds carry the _grouped_mm bug.
                     # The Strix reroute floors those at 2.11 and the generic branch floors

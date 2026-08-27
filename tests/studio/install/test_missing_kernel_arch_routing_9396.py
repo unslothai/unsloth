@@ -554,3 +554,46 @@ def test_an_all_integrated_host_is_never_deposed():
     """Every candidate is a shadowing APU, so there is no discrete card to prefer."""
     calls = _run_install(gfx_devices = ("gfx1103", "gfx1036"))
     assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+# ── building the index URL ───────────────────────────────────────────────────
+
+
+def test_the_leaf_lands_on_the_path_not_inside_a_mirror_token():
+    """A mirror can carry its token in the query. rstrip + concat buried the arch inside
+    it and left the request pointing at the bare mirror path."""
+    assert (
+        stack_mod._index_url_join("https://m.example/whl?token=x", "gfx110X-all")
+        == "https://m.example/whl/gfx110X-all/?token=x"
+    )
+    assert (
+        stack_mod._index_url_join("https://m.example/whl#frag", "gfx110X-all")
+        == "https://m.example/whl/gfx110X-all/#frag"
+    )
+    assert (
+        stack_mod._index_url_join("https://m.example/whl?a=1#f", "gfx1152")
+        == "https://m.example/whl/gfx1152/?a=1#f"
+    )
+
+
+def test_a_plain_mirror_is_joined_exactly_as_before():
+    for base in ("https://repo.amd.com/rocm/whl", "https://repo.amd.com/rocm/whl/"):
+        assert (
+            stack_mod._index_url_join(base, "gfx103X-all")
+            == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+        )
+
+
+def test_a_query_mirror_reaches_the_arch_index_end_to_end():
+    calls = _run_install(
+        gfx_devices = ("gfx1103",),
+        env = {"UNSLOTH_AMD_ROCM_MIRROR": "https://m.example/whl?token=x"},
+    )
+    assert "https://m.example/whl/gfx110X-all/?token=x" in calls, calls
+
+
+def test_every_strix_arch_has_a_leaf_in_the_shared_map():
+    """Both reroutes now build their URL through _amd_arch_index_url, which returns None
+    for an arch the map does not name; the Strix set must stay inside it."""
+    for arch in ("gfx1150", "gfx1151", "gfx1152"):
+        assert stack_mod._GFX_TO_AMD_INDEX_ARCH.get(arch) == arch, arch
