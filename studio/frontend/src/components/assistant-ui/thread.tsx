@@ -4192,44 +4192,38 @@ const Composer: FC<{
       const waitForCurrentRun =
         aui.thread().getState().isRunning ||
         hasPreStreamRunReservation(preStreamThreadIds);
-      // A parked send is a submit that arrives late, so the release mirrors
-      // handleSubmit's own branches rather than inventing shorter ones.
-      // Sending regardless is how a message vanished: measured on a throttled
-      // browser, a follow-up parked on the settings gate 786 ms after the
-      // chat's first send was released 236 ms later with the first turn still
-      // streaming, went straight to sendReservedComposer(), and was refused by
-      // the runtime -- no queue entry, no send, and the wait toast already
-      // dismissed above, so nothing on screen said so.
+      // A parked send is a submit arriving late, so mirror handleSubmit's
+      // branches. Sending regardless is how a message vanished: on a throttled
+      // browser a follow-up parked 786 ms in was released 236 ms later with
+      // the first turn still streaming, went to sendReservedComposer(), and
+      // was refused by the runtime -- neither queued nor sent, and the wait
+      // toast already dismissed above, so nothing on screen said so.
       //
-      // Research refuses every submit at the top of handleSubmit and the UI
-      // shows Stop research in place of Send, so a prompt released into one
-      // would be a turn started from a state where input is disabled. Keep it
-      // in the composer, draft and all, exactly as a live submit would.
+      // Research refuses every submit and swaps Send for Stop research, so a
+      // release here would start a turn from a state where input is disabled.
       if (isResearchActive) {
         return;
       }
       if (waitForCurrentRun) {
-        // The project new-chat composer never queues: queueing there binds the
-        // follow-up to a thread that does not exist yet.
+        // Queueing on the project new-chat composer binds the follow-up to a
+        // thread that does not exist yet.
         if (disableQueue) {
           toast.error("Wait for the current response to finish");
           return;
         }
-        // The draft stays until the queue actually starts. queueComposerText
-        // clears it from its onStarted callback, so a target that resolves to
-        // null leaves the text recoverable instead of erased.
+        // queueComposerText clears the draft from its onStarted callback, so a
+        // queue that never starts leaves the text recoverable.
         if (canQueueCurrentPrompt) {
           queueComposerText(true);
           return;
         }
         // A long paste lives in an attachment, so queueing the text alone
-        // queues nothing at all when that is all there is.
+        // queues nothing when that is all there is.
         if (canQueuePastedTextPrompt && queuePastedTextPrompt(true)) {
           return;
         }
-        // Nothing queueable and a run is live. handleSubmit keeps the prompt
-        // and says why; sending here would push the attachment into the
-        // running thread, which is the collision this whole branch avoids.
+        // Nothing queueable while a run is live: keep it and say why. Sending
+        // would push the attachment into the running thread.
         if (overlay || hasAttachments || hasPendingAudio) {
           toast.error("Wait for the current response to finish", {
             description:

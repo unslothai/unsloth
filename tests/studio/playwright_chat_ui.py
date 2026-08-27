@@ -65,12 +65,10 @@ PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# Emulate a slow CPU, so a fat build machine renders like the 4 vCPU boxes
-# plenty of users and every Kaggle session actually run. Not decoration: the
-# rapid-submit step passes here unthrottled and fails at 4x and 8x, and that is
-# how the parked-send bug this driver kept reporting on Kaggle was finally
-# reproduced away from it. Off unless set, so an ordinary lane is byte for byte
-# unchanged. Chromium only -- it is delivered over CDP.
+# Render like the 4 vCPU boxes users and Kaggle sessions actually run on. The
+# rapid-submit step passes unthrottled here and fails at 4x and 8x, which is how
+# the parked-send bug was finally reproduced off Kaggle. Off unless set, and
+# Chromium only, since it is delivered over CDP.
 CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
 
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
@@ -105,11 +103,10 @@ def recover_or_replace_page(page, ctx, **kwargs):
     """The shared recovery, with the throttle carried onto a replacement page.
 
     `Emulation.setCPUThrottlingRate` is scoped to the PAGE TARGET, so a page
-    that `ctx.new_page()` created runs at full speed however the option was
-    set. Every remaining step -- the rapid-submit one most of all -- would then
-    pass under exactly the conditions the throttle exists to reproduce, which
-    is a false pass rather than a missing one. Wrapping the import rather than
-    each call site means a fourth recovery point cannot forget this.
+    from `ctx.new_page()` runs at full speed however the option was set, and
+    every remaining step would pass under exactly the conditions the throttle
+    exists to reproduce. Wrapping the import rather than each call site means a
+    fourth recovery point cannot forget it.
     """
     replacement = _robust_recover_or_replace_page(page, ctx, **kwargs)
     if replacement is not page:

@@ -3,15 +3,14 @@
 
 """`STUDIO_UI_CPU_THROTTLE` is delivered over CDP, so it is Chromium only.
 
-The driver documents firefox and webkit as supported browsers, so the pairing
-is reachable from the documented environment alone, and `new_cdp_session` on
-either raises a Playwright error about CDP that never names the option that
-caused it. The driver refuses the combination before launch instead, which is
-what it already does for `STUDIO_PLAYWRIGHT_CHANNEL`.
+firefox and webkit are documented as supported, so the pairing is reachable
+from the environment alone and `new_cdp_session` raises a CDP error that never
+names the option. The driver refuses it before launch, as it already does for
+`STUDIO_PLAYWRIGHT_CHANNEL`.
 
 Comments are stripped before every match: this file's own prose says
-"chromium", and a guard satisfied by its neighbouring comment is a guard that
-passes while the code is gone.
+"chromium", and a guard its neighbouring comment satisfies passes while the
+code is gone.
 """
 
 import ast
@@ -58,11 +57,10 @@ def test_a_non_chromium_browser_refuses_the_throttle():
 
 
 def test_the_refusal_precedes_the_first_page():
-    """Order is the whole point: after a page exists it is not a refusal.
+    """Order is the point: after a page exists it is not a refusal.
 
-    Read against the launch function rather than the file, because the CDP call
-    now lives in a helper defined near the top -- textual order across the file
-    would say nothing about what runs first.
+    Read against the launch function, not the file: the CDP call lives in a
+    helper near the top, so file order says nothing about what runs first.
     """
     launch = CODE[CODE.index("browser_type = getattr(p, PLAYWRIGHT_BROWSER)") :]
     guard = launch.index("CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER")
@@ -90,10 +88,9 @@ def test_the_cdp_call_has_exactly_one_owner():
 def test_a_replacement_page_is_throttled_again():
     """`Emulation.setCPUThrottlingRate` is scoped to the page TARGET.
 
-    `recover_or_replace_page` hands back a page from `ctx.new_page()` when the
-    renderer died, and that one runs at full speed. Every later step then
-    passes under exactly the conditions the throttle exists to reproduce --
-    a false pass, in the slow case, which is the case that matters.
+    A page from `ctx.new_page()` after a renderer death runs at full speed, so
+    every later step passes under exactly the conditions the throttle exists to
+    reproduce -- a false pass in the case that matters.
     """
     assert "recover_or_replace_page as _robust_recover_or_replace_page" in CODE, (
         "the shared helper is imported under its own name, so the call sites "
