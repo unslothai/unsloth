@@ -41,6 +41,7 @@ dependencies = [
 
 [project.scripts]
 unsloth = "unsloth_cli:app"
+unforgettable = "unforgettable.cli:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "unsloth._version.__version__"}
@@ -84,6 +85,7 @@ exclude = [
     "tests*",
     "studio.backend.tests*",
     "studio.backend.*.tests*",
+    "unforgettable.tests*",
     "unsloth_compiled_cache*",
     "*.unsloth_compiled_cache*",
     "*.node_modules",
@@ -99,6 +101,7 @@ exclude = [
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
+"unforgettable" = ["tests/*"]
 
 [project.optional-dependencies]
 # Unsloth's server stack, mirroring studio/backend/requirements/studio.txt.

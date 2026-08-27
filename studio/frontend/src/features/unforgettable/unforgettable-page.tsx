@@ -3,29 +3,18 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { useSettingsDialogStore } from "@/features/settings";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type Dispatch,
-  type SetStateAction,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   admitRecord,
   compileRecord,
   deprecateRecord,
   fetchAdapters,
   fetchCompiled,
-  fetchContradictions,
-  fetchAdmissions,
   fetchRecords,
-  fetchRollouts,
   fetchSummary,
   patchProposedRecord,
   promoteAdapter,
@@ -36,6 +25,10 @@ import {
   runReview,
   uncompileRecord,
 } from "./api/memory-api";
+import { ageLabel, shortId } from "./format";
+import { HygienePanel, type HygieneReport } from "./hygiene-panel";
+import { Inspector } from "./inspector";
+import { SidecarPanel } from "./sidecar-panel";
 import type {
   AdapterRow,
   MemoryRecord,
@@ -62,38 +55,11 @@ const WORKSPACE_LABEL: Record<WorkspaceTab, TranslationKey> = {
   hygiene: "unforgettable.workspace.hygiene",
 };
 
-const HYGIENE_LABEL: Record<
-  "compact" | "contradictions" | "admissions" | "rollouts",
-  TranslationKey
-> = {
-  compact: "unforgettable.hygiene.compact",
-  contradictions: "unforgettable.hygiene.contradictions",
-  admissions: "unforgettable.hygiene.admissions",
-  rollouts: "unforgettable.hygiene.rollouts",
-};
-
 function statusForTab(tab: WorkspaceTab): string | undefined {
   if (tab === "inbox") return "proposed";
   if (tab === "notebook") return "active";
   if (tab === "archive") return "deprecated,superseded,rejected";
   return undefined;
-}
-
-function shortId(id: string) {
-  return id.slice(0, 8);
-}
-
-function ageLabel(iso?: string) {
-  if (!iso) return "";
-  const then = Date.parse(iso);
-  if (!Number.isFinite(then)) return "";
-  const delta = Date.now() - then;
-  const minutes = Math.round(delta / 60000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
 }
 
 export function UnforgettablePage() {
@@ -112,12 +78,7 @@ export function UnforgettablePage() {
   const [busy, setBusy] = useState(false);
   const [force, setForce] = useState(false);
   const [adapters, setAdapters] = useState<AdapterRow[]>([]);
-  const [hygiene, setHygiene] = useState<{
-    compact?: string;
-    contradictions?: string;
-    admissions?: string;
-    rollouts?: string;
-  }>({});
+  const [hygiene, setHygiene] = useState<HygieneReport>({});
   const [operatorReport, setOperatorReport] = useState<OperatorItem[] | null>(
     null,
   );
@@ -579,293 +540,6 @@ export function UnforgettablePage() {
           />
         </div>
       )}
-    </div>
-  );
-}
-
-function Inspector({
-  record,
-  tab,
-  draftTitle,
-  draftBody,
-  force,
-  busy,
-  onTitle,
-  onBody,
-  onForce,
-  onAdmit,
-  onReject,
-  onSave,
-  onCompile,
-  onUncompile,
-  onDeprecate,
-}: {
-  record: MemoryRecord | null;
-  tab: WorkspaceTab;
-  draftTitle: string;
-  draftBody: string;
-  force: boolean;
-  busy: boolean;
-  onTitle: (value: string) => void;
-  onBody: (value: string) => void;
-  onForce: (value: boolean) => void;
-  onAdmit: () => void;
-  onReject: () => void;
-  onSave: () => void;
-  onCompile: () => void;
-  onUncompile: () => void;
-  onDeprecate: () => void;
-}) {
-  const t = useT();
-  if (!record) {
-    return (
-      <div className="rounded-xl border border-dashed border-border/70 p-6 text-sm text-muted-foreground">
-        {t("unforgettable.inspector.noSelection")}
-      </div>
-    );
-  }
-  const proposed = record.status === "proposed";
-  const canAdmit =
-    record.status === "proposed" ||
-    record.status === "deprecated" ||
-    force;
-  const canReject = record.status === "proposed";
-  const canCompile = record.kind === "procedure" && record.status === "active";
-  return (
-    <div className="flex min-h-0 flex-col gap-3 rounded-xl border border-border/70 p-4">
-      <div className="text-xs text-muted-foreground">
-        {shortId(record.id)} · {record.kind} · {record.status} ·{" "}
-        {record.provenance}
-        {record.source_episode_id
-          ? ` · ep ${shortId(record.source_episode_id)}`
-          : ""}
-      </div>
-      <Input
-        value={draftTitle}
-        onChange={(event) => onTitle(event.target.value)}
-        disabled={!proposed || busy}
-      />
-      <Textarea
-        value={draftBody}
-        onChange={(event) => onBody(event.target.value)}
-        disabled={!proposed || busy}
-        className="min-h-40"
-      />
-      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-        <input
-          type="checkbox"
-          checked={force}
-          onChange={(event) => onForce(event.target.checked)}
-        />
-        {t("unforgettable.inspector.force")}
-      </label>
-      <div className="flex flex-wrap gap-2">
-        {proposed ? (
-          <Button type="button" size="sm" disabled={busy} onClick={onSave}>
-            {t("unforgettable.inspector.save")}
-          </Button>
-        ) : null}
-        {canAdmit ? (
-          <Button type="button" size="sm" disabled={busy} onClick={onAdmit}>
-            {t("unforgettable.inspector.admit")}
-          </Button>
-        ) : null}
-        {canReject ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={onReject}
-          >
-            {t("unforgettable.inspector.reject")}
-          </Button>
-        ) : null}
-        {canCompile && tab !== "standing" ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={onCompile}
-          >
-            {t("unforgettable.inspector.compile")}
-          </Button>
-        ) : null}
-        {tab === "standing" ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={onUncompile}
-          >
-            {t("unforgettable.inspector.uncompile")}
-          </Button>
-        ) : null}
-        {record.status === "active" ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={onDeprecate}
-          >
-            {t("unforgettable.inspector.deprecate")}
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function HygienePanel({
-  busy,
-  hygiene,
-  onCompact,
-  onReport,
-}: {
-  busy: boolean;
-  hygiene: {
-    compact?: string;
-    contradictions?: string;
-    admissions?: string;
-    rollouts?: string;
-  };
-  onCompact: (apply: boolean) => void;
-  onReport: Dispatch<
-    SetStateAction<{
-      compact?: string;
-      contradictions?: string;
-      admissions?: string;
-      rollouts?: string;
-    }>
-  >;
-}) {
-  const t = useT();
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.all([
-      fetchContradictions(),
-      fetchAdmissions(),
-      fetchRollouts(),
-    ])
-      .then(([contradictions, admissions, rollouts]) => {
-        if (cancelled) return;
-        onReport((prev) => ({
-          ...prev,
-          contradictions: JSON.stringify(contradictions, null, 2),
-          admissions: JSON.stringify(admissions, null, 2),
-          rollouts: JSON.stringify(rollouts, null, 2),
-        }));
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        toast.error(
-          error instanceof Error ? error.message : t("unforgettable.errors.load"),
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [onReport, t]);
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          onClick={() => onCompact(false)}
-        >
-          {t("unforgettable.hygiene.compact")}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy}
-          onClick={() => onCompact(true)}
-        >
-          {t("unforgettable.hygiene.compactApply")}
-        </Button>
-      </div>
-      {(["compact", "contradictions", "admissions", "rollouts"] as const).map(
-        (key) =>
-          hygiene[key] ? (
-            <section key={key}>
-              <h2 className="mb-1 text-sm font-medium">
-                {t(HYGIENE_LABEL[key])}
-              </h2>
-              <pre className="max-h-56 overflow-auto rounded-lg bg-muted/50 p-3 text-xs">
-                {hygiene[key]}
-              </pre>
-            </section>
-          ) : null,
-      )}
-    </div>
-  );
-}
-
-function SidecarPanel({
-  adapters,
-  busy,
-  onPromote,
-  onRollback,
-}: {
-  adapters: AdapterRow[];
-  busy: boolean;
-  onPromote: (id: string) => void;
-  onRollback: () => void;
-}) {
-  const t = useT();
-  if (adapters.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-border/70 p-6 text-sm text-muted-foreground">
-        {t("unforgettable.sidecar.empty")}
-      </div>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          onClick={onRollback}
-        >
-          {t("unforgettable.sidecar.rollback")}
-        </Button>
-      </div>
-      <ul className="divide-y divide-border/60 rounded-xl border border-border/70">
-        {adapters.map((adapter) => (
-          <li
-            key={adapter.id}
-            className="flex items-center justify-between gap-3 px-3 py-2.5"
-          >
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium">
-                {shortId(adapter.id)} · {adapter.status}
-              </div>
-              <div className="truncate text-xs text-muted-foreground">
-                {adapter.recipe} · {adapter.backend}
-              </div>
-            </div>
-            {adapter.status !== "promoted" ? (
-              <Button
-                type="button"
-                size="sm"
-                disabled={busy}
-                onClick={() => onPromote(adapter.id)}
-              >
-                {t("unforgettable.sidecar.promote")}
-              </Button>
-            ) : null}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

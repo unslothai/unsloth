@@ -37,11 +37,8 @@ These are **not** new architecture. They are leftovers the phase docs parked on 
 
 | Leftover | Where it sits today |
 |----------|---------------------|
-| Live LoRA attach | **Shipped.** `StudioHost.generate` sets `payload.use_adapter` to a PEFT adapter directory. The inference worker loads it for that pass and restores. Fake dirs and GGUF inners fail open. |
-| Unsloth DPO | **Shipped.** `--recipe preference` uses TRL `DPOTrainer` after Unsloth (same LoRA recipe as SFT). Missing `trl` still errors before any Unsloth import. CI stays on the fake backend. |
 | Compact is explicit-only | CLI / `memory_compact`. Never at episode end, never on a timer. |
 | Extract stays proposed | Naive `error_fix` and `llm_extract` drafts do not auto-admit. Operator `admit` is the promote path. |
-| No `console_scripts` | Entry is `python -m unforgettable`. |
 
 ### Locks that later work must not reopen
 
@@ -62,8 +59,8 @@ Permanent anti-patterns (do not put on a sprint) are listed at the end, not here
 
 ### 1. Hours — packaging and one-liners
 
-**1. `console_scripts` entry**
-MemPhase2: “No console_scripts entry required … Optional later.” `TECHNICAL.md` §2.5 still has none. Add `unforgettable = unforgettable.cli:main` in root `pyproject.toml` so `unforgettable list` works after install. Relocatable `python -m` stays.
+**1. `console_scripts` entry** — **Done.**
+`unforgettable = unforgettable.cli:main` in root `pyproject.toml`. Relocatable `python -m unforgettable` stays.
 
 **2. Confirm the model picker lists `unforgettable`**
 MemPhase1 frontend follow-up: if the desktop picker filters to real GGUF/safetensors, add a one-line allow for the synthetic id. Catalog already emits it. Check first; do nothing if it already appears.

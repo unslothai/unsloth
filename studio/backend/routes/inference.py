@@ -4436,7 +4436,7 @@ async def _select_request_tools(
             if extras:
                 tools = list(tools) + extras
     except Exception:
-        pass
+        get_logger(__name__).debug("unforgettable inner-generate tool union skipped", exc_info = True)
     # Same rule for the conversation archive: offered only once this thread has had turns
     # evicted, so a short chat never sees the extra schema. On the first compaction the
     # tool is still absent (the archive is written mid-request) and the forced recall

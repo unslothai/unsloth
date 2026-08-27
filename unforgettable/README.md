@@ -115,6 +115,7 @@ export UNFORGETTABLE_DB="$STUDIO_HOME/memory/memory.db"
 # or: export STUDIO_HOME=…   (CLI picks $STUDIO_HOME/memory/memory.db when that tree exists)
 # else: $UNFORGETTABLE_HOME/memory.db or ~/.unforgettable/memory.db
 
+# After `pip install -e .`, `unforgettable` is the same as `python -m unforgettable`.
 python -m unforgettable path
 python -m unforgettable list --kind procedure --status active
 python -m unforgettable search "pytest"

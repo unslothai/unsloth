@@ -10,7 +10,10 @@ every return in that module.
 
 from __future__ import annotations
 
+import logging
 from functools import wraps
+
+_log = logging.getLogger(__name__)
 
 _ALWAYS_SAFE_EXTRA = frozenset({"memory_search", "memory_get"})
 _installed = False
@@ -51,7 +54,7 @@ def install() -> None:
             from unforgettable.loop.runtime import note_tool_result
             note_tool_result(name, arguments or {}, result)
         except Exception:
-            pass
+            _log.exception("unforgettable note_tool_result failed for %s", name)
         return result
 
     tools_mod.execute_tool = execute_tool

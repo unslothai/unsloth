@@ -77,7 +77,6 @@ import {
   ArrowDown01Icon,
   ArrowRight02Icon,
   ArrowUp01Icon,
-  Bookmark02Icon,
   BadgeInfoIcon,
   BookOpen01Icon,
   BubbleChatIcon,
@@ -214,6 +213,7 @@ import {
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
+import { UNFORGETTABLE_NAV_ITEM_META } from "@/features/unforgettable/studio-ui";
 import {
   Fragment,
   useCallback,
@@ -2086,8 +2086,8 @@ export function AppSidebar() {
       },
     },
     unforgettable: {
-      icon: Bookmark02Icon,
-      label: t("shell.navigation.unforgettable"),
+      icon: UNFORGETTABLE_NAV_ITEM_META.icon,
+      label: t(UNFORGETTABLE_NAV_ITEM_META.labelKey),
       active:
         pathname === "/unforgettable" || pathname.startsWith("/unforgettable/"),
       onClick: () => {

@@ -162,7 +162,8 @@ Optional (`getattr` skip):
 
 | File | What it may do |
 |------|----------------|
-| `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, sidecar prepare/restore, `supervise` one-shot |
+| `studio/backend/core/unforgettable_host.py` | `StudioHost`, `handle_chat_completions`, sidecar prepare/restore, `supervise` one-shot. `install()` is called from `main.py`, not on import. |
+| `studio/backend/core/unforgettable_stream.py` | Inner SSE rewrite / drain (`_rewrite_inner_frame`, `_forward_inner_stream`). Re-exported from the host for tests. |
 | `studio/backend/core/unforgettable_patches.py` | `install()` wraps `execute_tool` (memory/rims `dispatch` + `note_tool_result`) and extends `_ALWAYS_SAFE_TOOLS`. Do not edit `tools.py`. |
 | `studio/backend/routes/unforgettable.py` | Thin HTTP face over `operators.py` + store inspect + `/settings`. No status math. |
 | `studio/backend/utils/unforgettable_settings.py` | Persisted episode defaults and voter knobs (`/api/unforgettable/settings`) |
@@ -186,9 +187,11 @@ Policy, schema, clone, and admit **must not** grow in those files. If a function
 
 ### 2.5 Packaging
 
-Root `pyproject.toml` includes `"unforgettable*"` in `setuptools.packages.find`. The wheel license metadata stays Apache-2.0 for the project; Studio files keep AGPL SPDX headers. `unforgettable/LICENSE` makes the package relocatable.
+Root `pyproject.toml` includes `"unforgettable*"` in `setuptools.packages.find` and excludes `unforgettable.tests*` (plus `exclude-package-data` so tests do not ship as package data). The wheel license metadata stays Apache-2.0 for the project; Studio files keep AGPL SPDX headers. `unforgettable/LICENSE` makes the package relocatable.
 
-There is no `console_scripts` entry. Entry is `python -m unforgettable`.
+Console script: `unforgettable = unforgettable.cli:main`. Relocatable `python -m unforgettable` stays.
+
+Lint CI `compileall` / `ruff check` include `unforgettable/`. Backend CI runs the Apache suite (ignore `test_sidecar_gpu.py`) and puts the repo root on `sys.path` so Studio tests can `import unforgettable`.
 
 Root `[tool.pytest.ini_options] testpaths = ["tests/security"]`. **Bare `pytest` at repo root does not collect this package.**
 
@@ -204,7 +207,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 |------|-------------|
 | `__init__.py` | Version `0.1.0`; `VIRTUAL_MODEL_ID`, `is_virtual_model`, `inner_model_id` |
 | `__main__.py` | `python -m unforgettable` → `cli.main` |
-| `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback / review / mine. `compact` and `pack` preview unless `--apply`. Thin wrap of `operators.py`. |
+| `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback / review / mine. Also the `unforgettable` console script. `compact` and `pack` preview unless `--apply`. Thin wrap of `operators.py`. |
 | `operators.py` | Shared admit / reject / review / mine / compile / promote / `summarize_store` used by CLI and Studio. Does not change `admit()` predicates. |
 | `constants.py` | Kinds, statuses, provenances, speakers, typology class, namespace defaults, `PROVENANCE_WEIGHT` |
 | `host.py` | `Host` protocol, `GenerateRequest` / `GenerateResult` / `ToolTrace`, run-action / supervise constants |
@@ -400,7 +403,7 @@ Live Studio inject does **not** shrink on promote alone. Shrink + `GenerateReque
 
 `StudioHost.run_action` uses `asyncio.to_thread` (copies context). Extract uses `complete`, not `generate`, so it cannot re-enter the act/sim loop. `supervise` is the same one-shot path with an optional larger `model` (`planner_model` / `voter_model`).
 
-### 4.6 Supervisor (approver + planner)
+### 4.7 Supervisor (approver + planner)
 
 Not the MemoryWheels outer wheel. Two optional jobs, separately configured, default off. Neither trains the large model. Neither reopens `admit()` or `decide()`.
 
@@ -416,7 +419,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **274** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
+Apache suite: **275** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
 
 | File | What it locks |
 |------|----------------|
@@ -451,7 +454,7 @@ Names that later phases must keep green: `test_episode_fail_sim_retry_writes_err
 
 ### 5.1 Studio-face tests (AGPL)
 
-`studio/backend/tests/test_unforgettable_stream.py` — `_rewrite_inner_frame` (tool frames unchanged, `finish_reason` nulled, inner `[DONE]` dropped), stream drain/`aclose`, enabled-tools union, `run_action`/`confirm` SSE, ContextVar copy through `stream_tool_execution`, PEFT `use_adapter` attach. Needs Studio backend on `PYTHONPATH` and Studio Python extras (`structlog`, …).
+`studio/backend/tests/test_unforgettable_stream.py` — `_rewrite_inner_frame` (tool frames unchanged, `finish_reason` nulled, inner `[DONE]` dropped), stream drain/`aclose`, enabled-tools union, `run_action`/`confirm` SSE, ContextVar copy through `stream_tool_execution`, PEFT `use_adapter` attach. Helpers live in `unforgettable_stream.py` and are re-exported from the host. Needs Studio backend on `PYTHONPATH` (repo root too, for `import unforgettable`) and Studio Python extras (`structlog`, …).
 
 Frontend: `studio/frontend/tests/unforgettable-merge-extras.test.ts` — virtual-model extras merge and settings search index. Overlay: `unforgettable-i18n-overlay.test.ts`. Studio settings/routes: `studio/backend/tests/test_unforgettable_settings.py`, `test_unforgettable_routes.py`.
 
@@ -484,6 +487,7 @@ Optional extras:
 python -c "import unforgettable, unforgettable.sidecar, unforgettable.loop.episode; print(unforgettable.__version__)"
 python -c "import sys, unforgettable.sidecar; assert 'unsloth' not in sys.modules and 'torch' not in sys.modules"
 python -m unforgettable --help
+unforgettable --help   # after editable install; same as python -m
 ```
 
 `git grep` of `unforgettable/*.py` (excluding tests) must not show `from studio` or `import studio`.
@@ -547,7 +551,7 @@ python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id
 
 - `unforgettable` imports with no Studio on `sys.path`.
 - `import unforgettable.sidecar` does not import `unsloth` or `torch`.
-- `pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py` 274 passed.
+- `pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py` 275 passed.
 - FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
 - FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
 - Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.

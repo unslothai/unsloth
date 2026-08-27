@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 
-OnChunk = Callable[[bytes], Awaitable[None] | None]
+OnChunk = Callable[[bytes], Optional[Awaitable[None]]]
 
 # One-shot extract completion cap. Not the user's generate budget.
 EXTRACT_MAX_TOKENS = 800

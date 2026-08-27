@@ -38,6 +38,7 @@ on:
       - 'install.ps1'
       - 'scripts/**'
       - 'pyproject.toml'
+      - 'unforgettable/**'
       - '.github/workflows/studio-backend-ci.yml'
   push:
     branches: [main]
@@ -307,6 +308,16 @@ jobs:
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py
+
+      - name: Unforgettable Apache tests (CPU)
+        if: matrix.scope == 'full'
+        # Sibling package at the repo root. Not collected by `pytest tests/`
+        # from studio/backend, and ignored by root testpaths (tests/security).
+        # GPU sidecar stays out: that file skips without CUDA + cached weights
+        # but still imports torch.
+        run: |
+          python -m pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py \
+            -q --tb=short --timeout=60
 
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
