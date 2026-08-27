@@ -17422,6 +17422,11 @@ _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # Flooring instead refused a file of exactly the size the composer allows.
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
 _MAX_AUDIO_SECONDS = 30 * 60
+# The duration cap alone is rate-relative, so a high-rate container retains far
+# more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
+# and np.concatenate doubles it. 48 kHz covers ordinary uploads, so this ceiling
+# only refuses rates above it, and never before the duration cap bites.
+_MAX_DECODED_SAMPLES = 48_000 * _MAX_AUDIO_SECONDS
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
 
@@ -17549,7 +17554,10 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
             always_2d = False,
         ):
             sample_count += len(block)
-            if sample_count > sample_rate * _MAX_AUDIO_SECONDS:
+            if (
+                sample_count > sample_rate * _MAX_AUDIO_SECONDS
+                or sample_count > _MAX_DECODED_SAMPLES
+            ):
                 raise _DecodedAudioTooLongError(
                     f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
                 )
@@ -17576,7 +17584,10 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
     def append_resampled(resampled) -> None:
         nonlocal sample_count
         sample_count += int(resampled.samples)
-        if sample_count > sample_rate * _MAX_AUDIO_SECONDS:
+        if (
+            sample_count > sample_rate * _MAX_AUDIO_SECONDS
+            or sample_count > _MAX_DECODED_SAMPLES
+        ):
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
@@ -17642,12 +17653,24 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 tmp.write(raw)
                 tmp_path = tmp.name
             try:
-                arr, sr = librosa.load(tmp_path, sr = None, mono = True)
+                # audioread/FFmpeg would otherwise materialize the whole
+                # waveform before the check below. Ask for the native rate first
+                # so the window covers the sample ceiling as well as the clock.
+                try:
+                    probe_rate = int(librosa.get_samplerate(tmp_path) or 0)
+                except Exception:  # noqa: BLE001 - unknown rate: bound by time alone
+                    probe_rate = 0
+                window = float(_MAX_AUDIO_SECONDS + 1)
+                if probe_rate > 0:
+                    window = min(window, _MAX_DECODED_SAMPLES / probe_rate + 1)
+                arr, sr = librosa.load(
+                    tmp_path, sr = None, mono = True, duration = window
+                )
             finally:
                 os.unlink(tmp_path)
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
-    if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
+    if (sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS) or len(arr) > _MAX_DECODED_SAMPLES:
         raise _DecodedAudioTooLongError(
             f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
         )

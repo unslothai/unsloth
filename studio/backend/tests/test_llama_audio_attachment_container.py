@@ -305,3 +305,85 @@ def test_the_probe_failure_path_still_enforces_the_cap(monkeypatch):
         pass
     else:
         raise AssertionError("expected the duration cap to be enforced")
+
+
+def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatch):
+    """The duration cap is rate-relative, so 30 minutes at a high rate retains far
+    more memory than the same speech at 16 kHz. The absolute ceiling bounds it."""
+    decoded_blocks = []
+
+    class FakeSoundFile:
+        samplerate = 192_000
+        channels = 1
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def blocks(self, **_kwargs):
+            # Well inside the 30-minute clock at this rate, past the sample cap.
+            block = np.ones(inference_route._MAX_DECODED_SAMPLES + 1, dtype = np.float32)
+            decoded_blocks.append(len(block))
+            yield block
+
+    monkeypatch.setitem(
+        sys.modules, "soundfile", types.SimpleNamespace(SoundFile = FakeSoundFile)
+    )
+
+    def concatenate_after_limit(*_args, **_kwargs):
+        raise AssertionError("an over-ceiling decode must not be concatenated")
+
+    monkeypatch.setattr(np, "concatenate", concatenate_after_limit)
+    try:
+        inference_route._decode_audio_mono_with_soundfile(b"high rate input")
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected the decoded-sample ceiling to be enforced")
+    assert decoded_blocks == [inference_route._MAX_DECODED_SAMPLES + 1]
+
+
+def test_the_ceiling_never_bites_before_the_advertised_duration(monkeypatch):
+    """An ordinary rate keeps the full 30 minutes: the ceiling only refuses rates
+    above 48 kHz, so the documented limit still means what it says."""
+    assert (
+        inference_route._MAX_DECODED_SAMPLES
+        >= 48_000 * inference_route._MAX_AUDIO_SECONDS
+    )
+    for rate in (8_000, 16_000, 44_100, 48_000):
+        assert rate * inference_route._MAX_AUDIO_SECONDS <= inference_route._MAX_DECODED_SAMPLES
+
+
+def test_the_librosa_fallback_reads_only_up_to_the_cap(monkeypatch):
+    """audioread would otherwise materialize the whole waveform and let the check
+    after it run too late."""
+    seen: dict = {}
+
+    class _FakeLibrosa:
+        @staticmethod
+        def get_samplerate(_path):
+            return 192_000
+
+        @staticmethod
+        def load(_path, sr = None, mono = True, duration = None):
+            seen["duration"] = duration
+            return np.zeros(16_000, dtype = np.float32), 192_000
+
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    monkeypatch.setitem(sys.modules, "librosa", _FakeLibrosa)
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_mono_with_av",
+        lambda raw: (_ for _ in ()).throw(RuntimeError("av cannot read this")),
+    )
+
+    inference_route._decode_audio_mono(b"container only librosa reads")
+    # Bounded by the sample ceiling at this rate, not by the 30-minute clock.
+    assert seen["duration"] is not None
+    assert seen["duration"] <= inference_route._MAX_DECODED_SAMPLES / 192_000 + 1
+    assert seen["duration"] < inference_route._MAX_AUDIO_SECONDS

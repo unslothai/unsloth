@@ -614,6 +614,37 @@ const EMAIL_CHARSET_RE = /charset[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/i;
 // vCard 2.1 puts the encoding on the property: `FN;CHARSET=windows-1252:...`.
 const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
 
+// A header block runs from the start of the file, an mbox "From " separator, or
+// a MIME boundary, to the first blank line. Body text can hold a line that reads
+// like a header, and treating that as a declaration refused valid files.
+const HEADER_BLOCK_START_RE = /(?:^|\r?\n)(?:From [^\r\n]*|--[^\r\n]+)\r?\n/g;
+const BLANK_LINE_RE = /\r?\n\r?\n/;
+
+/** The header regions of a message or archive, body text excluded. */
+function emailHeaderBlocks(text: string): string[] {
+  const starts = [0];
+  for (const match of text.matchAll(HEADER_BLOCK_START_RE)) {
+    starts.push(match.index + match[0].length);
+  }
+  return starts.map((start) => {
+    const rest = text.slice(start);
+    const end = rest.search(BLANK_LINE_RE);
+    // A block the scan window cut short is still read to its end.
+    return end === -1 ? rest : rest.slice(0, end);
+  });
+}
+
+// An XML prolog names the document's encoding and must be the first thing in it.
+// Read from the bytes rather than the extension, so every XML dialect here
+// (.resx, .xliff, .svg, a text .plist, the project files) is covered at once.
+const XML_PROLOG_ENCODING_RE =
+  /^<\?xml[^>]*?\sencoding[ \t]*=[ \t]*["\']([A-Za-z0-9._-]+)["\']/i;
+
+function declaredXmlEncoding(bytes: Uint8Array): string | null {
+  const prolog = new TextDecoder("windows-1252").decode(bytes.subarray(0, 256));
+  return prolog.match(XML_PROLOG_ENCODING_RE)?.[1] ?? null;
+}
+
 /** Distinct charsets a container declares about itself, in encounter order. */
 function declaredContainerCharsets(
   bytes: Uint8Array,
@@ -637,8 +668,10 @@ function declaredContainerCharsets(
     }
   };
   if (isEmail) {
-    for (const header of prefix.matchAll(EMAIL_CONTENT_TYPE_RE)) {
-      add(header[1]?.match(EMAIL_CHARSET_RE)?.[1]);
+    for (const block of emailHeaderBlocks(prefix)) {
+      for (const header of block.matchAll(EMAIL_CONTENT_TYPE_RE)) {
+        add(header[1]?.match(EMAIL_CHARSET_RE)?.[1]);
+      }
     }
   } else {
     for (const property of prefix.matchAll(VCARD_CHARSET_RE)) {
@@ -690,6 +723,13 @@ export function decodeTextAttachmentBytes(
       stream: truncated,
     });
   } catch {
+    // An XML document states its encoding in the prolog, which is as explicit as
+    // a declaration gets. Tried only after UTF-8 fails, so `encoding="UTF-8"`
+    // costs nothing.
+    const xmlEncoding = declaredXmlEncoding(bytes);
+    if (xmlEncoding) {
+      return decodeWithCharset(bytes, xmlEncoding);
+    }
     // An 8-bit mail or vCard says which charset it is, so honour it rather than
     // refusing a standards-valid file. Tried only after UTF-8 fails, so a modern
     // one is never remapped by a stale declaration.

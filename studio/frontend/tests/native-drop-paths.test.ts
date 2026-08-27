@@ -1143,6 +1143,74 @@ test("a declaration past the first pages is not missed", async () => {
   assert.equal(source.includes("DECLARATION_SCAN_BYTES"), false);
 });
 
+test("a header-shaped line in the body is not a declaration", async () => {
+  // Quoted mail and config snippets put "Content-Type:" at the start of a body
+  // line. Counting those as declarations refused files that say one thing.
+  const eml = new Uint8Array([
+    ...new TextEncoder().encode(
+      "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\n" +
+        "Here is the config we discussed:\r\n" +
+        "Content-Type: text/html; charset=windows-1251\r\n" +
+        "and that is the end of it. Caf",
+    ),
+    0xe9,
+  ]);
+  assert.match(
+    await readTextAttachment(new File([eml], "message.eml")),
+    /Caf\u00e9/,
+  );
+});
+
+test("parts after a boundary are still read as headers", async () => {
+  // The narrowing must not lose real part headers, which is what made the
+  // multipart case work in the first place.
+  const enc = new TextEncoder();
+  const mixed = new Uint8Array([
+    ...enc.encode(
+      "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+    ...enc.encode("\r\n--b\r\nContent-Type: text/plain; charset=windows-1251\r\n\r\n"),
+    0xcf,
+    0xf0,
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([mixed], "message.eml")),
+    (error: Error) => {
+      assert.match(error.message, /ISO-8859-1, windows-1251/);
+      return true;
+    },
+  );
+});
+
+test("an XML prolog encoding is honoured for every XML dialect", async () => {
+  // .resx, .xliff and friends are XML documents that state their encoding, so
+  // refusing them for carrying the bytes they describe was wrong.
+  const enc = new TextEncoder();
+  for (const name of ["Strings.resx", "ui.xliff", "app.xlf", "icon.svg"]) {
+    const bytes = new Uint8Array([
+      ...enc.encode('<?xml version="1.0" encoding="windows-1252"?>\n<root>Caf'),
+      0xe9,
+      ...enc.encode("</root>\n"),
+    ]);
+    assert.match(
+      await readTextAttachment(new File([bytes], name)),
+      /Caf\u00e9/,
+      `${name} decodes under its declared encoding`,
+    );
+  }
+  // A prolog only counts at the start of the document, where the spec puts it.
+  const late = new Uint8Array([
+    ...enc.encode('# notes\n<?xml version="1.0" encoding="windows-1252"?>\nCaf'),
+    0xe9,
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([late], "notes.txt")),
+    (error: Error) => error instanceof UndecodableTextError,
+  );
+});
+
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u"), false);
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u8"), true);

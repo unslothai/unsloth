@@ -16,7 +16,10 @@ const MAX_CLIPBOARD_RGBA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIPBOARD_PNG_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
-const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_AUDIO_BYTES;
+// Mirrors MAX_NATIVE_VIDEO_BYTES in native_intents.rs: a pasted clip and a
+// dropped one are the same file, and the 20 MB source cap skipped most videos.
+const MAX_CLIPBOARD_VIDEO_BYTES: u64 = 75_497_280;
+const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_VIDEO_BYTES;
 const MAX_CLIPBOARD_FILES: usize = 8;
 const MAX_CLIPBOARD_CANDIDATES: usize = 32;
 #[cfg(target_os = "linux")]
@@ -127,6 +130,8 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
 fn clipboard_file_max_bytes(mime_type: &str) -> u64 {
     if mime_type.starts_with("audio/") {
         MAX_CLIPBOARD_AUDIO_BYTES
+    } else if mime_type.starts_with("video/") {
+        MAX_CLIPBOARD_VIDEO_BYTES
     } else {
         MAX_CLIPBOARD_SOURCE_BYTES
     }
@@ -590,10 +595,27 @@ mod tests {
             clipboard_file_max_bytes("audio/mpeg"),
             MAX_CLIPBOARD_AUDIO_BYTES
         );
+        // A video gets the video budget, not the 20 MB source cap, which skipped
+        // most clips the picker and the drop path both accept.
         assert_eq!(
             clipboard_file_max_bytes("video/3gpp"),
-            MAX_CLIPBOARD_SOURCE_BYTES
+            MAX_CLIPBOARD_VIDEO_BYTES
         );
+        assert_eq!(
+            clipboard_file_max_bytes("video/mp4"),
+            MAX_CLIPBOARD_VIDEO_BYTES
+        );
+        assert!(MAX_CLIPBOARD_TOTAL_BYTES >= MAX_CLIPBOARD_VIDEO_BYTES);
+        // The pasted and dropped limits are the same file's limit.
+        let intents = include_str!("native_intents.rs");
+        let native = intents
+            .split("const MAX_NATIVE_VIDEO_BYTES: u64 = ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .map(|value| value.replace('_', ""))
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("native video cap not found");
+        assert_eq!(native, MAX_CLIPBOARD_VIDEO_BYTES);
         assert_eq!(
             clipboard_file_max_bytes("text/markdown"),
             MAX_CLIPBOARD_SOURCE_BYTES
