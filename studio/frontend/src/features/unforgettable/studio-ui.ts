@@ -28,6 +28,7 @@ export const UNFORGETTABLE_SEARCH_KEYS = [
   "settings.unforgettable.episode.testCommand",
   "settings.unforgettable.episode.maxClones",
   "settings.unforgettable.episode.maxSimTurns",
+  "settings.unforgettable.episode.twinPlugin",
   "settings.unforgettable.approver.title",
   "settings.unforgettable.approver.voter",
   "settings.unforgettable.approver.voterModel",

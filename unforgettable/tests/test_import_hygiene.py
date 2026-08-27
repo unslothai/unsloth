@@ -51,7 +51,7 @@ def test_sidecar_has_no_eager_unsloth_or_torch():
             if stripped.startswith("#"):
                 continue
             is_heavy = stripped.startswith(_HEAVY_IMPORT_PREFIXES)
-            if path.name != "train.py":
+            if path.name not in {"train.py", "export_gguf.py"}:
                 if is_heavy or "unsloth" in stripped.lower():
                     offenders.append(f"{path}:{lineno}: {stripped}")
                 continue

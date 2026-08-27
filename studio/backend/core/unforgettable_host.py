@@ -229,8 +229,16 @@ class StudioHost:
         payload.stream = want_stream
         # Sidecar C: a PEFT dir on GenerateRequest becomes the existing
         # use_adapter string. Fake adapter dirs and GGUF inners fail open.
+        # A GGUF LoRA is a serve artifact: load it with llama extra args --lora
+        # and reload. Do not convert or restart the server here.
         if req.adapter_path and is_peft_adapter_dir(req.adapter_path):
             payload.use_adapter = req.adapter_path
+        elif req.gguf_adapter_path:
+            _log.warning(
+                "GGUF LoRA is at '%s'; add --lora <path> to the GGUF load and reload. "
+                "Mid-chat attach is PEFT-only.",
+                req.gguf_adapter_path,
+            )
         before = len(current_traces())
         token = _INNER.set(True)
         try:
@@ -490,6 +498,9 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
             or None
         ),
         user_label = getattr(payload, "user_label", None),
+        twin_plugin = getattr(payload, "twin_plugin", None) or os.environ.get(
+            "UNFORGETTABLE_TWIN"
+        ),
     )
     if payload.stream:
         queue: asyncio.Queue = asyncio.Queue()

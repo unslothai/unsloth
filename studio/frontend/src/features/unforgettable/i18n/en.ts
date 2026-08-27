@@ -24,7 +24,7 @@ export const unforgettableMessages = {
     unforgettable: {
       title: "Unforgettable",
       description:
-        "Episode defaults and approver settings for the memory-aware model. Chat history is not memory.",
+        "Gated long-term notebook and rehearsal loop. Not chat RAG. Optional LoRA sidecar.",
       openDashboard: "Open Unforgettable dashboard",
       episode: {
         title: "Episode defaults",
@@ -54,7 +54,7 @@ export const unforgettableMessages = {
         adapterDescription: "Shrink standing for a trained sidecar adapter.",
         adapterNone: "None",
         adapterHint:
-          "Live LoRA attach is not wired yet; this still shrinks standing.",
+          "PEFT attaches on transformers/MLX inners. For GGUF, load with --lora and reload.",
         testCommand: "Test command",
         testCommandDescription:
           "Sim harness command. Overrides a stored test command procedure.",
@@ -62,6 +62,13 @@ export const unforgettableMessages = {
         maxSimTurns: "Max sim turns",
         budgetDescription:
           "Leave blank for the code default (1 clone / 8 turns).",
+        twinPlugin: "Twin plugin",
+        twinPluginDescription:
+          "How a sim is created after a recognized failure.",
+        twinFsCopy: "Filesystem copy",
+        twinNone: "None (text only)",
+        twinPluginHint:
+          "fs.copy clones the project sandbox. none rehearses in text with no copy.",
       },
       approver: {
         title: "Approver",

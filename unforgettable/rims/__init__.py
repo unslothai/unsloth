@@ -13,6 +13,31 @@
 # limitations under the License.
 
 from .clone import clone_tree
+from .plugin import (
+    DEFAULT_TWIN_PLUGIN,
+    FS_COPY_ID,
+    NONE_ID,
+    TWIN_ENV,
+    TWIN_PLUGIN_IDS,
+    HarnessGrade,
+    Location,
+    TwinBinding,
+    coerce_twin_plugin,
+    get_twin_plugin,
+)
 from .types import ContactMode
 
-__all__ = ["ContactMode", "clone_tree"]
+__all__ = [
+    "ContactMode",
+    "DEFAULT_TWIN_PLUGIN",
+    "FS_COPY_ID",
+    "HarnessGrade",
+    "Location",
+    "NONE_ID",
+    "TWIN_ENV",
+    "TWIN_PLUGIN_IDS",
+    "TwinBinding",
+    "clone_tree",
+    "coerce_twin_plugin",
+    "get_twin_plugin",
+]

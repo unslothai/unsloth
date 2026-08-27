@@ -27,6 +27,7 @@ from unforgettable.eyes.gate import LogGateEyes
 from unforgettable.host import RUN_ACTION_TIMEOUT_SEC
 from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import first_nonempty_line
+from unforgettable.rims.fs_copy import FsCopyPlugin
 from unforgettable.store.records import list_records
 
 PROBE_TITLE_PREFIX = "probe:"
@@ -93,15 +94,19 @@ async def _run_probes(
 async def _execute_probe(*, world: Path, command: str, host, on_chunk) -> bool:
     if host is None:
         return _execute_local(world, command)
-    sim_id = host.create_sim_session(f"probe-{uuid.uuid4().hex}")
+    plugin = FsCopyPlugin()
+    binding = plugin.spawn_from_world_path(host, Path(world), f"probe-{uuid.uuid4().hex}")
     try:
-        clone_tree(world, host.sandbox_path(sim_id))
-        result = host.run_action(sim_id, "terminal", {"command": command}, on_chunk = on_chunk)
-        if inspect.isawaitable(result):
-            result = await result
+        result = await plugin.run(
+            host,
+            binding,
+            "terminal",
+            {"command": command},
+            on_chunk = on_chunk,
+        )
         return grade_run_action("terminal", result) is None
     finally:
-        host.remove_sim_session(sim_id)
+        plugin.cleanup(host, binding)
 
 
 def _execute_local(world: Path, command: str) -> bool:

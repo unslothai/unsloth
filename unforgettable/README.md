@@ -2,6 +2,8 @@
 
 Progressive memory for a single AI face: remember, correct, rehearse after failure, and (optionally) internalize stable skill into an adapter — without treating every lesson as a full retrain or a disposable chat turn.
 
+Unforgettable is not another RAG. Studio already recalls this chat via compaction and `rag.db`. Unforgettable is a gated notebook for facts, procedures, and error→fix lessons that should outlive any thread — ranked by whether the world showed them, not by who asserted them. After a recognized failure it rehearses in a disposable twin (a filesystem copy of the project sandbox today; other environments later via a location+tools plugin) and only then retries the world. Stable skill can optionally become a LoRA sidecar trained with Unsloth, exported both as PEFT (transformers/MLX) and as GGUF LoRA (llama.cpp), without touching base weights. The dependency arrow is Studio → Unforgettable; the Unsloth training library stays unbloated.
+
 Unforgettable is an **Apache 2.0** Python package. It lives in this directory and does not import Studio or Unsloth at import time. Studio is an optional face: pick the virtual model `unforgettable` in chat and the episode loop runs behind a normal OpenAI completions request.
 
 Architecture notes that this package implements: [`plans/MemoryWheels.md`](plans/MemoryWheels.md) and the phase plans in [`plans/`](plans/). Developer-depth documentation: [`TECHNICAL.md`](TECHNICAL.md).
@@ -19,7 +21,7 @@ A live agent accumulates working context that vanishes when the session ends. Un
 Default motion (the “act path”):
 
 1. Act in the **world** (the project sandbox).
-2. On a recognized failure, clone the tree into a **sim** and rehearse (run tests when a command is known).
+2. On a recognized failure, spawn a **sim** via the twin plugin (default `fs.copy` clones the project tree; `none` is verbal-only) and rehearse (run tests when a command is known).
 3. Retry the world with a repaired-plan note. Confirm-before-retry is available; it is off unless stakes are high or permission mode is `ask`.
 4. Write lessons through admission. Extract stays **proposed** until you `admit` it. Explicit `memory_write` of a trusted world/mixed fact can stick immediately; tools cannot claim `human`, sim contact cannot claim `world`, and directives stay proposed until you admit them.
 
@@ -86,6 +88,7 @@ Optional extras on the same request (also first-class fields on Studio’s chat 
 | `confirm_retry` | `true` / `false` to force or skip the Allow/Deny card before world retry |
 | `permission_mode` | `"ask"` also requires confirm on retry |
 | `max_clones` / `max_sim_turns` | Budgets (defaults 1 clone / 8 sim turns) |
+| `twin_plugin` | `"fs.copy"` (default) clones the sandbox; `"none"` rehearses in text with no copy |
 | `adapter_id` | Attach a trained sidecar adapter and shrink standing playbooks it already learned |
 | `skip_standing` | Skip compiled standing inject |
 | `planner` | `"on"` asks a larger supervisor model for a temporary plan (this episode only) |
@@ -145,12 +148,18 @@ python -m unforgettable pack --dry-run
 python -m unforgettable pack --apply
 python -m unforgettable train --backend fake          # CI / wiring
 python -m unforgettable train --backend unsloth --base <model>
+python -m unforgettable export-gguf <adapter-id>      # PEFT dir → GGUF LoRA (optional)
 python -m unforgettable eval <adapter-id>
 python -m unforgettable promote <adapter-id>          # refuses if eval did not pass
 python -m unforgettable rollback
 ```
 
 Promote never merges into base weights. Rollback discards the promoted row; files stay on disk.
+
+**PEFT vs GGUF.** Training always writes a PEFT directory (source of truth). Unsloth train also tries to write a GGUF LoRA next to it (`--no-gguf` skips). Eval and promote score the PEFT adapter.
+
+- Transformers / MLX inner: pass `adapter_id`; PEFT attaches for the episode.
+- GGUF / llama.cpp inner: put `--lora <exported.gguf>` on the model load (Studio extra args) and reload. Mid-chat attach does not restart llama-server. `adapter_id` still shrinks standing.
 
 ### Optional supervisor (approver + planner + filter)
 
@@ -163,7 +172,7 @@ python -m unforgettable review --apply
 python -m unforgettable mine --apply
 ```
 
-Planner is per request: set `planner: "on"` on the chat payload, or `UNFORGETTABLE_PLANNER=on` for Studio. The plan is working memory only.
+Planner is per request: set `planner: "on"` on the chat payload, or `UNFORGETTABLE_PLANNER=on` for Studio. The plan is working memory only. Twin plugin: `twin_plugin` on the payload, Settings, or `UNFORGETTABLE_TWIN=fs.copy|none`.
 
 ## Brief architecture
 
@@ -175,18 +184,18 @@ Throne  —  act/sim policy, admission, confirm, budgets
     │
     ▼
 Middle  —  episode.run: retrieve + standing + trajectories → generate
-    │         on fail: clone → sim tests / generate → retry world → extract
+    │         on fail: twin.spawn_sim → sim tests / generate → retry world → extract
     │
-    ├──────── world rim (project sandbox)     sim rim (cloned session dir)
+    ├──────── world rim (twin plugin)     sim rim (fs.copy clone, or none)
     │
     ▼
 B store (SQLite + FTS5)     optional C adapter (LoRA dir next to the db)
 ```
 
 - **World** is the project sandbox (`session_id`, often `project-<id>`).
-- **Sim** is a new `sim-<episode>-<n>` directory, never the same path as world.
+- **Sim** is plugin-defined. `fs.copy` makes a new `sim-<episode>-<n>` directory, never the same path as world. `none` does not copy.
 - **B** is `$STUDIO_HOME/memory/memory.db` (sibling of RAG, not `rag.db`).
-- **C** is an operator job. Live Studio does not attach an adapter unless you pass `adapter_id`.
+- **C** is an operator job. Live Studio attaches PEFT when you pass `adapter_id` and the inner can load it; GGUF LoRA is load-time `--lora`.
 
 ## Tests
 

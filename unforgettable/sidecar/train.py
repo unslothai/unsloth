@@ -49,6 +49,7 @@ class TrainResult:
     backend: str
     recipe: str
     n_examples: int
+    gguf_path: Optional[str] = None
 
 
 class TrainBackend(Protocol):
@@ -492,6 +493,7 @@ def train_pack(
     base_model: str,
     recipe: str = "sft",
     db_path = None,
+    export_gguf: bool = True,
 ) -> TrainResult:
     items = list_pack_items(pack_id, db_path = db_path)
     if not items and get_pack(pack_id, db_path = db_path) is None:
@@ -515,6 +517,13 @@ def train_pack(
     output_dir = adapters_root(db_path) / adapter_id
     backend.train(examples, output_dir = output_dir, base_model = base_model, recipe = recipe)
     path = str(output_dir)
+    gguf_path = None
+    if export_gguf and _backend_name(backend) == "unsloth":
+        try:
+            from unforgettable.sidecar.export_gguf import export_adapter_gguf
+            gguf_path = export_adapter_gguf(output_dir, base_model = base_model)
+        except Exception:
+            gguf_path = None
     insert_adapter(
         adapter_id = adapter_id,
         pack_id = pack_id,
@@ -523,6 +532,7 @@ def train_pack(
         base_model = base_model,
         recipe = recipe,
         path = path,
+        gguf_path = gguf_path,
         db_path = db_path,
     )
     return TrainResult(
@@ -531,4 +541,5 @@ def train_pack(
         backend = _backend_name(backend),
         recipe = recipe,
         n_examples = len(examples),
+        gguf_path = gguf_path,
     )

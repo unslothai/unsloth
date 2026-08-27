@@ -12,7 +12,7 @@ The tree is the source of truth. Plans stay as the charter; this file describes 
 
 Unforgettable is the **main car** of the Memory Wheels stack: progressive memory under standing watch, so one user-facing AI can remember, correct, rehearse after failure, and (rarely) internalize stable skill.
 
-It is not a second RAG. Studio `rag.db` and chat history are **not** B. It is not a continuous fine-tune. Base weights stay frozen. It is not a physics twin unless the host provides one; the coding-domain sim is a **filesystem clone + test harness**.
+It is not a second RAG. Studio `rag.db` and chat history are **not** B. It is not a continuous fine-tune. Base weights stay frozen. It is not a physics twin unless the host provides one. The coding-domain sim is a **twin plugin**: default `fs.copy` (filesystem clone + test harness); `none` is verbal-only.
 
 ### 1.2 Three substrates
 
@@ -56,8 +56,9 @@ Inner      Host.generate        one tool-loop pass in the active rim sandbox
 ```
 
 - World session: host-reported (`payload.session_id` / `project-<id>` / thread sandbox).
-- Sim session: `sim-{episode[:8]}-{n}` (Studio) or `sim-{episode}-{n}` (FakeHost). Must not equal world and must not start with `project-`.
-- Clone: `rims.clone.clone_tree` (`copytree` with `symlinks=True`, skip `.unsloth_sandbox` / remap json / `*.deleting-*`, refuse same resolved path and dest-inside-source).
+- Twin plugin: `get_twin_plugin` (`fs.copy` default, `none` verbal-only). `episode.run` and probes do not call `clone_tree` themselves.
+- Sim session (`fs.copy`): `sim-{episode[:8]}-{n}` (Studio) or `sim-{episode}-{n}` (FakeHost). Must not equal world and must not start with `project-`.
+- Clone (`fs.copy`): `rims.clone.clone_tree` (`copytree` with `symlinks=True`, skip `.unsloth_sandbox` / remap json / `*.deleting-*`, refuse same resolved path and dest-inside-source). Failed spawn removes the sim session it created.
 - Shared action interface: `Host.run_action(session_id, "python"|"terminal", …)` — same tools, different cwd.
 
 Default act path (`MemoryWheels` §6, `decide()` at `throne/policy.py:83`):
@@ -253,15 +254,18 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 |------|-------------|
 | `__init__.py` | `run`, `EpisodeRequest` / `EpisodeState`, `note_tool_result` |
 | `context.py` | Request/state dataclasses; last-user text; created-sim tracking; planner flags |
-| `episode.py` | `run()`: inject, optional planner, generate loop, clone, harness, confirm, extract, probes, teardown |
+| `episode.py` | `run()`: inject, optional planner, generate loop, twin.spawn_sim, harness, confirm, extract, probes, teardown |
 | `runtime.py` | ContextVars for db / episode / namespace / contact / traces |
 
 ### 3.6 `rims/` — contact surfaces
 
 | File | Description |
 |------|-------------|
-| `__init__.py` | `clone_tree`, `ContactMode` |
+| `__init__.py` | `clone_tree`, `ContactMode`, twin plugin registry |
 | `types.py` | `ContactMode = "world" \| "sim"` |
+| `plugin.py` | `Location`, `TwinBinding`, `TwinPlugin`, `get_twin_plugin` |
+| `fs_copy.py` | Reference plugin: sandbox clone via `clone_tree` |
+| `none.py` | Verbal-only plugin; no copy |
 | `clone.py` | Pure filesystem clone; same-path refuse |
 | `detect.py` | Test-command resolution + tree detector (`pytest` / `npm test` / `go test`) |
 
@@ -290,8 +294,9 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 | `pack.py` | Eligibility, votes, holdout-by-episode, persist |
 | `format.py` | Title→body SFT messages; world fail/pass preference pairs |
 | `train.py` | `TrainBackend`, `FakeTrainBackend`, lazy `UnslothTrainBackend`, `train_pack` |
+| `export_gguf.py` | PEFT dir → GGUF LoRA via `convert_lora_to_gguf.py`; lazy Unsloth |
 | `eval.py` | Holdout lean score vs base; optional probes |
-| `adapters.py` | Registry: shadow → promote / discard / rollback |
+| `adapters.py` | Registry: shadow → promote / discard / rollback; optional `gguf_path` |
 
 ### 3.10 `plans/` (not imported)
 

@@ -102,7 +102,12 @@ class FakeHost:
     def sandbox_path(self, session_id: str) -> Path:
         if session_id == "world":
             return self.world
-        return self.sims[session_id]
+        if session_id in self.sims:
+            return self.sims[session_id]
+        path = self.world.parent / session_id
+        path.mkdir(exist_ok = True)
+        self.sims[session_id] = path
+        return path
 
     def remove_sim_session(self, session_id: str) -> None:
         self.removed.append(session_id)

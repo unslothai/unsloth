@@ -16,6 +16,7 @@ export type UnforgettableEpisodeExtras = {
   test_command?: string | null;
   max_clones?: number | null;
   max_sim_turns?: number | null;
+  twin_plugin?: string | null;
   voter_model?: string | null;
 };
 
@@ -39,6 +40,7 @@ export function mergeUnforgettableChatExtras(
   if (extras.test_command) out.test_command = extras.test_command;
   if (extras.max_clones != null) out.max_clones = extras.max_clones;
   if (extras.max_sim_turns != null) out.max_sim_turns = extras.max_sim_turns;
+  if (extras.twin_plugin) out.twin_plugin = extras.twin_plugin;
   if (extras.voter_model) out.voter_model = extras.voter_model;
   return out;
 }

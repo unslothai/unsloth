@@ -20,6 +20,7 @@ import argparse
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -50,6 +51,7 @@ from unforgettable.sidecar.adapters import (
     get_adapter,
     list_adapters,
     rollback_adapter,
+    set_adapter_gguf_path,
 )
 from unforgettable.sidecar.eval import eval_adapter
 from unforgettable.sidecar.pack import (
@@ -496,6 +498,7 @@ def _cmd_train(args: argparse.Namespace, db_path: Path) -> int:
             base_model = base_model,
             recipe = recipe,
             db_path = db_path,
+            export_gguf = not bool(getattr(args, "no_gguf", False)),
         )
     except KeyError:
         return _unknown_id(pack_id)
@@ -522,6 +525,22 @@ def _cmd_adapters(args: argparse.Namespace, db_path: Path) -> int:
             for rec in rows
         ],
     )
+    return 0
+
+
+def _cmd_export_gguf(args: argparse.Namespace, db_path: Path) -> int:
+    adapter = get_adapter(args.id, db_path = db_path)
+    if adapter is None:
+        return _unknown_id(args.id)
+    from unforgettable.sidecar.export_gguf import export_adapter_gguf
+
+    try:
+        path = export_adapter_gguf(adapter.get("path"), base_model = adapter.get("base_model"))
+    except (FileNotFoundError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(str(exc), file = sys.stderr)
+        return UNKNOWN_ID_EXIT
+    set_adapter_gguf_path(args.id, path, db_path = db_path)
+    _print_json({"adapter_id": args.id, "gguf_path": path})
     return 0
 
 
@@ -914,7 +933,23 @@ def build_parser() -> argparse.ArgumentParser:
         default = None,
         help = "Train recipe (default: distill if retrieval-heavy, else sft).",
     )
+    train_p.add_argument(
+        "--no-gguf",
+        action = "store_true",
+        help = "Skip GGUF LoRA export after Unsloth train. PEFT dir is still written.",
+    )
     train_p.set_defaults(func = _cmd_train)
+
+    export_gguf_p = sub.add_parser(
+        "export-gguf",
+        help = (
+            "Convert a PEFT adapter directory to a GGUF LoRA "
+            "(llama.cpp --lora). Does not load the adapter onto a running server."
+        ),
+    )
+    _add_db_flag(export_gguf_p)
+    export_gguf_p.add_argument("id")
+    export_gguf_p.set_defaults(func = _cmd_export_gguf)
 
     adapters_p = sub.add_parser(
         "adapters",
@@ -964,7 +999,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-_NEED_EXISTING_DB = frozenset({"pack", "train", "eval", "promote", "rollback"})
+_NEED_EXISTING_DB = frozenset({"pack", "train", "eval", "promote", "rollback", "export-gguf"})
 
 
 def main(argv: list[str] | None = None) -> int:

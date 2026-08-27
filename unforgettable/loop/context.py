@@ -55,6 +55,7 @@ class EpisodeRequest:
     filter: Optional[str] = None
     filter_model: Optional[str] = None
     user_label: Optional[str] = None
+    twin_plugin: Optional[str] = None
 
 
 @dataclass

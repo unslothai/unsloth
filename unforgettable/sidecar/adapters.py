@@ -61,6 +61,7 @@ def insert_adapter(
     status: str = STATUS_SHADOW,
     metrics: Any = None,
     adapter_id: Optional[str] = None,
+    gguf_path: Optional[str] = None,
     db_path = None,
 ) -> dict[str, Any]:
     if status not in ADAPTER_STATUSES:
@@ -78,8 +79,8 @@ def insert_adapter(
             """
             INSERT INTO adapters(
                 id, pack_id, status, backend, base_model, recipe,
-                path, metrics, created_at, promoted_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                path, gguf_path, metrics, created_at, promoted_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 aid,
@@ -89,6 +90,7 @@ def insert_adapter(
                 base_model,
                 recipe,
                 path,
+                gguf_path,
                 metrics_text,
                 _now(),
                 None,
@@ -100,6 +102,29 @@ def insert_adapter(
     found = get_adapter(aid, db_path = db_path)
     if found is None:
         raise RuntimeError("adapter insert did not persist")
+    return found
+
+
+def set_adapter_gguf_path(
+    adapter_id: str,
+    gguf_path: Optional[str],
+    *,
+    db_path = None,
+) -> dict[str, Any]:
+    if get_adapter(adapter_id, db_path = db_path) is None:
+        raise KeyError(adapter_id)
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE adapters SET gguf_path = ? WHERE id = ?",
+            (gguf_path, adapter_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    found = get_adapter(adapter_id, db_path = db_path)
+    if found is None:
+        raise RuntimeError("adapter gguf_path did not persist")
     return found
 
 

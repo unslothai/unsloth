@@ -67,6 +67,21 @@ def test_set_and_episode_extras(monkeypatch, tmp_path):
     assert extras["adapter_id"] == "ada-1"
 
 
+def test_twin_plugin_round_trip(monkeypatch, tmp_path):
+    _install_fake_studio_db(monkeypatch)
+    monkeypatch.setattr(unforgettable_settings, "memory_db_path", lambda: tmp_path / "memory.db")
+    updated = unforgettable_settings.set_unforgettable_settings({"twin_plugin": "none"})
+    assert updated["twin_plugin"] == "none"
+    extras = unforgettable_settings.episode_extras_from_settings(updated)
+    assert extras["twin_plugin"] == "none"
+    try:
+        unforgettable_settings.set_unforgettable_settings({"twin_plugin": "docker"})
+    except ValueError as exc:
+        assert "Twin plugin" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_rejects_unknown_voter(monkeypatch):
     _install_fake_studio_db(monkeypatch)
     try:

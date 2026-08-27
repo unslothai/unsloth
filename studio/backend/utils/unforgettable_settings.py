@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from unforgettable.rims.plugin import coerce_twin_plugin
 from unforgettable.supervisor import (
     DEFAULT_SUPERVISOR_TIMEOUT,
     VOTER_MODES,
@@ -105,6 +106,14 @@ def normalize_unforgettable_settings(raw: Any) -> dict[str, Any]:
         voter_value = str(voter).strip().lower()
         if voter_value not in VOTER_MODES:
             raise ValueError("Voter must be off, advisory, or binding.")
+    twin = source.get("twin_plugin")
+    if twin is None or twin == "":
+        twin_value = None
+    else:
+        try:
+            twin_value = coerce_twin_plugin(twin)
+        except ValueError as exc:
+            raise ValueError("Twin plugin must be fs.copy or none.") from exc
     return {
         "planner": planner_value,
         "planner_model": _coerce_optional_str(source.get("planner_model")),
@@ -118,6 +127,7 @@ def normalize_unforgettable_settings(raw: Any) -> dict[str, Any]:
         "test_command": _coerce_optional_str(source.get("test_command")),
         "max_clones": _coerce_optional_int(source.get("max_clones"), minimum = 1),
         "max_sim_turns": _coerce_optional_int(source.get("max_sim_turns"), minimum = 1),
+        "twin_plugin": twin_value,
         "voter": voter_value,
         "voter_model": _coerce_optional_str(source.get("voter_model")),
         "supervisor_url": _coerce_optional_str(source.get("supervisor_url")),
@@ -198,6 +208,8 @@ def episode_extras_from_settings(settings: dict[str, Any] | None = None) -> dict
         extras["max_clones"] = data["max_clones"]
     if data.get("max_sim_turns") is not None:
         extras["max_sim_turns"] = data["max_sim_turns"]
+    if data.get("twin_plugin"):
+        extras["twin_plugin"] = data["twin_plugin"]
     if data.get("voter_model"):
         extras["voter_model"] = data["voter_model"]
     return extras

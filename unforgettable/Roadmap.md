@@ -30,6 +30,8 @@ These are supervisor jobs, **not** a rename of the MemoryWheels outer wheel (B +
 | **Approver model** | **Complete.** | Optional vote after local select, before promote. `UNFORGETTABLE_VOTER=off\|advisory\|binding`. CLI `admit` / `compile` / `promote` wrap a vote; `review` batches proposed rows; `mine` is the same voter over proposed + rollouts + admissions and may insert new **proposed** drafts. Binding deny blocks unless `--force`. `episode` rows are skipped. Host seam: `supervise("vote"\|"mine")` or `HttpSupervisor` at `UNFORGETTABLE_SUPERVISOR_URL`. |
 | **Planner model** | **Complete.** | Runtime-selectable temporary overlay. `EpisodeRequest.planner=on` (Studio payload or `UNFORGETTABLE_PLANNER`). One `supervise("plan")` before the first generate; refresh on `RETRY_WORLD` only. Injected as working-memory A. Fail-open. Not written to B. |
 | **Filter judge** | **Complete.** | `supervise("filter")` before first generate. Strips coercive and manipulative spans; keeps the technical remainder. Empty remainder enters sim and requires confirm. Default on; fail-open skip. Compact still does not LLM-rewrite. |
+| **Twin plugin** | **Complete.** | Location+tools contract. Default `fs.copy` is the old sandbox clone. `none` rehearses in text with no copy. `UNFORGETTABLE_TWIN` / payload `twin_plugin` / Settings. Episode and probes no longer call `clone_tree` directly. |
+| **PEFT + GGUF LoRA** | **Complete as artifacts.** | Unsloth train writes PEFT (source of truth) and tries a GGUF LoRA next to it. CLI `export-gguf`. Transformers/MLX attach PEFT live. GGUF is load-time `--lora` (no mid-chat llama-server restart). |
 
 ### What “complete” still left named
 
@@ -82,8 +84,8 @@ MemPhase2 open question 3: always 800 vs the user’s `max_tokens`. Default 800 
 **7. Auto-admit world/mixed `error_fix` after evidence** — **policy-sensitive**
 Parked in MemPhase2, 3, 4, and 5 as “a later tiny PR … one-line `admit()` change.” Only if a week (or more) of proposed rows shows the naive fail→success writer is consistently worth retrieving. Restrict to `kind=error_fix` and `provenance in {world, mixed}`. Do not auto-admit LLM drafts (`infer`) or sim-only rows.
 
-**8. Live LoRA attach in `StudioHost.generate`** — **Done.**
-`GenerateRequest.adapter_path` on a PEFT dir becomes `payload.use_adapter`. The worker `load_adapter`s for that generate and restores. Remaining hole: GGUF inners cannot take a PEFT LoRA (fail-open).
+**8. Live LoRA attach in `StudioHost.generate`** — **Done for PEFT.**
+`GenerateRequest.adapter_path` on a PEFT dir becomes `payload.use_adapter`. The worker `load_adapter`s for that generate and restores. GGUF LoRA is a sibling artifact (`gguf_path`, CLI `export-gguf`); attach is load-time `--lora`, not a mid-chat llama-server restart.
 
 **9. Scheduled compact**
 `--older-than` is **shipped** on `compact` (stale proposed WHO/infer, default 30 days; world/mixed `error_fix` kept). Still explicit-only, dry-run default, not inside `episode.run`. A Studio cron / weekly job remains optional.
@@ -126,7 +128,7 @@ MemPhase2 compact chose exact `normalize_title()`. “Paraphrase dedupe waits fo
 Reserved comment on `record_fts` in `store/schema.py`. Every phase said “revisit only if a measured FTS miss shows up.” Additive `records_vec` table; keep FTS working on machines without sqlite-vec. Tests must not require the extension.
 
 **21. Incremental clone**
-MemPhase3 accepted full `copytree` of the project tree. A later pass can skip unchanged files or hardlink. Same-path / dest-inside-source / marker-skip rules stay. Do not invent a second sandbox API.
+MemPhase3 accepted full `copytree` of the project tree. Twin plugin `fs.copy` is the place for skip-unchanged / hardlink later. Same-path / dest-inside-source / marker-skip rules stay. Do not invent a second sandbox API.
 
 **22. Retrieve extras from Phase 1 “not in Phase 1”**
 Temporal decay curves, MMR rerank. Staleness is already a one-line age note at ≥30 days. Only worth it if `inject_stats` + operator `load` show the wrong records winning.

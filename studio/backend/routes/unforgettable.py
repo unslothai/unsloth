@@ -428,6 +428,7 @@ class UnforgettableSettingsPayload(BaseModel):
     test_command: Optional[str] = None
     max_clones: Optional[int] = Field(default = None, ge = 1)
     max_sim_turns: Optional[int] = Field(default = None, ge = 1)
+    twin_plugin: Optional[str] = None
     voter: Optional[str] = None
     voter_model: Optional[str] = None
     supervisor_url: Optional[str] = None

@@ -162,6 +162,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             base_model TEXT NOT NULL,
             recipe TEXT NOT NULL,
             path TEXT NOT NULL,
+            gguf_path TEXT,
             metrics TEXT,
             created_at TEXT NOT NULL,
             promoted_at TEXT,
@@ -202,3 +203,6 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
             END
             """
         )
+    adapter_cols = {row[1] for row in conn.execute("PRAGMA table_info(adapters)")}
+    if adapter_cols and "gguf_path" not in adapter_cols:
+        conn.execute("ALTER TABLE adapters ADD COLUMN gguf_path TEXT")

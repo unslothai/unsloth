@@ -313,6 +313,31 @@ export function UnforgettableTab() {
             }
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.unforgettable.episode.twinPlugin")}
+          description={t(
+            "settings.unforgettable.episode.twinPluginDescription",
+          )}
+          hint={t("settings.unforgettable.episode.twinPluginHint")}
+        >
+          <Select
+            value={settings?.twin_plugin ?? "fs.copy"}
+            disabled={!settings || saving}
+            onValueChange={(value) => void patch({ twin_plugin: value })}
+          >
+            <SelectTrigger className="w-52">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="fs.copy">
+                {t("settings.unforgettable.episode.twinFsCopy")}
+              </SelectItem>
+              <SelectItem value="none">
+                {t("settings.unforgettable.episode.twinNone")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection

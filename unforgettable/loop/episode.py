@@ -30,7 +30,6 @@ from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrie
 from unforgettable.constants import DEFAULT_NAMESPACE_ID
 from unforgettable.eyes.basic import (
     ENTER_SIM_TOOL_NAMES,
-    grade_run_action,
     inspect_tool_result,
     user_declares_failure,
 )
@@ -48,8 +47,8 @@ from unforgettable.supervisor import (
     request_filter,
     request_plan,
 )
-from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import resolve_test_command
+from unforgettable.rims.plugin import FS_COPY_ID, TwinBinding, get_twin_plugin
 from unforgettable.sidecar.adapters import STATUS_DISCARDED, get_adapter
 from unforgettable.sidecar.pack import ROLE_TRAIN, list_pack_items
 from unforgettable.store.compile import list_standing, maybe_compile, pack_standing
@@ -151,22 +150,45 @@ def _pass_failure(result: GenerateResult) -> Optional[str]:
     return last
 
 
+def _contact_suffix(binding: TwinBinding, *, fail_summary: str = "", retry: bool = False) -> str:
+    parts = [binding.describe]
+    if fail_summary:
+        parts.append(f"Previous world failure: {fail_summary}")
+    if retry:
+        parts.append("Retry in the world with the repaired plan.")
+    return "\n".join(p for p in parts if p)
+
+
+def _extra_tools(binding: TwinBinding) -> list[dict[str, Any]]:
+    extra = list(MEMORY_TOOLS) + list(CONTACT_TOOLS)
+    have = {spec["function"]["name"] for spec in extra if spec.get("function")}
+    for spec in binding.tool_specs:
+        fn = spec.get("function") if isinstance(spec, dict) else None
+        name = fn.get("name") if isinstance(fn, dict) else None
+        if name and name not in have:
+            extra.append(spec)
+            have.add(name)
+    return extra
+
+
 async def _maybe_run_sim_tests(
-    host: Host, state: EpisodeState, on_chunk
+    host: Host,
+    state: EpisodeState,
+    on_chunk,
+    plugin,
+    binding: TwinBinding,
 ) -> tuple[bool, Optional[RecognizedFailure]]:
-    cmd = state.test_command
-    run_fn = getattr(host, "run_action", None)
-    if not cmd or run_fn is None:
-        return False, None
     before = len(current_traces())
-    result = await run_fn(
-        state.active_session,
-        "terminal",
-        {"command": cmd},
+    grade = await plugin.grade(
+        host,
+        binding,
+        test_command = state.test_command,
         on_chunk = on_chunk,
     )
     state.traces.extend(current_traces()[before:])
-    return True, grade_run_action("terminal", result, contact = "sim")
+    if not grade.ran:
+        return False, None
+    return True, grade.failure
 
 
 async def _maybe_refresh_plan(host, request, state) -> None:
@@ -207,9 +229,10 @@ async def _confirm_retry_world(host, request, state, action, policy, db_path: st
 
 def _resolve_attached_adapter(
     request: EpisodeRequest, db_path: str
-) -> tuple[Optional[str], frozenset[str]]:
+) -> tuple[Optional[str], Optional[str], frozenset[str]]:
     adapter = None
     adapter_path = None
+    gguf_path = None
     if request.adapter_id:
         adapter = get_adapter(request.adapter_id, db_path = db_path)
         if adapter is None or adapter.get("status") == STATUS_DISCARDED:
@@ -217,6 +240,7 @@ def _resolve_attached_adapter(
             adapter = None
         else:
             adapter_path = adapter.get("path") or None
+            gguf_path = adapter.get("gguf_path") or None
     shrink = request.shrink_standing is True or (
         request.shrink_standing is None and adapter is not None
     )
@@ -229,7 +253,7 @@ def _resolve_attached_adapter(
                 for item in list_pack_items(pack_id, db_path = db_path)
                 if item.get("source_id") and item.get("role") == ROLE_TRAIN
             )
-    return adapter_path, exclude
+    return adapter_path, gguf_path, exclude
 
 
 def _inject_bundle(
@@ -294,18 +318,27 @@ def _inject_bundle(
 async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     episode_id = str(uuid.uuid4())
     db_path = str(host.memory_db_path())
-    world = request.world_session_id or host.world_session_id(request)
+    plugin = get_twin_plugin(request.twin_plugin)
+    world_binding = plugin.world(host, request)
+    world = world_binding.location.handle
+    sim_binding: Optional[TwinBinding] = None
+    spawned: list[TwinBinding] = []
     state = EpisodeState(episode_id = episode_id, world_session = world)
     policy = policy_from_request(request)
     tokens, _ = bind_episode(db_path = db_path, episode_id = episode_id, namespace = request.namespace)
     actions: list[str] = []
     text = ""
-    adapter_path, exclude_standing_ids = _resolve_attached_adapter(request, db_path)
+    adapter_path, gguf_path, exclude_standing_ids = _resolve_attached_adapter(request, db_path)
     working_messages = [dict(m) for m in request.messages]
     filter_empty = False
     try:
         set_filter_stripped(())
         set_user_label(request.user_label)
+
+        def _active_binding() -> TwinBinding:
+            if state.contact == "sim" and sim_binding is not None:
+                return sim_binding
+            return world_binding
 
         def _rebuild(contact: str, suffix: str) -> list[dict[str, Any]]:
             inject = _inject_bundle(
@@ -389,16 +422,18 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 state.note_failure(fail_summary, "world")
                 event = "failure"
             else:
+                active = _active_binding()
                 gen = await host.generate(
                     GenerateRequest(
                         messages = messages,
-                        session_id = state.active_session,
+                        session_id = active.location.handle,
                         thread_id = request.thread_id,
                         stream = request.stream,
-                        extra_tools = list(MEMORY_TOOLS) + list(CONTACT_TOOLS),
+                        extra_tools = _extra_tools(active),
                         inner_model = request.inner_model,
                         on_chunk = request.on_chunk,
                         adapter_path = adapter_path,
+                        gguf_adapter_path = gguf_path,
                     )
                 )
                 generated = True
@@ -407,8 +442,10 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     state.last_generate_text = gen.text
                 state.traces.extend(gen.tool_traces)
                 ran, grade = False, None
-                if state.contact == "sim":
-                    ran, grade = await _maybe_run_sim_tests(host, state, request.on_chunk)
+                if state.contact == "sim" and sim_binding is not None:
+                    ran, grade = await _maybe_run_sim_tests(
+                        host, state, request.on_chunk, plugin, sim_binding
+                    )
                 if ran:
                     if grade is None:
                         state.note_success(f"tests: {state.test_command}", "sim")
@@ -431,27 +468,39 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             action = await _confirm_retry_world(host, request, state, action, policy, db_path)
             actions.append(action)
             if action == Action.ENTER_SIM:
-                sim_id = host.create_sim_session(episode_id)
-                state.track_sim(sim_id)
                 try:
-                    if not sim_id or sim_id == world or sim_id.startswith("project-"):
-                        raise ValueError(f"refusing to share world sandbox as sim: {sim_id!r}")
-                    clone_tree(host.sandbox_path(world), host.sandbox_path(sim_id))
-                except Exception:
-                    LogGateEyes().note(f"sim: clone failed for {sim_id!r}", db_path = db_path)
+                    sim_binding = plugin.spawn_sim(
+                        host,
+                        world_binding,
+                        episode_id,
+                        clone_index = state.clone_count + 1,
+                    )
+                except Exception as exc:
+                    LogGateEyes().note(f"sim: clone failed for {exc!r}", db_path = db_path)
                     raise
+                spawned.append(sim_binding)
+                sim_id = sim_binding.location.handle
                 state.enter_sim(sim_id)
                 set_contact("sim")
+                tree = None
+                sandbox = getattr(host, "sandbox_path", None)
+                if plugin.id == FS_COPY_ID and callable(sandbox):
+                    try:
+                        tree = sandbox(sim_id)
+                    except Exception:
+                        tree = None
                 state.test_command = resolve_test_command(
                     requested = request.test_command,
                     db_path = db_path,
-                    tree = host.sandbox_path(sim_id),
+                    tree = tree,
                 )
                 messages = _rebuild(
                     "sim",
-                    f"You are in a sim clone of the world tree. Previous world failure: {fail_summary}",
+                    _contact_suffix(sim_binding, fail_summary = fail_summary),
                 )
-                ran, grade = await _maybe_run_sim_tests(host, state, request.on_chunk)
+                ran, grade = await _maybe_run_sim_tests(
+                    host, state, request.on_chunk, plugin, sim_binding
+                )
                 if ran:
                     if grade is None:
                         state.note_success(f"tests: {state.test_command}", "sim")
@@ -465,14 +514,14 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                             await _maybe_refresh_plan(host, request, state)
                             messages = _rebuild(
                                 "world",
-                                "Retry in the world with the repaired plan.",
+                                _contact_suffix(world_binding, retry = True),
                             )
                             continue
                         if action == Action.CONTINUE_SIM:
                             state.sim_turns += 1
                             messages = _rebuild(
                                 "sim",
-                                f"You are in a sim clone of the world tree. Previous world failure: {fail_summary}",
+                                _contact_suffix(sim_binding, fail_summary = fail_summary),
                             )
                             continue
                         if action != Action.ENTER_SIM:
@@ -481,14 +530,17 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                         state.note_failure(f"tests: {state.test_command}: {grade.summary}", "sim")
                         messages = _rebuild(
                             "sim",
-                            f"You are in a sim clone of the world tree. Previous world failure: {fail_summary}",
+                            _contact_suffix(sim_binding, fail_summary = fail_summary),
                         )
                 continue
             if action == Action.CONTINUE_SIM:
                 state.sim_turns += 1
                 messages = _rebuild(
                     "sim",
-                    f"You are in a sim clone of the world tree. Previous world failure: {state.last_fail_summary}",
+                    _contact_suffix(
+                        sim_binding or world_binding,
+                        fail_summary = state.last_fail_summary,
+                    ),
                 )
                 continue
             if action == Action.RETRY_WORLD:
@@ -496,7 +548,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 await _maybe_refresh_plan(host, request, state)
                 messages = _rebuild(
                     "world",
-                    "Retry in the world with the repaired plan.",
+                    _contact_suffix(world_binding, retry = True),
                 )
                 continue
             break
@@ -515,12 +567,13 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
         try:
             kept = state.sim_session if state.keep_sim else None
             seen: set[str] = set()
-            for sid in list(state.created_sims):
-                if not sid or sid in seen:
+            for binding in spawned:
+                handle = binding.location.handle
+                if not handle or handle in seen:
                     continue
-                seen.add(sid)
-                if sid != kept:
-                    host.remove_sim_session(sid)
+                seen.add(handle)
+                if handle != kept:
+                    plugin.cleanup(host, binding)
         finally:
             set_filter_stripped(())
             set_user_label(None)
