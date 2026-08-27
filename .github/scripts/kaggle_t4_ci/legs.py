@@ -369,9 +369,19 @@ LEGS: dict[str, Leg] = {
 }
 
 
-# GPUs in a Kaggle session, so legs one kernel can carry. A third leg would not
-# fail; it would share a card and quietly change what both of them measure.
-MAX_LEGS_PER_KERNEL = 2
+# How many legs one kernel packs. This used to be 2, the card count, because
+# legs were started all at once and one per card: a third would have SHARED a
+# card and quietly changed what both of the legs on it measured.
+#
+# They now queue -- build_kernel.py runs one worker per card, and a card takes
+# its next leg only when the previous one has exited -- so a leg beyond the
+# second waits rather than sharing, and the card count no longer caps this.
+# What caps it is wall clock: every leg past the second adds its whole runtime
+# to one card's column, the session is killed at 12 hours, and the launcher's
+# own ceiling is lower still. At 4 legs the longest column is about 11 minutes,
+# so there is room, but this is a number to raise deliberately and measure
+# after, not to grow by accident.
+MAX_LEGS_PER_KERNEL = 4
 
 # Legs defined here and deliberately NOT run, with the reason. A leg is unwired
 # rather than deleted when the payload is right and the environment is not, so
@@ -416,32 +426,48 @@ UNWIRED: dict[str, str] = {
     ),
 }
 
-# Which legs travel in which kernel, one entry per kernel, each running its legs
-# one per T4 of its session.
+# Which legs travel in which kernel. ONE kernel, holding every leg, which its
+# 2xT4 session works through two at a time -- one per card, the next leg
+# starting on a card only when that card's previous leg has exited.
 #
-# control and canary share a kernel so they run on the two cards of the SAME
-# session: same image, same driver, same hour. Splitting them across sessions
-# would put an uncontrolled variable between the only two legs whose comparison
-# has to be clean.
+# This was two kernels, and the reason it is one now is NOT quota. A session
+# bills its wall clock once rather than per card, so two kernels of two legs
+# cost 662s of billing against 646s for one kernel of four: a rounding error.
+# What two kernels cost is the whole ACCOUNT. Kaggle allows two concurrent GPU
+# sessions, two kernels take both, and kaggle-t4-studio-gpu-ci.yml runs on the
+# same account -- so the notebook leg locked Unsloth out entirely for as long as
+# it ran (measured: Unsloth's run 32607617804 queued ~40 minutes behind notebook
+# run 32607621452). One kernel holds one session and leaves the other free, and
+# the two workflows now hold separate GitHub concurrency groups so they can
+# actually use it. Splitting the group without packing the kernel, or packing
+# without splitting the group, each make things worse on their own.
 #
-# The second kernel's free T4 carries `frontier`, and the seat is literally
-# free: a session bills its wall clock once, not per card, so testing the newest
-# transformers and trl costs no quota. It went there rather than beside control
-# and canary because those two must differ in nothing but versions within the
-# zoo-permitted window, which frontier deliberately leaves.
+# Ordered LONGEST EXPECTED LEG FIRST, and that ordering is load-bearing.
+# build_kernel.py hands this order to the driver as its start order and a card
+# takes work greedily, so putting gptoss (384s, and the leg that sets the
+# makespan) anywhere but first leaves the schedule unable to balance around it.
+# Measured on run 32607621452: gptoss 384.1s, frontier 312.2s, canary 265.3s,
+# control 262.2s, which this order packs as 384.1+262.2 = 646.3s against
+# 312.2+265.3 = 577.5s. That is the optimal split of these four; the next best
+# pairing is 649.4s, and perfect balance would be 611.9s, so the 68.8s of idle
+# at the end is 34.4s of genuinely unavoidable imbalance and not a packing bug.
 #
-# `grpo` held that seat before, and returns to it once the illegal memory access
-# in UNWIRED is understood. It briefly had a third kernel of its own, on the
-# reasoning that pairing with gpt-oss broke it: it failed paired and had passed
-# alone. Running it ALONE again (unsloth-t4-ci-c98f14be) reproduced the paired
-# failure exactly, same stack, same 13.8GB peak, same engine_built false, so the
-# pairing was never the variable and one contrasting observation was not enough
-# to blame a shared host. It stays unwired rather than re-paired, since a leg
-# passing one session in three tells CI nothing either way.
-KERNELS: tuple[tuple[str, ...], ...] = (
-    ("control", "canary"),
-    ("gptoss", "frontier"),
-)
+# control and canary stay in the same kernel, which is what their comparison
+# needs: same image, same driver, same hour. They no longer run on the two
+# cards SIMULTANEOUSLY, which is fine -- they were never compared against each
+# other, only each against its own committed reference, and neither reads a
+# clock. What would break them is landing in different SESSIONS, and packing
+# everything into one kernel makes that impossible rather than merely unlikely.
+#
+# `grpo` returns here once the illegal memory access in UNWIRED is understood.
+# It briefly had a kernel of its own, on the reasoning that pairing with gpt-oss
+# broke it: it failed paired and had passed alone. Running it ALONE again
+# (unsloth-t4-ci-c98f14be) reproduced the paired failure exactly, same stack,
+# same 13.8GB peak, same engine_built false, so the pairing was never the
+# variable and one contrasting observation was not enough to blame a shared
+# host. It stays unwired rather than re-paired, since a leg passing one session
+# in three tells CI nothing either way.
+KERNELS: tuple[tuple[str, ...], ...] = (("gptoss", "frontier", "canary", "control"),)
 
 
 def expand_install(

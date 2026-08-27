@@ -161,6 +161,10 @@ class LocalModelInfo(BaseModel):
             "those lists."
         ),
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected output-audio codec used to decide whether Audio can run the row",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -239,6 +243,7 @@ class CachedRepoBase(BaseModel):
     # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
     # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
+    audio_type: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
@@ -269,6 +274,11 @@ class CachedModelRepo(CachedRepoBase):
     # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
     # is how they are seen and deleted; the pickers filter on this instead.
     companion: bool = False
+    # True when the SELECTED revision is a diffusers pipeline. An unrecognised one carries no
+    # task and no root config for can_chat, so this flag is all that keeps it out of a chat
+    # picker. Declared because response_model drops undeclared keys, which left the CLI
+    # (reading the dict in-process) and the frontend disagreeing about the same row.
+    diffusers: bool = False
 
 
 class CachedModelsResponse(BaseModel):
