@@ -1966,24 +1966,14 @@ function useStudioRuntimeAdapters(
               sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // Nothing to write: every field below is already the server's own.
+          // The backend owns this message and refuses client edits, and every field the save
+          // would send was just read back from it, so the request is answered 409 every time.
+          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs
+          // from the `ensureStoredChatThread` inside `saveStoredChatMessage`. Returning here
+          // drops both.
           //
-          // `preserveServerManaged` means the backend owns this message and refuses to let a
-          // client edit it. The autosave then echoes what it just read back at the server:
-          // `content` is `existingMessage.content`, `metadata` is `existingMetadata`, and
-          // `createdAt` is `existingMessage.createdAt`. `attachments` is empty because only a
-          // user message carries them and this branch is a server-managed generation. So the
-          // request cannot change anything, and the server answers 409 every time.
-          //
-          // Measured on a real session: one 43.6 s generation issued 265 PUTs of which 256 were
-          // rejected with "server-managed generation messages cannot be edited", a median 166 ms
-          // apart, plus 353 whole-thread GETs a median 339 ms apart from the
-          // `ensureStoredChatThread` inside `saveStoredChatMessage`. All of it against the same
-          // backend the model is saturating.
-          //
-          // `parentId` is the one field not echoed back, so a reparent could in principle differ
-          // here. It is dropped either way: the server rejects the whole request, so that update
-          // has never landed on this path. Skipping is behaviour-preserving, not a new trade.
+          // `parentId` is the one field not echoed back, so a reparent could differ. It is
+          // dropped either way: the server rejects the whole request, so it never landed here.
           if (preserveServerManaged) {
             await throwIfHistoryWasCleared(remoteId);
             return;

@@ -4,19 +4,13 @@
 /**
  * The per-chunk autosave must not write back a message the server owns.
  *
- * When `preserveServerManaged` is true the backend owns the message and refuses to let a client
- * edit it, and every field the autosave would send is one it just read from the backend. So the
- * request cannot change anything and is answered 409.
+ * Every field it would send was just read from the backend, which then refuses the edit. One
+ * measured 43.6 s generation: 265 PUTs, 256 rejected 409, plus 353 whole-thread GETs from the
+ * `ensureStoredChatThread` inside `saveStoredChatMessage`.
  *
- * Measured on a real session before this guard existed: one 43.6 s generation issued 265 PUTs of
- * which 256 were rejected with "server-managed generation messages cannot be edited", a median
- * 166 ms apart, plus 353 whole-thread GETs a median 339 ms apart from the `ensureStoredChatThread`
- * inside `saveStoredChatMessage`. All against the backend the model is saturating.
- *
- * This is a SOURCE guard rather than a behavioural one because the call site is an inline closure
- * inside the history adapter, with no seam to stub. It therefore pins ORDERING, not spelling: that
- * the `preserveServerManaged` early return appears before the `saveStoredChatMessage` call it
- * guards. A rename of either keeps working; moving the save above the guard does not.
+ * A source guard, because the call site is an inline closure with no seam to stub. It pins
+ * ORDERING rather than spelling: a rename keeps working, moving the save above the guard does
+ * not.
  */
 
 import assert from "node:assert/strict";
