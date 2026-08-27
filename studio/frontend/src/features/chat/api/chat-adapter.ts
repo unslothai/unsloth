@@ -5307,38 +5307,27 @@ export function createOpenAIStreamAdapter(
       // hung off the call, so merging two of them has to check first.
       const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
         typeof v === "object" && v !== null && !Array.isArray(v);
-      // A name waiting for arguments is waiting within one provider turn. The
-      // backend starts the next turn on this same response with the delta index
-      // restarted at 0, so a name left over would be prepended to whatever
-      // opens there, turning "C" into "BC" and hanging B's metadata on it. The
-      // backend's own pending state is per turn for the same reason.
-      // Metadata for a call that was announced by name and never opened. The
-      // backend still runs such a call, and its tool_start carries no
-      // extra_content, so the card it paints would persist without the thought
-      // signature the announcement brought and the replay would be rejected.
-      // Queued, not replaced: the same tool can be announced at two indices,
-      // and the backend runs both, so the second card would otherwise be
-      // painted with no signature while the first wore the wrong one.
+      // Metadata for a call announced by name that never opened. The backend
+      // runs it anyway and its tool_start carries no extra_content, so the card
+      // would persist unsigned and the replay be rejected. Queued rather than
+      // replaced: the same tool can be announced at two indices, and both run.
       const announcedExtraByName = new Map<string, unknown[]>();
-      // Cards forked off a slot whose last object had not closed yet. The
-      // backend holds the same ones back in open_tail_keys: a stream that stops
-      // after `{"a":1}{` is not marked truncated, so the lone brace would
-      // otherwise persist as a card no execution event can ever complete and
-      // replay would send as `{}`. The card still has to exist while the turn
-      // runs, because later id-less fragments are written to it.
+      // Cards forked off a slot whose last object had not closed. The backend
+      // holds the same ones in open_tail_keys: a stream stopping after
+      // `{"a":1}{` is not marked truncated, so the lone brace would persist as
+      // a card nothing can complete. Kept while the turn runs, since later
+      // id-less fragments are written to it.
       const openTailIds = new Set<string>();
       const endProviderTurn = (): boolean => {
         let changed = false;
         for (const [pendingIdx, pendingName] of pendingNameByIndex) {
           const extra = pendingExtraByIndex.get(pendingIdx);
           if (!pendingName || extra === undefined) continue;
-          // A parked name that repeats or extends the name of the call this
-          // slot already holds is that call's name resent, not a second call:
-          // _announced_but_unopened invents nothing for it and hangs the
-          // metadata on the held call instead. Queued under the fragment it
-          // would never be read, because the tool_start that follows carries
-          // the held call's name, and the card would persist without the
-          // thought signature its replay needs.
+          // A parked name repeating or extending the held call's is that
+          // call's name resent: _announced_but_unopened invents nothing for it
+          // and hangs the metadata on the held call. Queued under the fragment
+          // it would never be read, the tool_start carrying the held name, and
+          // the card would replay unsigned.
           const heldIndex = findStreamedToolCallPartIndex(
             toolCallParts,
             undefined,
@@ -5436,12 +5425,10 @@ export function createOpenAIStreamAdapter(
             ...(isLast && extraContent !== undefined
               ? { extra_content: extraContent }
               : {}),
-            // Every segment but the last is spoken for: an id stamped on a
-            // later fragment must not reach back past the newest call in the
-            // slot. The last one is left claimable even when its object has
-            // closed, because a provider that bundles several calls into one
-            // delta can stamp the last one's real id in a delta of its own,
-            // and the loop decides claim against open by the name it carries.
+            // Every segment but the last is spoken for, so a late id cannot
+            // reach back past the newest call in the slot. The last stays
+            // claimable even when closed: a provider bundling several calls
+            // into one delta can stamp that one's real id in a delta of its own.
             ...(isLast ? {} : { _has_stable_id: true }),
             ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
           };
@@ -6371,21 +6358,17 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
-                // The empty status the loop yields between iterations, which is
-                // the one boundary a round always has. A round whose calls were
-                // all rejected as disabled emits no tool_start or tool_end at
-                // all, and an upstream that ends its turns with [DONE] or EOF
-                // sends no finish_reason either, so without this a name parked
-                // in that round would be prepended to whatever opens at the
-                // same index in the next one.
+                // The empty status between iterations, the one boundary every
+                // round has. A round whose calls were all rejected as disabled
+                // emits no tool card, and a [DONE] or EOF upstream sends no
+                // finish_reason, so a name parked there would otherwise be
+                // prepended to whatever opens next round.
                 if (!toolStatusText) {
                   endProviderTurn();
                   // Every card a round paints arrives before the status that
-                  // closes it, so an announcement still queued here was never
-                  // matched by one: the backend emits no tool_start for a call
-                  // it rejected as disabled. Kept, it would be handed to the
-                  // next call of the same name and put a signature that call
-                  // never carried on its replay.
+                  // closes it, so an announcement still queued here was matched
+                  // by none, the backend emitting no card for a disabled call.
+                  // Kept, it would sign the next call of the same name.
                   announcedExtraByName.clear();
                 }
                 runtime.setToolStatus(
@@ -6472,22 +6455,16 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // One of Unsloth's own tool events means the provider turn that
-                // asked for it has ended. finish_reason alone is not enough: an
-                // OpenAI-compatible upstream can end a turn with [DONE] or EOF
-                // and never send one, and the loop starts the next request
-                // anyway with the delta indices restarted, so a name waiting
-                // for arguments would be prepended to whatever opens there.
-                // Before the queue below is read, so this turn's announcements
-                // reach it.
+                // One of Unsloth's own tool events ends the provider turn that
+                // asked for it. finish_reason alone is not enough: a [DONE] or
+                // EOF upstream never sends one, and the next request restarts
+                // the delta indices. Before the queue below is read, so this
+                // turn's announcements reach it.
                 //
-                // A provider-hosted tool runs INSIDE the turn, though: the
-                // backend records those with note_hosted_tool_event and leaves
-                // its _Turn open, so an argument-only delta after one still
-                // opens the name parked here. Hosted events arrive as whole
-                // chat.completion.chunks carrying _toolEvent beside `choices`,
-                // while Unsloth's are bare {"type": "tool_start"} SSE frames
-                // that chat-api wraps with nothing else on them.
+                // A hosted tool runs INSIDE the turn, though, and
+                // note_hosted_tool_event leaves the _Turn open. Hosted events
+                // ride a whole chat.completion.chunk, `choices` and all;
+                // Unsloth's are bare {"type": "tool_start"} frames.
                 if (!chunk.choices) {
                   endProviderTurn();
                 }
@@ -6661,11 +6638,10 @@ export function createOpenAIStreamAdapter(
                     (p) => p.toolCallId === id,
                   );
                   // Claimed once, whichever branch below runs: the announcement
-                  // it came from named this call and no other. A name resent
-                  // after its call closed carries metadata that the backend
-                  // merges into that call, and the id resolves to the card
-                  // already on screen, so reading the queue only when a card is
-                  // created dropped the signature the backend kept.
+                  // named this call and no other. Reading the queue only when a
+                  // card is created dropped the signature for a name resent
+                  // after its call closed, whose id resolves to a card already
+                  // on screen.
                   const queued =
                     announcedExtraByName.get(toolEvent.tool_name as string) ??
                     [];
@@ -7125,10 +7101,8 @@ export function createOpenAIStreamAdapter(
                   const stableId = call.id;
                   // The chunk is cast, not validated, and llama-server has
                   // shipped `arguments` as a decoded object rather than the
-                  // string the API specifies. Reading it as a string aborted
-                  // the whole adapter, so hold it to the type the accumulator
-                  // is written against, which is what the backend already does
-                  // with its own isinstance check.
+                  // string the API specifies. Reading it as a string aborted the
+                  // adapter; the backend guards the same way with isinstance.
                   const deltaArgs =
                     typeof call.function?.arguments === "string"
                       ? call.function.arguments
@@ -7152,12 +7126,10 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // A closed object cannot take more content, so a delta that
-                  // brings a name or arguments to a slot already holding one
-                  // whole object is opening the next parallel call. Splitting
-                  // the accumulated text only catches this once the arguments
-                  // land; a name-only delta would rename the finished call,
-                  // and a late id would claim it and glue onto it.
+                  // A closed object takes no more content, so a delta bringing
+                  // a name or arguments to a slot holding one whole object opens
+                  // the next parallel call. Splitting the text catches that only
+                  // once the arguments land, too late for a name or a late id.
                   const slotIsClosed = (() => {
                     if (!matched?.argsText) return false;
                     const held = scanArgsText(
@@ -7172,29 +7144,20 @@ export function createOpenAIStreamAdapter(
                   // and opening a call there gives two cards one id.
                   const namesThisCall =
                     !!stablePartId && matched?.toolCallId === stablePartId;
-                  // Whitespace after a closing brace is legal JSON and says
-                  // nothing about another call, and a next call opens with the
-                  // "{" of its own arguments object, so a fragment starting
-                  // with anything else is not one: cutting there would turn a
-                  // stray scalar suffix into a second call and run the tool
-                  // twice, where the scanner deliberately would not cut at all.
+                  // Whitespace after a closing brace says nothing about another
+                  // call, and a next call opens with the "{" of its own
+                  // arguments. Cutting on anything else would turn a stray
+                  // scalar suffix into a second call and run the tool twice.
                   const bringsArgs = deltaArgs.trim().startsWith("{");
                   const closedSlot = slotIsClosed && !namesThisCall;
-                  // A name reaching a closed slot cannot be read yet: the same
-                  // tool called twice announces itself exactly as llama-server
-                  // resends a name it is still growing. Hold it until arguments
-                  // say which call it names, rather than renaming the finished
-                  // one.
-                  // An id, though, names a call outright, so one that is not the
-                  // closed call's own opens the next one even before its
-                  // arguments arrive: the conventional opening delta carries id
-                  // and name with empty arguments, and letting it claim the
-                  // finished card would draw the next call's arguments there.
-                  // An id at a closed slot opens the next call only when it
-                  // also names a different one. On its own, or repeating the
-                  // name the card holds, it is that call's real id stamped
-                  // late, and forking there leaves the finished card under its
-                  // provisional id beside an empty second one.
+                  // A name reaching a closed slot cannot be read yet: a second
+                  // call to the same tool announces itself exactly as
+                  // llama-server resends a name it is growing. An id names its
+                  // call outright, so one naming a DIFFERENT call opens the next
+                  // even before its arguments arrive. On its own, or repeating
+                  // the held name, it is that call's id stamped late, and
+                  // forking there strands the finished card under a provisional
+                  // id beside an empty second one.
                   const idNamesAnotherCall =
                     !!stablePartId &&
                     !!call.function?.name &&
@@ -7204,14 +7167,12 @@ export function createOpenAIStreamAdapter(
                     // would have the second claim the first. Only the same
                     // name, or none, reads as that call's id arriving late.
                     call.function.name !== matched.toolName;
-                  // A provider that streams whole snapshots rather than
-                  // fragments repeats the finished call verbatim once it has an
-                  // id for it. The same name and byte-identical arguments, on a
-                  // card carrying no id of its own, is that call arriving to be
-                  // claimed rather than a second one, and a second card runs a
-                  // side-effecting tool twice. Narrow on purpose: only an exact
-                  // repeat, so two parallel calls differing anywhere still open
-                  // separately.
+                  // A snapshot-style provider repeats the finished call
+                  // verbatim once it has an id for it. Same name and
+                  // byte-identical arguments, on a card with no id of its own,
+                  // is that call arriving to be claimed; a second card runs a
+                  // side-effecting tool twice. Exact repeats only, so parallel
+                  // calls differing anywhere still open separately.
                   const resendsThisCall =
                     !!stablePartId &&
                     !!matched &&
@@ -7222,13 +7183,11 @@ export function createOpenAIStreamAdapter(
                     closedSlot &&
                     (bringsArgs || idNamesAnotherCall) &&
                     !resendsThisCall;
-                  // Trailing whitespace is legal JSON belonging to the object
-                  // just closed, so the whitespace goes on the closed card. The
-                  // name on such a delta is still held rather than merged into
-                  // that card: it is either that call's name resent, which the
-                  // opening delta discards when it disagrees, or the next
-                  // call's announced early, and merging it gave the closed card
-                  // "alphabeta" and the new one no name at all.
+                  // Trailing whitespace belongs to the object just closed, so
+                  // it goes on the closed card. The name on such a delta is held
+                  // rather than merged: it is that call's name resent or the
+                  // next call's announced early, and merging gave the closed
+                  // card "alphabeta" and the new one no name at all.
                   const defersToNextCall =
                     closedSlot && !opensNextCall && !resendsThisCall;
                   const suppressName =
@@ -7239,12 +7198,10 @@ export function createOpenAIStreamAdapter(
                   // further call follows.
                   if (suppressName && call.extra_content !== undefined) {
                     // Announced with the name, so it describes the call being
-                    // announced. Left on the closed card it gives that call
-                    // another call's signature and the new call none, and
-                    // native replay rejects both.
-                    // Merged: a name streamed across several deltas can carry
-                    // metadata on more than one of them, and replacing drops
-                    // the signature an earlier fragment brought.
+                    // announced; left on the closed card it signs the wrong one
+                    // and native replay rejects both. Merged, because a name
+                    // streamed across several deltas can carry metadata on more
+                    // than one of them.
                     const parkedBefore = pendingExtraByIndex.get(idx);
                     pendingExtraByIndex.set(
                       idx,
@@ -7296,13 +7253,11 @@ export function createOpenAIStreamAdapter(
                       ? (existing.argsText ?? "")
                       : (existing.argsText ?? "") + argsFragment;
                     // A call's arguments are one JSON object, so a slot holding
-                    // two whole objects is holding two calls: the stream reused
-                    // this index instead of opening the next, which is how
-                    // vLLM's id-less parallel deltas glue `{"url":"a"}` and
+                    // two is holding two calls: the stream reused this index,
+                    // which is how vLLM's id-less deltas glue `{"url":"a"}` and
                     // `{"url":"b"}` into one unparsable string (issue #9807).
-                    // Cut on the object boundary, not on a change of function
-                    // name: the same tool called twice has no name to cut on.
-                    // A delta carrying an id addresses its own call already.
+                    // Cut on the object boundary, since the same tool twice has
+                    // no name to cut on; a delta with an id addresses its own.
                     const split = stablePartId
                       ? { complete: [], tail: "" }
                       : scanArgsText(existing.toolCallId, merged);
@@ -7426,12 +7381,11 @@ export function createOpenAIStreamAdapter(
                     const nameFragment = call.function?.name ?? "";
                     const parkedSlot = pendingSlotByIndex.get(idx);
                     pendingSlotByIndex.delete(idx);
-                    // A parked name that repeats or extends the closed call's
-                    // own is most likely that call's name resent, kept only
-                    // because a second no-argument call to the same tool looks
-                    // identical. So a delta that names its call outright wins:
-                    // concatenating gave "alphabeta", a name the backend never
-                    // executes. Same decision as _take_parked there.
+                    // A parked name repeating or extending the closed call's is
+                    // most likely that call's name resent, kept only because a
+                    // second no-argument call looks identical. A delta naming its
+                    // call outright wins: concatenating gave "alphabeta", which
+                    // the backend never executes. Same decision as _take_parked.
                     const heldName = matched?.toolName ?? "";
                     const parkedIsResend =
                       !!parked &&
@@ -7503,13 +7457,11 @@ export function createOpenAIStreamAdapter(
                         : call.extra_content !== undefined
                           ? call.extra_content
                           : parkedExtra;
-                    // Split apart when this delta opened several calls: the
-                    // parked metadata was announced for the call the
-                    // announcement named, which is this one, and the metadata
-                    // the delta carried belongs to the call it closes, which is
-                    // the last. _take_parked and _fork_glued_arguments divide
-                    // them the same way, and a signature on the wrong call gets
-                    // both rejected on replay.
+                    // Split when this delta opened several calls: the parked
+                    // metadata was announced for this one, and the metadata the
+                    // delta carried belongs to the call it closes, the last.
+                    // _take_parked and _fork_glued_arguments divide them the
+                    // same way, and a misplaced signature fails replay.
                     const freshOwnExtra = freshIsSplit ? parkedExtra : freshExtra;
                     const bornExtra = freshIsSplit
                       ? call.extra_content
@@ -7562,11 +7514,9 @@ export function createOpenAIStreamAdapter(
                     // the order the backend runs them.
                     if (announcedSlot) {
                       // Only the announced call takes the reserved place. The
-                      // calls this delta's later objects introduce were never
-                      // announced, and _fork_glued_arguments numbers them as
-                      // the arguments arrive, so the backend runs them after
-                      // anything that opened in between: appending is where
-                      // they belong, and it is where the split above puts them.
+                      // calls its later objects introduce were never announced,
+                      // and _fork_glued_arguments numbers them as the arguments
+                      // arrive, so they run after anything opened in between.
                       toolCallParts.splice(announcedSlot.at, 0, fresh);
                       toolCallParts.push(...born);
                       // Another index can be waiting on the same position,

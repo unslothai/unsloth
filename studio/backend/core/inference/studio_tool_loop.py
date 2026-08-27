@@ -664,12 +664,11 @@ class _Turn:
             # belong to the newer call.
             key: Any = self.open_key_by_index.get(index, index)
             if isinstance(call_id, str) and call_id:
-                # An id beats the latest-index mapping, which only exists to
-                # place the fragments that carry no id: a fragment repeating an
-                # id goes back to the call wearing it wherever that call now
-                # sits, even when an id-less call opened at this index after it.
-                # Matching only against the open call renamed that newer call
-                # and gave it a second copy of the id.
+                # An id beats the latest-index mapping, which only places
+                # fragments carrying no id: a fragment repeating an id returns
+                # to the call wearing it wherever that call now sits. Matching
+                # the open call instead renamed a newer one and gave it a second
+                # copy of the id.
                 owner = self.key_by_call_id.get(call_id)
                 if owner is not None:
                     key = owner
@@ -689,24 +688,15 @@ class _Turn:
                 new_function.get("arguments") if isinstance(new_function, dict) else None
             )
             new_name = new_function.get("name") if isinstance(new_function, dict) else None
-            # Whitespace after a closing brace is legal JSON and says nothing
-            # about another call, so a provider that chunks it off on its own
-            # must not open one.
-            # An id, though, names a call outright, so one that is not the closed
-            # call's own opens the next one even before its arguments arrive --
-            # the conventional opening delta carries id and name with empty
-            # arguments, and letting it land on the finished call would put the
-            # next call's arguments there too.
             # A next call opens with the "{" of its own arguments object, so a
-            # fragment that starts with anything else is not one. Forking on any
-            # non-whitespace text cut where the scanner deliberately would not,
-            # turning a stray scalar suffix into a second call and running the
-            # tool twice.
-            # An id at a closed slot opens the next call only when it also
-            # names a different one. On its own, or repeating the name the slot
-            # holds, it is that call's real id stamped late, and forking there
-            # leaves the finished call under its provisional id beside an empty
-            # second one.
+            # fragment starting with anything else is not one: whitespace after
+            # a closing brace belongs to the object just closed, and forking on
+            # a stray scalar suffix would run the tool twice.
+            # An id names a call outright, so one naming a DIFFERENT call opens
+            # the next even before its arguments arrive. On its own, or
+            # repeating the name the slot holds, it is that call's id stamped
+            # late, and forking there strands the finished call under its
+            # provisional id beside an empty second one.
             held_name_now = held["function"]["name"] if held is not None else ""
             id_names_another_call = bool(
                 isinstance(call_id, str)
@@ -721,14 +711,12 @@ class _Turn:
                 # late.
                 and new_name != held_name_now
             )
-            # A provider that streams whole snapshots rather than fragments
-            # repeats the finished call verbatim once it has an id for it. The
-            # same name and byte-identical arguments, with an id the slot does
-            # not hold yet, is that call arriving to be claimed rather than a
-            # second one, and opening a second runs a side-effecting tool twice.
-            # Narrow on purpose: only an EXACT repeat of a call that has no id
-            # of its own, so two genuinely parallel calls that differ anywhere
-            # still both run.
+            # A snapshot-style provider repeats the finished call verbatim once
+            # it has an id for it. Same name and byte-identical arguments, with
+            # an id the slot does not hold yet, is that call arriving to be
+            # claimed; opening a second runs a side-effecting tool twice. Exact
+            # repeats of an id-less call only, so parallel calls differing
+            # anywhere still both run.
             resends_this_call = bool(
                 held is not None
                 and isinstance(call_id, str)
@@ -762,13 +750,12 @@ class _Turn:
             # name it is still growing. So hold it until arguments say which
             # call it belongs to, rather than renaming the finished one.
             extra = raw_call.get("extra_content")
-            # Trailing whitespace is legal JSON that belongs to the object just
-            # closed, so the whitespace goes on the closed call. The name on such
-            # a delta is still held rather than merged into that call: it is
-            # either that call's name resent, which _take_parked discards when
-            # the opening delta disagrees, or the next call's announced early,
-            # and merging it gave the closed call "alphabeta" and the new call
-            # no name at all, so neither ran.
+            # Trailing whitespace belongs to the object just closed, so it goes
+            # on the closed call. The name on such a delta is held rather than
+            # merged: it is that call's name resent, which _take_parked discards
+            # when the opening delta disagrees, or the next call's announced
+            # early, and merging gave the closed call "alphabeta" and the new
+            # one no name at all, so neither ran.
             defers_to_next_call = slot_is_closed and not opens_next_call and not resends_this_call
             suppress_name = False
             suppress_extra = False
@@ -809,11 +796,10 @@ class _Turn:
             if key not in self.by_index:
                 parked_name, parked_extra = self._take_parked(index, held, new_name)
                 # An id-less provider reusing the index for another call to the
-                # same tool can leave the repeated name out, since the first
-                # delta already gave it. An empty name is no tool at all, so
-                # _normalized_call drops the call and the user is one result
-                # short; the call this slot just closed is the only name it can
-                # mean.
+                # same tool can leave the repeated name out, the first delta
+                # having given it. An empty name is no tool, so _normalized_call
+                # drops the call and the user is one result short; the call this
+                # slot just closed is the only name it can mean.
                 if not parked_name and not (isinstance(new_name, str) and new_name):
                     parked_name = held_name_now
                 born = {
@@ -1060,10 +1046,9 @@ class _Turn:
         out: list[dict[str, Any]] = []
         # Ordered by when the stream announced each call, so one announced
         # second is not run third because another index opened in between. Keyed
-        # on the sequence number alone: two announcements can share a moment
-        # only if one has no number yet, and comparing the calls themselves to
-        # break that tie raises rather than sorting. Stable, so a shared number
-        # keeps the order the calls were found in.
+        # on the sequence number alone: comparing the calls themselves to break
+        # a tie raises rather than sorts, and the sort is stable, so a shared
+        # number keeps the order the calls were found in.
         numbered = [
             (self.seq_by_key.get(key, position), self.by_index[key])
             for position, key in enumerate(self.order)
