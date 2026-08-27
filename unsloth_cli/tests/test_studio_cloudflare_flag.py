@@ -93,9 +93,7 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
     # admin password against the real STUDIO_HOME (which this helper does not
     # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
     # here; it has a dedicated suite in test_studio_password_prompt.py.
-    monkeypatch.setattr(
-        studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None
-    )
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
 
     monkeypatch.setattr(sys, "platform", platform)
 
@@ -178,9 +176,7 @@ def _invoke_studio_default(
     # admin password against the real STUDIO_HOME (which this helper does not
     # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
     # here; it has a dedicated suite in test_studio_password_prompt.py.
-    monkeypatch.setattr(
-        studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None
-    )
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
 
     monkeypatch.setattr(sys, "platform", platform)
 

@@ -458,12 +458,15 @@ def _auto_generate_colab_admin_password() -> "str | None":
             # update_password returns the rotated JWT secret, or None when a guard
             # rejected the write. Narrow to a bool here: the except branch below
             # assigns one, and this variable must not hold a secret on one path.
-            committed = update_password(
-                DEFAULT_ADMIN_USERNAME,
-                generated,
-                revoke_refresh_tokens = True,
-                require_must_change = True,
-            ) is not None
+            committed = (
+                update_password(
+                    DEFAULT_ADMIN_USERNAME,
+                    generated,
+                    revoke_refresh_tokens = True,
+                    require_must_change = True,
+                )
+                is not None
+            )
         except Exception as e:
             # update_password commits the row BEFORE its best-effort cleanup
             # (clear_bootstrap_password, which can still raise -- e.g. printing its
@@ -883,11 +886,7 @@ def _show_and_embed(
     _embed_html_iframe(url, port)
 
 
-def start(
-    port: int = 8888,
-    *,
-    cloudflare: "bool | None" = None,
-):
+def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     """Start Unsloth Studio in Colab and display the URL.
 
     Args:

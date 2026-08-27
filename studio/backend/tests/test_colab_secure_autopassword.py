@@ -120,11 +120,11 @@ def test_auto_generate_loses_race_to_a_concurrent_password_change(monkeypatch):
 def test_update_password_compare_and_set_guard():
     # Storage unit: the guarded update writes only while must_change_password = 1.
     admin = _seed_admin(must_change_password = True)
-    assert storage.update_password(admin, "first-generated-pw-1", require_must_change = True) is not None
-    # must_change is now 0, so a second guarded write is refused (rowcount 0)...
     assert (
-        storage.update_password(admin, "second-generated-pw-2", require_must_change = True) is None
+        storage.update_password(admin, "first-generated-pw-1", require_must_change = True) is not None
     )
+    # must_change is now 0, so a second guarded write is refused (rowcount 0)...
+    assert storage.update_password(admin, "second-generated-pw-2", require_must_change = True) is None
     from auth import hashing
 
     salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
@@ -217,8 +217,7 @@ def test_start_cloudflare_tunnel_refuses_without_a_display_channel(monkeypatch):
     monkeypatch.setattr(
         cloudflare_tunnel,
         "start_studio_tunnel",
-        lambda port, **_kwargs: started.update(called = True)
-        or "https://example.trycloudflare.com",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.trycloudflare.com",
     )
 
     assert colab.start_cloudflare_tunnel(8888) is None
@@ -426,9 +425,6 @@ def test_start_cloudflare_tunnel_fails_closed_when_display_fails(monkeypatch):
 # ── opt-in same-tab link token ───────────────────────────────────────
 
 
-
-
-
 def _patch_start_for_cloudflare(monkeypatch, *, finalize_calls, embed_kwargs):
     """Stub start()'s side effects so it runs to the keepalive loop, then bails.
 
@@ -470,7 +466,6 @@ def test_start_cloudflare_never_finalizes_or_caches_credentials(monkeypatch):
 
     assert finalize_calls == []  # credential handled by start_cloudflare_tunnel only
     assert "colab_login" not in embed_kwargs or embed_kwargs["colab_login"] is None
-
 
 
 def test_notebook_text_warns_that_cell_output_is_saved():

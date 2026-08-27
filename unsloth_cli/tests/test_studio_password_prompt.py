@@ -1312,7 +1312,6 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
     assert bootstrap_file.read_text() == ""
 
 
-
 def test_cli_update_password_compare_and_set_guard(monkeypatch, tmp_path):
     # Mirror backend storage.update_password: the auto-generated launch credential
     # is committed only while must_change_password is still 1. A user finishing
@@ -1370,8 +1369,6 @@ def test_cli_update_password_compare_and_set_guard(monkeypatch, tmp_path):
     # No collateral revocation on a rejected write.
     assert remaining_refresh == 1
     assert remaining_keys == 1
-
-
 
 
 def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
@@ -1588,7 +1585,6 @@ def test_studio_default_password_applies_on_headless_wildcard_no_tunnel(monkeypa
     assert after["must_change_password"] == 0
     assert after["password_hash"] != before["password_hash"]
     assert "--password" not in _exec_argv(events)
-
 
 
 class _DyingConsole:

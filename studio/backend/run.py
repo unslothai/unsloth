@@ -2170,12 +2170,15 @@ def _auto_generate_admin_password(admin_username: str, *, out = None) -> "Option
     generated = _secrets.token_urlsafe(24)
     try:
         # Returns the rotated JWT secret, or None when the compare-and-set lost.
-        committed = _auth_storage.update_password(
-            admin_username,
-            generated,
-            revoke_refresh_tokens = True,
-            require_must_change = True,
-        ) is not None
+        committed = (
+            _auth_storage.update_password(
+                admin_username,
+                generated,
+                revoke_refresh_tokens = True,
+                require_must_change = True,
+            )
+            is not None
+        )
     except Exception as e:
         if not _generated_password_is_live(admin_username, generated):
             raise

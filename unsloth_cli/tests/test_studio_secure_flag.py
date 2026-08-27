@@ -98,9 +98,7 @@ def _install_run_reexec_capture(monkeypatch):
     # admin password against the real STUDIO_HOME (which this helper does not
     # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
     # here; it has a dedicated suite in test_studio_password_prompt.py.
-    monkeypatch.setattr(
-        studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None
-    )
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
 
     monkeypatch.setattr(sys, "platform", "linux")
 
@@ -144,9 +142,7 @@ def _invoke_studio_default(monkeypatch, args):
     # admin password against the real STUDIO_HOME (which this helper does not
     # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
     # here; it has a dedicated suite in test_studio_password_prompt.py.
-    monkeypatch.setattr(
-        studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None
-    )
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
 
     monkeypatch.setattr(sys, "platform", "linux")
 
@@ -371,9 +367,7 @@ def test_run_secure_resolves_tools_against_loopback(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     # Same reason as _install_run_reexec_capture: this asserts which host the tool
     # policy is resolved against, not the pre-exposure password gate.
-    monkeypatch.setattr(
-        studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None
-    )
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
 
     from unsloth_cli import _tool_policy as _tp_mod
 
