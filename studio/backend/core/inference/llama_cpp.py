@@ -18463,9 +18463,9 @@ class LlamaCppBackend:
                         # An EXPLICIT context gets its requested length, because there
                         # the reasoning points the other way: the loop honors a pinned
                         # context verbatim, so the only give left is `--fit on`, which
-                        # spills MODEL LAYERS and collapses decode ~3x. Asking at 4096
-                        # would answer "fits", keep the projector, and pay in offloaded
-                        # weights -- this probe's trade at its worst rate.
+                        # spills MODEL LAYERS and collapses decode ~3x. Asking at the
+                        # floor instead would answer "fits", keep the projector, and pay
+                        # in offloaded weights -- this probe's trade at its worst rate.
                         #
                         # The drafter IS charged: this runs before the drop probe, so
                         # speculative decoding is still in the footprint. Priced exactly
