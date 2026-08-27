@@ -243,3 +243,72 @@ def test_load_is_registered_before_the_lifecycle_gate_and_always_cleared(monkeyp
 
     assert seen == [["org/queued-model-GGUF"]]
     assert inference_route._pending_load_attempts == {}
+
+
+def test_status_reports_an_on_device_load_by_its_public_id(monkeypatch):
+    """A load still on its way to the backend must not publish the on-disk path the
+    completed load is careful to keep out of the same response."""
+    _patch_fast_status(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("/home/alice/models/Qwen3-30B-A3B-Q4_K_M.gguf"),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.loading == ["Qwen3-30B-A3B-Q4_K_M"]
+
+
+def test_status_reports_a_leased_native_load_by_its_registered_label(monkeypatch):
+    """Once the grant is redeemed the label is what every other field reports."""
+    from utils import native_path_leases
+
+    path = "/home/alice/Downloads/private-model.gguf"
+    native_path_leases._remember_native_path_for_redaction(path, "private-model")
+    try:
+        _patch_fast_status(monkeypatch)
+        monkeypatch.setattr(inference_route, "_running_load_attempt", _attempt(path))
+
+        response = asyncio.run(inference_route.get_status(current_subject = "test"))
+    finally:
+        with native_path_leases._REDACTION_LOCK:
+            native_path_leases._NATIVE_PATH_LABELS.pop(path, None)
+            if path in native_path_leases._NATIVE_PATH_REDACTIONS:
+                native_path_leases._NATIVE_PATH_REDACTIONS.remove(path)
+
+    assert response.loading == ["private-model"]
+
+
+def test_status_leaves_a_hub_repo_id_alone(monkeypatch):
+    """The redaction only has to reach paths; a repo id is already public."""
+    _patch_fast_status(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("unsloth/gemma-4-E2B-it-GGUF"),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.loading == ["unsloth/gemma-4-E2B-it-GGUF"]
+
+
+def test_status_does_not_list_one_transformers_load_twice(monkeypatch):
+    """The backend names the load it is running and the registry names the one the
+    route accepted. Reporting the attempt by its public id must not un-merge them."""
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = None
+    backend.models = {}
+    backend.loading_models = {"/home/alice/models/local-llama"}
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("/home/alice/models/local-llama"),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.loading == ["/home/alice/models/local-llama"]

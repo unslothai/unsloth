@@ -6266,6 +6266,23 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
     )
 
 
+def _loading_public_id(model_path: Optional[str]) -> Optional[str]:
+    """The id ``/api/inference/status`` publishes for a load still in flight.
+
+    The request carries whatever the client sent, which for an on-device model is an
+    absolute path. What the same load reports once it lands is path-free (see
+    ``_llama_status_model_ids`` and ``core.inference.model_ids.public_model_id``), so
+    reporting it mid-load must be too: a registered native-lease label if the grant has
+    been redeemed, else the clean public id.
+    """
+    if not model_path:
+        return model_path
+    label = display_label_for_native_path(model_path)
+    if label != model_path:
+        return label
+    return public_model_id(model_path) or model_path
+
+
 def _llama_status_model_ids(llama_backend) -> "tuple[Optional[str], Optional[str]]":
     """The ``(active_model, model_identifier)`` pair ``/api/inference/status`` publishes
     for a loaded GGUF. A native-lease load reports only the display label, never the
@@ -14610,6 +14627,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             if not _tracked_loading_id:
                 _queued = next(iter(_pending_load_attempts.values()), None)
                 _tracked_loading_id = _queued.model_path if _queued is not None else ""
+        # The attempt holds what the client sent, which for an on-device model is a path.
+        _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
         _loading = [_tracked_loading_id] if _tracked_loading_id else []
         backend = _peek_inference_backend()
 
@@ -14710,8 +14729,13 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
 
+        # The backend names the load it is running and the attempt registry names the
+        # one the route accepted; they are the same load, so compare the public ids or
+        # a model loaded from a path would be listed twice.
         _loading_models = list(getattr(backend, "loading_models", set()))
-        if _tracked_loading_id and _tracked_loading_id not in _loading_models:
+        if _tracked_loading_id and not any(
+            _loading_public_id(_name) == _tracked_loading_id for _name in _loading_models
+        ):
             _loading_models.append(_tracked_loading_id)
 
         return InferenceStatusResponse(
