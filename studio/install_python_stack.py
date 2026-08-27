@@ -2983,6 +2983,50 @@ def _expected_torch_index_url(tag: str) -> str:
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 
+def _explicit_cpu_torch_index_pin() -> bool:
+    """Whether this run was pinned to a CPU wheel index, by URL or by family.
+
+    Only a pin counts. setup.ps1's published tag also reads "cpu" for a host whose
+    nvidia-smi probe simply returned nothing, and treating that as an instruction would
+    let a wedged driver downgrade a healthy CUDA venv.
+    """
+    pin = _explicit_torch_index_url()
+    return pin is not None and _torch_index_leaf(pin) == "cpu"
+
+
+def _installed_flavor_tag_now() -> str:
+    """The venv's CURRENT flavor tag, re-probed, or "" when nothing could be read.
+
+    _torch_build_is_gpu answers a weaker question ("can this torch use a GPU at all")
+    and is deliberately family-blind, so it cannot tell a repair that installed the
+    requested family from one that left a different GPU wheel in place. "" is returned
+    for an unreadable venv rather than "cpu", so ambiguity stays distinguishable from
+    a positive CPU reading and never fails an update on its own.
+    """
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    if _ran and _importable and _version:
+        return _torch_flavor_tag(_version)
+    label = _installed_torch_label_on_disk()
+    return _torch_flavor_tag(label) if label else ""
+
+
+def _warn_wrong_flavor(expected: str, installed: str) -> bool:
+    """Report a repair that installed the wrong family, and fail. Always returns False.
+
+    Distinct from _warn_still_cpu because "PyTorch is CPU-only" would be false here and
+    would send the reader after the wrong problem: the venv holds a GPU build, just not
+    the one this host asked for.
+    """
+    _safe_print("")
+    _safe_print(
+        f"   [WARN] PyTorch is a {installed} build but {expected} was expected for this machine."
+    )
+    _safe_print("   [WARN] The repair did not install the requested build.")
+    _safe_print("   [WARN] Re-run this installer, or reinstall the build for your GPU manually.")
+    _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
+    return False
+
+
 def _warn_still_cpu(expected: str) -> bool:
     """Report a repair that did not take, and fail the install. Always returns False.
 
@@ -3050,18 +3094,33 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # helpers), and rejecting it here would skip the invariant on exactly the hosts that
     # asked for that GPU family on purpose. They are re-tested against the expectation
     # once it is known, just below.
-    if _TORCH_BACKEND not in ("", "cuda", "rocm", "xpu"):
+    if _TORCH_BACKEND not in ("", "cuda", "rocm", "xpu", "cpu"):
         return True
     if expected is None:
         expected = _expected_torch_flavor_tag()
+    # An expectation of "cpu" is enforceable ONLY when the user pinned a CPU index for
+    # this run. UV_TORCH_BACKEND is honoured by the unpinned dependency steps (see
+    # _build_uv_cmd), so a GPU wheel can land in a venv that was deliberately built as
+    # CPU, and the update would then record expected_torch_tag: cpu over it.
+    #
+    # The pin, not the handover, and this distinction is the whole safety of it:
+    # setup.ps1 also publishes "cpu" when its bounded nvidia-smi probe comes back empty,
+    # which is exactly the wedged-driver host whose healthy cu124 venv the no-wipe
+    # escape in that file exists to protect. Acting on that handover would force a
+    # working CUDA venv down to CPU, which is far more destructive than the gap it
+    # closes. A pinned /cpu index is an unambiguous instruction for this run.
+    _cpu_pinned = expected == "cpu" and _explicit_cpu_torch_index_pin()
     # _is_cuda_family_leaf rejects "" / "cpu" and an unknown mirror leaf in one test, so
-    # every unenforceable expectation lands here; "xpu" and "rocm" are the additions.
-    if not (_is_cuda_family_leaf(expected) or expected in ("xpu", "rocm")):
+    # every unenforceable expectation lands here; "xpu", "rocm" and the pinned CPU case
+    # are the additions.
+    if not (_is_cuda_family_leaf(expected) or expected in ("xpu", "rocm") or _cpu_pinned):
         return True
-    # A GPU backend that DISAGREES with what setup.ps1 published is a deliberate choice
-    # this pass must not overrule: the pin is the newer, more specific instruction, and
-    # the handover can only describe what the install arm above it happened to do.
-    if _TORCH_BACKEND in ("rocm", "xpu") and _TORCH_BACKEND != expected:
+    # A backend that DISAGREES with what setup.ps1 published is a deliberate choice this
+    # pass must not overrule: the pin is the newer, more specific instruction, and the
+    # handover can only describe what the install arm above it happened to do. "cpu" is
+    # in this set because it now reaches here at all: a CPU backend under a cu124
+    # expectation must still be left alone.
+    if _TORCH_BACKEND in ("rocm", "xpu", "cpu") and _TORCH_BACKEND != expected:
         return True
     # An explicit pin whose leaf names no flavor was applied VERBATIM at install time,
     # so this function has no standing to second-guess it -- and it must not, because
@@ -3124,9 +3183,23 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         # trusting it. It runs at step 2b, which is BEFORE the dependency steps that can put
         # PyPI's CPU wheel here, and nothing ran it afterwards.
         _ensure_rocm_torch()
-        if _torch_build_is_gpu():
+        # Verify the FAMILY, not just that some GPU build is present. A transient
+        # repo.amd.com failure is non-fatal inside _ensure_rocm_torch, and the cu124 or
+        # xpu wheel it leaves behind passes _torch_build_is_gpu, so the update would
+        # exit 0 and the manifest would record "rocm" over an environment that never
+        # received it. Reachable by running this script directly on Windows with an
+        # explicit ROCm pin over an existing non-ROCm build.
+        _now = _installed_flavor_tag_now()
+        if _now == expected:
             return True
-        return _warn_still_cpu(expected)
+        if not _now:
+            # Nothing could be read at all, which is the wedged-driver host these
+            # repairs exist for. Ambiguity must not fail an update by itself, so fall
+            # back to the weaker verdict.
+            return True if _torch_build_is_gpu() else _warn_still_cpu(expected)
+        if not _torch_build_is_gpu():
+            return _warn_still_cpu(expected)
+        return _warn_wrong_flavor(expected, _now)
 
     index_url = _expected_torch_index_url(expected)
     # The XPU floor is 2.6, not 2.4: unsloth/models/_utils.py raises at import for an XPU
@@ -3158,6 +3231,14 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     )
 
     # pip_install invalidated the memoized classification, so this re-probes for real.
+    if expected == "cpu":
+        # _torch_build_is_gpu answers the opposite question here and would call every
+        # failed CPU repair a success, so compare the family directly. An unreadable
+        # venv still passes: ambiguity must not fail an update by itself.
+        _now = _installed_flavor_tag_now()
+        if _now in ("", "cpu"):
+            return True
+        return _warn_wrong_flavor(expected, _now)
     if _torch_build_is_gpu():
         return True
     return _warn_still_cpu(expected)

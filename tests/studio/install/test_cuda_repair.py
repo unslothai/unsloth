@@ -1197,6 +1197,124 @@ class TestExpectedXpuFlavorIsEnforced:
         assert ok is False
 
 
+class TestTheDelegatedRocmRepairIsVerifiedByFamily:
+    """_torch_build_is_gpu is family-blind, so it cannot judge a ROCm repair.
+
+    A transient repo.amd.com failure is non-fatal inside _ensure_rocm_torch, and the
+    cu124 wheel it leaves behind passes that check, so the update exited 0 and the
+    manifest recorded "rocm" over an environment that never received it.
+    """
+
+    def test_a_repair_that_left_a_cuda_wheel_now_fails(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.6.0+cu124",
+            repaired = "2.6.0+cu124",
+            expected_env = "rocm",
+            backend = "rocm",
+        )
+        assert ok is False
+        mock_pip.rocm_repair.assert_called_once()
+
+    def test_a_repair_that_took_still_passes(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.6.0+cu124",
+            repaired = "2.11.0+rocm7.2",
+            expected_env = "rocm",
+            backend = "rocm",
+        )
+        assert ok is True
+        mock_pip.rocm_repair.assert_called_once()
+
+    def test_a_repair_that_left_cpu_torch_still_reads_as_cpu(self):
+        # The two warnings differ, and this host has to get the CPU-only one.
+        ok, _mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            repaired = "2.11.0+cpu",
+            expected_env = "rocm",
+            backend = "rocm",
+        )
+        assert ok is False
+
+    def test_an_unreadable_venv_does_not_fail_the_update_on_its_own(self):
+        # The wedged-driver host these repairs exist for: the probe never returns and
+        # version.py names nothing. Ambiguity must not be turned into a failure.
+        ok, _mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            repaired = "2.11.0+cpu",
+            expected_env = "rocm",
+            backend = "rocm",
+            probe_timeout = True,
+            disk_label = "",
+        )
+        assert ok is True
+
+
+class TestAPinnedCpuIndexIsEnforcedToo:
+    """UV_TORCH_BACKEND is honoured by the unpinned dependency steps.
+
+    A venv deliberately built against /cpu can therefore come out of them holding a GPU
+    wheel, and the update would record expected_torch_tag: cpu over it. Only a PIN
+    counts: setup.ps1 also publishes "cpu" for a host whose nvidia-smi probe returned
+    nothing, and acting on that would push a healthy cu124 venv down to CPU.
+    """
+
+    def test_a_gpu_wheel_under_a_pinned_cpu_index_is_repaired(self):
+        pin = "https://download.pytorch.org/whl/cpu"
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.6.0+cu124",
+            repaired = "2.11.0+cpu",
+            expected_env = "cpu",
+            index_url = pin,
+            backend = "cpu",
+        )
+        assert ok is True
+        assert _index_url(mock_pip) == pin
+        assert "--force-reinstall" in [str(a) for a in mock_pip.call_args.args]
+
+    def test_a_published_cpu_tag_with_no_pin_is_still_left_alone(self):
+        # The wedged-driver host: setup.ps1 saw no nvidia-smi output and published
+        # "cpu", but the venv is a healthy cu124 one that must not be downgraded.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.6.0+cu124",
+            expected_env = "cpu",
+            nvidia = False,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_cpu_venv_under_a_cpu_pin_is_a_no_op(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            expected_env = "cpu",
+            index_url = "https://download.pytorch.org/whl/cpu",
+            backend = "cpu",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_cpu_repair_that_did_not_take_fails(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.6.0+cu124",
+            repaired = "2.6.0+cu124",
+            expected_env = "cpu",
+            backend = "cpu",
+            index_url = "https://download.pytorch.org/whl/cpu",
+        )
+        assert ok is False
+        assert mock_pip.call_count == 1
+
+    def test_a_cpu_backend_under_a_gpu_expectation_is_still_left_alone(self):
+        # _TORCH_BACKEND now reaches this function at all, so the disagreement guard has
+        # to cover it: a deliberate CPU backend must not be dragged up to cu124.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            expected_env = "cu124",
+            backend = "cpu",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+
 class TestWindowsOnArmKeepsTheNoTorchaudioException:
     """No win_arm64 torchaudio wheel is published on any index.
 
