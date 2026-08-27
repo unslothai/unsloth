@@ -2814,12 +2814,26 @@ export function ModelConfigPage({
   // that was being missed: both share the pool, so adding VRAM to system RAM to
   // reach a machine-wide ceiling counts the same bytes twice.
   //
-  // Scoped to the PIN, not the host. `devices.some(...)` over the whole
-  // inventory is wrong on a mixed machine: an APU beside a discrete card makes
-  // the host-wide flag true, and a pin on the discrete card then collapsed
-  // totalCapacityGb from 143.5 GiB to 15.5 GiB, discarding 128 GiB of system RAM
-  // the load can really spill into and warning "more than this machine holds"
-  // for a load that fits comfortably. The pinned card does not share anything.
+  // Scoped to the devices this load will actually use, and true only when EVERY
+  // one of them is unified.
+  //
+  // Two separate mistakes were made here, so both are written down. Reading the
+  // host-wide flag was the first: an APU beside a discrete card makes it true,
+  // and a pin on the discrete card then collapsed totalCapacityGb from 143.5 GiB
+  // to 15.5 GiB. Narrowing to the pin but keeping `.some()` was the second: an
+  // unpinned load, or a pin naming BOTH, still marked the whole set unified and
+  // reported 62.1 GiB instead of 143.5 GiB. Both produce false "more than this
+  // machine holds" warnings for loads that fit comfortably.
+  //
+  // `.every()` is the right question for CAPACITY: one independent-memory device
+  // in the set means there is real VRAM beside system RAM, so the two are not
+  // one pool. Note use-gpu-info.ts deliberately uses `.some()` for its own flag,
+  // and that is not an inconsistency -- it answers a different question, whether
+  // the aggregate is still a VRAM ceiling a verdict can be measured against, and
+  // one unified part is enough to spoil that.
+  //
+  // The empty set is excluded explicitly, because `[].every()` is true and a
+  // host with no devices at all is not a unified-memory machine.
   //
   // The Apple fallback stays host-wide and unconditional: there every device is
   // the one pool whatever is pinned, and it also covers the window before the
@@ -2831,7 +2845,8 @@ export function ModelConfigPage({
       pinnedGpuIds && pinnedGpuIds.length > 0
         ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
         : gpuDevices;
-    return governing.some((device) => device.unifiedMemory === true);
+    if (governing.length === 0) return false;
+    return governing.every((device) => device.unifiedMemory === true);
   }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
   // The VRAM Budget slider sits in this same panel and caps what the next load may
   // claim per GPU, so the verdict has to be measured against the capped figure or the

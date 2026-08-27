@@ -83,11 +83,11 @@ test("the panel passes the hardware signal, not the platform one", () => {
       "Apple-only one charges a ROCm APU's single pool as VRAM plus host RAM.",
   );
   // And the general signal must come from the probed DEVICES rather than being
-  // aliased back to the platform check. Which devices is asserted separately, by
-  // "the panel scopes the unified flag to the pinned devices" below.
+  // aliased back to the platform check. WHICH devices, and with which quantifier,
+  // are asserted separately below.
   assert.match(
     source,
-    /const hasUnifiedMemory[\s\S]{0,400}?\.some\(\(device\) => device\.unifiedMemory === true\)/,
+    /const hasUnifiedMemory[\s\S]{0,900}?device\.unifiedMemory === true/,
     "hasUnifiedMemory must be derived from the backend's per-device flag",
   );
 });
@@ -179,5 +179,58 @@ test("the panel scopes the unified flag to the pinned devices", () => {
     decl[0],
     /isAppleUnifiedMemory/,
     "the Apple fallback must stay, for the window before the per-device probe lands",
+  );
+});
+
+test("a mixed governing set is not unified, pinned or unpinned", () => {
+  // The second half of the same bug. Narrowing to the pin fixed the discrete-only
+  // case but `.some()` still marked a MIXED set unified: an unpinned load, or a
+  // pin naming both an APU and a discrete card, reported 62.08 GiB instead of
+  // 143.52 GiB. One independent-memory device in the set means there is real VRAM
+  // beside system RAM, so the two are not one pool.
+  const APU = { memoryTotalGb: 48, sharedMemory: true, unifiedMemory: true };
+  const DGPU = { memoryTotalGb: 16, sharedMemory: false, unifiedMemory: false };
+  const mixed = [APU, DGPU];
+
+  const unified = (governing: typeof mixed) =>
+    governing.length > 0 && governing.every((d) => d.unifiedMemory === true);
+
+  assert.equal(unified(mixed), false, "a mixed set must not read as unified");
+  assert.equal(unified([APU]), true, "an APU-only set is unified");
+  assert.equal(unified([DGPU]), false, "a discrete-only set is not unified");
+  // `[].every()` is true, which would make a host with no devices at all read as
+  // a unified-memory machine.
+  assert.equal(unified([]), false, "the empty set must not read as unified");
+
+  // And the capacity that follows from it.
+  const cap = resolveMemoryCapacityGb({
+    pinnedDevices: mixed,
+    hostDevices: mixed,
+    hostGpuTotalGb: 64,
+    hostSharesSystemRam: true,
+    systemRamTotalGb: 128,
+    unifiedMemory: unified(mixed),
+    gpuBudgetFraction: 0.97,
+  });
+  assert.ok(
+    cap.totalCapacityGb > 100,
+    `a mixed pin must keep host RAM beside the discrete card; got ${cap.totalCapacityGb} GiB`,
+  );
+});
+
+test("the panel asks whether EVERY governing device is unified", () => {
+  const source = readFileSync(PANEL, "utf8");
+  const decl = source.match(/const hasUnifiedMemory = useMemo\(\(\) => \{[\s\S]*?\}, \[[^\]]*\]\);/);
+  assert.ok(decl, "hasUnifiedMemory is no longer a scoped useMemo");
+  assert.match(
+    decl[0],
+    /\.every\(\(device\) => device\.unifiedMemory === true\)/,
+    "must be .every(): .some() marks a mixed APU-plus-discrete set unified and " +
+      "throws away the system RAM beside the discrete card",
+  );
+  assert.match(
+    decl[0],
+    /governing\.length === 0/,
+    "the empty set needs an explicit guard, since [].every() is true",
   );
 });
