@@ -17,12 +17,34 @@ export const TARGET_MODULES = [
   "down_proj",
 ];
 
+/** CPT trains embeddings via modules_to_save; the UI still lists them for visibility. */
+export const CPT_EMBEDDING_MODULES = ["embed_tokens", "lm_head"] as const;
+
 /** CPT requires embed_tokens and lm_head in addition to standard LoRA modules. */
 export const CPT_TARGET_MODULES = [
   ...TARGET_MODULES,
-  "embed_tokens",
-  "lm_head",
+  ...CPT_EMBEDDING_MODULES,
 ];
+
+/** Preserve architecture-specific all-linear defaults when entering CPT. */
+export function resolveCptTargetModules(
+  currentTargetModules: readonly string[],
+): string[] {
+  if (currentTargetModules.includes("all-linear")) {
+    return ["all-linear", ...CPT_EMBEDDING_MODULES];
+  }
+  return [...CPT_TARGET_MODULES];
+}
+
+/** Target-module chips shown in the CPT advanced-settings UI. */
+export function getCptUiTargetModules(
+  targetModules: readonly string[],
+): readonly string[] {
+  if (targetModules.includes("all-linear")) {
+    return ["all-linear", ...CPT_EMBEDDING_MODULES];
+  }
+  return CPT_TARGET_MODULES;
+}
 
 export const OPTIMIZER_OPTIONS: ReadonlyArray<{
   value: string;

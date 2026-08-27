@@ -8,7 +8,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { usePlatformStore } from "@/config/env";
-import { CPT_TARGET_MODULES, TARGET_MODULES } from "@/config/training";
+import { TARGET_MODULES, getCptUiTargetModules } from "@/config/training";
 import {
   isTrainingLoraVariantSupportedOnDevice,
   useTrainingConfigStore,
@@ -188,7 +188,7 @@ export function LoraParamsSection(): ReactElement | null {
                 {t("studio.params.targetModules")}
               </span>
               <div className="flex flex-wrap gap-1.5">
-                {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map((module) => {
+                {(isCpt ? getCptUiTargetModules(store.targetModules) : TARGET_MODULES).map((module) => {
                   const active = store.targetModules.includes(module);
                   return (
                     <button

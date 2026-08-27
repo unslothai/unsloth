@@ -285,15 +285,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : null;
 
             // Preserve CPT hyperparams: YAML adapter defaults are tuned for standard LoRA.
+            const cptTargetModules =
+              modelDefaultsPatch.targetModules ?? get().targetModules;
+            const cptDefaultsPatch = getCptModelDefaultsPatch(cptTargetModules);
             const cptOverrides =
               shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
+                ? cptDefaultsPatch
                 : {};
             const modelDefaultsBaseline = {
               ...modelDefaultsPatch,
-              ...(get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
-                : {}),
+              ...(get().trainingMethod === "cpt" ? cptDefaultsPatch : {}),
             };
             const advancedSettingsBaseline =
               get().advancedSettingsBaseline ?? modelDefaultsBaseline;
