@@ -1736,8 +1736,12 @@ def _detect_amd_gfx_codes(
 _HSA_SPOOFABLE_PHYSICAL_GFX: frozenset[str] = frozenset({"gfx1151", "gfx1150", "gfx1152"})
 
 
-# Architectures reported by torch 2.10.0+rocm7.1's generic wheel on 2026-08-27.
-# Recheck this list when the generic torch pin changes.
+# Architectures the generic pytorch.org ROCm wheels carry, read from
+# torch.cuda.get_arch_list() on 2026-08-27. Identical across every generic wheel the pins
+# below can resolve: 2.10.0+rocm7.1, 2.11.0+rocm7.1, 2.11.0+rocm7.2 and 2.10.0+rocm7.0.
+# The rocm6.3 wheel (gfx906's legacy tag) carries a subset, without gfx1150/gfx1151, which
+# the Strix reroute covers on its own. torch 2.13.0+rocm7.1 DOES add gfx1103, so raising
+# the <2.11 cap in _ROCM_TORCH_PKG_SPECS["_default"] means rechecking this list.
 _GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
     {
         "gfx900",
