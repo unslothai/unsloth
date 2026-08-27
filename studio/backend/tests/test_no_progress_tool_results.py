@@ -486,3 +486,53 @@ def test_a_resumed_turn_prices_its_tool_result_by_what_is_left(monkeypatch):
     assert 1000 not in caps, (
         f"a resumed turn priced its result against the whole cap: {caps}"
     )
+
+
+def test_a_resumed_turn_sizes_its_recall_by_what_is_left(monkeypatch):
+    """`retrieval_budget` reserves the output allowance before handing back recall room.
+
+    Reserving the caller's whole cap on a continuation that has a fraction of it left
+    returns a near-zero budget, so `search_conversation` drops context the request had
+    ample room for.
+    """
+
+    caps: list[object] = []
+    import core.inference.llama_cpp as _lc  # noqa: PLC0415
+
+    real_budget = _lc._retrieval_budget
+
+    def recording_budget(context_length, max_tokens, spent, **kwargs):
+        caps.append(max_tokens)
+        return real_budget(context_length, max_tokens, spent, **kwargs)
+
+    monkeypatch.setattr(_lc, "_retrieval_budget", recording_budget)
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": "Half an answer"}), _usage(900), _finish("length"), _done()],
+            [_call("read it", 0), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+        payloads,
+    )
+
+    def _accepts_everything(*_a, **_k):
+        return "contents"
+
+    _accepts_everything.__signature__ = None
+    monkeypatch.setattr("core.inference.tools.execute_tool", _accepts_everything)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Show me the file"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 3,
+            max_tokens = 1000,
+        )
+    )
+
+    assert 1000 not in caps, (
+        f"a resumed turn sized its recall against the whole cap: {caps}"
+    )

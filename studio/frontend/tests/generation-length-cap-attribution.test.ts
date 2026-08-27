@@ -11,7 +11,10 @@ import { maxTokensIsTheLimit } from "../src/features/chat/api/generation-length.
 
 // Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
 const LOCAL_WINDOW_ARGUMENT =
-  /isExternalRequest\s*\n\s*\? null\s*\n\s*: \(runtime\.customContextLength \?\?\s*\n\s*runtime\.ggufContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
+  /isExternalRequest\s*\n\s*\? null\s*\n\s*: \(runtime\.loadedCustomContextLength \?\?\s*\n\s*runtime\.ggufContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
+// The EDITABLE field must not be what a stop is judged against: the store defines a
+// pending context edit as exactly `customContextLength !== loadedCustomContextLength`.
+const PENDING_FIELD = /: \(runtime\.customContextLength \?\?/;
 
 test("a cap the prompt left no room for is not the limit that was hit", () => {
   // 4096 window, 3000-token prompt, Max Tokens 2048: generation stops at roughly 1096,
@@ -101,4 +104,19 @@ test("a local model with no GGUF window still reports one", () => {
     "utf8",
   );
   assert.match(adapter, LOCAL_WINDOW_ARGUMENT);
+});
+
+test("a pending Context Length edit does not decide what stopped the generation", () => {
+  // Typing 8192 into the field while the model still serves at 4096 would make the
+  // 4096 stop look user-imposed, and the advice would be to raise Max Tokens rather
+  // than to reload at the larger context.
+  const adapter = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+
+  assert.match(adapter, LOCAL_WINDOW_ARGUMENT);
+  assert.doesNotMatch(adapter, PENDING_FIELD);
 });

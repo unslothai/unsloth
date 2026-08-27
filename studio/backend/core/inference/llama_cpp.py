@@ -26742,7 +26742,8 @@ class LlamaCppBackend:
                             # Leave room for the answer appended on the next iteration.
                             recall_budget_tokens = _retrieval_budget(
                                 self._effective_context_length,
-                                max_tokens,
+                                # As above: the cap this iteration will actually send.
+                                _iteration_max_tokens,
                                 truncation.get("prompt_tokens_after") or 0,
                                 reply_returns = True,
                             ),
@@ -28797,7 +28798,12 @@ class LlamaCppBackend:
                                     # the result cannot spend their entire shared budget.
                                     kwargs["conversation_budget_tokens"] = _retrieval_budget(
                                         self._effective_context_length,
-                                        max_tokens,
+                                        # This iteration's cap, like the result budget
+                                        # beside it. Reserving the caller's whole
+                                        # allowance on a continuation that has a fraction
+                                        # of it left returns a near-zero budget and drops
+                                        # recall the request had room for.
+                                        _iteration_max_tokens,
                                         _spent,
                                         reply_returns = True,
                                     )

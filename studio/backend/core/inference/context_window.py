@@ -454,7 +454,16 @@ def _compacted_arguments(
     # refused paths moved to the new one -- the same receipt the model misread as tool
     # output, still being emitted by the most common caller.
     phrase = phrase or _completed_phrase_for(name, reply)
-    if not isinstance(arguments, str) or len(arguments) < _ARG_COMPACTION_TOTAL_FLOOR_CHARS:
+    if not isinstance(arguments, str):
+        return None
+    # The general floor exists so a receipt is not bigger than what it replaces, and for
+    # ordinary history compaction a call under it is not worth the churn. A REFUSED call
+    # is the opposite case: the refusal message itself is about to be added to a prompt
+    # that already does not fit, so any reduction at all is the difference between the
+    # user reading the refusal and reading llama-server's context error. The size check
+    # at the end still guarantees the receipt never grows the prompt.
+    refused = phrase == _REFUSED_PHRASE
+    if not refused and len(arguments) < _ARG_COMPACTION_TOTAL_FLOOR_CHARS:
         return None
     try:
         parsed = json.loads(arguments)
@@ -467,10 +476,13 @@ def _compacted_arguments(
         # having run, next to the tool message saying nothing was written: two
         # contradictory accounts of the same call, one of which invites the model to
         # reason from a side effect that never happened.
-        return json.dumps(
+        _unparseable = json.dumps(
             {"_unsloth_compacted": f"{len(arguments)} chars {phrase.format(where = '')}"},
             ensure_ascii = False,
         )
+        # Checked here as well as at the end: without the general floor in front of it,
+        # a short refused call can have a receipt longer than the arguments it replaces.
+        return _unparseable if len(_unparseable) < len(arguments) else None
     if not isinstance(parsed, dict):
         return None
     path = parsed.get("path") or parsed.get("file_path") or parsed.get("filePath")
@@ -487,7 +499,11 @@ def _compacted_arguments(
     # compacted only the first, leaving about 40 KB replayed -- the mixed payload is
     # exactly the shape a batched refactor produces.
     _leaf_floor = (
-        _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR
+        # A refused call takes whatever it can get, floored only at the point where a
+        # leaf is longer than the receipt describing it, so eliding cannot lose ground.
+        _REFUSED_LEAF_FLOOR
+        if refused
+        else _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR
         if _total_leaves(parsed) >= _ARG_COMPACTION_TOTAL_FLOOR_CHARS
         else _ARG_COMPACTION_FLOOR_CHARS
     )
@@ -544,6 +560,9 @@ def _compacted_arguments(
     return compacted if len(compacted) < len(arguments) else None
 
 
+# A leaf shorter than its own receipt costs room to elide, so this is the break-even
+# point for the refusal wording rather than a judgement about what is worth compacting.
+_REFUSED_LEAF_FLOOR = 110
 _REFUSED_PHRASE = (
     "of arguments you sent, elided; this call was refused before it ran and nothing was written"
 )
@@ -879,6 +898,53 @@ def _blamed_role(message: dict) -> str:
     return role
 
 
+def _blamed_role_for_turn(messages: list[dict]) -> str:
+    """Who to blame for the newest turn, which is not always the newest MESSAGE.
+
+    On the strict templates an assistant `tool_calls` block renders only once a `tool`
+    message answers it, so the marginal cost of that tool message is the reply PLUS the
+    call's arguments, which were invisible until now. Classifying the reply alone reports
+    an overflow caused by a large `python`, MCP or `edit_file` payload as a large tool
+    result, and the advice -- ask for a smaller slice of the file or page -- cannot shrink
+    the thing that actually overflowed.
+    """
+    if not messages:
+        return ""
+    latest = messages[-1]
+    if str(latest.get("role") or "") != "tool":
+        return _blamed_role(latest)
+    call_id = latest.get("tool_call_id")
+    for message in reversed(messages[:-1]):
+        role = str(message.get("role") or "")
+        if role != "assistant":
+            # Only the call immediately preceding this reply is paired with it; anything
+            # else between them means this reply does not belong to a call at all.
+            if role == "tool":
+                continue
+            break
+        if not message.get("tool_calls"):
+            break
+        if call_id and not any(
+            isinstance(call, dict) and str(call.get("id") or "") == str(call_id)
+            for call in message.get("tool_calls") or []
+        ):
+            break
+        # Only when the CALL is the bigger half. A dominant tool result still gets the
+        # tool advice, which is right and is what the existing cases assert: the reply is
+        # the thing the user can ask for less of. Blaming the call unconditionally
+        # reversed that and told them to shrink a payload that was not the problem.
+        _call_chars = sum(
+            len(str((call.get("function") or {}).get("arguments") or ""))
+            for call in message.get("tool_calls") or []
+            if isinstance(call, dict)
+        )
+        _reply_chars = len(str(latest.get("content") or ""))
+        if _call_chars > _reply_chars:
+            return _blamed_role(message)
+        break
+    return _blamed_role(latest)
+
+
 def _latest_turn_count(
     messages: list[dict], count_tokens: Callable[[list[dict]], int]
 ) -> tuple[int, bool]:
@@ -1011,7 +1077,7 @@ def turn_diagnosis(
     return {
         "latest_turn_tokens": latest,
         # Whose message it is: often a tool result the user cannot shorten.
-        "latest_turn_role": _blamed_role(messages[-1]),
+        "latest_turn_role": _blamed_role_for_turn(messages),
         "shared_prompt_tokens": shared,
         # Whether the number above is a token count or a four-characters-a-token guess.
         "latest_turn_exact": bool(exact),

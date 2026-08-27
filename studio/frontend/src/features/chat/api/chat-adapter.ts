@@ -6201,9 +6201,15 @@ export function createOpenAIStreamAdapter(
                     // that as "no window" makes every context-length stop look like a
                     // user-set Max Tokens one -- advice to raise a value already at the
                     // model's maximum. Same order the RAG `context_length` above uses.
+                    // `loadedCustomContextLength`, not `customContextLength`: the
+                    // latter is the EDITABLE field, and the store's own definition of a
+                    // pending edit is the two differing. A model still serving at 4096
+                    // while the field reads 8192 would make its 4096 stop look
+                    // user-imposed, and the toast would advise raising Max Tokens
+                    // instead of reloading at the larger context.
                     isExternalRequest
                       ? null
-                      : (runtime.customContextLength ??
+                      : (runtime.loadedCustomContextLength ??
                         runtime.ggufContextLength ??
                         (params.maxSeqLength || null)),
                   );

@@ -863,3 +863,86 @@ def test_a_truncated_reply_is_inconclusive_too():
     cut = "Wrote 2401 ch\n\n... (truncated to 13 chars for the model; 2401 chars total)"
 
     assert "written" not in _completed_phrase_for("edit_file", cut)
+
+
+def test_a_refused_call_is_compacted_below_the_general_floor():
+    """The floor is there so a receipt never costs more than what it replaces.
+
+    A refused call is the case where that trade is always worth making: the refusal
+    message is about to be added to a prompt that already does not fit, so any reduction
+    is the difference between the user reading the refusal and reading llama-server's
+    context error instead.
+    """
+    from core.inference.context_window import (  # noqa: PLC0415
+        _ARG_COMPACTION_TOTAL_FLOOR_CHARS,
+        compact_refused_tool_arguments,
+    )
+
+    body = "x" * 400
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", "python", code = body)],
+        },
+    ]
+    before = messages[0]["tool_calls"][0]["function"]["arguments"]
+    assert len(before) < _ARG_COMPACTION_TOTAL_FLOOR_CHARS, "fixture must sit under the floor"
+
+    fitted = compact_refused_tool_arguments(messages, "c1")
+    after = fitted[0]["tool_calls"][0]["function"]["arguments"]
+
+    assert len(after) < len(before), "a refused call under the floor was left whole"
+    assert body not in after
+
+
+def test_a_receipt_that_would_grow_the_prompt_is_still_refused():
+    """The floor's real job, kept: eliding must never cost more than it saves."""
+    from core.inference.context_window import compact_refused_tool_arguments  # noqa: PLC0415
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", "python", code = "print(1)")],
+        },
+    ]
+    before = messages[0]["tool_calls"][0]["function"]["arguments"]
+
+    fitted = compact_refused_tool_arguments(messages, "c1")
+
+    assert fitted[0]["tool_calls"][0]["function"]["arguments"] == before
+
+
+def test_an_overflowing_tool_turn_is_blamed_on_the_call_not_the_reply():
+    """Strict templates render the assistant call only once its reply is present.
+
+    The marginal cost of that reply is therefore the reply PLUS the arguments, and
+    blaming the reply alone tells the user to ask for a smaller slice of a file when what
+    overflowed was the payload they cannot shrink that way.
+    """
+    from core.inference.context_window import _blamed_role_for_turn  # noqa: PLC0415
+
+    messages = [
+        {"role": "user", "content": "run it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", "python", code = "x" * 40000)],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "python", "content": "ok"},
+    ]
+
+    assert _blamed_role_for_turn(messages) == "assistant_tool_payload"
+
+
+def test_a_tool_reply_with_no_call_behind_it_is_still_blamed_on_itself():
+    """The fallback has to survive: a reply whose call is gone is the reply's own weight."""
+    from core.inference.context_window import _blamed_role_for_turn  # noqa: PLC0415
+
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "tool", "tool_call_id": "c1", "name": "python", "content": "x" * 40000},
+    ]
+
+    assert _blamed_role_for_turn(messages) == "tool"
