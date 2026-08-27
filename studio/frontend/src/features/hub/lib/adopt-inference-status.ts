@@ -21,9 +21,14 @@ export interface ResidentAdoptionState {
 
 /** What ``/api/inference/status`` says is resident, already resolved. */
 export interface ResidentStatusFacts {
-  /** ``resolveInferenceCheckpointId(status)``; null when nothing is loaded. */
+  /** ``resolveInferenceCheckpointId(status)``; null when nothing is loaded, and null
+   * for a speech model, which chat cannot adopt. ``speechOnly`` tells the two apart. */
   checkpointId: string | null;
   ggufVariant: string | null;
+  /** The slot holds a speech model rather than being empty. Chat cannot adopt one, but
+   * it is not the idle eviction the rule below is about either: an Audio load took the
+   * slot outright and no stash brings the chat model back. */
+  speechOnly?: boolean;
 }
 
 export interface ResidentAdoptionActions {
@@ -63,7 +68,9 @@ export function adoptResidentModelStatus(
     // An empty status means one of two things and /status cannot say which. Armed, the idle
     // loop frees the model but keeps a stash the next request reloads, so clearing would drop
     // a selection that is coming back. Disarmed, nothing brings it back.
-    if (state.idleUnloadArmed) {
+    // A speech model is neither: an Audio load took the slot, not the idle loop, and no
+    // stash reloads the chat model. Keeping the prior pick would leave stale Hub residency.
+    if (state.idleUnloadArmed && !status.speechOnly) {
       return false;
     }
     if (state.checkpoint) {

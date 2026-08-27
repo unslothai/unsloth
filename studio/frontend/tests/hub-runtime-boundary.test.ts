@@ -69,6 +69,10 @@ test("the Hub no longer owns model runtime actions or model configuration", () =
 
 test("residency remains a cache mutation safety input", () => {
   const hubPage = readFileSync(path.join(HUB_ROOT, "hub-page.tsx"), "utf8");
+  const adoptionSource = readFileSync(
+    path.join(HUB_ROOT, "lib/adopt-inference-status.ts"),
+    "utf8",
+  );
   const ggufCard = readFileSync(
     path.join(HUB_ROOT, "catalog/gguf-download-card.tsx"),
     "utf8",
@@ -96,6 +100,16 @@ test("residency remains a cache mutation safety input", () => {
   assert.match(
     hubPage,
     /applyStatus: \(previous\) => \{\s*applyActiveModelStatusToStore\(status, \{/,
+  );
+  assert.match(
+    hubPage,
+    /checkpointId: isSpeechOnlyStatus\(status\)\s*\? null\s*: resolveInferenceCheckpointId\(status\),/,
+  );
+  assert.match(hubPage, /speechOnly: isSpeechOnlyStatus\(status\),/);
+  assert.doesNotMatch(hubPage, /setCheckpoint\(status\.active_model/);
+  assert.match(
+    adoptionSource,
+    /state\.idleUnloadArmed && !status\.speechOnly/,
   );
   assert.match(
     hubPage,

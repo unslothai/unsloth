@@ -18,6 +18,7 @@ import {
   formatShortDate,
 } from "@/features/hub/lib/format";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn, formatCompact } from "@/lib/utils";
 import {
@@ -43,6 +44,7 @@ import { memo, useDeferredValue, useMemo } from "react";
 import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
+import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
   formatLocalUpdated,
@@ -409,7 +411,6 @@ export const ModelInspector = memo(function ModelInspector({
   metadataUnavailable?: boolean;
   selectionHiddenByFilters?: boolean;
   preferredGgufFile?: string | null;
-
   preferredGgufFileIntent?: number;
   runtime: ModelInspectorRuntime;
   actions: ModelInspectorActions;
@@ -423,10 +424,7 @@ export const ModelInspector = memo(function ModelInspector({
     gpuGb,
     systemRamGb,
   } = runtime;
-  const {
-    onInventoryChange,
-    onSearchHub,
-  } = actions;
+  const { onInventoryChange, onSearchHub } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hfToken = useHfTokenStore((s) => s.token);
@@ -529,6 +527,12 @@ export const ModelInspector = memo(function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
+  // Media models use a separate runtime, so the llama.cpp memory estimate does
+  // not describe their load.
+  const runsOnMediaRuntime =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
@@ -630,6 +634,7 @@ export const ModelInspector = memo(function ModelInspector({
         <InspectorDownloadSlot>
           {model.isLocal && !hasActiveHubDownload ? (
             <LocalOnDeviceCard
+              showMemoryBar={!runsOnMediaRuntime}
               modelId={model.id}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}
@@ -651,7 +656,8 @@ export const ModelInspector = memo(function ModelInspector({
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
               unsupportedReason={
-                unslothSupport.status === "unsupported" && !unslothSupport.supportedIn
+                unslothSupport.status === "unsupported" &&
+                !unslothSupport.supportedIn
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
@@ -659,6 +665,7 @@ export const ModelInspector = memo(function ModelInspector({
             />
           ) : (
             <DownloadSection
+              showMemoryBar={!runsOnMediaRuntime}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               isDownloaded={model.isDownloaded}
@@ -669,7 +676,6 @@ export const ModelInspector = memo(function ModelInspector({
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
               preferredGgufFile={preferredGgufFile}
-
               preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}

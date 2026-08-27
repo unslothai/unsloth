@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -227,6 +228,20 @@ def test_the_projector_residency_floor_is_the_fit_floor_and_not_the_offload_cont
 
     Pinned here because the two constants were the same literal before this change,
     so a reader could reasonably assume they still move together.
+
+    The value check is on the fit floor only. Raising ``_FIT_MIN_CTX`` to 8192 put it
+    on the same number as ``_AUTO_OFFLOAD_CTX`` again, so ``!=`` on the values no
+    longer separates the two concepts: it would fail on a correct tree and pass on a
+    wrong one the moment the offload fallback moved. Assert instead that the projector
+    floor is DERIVED from the fit floor and never from the offload fallback, which is
+    the mistake this test exists to catch and holds whatever the two numbers are.
     """
     assert LlamaCppBackend._MMPROJ_FIT_FLOOR_CTX == _FIT_MIN_CTX
-    assert LlamaCppBackend._MMPROJ_FIT_FLOOR_CTX != _AUTO_OFFLOAD_CTX
+    source = inspect.getsource(LlamaCppBackend)
+    assignment = re.search(r"^\s*_MMPROJ_FIT_FLOOR_CTX\s*=\s*(.+)$", source, re.MULTILINE)
+    assert assignment, "_MMPROJ_FIT_FLOOR_CTX is no longer a class attribute of the backend"
+    assert "_AUTO_OFFLOAD_CTX" not in assignment.group(1), (
+        "_MMPROJ_FIT_FLOOR_CTX is being set from _AUTO_OFFLOAD_CTX. It must track the FIT "
+        "floor: the projector probe asks for the lowest context at which placement can "
+        f"still award GPU residency, which the offload fallback is past. Got {assignment.group(1)!r}."
+    )

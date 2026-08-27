@@ -3,12 +3,15 @@
 
 import type { GgufVariantDetail } from "@/features/hub/inventory";
 import { formatBytes } from "@/features/hub/lib/format";
-import { classifyGgufFit } from "@/features/hub/lib/gguf-fit";
+import { classifyGgufFit } from "@/lib/gguf-fit";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
 
 type GgufVariantResources = {
   gpuGb?: number;
   systemRamGb?: number;
+  /** The saved VRAM Budget, so the sort ranks against the line the loader will
+   *  actually admit at rather than against the default. */
+  budgetFraction?: number;
 };
 
 export function ggufVariantDisplayLabel(

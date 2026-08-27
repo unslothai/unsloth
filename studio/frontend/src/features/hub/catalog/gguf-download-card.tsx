@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +25,8 @@ import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -54,7 +57,7 @@ import {
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
-import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
+import { formatBytes } from "../lib/format";
 import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
@@ -235,7 +238,7 @@ interface GgufVariantMenuItem {
 
 function createGgufVariantMenuItems(
   variants: readonly GgufVariantDetail[] | null,
-  resources: { gpuGb?: number; systemRamGb?: number },
+  resources: { gpuGb?: number; systemRamGb?: number; budgetFraction?: number },
 ): GgufVariantMenuItem[] {
   if (!variants) return [];
   return variants.map((variant) => ({
@@ -539,6 +542,7 @@ export function GgufDownloadCard({
   preferLocalCache = false,
   isPartial = false,
   onChange,
+  showMemoryBar = true,
 }: {
   repoId: string;
   isActive: boolean;
@@ -553,6 +557,13 @@ export function GgufDownloadCard({
   preferLocalCache?: boolean;
   isPartial?: boolean;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs. They load through a different
+   *  planner onto a single torch device rather than the aggregate inference
+   *  pool, so the llama.cpp estimator has nothing to say about them -- and when
+   *  it returns unsized the bar falls back to the file size and draws a
+   *  weights-only verdict anyway, which is a confident number about the wrong
+   *  runtime. The picker suppresses these rows for the same reason. */
+  showMemoryBar?: boolean;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
@@ -595,10 +606,19 @@ export function GgufDownloadCard({
     ReadonlySet<string>
   >(() => new Set<string>());
 
+  // The live VRAM Budget, so the badge and the sort score against the line the
+  // loader will actually admit at. The memory bar on this same row already reads
+  // it; without this the two disagreed for every saved fraction below the default.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
+
   const rawSortedVariants = useMemo(() => {
     if (!variants) return null;
-    return sortDownloadableGgufVariants(variants, { gpuGb, systemRamGb });
-  }, [variants, gpuGb, systemRamGb]);
+    return sortDownloadableGgufVariants(variants, {
+      gpuGb,
+      systemRamGb,
+      budgetFraction,
+    });
+  }, [variants, gpuGb, systemRamGb, budgetFraction]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -620,8 +640,13 @@ export function GgufDownloadCard({
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
   const variantMenuItems = useMemo(
-    () => createGgufVariantMenuItems(sortedVariants, { gpuGb, systemRamGb }),
-    [gpuGb, sortedVariants, systemRamGb],
+    () =>
+      createGgufVariantMenuItems(sortedVariants, {
+        gpuGb,
+        systemRamGb,
+        budgetFraction,
+      }),
+    [gpuGb, sortedVariants, systemRamGb, budgetFraction],
   );
 
   const selectedQuant =
@@ -711,9 +736,13 @@ export function GgufDownloadCard({
   const selectedFit = useMemo(
     () =>
       selected
-        ? classifyGgufFit(selected.size_bytes, { gpuGb, systemRamGb })
+        ? classifyGgufFit(selected.size_bytes, {
+            gpuGb,
+            systemRamGb,
+            budgetFraction,
+          })
         : null,
-    [gpuGb, selected?.size_bytes, systemRamGb],
+    [gpuGb, selected?.size_bytes, systemRamGb, budgetFraction],
   );
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)
@@ -1108,6 +1137,18 @@ export function GgufDownloadCard({
           </button>
         )}
       </DownloadCard>
+      {/* Only a quant actually on disk gets charted: an undownloaded one has no
+          weights to measure, and the fit badge already tiers those. */}
+      {selected?.downloaded && showMemoryBar ? (
+        <ModelMemoryBarFor
+          repoId={repoId}
+          quant={selected.quant}
+          sizeBytes={selected.size_bytes}
+          gpuGb={gpuGb}
+          showReadout={true}
+          className="px-1"
+        />
+      ) : null}
       {refreshError && (
         <button
           type="button"

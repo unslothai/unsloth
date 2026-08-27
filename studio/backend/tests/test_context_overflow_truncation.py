@@ -1178,6 +1178,89 @@ def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
     assert len(plain) > len(sticky)
 
 
+def test_a_request_can_override_compaction_headroom_ratio():
+    """Studio's extra-trim control is a per-request override of the process default."""
+    messages = []
+    for index in range(20):
+        messages.append({"role": "user", "content": f"q{index} " + "u" * 80})
+        messages.append({"role": "assistant", "content": f"a{index} " + "a" * 80})
+    messages.append({"role": "user", "content": "latest"})
+
+    kwargs = dict(
+        context_length = 2000,
+        max_tokens = 200,
+        count_tokens = _length_counter,
+        keeps_boundary = True,
+    )
+    _, default_info = fit_rolling_context(list(messages), **kwargs)
+    _, none_info = fit_rolling_context(list(messages), headroom_ratio = 0.0, **kwargs)
+
+    assert default_info["fits"] and none_info["fits"]
+    assert none_info["prompt_tokens_after"] > default_info["prompt_tokens_after"]
+
+
+def test_zero_headroom_drops_only_the_oldest_turn_needed_to_fit():
+    messages = []
+    for _ in range(100):
+        messages.append({"role": "user", "content": "u" * 5})
+        messages.append({"role": "assistant", "content": "a" * 5})
+    messages.append({"role": "user", "content": "x"})
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 1100,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        keeps_boundary = True,
+        headroom_ratio = 0.0,
+    )
+
+    assert info is not None and info["fits"]
+    assert info["prompt_tokens_before"] == 1001
+    assert info["prompt_tokens_after"] == 991
+    assert info["dropped_messages"] == 2
+    assert fitted == messages[2:]
+
+
+def test_a_request_that_chose_nothing_keeps_the_eviction_size_it_always_had():
+    """`keeps_boundary = False` is not a request for no extra trim.
+
+    Threadless API requests and incognito chats zero the headroom because there is no
+    boundary to remember a deeper cut with, not because anyone picked the "no extra trim"
+    option. Keying the 5% floor on `headroom` instead of the requested ratio handed them
+    the new setting anyway: measured on the messages below, eviction went from 12 messages
+    to 2 for a caller that sent no new field at all.
+    """
+    messages = []
+    for _ in range(100):
+        messages.append({"role": "user", "content": "u" * 5})
+        messages.append({"role": "assistant", "content": "a" * 5})
+    messages.append({"role": "user", "content": "x"})
+
+    _, info = fit_rolling_context(
+        messages,
+        context_length = 1100,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        keeps_boundary = False,
+    )
+
+    assert info is not None and info["fits"]
+    assert info["dropped_messages"] == 12
+    assert info["prompt_tokens_after"] == 941
+
+
+def test_clamp_compaction_headroom_ratio_rejects_junk():
+    from core.inference.context_window import clamp_compaction_headroom_ratio
+
+    assert clamp_compaction_headroom_ratio(None) is None
+    assert clamp_compaction_headroom_ratio("nope") is None
+    assert clamp_compaction_headroom_ratio(float("nan")) is None
+    assert clamp_compaction_headroom_ratio(-1) == 0.0
+    assert clamp_compaction_headroom_ratio(2) == 0.9
+    assert clamp_compaction_headroom_ratio(0.05) == 0.05
+
+
 # --- Keeping the user's standing instruction when everything else is evicted ---
 #
 # `truncate_oldest_messages` protects the newest USER group, so an instruction is safe only

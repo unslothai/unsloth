@@ -6,11 +6,12 @@ import {
   applyActiveModelStatusToStore,
   getInferenceStatus,
   isExternalModelId,
+  isSpeechOnlyStatus,
   resolveInferenceCheckpointId,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { useHubInfiniteScroll } from "@/features/hub";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { hfModelFitsDevice } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -26,6 +27,7 @@ import {
   useState,
 } from "react";
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
+import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
@@ -45,7 +47,6 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
-import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -61,12 +62,6 @@ import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import { useHubInventory } from "./inventory";
 import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
-import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
-import {
-  type RefreshSupersession,
-  registerRefresh,
-  supersedingRefresh,
-} from "./lib/superseded-refresh";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -87,6 +82,12 @@ import {
   matchesModelType,
 } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
+import {
+  type RefreshSupersession,
+  registerRefresh,
+  supersedingRefresh,
+} from "./lib/superseded-refresh";
 import { fingerprintToken } from "./lib/token-fingerprint";
 import {
   buildDiscoverRows,
@@ -391,7 +392,13 @@ export function ModelsPage() {
         const store = useChatRuntimeStore.getState();
         adoptResidentModelStatus(
           {
-            checkpointId: resolveInferenceCheckpointId(status),
+            // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
+            // Null for a speech model: this page is the other writer of params.checkpoint,
+            // so adopting one here made it the chat model just as the mount sync did.
+            checkpointId: isSpeechOnlyStatus(status)
+              ? null
+              : resolveInferenceCheckpointId(status),
+            speechOnly: isSpeechOnlyStatus(status),
             ggufVariant: status.gguf_variant ?? null,
           },
           {
@@ -1239,8 +1246,12 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.round(gpu.memoryTotalGb)} GiB`
+    ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
     : "Unavailable";
+  const gpuSharedLabel =
+    gpu.available && gpu.memorySharedGb > 0
+      ? `${Math.round(gpu.memorySharedGb)} GiB`
+      : null;
   const ramLabel =
     gpu.systemRamTotalGb > 0
       ? `${Math.round(gpu.systemRamTotalGb)} GiB`
@@ -1543,6 +1554,7 @@ export function ModelsPage() {
           localCount={visibleLocalCount}
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
+          gpuSharedLabel={gpuSharedLabel}
           ramLabel={ramLabel}
           coreLabel={coreLabel}
           onTitleClick={handleResetToDiscover}

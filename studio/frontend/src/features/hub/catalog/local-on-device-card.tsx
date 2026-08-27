@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
   PopoverContent,
@@ -11,13 +12,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import {
-  Alert02Icon,
-  CubeIcon,
-  Share05Icon,
-} from "@hugeicons/core-free-icons";
+import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -46,6 +44,7 @@ import {
 import { ggufVariantsMatch } from "../lib/model-identity";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
@@ -55,7 +54,6 @@ import {
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
-import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
@@ -65,6 +63,11 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
+  /** False for a local diffusion / audio / video GGUF: it runs through the media
+   *  planner rather than llama.cpp, so the KV estimator describes the wrong
+   *  runtime -- and it still falls back to the file size, so it draws a
+   *  confident weights-only verdict rather than nothing. */
+  showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
   modelFormat: ModelInventoryFormat | null;
@@ -180,6 +183,7 @@ export function LocalOnDeviceCard({
   sourceLabel,
   source,
   path,
+  showMemoryBar = true,
   isGguf,
   requiresVariant = false,
   modelFormat,
@@ -228,7 +232,10 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
-  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
+  const deleteImpact = useDeleteImpact(
+    deleteOpen && Boolean(repoId),
+    repoId ?? "",
+  );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -297,6 +304,11 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
+  // The same live VRAM Budget the memory bar on this card reads. Without it the
+  // quant menu ranked against the 0.97 default while the bar beside it used the
+  // saved fraction, so an over-budget variant could sit above a smaller one that
+  // actually fits.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
       variants
@@ -304,6 +316,7 @@ export function LocalOnDeviceCard({
             defaultVariant: currentVariantState.defaultVariant,
             gpuGb,
             systemRamGb,
+            budgetFraction,
           })
         : null,
     [
@@ -311,6 +324,7 @@ export function LocalOnDeviceCard({
       currentVariantState.defaultVariant,
       gpuGb,
       systemRamGb,
+      budgetFraction,
     ],
   );
   const preferredQuant = preferredFile
@@ -543,6 +557,25 @@ export function LocalOnDeviceCard({
             </div>
           </div>
         </div>
+        {/* Render the full-width memory bar below the horizontal card row so it
+            does not compete with row controls for width. */}
+        {/* A direct .gguf path skips variant selection, so selectedQuant is null.
+            The path itself still supplies the local artifact identity. */}
+        {showMemoryBar &&
+        (repoId || localGgufPath) &&
+        (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
+          <ModelMemoryBarFor
+            // The card's exact path identifies the downloaded artifact across
+            // cache roots and revisions. It is also the only identity available
+            // for a custom or local GGUF when repoId is null.
+            repoId={repoId || localGgufPath}
+            loadId={localGgufPath}
+            quant={selectedQuant ?? ""}
+            sizeBytes={selectedVariant?.size_bytes}
+            gpuGb={gpuGb}
+            className="px-3 pb-2"
+          />
+        ) : null}
       </div>
       {baseModel && (
         <BaseModelReference

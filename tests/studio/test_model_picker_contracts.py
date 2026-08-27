@@ -666,8 +666,9 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # the same meta and so has to carry the pin. Counted rather than matched
     # loosely, so a new row that forgets it is a failure here rather than a load
     # that silently follows the default ref. #7736 added the third: the collapsed
-    # single-quant GGUF row, which is a load site like the other two.
-    assert picker.count("loadId: c.load_id") == 3, (
+    # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
+    # has to price the pinned snapshot rather than the default ref.
+    assert picker.count("loadId: c.load_id") == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
     )
@@ -3219,16 +3220,22 @@ def test_indexed_local_loads_are_remembered_without_bypassing_leases():
     assert "token" not in store.lower().replace("isPathLikeId", "")
 
 
-def test_autoload_skips_image_and_video_rows():
-    """The backend tags a row with a task only for image/video models, and the
-    picker routes those away on click. A background load has no routing step."""
+def test_autoload_skips_rows_chat_cannot_answer():
+    """The backend tags a row with a task only for the models that own another page,
+    and the picker routes those away on click. A background load has no routing step.
+    The audio tasks are here because the chat route answers a turn on a speech model by
+    synthesizing the prompt rather than refusing it, so nothing downstream catches it."""
     src = _read("features/chat/api/chat-adapter.ts")
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-to-image"' in tasks
     assert '"text-to-video"' in tasks
     assert '"image-diffusion-unsupported"' in tasks
+    assert '"text-to-speech"' in tasks
+    assert '"text-to-audio"' in tasks
+    assert '"audio-to-audio"' in tasks
+    assert '"automatic-speech-recognition"' in tasks
     policy = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in policy
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in policy
 
 
 def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
@@ -3337,6 +3344,16 @@ def test_cached_rows_classify_chat_capability_too():
     assert "_local_transformers_can_chat(classify_snapshot)" in fields
 
 
+def test_cached_codec_evidence_enriches_an_existing_hub_result():
+    """Search results outrank cached metadata, but they must not erase a decoder
+    discovered from the local tokenizer files for the same repo."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    evidence = src.split("const hubEvidenceById = useMemo", 1)[1]
+    evidence = evidence.split("const capsById = useMemo", 1)[0]
+    assert evidence.count("const existing = map.get(c.repo_id);") == 2
+    assert evidence.count("audioType: existing.audioType ?? c.audio_type") == 2
+
+
 def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
     load targets, so they must agree on POSIX case."""
@@ -3360,16 +3377,16 @@ def test_the_default_variant_lookup_takes_the_run_signal():
     assert helper.index("} catch {") < helper.index("abortSignal?.throwIfAborted();")
 
 
-def test_cached_rows_get_the_same_image_and_video_gate_as_local_rows():
-    """Cached diffusion repos carry their task on the row and report can_chat
-    true on file format alone."""
+def test_cached_rows_get_the_same_non_chat_gate_as_local_rows():
+    """Cached diffusion and speech repos carry their task on the row and report can_chat
+    true on file format alone. Both inventories, or one of them still offers the row."""
     src = _read("features/chat/api/chat-adapter.ts")
     cached = src.split("function isChattableCachedRepo", 1)[1].split("\n}\n", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")' in cached
+    assert 'NON_CHAT_TASKS.has(repo.task ?? "")' in cached
     local = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in local
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in local
     # A chat GGUF is tagged text-generation, so the gate is a list, not "has a task".
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-generation"' not in tasks
 
 
