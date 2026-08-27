@@ -1357,6 +1357,12 @@ def audit_null(
     permanently undecided for an honest reason. Those names are excused by `allow_undecided`, and
     every one of them is a hole, so they are printed.
 
+    ONE REFUSAL IS NOT BLIND, and it is the one that made this audit unsatisfiable on the packed
+    rungs. A pair whose scaffold, overlays, message set and every SETTLED row agreed, with only
+    the subtree of a still-arriving reply left over, counts as an observation of non-difference
+    (`parity.SETTLED_MATCH`). How many decided entries rest on it is reported rather than folded
+    away, because it is the weaker claim: the settled thread was read, the live tail was not.
+
     SCOPED TO WHAT THE EXCUSE CHANGES, when a scope is given, and this is the difference between
     a gate that means something and one no runner can satisfy. The null control exists to excuse
     the result's noise, so the only actions it owes an opinion on are the ones an excuse would
@@ -1377,6 +1383,9 @@ def audit_null(
         by_rung[rung_of_cell(cell)].append((action, r))
 
     decided, undecided, differed, excused, out_of_scope = [], [], [], [], []
+    # Decided entries whose every observation came from a settled-match refusal. Kept apart from
+    # `decided` because the live tail was never read at all.
+    on_settled = []
     for rung, pairs in sorted(by_rung.items()):
         for action, row in sorted(P.derive_unstable(pairs).items()):
             entry = (rung, action)
@@ -1391,6 +1400,8 @@ def audit_null(
                 (excused if action in allow_undecided else undecided).append(entry)
                 continue
             decided.append(entry)
+            if row.get(P.SETTLED_MATCH) and row[P.SETTLED_MATCH] >= row["observations"]:
+                on_settled.append(entry)
             if row["unstable"]:
                 differed.append(entry)
 
@@ -1427,6 +1438,7 @@ def audit_null(
         "out_of_scope": out_of_scope,
         "differed": differed,
         "missing": missing,
+        "decided_on_settled_thread": on_settled,
     }
     # NOTHING TO DECIDE IS A PASS, and only when a scope said so. A result whose every action
     # matched asks the null for no excuses at all, and there is no way to fail a question that
@@ -1462,6 +1474,13 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
         return
     print(f"  decided (rung, action):     {len(report_['decided'])}")
     print(f"  of which differed:          {len(report_['differed'])}  (the MEASURED unstable set)")
+    if report_.get("decided_on_settled_thread"):
+        # A narrower claim than the line above, so it is said out loud.
+        print(
+            f"  of which on the settled thread only: "
+            f"{len(report_['decided_on_settled_thread'])}  (a reply was still arriving on every "
+            "observation, so its subtree was withheld and the rest of the thread agreed)"
+        )
     print(f"  undecided:                  {len(report_['undecided'])}")
     if allow_undecided and report_["excused"]:
         print(
