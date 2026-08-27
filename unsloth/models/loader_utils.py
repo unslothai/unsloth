@@ -892,17 +892,89 @@ def _get_new_mapper():
                     literal = None
                 if isinstance(literal, dict):
                     source_table = literal
+        def _source_before_the_builder(name):
+            """The source table as the builder receives it, mutations included.
+
+            `__INT_TO_FLOAT_MAPPER.update({...})` and
+            `__INT_TO_FLOAT_MAPPER["org/x-bnb-4bit"] = ("org/x",)` are ordinary ways to
+            extend the table before it is handed over, and reading only the last
+            literal assignment dropped them: the entries never reached `build_mappers`,
+            so a model added through either spelling got no upgrade notice. The
+            mutation pass further down applies to the five EXPORTED tables and never
+            saw the source one.
+
+            In execution order, and only up to the call: a mutation written after the
+            builder ran does not change what it was handed.
+            """
+            current = None
+            for node, _shadowed in _executed_nodes(tree.body):
+                if _calls_the_builder(node):
+                    break
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    if node.value is None:
+                        continue
+                    targets = (
+                        [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+                    )
+                    for target in targets:
+                        if isinstance(target, ast.Name) and target.id == name:
+                            try:
+                                literal = ast.literal_eval(node.value)
+                            except Exception:
+                                continue
+                            if isinstance(literal, dict):
+                                # A rebind REPLACES it, so anything applied above is
+                                # gone, exactly as it is in the module itself.
+                                current = dict(literal)
+                        elif (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == name
+                            and current is not None
+                        ):
+                            try:
+                                current[ast.literal_eval(target.slice)] = ast.literal_eval(
+                                    node.value
+                                )
+                            except Exception:
+                                continue
+                elif (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "update"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == name
+                    and current is not None
+                    and len(node.args) == 1
+                    and not node.keywords
+                ):
+                    try:
+                        additions = ast.literal_eval(node.args[0])
+                    except Exception:
+                        continue
+                    if isinstance(additions, dict):
+                        current.update(additions)
+            return current
+
+        if source_table is None and builder_call is not None:
+            source_table = _source_before_the_builder(source_name)
         if source_table is None:
             # `None` for the cutoff when the builder was not located: the call still
             # ran somewhere unreadable, and the last binding is the best available
             # answer, exactly as before.
             source_table = _binding_at(source_name, builder_index)
-        if not source_table:
-            return {}, {}, {}, {}, {}
 
+        # An empty or absent source table is no longer the end of the probe. A fetched
+        # mapper may install an exported entry DIRECTLY - a row-only FP8 repo cannot be
+        # expressed through the source table at all - and returning here left those
+        # unread, so importing that mapper would support the model while the probe said
+        # nothing. The base tables are built empty and the ordered pass below runs; a
+        # body that turns out to add nothing is still reported as nothing found, at the
+        # end, so a response that is not a mapper at all answers exactly as before.
+        empty_base = not source_table
         # A newer mapper.py may carry entry shapes this builder does not know; the
         # caller already treats an empty result as "the probe found nothing".
-        tables = build_mappers(source_table)
+        tables = build_mappers(source_table or {})
 
         # The fp8 tables can also gain entries as plain subscript assignments rather
         # than through the source table, e.g.
@@ -1071,6 +1143,12 @@ def _get_new_mapper():
                     continue
             pass
         pass
+        if empty_base and tables == build_mappers({}):
+            # Nothing was installed on top of the empty base, so the fetched body
+            # carried no mapping at all: the same "found nothing" the early return
+            # used to give, now decided from the result rather than from the source
+            # table alone.
+            return {}, {}, {}, {}, {}
         return tables
     except:
         return {}, {}, {}, {}, {}

@@ -564,3 +564,67 @@ def test_a_source_table_rebound_before_the_builder_is_the_one_read(monkeypatch):
 
     assert any(expected)
     assert got == expected, "an earlier empty binding was read instead of the real one"
+
+
+def test_a_source_table_extended_before_the_builder_is_read(monkeypatch):
+    """`__INT_TO_FLOAT_MAPPER.update({...})` is an ordinary way to add entries.
+
+    Reading only the last literal assignment dropped the update, so the entries never
+    reached `build_mappers` and a model added that way got no upgrade notice.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers("))
+    extended = "".join(
+        lines[:insert]
+        + [
+            '__INT_TO_FLOAT_MAPPER.update('
+            '{"vendor/added-bnb-4bit": ("vendor/added",)})\n',
+            '__INT_TO_FLOAT_MAPPER["vendor/keyed-bnb-4bit"] = ("vendor/keyed",)\n',
+        ]
+        + lines[insert:]
+    )
+    with _serving(extended, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    joined = " ".join(str(sorted(table)) for table in tables)
+    assert "vendor/added" in joined, "an update before the builder was dropped"
+    assert "vendor/keyed" in joined, "a subscript assignment before the builder was dropped"
+
+
+def test_a_source_mutation_after_the_builder_is_not_read(monkeypatch):
+    """The other direction: the builder was handed what existed when it ran."""
+    late = REAL_MAPPER + (
+        '\n__INT_TO_FLOAT_MAPPER.update({"vendor/late-bnb-4bit": ("vendor/late",)})\n'
+    )
+    with _serving(REAL_MAPPER, monkeypatch):
+        expected = loader_utils._get_new_mapper()
+    with _serving(late, monkeypatch):
+        got = loader_utils._get_new_mapper()
+    assert any(expected)
+    assert got == expected, "a mutation after the builder call was read as the source"
+
+
+def test_a_direct_entry_survives_an_empty_source_table(monkeypatch):
+    """A row-only FP8 entry cannot be expressed through the source table at all.
+
+    Returning as soon as the source table was empty left every direct mutation unread,
+    so importing the fetched mapper would support the model while the probe reported
+    nothing.
+    """
+    emptied = REAL_MAPPER.replace(
+        "= build_mappers(__INT_TO_FLOAT_MAPPER)", "= build_mappers({})"
+    ) + (
+        '\nFLOAT_TO_FP8_ROW_MAPPER["vendor/only-fp8"] = "unsloth/only-fp8-row"\n'
+    )
+    with _serving(emptied, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        table.get("vendor/only-fp8") == "unsloth/only-fp8-row"
+        for table in tables if isinstance(table, dict)
+    ), "a direct entry was dropped because the source table was empty"
+
+
+def test_a_body_that_installs_nothing_still_reports_nothing(monkeypatch):
+    """And the guard the early return used to give is kept, decided from the result."""
+    for body in ("", "x = 1\n", "__INT_TO_FLOAT_MAPPER = {}\n"):
+        with _serving(body, monkeypatch):
+            assert loader_utils._get_new_mapper() == ({}, {}, {}, {}, {}), body
