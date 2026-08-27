@@ -418,10 +418,10 @@ def get_base_url(provider_type: str) -> str | None:
 
 
 def provider_runs_local_tools(provider_type: str | None) -> bool:
-    """Whether Studio may run its own tool loop against this provider type.
+    """Whether Unsloth may run its own tool loop against this provider type.
 
-    Studio's tools (web_search, python, terminal, MCP, knowledge-base search)
-    execute on the Studio host, so any provider whose wire format can carry a
+    Unsloth's tools (web_search, python, terminal, MCP, knowledge-base search)
+    execute on the Unsloth host, so any provider whose wire format can carry a
     tool schema out and a tool result back can use them. That is the whole
     OpenAI-compatible family plus Gemini, whose native shape is translated to
     and from OpenAI chunks in ``external_provider.py``.
@@ -465,14 +465,14 @@ def provider_model_runs_local_tools(provider_type: str | None, model: str | None
 def provider_hosted_tools(provider_type: str | None) -> frozenset[str]:
     """Built-in tool names this provider executes on its own side.
 
-    These are not Studio's tools: they are body flags (`tools: [{type:
+    These are not Unsloth's tools: they are body flags (`tools: [{type:
     "web_search"}]`, `plugins: [{id: "web"}]`, `codeExecution`) that the provider
     runs and bills, and the only thing this server does with them is forward the
     name. `provider_runs_local_tools` is orthogonal -- most providers do both,
     and a request picks a side by which names it lists.
 
     Empty for the self-hosted presets (llama.cpp, vLLM, Ollama, custom) and for
-    openai_codex, whose `web_search` is Studio's own tool run by the Codex loop.
+    openai_codex, whose `web_search` is Unsloth's own tool run by the Codex loop.
     """
     if not isinstance(provider_type, str):
         return frozenset()
@@ -494,10 +494,10 @@ HOSTED_TOOL_NAMES: frozenset[str] = frozenset(
 # and bills for it.
 #
 # Which side a request wants is the request's to say, not this server's to
-# assume. web_search is unambiguous -- the hosted name and Studio's own tool are
-# spelled the same, so naming it while the loop runs can only mean Studio's.
+# assume. web_search is unambiguous -- the hosted name and Unsloth's own tool are
+# spelled the same, so naming it while the loop runs can only mean Unsloth's.
 # code_execution is a different name from python/terminal precisely because it
-# is a different thing: it runs in the provider's sandbox, and Studio has no
+# is a different thing: it runs in the provider's sandbox, and Unsloth has no
 # implementation of it at all (see ALL_TOOLS). Treating it as "already replaced"
 # therefore substitutes nothing, it just drops the tool while its pill stays lit.
 LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
@@ -507,11 +507,11 @@ LOCAL_STANDINS_FOR_HOSTED_TOOLS: dict[str, frozenset[str]] = {
 
 
 def hosted_only_tools(provider_type: str | None, enabled_tools: Any) -> list[str]:
-    """The requested hosted tools Studio is not running in their place.
+    """The requested hosted tools Unsloth is not running in their place.
 
     image_generation and web_fetch have no local implementation, and their UI
     pills are independent of Search / Code / RAG, so a request that mixes one of
-    them with a Studio tool has to carry it through to the provider or the tool
+    them with an Unsloth tool has to carry it through to the provider or the tool
     silently disappears while its toggle stays on. code_execution has no local
     implementation either, and rides along unless the same request also asked
     for the local tools that would duplicate it.
@@ -567,7 +567,7 @@ _METADATA_IPS = frozenset(
 # not mistaken for one.
 _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 
-# Opt-in for operators who expose Studio on a shared host: also refuse provider
+# Opt-in for operators who expose Unsloth on a shared host: also refuse provider
 # URLs that resolve to a non-public address. Off by default, because loopback and
 # LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
@@ -908,7 +908,7 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     entries.
 
     ``include_hidden`` is how a client that does know says so. The self-hosted
-    presets are exactly the ones that run Studio's tools, so their capability
+    presets are exactly the ones that run Unsloth's tools, so their capability
     has to reach a frontend that asks for it, and asking is opt-in.
     """
     result = []

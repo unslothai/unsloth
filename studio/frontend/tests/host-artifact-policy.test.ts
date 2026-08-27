@@ -79,7 +79,7 @@ test("a gguf-only host drops the one pipeline the backend refuses, and nothing e
 });
 
 test("a gguf-only host keeps every non-GGUF row the backend can still load", () => {
-  // Each of these is a load Studio supports on Apple Silicon or CPU today: the diffusion
+  // Each of these is a load Unsloth supports on Apple Silicon or CPU today: the diffusion
   // pipelines are device-neutral (video_capability() certifies Apple Silicon, and
   // diffusion_device.py picks MPS bfloat16 for exactly these), and the STT rows run through
   // the whisper.cpp sidecar, whose format label in the catalog is informational only.

@@ -281,6 +281,28 @@ def test_the_effective_checkpoint_count_comes_from_the_extras():
     assert resolve_ctx_checkpoints([], None) == 0
 
 
+def test_the_checkpoint_flag_falls_back_to_the_legacy_spelling():
+    """A build carrying only --swa-checkpoints must still get the control's value.
+
+    Upstream renamed --swa-checkpoints to --ctx-checkpoints and kept the old name
+    as an alias, so a build older than the rename exposes only the old one.
+    Probing the modern name alone dropped the Checkpoints pick there in silence.
+    """
+    import inspect
+
+    from core.inference import llama_cpp
+
+    probe = inspect.getsource(llama_cpp.LlamaCppBackend.probe_server_capabilities)
+    # both spellings probed, most modern first, and WHICH one is recorded
+    assert 'for _alias in ("--ctx-checkpoints", "--swa-checkpoints")' in probe
+    assert "ctx_checkpoints_flag = _alias" in probe
+    assert "supports_ctx_checkpoints = ctx_checkpoints_flag is not None" in probe
+    # and the emission uses the recorded name, not a hard-coded one
+    load = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    assert "cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])" in load
+    assert 'cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
+
+
 def test_an_unsupported_draft_cache_dtype_is_dropped_not_launched():
     """llama-server exits on a dtype it cannot map, and by then the old model is gone."""
     import inspect
@@ -398,9 +420,16 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
         in inspect.signature(inference_routes._estimate_gguf_required_gb).parameters
     )
     assert "ctx_checkpoints" in inspect.signature(inference_routes._estimate_gguf_kv_gb).parameters
+    assert "ctx_checkpoints" in inspect.signature(inference_routes._gguf_runtime_bytes).parameters
     source = inspect.getsource(inference_routes._guard_chat_load_against_training)
     assert 'ctx_checkpoints = getattr(request, "ctx_checkpoints", None)' in source
-    kv_source = inspect.getsource(inference_routes._estimate_gguf_kv_gb)
+    # _estimate_gguf_kv_gb is the guard's summing wrapper; the arithmetic lives in
+    # _gguf_runtime_bytes, which the memory-estimate endpoint reads itemized. Both
+    # links are asserted, so dropping the field in either place still fails here.
+    assert "ctx_checkpoints = ctx_checkpoints" in inspect.getsource(
+        inference_routes._estimate_gguf_kv_gb
+    )
+    kv_source = inspect.getsource(inference_routes._gguf_runtime_bytes)
     # priced on what the launch runs, so a typed --ctx-checkpoints wins here too
     assert "resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)" in kv_source
 

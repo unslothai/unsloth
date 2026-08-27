@@ -3,7 +3,7 @@
 
 """The one list of video container extensions a training dataset may hold.
 
-Studio's diffusion dataset layer grew up image-only, so the routes carry their own
+Unsloth's diffusion dataset layer grew up image-only, so the routes carry their own
 ``_DIFFUSION_DATASET_IMAGE_EXTS``. Clips need the same treatment, but a clip dataset is read
 by the trainer and written by the upload endpoint, and those live on opposite sides of the
 backend. Putting the set in either one makes the other import it across a layer it has no

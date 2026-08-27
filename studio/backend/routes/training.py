@@ -134,7 +134,7 @@ class TrainingStopRequest(PydanticBaseModel):
 
 
 class TrainingResetRequest(PydanticBaseModel):
-    # Stays optional: every Studio build before the train-page rework posts /reset with no
+    # Stays optional: every Unsloth build before the train-page rework posts /reset with no
     # body, and those clients only ever reset a finished run. The backend refuses an
     # unscoped reset that would touch a LIVE run instead, so the guard costs no compat.
     expected_job_id: Optional[str] = PydanticField(
@@ -1170,19 +1170,19 @@ async def start_training(
         backend = get_training_backend()
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
-            reservation, record = backend.reserve_start_request(
-                request.start_request_id,
-                job_id,
-            )
-            if reservation == "existing":
-                return _start_request_response(record)
-            if reservation == "conflict":
-                return _start_request_response(record)
-            reserved_start_request_id = request.start_request_id
+            # A retry of an id that already resolved replays its stored outcome even when the
+            # guard below would refuse a NEW start: the caller asked what happened to THIS
+            # start. Peeking also refreshes a cancellation tombstone, so a retry cannot outlive
+            # it and go on to spawn the run the user cancelled.
+            existing_record = backend.peek_start_request(request.start_request_id)
+            if existing_record is not None:
+                return _start_request_response(existing_record)
 
         # When Unsloth is driven as an inference API (API-key auth), refuse to start training while
         # a request is in flight: training frees VRAM by unloading the chat model, killing the
         # stream. The UI (session auth) still starts and coexists. Mixed UI+API is not special-cased.
+        # Checked BEFORE reserving start_request_id: this refusal is transient, so resolving the
+        # idempotency key to "rejected" would make every retry replay a stale rejection forever.
         if via_api_key is True:
             from core.inference.llama_keepwarm import other_inference_request_count
             if (
@@ -1196,6 +1196,17 @@ async def start_training(
                         "progress. Wait for it to finish, or start training from the Unsloth UI."
                     ),
                 )
+
+        if request.start_request_id:
+            reservation, record = backend.reserve_start_request(
+                request.start_request_id,
+                job_id,
+            )
+            if reservation == "existing":
+                return _start_request_response(record)
+            if reservation == "conflict":
+                return _start_request_response(record)
+            reserved_start_request_id = request.start_request_id
 
         # No in-process ensure_transformers_version(): worker.py activates it before ML imports.
 
@@ -2067,7 +2078,9 @@ async def get_training_metrics(
         )
 
 
-@router.get("/progress")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/progress")
+@router.get("/progress", include_in_schema = False)
 async def stream_training_progress(
     request: Request,
     expected_job_id: Optional[str] = None,
@@ -2633,7 +2646,7 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
                 status_code = 400,
                 detail = (
                     f"Access to '{repo}' is gated or unauthorized. Accept the model's license "
-                    f"on its Hugging Face page and add your HF token in Studio settings, then "
+                    f"on its Hugging Face page and add your HF token in Unsloth settings, then "
                     f"try again."
                 ),
             )
@@ -2716,7 +2729,7 @@ async def start_diffusion_training(
                 detail = (
                     "Cannot start diffusion (Images) training over the API while an inference "
                     "request is in progress. Wait for it to finish, or start training from the "
-                    "Studio UI."
+                    "Unsloth UI."
                 ),
             )
 
@@ -3332,7 +3345,7 @@ def _dataset_folder_is_case_insensitive(folder: Path) -> bool:
 
     Probed once per process against the real filesystem rather than keyed off ``sys.platform``:
     NTFS and the default APFS fold case, but macOS also ships case-SENSITIVE APFS volumes and a
-    Linux host can keep its Studio home on an exFAT/NTFS mount. A failed probe answers False,
+    Linux host can keep its Unsloth home on an exFAT/NTFS mount. A failed probe answers False,
     which keeps the case-sensitive behaviour (two names, two files) unchanged.
     """
     global _DATASETS_CASE_INSENSITIVE
@@ -3397,7 +3410,7 @@ async def upload_diffusion_dataset(
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """Upload training images (and optional caption .txt / metadata.jsonl files) into a
-    named folder under the Studio datasets root, creating it if needed. Repeat uploads
+    named folder under the Unsloth datasets root, creating it if needed. Repeat uploads
     into the same name accumulate, so large datasets can arrive in batches. The returned
     name can be passed directly as ``data_dir`` to /diffusion/start."""
     import os
@@ -3613,7 +3626,7 @@ _MAX_CAPTION_CHARS = 2000
 
 
 def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
-    """Validate ``name`` (single component, no traversal) and resolve it under the Studio
+    """Validate ``name`` (single component, no traversal) and resolve it under the Unsloth
     datasets root. 404 when a read target is missing."""
     from utils.paths import datasets_root
 
@@ -3633,7 +3646,7 @@ def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
     except (OSError, ValueError):
         raise HTTPException(
             status_code = 400,
-            detail = f"Dataset '{cleaned}' escapes the Studio datasets directory.",
+            detail = f"Dataset '{cleaned}' escapes the Unsloth datasets directory.",
         )
     return folder
 
@@ -4216,7 +4229,7 @@ async def import_diffusion_dataset_example(
     current_subject: str = Depends(get_current_subject),
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
-    """Materialize a curated example dataset into a Studio dataset folder (images + .txt
+    """Materialize a curated example dataset into an Unsloth dataset folder (images + .txt
     captions), ready to train. Idempotent: a folder that already holds images is returned
     as-is rather than re-downloaded."""
     _require_diffusion_dataset_mutable()

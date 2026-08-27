@@ -276,7 +276,7 @@ jobs:
       # key on THIS step rather than on assert-prebuilt. shim only runs when
       # assert-prebuilt succeeded, so `steps.shim.outcome == 'success'` implies
       # the assertion passed and additionally catches a missing shim, which
-      # would otherwise let all three phases boot a Studio that is not on PATH.
+      # would otherwise let all three phases boot an Unsloth that is not on PATH.
       - name: Add Unsloth shim to GITHUB_PATH
         id: shim
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
@@ -295,7 +295,12 @@ jobs:
         id: sdks
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         timeout-minutes: 10
-        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: python -m pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
 
       # Phase 1's environment and model cache sit HERE, after the shared
       # preamble, not before it. They used to run before the installer, which is
@@ -465,7 +470,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -957,7 +962,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -1346,7 +1351,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
