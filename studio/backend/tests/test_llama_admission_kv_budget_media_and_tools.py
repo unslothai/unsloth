@@ -107,12 +107,12 @@ class TestMediaIsCharged:
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
 
         assert dual_cost == inline_cost
-        assert (
-            dual_cost < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
-        ), "the echo must be charged once, not once per spelling"
-        assert (
-            dual_cost >= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
-        ), "image bytes must be bounded but still charged"
+        assert dual_cost < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            "the echo must be charged once, not once per spelling"
+        )
+        assert dual_cost >= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            "image bytes must be bounded but still charged"
+        )
 
     def test_every_builder_forwards_exactly_what_admission_charged(self):
         """The reservation is only a bound if it counts the images actually sent.
@@ -218,9 +218,9 @@ class TestMediaIsCharged:
         """
         measured_worst_case = {"qwen3-vl-4b": 4098, "gemma-3-4b": 258}
         for model, tokens in measured_worst_case.items():
-            assert (
-                _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS >= tokens
-            ), f"per-image allowance under-reserves {model}"
+            assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS >= tokens, (
+                f"per-image allowance under-reserves {model}"
+            )
 
     def test_the_allowance_follows_a_raised_image_token_cap(self):
         """A load can raise the projector ceiling, and the reservation has to follow it.
@@ -230,29 +230,53 @@ class TestMediaIsCharged:
         Qwen3-VL image costs 8102, against 4098 at the default. Reserving the default
         against that backend admits concurrent requests the cache cannot hold.
         """
-        from routes.inference import _openai_llama_admission_image_tokens
+        from routes.inference import (
+            _MMPROJ_IMAGE_TOKEN_MAX,
+            _openai_llama_admission_image_tokens,
+        )
 
         class _Backend:
-            def __init__(self, extra_args):
+            def __init__(
+                self,
+                extra_args = None,
+                projector = None,
+            ):
                 self._extra_args = extra_args
+                self._mmproj_projector_type = projector
 
-        assert _openai_llama_admission_image_tokens(_Backend(None)) == (
+        assert _openai_llama_admission_image_tokens(_Backend()) == (
             _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
         for spelling in (["--image-max-tokens", "8192"], ["--image-max-tokens=8192"]):
             allowance = _openai_llama_admission_image_tokens(_Backend(spelling))
             assert allowance > _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
             assert allowance >= 8102, f"{spelling} under-reserves the measured cost"
-        # A lowered cap reserves less, which is the whole point of reading it.
-        assert (
-            _openai_llama_admission_image_tokens(_Backend(["--image-max-tokens", "512"]))
-            < _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
-        )
         # Junk must not be mistaken for a cap, and must not raise.
         for junk in (["--image-max-tokens"], ["--image-max-tokens", "abc"], ["-c", "40000"]):
             assert _openai_llama_admission_image_tokens(_Backend(junk)) == (
                 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
             )
+
+        # Every family llama.cpp gives its own ceiling must be bounded, including the
+        # ones far above the default: youtuvl is 62500 and hunyuanvl 16384, so a flat
+        # default would have reserved a fraction of what one image really costs.
+        for projector, ceiling in _MMPROJ_IMAGE_TOKEN_MAX.items():
+            assert _openai_llama_admission_image_tokens(_Backend(projector = projector)) >= ceiling
+        assert _openai_llama_admission_image_tokens(_Backend(projector = "youtuvl")) >= 62500
+        # A projector with a small ceiling reserves near it rather than the default.
+        assert _openai_llama_admission_image_tokens(_Backend(projector = "lfm2")) < 1024
+        # An unknown family keeps the default rather than inventing a number.
+        assert _openai_llama_admission_image_tokens(_Backend(projector = "nope")) == (
+            _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        # The flag is only honoured by dynamic-resolution projectors, so a LOW cap must
+        # not talk the reservation below what a fixed-resolution one really costs.
+        assert (
+            _openai_llama_admission_image_tokens(
+                _Backend(["--image-max-tokens", "16"], projector = "qwen3vl_merger")
+            )
+            >= _MMPROJ_IMAGE_TOKEN_MAX["qwen3vl_merger"]
+        )
 
     def test_two_large_studio_image_chats_can_be_admitted_together(self):
         """A large base64 transport must not turn each vision request into a full-cache lease."""
