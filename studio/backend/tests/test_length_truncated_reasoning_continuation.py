@@ -709,9 +709,9 @@ def test_the_in_loop_retry_is_admitted_under_the_kwargs_it_will_be_sent_with(mon
 
     assert len(payloads) == 2, "the retry was refused"
     assert payloads[1]["chat_template_kwargs"] == {"enable_thinking": False}
-    assert {"enable_thinking": False} in seen, (
-        "the retry was admitted under kwargs it is not sent with"
-    )
+    assert {
+        "enable_thinking": False
+    } in seen, "the retry was admitted under kwargs it is not sent with"
 
 
 def test_the_in_loop_give_up_names_the_cap_when_the_last_attempt_spent_it(monkeypatch):

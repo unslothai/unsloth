@@ -26308,7 +26308,12 @@ class LlamaCppBackend:
 
         _markup_cache = _sweep_cache()
 
-        def _evict_until_it_fits(candidate, tools, reasoning_kw, continue_flag = False):
+        def _evict_until_it_fits(
+            candidate,
+            tools,
+            reasoning_kw,
+            continue_flag = False,
+        ):
             """Drop older turns from a continuation candidate that is one eviction short.
 
             Only reached once the candidate has already been priced and found too large.
@@ -27596,9 +27601,7 @@ class LlamaCppBackend:
                                 # Possibly one eviction short. Refusing here ends the
                                 # turn, so the next iteration's ordinary preflight never
                                 # gets its chance to drop an older exchange.
-                                _evicted_l = _evict_until_it_fits(
-                                    _cand_l, safe_tools, _off_kw_l
-                                )
+                                _evicted_l = _evict_until_it_fits(_cand_l, safe_tools, _off_kw_l)
                                 if _evicted_l is not None and _loop_continuation_fits(
                                     _evicted_l, safe_tools, _off_kw_l
                                 ):
@@ -29470,9 +29473,7 @@ class LlamaCppBackend:
                                 _candidate_r, False, _off_kw
                             )
                             if _next_cap_r != 0 and not _served_r:
-                                _evicted_r = _evict_until_it_fits(
-                                    _candidate_r, None, _off_kw
-                                )
+                                _evicted_r = _evict_until_it_fits(_candidate_r, None, _off_kw)
                                 if _evicted_r is not None and _continuation_would_be_served(
                                     _evicted_r, False, _off_kw
                                 ):
