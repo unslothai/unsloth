@@ -1168,8 +1168,7 @@ def _scan_cached_models(
                         "text-to-speech"
                         # The probe answers for a repo whose card says nothing, so the
                         # Audio page, which selects by task, still lists it.
-                        if is_output_audio
-                        or local_metadata.get("pipeline_tag") == "text-to-speech"
+                        if is_output_audio or local_metadata.get("pipeline_tag") == "text-to-speech"
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
                 )
