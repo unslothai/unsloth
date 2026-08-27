@@ -150,6 +150,15 @@ export function resolveSyncedModelIds(
   return prunedSaved.length > 0 ? prunedSaved : defaultModels;
 }
 
+function filterReasoningPinsToModels(
+  reasoningModelIds: string[] | undefined,
+  models: string[],
+): string[] | undefined {
+  if (reasoningModelIds === undefined) return undefined;
+  const enabled = new Set(models.map((model) => model.trim().toLowerCase()));
+  return reasoningModelIds.filter((id) => enabled.has(id.trim().toLowerCase()));
+}
+
 
 /** Carry browser-local provider knobs through a backend sync rebuild. */
 export function mergeLocalProviderOptions(
@@ -174,7 +183,10 @@ export function mergeLocalProviderOptions(
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
       : undefined,
     reasoningModelIds: supportsPerModelReasoningPin(providerType)
-      ? (existing.reasoningModelIds ?? synced.reasoningModelIds)
+      ? filterReasoningPinsToModels(
+          existing.reasoningModelIds ?? synced.reasoningModelIds,
+          synced.models,
+        )
       : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
