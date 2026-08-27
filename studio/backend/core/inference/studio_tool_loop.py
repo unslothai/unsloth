@@ -410,7 +410,16 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
             if depth == 0:
                 segment = text[start : i + 1]
                 try:
-                    json.loads(segment, parse_constant = _reject_json_constant)
+                    json.loads(
+                        segment,
+                        parse_constant = _reject_json_constant,
+                        # Validation only, so the numbers are never read: keeping
+                        # them as text sidesteps the 4300-digit cap on int
+                        # conversion, which JSON.parse does not have and which
+                        # would otherwise make the two disagree on where a call
+                        # ends over a literal that fits in an ordinary payload.
+                        parse_int = str,
+                    )
                 except (ValueError, TypeError):
                     # Balanced but invalid, so the brace count was a
                     # coincidence and cutting here would invent a call.
@@ -488,7 +497,11 @@ class _BoundaryScan:
                 if self.depth == 0:
                     segment = text[self.start : i + 1]
                     try:
-                        json.loads(segment, parse_constant = _reject_json_constant)
+                        json.loads(
+                            segment,
+                            parse_constant = _reject_json_constant,
+                            parse_int = str,
+                        )
                     except (ValueError, TypeError, RecursionError):
                         self.unsplittable = True
                         return [], text
@@ -517,6 +530,10 @@ class _Turn:
     # with the name rather than land on the call that has already closed.
     pending_name_by_index: dict[int, str] = field(default_factory = dict)
     pending_extra_by_index: dict[int, dict[str, Any]] = field(default_factory = dict)
+    # Where in first-seen order the announcement landed, so a call the stream
+    # announced before another one still runs before it: the loop spends its
+    # budget down this list in order.
+    pending_order_by_index: dict[int, int] = field(default_factory = dict)
     # Which call each id names, so a fragment repeating an id reaches its own
     # call even when a later call at that index is the one currently open.
     key_by_call_id: dict[str, Any] = field(default_factory = dict)
@@ -673,8 +690,13 @@ class _Turn:
             # the conventional opening delta carries id and name with empty
             # arguments, and letting it land on the finished call would put the
             # next call's arguments there too.
+            # A next call opens with the "{" of its own arguments object, so a
+            # fragment that starts with anything else is not one. Forking on any
+            # non-whitespace text cut where the scanner deliberately would not,
+            # turning a stray scalar suffix into a second call and running the
+            # tool twice.
             opens_next_call = bool(
-                isinstance(new_arguments, str) and new_arguments.strip()
+                isinstance(new_arguments, str) and new_arguments.strip().startswith("{")
             ) or bool(isinstance(call_id, str) and call_id)
             # An id names its call, so a fragment repeating the id this slot
             # already holds continues it however complete its arguments look --
@@ -710,6 +732,7 @@ class _Turn:
                     # streamed as "web" then "_search" must open its call as
                     # "web_search", not as whichever fragment arrived last.
                     pending_before = self.pending_name_by_index.get(index, "")
+                    self.pending_order_by_index.setdefault(index, len(self.order))
                     self.pending_name_by_index[index] = (
                         new_name
                         if new_name.startswith(pending_before)
@@ -747,6 +770,7 @@ class _Turn:
                         "arguments": "",
                     },
                 }
+                self.pending_order_by_index.pop(index, None)
                 pending_extra = self.pending_extra_by_index.pop(index, None)
                 if pending_extra:
                     born["extra_content"] = pending_extra
@@ -866,7 +890,7 @@ class _Turn:
         # Later id-less fragments continue the last call, finished or not.
         self.open_key_by_index[index] = open_key
 
-    def _announced_but_unopened(self) -> list[dict[str, Any]]:
+    def _announced_but_unopened(self) -> list[tuple[int, dict[str, Any]]]:
         """Calls a name announced that no argument fragment ever opened.
 
         A tool that takes no parameters can be announced and then simply end,
@@ -880,7 +904,7 @@ class _Turn:
         Read rather than flushed, so a later argument fragment that does open
         the call still opens it, and this stops reporting it.
         """
-        out: list[dict[str, Any]] = []
+        out: list[tuple[int, dict[str, Any]]] = []
         for index in sorted(self.pending_name_by_index):
             name = self.pending_name_by_index[index]
             if not name:
@@ -897,7 +921,7 @@ class _Turn:
             extra = self.pending_extra_by_index.get(index)
             if extra:
                 call["extra_content"] = dict(extra)
-            out.append(call)
+            out.append((self.pending_order_by_index.get(index, len(self.order)), call))
         return out
 
     def calls(self, taken: set[str] | None = None) -> list[dict[str, Any]]:
@@ -910,11 +934,13 @@ class _Turn:
         """
         seen: set[str] = taken if taken is not None else set()
         out: list[dict[str, Any]] = []
-        for position, call in enumerate(
-            [self.by_index[key] for key in self.order]
-            + self._announced_but_unopened()
-            + list(self.healed)
-        ):
+        ordered = [self.by_index[key] for key in self.order]
+        # Placed where the stream announced them rather than appended, so a call
+        # announced second is not run third. Descending, so an earlier insert
+        # cannot shift a later one off its mark.
+        for at, pending in sorted(self._announced_but_unopened(), reverse = True):
+            ordered.insert(at, pending)
+        for position, call in enumerate(ordered + list(self.healed)):
             normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
             if normalized is None:
                 continue

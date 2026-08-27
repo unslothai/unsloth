@@ -423,3 +423,42 @@ def test_a_name_resent_or_grown_after_a_call_closed_invents_nothing():
         turn.merge_structured([_delta(0, resent, "")])
 
         assert _shape(turn) == [("alpha", '{"a":1}')]
+
+
+def test_a_pending_call_runs_where_the_stream_announced_it():
+    # The loop spends its budget down this list in order, so a call announced
+    # second must not run third: a finite budget would run the later call and
+    # reject the earlier one.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "A", '{"a":1}')])
+    turn.merge_structured([_delta(0, "B", "")])
+    turn.merge_structured([_delta(1, "C", '{"c":3}')])
+
+    reported = [(call["function"]["name"], call["function"]["arguments"]) for call in turn.calls()]
+    assert reported == [("A", '{"a":1}'), ("B", "{}"), ("C", '{"c":3}')]
+
+
+def test_a_fragment_that_does_not_open_an_object_does_not_open_a_call():
+    # A next call begins with the "{" of its own arguments object. Forking on
+    # any non-whitespace text cut where the scanner deliberately leaves the text
+    # whole, so a stray scalar suffix ran the tool a second time.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "q", '{"query":"a"}')])
+    turn.merge_structured([_delta(0, "q", '"b"')])
+
+    assert _shape(turn) == [("q", '{"query":"a"}"b"')]
+    assert _split_top_level_json_objects('{"query":"a"}"b"') == ([], '{"query":"a"}"b"')
+
+
+def test_an_integer_too_long_to_convert_is_still_a_boundary():
+    # json.loads raises ValueError past the 4300-digit cap on int conversion,
+    # where JSON.parse does not, and a 4301-digit literal is about 4 KB and fits
+    # in an ordinary payload. Validation never reads the numbers, so keeping
+    # them as text keeps the two scanners cutting in the same place.
+    big = '{"a":' + "1" * 4301 + "}"
+    assert _split_top_level_json_objects(big + '{"b":2}') == ([big, '{"b":2}'], "")
+
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", big)])
+    turn.merge_structured([_delta(0, "beta", '{"b":2}')])
+    assert _shape(turn) == [("alpha", big), ("beta", '{"b":2}')]

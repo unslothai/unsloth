@@ -184,20 +184,6 @@ function liftSplitHelpers(): string {
   return lifted;
 }
 
-/** The end-of-stream flush, which runs after the chunk loop, not inside it. */
-function liftPendingFlush(): string {
-  const lifted = liftBetween(
-    "pending flush",
-    "for (const [pendingIdx, pendingName] of pendingNameByIndex) {",
-    "// The model asked for Deep Research",
-  );
-  assert.ok(
-    lifted.includes("mintSplitToolCallId"),
-    "the end-of-stream flush moved in chat-adapter.ts",
-  );
-  return lifted;
-}
-
 function liftDeltaLoop(): string {
   const loopStart = adapterSource.indexOf(
     "for (const tc of rawDeltaToolCalls) {",
@@ -239,7 +225,6 @@ interface LoopPart {
 /** The lifted loop, with the locals it closes over supplied by hand. */
 function makeStream(): {
   feed: (batch: DeltaCall[]) => boolean;
-  finish: () => void;
   parts: LoopPart[];
 } {
   const body = `
@@ -263,10 +248,7 @@ function makeStream(): {
       ${liftDeltaLoop()}
       return addedToolCall;
     }
-    function finish() {
-      ${liftPendingFlush()}
-    }
-    return { feed, finish, parts: toolCallParts };
+    return { feed, parts: toolCallParts };
   `;
   const js = ts.transpileModule(body, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -282,7 +264,6 @@ function makeStream(): {
     findStreamedToolCallPartIndex,
   ) as {
     feed: (batch: DeltaCall[]) => boolean;
-    finish: () => void;
     parts: LoopPart[];
   };
 }
@@ -290,7 +271,6 @@ function makeStream(): {
 function run(batches: DeltaCall[][]): LoopPart[] {
   const stream = makeStream();
   for (const batch of batches) stream.feed(batch);
-  stream.finish();
   return stream.parts;
 }
 
@@ -684,22 +664,6 @@ test("metadata arriving alone stays on the call that closed", () => {
   });
 });
 
-test("a call announced by name only still gets a card", () => {
-  // A tool that takes no parameters can be announced and then simply end. The
-  // stream is over, so the name is not waiting for arguments any more.
-  const parts = run([
-    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
-    [{ index: 0, function: { name: "beta", arguments: "" } }],
-  ]);
-
-  assert.deepEqual(shape(parts), [
-    ["alpha", '{"a":1}'],
-    ["beta", ""],
-  ]);
-  const ids = parts.map((p) => p.toolCallId);
-  assert.equal(new Set(ids).size, ids.length, `ids collide: ${ids.join(",")}`);
-});
-
 test("a name resent or grown after a call closed invents nothing", () => {
   // Indistinguishable from a second no-argument call to the same tool, so the
   // conservative reading is the one that does not run a tool twice.
@@ -729,4 +693,48 @@ test("an argument fragment that is not a string does not abort the stream", () =
   ]);
 
   assert.deepEqual(shape(parts), [["alpha", '{"a":1}']]);
+});
+
+test("a fragment that does not open an object does not open a call", () => {
+  // A next call begins with the "{" of its own arguments object. Forking on any
+  // non-whitespace text cut where the scanner deliberately leaves the text
+  // whole, so a stray scalar suffix ran the tool a second time.
+  const parts = run([
+    [{ index: 0, function: { name: "q", arguments: '{"query":"a"}' } }],
+    [{ index: 0, function: { name: "q", arguments: '"b"' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [["q", '{"query":"a"}"b"']]);
+});
+
+test("metadata parked with a name is merged, not replaced", () => {
+  // A signature parked with the name and metadata arriving with the arguments
+  // are different fields of one call, and the replayed turn is rejected
+  // without either.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [
+      {
+        index: 0,
+        function: { name: "beta" },
+        extra_content: { google: { thought_signature: "SIG" } },
+      },
+    ],
+    [
+      {
+        index: 0,
+        function: { arguments: '{"b":2}' },
+        extra_content: { openai: { x: 1 } },
+      },
+    ],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["beta", '{"b":2}'],
+  ]);
+  assert.deepEqual(parts[1].extra_content, {
+    google: { thought_signature: "SIG" },
+    openai: { x: 1 },
+  });
 });

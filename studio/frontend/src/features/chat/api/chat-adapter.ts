@@ -5295,6 +5295,10 @@ export function createOpenAIStreamAdapter(
         string,
         ReturnType<typeof createBoundaryScan>
       >();
+      // extra_content is typed `unknown` because it is whatever the provider
+      // hung off the call, so merging two of them has to check first.
+      const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v);
       const scanArgsText = (partId: string, text: string) => {
         let scan = boundaryScans.get(partId);
         if (!scan) {
@@ -7018,8 +7022,12 @@ export function createOpenAIStreamAdapter(
                   const namesThisCall =
                     !!stablePartId && matched?.toolCallId === stablePartId;
                   // Whitespace after a closing brace is legal JSON and says
-                  // nothing about another call.
-                  const bringsArgs = !!deltaArgs.trim();
+                  // nothing about another call, and a next call opens with the
+                  // "{" of its own arguments object, so a fragment starting
+                  // with anything else is not one: cutting there would turn a
+                  // stray scalar suffix into a second call and run the tool
+                  // twice, where the scanner deliberately would not cut at all.
+                  const bringsArgs = deltaArgs.trim().startsWith("{");
                   const closedSlot = slotIsClosed && !namesThisCall;
                   // A name reaching a closed slot cannot be read yet: the same
                   // tool called twice announces itself exactly as llama-server
@@ -7212,10 +7220,16 @@ export function createOpenAIStreamAdapter(
                     // this call, the one it was announcing.
                     const parkedExtra = pendingExtraByIndex.get(idx);
                     pendingExtraByIndex.delete(idx);
+                    // Merged, not replaced: a signature parked with the name
+                    // and metadata arriving with the arguments are different
+                    // fields of one call, and dropping either gets the replayed
+                    // turn rejected. Same per-call merge the backend does.
                     const freshExtra =
-                      call.extra_content !== undefined
-                        ? call.extra_content
-                        : parkedExtra;
+                      isPlainRecord(parkedExtra) && isPlainRecord(call.extra_content)
+                        ? { ...parkedExtra, ...call.extra_content }
+                        : call.extra_content !== undefined
+                          ? call.extra_content
+                          : parkedExtra;
                     const argsText = freshIsSplit
                       ? freshSegments[0]
                       : argsFragment;
@@ -7426,49 +7440,6 @@ export function createOpenAIStreamAdapter(
             throw streamError;
           }
         }
-        // A tool that takes no parameters can be announced by name and then
-        // simply end, so the arguments that would have opened its card never
-        // arrive. The stream is over, so the name is not waiting for anything
-        // any more and dropping it would show one card fewer than the model
-        // asked for.
-        //
-        // A name that repeats or extends the one the slot already holds is
-        // left alone: that is exactly how llama-server resends a name, or
-        // grows one, and it cannot be told apart from a second no-argument
-        // call to the same tool, so inventing a card there would show a call
-        // the model never made. Same rule as the backend's.
-        for (const [pendingIdx, pendingName] of pendingNameByIndex) {
-          if (!pendingName) continue;
-          const slot = findStreamedToolCallPartIndex(
-            toolCallParts,
-            undefined,
-            pendingIdx,
-          );
-          const heldName =
-            slot === -1 ? "" : (toolCallParts[slot].toolName ?? "");
-          if (
-            heldName &&
-            (heldName.startsWith(pendingName) ||
-              pendingName.startsWith(heldName))
-          ) {
-            continue;
-          }
-          const parkedExtra = pendingExtraByIndex.get(pendingIdx);
-          toolCallParts.push({
-            type: "tool-call" as const,
-            toolCallId: mintSplitToolCallId(pendingIdx),
-            toolName: pendingName,
-            argsText: "",
-            args: {},
-            textCursor: cumulativeText.length,
-            ...(parkedExtra !== undefined
-              ? { extra_content: parkedExtra }
-              : {}),
-            ...(pendingIdx !== undefined ? { _delta_index: pendingIdx } : {}),
-          } as PositionedToolCallPart);
-        }
-        pendingNameByIndex.clear();
-        pendingExtraByIndex.clear();
         // The model asked for Deep Research, so the run takes over from here and its card
         // replaces this reply. Not after Stop: the user ended the turn before it got there.
         if (deepResearchHandoff.question !== null && !runSignal.aborted) {
