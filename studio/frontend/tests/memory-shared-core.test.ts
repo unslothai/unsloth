@@ -323,3 +323,64 @@ test("marginal stays on the raw card, or the band cannot be reached", async () =
     "a load between the budget and the card must still be reachable",
   );
 });
+
+test("every fit-scoring surface reads the saved budget, not just the Hub card", async () => {
+  // The Hub download card got the live fraction; the On Device card did not, and
+  // it renders a memory bar (which uses the saved value) directly above a quant
+  // menu sorted by classifyGgufFit (which did not). One card, two budgets.
+  const { readFileSync } = await import("node:fs");
+  const read = (rel: string) =>
+    readFileSync(new URL(rel, import.meta.url), "utf8");
+  for (const rel of [
+    "../src/features/hub/catalog/gguf-download-card.tsx",
+    "../src/features/hub/catalog/local-on-device-card.tsx",
+  ]) {
+    const source = read(rel);
+    assert.match(
+      source,
+      /useVramBudgetFraction\(\)/,
+      `${rel} scores GGUF fit but does not read the saved VRAM Budget`,
+    );
+    assert.match(
+      source,
+      /budgetFraction,/,
+      `${rel} reads the fraction but never passes it to the classifier`,
+    );
+  }
+});
+
+test("the budget read is shared, not one request per mounted card", async () => {
+  // loadVramBudgetSettings deliberately has no read-through cache and clears its
+  // shared promise once each request settles, so it coalesces only callers whose
+  // requests overlap in time. A Hub catalog mounts a card per repo progressively
+  // through scrolling and filtering, so a per-card call is a GET per card, and a
+  // 404 per card on a backend predating the route.
+  const source = await import("node:fs").then(({ readFileSync }) =>
+    readFileSync(
+      new URL("../src/hooks/use-vram-budget-fraction.ts", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.match(
+    source,
+    /let cachedFraction/,
+    "the fraction must be cached module-wide; it is one host-wide value",
+  );
+  assert.match(
+    source,
+    /let inFlight/,
+    "cards mounting in the same tick must share one request",
+  );
+  assert.match(
+    source,
+    /routeAbsent/,
+    "a 404 must be remembered, or every card retries a route that does not exist",
+  );
+  // And the cache must still be invalidated by a save, or a shared cache is just
+  // a stale one.
+  assert.match(
+    source,
+    /subscribeVramBudgetSettings\(\([\s\S]{0,200}?cachedFraction = settings\.fraction/,
+    "the change event must refresh the cache, or a save never reaches the cards",
+  );
+});

@@ -2894,6 +2894,22 @@ export function ModelConfigPage({
   const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
     ? memoryVramBudgetFraction
     : 1;
+  // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of the system
+  // before admitting an offloaded load.
+  //
+  // The HOST reading, not the sum-shaped one beside it, which is zeroed whenever
+  // ANY device shares system RAM -- every dGPU + iGPU box -- so that was
+  // permanently 0 there and the host-pressure advisory could not fire even under
+  // a pin on the discrete card, the one case where host RAM really is a separate
+  // pool.
+  //
+  // Hoisted because the free-capacity memo below needs the same figure: a ROCm
+  // APU's free pool IS this, and two copies of the subtraction is how they would
+  // drift apart.
+  const memoryUsableSystemRamGb = Math.max(
+    0,
+    (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
+  );
   const memoryFreeGpuCapacityGb = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
@@ -2909,8 +2925,31 @@ export function ModelConfigPage({
     // is measured against.
     // The reserve keeps its budget-derived floor even for a fixed Manual placement:
     // what is free right now still constrains the launch, whatever set the number.
-    return aggregateUsableFreeVramGb(pinned, memoryEffectiveBudgetFraction);
-  }, [gpuDevices, pinnedGpuIds, memoryEffectiveBudgetFraction]);
+    const freeVram = aggregateUsableFreeVramGb(
+      pinned,
+      memoryEffectiveBudgetFraction,
+    );
+    // On a ROCm APU this figure is the free space inside a BIOS-carved window,
+    // and resolveMemoryFit asks it the WHOLE-LOAD question as soon as the pool is
+    // single. Those two together warned that a 60 GiB load does not fit a 96 GiB
+    // machine with 60+ GiB free, purely because it exceeds a 48 GiB window.
+    //
+    // The pool's real free memory is the host's, exactly as its real CAPACITY is
+    // the host's RAM rather than the window. Same discriminator as the capacity
+    // side, so the two cannot answer differently: Apple's GPU figure already IS
+    // the pool and is left alone.
+    if (hasUnifiedMemory && !isAppleUnifiedMemory) {
+      return Math.max(freeVram, memoryUsableSystemRamGb);
+    }
+    return freeVram;
+  }, [
+    gpuDevices,
+    pinnedGpuIds,
+    memoryEffectiveBudgetFraction,
+    hasUnifiedMemory,
+    isAppleUnifiedMemory,
+    memoryUsableSystemRamGb,
+  ]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
     totalCapacityGb: memoryTotalCapacityGb,
@@ -3169,18 +3208,7 @@ export function ModelConfigPage({
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               freeGpuCapacityGb={memoryFreeGpuCapacityGb}
-              usableSystemRamGb={Math.max(
-                0,
-                // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of
-                // the system before admitting an offloaded load.
-                //
-                // The HOST reading, not the sum-shaped one beside it, which is zeroed
-                // whenever ANY device shares system RAM -- every dGPU + iGPU box -- so
-                // this was permanently 0 there and the host-pressure advisory could not
-                // fire even under a pin on the discrete card, the one case where host
-                // RAM really is a separate pool.
-                (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
-              )}
+              usableSystemRamGb={memoryUsableSystemRamGb}
               isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}

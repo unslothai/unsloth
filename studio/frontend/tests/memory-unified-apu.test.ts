@@ -20,7 +20,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-import { resolveMemoryCapacityGb } from "../src/hooks/gpu-vram.ts";
+import {
+  aggregateUsableFreeVramGb,
+  resolveMemoryCapacityGb,
+} from "../src/hooks/gpu-vram.ts";
 
 const PANEL = new URL(
   "../src/features/model-picker/components/model-config-page.tsx",
@@ -384,5 +387,70 @@ test("the unified flag is read from the device, not just shared_memory", () => {
     viaUnified,
     viaShared,
     "Windows and Linux must price the same APU identically",
+  );
+});
+
+test("a Linux APU's FREE memory is the pool's, not the window's", () => {
+  // The free side of the same split, and a regression this PR introduced rather
+  // than inherited. resolveMemoryFit asks the WHOLE-LOAD question of
+  // freeGpuCapacityGb as soon as the pool is single, and marking a ROCm APU
+  // single-pool (correctly) pointed that question at the free space inside a
+  // BIOS-carved window. A 60 GiB load on a 96 GiB machine with 60+ GiB free was
+  // then warned as not fitting, purely because 60 > the 48 GiB window.
+  const APU = { memoryFreeGb: 44, memoryTotalGb: 48, sharedMemory: false, unifiedMemory: true };
+  const freeVram = aggregateUsableFreeVramGb([APU], 0.97);
+  const usableSystemRamGb = 62; // 64 GiB available, less the loader's 2 GiB headroom
+
+  // What the panel now hands resolveMemoryFit for a non-Apple unified pool.
+  const pooledFree = Math.max(freeVram, usableSystemRamGb);
+  assert.ok(
+    pooledFree >= usableSystemRamGb,
+    `the pool's free memory cannot be smaller than the host's; got ${pooledFree}`,
+  );
+  // And the 60 GiB load the old figure refused now fits the one it should be
+  // measured against.
+  assert.ok(freeVram < 60, `the window must be the smaller figure; got ${freeVram}`);
+  assert.ok(pooledFree > 60, `the pool must hold the load; got ${pooledFree}`);
+});
+
+test("two views of one host pool are not counted as two pools", () => {
+  // What folding unifiedMemory into the FREE path actually buys, measured rather
+  // than asserted. A ROCm APU (Linux: unifiedMemory) beside a Vulkan iGPU
+  // (sharedMemory) are two reported views of the SAME host memory. Gating on
+  // sharedMemory alone made the APU an independent addend:
+  //
+  //   unfixed  77.12 GiB     fixed  38.56 GiB
+  //
+  // The pool counted twice, on the figure the fit verdict is measured against.
+  //
+  // Worth recording what this does NOT buy, because the first version of this
+  // test claimed it and was vacuous: for an APU beside a DISCRETE card the
+  // aggregate is 52.08 either way. A fully shared device already contributes its
+  // own free exactly once, so there is nothing to dedupe until a SECOND view of
+  // the same pool shows up. That case is this one.
+  const APU = { memoryFreeGb: 40, memoryTotalGb: 48, sharedMemory: false, unifiedMemory: true };
+  const IGPU = { memoryFreeGb: 40, memoryTotalGb: 48, sharedMemory: true };
+  const folded = aggregateUsableFreeVramGb([APU, IGPU], 0.97);
+  const asDedicated = aggregateUsableFreeVramGb(
+    [{ ...APU, unifiedMemory: false }, IGPU],
+    0.97,
+  );
+  assert.equal(folded, 38.56);
+  assert.ok(
+    asDedicated > folded,
+    "treating the APU as its own memory must be the larger, wrong answer, " +
+      `or this test is measuring nothing; got ${asDedicated} vs ${folded}`,
+  );
+  // One view's worth, not two.
+  assert.ok(folded < asDedicated / 1.5);
+});
+
+test("the panel measures pool pressure against the pool", () => {
+  const source = readFileSync(PANEL, "utf8");
+  assert.match(
+    source,
+    /hasUnifiedMemory && !isAppleUnifiedMemory[\s\S]{0,160}?Math\.max\(\s*freeVram,\s*memoryUsableSystemRamGb\s*\)/,
+    "a non-Apple unified pool's free capacity must fall back to the host view; " +
+      "the carved window cannot answer a whole-load question",
   );
 });

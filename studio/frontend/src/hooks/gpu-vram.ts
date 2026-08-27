@@ -128,8 +128,11 @@ export interface MemoryCapacityDevice {
 /** Whether this device's memory is a view into host RAM rather than beside it.
  *  The one question capacity cares about; the two flags are how the backend
  *  happens to report it on two platforms. */
-function sharesHostMemory(device: MemoryCapacityDevice): boolean {
-  return device.sharedMemory || device.unifiedMemory === true;
+function sharesHostMemory(device: {
+  sharedMemory?: boolean;
+  unifiedMemory?: boolean;
+}): boolean {
+  return device.sharedMemory === true || device.unifiedMemory === true;
 }
 
 function budgetedGpuMemoryGb(
@@ -420,6 +423,11 @@ export interface FreeVramDevice {
   sharedMemory?: boolean;
   /** Host-backed portion of memoryTotalGb when sharedMemory is true. */
   sharedMemoryHostBackedGb?: number | null;
+  /** The backend's per-device `unified_memory`. Same reason it exists on
+   *  MemoryCapacityDevice: a Linux ROCm APU reports `unified_memory: true,
+   *  shared_memory: false`, and summing its window into the DEDICATED free total
+   *  counts memory that is already inside the host's RAM. */
+  unifiedMemory?: boolean;
 }
 
 /**
@@ -452,7 +460,7 @@ export function aggregateUsableFreeVramGb(
   let fullySharedFree = 0;
   for (const device of devices) {
     const deviceUsable = usable(device);
-    if (!device.sharedMemory) {
+    if (!sharesHostMemory(device)) {
       dedicated += deviceUsable;
       continue;
     }
