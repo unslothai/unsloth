@@ -51,12 +51,11 @@ test("a pin on the iGPU does not offer its own RAM twice, nor throw the rest awa
 });
 
 test("pinning both keeps the discrete card as a pool beside system RAM", () => {
-  // This asserted 96 and the reasoning given was that under-counting the dGPU refuses
-  // a load rather than admitting one, so it was the safe direction. That was wrong,
-  // and only half the effect was being looked at: the flag it also sets makes the row
-  // show a lone Shared figure and drop the GPU verdict entirely, so a fixed placement
-  // larger than the discrete card had nothing left to catch it. Two pools now, with
-  // the ceiling counting the shared bytes once: 16 dedicated + 96 RAM, not 28 + 96.
+  // This asserted 96, on the reasoning that under-counting the dGPU refuses a load
+  // rather than admitting one. That looked at half the effect: the flag it also sets
+  // makes the row show a lone Shared figure and drop the GPU verdict, so a fixed
+  // placement larger than the discrete card had nothing to catch it. Two pools now,
+  // counting the shared bytes once: 16 dedicated + 96 RAM, not 28 + 96.
   const capacity = resolveMemoryCapacityGb({
     ...HOST,
     pinnedDevices: [DGPU, IGPU, IGPU],
