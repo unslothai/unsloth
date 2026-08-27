@@ -1353,10 +1353,29 @@ export const en = {
       rememberParamsPerModel: "Remember settings per model",
       rememberParamsPerModelDescription:
         "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
+      autoCompact: "Auto-compact long chats",
+      autoCompactDescription:
+        "When a local GGUF chat fills the context length you set, drop older turns instead of returning an error. This is not based on free VRAM.",
+      compactionStyle: "When context fills",
+      compactionStyleDescription:
+        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
+      compactionStyleInherit: "Use server default",
+      compactionStyleCheckpoint: "Reset conversation",
+      compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
+      compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
+      compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
+      compactionStyleRollingNone: "Drop oldest turns (no extra trim)",
+      autoCompactKeywords:
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+      },
+      tools: {
+        collapseByDefault: "Collapse tool activity by default",
+        collapseByDefaultDescription:
+          "Keep tool inputs and outputs collapsed while tools run. Expand any tool row to inspect it.",
       },
       webSearch: {
         title: "Web search",

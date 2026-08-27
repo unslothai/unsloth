@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import {
   Popover,
   PopoverContent,
@@ -343,6 +344,11 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
+  // The same live VRAM Budget the memory bar on this card reads. Without it the
+  // quant menu ranked against the 0.97 default while the bar beside it used the
+  // saved fraction, so an over-budget variant could sit above a smaller one that
+  // actually fits.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
       variants
@@ -351,6 +357,7 @@ export function LocalOnDeviceCard({
             activeGgufVariant: isActive ? activeGgufVariant : null,
             gpuGb,
             systemRamGb,
+            budgetFraction,
           })
         : null,
     [
@@ -360,6 +367,7 @@ export function LocalOnDeviceCard({
       activeGgufVariant,
       gpuGb,
       systemRamGb,
+      budgetFraction,
     ],
   );
   const preferredQuant = preferredFile

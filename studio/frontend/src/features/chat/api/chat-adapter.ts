@@ -63,6 +63,11 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import {
+  studioToolHistoryRequestFields,
+  type ToolHistoryMessage,
+} from "../utils/studio-tool-history";
 import {
   newDeepResearchHandoff,
   readDeepResearchToolEvent,
@@ -223,17 +228,19 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  createContinuationMerger,
   type IncompleteReason,
-  joinContinuation,
   readIncompleteInfo,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
 } from "../utils/continuation";
 import {
+  claimLiveGenerationRun,
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
+  releaseLiveGenerationRun,
 } from "../utils/chat-generation-recovery";
 import {
   generateAudio,
@@ -1196,6 +1203,26 @@ function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
   return getToolPartReplayMetadata(part).isServerSideBuiltin;
 }
 
+function toolCallPartSurvivesOpenAIReplay(part: ToolCallMessagePart): boolean {
+  if (!serializeAssistantToolCallPart(part)) return false;
+  if (
+    !serializeToolResultPart(part) &&
+    !canReplayToolCallWithoutRoleTool(part)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function studioToolHistoryRequestFieldsAfterReplay(
+  messages: readonly ToolHistoryMessage[],
+): { studio_tool_history?: true } {
+  return studioToolHistoryRequestFields(messages, {
+    toolCallSurvives: (part) =>
+      toolCallPartSurvivesOpenAIReplay(part as unknown as ToolCallMessagePart),
+  });
+}
+
 function sanitizeAssistantReplayText(text: string): string {
   // Same reason as the tool result above: the tokens the model wrote last turn
   // are renderer markup scoped to that message, not prose it should repeat.
@@ -1760,15 +1787,19 @@ export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
 /**
- * The OpenAI-form messages a completion would send. Mirrors the prune + system-prompt half of
- * createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since --enable-tools
- * can inject schemas the client cannot see.
+ * The OpenAI-form history fields a completion would send. Mirrors the prune + system-prompt half
+ * of createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since
+ * --enable-tools can inject schemas the client cannot see.
  */
-export async function buildOutboundMessagesForTokenCount(
+export async function buildLocalTokenCountHistory(
   messages: RunMessages,
   threadId: string | undefined,
-): Promise<OpenAIChatMessage[]> {
-  const outboundMessages = pruneOutboundHistory(messages, true)
+): Promise<{
+  messages: OpenAIChatMessage[];
+  studio_tool_history?: true;
+}> {
+  const survivingMessages = pruneOutboundHistory(messages, true);
+  const outboundMessages = survivingMessages
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -1820,7 +1851,12 @@ export async function buildOutboundMessagesForTokenCount(
     }
   }
 
-  return outboundMessages as OpenAIChatMessage[];
+  return {
+    messages: outboundMessages as OpenAIChatMessage[],
+    ...studioToolHistoryRequestFieldsAfterReplay(
+      survivingMessages as unknown as ToolHistoryMessage[],
+    ),
+  };
 }
 
 /**
@@ -4705,7 +4741,6 @@ export function createOpenAIStreamAdapter(
         messages,
         !isExternalRequest,
       );
-
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
@@ -5160,18 +5195,20 @@ export function createOpenAIStreamAdapter(
       // is for providers that may ignore the prefill and repeat or restart.
       const repairContinuation =
         isExternalRequest && !resumesExactly(externalProvider?.providerType);
-      const mergeContinuation = (text: string): string =>
-        continuationPartial && repairContinuation
-          ? joinContinuation(
-              continuationPartial,
-              text.slice(continuationPartial.length),
-            )
-          : text;
+      // Streamed publishes get the cumulative text unchanged; the repairs run once, on
+      // the finished turn. Both of them re-decide as the continuation grows, so running
+      // them per arrival published a SHORTER text than the arrival before it, and the
+      // restart branch published only the continuation, dropping the whole partial the
+      // reader was already looking at.
+      const mergeContinuation = createContinuationMerger(
+        continuationPartial,
+        repairContinuation,
+      );
       // The parse of everything already streamed, extended by each delta.
-      // `mergeContinuation` can rewrite the prefix it is handed, and a rewritten
-      // prefix is exactly what an extend-only parse cannot follow, so that one
-      // path keeps reparsing the whole reply as before. It is a continuation of
-      // an external provider that may repeat itself, not the streaming case.
+      // The final merge can rewrite the prefix it is handed, and a rewritten prefix is
+      // exactly what an extend-only parse cannot follow, so that one path keeps
+      // reparsing the whole reply as before. It is a continuation of an external
+      // provider that may repeat itself, not the streaming case.
       const segmentedText = createSegmentedAssistantText({
         trustAppends: !(continuationPartial && repairContinuation),
       });
@@ -5900,12 +5937,18 @@ export function createOpenAIStreamAdapter(
             messages: outboundMessages,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
+            ...studioToolHistoryRequestFieldsAfterReplay(
+              survivingMessages as unknown as ToolHistoryMessage[],
+            ),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
-            ...(activeModel?.isGguf === true
-              ? { context_overflow: "truncate_oldest" as const }
-              : {}),
+            ...ggufCompactionRequestFields({
+              isGguf: activeModel?.isGguf === true,
+              autoCompactEnabled: runtime.autoCompactEnabled,
+              contextPolicy: runtime.contextPolicy,
+              compactionHeadroomRatio: runtime.compactionHeadroomRatio,
+            }),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
@@ -6075,6 +6118,12 @@ export function createOpenAIStreamAdapter(
                   generationDecision = "legacy";
                 } else {
                   generationDecision = "durable";
+                  // Before admission, not after. The run id is ours (`cancelId` is passed as
+                  // `runId`), and the run becomes visible through /active as soon as the POST
+                  // lands, so a visibility, pageshow, online or history-load trigger during
+                  // this await could otherwise start a recovery that the later claim would
+                  // not stop: the scheduler only tests ownership at startup.
+                  claimLiveGenerationRun(cancelId);
                   try {
                     generationRun = await createChatGenerationRunUntilAbort(
                       {
@@ -6098,6 +6147,9 @@ export function createOpenAIStreamAdapter(
                     if (generationDecision === "durable") return;
                   } else {
                     generationRunId = generationRun.id;
+                    // Normally the same id we claimed above; claimed again in case the server
+                    // ever echoes a different one. Both are released in the finally below.
+                    claimLiveGenerationRun(generationRunId);
                     generationStatus = generationRun.status;
                     if (generationStopRequested) {
                       void cancelChatGenerationRun(generationRun.id).catch(
@@ -6148,10 +6200,38 @@ export function createOpenAIStreamAdapter(
                 );
               }
             };
+            // The window is passed so a length-stop can tell a Max Tokens the user chose
+            // from the backend's stand-in for "Max" (the whole context length). The two
+            // need opposite advice, and "Increase Max Tokens" cannot be acted on when it
+            // is already unlimited.
             const stream =
               generationDecision === "durable"
                 ? durableStream()
-                : streamChatCompletions(requestPayload, runSignal);
+                : streamChatCompletions(
+                    requestPayload,
+                    runSignal,
+                    // Only when the request targets the LOCAL model. ggufContextLength
+                    // stays populated for a resident GGUF even while an external model is
+                    // selected, so an external request with a 16K cap was being measured
+                    // against an unrelated 4096-token local window and reported as having
+                    // unlimited Max Tokens and no context left.
+                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
+                    // MLX request on this path has neither GGUF field set, and reading
+                    // that as "no window" makes every context-length stop look like a
+                    // user-set Max Tokens one -- advice to raise a value already at the
+                    // model's maximum. Same order the RAG `context_length` above uses.
+                    // `loadedCustomContextLength`, not `customContextLength`: the
+                    // latter is the EDITABLE field, and the store's own definition of a
+                    // pending edit is the two differing. A model still serving at 4096
+                    // while the field reads 8192 would make its 4096 stop look
+                    // user-imposed, and the toast would advise raising Max Tokens
+                    // instead of reloading at the larger context.
+                    isExternalRequest
+                      ? null
+                      : (runtime.loadedCustomContextLength ??
+                        runtime.ggufContextLength ??
+                        (params.maxSeqLength || null)),
+                  );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
 
@@ -7313,7 +7393,7 @@ export function createOpenAIStreamAdapter(
         ) {
           // Rendered parts, not the raw stream: `cumulativeText` carries <think>.
           const answerText = answerTextFromParts(
-            buildAssistantContent(mergeContinuation(cumulativeText)),
+            buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
           );
           const subjects = missingListSubjects(answerText, toolCallParts);
           if (subjects.length > 0) {
@@ -7391,7 +7471,7 @@ export function createOpenAIStreamAdapter(
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText)),
+            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -7433,10 +7513,15 @@ export function createOpenAIStreamAdapter(
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
+              // The error already chose between the Max Tokens and Context Length
+              // remedies from the cap and the prompt size. Repeating the Max Tokens
+              // advice here overrode that choice in the one place the user reads,
+              // sending them to a setting that is already at its maximum.
               description:
+                msg ||
                 "The model used the full Max Tokens budget while thinking " +
-                "and did not produce a final answer. Increase Max Tokens in " +
-                "chat Settings or turn off thinking, then retry.",
+                  "and did not produce a final answer. Increase Max Tokens in " +
+                  "chat Settings or turn off thinking, then retry.",
               duration: 8000,
             });
           } else if (err instanceof ChatGenerationTerminalError) {
@@ -7524,7 +7609,7 @@ export function createOpenAIStreamAdapter(
         }
         if (!abortSignal.aborted) {
           closeReasoningContent();
-          const partialText = mergeContinuation(cumulativeText);
+          const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             const partialTiming = buildTiming(
@@ -7561,6 +7646,10 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
+        // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run
+        // left claimed after its stream died is one this tab would never recover.
+        releaseLiveGenerationRun(cancelId);
+        if (generationRunId) releaseLiveGenerationRun(generationRunId);
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.

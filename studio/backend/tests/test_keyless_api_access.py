@@ -55,9 +55,10 @@ def isolated_auth_db(tmp_path, monkeypatch):
     _reset_scope_cache()
 
 
-def seed_user():
+def seed_user(*, must_change_password = False):
     storage.create_initial_user(username = storage.DEFAULT_ADMIN_USERNAME,
-                                password = "human-password-123", jwt_secret = secrets.token_urlsafe(64))
+                                password = "human-password-123", jwt_secret = secrets.token_urlsafe(64),
+                                must_change_password = must_change_password)
 
 
 def app_state(**overrides):
@@ -104,12 +105,14 @@ def subject_of(request):
     return asyncio.run(get_current_subject(resolve(request)))
 
 
+INFERENCE_POST_PATHS = "/v1/chat/completions /v1/chat/count_tokens /v1/completions /v1/embeddings /v1/messages /v1/messages/count_tokens /v1/responses".split()
+
+
 def test_exact_route_matrix_matches_registered_topology():
     from routes.inference import router
 
-    allowed_posts = "/v1/chat/completions /v1/chat/count_tokens /v1/completions /v1/embeddings /v1/messages /v1/messages/count_tokens /v1/responses".split()
     denied_posts = "/v1/load /v1/unload /v1/validate /v1/generate/stream /v1/audio/speech /v1/images/generations /v1/external/openai/containers/create /v1x/chat".split()
-    allowed = {("POST", path) for path in allowed_posts} | {
+    allowed = {("POST", path) for path in INFERENCE_POST_PATHS} | {
         ("GET", "/v1/models"), ("GET", "/v1/models/unsloth/model")}
     denied = {("POST", path) for path in denied_posts} | {
         ("POST", "/v1/models"), ("GET", "/v1/chat/completions"), ("GET", "/v1/sandbox/abc")}
@@ -122,7 +125,7 @@ def test_exact_route_matrix_matches_registered_topology():
 
     registered = {(method, route.path) for route in router.routes
                   for method in getattr(route, "methods", set())}
-    intended = {("POST", path.removeprefix("/v1")) for path in allowed_posts} | {
+    intended = {("POST", path.removeprefix("/v1")) for path in INFERENCE_POST_PATHS} | {
         ("GET", "/models"), ("GET", "/models/{model_id:path}")}
     assert intended <= registered
 
@@ -350,6 +353,83 @@ def test_tool_policy_and_api_identity(monkeypatch):
 
     asyncio.run(KeylessToolPolicyMiddleware(enabled_between_layers)(
         asgi_scope(), lambda: None, lambda _message: None))
+
+
+def test_desktop_password_setup_does_not_block_keyless_access(monkeypatch):
+    import lan_access
+    from utils import host_policy
+
+    seed_user(must_change_password = True)
+    monkeypatch.setattr(lan_access, "lan_listener_status",
+                        lambda: {"running": True, "port": 8888,
+                                 "addresses": ["192.168.1.24"]})
+    monkeypatch.setattr(host_policy, "_lan_connector_active", True)
+    set_keyless_api_access("inference")
+
+    routes = [("POST", path) for path in INFERENCE_POST_PATHS] + [
+        ("GET", "/v1/models"),
+        ("GET", "/v1/models/unsloth/model"),
+    ]
+    transports = [
+        {},
+        {"server": ("192.168.1.24", 8888), "client": ("192.168.1.90", 54321)},
+    ]
+    for method, path in routes:
+        for transport in transports:
+            for bearer in (None, "not-needed"):
+                request = (
+                    request_for(method = method, path = path, **transport)
+                    if bearer is None
+                    else bearer_request(bearer, method = method, path = path, **transport)
+                )
+                assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
+
+    set_keyless_api_access("full")
+    for bearer in (None, "not-needed"):
+        request = (
+            request_for(method = "POST", path = "/api/train/start")
+            if bearer is None
+            else bearer_request(bearer, method = "POST", path = "/api/train/start")
+        )
+        assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
+
+
+def test_setup_is_still_owed_after_keyless_access():
+    """Admitting a keyless caller must not settle the password setup it skipped.
+
+    The UI routes to /change-password off ``/api/auth/status``, which takes no auth
+    dependency, and off the 403 a browser session still gets. Keyless reaches neither.
+    """
+    from routes.auth import auth_status
+
+    seed_user(must_change_password = True)
+    set_keyless_api_access("inference")
+    assert subject_of(request_for()) == storage.DEFAULT_ADMIN_USERNAME
+
+    assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
+    assert auth_status().requires_password_change is True
+
+    # The literal frontend/src/features/auth/api.ts matches to redirect the UI.
+    record = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    token = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME, secret = record[2])
+    with pytest.raises(HTTPException) as excinfo:
+        subject_of(bearer_request(token))
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail == "Password change required"
+
+
+def test_browser_guards_hold_before_password_setup():
+    """A page on another site stays out while the seeded password is still in place.
+
+    The gate that no longer applies to keyless callers was incidentally doubling for
+    these, so they are pinned here on their own footing.
+    """
+    seed_user(must_change_password = True)
+    set_keyless_api_access("inference")
+    for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "none"},
+                    {"Host": "evil.example"}):
+        assert not keyless_request_allowed(request_for(headers = headers))
+    assert keyless_request_allowed(request_for(headers = {"Sec-Fetch-Site": "same-origin"}))
 
 
 def test_protected_side_effect_guards_remain_wired():

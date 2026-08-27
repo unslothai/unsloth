@@ -67,6 +67,10 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.memory_contract import (
+    build_memory_estimate,
+    project_estimate_memory_response,
+)
 from core.inference.stream_errors import LlamaStreamError
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
@@ -717,6 +721,20 @@ def _overflow_truncation_policy(payload) -> Optional[str]:
 def _rolling_context_policy(payload) -> Optional[str]:
     policy = _overflow_truncation_policy(payload)
     return policy if policy == "truncate_oldest" else None
+
+
+def _request_context_policy(payload) -> Optional[str]:
+    requested = getattr(payload, "context_policy", None)
+    if isinstance(requested, str):
+        value = requested.strip().lower()
+        if value in ("checkpoint", "rolling"):
+            return value
+    return None
+
+
+def _request_compaction_headroom_ratio(payload) -> Optional[float]:
+    from core.inference.context_window import clamp_compaction_headroom_ratio
+    return clamp_compaction_headroom_ratio(getattr(payload, "compaction_headroom_ratio", None))
 
 
 def _overflow_truncation_requested(payload) -> bool:
@@ -1620,23 +1638,159 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     return extra
 
 
-def _openai_llama_admission_media_tokens(payload) -> int:
-    """Media the request carries in Unsloth's legacy top-level fields, in tokens.
+# An upper bound per image, not an estimate: under-reserving hands out a slot the cache
+# cannot back, which is the overcommit #9392 exists to stop.
+#
+# 4096 is llama.cpp's default Qwen-VL embedding cap (the projector resizes to its own
+# pixel limits, so transport size never enters into it), but mtmd wraps the embeddings
+# in delimiters. Measured on llama-server b10639: 4098 for a 2048x2048 image on
+# Qwen3-VL-4B, 258 on Gemma 3 4B. The wrapper allowance is far above the two measured
+# so longer delimiters still fit. Only the DEFAULT, though: a load may raise the cap
+# (`_openai_llama_admission_image_tokens`), and a projector whose embeddings exceed it
+# on their own (tiling or multi-crop families) still wants an allowance read off the
+# loaded mmproj rather than a bigger number here.
+_OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP = 4096
+_OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS = 128
+_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
+    _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+)
 
-    Unsloth's own composer sends every attachment as ``image_base64`` /
-    ``audio_base64`` / ``video_base64``, never as ``messages`` content parts, and the
-    generation path splices them into the prompt AFTER this estimate is taken
-    (``_openai_messages_for_gguf_chat``, ``_inject_audio_part``,
-    ``_inject_video_part``). Charging only ``messages`` therefore priced an image at
-    zero while llama.cpp's mtmd embeddings occupy real KV positions, so two
-    media-heavy chats with a line of text each were admitted against a cache that
-    holds one.
 
-    Sized as the same media inlined as a data URL is already sized, so the two
-    spellings of one request cost the same rather than 30x apart.
+def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
+    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
+
+    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``.
+    """
+    args = [str(arg) for arg in (extra_args or ())]
+    found = None
+    for index, raw in enumerate(args):
+        if raw.startswith("--image-max-tokens="):
+            value = raw.partition("=")[2]
+        elif raw == "--image-max-tokens" and index + 1 < len(args):
+            value = args[index + 1]
+        else:
+            continue
+        parsed = _positive_int_or_none(value)
+        if parsed is not None:
+            found = parsed
+    return found
+
+
+# Embeddings one image may become, per projector family, from llama.cpp's own
+# `set_limit_image_tokens` calls in tools/mtmd/clip.cpp; the keys are the
+# `clip.projector_type` strings in clip-impl.h, which is what the mmproj GGUF carries.
+# There is no universal default -- `--image-max-tokens` documents itself as "read from
+# model" -- and the spread is three orders of magnitude, so assuming any one number
+# under-reserves somebody. A family absent here falls back to the default ceiling
+# below, which is the pre-existing behaviour rather than a new guess.
+_MMPROJ_IMAGE_TOKEN_MAX = {
+    "qwen2vl_merger": 4096,
+    "qwen2.5vl_merger": 4096,
+    "qwen3vl_merger": 4096,
+    "glm4v": 4096,
+    "kimik25": 4096,
+    "muse-glimmer": 4096,
+    "youtuvl": 62500,
+    "hunyuanvl": 16384,
+    "pixtral": 1024,
+    "lightonocr": 1024,
+    "kimivl": 1024,
+    "minimax_m3": 576,
+    "gemma4v": 280,
+    "gemma4uv": 280,
+    "lfm2": 256,
+}
+
+
+def _openai_llama_admission_image_tokens(llama_backend) -> int:
+    """Per-image KV allowance for the backend that is actually running.
+
+    Two things move the ceiling off the default. The loaded projector sets its own:
+    measured on b10639, a max-resolution image is 4098 KV positions on Qwen3-VL-4B and
+    258 on Gemma 3 4B, and clip.cpp's own table runs from 256 (lfm2) to 62500 (youtuvl).
+    And ``--image-max-tokens`` is not an Unsloth-managed flag, so ``llama_extra_args``
+    forwards one verbatim: with ``--image-max-tokens 8192`` that same Qwen3-VL image
+    costs 8102.
+
+    Takes the LARGER of the two rather than trusting the flag, because llama-server
+    applies it only to dynamic-resolution projectors -- a low cap against a fixed
+    resolution one is ignored, and believing it would reserve less than the image costs.
+    Over-reserving is the safe direction; under-reserving hands out a slot the cache
+    cannot back.
+    """
+    projector = getattr(llama_backend, "_mmproj_projector_type", None)
+    known = _MMPROJ_IMAGE_TOKEN_MAX.get(str(projector).strip().lower()) if projector else None
+    cap = max(
+        known or _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP,
+        _extra_args_image_max_tokens(getattr(llama_backend, "_extra_args", None)) or 0,
+    )
+    return cap + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+
+
+def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
+    """Remove image bytes before estimating the textual part of a prompt.
+
+    mtmd turns an image into model-specific embedding tokens, so its base64 transport
+    is neither prompt text nor a proxy for that count. Keep each image part's shape for
+    the JSON estimate and return the count, so the caller can add a bounded allowance.
+    """
+    estimate_messages = []
+    image_parts = 0
+    for message in messages:
+        # exclude_none like every other dump here, including the generation paths this
+        # predicts: the five unset optionals on ChatMessage otherwise serialise as
+        # `"name": null` and get priced as prompt text (34 tokens for a two-key message
+        # against 8), reserving KV for punctuation that is never sent.
+        message_dict = (
+            message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        )
+        estimate_message = dict(message_dict)
+        content = message_dict.get("content")
+        if isinstance(content, list):
+            estimate_content = []
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    estimate_content.append(part)
+                    continue
+
+                image_parts += 1
+                image_url = part.get("image_url")
+                compact_image_url = {"url": "[image]"}
+                if isinstance(image_url, dict) and image_url.get("detail") is not None:
+                    compact_image_url["detail"] = image_url["detail"]
+                estimate_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": compact_image_url,
+                    }
+                )
+            estimate_message["content"] = estimate_content
+        estimate_messages.append(estimate_message)
+    return estimate_messages, image_parts
+
+
+def _openai_llama_admission_media_tokens(
+    payload,
+    *,
+    message_image_parts: int = 0,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+) -> int:
+    """Estimate media KV usage without charging transport bytes as prompt tokens.
+
+    Charges the legacy top-level image on exactly the condition both builders splice it
+    on, ``_legacy_image_is_distinct``: Studio echoes one image into both spellings, so
+    charging that twice reserves it twice, while a legacy image the messages do not
+    already carry is a second image really sent. The allowance is per-image rather than
+    per-byte because the real mtmd count follows the loaded projector, not base64 length.
+
+    Audio and video keep the old top-level accounting until they have a model-specific
+    estimate; this is scoped to the image path that regressed vision concurrency.
     """
     extra = 0
-    for attribute in ("image_base64", "audio_base64", "video_base64"):
+    extra += max(0, message_image_parts) * image_tokens
+    if _legacy_image_is_distinct(payload):
+        extra += image_tokens
+    for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
@@ -1649,6 +1803,7 @@ def _openai_llama_admission_tokens(
     budget: Optional[int],
     capacity: int,
     tool_loop: bool = False,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -1665,11 +1820,16 @@ def _openai_llama_admission_tokens(
     messages = getattr(payload, "messages", None)
     if isinstance(messages, list) and messages:
         try:
-            prompt_tokens = estimate_messages_tokens_dense(
-                [m if isinstance(m, dict) else m.model_dump() for m in messages]
+            estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+                messages
             )
+            prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-            prompt_tokens += _openai_llama_admission_media_tokens(payload)
+            prompt_tokens += _openai_llama_admission_media_tokens(
+                payload,
+                message_image_parts = message_image_parts,
+                image_tokens = image_tokens,
+            )
         except Exception:
             prompt_tokens = None
     else:
@@ -1738,6 +1898,7 @@ def _openai_llama_admission_reserve(
             budget = budget,
             capacity = capacity,
             tool_loop = tool_loop,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
         if payload is not None
         else None,
@@ -3287,7 +3448,7 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     return True
 
 
-_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
+_LEGACY_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
 
 
 def _tool_call_names(message) -> list[Optional[str]]:
@@ -3308,33 +3469,40 @@ def _tool_call_names(message) -> list[Optional[str]]:
     return names
 
 
-def _only_studio_memory_tool_history(payload) -> bool:
-    """True when the request's ONLY tool history is Unsloth's own conversation memory.
+def _only_studio_tool_history(payload) -> bool:
+    """True when the request's ONLY tool history was produced by Unsloth's own loop.
 
-    Once the model uses `search_conversation`, the branch keeps an assistant `tool_calls`
-    turn and its `role="tool"` result and the client replays both forever. Read as a CLIENT
-    tool contract, that history routes every later turn to the llama-server passthrough,
-    which runs no context fit, so the epoch, the carried-forward block and the automatic
-    recall vanish one turn after the compaction that created them. It is Unsloth's own
-    read-only tool run by Unsloth's own loop, so it must route as a tools-on Unsloth chat.
+    Once a Studio-local tool runs, the branch keeps an assistant `tool_calls` turn and its
+    `role="tool"` result and the client replays both forever. Read as a CLIENT tool
+    contract, that history routes every later turn to the llama-server passthrough, which
+    runs no context fit, so the epoch, the carried-forward block and the automatic recall
+    vanish one turn after the compaction that created them.
 
-    Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
-    any other tool name means "not ours", so a real client tool loop is never claimed.
+    Current Studio clients say so directly: `studio_tool_history` is set only after every
+    serialized call was checked for local provenance. Older clients send no marker, so the
+    `search_conversation`-only fallback below stays, deliberately strict -- an unnamed call
+    or result, or any other tool name, means "not ours", so a real client tool loop is
+    never claimed.
+
+    A caller-supplied `tools` catalog is a client contract either way.
     """
     if getattr(payload, "tools", None):
         return False
+    messages = getattr(payload, "messages", None) or []
+    if getattr(payload, "studio_tool_history", False):
+        return _has_openai_tool_history(messages)
     saw_call = False
-    for message in getattr(payload, "messages", None) or []:
+    for message in messages:
         role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
         for name in _tool_call_names(message):
             saw_call = True
-            if name not in _STUDIO_MEMORY_TOOLS:
+            if name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
         if role == "tool":
             result_name = (
                 message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
             )
-            if result_name not in _STUDIO_MEMORY_TOOLS:
+            if result_name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
     return saw_call
 
@@ -3352,9 +3520,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
-    ) or (
-        _has_openai_tool_history(payload.messages) and not _only_studio_memory_tool_history(payload)
-    )
+    ) or (_has_openai_tool_history(payload.messages) and not _only_studio_tool_history(payload))
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True
@@ -4449,7 +4615,7 @@ async def _select_request_tools(
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
-    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search())):
+    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search(payload))):
         tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
         if not tools_on:
             # After a reset, search_conversation is the only route back to what was
@@ -4519,11 +4685,17 @@ _CHECKPOINT_SESSION_NUDGE = (
 )
 
 
-def _checkpoint_needs_search() -> bool:
+def _checkpoint_needs_search(payload = None) -> bool:
     """Whether the context policy makes search_conversation load-bearing rather than extra.
 
-    Read at call time, so flipping UNSLOTH_CONTEXT_POLICY needs no restart.
+    ``context_policy`` on the request overrides UNSLOTH_CONTEXT_POLICY, matching the
+    fitter, so tool admission and the compaction nudge follow the same effective policy.
     """
+    requested = _request_context_policy(payload)
+    if requested == "checkpoint":
+        return True
+    if requested == "rolling":
+        return False
     try:
         from core.inference import checkpoint
         return checkpoint.enabled()
@@ -4537,7 +4709,7 @@ def _checkpoint_recall_may_enable_tools(payload) -> bool:
     return bool(
         get_tool_policy() is not False
         and _rolling_context_policy(payload) is not None
-        and _checkpoint_needs_search()
+        and _checkpoint_needs_search(payload)
         and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
         and _thread_has_checkpoint(
             getattr(payload, "thread_id", None), getattr(payload, "messages", None)
@@ -4550,6 +4722,7 @@ def _apply_compaction_nudge(
     tools: list[dict],
     *,
     checkpoint_fitted: bool = False,
+    payload = None,
 ) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
@@ -4565,7 +4738,7 @@ def _apply_compaction_nudge(
     if "search_conversation" not in tool_names:
         return nudge
     text = _COMPACTED_SESSION_NUDGE
-    if checkpoint_fitted and _checkpoint_needs_search():
+    if checkpoint_fitted and _checkpoint_needs_search(payload):
         text = text + " " + _CHECKPOINT_SESSION_NUDGE
     if not nudge:
         return text
@@ -13921,25 +14094,20 @@ async def estimate_memory(
         )
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
-        return EstimateMemoryResponse(
-            available = True,
-            weights_bytes = breakdown.weights_bytes,
-            kv_bytes = breakdown.kv_bytes,
-            compute_bytes = breakdown.compute_bytes,
-            drafter_runtime_bytes = breakdown.drafter_runtime_bytes,
-            drafter_runtime_gpu_bytes = breakdown.drafter_runtime_gpu_bytes,
-            projector_runtime_bytes = breakdown.projector_runtime_bytes,
-            drafter_kv_unsized = breakdown.drafter_kv_unsized,
-            adapters_unsized = breakdown.adapters_unsized,
-            total_bytes = breakdown.total_bytes,
-            gpu_bytes = breakdown.gpu_bytes,
-            kv_estimable = breakdown.kv_estimable,
-            kv_on_gpu = breakdown.kv_on_gpu,
-            n_ctx = breakdown.n_ctx,
-            cache_type_kv = breakdown.cache_type_kv,
-            n_parallel = breakdown.n_parallel,
-            layer_count = breakdown.layer_count,
-            gpu_layers = breakdown.gpu_layers,
+        # Shaped through the canonical MemoryEstimate, the same one
+        # GET /models/kv-cache-estimate goes through, so the two routes cannot
+        # drift apart in vocabulary. The projection is what preserves THIS
+        # route's meaning of weights_bytes -- every resident file, not the quant
+        # file alone. Both mappings live together in
+        # core/inference/memory_contract.py.
+        estimate = build_memory_estimate(
+            breakdown,
+            # Not known here, and 0 rather than a stand-in: this route is given a
+            # resolved config and prices what the launch would hold, so nothing
+            # in it measured the single file the user picked. The legacy shape
+            # below does not carry the field, and inventing a value would put a
+            # wrong number on the canonical route for the sake of a non-null.
+            quant_file_bytes = 0,
             moe_offload_unmodelled = bool(
                 (request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0)
                 # Outside Manual the extras keep their expert-placement flags: /load
@@ -13952,6 +14120,7 @@ async def estimate_memory(
                 )
             ),
         )
+        return EstimateMemoryResponse(**project_estimate_memory_response(estimate))
 
     # Header walks and file stats are blocking; keep them off the event loop so a
     # slider drag cannot stall streaming chats.
@@ -16332,26 +16501,42 @@ def _legacy_image_is_distinct(payload) -> bool:
     against that one value alone: matching any image in the thread let a client
     resend an older image, or an assistant's, and hid a real attachment.
     """
-    if not payload.image_base64:
+    image = getattr(payload, "image_base64", None)
+    if not image:
         return False
-    return _latest_user_image_payload(payload.messages) != payload.image_base64
+    return _latest_user_image_payload(getattr(payload, "messages", None)) != image
 
 
-def _latest_user_image_payload(messages: list) -> "Optional[str]":
+def _latest_user_image_payload(messages) -> "Optional[str]":
     """The value ``findLatestUserImageBase64`` would put in ``image_base64``.
 
     Its scan order: newest turn first, user turns only, first image part, ``data:``
     prefix stripped the way :func:`_extract_content_parts` strips it. A part that
     yields nothing does not end the scan, since the frontend walks on past a falsy
     read; stopping on one refused Studio's echo of a valid earlier image.
+
+    Reads models and plain dicts alike: the generation paths only ever hold models, but
+    the KV admission estimate sees whatever the caller passed, and both have to answer
+    "is the legacy field an echo?" the same way or the reservation stops matching the
+    prompt.
     """
-    for msg in reversed(messages):
-        if msg.role != "user" or not isinstance(msg.content, list):
+    for msg in reversed(list(messages or ())):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if role != "user" or not isinstance(content, list):
             continue
-        for part in msg.content:
-            if part.type != "image_url":
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") != "image_url":
+                    continue
+                image_url = part.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else image_url
+            else:
+                if getattr(part, "type", None) != "image_url":
+                    continue
+                url = getattr(getattr(part, "image_url", None), "url", None)
+            if not isinstance(url, str):
                 continue
-            url = part.image_url.url
             encoded = url.partition(",")[2] if url.startswith("data:") else url
             if encoded:
                 return encoded
@@ -18926,6 +19111,7 @@ async def produce_openai_chat_completions(
                 _nudge,
                 tools_to_use,
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                payload = payload,
             )
 
             if _nudge:
@@ -19002,6 +19188,8 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     context_overflow = _rolling_context_policy(payload),
+                    context_policy = _request_context_policy(payload),
+                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -19721,6 +19909,8 @@ async def produce_openai_chat_completions(
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 thread_id = payload.thread_id,
                 # These requests suppress the tool loop AND are excluded from the checkpoint
                 # repair above, so search_conversation is offered neither now nor on the
@@ -27689,12 +27879,18 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     image is re-encoded to PNG (llama-server's stb_image has limited format
     support) and spliced into the last user message as an OpenAI ``image_url``
     content part so vision + function-calling requests work transparently.
+
+    Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
+    what admission charges for. Studio echoes the current image into both spellings, so
+    splicing that unconditionally sent a tools or response_format request two copies
+    against a reservation for one: 4417 reserved against 8466 charged, which overcommits
+    the KV cache wherever the slot count lets that gap accumulate.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
 
-    if not payload.image_base64:
+    if not _legacy_image_is_distinct(payload):
         return messages
 
     try:
@@ -27779,12 +27975,10 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
             )
         )
     )
-    has_message_image = any(
-        isinstance(msg.get("content"), list)
-        and any(part.get("type") == "image_url" for part in msg["content"])
-        for msg in messages
-    )
-    if payload.image_base64 and not has_message_image:
+    # Distinctness, not "the messages carry no image": Studio's echo is byte-equal to a
+    # part already here and must not be spliced twice, but a legacy image the thread
+    # does not hold is a real attachment. Admission charges on the same predicate.
+    if _legacy_image_is_distinct(payload):
         # Legacy bytes can be any format; the normalizer below sniffs and
         # re-encodes to PNG, so the declared mime is rewritten anyway.
         image_part = {
