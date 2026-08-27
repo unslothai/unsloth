@@ -14,6 +14,28 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
+# Opening a cloud placeholder for data recalls it. These attributes are available through
+# ``stat_result.st_file_attributes`` on Windows without reading file contents.
+_WINDOWS_CONTENT_RECALL_ATTRIBUTES = (
+    0x00001000  # FILE_ATTRIBUTE_OFFLINE
+    | 0x00040000  # FILE_ATTRIBUTE_RECALL_ON_OPEN
+    | 0x00400000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+)
+
+
+def file_contents_available_locally(path, stat_result = None) -> bool:
+    """Whether opening *path* can read data without recalling a cloud placeholder.
+
+    Non-Windows files have no ``st_file_attributes`` and are treated as local. An
+    inaccessible path is not safe to open during inventory discovery.
+    """
+    try:
+        info = stat_result if stat_result is not None else os.stat(path)
+    except OSError:
+        return False
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
+
 
 # ── macOS Finder metadata companions ───────────────────────────
 # A volume without native xattrs (exFAT, FAT, most SMB and NFS) makes macOS keep a file's xattrs
