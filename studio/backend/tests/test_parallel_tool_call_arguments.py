@@ -598,3 +598,20 @@ def test_a_new_name_arriving_with_whitespace_is_still_held():
     resent.merge_structured([_delta(0, "alpha", " ")])
     resent.merge_structured([_delta(0, "beta", '{"b":2}')])
     assert _shape(resent) == [("alpha", '{"a":1} '), ("beta", '{"b":2}')]
+
+
+def test_metadata_on_a_resent_name_reaches_the_closed_call():
+    # No call is invented for a name read as the closed call's resent, so
+    # metadata announced on that delta has nowhere else to go. Dropping it cost
+    # the call its thought signature, and the provider rejects the replay.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}') | {"extra_content": {"own": "A"}}])
+    turn.merge_structured([_delta(0, "alpha_long", None) | {"extra_content": {"sig": "S"}}])
+
+    reported = turn.calls()
+    assert [(c["function"]["name"], c["function"]["arguments"]) for c in reported] == [
+        ("alpha", '{"a":1}')
+    ]
+    assert reported[0]["extra_content"] == {"own": "A", "sig": "S"}
+    # Read twice, so a second read cannot double anything or lose it.
+    assert turn.calls()[0]["extra_content"] == {"own": "A", "sig": "S"}

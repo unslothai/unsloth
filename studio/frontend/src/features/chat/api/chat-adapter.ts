@@ -5289,6 +5289,14 @@ export function createOpenAIStreamAdapter(
       // that has already closed.
       const pendingNameByIndex = new Map<number | undefined, string>();
       const pendingExtraByIndex = new Map<number | undefined, unknown>();
+      // Where the card would have gone had the announcement opened the call
+      // there and then. The backend orders by when a call was announced, so
+      // without this the transcript reads C before B while the backend runs B
+      // before C, and any text in between lands on the wrong side.
+      const pendingSlotByIndex = new Map<
+        number | undefined,
+        { at: number; cursor: number }
+      >();
       // Resumable boundary scan per card, so an argument streamed in many
       // fragments is scanned once rather than once per fragment.
       const boundaryScans = new Map<
@@ -5323,6 +5331,7 @@ export function createOpenAIStreamAdapter(
         }
         pendingNameByIndex.clear();
         pendingExtraByIndex.clear();
+        pendingSlotByIndex.clear();
       };
       const scanArgsText = (partId: string, text: string) => {
         let scan = boundaryScans.get(partId);
@@ -5351,7 +5360,6 @@ export function createOpenAIStreamAdapter(
         toolName: string,
         deltaIndex: number | undefined,
         extraContent: unknown,
-        tailIsOpen: boolean,
       ): PositionedToolCallPart[] =>
         extraSegments.map((segment, n) => {
           const isLast = n === extraSegments.length - 1;
@@ -5375,10 +5383,13 @@ export function createOpenAIStreamAdapter(
             ...(isLast && extraContent !== undefined
               ? { extra_content: extraContent }
               : {}),
-            // A closed object is spoken for: otherwise an id stamped on a later
-            // fragment claims the newest unclaimed part in the slot, a call
-            // that has already closed, and appends to it.
-            ...(isLast && tailIsOpen ? {} : { _has_stable_id: true }),
+            // Every segment but the last is spoken for: an id stamped on a
+            // later fragment must not reach back past the newest call in the
+            // slot. The last one is left claimable even when its object has
+            // closed, because a provider that bundles several calls into one
+            // delta can stamp the last one's real id in a delta of its own,
+            // and the loop decides claim against open by the name it carries.
+            ...(isLast ? {} : { _has_stable_id: true }),
             ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
           };
         });
@@ -7136,6 +7147,12 @@ export function createOpenAIStreamAdapter(
                     // Held across deltas, so a name streamed as "web" then
                     // "_search" opens its call as "web_search" rather than as
                     // whichever fragment arrived last.
+                    if (!pendingSlotByIndex.has(idx)) {
+                      pendingSlotByIndex.set(idx, {
+                        at: toolCallParts.length,
+                        cursor: cumulativeText.length,
+                      });
+                    }
                     const pendingBefore = pendingNameByIndex.get(idx) ?? "";
                     const fragment = call.function?.name ?? "";
                     pendingNameByIndex.set(
@@ -7243,7 +7260,6 @@ export function createOpenAIStreamAdapter(
                           nextName,
                           idx,
                           incomingExtra,
-                          splitTailIsOpen,
                         ),
                       );
                       // New calls are state, so they never wait on the gate.
@@ -7282,6 +7298,8 @@ export function createOpenAIStreamAdapter(
                     // delta adds to it.
                     const parked = pendingNameByIndex.get(idx) ?? "";
                     const nameFragment = call.function?.name ?? "";
+                    const announcedSlot = pendingSlotByIndex.get(idx);
+                    pendingSlotByIndex.delete(idx);
                     // A parked name that repeats or extends the closed call's
                     // own is most likely that call's name resent, kept only
                     // because a second no-argument call to the same tool looks
@@ -7371,24 +7389,30 @@ export function createOpenAIStreamAdapter(
                       toolName: freshName,
                       argsText,
                       args: parsedArgs,
-                      textCursor: cumulativeText.length,
+                      textCursor: announcedSlot
+                        ? announcedSlot.cursor
+                        : cumulativeText.length,
                       ...(freshExtra !== undefined && !freshIsSplit
                         ? { extra_content: freshExtra }
                         : {}),
                       ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
-                    toolCallParts.push(fresh);
-                    if (freshIsSplit) {
-                      toolCallParts.push(
-                        ...bornSplitToolCalls(
+                    const born = freshIsSplit
+                      ? bornSplitToolCalls(
                           freshSegments.slice(1),
                           freshName,
                           idx,
                           freshExtra,
-                          freshTailIsOpen,
-                        ),
-                      );
+                        )
+                      : [];
+                    // A call announced by name goes where it was announced, not
+                    // where its arguments turned up, so the transcript reads in
+                    // the order the backend runs them.
+                    if (announcedSlot) {
+                      toolCallParts.splice(announcedSlot.at, 0, fresh, ...born);
+                    } else {
+                      toolCallParts.push(fresh, ...born);
                     }
                     addedToolCall = true;
                   }

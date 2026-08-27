@@ -972,6 +972,14 @@ class _Turn:
             held = self.by_index.get(self.open_key_by_index.get(index, index))
             held_name = held["function"]["name"] if held is not None else ""
             if held_name and (held_name.startswith(name) or name.startswith(held_name)):
+                # No call is invented here, so metadata parked with that name
+                # has nowhere else to go: it was announced on a delta that
+                # turned out to be the closed call's name resent, which makes
+                # it the closed call's, and dropping it costs that call its
+                # thought signature on replay.
+                extra = self.pending_extra_by_index.get(index)
+                if extra and held is not None:
+                    held["extra_content"] = {**held.get("extra_content", {}), **extra}
                 continue
             call: dict[str, Any] = {
                 "id": "",

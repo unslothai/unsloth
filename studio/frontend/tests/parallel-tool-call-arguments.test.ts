@@ -875,3 +875,38 @@ test("a new name arriving with whitespace is still held", () => {
     ["beta", '{"b":2}'],
   ]);
 });
+
+test("a call announced by name is placed where it was announced", () => {
+  // The backend orders by when a call was announced, so a card appended where
+  // its arguments turned up reads C before B while the backend runs B first.
+  const parts = run([
+    [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "B" } }],
+    [{ index: 1, function: { name: "C", arguments: '{"c":3}' } }],
+    [{ index: 0, function: { arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["A", '{"a":1}'],
+    ["B", '{"b":2}'],
+    ["C", '{"c":3}'],
+  ]);
+});
+
+test("a late id claims the last call a bundled delta opened", () => {
+  // A provider that writes several calls in one delta can stamp the last one's
+  // real id in a delta of its own. Marking that card owned sent the id to a
+  // third empty card, while the backend put it on the split call.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}{"b":2}' } }],
+    [{ id: "call_b", index: 0 }],
+  ]);
+
+  assert.deepEqual(
+    parts.map((p) => [p.toolCallId, p.toolName, p.argsText]),
+    [
+      ["tool_call_0", "alpha", '{"a":1}'],
+      ["call_b", "alpha", '{"b":2}'],
+    ],
+  );
+});
