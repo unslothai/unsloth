@@ -601,7 +601,7 @@ def test_a_style_probe_that_matched_no_elements_does_not_report_a_match():
     -- both the hash of an empty string -- so the strongest verdict the function can return was
     being issued on the strength of no observation at all.
 
-    Not hypothetical: the probe walks a hand-written selector list written against Studio's
+    Not hypothetical: the probe walks a hand-written selector list written against Unsloth's
     markup, and a class rename anywhere in it empties the scan silently.
     """
     verdict, reason = P.compare_styles(_styled(0), _styled(0))

@@ -494,7 +494,7 @@ fn executable_path_impl(pid: u32) -> Option<PathBuf> {
 
     unsafe {
         // The limited right, not PROCESS_QUERY_INFORMATION: it is granted for
-        // processes at a higher integrity level, which a Studio started from an
+        // processes at a higher integrity level, which an Unsloth started from an
         // elevated terminal is.
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {

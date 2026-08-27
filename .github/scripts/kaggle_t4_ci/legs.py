@@ -435,8 +435,8 @@ UNWIRED: dict[str, str] = {
 # cost 662s of billing against 646s for one kernel of four: a rounding error.
 # What two kernels cost is the whole ACCOUNT. Kaggle allows two concurrent GPU
 # sessions, two kernels take both, and kaggle-t4-studio-gpu-ci.yml runs on the
-# same account -- so the notebook leg locked Studio out entirely for as long as
-# it ran (measured: Studio's run 32607617804 queued ~40 minutes behind notebook
+# same account -- so the notebook leg locked Unsloth out entirely for as long as
+# it ran (measured: Unsloth's run 32607617804 queued ~40 minutes behind notebook
 # run 32607621452). One kernel holds one session and leaves the other free, and
 # the two workflows now hold separate GitHub concurrency groups so they can
 # actually use it. Splitting the group without packing the kernel, or packing

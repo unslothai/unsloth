@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-GPU arbiter for Studio's heavy GPU consumers.
+"""Single-GPU arbiter for Unsloth's heavy GPU consumers.
 
 The chat backends, diffusion, and video share one GPU. Before taking it each calls
 ``acquire_for(owner)``, which evicts the current other owner so two large models never sit in VRAM

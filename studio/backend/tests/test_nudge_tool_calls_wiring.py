@@ -5,11 +5,11 @@
 
 The request flag is explicit at every boundary. ``None`` follows the shared
 process default from ``passthrough_healing.nudge_enabled`` (off unless
-``UNSLOTH_TOOL_CALL_NUDGE=1``), while Studio may opt in by sending ``True``.
+``UNSLOTH_TOOL_CALL_NUDGE=1``), while Unsloth may opt in by sending ``True``.
 
 Mechanism (verified here without loading a model):
 
-  * the GGUF loop and external Studio loop use the same normalizer;
+  * the GGUF loop and external Unsloth loop use the same normalizer;
   * the external route forwards the request flag into ``ToolLoopPolicy``;
   * the API request models default the flag to ``None`` (opt-in / off);
   * the Unsloth-facing routes forward the request's flag, and the Unsloth frontend

@@ -3,7 +3,7 @@
 
 """The macOS tab-capability smoke has to be able to fail.
 
-tests/studio/playwright_mac_tab_capabilities.py needs a live Studio and a browser, so
+tests/studio/playwright_mac_tab_capabilities.py needs a live Unsloth and a browser, so
 CI is the only place it runs and nothing else checks that a red case comes out red.
 Twice now it has gone green having observed nothing: first by authenticating with
 nobody, then by computing `seen_spinner` and only logging it, so a backend that
@@ -12,7 +12,7 @@ settled before the browser arrived skipped every assertion.
 This drives the same functions with the page and the backend stubbed, over the exact
 shapes that used to pass: the warm window already shut, the row absent, the row greyed
 out. It is a plain pytest file so it runs in the Backend CI walk over tests/, where
-neither playwright nor a Studio is installed.
+neither playwright nor an Unsloth is installed.
 """
 
 from __future__ import annotations

@@ -1709,7 +1709,7 @@ def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():
 
 
 class TestLegacyBuildQuantizedKvInTensorMode:
-    """Studio stopped pre-emptively rewriting a quantized KV cache for the tensor
+    """Unsloth stopped pre-emptively rewriting a quantized KV cache for the tensor
     attempt (ggml-org/llama.cpp#23792, b9455), so an older binary now refuses the
     load itself. That refusal is a clean LLAMA_LOG_ERROR + return nullptr, not a
     GGML_ASSERT, so nothing in the #6415 path can see it -- these pin the marker's

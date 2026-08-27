@@ -60,10 +60,12 @@ import {
 import {
   DeferredFenceShell,
   fenceMode,
+  trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
+import { withMathBlockMarker } from "./math-block-marker";
 import {
   MarkdownBlockBoundary,
   MarkdownBlockFallbackView,
@@ -79,7 +81,15 @@ import {
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
 
-const math = createMathPlugin({ singleDollarTextMath: true });
+const baseMath = createMathPlugin({ singleDollarTextMath: true });
+// Mark the block that holds each inline maths root, on the way past, so `index.css` has something
+// that can take containment. Composed onto the maths plugin's own rehype pass because that is the
+// only hook here that runs after Streamdown's sanitizer, which strips class names it does not
+// recognise. See `math-block-marker.ts` for why neither plugin prop works.
+const math = {
+  ...baseMath,
+  rehypePlugin: withMathBlockMarker(baseMath.rehypePlugin),
+} satisfies typeof baseMath;
 const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
@@ -553,6 +563,7 @@ function FenceBlock({
     mode !== "off",
     Boolean(isIncomplete),
     languageToken,
+    trimmedLength(source),
     warm,
   );
 
@@ -607,7 +618,7 @@ function FenceBlock({
  * Every block is rendered inside a boundary. Streamdown fetches the code
  * highlighter and the Mermaid renderer with `React.lazy` the first time a reply
  * needs them, and a rejected import rethrows during render; without this the
- * nearest catcher is the ROUTER's, which replaces all of Studio and takes the
+ * nearest catcher is the ROUTER's, which replaces all of Unsloth and takes the
  * reply and its runtime with it. Per block, so one fence losing its colours
  * costs only that fence.
  */
