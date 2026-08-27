@@ -316,6 +316,29 @@ export function resolveMemoryAdvisory(
   return null;
 }
 
+/** What `resolveKvNote` joins its items with, and what `glueNoteItems` splits on. */
+export const NOTE_SEPARATOR = " · ";
+
+/**
+ * The same caption, breakable only between its items.
+ *
+ * A caption like "f16 · 262,144 tokens · 4 slots" does not fit the panel once the
+ * window is narrow enough to shrink it, and left to itself the browser breaks at the
+ * last space that fits -- which put "slots" alone on a line under "... tokens · 4".
+ * Gluing each item together with U+00A0 leaves exactly one break opportunity per
+ * bullet, and gluing the bullet to the item that FOLLOWS it means the break lands
+ * before the bullet rather than orphaning it at the end of the previous line.
+ */
+export function glueNoteItems(note: string): string {
+  return note
+    .split(NOTE_SEPARATOR)
+    .map((item, index) => {
+      const glued = item.replace(/ /g, "\u00a0");
+      return index === 0 ? glued : `\u00b7\u00a0${glued}`;
+    })
+    .join(" ");
+}
+
 /** The KV line's caption: dtype, what was priced, and where it lives. */
 export function resolveKvNote(estimate: {
   cacheTypeKv: string | null;
