@@ -1366,6 +1366,11 @@ export const ja = {
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
       },
+      tools: {
+        collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
+        collapseByDefaultDescription:
+          "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
+      },
       webSearch: {
         title: "ウェブ検索",
         images: "ウェブ検索の画像を表示",
