@@ -2741,17 +2741,18 @@ $_rocmWheelArches = @(
 )
 # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
 # unmapped arches (Vega, RDNA1) too, and those install CPU torch.
-# The arch list answers "does this GPU have wheels", not "does this HOST get them". AMD publishes
-# win_amd64 only under repo.amd.com/rocm/whl/<family>, so an ARM64 host whose arch happens to be
-# listed reads as wheeled, correctly receives CPU torch, and would then be accused on every
-# `unsloth studio update` of a fault that is the documented routing. setup.sh demotes on the same
-# grounds via `uname -m`. Scoped to the AMD term exactly as setup.sh scopes it, so ARM64 NVIDIA
-# keeps its CUDA wheels and is still reconciled.
 $AmdHasGpuWheels = [bool](
     $script:ROCmGfxArch -and
-    ($_rocmWheelArches -contains $script:ROCmGfxArch) -and
-    ((Get-HostMachineArch) -ne "arm64")
+    ($_rocmWheelArches -contains $script:ROCmGfxArch)
 )
+
+# Host arch is deliberately NOT folded into $AmdHasGpuWheels above. AMD publishes win_amd64 only
+# under repo.amd.com/rocm/whl/<family>, so an ARM64 host reading as wheeled is wrong for THIS
+# report -- but $AmdHasGpuWheels has seven other consumers, and the stale-venv check at :4288 is
+# one of them. Demoting it there expects "cpu", sees the +rocm wheel the ROCm override at :5167
+# installs with no host-arch gate of its own, and deletes a working venv, after which setup exits
+# because the venv is gone. So the demotion lives here, on the diagnostic only.
+$AmdWheelsReachThisHost = [bool]($AmdHasGpuWheels -and ((Get-HostMachineArch) -ne "arm64"))
 
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after
 # install.ps1 reported a usable Arc GPU. Self-contained, because `studio update` runs setup.ps1
@@ -5068,6 +5069,12 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 # below force-reinstalls from the new pin (else the fast path keeps the old wheel).
 if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
 
+# Declared out here, not just inside the branch: the GPU visibility check reads both, and on the
+# fast path the branch never runs, so under a caller's Set-StrictMode the read is fatal. That run
+# is the one this whole check exists for.
+$ROCmCpuFallback = $false
+$XpuCpuFallback = $false
+
 if (-not $SkipPythonDeps) {
 
 # install_python_stack.py drops the manifest before its own dependency pass, but
@@ -5666,11 +5673,20 @@ $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
     (Test-OneApiSelectorExcludesGpu $env:ONEAPI_DEVICE_SELECTOR) -or
         (Test-ZeAffinityMaskHidesAll $env:ZE_AFFINITY_MASK)
 } else { $false }
+# An ARM64 host gets CPU torch by design, so a CPU verdict there is the routing working.
+$_gpuCheckArm64Amd = ($_gpuCheckAnnounced -like "AMD*") -and -not $AmdWheelsReachThisHost
+# This run already told the user the GPU wheel would not install and fell back to CPU on purpose
+# ($ROCmCpuFallback / $XpuCpuFallback, set at the two force-reinstall arms below the index
+# selection). $InstallerTorchTag does not carry either, so without these terms the failure the
+# user just read is followed by a red accusation and a request to file an issue about it.
+$_gpuCheckLocalCpuFallback = $ROCmCpuFallback -or $XpuCpuFallback
 # The Windows half of the resolved-backend exclusion: install.ps1 routes an NVIDIA host whose CUDA
 # is below 11 to the CPU index by design. $null is "did not say" and must still be reconciled.
 if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and
     ($InstallerTorchTag -ne "cpu") -and
     -not $_gpuCheckMasked -and
+    -not $_gpuCheckArm64Amd -and
+    -not $_gpuCheckLocalCpuFallback -and
     -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
     (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
     $_gpuVisibility = Get-TorchGpuVisibility -PythonExe $_gpuCheckPy

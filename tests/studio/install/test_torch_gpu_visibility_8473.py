@@ -1017,16 +1017,60 @@ def test_windows_demotes_a_non_x86_host_too():
     setup.sh demotes on `uname -m` because PyTorch and AMD both publish per-arch ROCm wheels for
     one platform each (linux x86_64, win_amd64), so a host outside that reads as wheeled, is
     correctly given CPU torch, and would then be accused on every update of the documented
-    routing. Windows needs the same demotion for the same reason, scoped to the AMD term so an
-    ARM64 NVIDIA host keeps its CUDA wheels and is still reconciled.
+    routing. Windows needs the same demotion for the same reason.
+
+    It lives on its own flag rather than inside $AmdHasGpuWheels. That flag has seven consumers
+    predating this branch and the stale-venv check is one of them: demoting it there expects
+    "cpu", meets the +rocm wheel the ROCm override installs with no host-arch gate of its own,
+    deletes the venv, and setup exits because the venv is gone.
     """
     text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
     start = text.index("$AmdHasGpuWheels = [bool](")
     end = text.index("\n)", start)
     assign = text[start:end]
-    assert "Get-HostMachineArch" in assign and '-ne "arm64"' in assign, (
-        "$AmdHasGpuWheels no longer demotes an ARM64 host, so a Windows-on-ARM box whose arch is "
-        "in $_rocmWheelArches would be accused of a fault that is the documented routing."
+    assert "Get-HostMachineArch" not in assign, (
+        "$AmdHasGpuWheels demotes an ARM64 host again. Its other consumers include the stale-venv "
+        "check, which then expects cpu, wipes a working +rocm venv, and exits."
+    )
+
+    reach = next((ln for ln in text.splitlines()
+                  if ln.startswith("$AmdWheelsReachThisHost =")), "")
+    assert "Get-HostMachineArch" in reach and '-ne "arm64"' in reach, (
+        "nothing demotes an ARM64 host any more, so a Windows-on-ARM box whose arch is in "
+        "$_rocmWheelArches would be accused of a fault that is the documented routing."
+    )
+    assert "$AmdHasGpuWheels" in reach, "the host-arch flag must still require a wheeled arch."
+
+
+def test_the_arm64_demotion_reaches_only_the_report():
+    """One consumer, and it is the reconciliation gate."""
+    text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    users = [ln.strip() for ln in text.splitlines()
+             if "$AmdWheelsReachThisHost" in ln and not ln.strip().startswith("#")]
+    assert len(users) == 2, f"expected the assignment plus one reader, got {users}"
+    assert any(ln.startswith("$_gpuCheckArm64Amd =") for ln in users), (
+        "the ARM64 demotion is read somewhere other than the GPU visibility gate."
+    )
+
+
+def test_a_local_cpu_fallback_is_not_a_mismatch():
+    """$ROCmCpuFallback / $XpuCpuFallback mean this run failed to install the GPU wheel and
+    force-installed CPU torch on purpose. $InstallerTorchTag carries neither, so without them the
+    user reads the install failure and then a red accusation about the result of it.
+
+    Both are declared outside `if (-not $SkipPythonDeps)`: the fast path never enters that block,
+    and the fast path is the run this whole check exists for, so a caller's Set-StrictMode would
+    make the read fatal on exactly the reported host.
+    """
+    text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    assert "-not $_gpuCheckLocalCpuFallback -and" in text
+    assert "$_gpuCheckLocalCpuFallback = $ROCmCpuFallback -or $XpuCpuFallback" in text
+
+    decl = text.index("$ROCmCpuFallback = $false\n$XpuCpuFallback = $false")
+    branch = text.index("if (-not $SkipPythonDeps) {")
+    assert decl < branch, (
+        "the fallback flags are declared inside the dependency-pass branch, so on the fast path "
+        "they are never assigned and the gate reads an undefined variable."
     )
 
 

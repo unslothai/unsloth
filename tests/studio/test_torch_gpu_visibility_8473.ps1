@@ -477,6 +477,75 @@ Check "and only the Intel arm does"     ((([regex]::Matches($masked, '\$env:ZE_A
 # Still off-limits: ROCR is Linux-only, so reading it on Windows would mute a real mismatch.
 Check "ROCR is still not read here"     (-not ($masked -match '\$env:ROCR_VISIBLE_DEVICES'))
 
+
+# --- the ARM64 demotion belongs to this check, not to $AmdHasGpuWheels ------------------------
+# The first cut of this folded `(Get-HostMachineArch) -ne "arm64"` straight into
+# $AmdHasGpuWheels. That flag has seven other consumers, and the stale-venv check is one of them:
+# demoting it there expects "cpu", meets the +rocm wheel the ROCm override installs with no
+# host-arch gate of its own, wipes the venv, and setup then exits because the venv is gone. A
+# green suite could not see it, because nothing drove an ARM64 host holding a ROCm wheel.
+Write-Host ""
+Write-Host "the ARM64 demotion is scoped to the diagnostic"
+$wheelsPat = '(?ms)^\$AmdHasGpuWheels = \[bool\]\(.*?^\)$'
+$wheelsExpr = if ($setupText -match $wheelsPat) { $Matches[0] } else { "" }
+Check "the wheels flag was found"       ($wheelsExpr -ne "")
+Check "it does not read host arch"      (-not ($wheelsExpr -match 'Get-HostMachineArch'))
+Check "the arch list still gates it"    ($wheelsExpr -match '_rocmWheelArches')
+$reachPat = '(?m)^\$AmdWheelsReachThisHost = .*$'
+$reachExpr = if ($setupText -match $reachPat) { $Matches[0] } else { "" }
+Check "the host-arch flag exists"       ($reachExpr -ne "")
+Check "and it is the one reading arch"  ($reachExpr -match 'Get-HostMachineArch.*arm64')
+Check "the report excludes ARM64 AMD"   ($report -match '-not \$_gpuCheckArm64Amd')
+Check "scoped to the AMD arm"           ($reportCode -match '\$_gpuCheckArm64Amd = \(\$_gpuCheckAnnounced -like "AMD\*"\)')
+
+# The venv-wipe chain itself, driven rather than asserted about. An ARM64 host with a wheeled
+# arch and an installed +rocm wheel must expect "rocm" and stand pat.
+$archesPat = '(?ms)^\$_rocmWheelArches = @\(.*?^\)$'
+$archesExpr = if ($setupText -match $archesPat) { $Matches[0] } else { "" }
+Check "the arch list was found"         ($archesExpr -match 'gfx1201')
+$expectedTagBody = @'
+param($HostArch, $InstalledTag, $GfxArch)
+function Get-HostMachineArch { return $HostArch }
+$script:ROCmGfxArch = $GfxArch
+$installedTorchTag = $InstalledTag
+__ARCHES__
+__WHEELS__
+__REACH__
+if ($AmdHasGpuWheels) {
+    if ($installedTorchTag -eq "cpu") { "cpu" } else { "rocm" }
+} else { "cpu" }
+'@
+# .Replace(), not -replace: the extracted source is full of `$_rocmWheelArches`, and in a regex
+# replacement string PowerShell eats the `$_`.
+$expectedTagBody = $expectedTagBody.Replace('__ARCHES__', $archesExpr).Replace(
+    '__WHEELS__', $wheelsExpr).Replace('__REACH__', $reachExpr)
+
+function Get-ExpectedTag {
+    param([string] $HostArch, [string] $InstalledTag, [string] $GfxArch = "gfx1201")
+    return [string] (& ([scriptblock]::Create($script:expectedTagBody)) $HostArch $InstalledTag $GfxArch)
+}
+$script:expectedTagBody = $expectedTagBody
+Check "ARM64 keeps an installed rocm venv" ((Get-ExpectedTag "arm64" "rocm") -eq "rocm")
+Check "x64 keeps it too"                   ((Get-ExpectedTag "x64" "rocm") -eq "rocm")
+Check "a cpu wheel is left alone"          ((Get-ExpectedTag "arm64" "cpu") -eq "cpu")
+Check "an unmapped arch expects cpu"       ((Get-ExpectedTag "x64" "rocm" "gfx900") -eq "cpu")
+
+
+# --- a deliberate local CPU fallback is not a mismatch -----------------------------------------
+# $ROCmCpuFallback / $XpuCpuFallback are set when THIS run failed to install the GPU wheel and
+# force-installed CPU torch instead. $InstallerTorchTag carries neither, so without these terms
+# the user reads the install failure and then a red accusation about the result of it.
+Write-Host ""
+Write-Host "it does not accuse a run that already explained itself"
+Check "a local ROCm fallback is excluded" ($report -match '-not \$_gpuCheckLocalCpuFallback')
+Check "it reads both fallback flags"      ($reportCode -match '\$ROCmCpuFallback -or \$XpuCpuFallback')
+# Both are assigned inside `if (-not $SkipPythonDeps)`. The fast path never enters that block, and
+# the fast path is the run this whole check exists for, so a caller's Set-StrictMode would make
+# the read fatal on exactly the reported host.
+$_fallbackDecl = [regex]::Match($setupText,
+    '(?ms)^\$ROCmCpuFallback = \$false\r?\n\$XpuCpuFallback = \$false\r?\n\r?\nif \(-not \$SkipPythonDeps\) \{')
+Check "both are declared before the branch" ($_fallbackDecl.Success)
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green
