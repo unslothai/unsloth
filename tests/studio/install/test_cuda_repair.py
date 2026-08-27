@@ -803,6 +803,12 @@ def _run_flavor_invariant(
         if repaired is not None:
             state["version"] = repaired
 
+    def _rocm(*args, **kwargs):
+        # The ROCm arm delegates to _ensure_rocm_torch rather than naming an index of its
+        # own, so the stand-in has to move the venv exactly as the real one would: the real
+        # function reaches pip_install internally, which is already patched here.
+        _pip()
+
     def _which(name, *a, **k):
         return "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
 
@@ -824,6 +830,7 @@ def _run_flavor_invariant(
             ),
         ),
         patch.object(stack_mod, "pip_install", side_effect = _pip) as mock_pip,
+        patch.object(stack_mod, "_ensure_rocm_torch", side_effect = _rocm) as mock_rocm,
         patch.object(stack_mod.subprocess, "run", side_effect = _run),
         patch.dict(stack_mod.os.environ, env, clear = False),
     ):
@@ -837,6 +844,9 @@ def _run_flavor_invariant(
             if value is None:
                 stack_mod.os.environ.pop(name, None)
         ok = _ensure_expected_torch_flavor()
+    # Hung off the pip mock rather than widening the tuple: every existing caller unpacks
+    # two values, and only the three ROCm tests need to see the delegation.
+    mock_pip.rocm_repair = mock_rocm
     return ok, mock_pip
 
 
@@ -942,13 +952,12 @@ class TestExpectedTorchFlavorSkips:
         assert ok is True
         assert mock_pip.call_count == 1
 
-    @pytest.mark.parametrize("tag", ["rocm", "current", "custom", "simple", "cu"])
+    @pytest.mark.parametrize("tag", ["current", "custom", "simple", "cu"])
     def test_an_unenforceable_expectation_is_a_no_op(self, tag):
-        # ROCm wheels come from a per-architecture repo.amd.com index that cannot be
-        # reconstructed from a generic "rocm" tag, so the path that owns it keeps it.
-        # An unknown mirror leaf names no flavor at all. "xpu" is NOT in this list:
-        # setup.ps1 publishes it and it is repairable from a real index, so it is
-        # enforced -- see TestExpectedXpuFlavorIsEnforced.
+        # An unknown mirror leaf names no flavor, so there is nothing to check against.
+        # "xpu" and "rocm" are NOT in this list: setup.ps1 publishes both and both are
+        # enforced -- see TestExpectedXpuFlavorIsEnforced, which also covers the ROCm
+        # delegation.
         ok, mock_pip = _run_flavor_invariant(expected_env = tag)
         assert ok is True
         mock_pip.assert_not_called()
@@ -1143,14 +1152,37 @@ class TestExpectedXpuFlavorIsEnforced:
         assert ok is True
         mock_pip.assert_called_once()
 
-    def test_rocm_is_still_left_to_the_path_that_owns_it(self):
-        """Its wheels come from a per-arch repo.amd.com index this pass cannot
-        reconstruct from a generic "rocm" tag, so guessing one would be worse."""
+    def test_rocm_is_delegated_rather_than_rebuilt_here(self):
+        """AMD's Windows wheels live on a per-architecture repo.amd.com index that a
+        generic "rocm" tag cannot name, and setup.ps1 hands over an index URL that still
+        points at /cpu on that path. _ensure_rocm_torch already detects the arch, maps
+        it, and honours an explicit pin, so the repair is delegated to it rather than
+        rebuilt from a guessed URL -- but it IS repaired, because it runs at step 2b,
+        before the dependency steps that can put PyPI's CPU wheel here."""
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu", expected_env = "rocm"
+            installed = "2.11.0+cpu", repaired = "2.11.0+rocm7.2", expected_env = "rocm",
         )
-        assert ok is True
+        mock_pip.rocm_repair.assert_called_once()
+        # Not called directly: this pass must not invent a repo.amd.com URL of its own.
         mock_pip.assert_not_called()
+        assert ok is True
+
+    def test_a_healthy_rocm_venv_does_not_call_the_repair(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+rocm7.2", expected_env = "rocm"
+        )
+        mock_pip.rocm_repair.assert_not_called()
+        mock_pip.assert_not_called()
+        assert ok is True
+
+    def test_a_rocm_repair_that_does_not_take_fails_the_update(self):
+        """The state that used to be written as a successful CPU-only manifest."""
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", repaired = None, expected_env = "rocm"
+        )
+        mock_pip.rocm_repair.assert_called_once()
+        mock_pip.assert_not_called()
+        assert ok is False
 
 
 class TestSetupPs1CudaOnDiskFallback:

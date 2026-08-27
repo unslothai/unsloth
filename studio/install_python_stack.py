@@ -2966,6 +2966,25 @@ def _expected_torch_index_url(tag: str) -> str:
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 
+def _warn_still_cpu(expected: str) -> bool:
+    """Report a repair that did not take, and fail the install. Always returns False.
+
+    install.ps1 warns here and exits 0. Failing instead is the entire point: a CPU-only
+    torch on a host that expects a GPU build is precisely the state an update used to
+    report as "dependencies up to date" while the app ran everything on CPU.
+    """
+    _safe_print("")
+    _safe_print(
+        f"   [WARN] PyTorch is CPU-only but a {expected} GPU build was expected for this machine."
+    )
+    _safe_print("   [WARN] Training and GPU inference will run on CPU until this is fixed.")
+    _safe_print(
+        "   [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU."
+    )
+    _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
+    return False
+
+
 def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     """Enforce that the venv still holds the torch flavor the install selected.
 
@@ -2988,21 +3007,23 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
       * NO_TORCH: there is no torch to have a flavor.
       * UNSLOTH_TORCH_BACKEND outside ("", "cuda"): rocm / cpu / xpu / an unrecognised
         value are deliberate, the same rule _ensure_cuda_torch applies.
-      * An expected tag that is absent, "cpu", rocm, or an unknown mirror leaf: a CPU
-        install has nothing to repair to, and ROCm belongs to the path that owns it
-        (setup.ps1 installs the Windows ROCm trio itself, from repo.amd.com).
+      * An expected tag that is absent, "cpu", or an unknown mirror leaf: a CPU install
+        has nothing to repair to, and a leaf that names no flavor names nothing to check.
       * An explicit index pin whose family cannot be read.
-      * CUDA_VISIBLE_DEVICES ""/-1: the NVIDIA GPU is deliberately hidden.
+      * CUDA_VISIBLE_DEVICES ""/-1: the NVIDIA GPU is deliberately hidden (cu* only --
+        an Arc host hides its GPU with a different variable).
       * Installed flavor already equals the expected one.
 
-    cu* and xpu are BOTH enforced. setup.ps1 publishes "xpu" for an Arc host and
-    installs the XPU trio before handing over, so ignoring that expectation would make
-    this function incoherent -- it would carry an answer it declines to act on -- and
-    the exposure is identical: the dependency steps re-resolve torch from PyPI, and
-    _ensure_xpu_torch cannot clean up after them because step 13's whole repair set is
-    gated off Windows. ROCm is deliberately NOT enforced here: its wheels come from a
-    per-architecture repo.amd.com index that this function cannot reconstruct from a
-    generic "rocm" tag, and guessing one would be worse than leaving it alone.
+    Every flavor setup.ps1 can publish is enforced: cu*, xpu and rocm. Publishing an
+    expectation and then declining to act on it would leave this function carrying an
+    answer it refuses to use, and the exposure is identical for all three -- the
+    dependency steps re-resolve torch from PyPI, and step 13's whole repair set is gated
+    off Windows, so nothing else looks at the venv afterwards.
+
+    cu* and xpu are repaired here from an index this function can name. ROCm is
+    DELEGATED to _ensure_rocm_torch, because AMD's Windows wheels live on a
+    per-architecture repo.amd.com index that a generic "rocm" tag cannot reconstruct --
+    that function already detects the arch, maps it, and honours an explicit ROCm pin.
     """
     if NO_TORCH:
         return True
@@ -3021,7 +3042,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         expected = _expected_torch_flavor_tag()
     # _is_cuda_family_leaf rejects "" / "cpu" / "rocm" and an unknown mirror leaf in one
     # test, so every no-op expectation above lands here; "xpu" is the one addition.
-    if not (_is_cuda_family_leaf(expected) or expected == "xpu"):
+    if not (_is_cuda_family_leaf(expected) or expected in ("xpu", "rocm")):
         return True
     # Only meaningful for CUDA. An Arc host hides its GPU with a different variable, and
     # reading this one there would make an unrelated NVIDIA mask cancel an XPU repair.
@@ -3052,12 +3073,26 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     if installed == expected:
         return True
 
-    index_url = _expected_torch_index_url(expected)
     # install.ps1's line, word for word, so a support log from either path reads the same.
     _safe_print(
         f"   PyTorch flavor mismatch (installed {installed}, need {expected}) -- "
         f"reinstalling correct build..."
     )
+    if expected == "rocm":
+        # Delegated, not rebuilt here. AMD's Windows wheels live on a PER-ARCHITECTURE
+        # repo.amd.com index (gfx1100, gfx1151, ...) that a generic "rocm" tag cannot name,
+        # and setup.ps1 hands over $TorchInstallIndexUrl, which on that path still points at
+        # /cpu -- so there is no URL in scope to repair from. _ensure_rocm_torch already owns
+        # the whole problem: it detects the arch, maps it to an index, honours an explicit
+        # ROCm pin, and re-probes the stale UNSLOTH_ROCM_TORCH_INSTALLED marker instead of
+        # trusting it. It runs at step 2b, which is BEFORE the dependency steps that can put
+        # PyPI's CPU wheel here, and nothing ran it afterwards.
+        _ensure_rocm_torch()
+        if _torch_build_is_gpu():
+            return True
+        return _warn_still_cpu(expected)
+
+    index_url = _expected_torch_index_url(expected)
     # The XPU floor is 2.6, not 2.4: unsloth/models/_utils.py raises at import for an XPU
     # device below it, and an older wheel would satisfy the CUDA range and be kept. Same
     # trio setup.ps1's own XPU arm installs, so a repaired venv matches a fresh one.
@@ -3084,19 +3119,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # pip_install invalidated the memoized classification, so this re-probes for real.
     if _torch_build_is_gpu():
         return True
-    # install.ps1 warns here and exits 0. Failing instead is the point of this function:
-    # a CPU-only torch on a host that expects a GPU build is precisely the state the
-    # update reported as "dependencies up to date" while the app ran everything on CPU.
-    _safe_print("")
-    _safe_print(
-        f"   [WARN] PyTorch is CPU-only but a {expected} GPU build was expected for this machine."
-    )
-    _safe_print("   [WARN] Training and GPU inference will run on CPU until this is fixed.")
-    _safe_print(
-        "   [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU."
-    )
-    _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
-    return False
+    return _warn_still_cpu(expected)
 
 
 def _amd_torch_needs_dependency_pass() -> bool:
