@@ -9,6 +9,12 @@
 //   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
 //      math delimiters when singleDollarTextMath is enabled.
 
+import {
+  EMPTY_LIST_STATE,
+  indentWidth,
+  openLists,
+} from "./markdown-list-columns.ts";
+
 /**
  * Matches a single $ followed by a number pattern (currency), e.g.:
  *   $5, $1,000, $5.99, $100K, $3.5M
@@ -74,13 +80,16 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
     let blockStart = -1;
     let blockEnd = -1;
     let previousBlank = true;
+    let lists = EMPTY_LIST_STATE;
     for (const lineMatch of lines) {
       const line = lineMatch[0];
       if (!line) break;
       const start = lineMatch.index;
       const text = line.replace(/(?:\r\n|\n|\r)$/, "");
       const blank = /^\s*$/.test(text);
-      const code = /^(?: {4}|\t)/.test(text);
+      lists = openLists(text, lists, !previousBlank);
+      const containerColumn = lists.columns.at(-1) ?? 0;
+      const code = indentWidth(text) - containerColumn >= 4;
       if (blockStart >= 0) {
         if (code || blank) {
           blockEnd = start + line.length;
@@ -132,7 +141,7 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
  * of balanced parens.
  */
 const LINK_DEST_RE =
-  /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/gd;
+  /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
 
 /**
  * Find the destination spans of inline links/images, so a `\(...\)` written with
@@ -292,6 +301,40 @@ function isEscapedDollar(content: string, offset: number): boolean {
   return slashes % 2 === 1;
 }
 
+/**
+ * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. Non-greedy so
+ * the first closer wins; dotall so display spans can wrap lines. `(?<!\\)` on
+ * each opener leaves an escaped literal `\\[` (a real backslash then bracket)
+ * alone. The body is length-capped so an unclosed opener can't scan to
+ * end-of-input: without the cap, many unclosed `\(`/`\[` make matching O(n^2),
+ * and this runs per animation frame while streaming. Real spans are far shorter
+ * than the cap; a longer one just stays literal.
+ */
+const LATEX_DELIM_RE =
+  /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
+
+/** Find existing bracket-delimited math outside code and link destinations. */
+function findBracketMathRegions(
+  content: string,
+  skipRegions: Array<[number, number]>,
+): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  let match: RegExpExecArray | null;
+  LATEX_DELIM_RE.lastIndex = 0;
+  while ((match = LATEX_DELIM_RE.exec(content)) !== null) {
+    const end = match.index + match[0].length;
+    if (
+      isInRegion(match.index, skipRegions) ||
+      isInRegion(end - 1, skipRegions)
+    ) {
+      LATEX_DELIM_RE.lastIndex = match.index + 1;
+      continue;
+    }
+    regions.push([match.index, end]);
+  }
+  return regions;
+}
+
 /** Find existing `$...$` and `$$...$$` regions outside code and links. */
 function findDollarMathRegions(
   content: string,
@@ -308,7 +351,10 @@ function findDollarMathRegions(
     }
     const display = content[opening + 1] === "$";
     const bodyStart = opening + (display ? 2 : 1);
-    const limit = Math.min(content.length, bodyStart + (display ? 4096 : 200));
+    const limit = Math.min(
+      content.length,
+      bodyStart + (display ? 4096 : 200) + 1,
+    );
     for (let closing = bodyStart; closing < limit; closing += 1) {
       if (!display && /[\r\n]/.test(content[closing])) break;
       if (
@@ -349,6 +395,10 @@ function normalizeEscapedInlineMath(content: string): string {
   let skipRegions = mergeRegions(
     findCodeBlockRegions(content),
     findLinkDestinationRegions(content),
+  );
+  skipRegions = mergeRegions(
+    skipRegions,
+    findBracketMathRegions(content, skipRegions),
   );
   skipRegions = mergeRegions(
     skipRegions,
@@ -403,18 +453,6 @@ function normalizeEscapedInlineMath(content: string): string {
   append(content.slice(last));
   return parts.join("");
 }
-
-/**
- * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. Non-greedy so
- * the first closer wins; dotall so display spans can wrap lines. `(?<!\\)` on
- * each opener leaves an escaped literal `\\[` (a real backslash then bracket)
- * alone. The body is length-capped so an unclosed opener can't scan to
- * end-of-input: without the cap, many unclosed `\(`/`\[` make matching O(n^2),
- * and this runs per animation frame while streaming. Real spans are far shorter
- * than the cap; a longer one just stays literal.
- */
-const LATEX_DELIM_RE =
-  /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
 
 /**
  * Rewrite `\[...\]` -> block `$$...$$` and `\(...\)` -> inline `$...$` so

@@ -42,3 +42,20 @@ test("escaped inline math in a generated list reaches KaTeX", () => {
   }
   assert.ok(!html.includes("$v_s$"));
 });
+
+test("escaped math in a loose-list continuation reaches KaTeX", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(
+      Streamdown,
+      { mode: "static", plugins: { math } },
+      preprocessLaTeX("- item\n\n    \\$x\\$"),
+    ),
+  );
+
+  assert.ok(
+    html.includes('<annotation encoding="application/x-tex">x</annotation>'),
+  );
+  assert.ok(html.indexOf("<li") < html.indexOf("<annotation"));
+  assert.ok(html.indexOf("<annotation") < html.indexOf("</li>"));
+  assert.ok(!html.includes("$x$"));
+});
