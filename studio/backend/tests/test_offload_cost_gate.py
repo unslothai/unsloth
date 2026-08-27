@@ -18,7 +18,11 @@ from __future__ import annotations
 
 from core.inference.offload_cost_model import HostProfile
 from core.inference.offload_layout import BlockLayout, ModelLayout
-from core.inference.offload_planner import PlanOptions, plan_placement
+from core.inference.offload_planner import (
+    PlanOptions,
+    _fit_fallback_placement,
+    plan_placement,
+)
 
 GIB = 1024**3
 
@@ -156,3 +160,70 @@ def test_the_margin_is_what_decides_a_near_tie():
     )
     assert not strict.spilled_blocks
     assert lenient.spilled_blocks
+
+
+def moe_layout(n_blocks: int = 40) -> ModelLayout:
+    """A 35B-A3B-shaped MoE: most of the weight is in routed experts."""
+    blocks = tuple(
+        BlockLayout(i, int(0.47 * GIB), int(0.025 * GIB)) for i in range(n_blocks)
+    )
+    return ModelLayout(
+        arch = "qwen3moe",
+        n_layers = n_blocks,
+        n_attention_layers = n_blocks,
+        blocks = blocks,
+        lm_head_bytes = int(0.5 * GIB),
+        token_embd_bytes = int(0.5 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 0.62 * GIB / 32768,
+        n_ctx_train = 32768,
+        is_moe = True,
+        n_expert = 128,
+        n_expert_used = 8,
+        complete = True,
+    )
+
+
+def test_the_moe_fallback_moves_every_expert_whatever_the_card_holds():
+    """Measured on the shipped build, and the invariance is the point.
+
+    ``--fit on`` left exactly 1.00 GiB of a 21.28 GiB MoE on the card on a 12 GiB
+    L4 AND on a 16 GiB A100. The bigger card's four spare gigabytes bought
+    nothing, so this is not a search that happens to converge low: cache
+    residency wins absolutely and the weights take what is left. A model that
+    assumed a fitter moves only what it must would call the two placements equal
+    and decline a prefill win of 2.05x to 2.16x that is really there.
+    """
+    layout = moe_layout()
+    small = _fit_fallback_placement(
+        layout, gated(), 11 * GIB, 8192, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+    )
+    large = _fit_fallback_placement(
+        layout, gated(), 15 * GIB, 8192, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+    )
+    assert small is not None and large is not None
+    moved = [sum(g.bytes_total for g in p.host_groups) for p in (small, large)]
+    assert moved[0] == moved[1] == layout.spillable_bytes
+    # The cache is never among what it moves, which is the half of the planner's
+    # premise that survived: on MoE both arms keep it resident, and generation
+    # duly measured 33.65 against 34.77 t/s, a 1.03x tie.
+    assert all(p.kv_host_bytes == 0 for p in (small, large))
+
+
+def test_the_dense_fallback_does_move_whole_layers_and_the_cache_with_them():
+    """The other half, also measured: n_part=0, no overrides, cache off the GPU.
+
+    ``--fit on`` chose 54 of 65 layers on a 16 GiB card and 38 of 65 on a 12 GiB
+    one, both with no tensor overrides at all. So the planner's original premise
+    is right for dense models and wrong for MoE, and the fallback has to branch.
+    """
+    layout = dense_layout()
+    placement = _fit_fallback_placement(
+        layout, gated(), 12 * GIB, 32768, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+    )
+    assert placement is not None
+    names = {g.name for g in placement.host_groups}
+    assert "layers" in names, "a dense fit moves attention weights too"
+    assert any(g.name.startswith("kv") for g in placement.host_groups), (
+        "a dense fit drags the moved layers' cache to host with them"
+    )

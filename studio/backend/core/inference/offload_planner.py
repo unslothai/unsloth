@@ -354,8 +354,43 @@ def _fit_fallback_placement(
         else 0.0
     )
 
-    # llama.cpp keeps the FIRST n_gpu_layers on the device, so the host takes the
-    # trailing ones. Walk out from the end until the remainder fits.
+    if layout.is_moe:
+        # MEASURED, not assumed. On an MoE model ``--fit on`` keeps EVERY layer
+        # on the device (n_layer=41/41 on both a 12 GiB L4 and a 16 GiB A100) and
+        # moves only the trailing layers' expert tensors, through the same kind
+        # of tensor override the planner emits:
+        #
+        #   blk.<il>.ffn_(up|down|gate_up|gate)_(ch|)exps   (fit.cpp:434-440)
+        #
+        # so the cache stays resident and no attention weight moves. That is the
+        # planner's own strategy, which is why declining costs so little on this
+        # architecture: both arms measured 33.65 against 34.77 t/s on generation,
+        # a 1.03x tie.
+        #
+        # It does not actually FIT on this architecture: it moves all of them.
+        # Measured 20.28 GiB of a 21.28 GiB model left on the host, leaving
+        # exactly 1.00 GiB on the card -- the SAME figure on a 12 GiB L4 and on a
+        # 16 GiB A100, so the four spare gigabytes on the bigger card bought
+        # nothing. Cache residency is prioritised absolutely and the weights take
+        # what is left, which is a fixed behaviour rather than a search.
+        #
+        # Modelling it as an ideal fitter instead made the two placements
+        # identical (612 ms against 612 ms) and the gate declined every MoE cell,
+        # discarding a prefill win of 2.05x to 2.16x that is really there. The
+        # cost of that idealisation is larger than the cost of describing what
+        # the shipped build does.
+        #
+        # A tighter fitter upstream would make this pessimistic, and the honest
+        # place to notice that is a re-measurement, not a hedge here.
+        if not layout.spillable_bytes:
+            return None
+        return Placement(host_groups = [_ffn_group(layout, layout.spillable_bytes)])
+
+    # Dense, where the whole-layer model IS what happens: measured n_part=0 with
+    # n_layer 54 of 65 and 38 of 65, no overrides at all, and the cache off the
+    # GPU with it. llama.cpp keeps the LAST n_gpu_layers on the device, so the
+    # host takes the leading ones; walking from the end is equivalent here
+    # because only the count enters the cost.
     host_weights = 0
     host_spillable = 0
     for moved, block in enumerate(reversed(blocks), start = 1):
