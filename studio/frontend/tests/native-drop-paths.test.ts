@@ -1211,6 +1211,49 @@ test("an XML prolog encoding is honoured for every XML dialect", async () => {
   );
 });
 
+test("a declared charset is decoded as strictly as an undeclared one", async () => {
+  // The declared-charset paths used a lenient decoder, so a file claiming UTF-8
+  // and holding broken bytes came through as replacement characters, which is
+  // the corruption the strict default was added to stop.
+  const enc = new TextEncoder();
+  const broken = [0xc3, 0x28]; // a lead byte followed by an invalid continuation
+  for (const [name, head] of [
+    [
+      "messages.po",
+      'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=UTF-8\\n"\n\nmsgstr "Caf',
+    ],
+    ["strings.resx", '<?xml version="1.0" encoding="UTF-8"?><r>Caf'],
+  ] as const) {
+    await assert.rejects(
+      readTextAttachment(new File([new Uint8Array([...enc.encode(head), ...broken])], name)),
+      (error: Error) => {
+        assert.ok(error instanceof UndecodableTextError);
+        assert.match(error.message, /declares charset "UTF-8"/);
+        return true;
+      },
+      `${name} is refused rather than corrupted`,
+    );
+  }
+  // A single-byte charset maps every byte, so those files are unaffected.
+  const latin = new Uint8Array([
+    ...enc.encode('<?xml version="1.0" encoding="windows-1252"?><r>Caf'),
+    0xe9,
+  ]);
+  assert.match(
+    await readTextAttachment(new File([latin], "strings.resx")),
+    /Caf\u00e9/,
+  );
+  // A bounded preview keeps its allowance for the character the slice cut.
+  const cut = new Uint8Array([
+    ...enc.encode('<?xml version="1.0" encoding="UTF-8"?><r>caf'),
+    0xc3,
+  ]);
+  assert.match(
+    decodeTextAttachmentBytes(cut, "strings.resx", true),
+    /<r>caf$/,
+  );
+});
+
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u"), false);
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u8"), true);

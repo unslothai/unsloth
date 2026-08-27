@@ -17375,29 +17375,36 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
             probe = torchaudio.info(tmp_path)
             rate = int(getattr(probe, "sample_rate", 0) or 0)
             frames = int(getattr(probe, "num_frames", 0) or 0)
+            channels = max(1, int(getattr(probe, "num_channels", 1) or 1))
         except Exception:  # noqa: BLE001 - a container info cannot read is still loadable
-            rate, frames = 0, 0
+            rate, frames, channels = 0, 0, 1
         limit = rate * _MAX_AUDIO_SECONDS
         if limit and frames > limit:
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
-        if limit:
+        # load() materializes every channel at the native rate, so it is only safe
+        # when info said how long the file is and that fits the ceiling. Anything
+        # else -- an unreadable probe, an unreported length, a high rate or a
+        # multichannel file -- goes to the bounded reader, which downmixes as it
+        # goes and holds mono frames only. Streaming beats refusing: the file is
+        # inside the clock, it is just too wide to hold at once.
+        if limit and frames and frames * channels <= _MAX_DECODED_SAMPLES:
             # One frame past the cap, so a container that misreports its length
             # is still never fully read.
             waveform, sr = torchaudio.load(tmp_path, num_frames = limit + 1)
         else:
-            # info could not say how long this is, and loading it whole to find
-            # out is what the cap exists to prevent. Decode with the bounded
-            # reader the GGUF path uses, which stops at the cap as frames arrive.
             import torch
+
             samples, sr = _decode_audio_mono(raw)
             waveform = torch.from_numpy(samples).unsqueeze(0)
     finally:
         os.unlink(tmp_path)
 
     # Backstop for a container that reported neither rate nor length.
-    if sr > 0 and waveform.shape[-1] > sr * _MAX_AUDIO_SECONDS:
+    if (sr > 0 and waveform.shape[-1] > sr * _MAX_AUDIO_SECONDS) or (
+        waveform.shape[-1] * waveform.shape[0] > _MAX_DECODED_SAMPLES
+    ):
         raise _DecodedAudioTooLongError(
             f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
         )

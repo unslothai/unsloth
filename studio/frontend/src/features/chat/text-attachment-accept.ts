@@ -682,10 +682,19 @@ function declaredContainerCharsets(
 }
 
 /** Decode under a charset the file itself declared, or say why it could not. */
-function decodeWithCharset(bytes: Uint8Array, charset: string): string {
+function decodeWithCharset(
+  bytes: Uint8Array,
+  charset: string,
+  fileName: string,
+  truncated: boolean,
+): string {
   const label = GETTEXT_CHARSET_ALIASES[charset.toUpperCase()] ?? charset;
+  let decoder: TextDecoder;
   try {
-    return new TextDecoder(label).decode(bytes);
+    // Strict, like the default path: a declaration is a claim about the bytes,
+    // and bytes that break it are corrupt rather than readable. Single-byte
+    // charsets map everything, so this only bites on the multibyte ones.
+    decoder = new TextDecoder(label, { fatal: true });
   } catch (error) {
     if (error instanceof RangeError) {
       throw new Error(
@@ -693,6 +702,14 @@ function decodeWithCharset(bytes: Uint8Array, charset: string): string {
       );
     }
     throw error;
+  }
+  try {
+    return decoder.decode(bytes, { stream: truncated });
+  } catch {
+    throw new UndecodableTextError(
+      fileName,
+      `It declares charset "${charset}" but does not hold valid ${charset} text.`,
+    );
   }
 }
 
@@ -713,7 +730,7 @@ export function decodeTextAttachmentBytes(
   }
   const gettextCharset = declaredGettextCharset(bytes, fileName);
   if (gettextCharset) {
-    return decodeWithCharset(bytes, gettextCharset);
+    return decodeWithCharset(bytes, gettextCharset, fileName, truncated);
   }
   try {
     // A truncated read decodes with stream:true so the character the slice cut
@@ -728,14 +745,14 @@ export function decodeTextAttachmentBytes(
     // costs nothing.
     const xmlEncoding = declaredXmlEncoding(bytes);
     if (xmlEncoding) {
-      return decodeWithCharset(bytes, xmlEncoding);
+      return decodeWithCharset(bytes, xmlEncoding, fileName, truncated);
     }
     // An 8-bit mail or vCard says which charset it is, so honour it rather than
     // refusing a standards-valid file. Tried only after UTF-8 fails, so a modern
     // one is never remapped by a stale declaration.
     const declared = declaredContainerCharsets(bytes, fileName);
     if (declared.length === 1) {
-      return decodeWithCharset(bytes, declared[0]!);
+      return decodeWithCharset(bytes, declared[0]!, fileName, truncated);
     }
     if (declared.length > 1) {
       // Parts in different encodings: decoding the container as one unit would

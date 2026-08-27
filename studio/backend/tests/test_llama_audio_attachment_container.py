@@ -200,35 +200,64 @@ def test_audio_input_decode_is_bounded_by_the_duration_limit(monkeypatch):
     assert loads == []
 
 
-def test_audio_input_decode_bounds_a_container_that_hides_its_length(monkeypatch):
-    """A container whose header does not report num_frames is still read only one
-    frame past the cap, so nothing longer is ever held in memory."""
-    import torch
-
-    loads: list[dict] = []
-    limit_frames = 16_000 * 30 * 60
+def test_audio_input_decode_streams_a_container_that_hides_its_length(monkeypatch):
+    """A header that does not report num_frames cannot be bounded by num_frames:
+    with several channels the read would still outrun the ceiling, and trimming it
+    would silently truncate a file that is inside the limit. Stream it instead."""
+    streamed: list[bytes] = []
 
     class _FakeTorchaudio:
         @staticmethod
         def info(_path):
-            return types.SimpleNamespace(sample_rate = 16_000, num_frames = 0)
+            return types.SimpleNamespace(sample_rate = 16_000, num_frames = 0, num_channels = 2)
 
         @staticmethod
-        def load(path, **kwargs):
-            loads.append(kwargs)
-            # Exactly the bound the caller asked for: a stream that never ends.
-            return torch.zeros((1, kwargs["num_frames"])), 16_000
+        def load(*_a, **_k):
+            raise AssertionError("an unreported length must not be loaded whole")
 
     monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
-    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 30 * 60)
 
-    try:
-        inference_route._decode_audio_base64(base64.b64encode(b"endless stream").decode())
-    except inference_route._DecodedAudioTooLongError:
-        pass
-    else:
-        raise AssertionError("expected the backstop check to reject the over-limit read")
-    assert loads == [{"num_frames": limit_frames + 1}]
+    def _bounded(raw):
+        streamed.append(raw)
+        return np.zeros(16_000, dtype = np.float32), 16_000
+
+    monkeypatch.setattr(inference_route, "_decode_audio_mono", _bounded)
+
+    out = inference_route._decode_audio_base64(base64.b64encode(b"endless stream").decode())
+    assert out.shape == (16_000,)
+    assert streamed == [b"endless stream"]
+
+
+def test_a_wide_container_inside_the_clock_is_streamed_not_refused(monkeypatch):
+    """30 minutes of high-rate or multichannel audio is within the advertised
+    limit, so it must still decode; it just cannot be held at once."""
+    streamed: list[bytes] = []
+
+    class _FakeTorchaudio:
+        @staticmethod
+        def info(_path):
+            # Inside the 30-minute clock, past the ceiling once channels count.
+            return types.SimpleNamespace(
+                sample_rate = 48_000,
+                num_frames = 48_000 * 20 * 60,
+                num_channels = 2,
+            )
+
+        @staticmethod
+        def load(*_a, **_k):
+            raise AssertionError("a wide container must not be materialized")
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+
+    def _bounded(raw):
+        streamed.append(raw)
+        return np.zeros(16_000, dtype = np.float32), 16_000
+
+    monkeypatch.setattr(inference_route, "_decode_audio_mono", _bounded)
+
+    out = inference_route._decode_audio_base64(base64.b64encode(b"wide input").decode())
+    assert out.shape == (16_000,)
+    assert streamed == [b"wide input"]
 
 
 def test_audio_input_decode_passes_a_short_recording_through(monkeypatch):

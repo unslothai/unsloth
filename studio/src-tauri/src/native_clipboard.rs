@@ -185,9 +185,11 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             .and_then(|value| value.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("3gp"));
         // A 3GP recording cannot use its final size limit until its BMFF
-        // handlers have been read and classified as audio-only or video.
+        // handlers have been read and classified as audio-only or video. Read it
+        // under the larger of the two, as the drop path does; the audio cap is
+        // reapplied below once the track handlers say it is audio-only.
         let provisional_limit = if is_3gp {
-            MAX_CLIPBOARD_AUDIO_BYTES
+            MAX_CLIPBOARD_VIDEO_BYTES
         } else {
             clipboard_file_max_bytes(mime_type)
         };
