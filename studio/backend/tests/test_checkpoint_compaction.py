@@ -1571,9 +1571,9 @@ def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
 
     rolling_origin = _fit(False)
     assert rolling_origin.get("checkpoint") is None
-    assert bool(rolling_origin.get("checkpoint_started", True)) is True, (
-        "a rolling boundary replayed as an epoch suppresses the inline recall"
-    )
+    assert (
+        bool(rolling_origin.get("checkpoint_started", True)) is True
+    ), "a rolling boundary replayed as an epoch suppresses the inline recall"
 
     # A real epoch still replays, block and all, and still reports no NEW reset.
     checkpoint_origin = _fit(True)
