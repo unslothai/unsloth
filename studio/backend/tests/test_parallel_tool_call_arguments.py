@@ -615,3 +615,36 @@ def test_metadata_on_a_resent_name_reaches_the_closed_call():
     assert reported[0]["extra_content"] == {"own": "A", "sig": "S"}
     # Read twice, so a second read cannot double anything or lose it.
     assert turn.calls()[0]["extra_content"] == {"own": "A", "sig": "S"}
+
+
+def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
+    # A catalog can hold both "web" and "web_search". Reading the second name as
+    # a growth of the first gave the id to the completed call, and the arguments
+    # that followed glued onto it, losing the second intent entirely.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "web", '{"a":1}')])
+    turn.merge_structured([_delta(0, "web_search", "", call_id = "call_b")])
+    turn.merge_structured([_delta(0, None, '{"b":2}', call_id = "call_b")])
+
+    reported = [
+        (call["id"], call["function"]["name"], call["function"]["arguments"])
+        for call in turn.calls()
+    ]
+    assert reported == [("call_0_0", "web", '{"a":1}'), ("call_b", "web_search", '{"b":2}')]
+
+
+def test_an_unfinished_split_tail_is_not_reported_as_a_call():
+    # Only "length" and "content_filter" mark a turn truncated, so a stream that
+    # stops after the start of a second object looks complete. Running the tool
+    # again on that lone brace is worse than dropping a call the model never
+    # finished writing.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}{')])
+
+    assert [(call["function"]["name"], call["function"]["arguments"]) for call in turn.calls()] == [
+        ("alpha", '{"a":1}')
+    ]
+
+    # It is held, not discarded: the rest of the object still opens the call.
+    turn.merge_structured([_delta(0, None, '"b":2}')])
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("alpha", '{"b":2}')]

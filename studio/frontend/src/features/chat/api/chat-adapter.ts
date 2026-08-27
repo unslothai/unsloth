@@ -7118,10 +7118,11 @@ export function createOpenAIStreamAdapter(
                     !!stablePartId &&
                     !!call.function?.name &&
                     !!matched?.toolName &&
-                    !(
-                      call.function.name.startsWith(matched.toolName) ||
-                      matched.toolName.startsWith(call.function.name)
-                    );
+                    // Not a prefix test: an id is strong evidence of its own
+                    // call, and a catalog holding both "web" and "web_search"
+                    // would have the second claim the first. Only the same
+                    // name, or none, reads as that call's id arriving late.
+                    call.function.name !== matched.toolName;
                   const opensNextCall =
                     closedSlot && (bringsArgs || idNamesAnotherCall);
                   // Trailing whitespace is legal JSON belonging to the object

@@ -945,3 +945,22 @@ test("a rejected resend gives up its place too", () => {
     ["A", "C", "B"],
   );
 });
+
+test("a stable id naming a longer tool opens its own call", () => {
+  // A catalog can hold both "web" and "web_search". Reading the second name as
+  // a growth of the first gave the id to the completed card, and the arguments
+  // that followed glued onto it.
+  const parts = run([
+    [{ index: 0, function: { name: "web", arguments: '{"a":1}' } }],
+    [{ id: "call_b", index: 0, function: { name: "web_search", arguments: "" } }],
+    [{ id: "call_b", index: 0, function: { arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(
+    parts.map((p) => [p.toolCallId, p.toolName, p.argsText]),
+    [
+      ["tool_call_0", "web", '{"a":1}'],
+      ["call_b", "web_search", '{"b":2}'],
+    ],
+  );
+});

@@ -542,6 +542,10 @@ class _Turn:
     key_by_call_id: dict[str, Any] = field(default_factory = dict)
     # Resumable boundary scan per call, keyed the same as ``by_index``.
     scan_by_key: dict[Any, _BoundaryScan] = field(default_factory = dict)
+    # Split-born calls whose object had not closed when they were forked off.
+    # Reported only once it does: a stream cut short after "{\"a\":1}{" would
+    # otherwise run the tool a second time on half an argument.
+    open_tail_keys: set[Any] = field(default_factory = set)
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
@@ -710,7 +714,12 @@ class _Turn:
                 and isinstance(new_name, str)
                 and new_name
                 and held_name_now
-                and not (new_name.startswith(held_name_now) or held_name_now.startswith(new_name))
+                # Not a prefix test: an id is strong evidence of its own call,
+                # and a catalog holding both "web" and "web_search" would have
+                # the second claim the first and glue their arguments together.
+                # Only the same name, or none, reads as that call's id arriving
+                # late.
+                and new_name != held_name_now
             )
             opens_next_call = (
                 bool(isinstance(new_arguments, str) and new_arguments.strip().startswith("{"))
@@ -908,6 +917,8 @@ class _Turn:
                 "function": {"name": born_name, "arguments": segment},
             }
             self.seq_by_key[born_key] = self._next_seq()
+            if tail and segment is segments[-1]:
+                self.open_tail_keys.add(born_key)
             self.order.append(born_key)
             open_key = born_key
         if incoming_extra is not None:
@@ -992,6 +1003,21 @@ class _Turn:
             out.append((self.pending_seq_by_index.get(index, self.seq_counter), call))
         return out
 
+    def _call_is_finished(self, key: Any) -> bool:
+        """Whether a call forked off an unfinished object has since closed it.
+
+        Only ``length`` and ``content_filter`` mark a turn truncated, so a
+        stream that stops after ``{"a":1}{`` looks complete; running the tool a
+        second time on that lone brace is worse than dropping a call the model
+        never finished writing.
+        """
+        if key not in self.open_tail_keys:
+            return True
+        closed, unfinished = _split_top_level_json_objects(
+            self.by_index[key]["function"]["arguments"]
+        )
+        return bool(closed) and not unfinished
+
     def _next_seq(self) -> int:
         self.seq_counter += 1
         return self.seq_counter
@@ -1015,6 +1041,7 @@ class _Turn:
         numbered = [
             (self.seq_by_key.get(key, position), self.by_index[key])
             for position, key in enumerate(self.order)
+            if self._call_is_finished(key)
         ] + self._announced_but_unopened()
         ordered = [call for _, call in sorted(numbered, key = lambda pair: pair[0])]
         for position, call in enumerate(ordered + list(self.healed)):
