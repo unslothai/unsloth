@@ -95,12 +95,12 @@ class TestMediaIsCharged:
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
 
         assert dual_cost == inline_cost
-        assert dual_cost < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
-            "the echo must be charged once, not once per spelling"
-        )
-        assert dual_cost >= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
-            "image bytes must be bounded but still charged"
-        )
+        assert (
+            dual_cost < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        ), "the echo must be charged once, not once per spelling"
+        assert (
+            dual_cost >= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        ), "image bytes must be bounded but still charged"
 
     def test_every_builder_forwards_exactly_what_admission_charged(self):
         """The reservation is only a bound if it counts the images actually sent.
@@ -193,9 +193,9 @@ class TestMediaIsCharged:
         """
         measured_worst_case = {"qwen3-vl-4b": 4098, "gemma-3-4b": 258}
         for model, tokens in measured_worst_case.items():
-            assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS >= tokens, (
-                f"per-image allowance under-reserves {model}"
-            )
+            assert (
+                _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS >= tokens
+            ), f"per-image allowance under-reserves {model}"
 
     def test_two_large_studio_image_chats_can_be_admitted_together(self):
         """A large base64 transport must not turn each vision request into a full-cache lease."""
