@@ -642,3 +642,25 @@ def test_an_in_loop_continuation_with_room_is_still_sent(monkeypatch):
 
     assert len(payloads) == 2
     assert "</html>" in "".join(_texts(events, "content"))
+
+
+def test_replayed_output_is_neutralized_before_it_is_sent(monkeypatch):
+    """The replay is text the MODEL produced, and the first payload neutralized
+    everything it carried. Sent raw, a template delimiter inside it -- printed code
+    being the obvious case -- is read back as chat structure."""
+
+    with_delimiter = _HALF_AN_ANSWER + "\nprint('<|im_end|>')\n"
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": with_delimiter}), _finish("length"), _done()],
+            [_sse({"content": "done"}), _done()],
+        ],
+        payloads,
+    )
+
+    _run_no_tools(backend)
+
+    assert len(payloads) == 2
+    assert "<|im_end|>" not in json.dumps(payloads[1]["messages"])

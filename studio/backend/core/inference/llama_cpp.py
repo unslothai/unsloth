@@ -368,6 +368,7 @@ from core.inference.tool_call_parser import (
     repeated_result_message as _repeated_result_message,
     starved_result_message as _starved_result_message,
     reprompt_to_act_message as _reprompt_to_act_message,
+    reasoning_cap_spent_message as _reasoning_cap_spent_message,
     thinking_exhausted_message as _thinking_exhausted_message,
     unfinished_thought_progress as _unfinished_thought_progress,
 )
@@ -26368,6 +26369,9 @@ class LlamaCppBackend:
                 return
             # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
             _turn_executed_real_tool = False
+            # Set when a reasoning retry was refused because the CALLER's allowance was
+            # spent rather than the window. Per iteration: it describes this turn only.
+            _reasoning_cap_spent = False
 
             active_tools = tool_controller.active_tools()
             if not active_tools:
@@ -27526,6 +27530,12 @@ class LlamaCppBackend:
                                     if _cap_left_l == 0
                                     else "the retry prompt would not be served",
                                 )
+                                # Which wall it was, so the give-up below names the lever
+                                # the user actually has. Blaming the context window for a
+                                # spent Max Tokens sends them to the one setting that was
+                                # never the constraint, and this reaches the client as
+                                # ordinary content, so nothing downstream can correct it.
+                                _reasoning_cap_spent = _cap_left_l == 0
                                 _length_continuations -= 1
                                 _effective_enable_thinking = enable_thinking
                                 _effective_reasoning_effort = reasoning_effort
@@ -27562,7 +27572,13 @@ class LlamaCppBackend:
                             yield {"type": "status", "text": ""}
                             yield {
                                 "type": "content",
-                                "text": _thinking_exhausted_message(self._effective_context_length),
+                                "text": (
+                                    _reasoning_cap_spent_message(max_tokens)
+                                    if _reasoning_cap_spent
+                                    else _thinking_exhausted_message(
+                                        self._effective_context_length
+                                    )
+                                ),
                             }
                             _meta = _build_metadata_event(
                                 _iter_usage, _iter_timings, _iter_finish_reason
@@ -27960,6 +27976,20 @@ class LlamaCppBackend:
                                 conversation[:] = compact_refused_tool_arguments(
                                     conversation, decision.tool_call_id
                                 )
+                                # Rebuilt, not mutated, so the handle this batch is still
+                                # appending to is now detached. Same defect the executed
+                                # path had: the next call in the batch would land on the
+                                # stale object while its RESULT lands in `conversation`,
+                                # and the model receives a result for a call it cannot see.
+                                for _dmsg in reversed(conversation):
+                                    if _dmsg.get("role") != "assistant":
+                                        continue
+                                    if any(
+                                        (_tc or {}).get("id") == decision.tool_call_id
+                                        for _tc in (_dmsg.get("tool_calls") or [])
+                                    ):
+                                        assistant_msg = _dmsg
+                                        break
                             if _forced_tool_call_pending:
                                 _forced_tool_call_pending = False
                             continue
@@ -28169,6 +28199,23 @@ class LlamaCppBackend:
                             )
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
+                        # The forced choice is spent by this refusal, as it is by a user
+                        # denial. Left unresolved, the next iteration advertises the same
+                        # tool as required and the model is pushed into calling it again
+                        # for the same refusal, instead of being free to say what went
+                        # wrong or finish the turn another way.
+                        _forced_choice_resolved = True
+                        # This assistant turn was rebuilt by the compaction above, so the
+                        # handle the batch is appending to no longer belongs to it.
+                        for _rmsg in reversed(conversation):
+                            if _rmsg.get("role") != "assistant":
+                                continue
+                            if any(
+                                (_tc or {}).get("id") == decision.tool_call_id
+                                for _tc in (_rmsg.get("tool_calls") or [])
+                            ):
+                                assistant_msg = _rmsg
+                                break
                         continue
 
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
@@ -28591,7 +28638,11 @@ class LlamaCppBackend:
                         # while its RESULT goes to `conversation`: the model would receive
                         # a tool result answering a call it cannot see. Rebind to the live
                         # message carrying this call.
-                        for _msg in conversation:
+                        # Backwards: generated ids restart at `call_0` every turn, so a
+                        # forward scan binds to the OLDEST turn carrying the id and the
+                        # rest of this batch is appended to history instead of to the live
+                        # exchange. The call being compacted is always the current one.
+                        for _msg in reversed(conversation):
                             if _msg.get("role") != "assistant":
                                 continue
                             if any(
@@ -29195,6 +29246,14 @@ class LlamaCppBackend:
                             },
                             continue_final_message = True,
                         )
+                        # The replay is text the MODEL just produced, and the first payload
+                        # neutralized everything it carried. Sent raw, a template delimiter
+                        # inside it -- printed code being the obvious case -- is read back
+                        # as chat structure. Neutralized before it is counted as well, so
+                        # the admission number describes the payload actually sent.
+                        _candidate_messages = neutralize_control_markup_in_messages(
+                            _candidate_messages, None, self.markup_profile
+                        )
                         _next_cap = _remaining_output_budget()
                         if _next_cap != 0 and _continuation_would_be_served(
                             _candidate_messages, True
@@ -29267,6 +29326,11 @@ class LlamaCppBackend:
                             )
                             _candidate_r.append(
                                 {"role": "user", "content": _continue_after_length_message()}
+                            )
+                            # Same reason as the answer continuation above: the progress
+                            # note quotes the model's own reasoning.
+                            _candidate_r = neutralize_control_markup_in_messages(
+                                _candidate_r, None, self.markup_profile
                             )
                             _next_cap_r = _remaining_output_budget()
                             if _next_cap_r != 0 and _continuation_would_be_served(

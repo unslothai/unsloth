@@ -333,6 +333,26 @@ def thinking_exhausted_message(context_length: Optional[int] = None) -> str:
     )
 
 
+def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
+    """Shown when a reasoning-only turn was stopped by the CALLER's own Max Tokens.
+
+    A different wall from the one `thinking_exhausted_message` describes, and the levers
+    are opposite: the window has room, the allowance does not, and only one attempt ran.
+    Blaming the context window there sends the user to raise the one setting that was
+    never the constraint, and this text reaches the client as ordinary content, so the
+    frontend's cap-aware error cannot correct it afterwards.
+    """
+    allowance = f" of {max_tokens} tokens" if max_tokens else ""
+    return (
+        f"The model used its whole output allowance{allowance} on reasoning and had none "
+        "left for an answer.\n\n"
+        "To get past this:\n"
+        "- Raise Max Tokens, so a thought and an answer both fit\n"
+        "- Or lower the reasoning effort, or turn thinking off\n"
+        "- Or ask for a smaller piece of the task at a time"
+    )
+
+
 def continue_after_length_message() -> str:
     """The user message appended when a turn ended inside its own reasoning.
 

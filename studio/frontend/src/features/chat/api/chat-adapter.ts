@@ -6150,7 +6150,16 @@ export function createOpenAIStreamAdapter(
                 : streamChatCompletions(
                     requestPayload,
                     runSignal,
-                    runtime.customContextLength ?? runtime.ggufContextLength ?? null,
+                    // Only when the request targets the LOCAL model. ggufContextLength
+                    // stays populated for a resident GGUF even while an external model is
+                    // selected, so an external request with a 16K cap was being measured
+                    // against an unrelated 4096-token local window and reported as having
+                    // unlimited Max Tokens and no context left.
+                    isExternalRequest
+                      ? null
+                      : (runtime.customContextLength ??
+                        runtime.ggufContextLength ??
+                        null),
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();

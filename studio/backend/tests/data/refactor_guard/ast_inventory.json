@@ -1701,6 +1701,11 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
       },
+      "reasoning_cap_spent_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "max_tokens: Optional[int]=None"
+      },
       "repeated_result_message": {
         "decorators": [],
         "kind": "def",
