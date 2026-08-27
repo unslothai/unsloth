@@ -721,10 +721,28 @@ class _Turn:
                 # late.
                 and new_name != held_name_now
             )
+            # A provider that streams whole snapshots rather than fragments
+            # repeats the finished call verbatim once it has an id for it. The
+            # same name and byte-identical arguments, with an id the slot does
+            # not hold yet, is that call arriving to be claimed rather than a
+            # second one, and opening a second runs a side-effecting tool twice.
+            # Narrow on purpose: only an EXACT repeat of a call that has no id
+            # of its own, so two genuinely parallel calls that differ anywhere
+            # still both run.
+            resends_this_call = bool(
+                held is not None
+                and isinstance(call_id, str)
+                and call_id
+                and not held.get("id")
+                and isinstance(new_name, str)
+                and new_name == held_name_now
+                and isinstance(new_arguments, str)
+                and new_arguments == held["function"]["arguments"]
+            )
             opens_next_call = (
                 bool(isinstance(new_arguments, str) and new_arguments.strip().startswith("{"))
                 or id_names_another_call
-            )
+            ) and not resends_this_call
             # An id names its call, so a fragment repeating the id this slot
             # already holds continues it however complete its arguments look --
             # llama-server grows the name across deltas, and forking there gives
@@ -751,7 +769,9 @@ class _Turn:
             # the opening delta disagrees, or the next call's announced early,
             # and merging it gave the closed call "alphabeta" and the new call
             # no name at all, so neither ran.
-            defers_to_next_call = slot_is_closed and not opens_next_call
+            defers_to_next_call = (
+                slot_is_closed and not opens_next_call and not resends_this_call
+            )
             suppress_name = False
             suppress_extra = False
             if defers_to_next_call:
@@ -790,6 +810,14 @@ class _Turn:
             self.open_key_by_index[index] = key
             if key not in self.by_index:
                 parked_name, parked_extra = self._take_parked(index, held, new_name)
+                # An id-less provider reusing the index for another call to the
+                # same tool can leave the repeated name out, since the first
+                # delta already gave it. An empty name is no tool at all, so
+                # _normalized_call drops the call and the user is one result
+                # short; the call this slot just closed is the only name it can
+                # mean.
+                if not parked_name and not (isinstance(new_name, str) and new_name):
+                    parked_name = held_name_now
                 born = {
                     "id": "",
                     "type": "function",
@@ -840,7 +868,7 @@ class _Turn:
                         current["function"]["name"] = fragment
                     else:
                         current["function"]["name"] = name_before + fragment
-                if isinstance(function.get("arguments"), str):
+                if isinstance(function.get("arguments"), str) and not resends_this_call:
                     current["function"]["arguments"] += function["arguments"]
                     if not (isinstance(call_id, str) and call_id):
                         # The id fork above cannot see this one: an id-less

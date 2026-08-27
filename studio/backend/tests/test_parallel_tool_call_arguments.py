@@ -648,3 +648,42 @@ def test_an_unfinished_split_tail_is_not_reported_as_a_call():
     # It is held, not discarded: the rest of the object still opens the call.
     turn.merge_structured([_delta(0, None, '"b":2}')])
     assert _shape(turn) == [("alpha", '{"a":1}'), ("alpha", '{"b":2}')]
+
+
+def test_a_second_call_to_the_same_tool_keeps_that_tools_name():
+    # The provider named the tool once and reused the index for the next call
+    # with arguments alone. An empty name is no tool at all, so the call was
+    # dropped by _normalized_call and the user was one result short.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, None, '{"a":2}')])
+
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("alpha", '{"a":2}')]
+
+
+def test_a_snapshot_repeated_to_carry_the_id_claims_the_call():
+    # Snapshot-style servers resend the whole call rather than fragments of it,
+    # so the id arrives on a verbatim repeat. Opening a second call there runs a
+    # side-effecting tool twice.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
+
+    reported = [
+        (call["id"], call["function"]["name"], call["function"]["arguments"])
+        for call in turn.calls()
+    ]
+    assert reported == [("call_a", "alpha", '{"a":1}')]
+
+
+def test_a_second_call_that_differs_anywhere_still_opens_its_own():
+    # The claim above is an exact repeat only: a call whose arguments differ is
+    # a parallel call of its own however alike the two look.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "alpha", '{"a":2}', call_id = "call_b")])
+
+    reported = [
+        (call["id"], call["function"]["arguments"]) for call in turn.calls()
+    ]
+    assert reported == [("call_0_0", '{"a":1}'), ("call_b", '{"a":2}')]

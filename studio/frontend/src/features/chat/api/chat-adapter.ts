@@ -7204,8 +7204,24 @@ export function createOpenAIStreamAdapter(
                     // would have the second claim the first. Only the same
                     // name, or none, reads as that call's id arriving late.
                     call.function.name !== matched.toolName;
+                  // A provider that streams whole snapshots rather than
+                  // fragments repeats the finished call verbatim once it has an
+                  // id for it. The same name and byte-identical arguments, on a
+                  // card carrying no id of its own, is that call arriving to be
+                  // claimed rather than a second one, and a second card runs a
+                  // side-effecting tool twice. Narrow on purpose: only an exact
+                  // repeat, so two parallel calls differing anywhere still open
+                  // separately.
+                  const resendsThisCall =
+                    !!stablePartId &&
+                    !!matched &&
+                    !matched._has_stable_id &&
+                    call.function?.name === matched.toolName &&
+                    deltaArgs === matched.argsText;
                   const opensNextCall =
-                    closedSlot && (bringsArgs || idNamesAnotherCall);
+                    closedSlot &&
+                    (bringsArgs || idNamesAnotherCall) &&
+                    !resendsThisCall;
                   // Trailing whitespace is legal JSON belonging to the object
                   // just closed, so the whitespace goes on the closed card. The
                   // name on such a delta is still held rather than merged into
@@ -7213,7 +7229,8 @@ export function createOpenAIStreamAdapter(
                   // opening delta discards when it disagrees, or the next
                   // call's announced early, and merging it gave the closed card
                   // "alphabeta" and the new one no name at all.
-                  const defersToNextCall = closedSlot && !opensNextCall;
+                  const defersToNextCall =
+                    closedSlot && !opensNextCall && !resendsThisCall;
                   const suppressName =
                     defersToNextCall && !!call.function?.name;
                   // Only once a name has announced the next call: metadata that
@@ -7272,7 +7289,12 @@ export function createOpenAIStreamAdapter(
                     const nextName = suppressName
                       ? prevName
                       : (call.function?.name ?? prevName);
-                    const merged = (existing.argsText ?? "") + argsFragment;
+                    // A snapshot repeated to carry the id says nothing new
+                    // about the arguments; appending it would give the card
+                    // `{"a":1}{"a":1}` and split it back into two calls.
+                    const merged = resendsThisCall
+                      ? (existing.argsText ?? "")
+                      : (existing.argsText ?? "") + argsFragment;
                     // A call's arguments are one JSON object, so a slot holding
                     // two whole objects is holding two calls: the stream reused
                     // this index instead of opening the next, which is how
@@ -7429,8 +7451,12 @@ export function createOpenAIStreamAdapter(
                     // opening here takes the position its arguments arrived at.
                     const announcedSlot =
                       pendingName === parked ? parkedSlot : undefined;
+                    // An id-less provider reusing the index for another call
+                    // to the same tool can leave the repeated name out, the
+                    // first delta having given it. A blank name is no tool at
+                    // all, and the card would name nothing the backend runs.
                     const freshName = !nameFragment
-                      ? pendingName
+                      ? pendingName || heldName
                       : nameFragment.startsWith(pendingName)
                         ? nameFragment
                         : pendingName + nameFragment;

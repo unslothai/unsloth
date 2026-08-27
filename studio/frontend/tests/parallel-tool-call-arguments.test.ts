@@ -1113,3 +1113,50 @@ test("the announced call keeps its own metadata when its delta splits", () => {
   assert.deepEqual(parts[1].extra_content, { sig: "parked" });
   assert.deepEqual(parts[2].extra_content, { sig: "incoming" });
 });
+
+test("a second call to the same tool keeps that tool's name", () => {
+  // The provider gave the name once and reused the index for the next call
+  // with arguments alone. A blank name is no tool: _normalized_call drops the
+  // call on the backend and the card here would name nothing.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { arguments: '{"a":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["alpha", '{"a":2}'],
+  ]);
+});
+
+test("a snapshot repeated to carry the id claims the call", () => {
+  // Snapshot-style servers resend the whole call rather than fragments of it,
+  // so the id arrives on a verbatim repeat. Opening a second call there runs a
+  // side-effecting tool twice.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ id: "call_a", index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+  ]);
+
+  assert.deepEqual(
+    parts.map((p) => [p.toolCallId, p.toolName, p.argsText]),
+    [["call_a", "alpha", '{"a":1}']],
+  );
+});
+
+test("a second call that differs anywhere still opens its own", () => {
+  // The claim above is an exact repeat only, so genuine parallel calls with
+  // ids of their own are not collapsed into one.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ id: "call_b", index: 0, function: { name: "alpha", arguments: '{"a":2}' } }],
+  ]);
+
+  assert.deepEqual(
+    parts.map((p) => [p.toolCallId, p.argsText]),
+    [
+      ["tool_call_0", '{"a":1}'],
+      ["call_b", '{"a":2}'],
+    ],
+  );
+});
