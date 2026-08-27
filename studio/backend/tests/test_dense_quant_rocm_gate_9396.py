@@ -27,8 +27,12 @@ def _stub_torch(
     hip = None,
     version_str = "2.10.0+cu128",
     cc = (11, 0),
+    current_device = 0,
 ):
-    """A torch stub that answers like a ROCm build when ``hip`` is set."""
+    """A torch stub that answers like a ROCm build when ``hip`` is set.
+
+    ``current_device`` is the ordinal this thread is pinned to; ``torch.cuda.selected`` records
+    every ``set_device`` the code under test makes."""
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.float16 = "float16"
@@ -39,8 +43,10 @@ def _stub_torch(
         is_available = lambda: True,
         get_device_capability = lambda *a: cc,
         get_device_name = lambda *a: "AMD Radeon  780M Graphics" if hip else "NVIDIA B200",
-        current_device = lambda: 0,
+        current_device = lambda: current_device,
+        selected = [],
     )
+    torch.cuda.set_device = torch.cuda.selected.append
     torch.nn = types.SimpleNamespace(
         Embedding = type("Embedding", (), {}),
         ModuleList = type("ModuleList", (list,), {}),
@@ -204,6 +210,49 @@ def test_a_scheme_missing_from_the_table_is_still_not_an_answer(monkeypatch):
     )
     assert tq._scheme_supported(tq.TQ_INT8, "cuda") is True
     assert probed == [tq.TQ_INT8]
+
+
+# ── 3a. the child must probe the card the verdict is filed under ─────────────
+
+
+def test_child_is_asked_about_the_pinned_card_not_the_default_one(monkeypatch):
+    """A load pinned to GPU 1 caches under cuda:1, so the child has to be asked about cuda:1.
+
+    A freshly spawned child starts on ordinal 0 whatever this thread selected, so handing it a
+    bare "cuda" would file the default card's kernel support against the card the load runs on.
+    """
+    _stub_torch(
+        monkeypatch,
+        hip = None,
+        version_str = "2.10.0+cu128",
+        cc = (8, 6),
+        current_device = 1,
+    )
+    asked: list = []
+    # Only the pinned card runs the scheme here, which is the mixed-GPU box this guards.
+    monkeypatch.setattr(
+        tq,
+        "_child_probe_table",
+        lambda device: asked.append(device) or {s: device == "cuda:1" for s in tq.TQ_SCHEMES},
+    )
+    monkeypatch.setattr(
+        tq, "_run_smoke_probe", lambda *a, **k: pytest.fail("the child already answered")
+    )
+    assert tq._scheme_supported(tq.TQ_FP8, "cuda") is True
+    assert asked == ["cuda:1"]
+    assert tq._SMOKE_CACHE[(tq.TQ_FP8, "cuda:1")] is True
+    assert (tq.TQ_FP8, "cuda:0") not in tq._SMOKE_CACHE
+
+
+@pytest.mark.parametrize(
+    "device, expected", [("cuda:1", [1]), ("cuda:0", [0]), ("cuda", []), ("cpu", [])]
+)
+def test_probe_child_selects_the_card_it_was_given(monkeypatch, device, expected):
+    """Argument-less CUDA calls inside the probe (synchronize, torchao's capability lookups)
+    read the CURRENT device, so the child pins it rather than only placing tensors."""
+    torch = _stub_torch(monkeypatch)
+    tq._select_probe_card(device)
+    assert torch.cuda.selected == expected
 
 
 # ── 4. the training gate has the same misread, at four entry points ───────────

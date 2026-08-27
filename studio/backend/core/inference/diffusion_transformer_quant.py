@@ -579,13 +579,16 @@ def _scheme_supported(
     # because /images/download-plan calls assert_precision_available while the user is only
     # STAGING, so a plan alone cost the backend ~700 MiB it can never give back.
     # Use the same card-qualified key as _smoke_probe; a bare "cuda" key hid child verdicts.
+    # The CHILD is asked about that same card, never the bare device: a fresh spawn starts on
+    # ordinal 0 whatever this thread is pinned to, so a bare "cuda" there would file card 0's
+    # verdict under the card this load actually runs on.
     card = _smoke_cache_device_key(device)
     if (scheme, card) not in _SMOKE_CACHE:
         with _CHILD_PROBE_LOCK:
             # Re-checked under the lock: the route answers plans concurrently, and a burst of
             # them must not each spawn a child that imports torch.
             if (scheme, card) not in _SMOKE_CACHE:
-                table = _child_probe_table(device)
+                table = _child_probe_table(card)
                 if table is not None:
                     for name, child_verdict in table.items():
                         # None is the child's out-of-memory: not a verdict, so not cached.
@@ -818,12 +821,29 @@ def _close_probe_child(proc: Any, queue: Any) -> bool:
     return True
 
 
+def _select_probe_card(device: str) -> None:
+    """Make ``device``'s ordinal current in this child, so the probe's argument-less CUDA calls
+    -- ``synchronize()``, torchao's own capability lookups -- read the card the tensors are on.
+
+    Best-effort: an index this process cannot select still probes, and lands the same failure
+    the in-process fallback would."""
+    ordinal = device.partition(":")[2]
+    if not ordinal.isdigit():
+        return
+    try:
+        import torch
+        torch.cuda.set_device(int(ordinal))
+    except Exception:  # noqa: BLE001 -- an unselectable index still probes, on the default card
+        pass
+
+
 def _child_probe_entry(device: str, schemes: tuple[str, ...], out: Any) -> None:
     """Child side of ``_child_probe_table``: probe every scheme and post one table back.
 
     Module-level and stdlib-signature so ``spawn`` can reach it by name. Every scheme is
     attempted even after one fails, because the verdicts are independent and the whole point is
     to pay the CUDA context once."""
+    _select_probe_card(device)
     table: dict[str, Optional[bool]] = {}
     for scheme in schemes:
         try:
