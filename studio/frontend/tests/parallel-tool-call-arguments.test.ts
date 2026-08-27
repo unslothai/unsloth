@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Issue #9807: a backend that streams parallel tool calls as id-less,
-// index-based deltas reuses one slot for several calls, and the adapter used to
-// append their arguments into one unparsable `{"url":"a"}{"url":"b"}`.
+// Issue #9807: a backend streaming parallel tool calls as id-less, index-based
+// deltas reuses one slot for several calls, and the adapter used to append
+// their arguments into one unparsable `{"url":"a"}{"url":"b"}`.
 //
-// The boundary between two calls is the end of a top-level JSON object, not a
-// change of function name: the reported stream calls the same tool three times
-// and has no name change to cut on. These cover the scanner that finds those
-// boundaries, the replay guard behind it, and the accumulation loop itself.
+// The boundary is the end of a top-level JSON object, not a change of function
+// name: the reported stream calls the same tool three times. These cover the
+// scanner, the replay guard behind it, and the accumulation loop itself.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -61,8 +60,8 @@ test("the object still being written is the tail, not a call", () => {
 });
 
 test("braces that are data, not structure, are not boundaries", () => {
-  // A brace inside a string, an escaped quote that does not end that string,
-  // an even run of backslashes that does, a Windows path, and nesting.
+  // A brace in a string, an escaped quote that does not end it, an even run
+  // of backslashes that does, a Windows path, and nesting.
   assert.deepEqual(splitTopLevelJsonObjects('{"a":"}{"}{"b":2}'), {
     complete: ['{"a":"}{"}', '{"b":2}'],
     tail: "",
@@ -89,8 +88,7 @@ test("braces that are data, not structure, are not boundaries", () => {
 });
 
 test("text that is not a run of objects is handed back untouched", () => {
-  // Cutting any of these would invent a call the model never made, so the slot
-  // keeps the behaviour it had before there was a scanner.
+  // Cutting any of these would invent a call the model never made.
   for (const text of [
     '[{"a":1}]',
     '"hello"',
@@ -125,9 +123,9 @@ test("a healthy call replays byte for byte", () => {
 });
 
 test("the _raw marker never reaches a backend as a tool parameter", () => {
-  // Threads stored before arguments were split per call still hold these, and
-  // so do threads imported through chat-import.ts. `_raw` is the adapter's own
-  // marker for text it could not parse; no tool declares it.
+  // Threads stored before the split still hold these, as do threads imported
+  // through chat-import.ts. `_raw` is the adapter's own marker for text it
+  // could not parse; no tool declares it.
   assert.equal(
     toolCallReplayArguments('{"query":"a"}{"query":"b"}', {
       _raw: '{"query":"a"}{"query":"b"}',
@@ -155,7 +153,7 @@ test("arguments that are not one JSON object fall back rather than replay", () =
 // chat-adapter.ts reaches the stores and a JSX barrel and cannot be imported,
 // so lift the loop the way tests/pr9057-video-simulation.test.ts lifts its
 // extractor. A re-implementation would pass while the adapter stayed broken,
-// which is exactly how this defect survived tool-call-delta-index.test.ts.
+// which is how this defect survived tool-call-delta-index.test.ts.
 const adapterSource = readFileSync(
   fileURLToPath(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
@@ -271,8 +269,8 @@ function run(batches: DeltaCall[][]): LoopPart[] {
 const shape = (parts: LoopPart[]) => parts.map((p) => [p.toolName, p.argsText]);
 
 test("the stream from #9807 becomes one call per JSON object", () => {
-  // Three fetches and a search, all arriving id-less at index 0. The same tool
-  // repeats, so there is no name change to cut on.
+  // Three fetches and a search, all id-less at index 0. The same tool repeats,
+  // so there is no name change to cut on.
   const parts = run([
     [{ index: 0, function: { name: "url", arguments: '{"url":"a"}' } }],
     [{ index: 0, function: { name: "url", arguments: '{"url":"b"}' } }],
@@ -291,8 +289,8 @@ test("the stream from #9807 becomes one call per JSON object", () => {
 });
 
 test("a call at another index is not overwritten when a slot splits", () => {
-  // The slot being split sits before the neighbour in the array, so removing
-  // it and writing back through the old position would delete the neighbour.
+  // The split slot sits before the neighbour, so removing it and writing back
+  // through the old position would delete that neighbour.
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
     [{ index: 1, function: { name: "beta", arguments: '{"b":2}' } }],
@@ -344,8 +342,8 @@ test("a call born from a split is state, so it does not wait to publish", () => 
     ]),
     true,
   );
-  // Without this the pacing gate can hold the second call back, and Stop
-  // persists a snapshot the second call is missing from.
+  // Otherwise the pacing gate holds the second call back and Stop persists a
+  // snapshot without it.
   assert.equal(
     stream.feed([
       { index: 0, function: { name: "beta", arguments: '{"b":2}' } },
@@ -409,9 +407,9 @@ test("an id stamped on a later fragment still claims its own slot", () => {
 });
 
 test("a late id claims the call still being written, never a closed one", () => {
-  // The slot splits, leaving a half-written third call; an id then arrives.
-  // It has to land on that unfinished call, because appending to either of the
-  // two that already closed is the gluing this whole change is about.
+  // The slot splits, leaving a half-written third call, then an id arrives. It
+  // has to land on that unfinished call: appending to either of the two that
+  // closed is the gluing this whole change is about.
   const parts = run([
     [
       {

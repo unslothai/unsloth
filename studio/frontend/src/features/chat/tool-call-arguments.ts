@@ -12,20 +12,17 @@ function isSingleJsonObject(text: string): boolean {
 }
 
 /**
- * The accumulated argument text of one streaming slot, cut into the top-level
- * JSON objects it holds.
+ * One streaming slot's accumulated argument text, cut into the top-level JSON
+ * objects it holds: `complete` are the ones that closed, `tail` is the one
+ * still being written.
  *
- * One tool call's `function.arguments` is exactly one JSON object, so a second
- * top-level `{` can only mean the stream reused a single index slot for a
- * second parallel call. That is what turns two calls into the unparsable
- * `{"url":"a"}{"url":"b"}`.
+ * A call's `function.arguments` is one JSON object, so a second top-level `{`
+ * means the stream reused this slot for a second parallel call, which is what
+ * turns two calls into the unparsable `{"url":"a"}{"url":"b"}`.
  *
- * `complete` holds the objects that have closed, in order, each one valid JSON
- * on its own. `tail` is the object still being written, if any. Anything the
- * scanner cannot read as a run of whole objects -- a top-level array or scalar,
- * trailing junk, an unbalanced brace -- is returned whole in `tail` with
- * `complete` empty, so a stream this was never meant for keeps its old
- * behaviour rather than being cut in a place that means nothing.
+ * Text that is not a run of whole objects (top-level array or scalar, trailing
+ * junk, an unbalanced brace) comes back whole in `tail` with `complete` empty,
+ * so a stream this was never meant for is left alone.
  */
 export function splitTopLevelJsonObjects(text: string): {
   complete: string[];
@@ -41,17 +38,16 @@ export function splitTopLevelJsonObjects(text: string): {
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (inString) {
-      // A backslash escapes exactly the next character, so a run of them
-      // toggles rather than accumulates and `\\"` really does end the string.
+      // A backslash escapes one character, so a run of them toggles rather
+      // than accumulates and `\\"` really does end the string.
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       continue;
     }
     if (depth === 0) {
-      // Between objects only whitespace is allowed. Providers wrap in "\r\n"
-      // as readily as "\n", and both are whitespace here. Anything else, a
-      // quote included, means this is not a run of objects at all.
+      // Between objects only whitespace, "\r\n" as readily as "\n". Anything
+      // else, a quote included, means this is not a run of objects at all.
       if (ch === "{") {
         depth = 1;
         start = i;
@@ -72,8 +68,8 @@ export function splitTopLevelJsonObjects(text: string): {
         try {
           JSON.parse(segment);
         } catch {
-          // Balanced but not valid JSON, so the brace count was a coincidence
-          // and cutting here would invent a call the model never made.
+          // Balanced but invalid, so the brace count was a coincidence and
+          // cutting here would invent a call the model never made.
           return unsplit;
         }
         complete.push(segment);
@@ -96,10 +92,9 @@ export function splitTopLevelJsonObjects(text: string): {
  * in the thread, and strict chat templates reject the whole request rather than
  * one call, so it falls back to the structured args the part already carries.
  *
- * `{ _raw }` is the adapter's own marker for text it could not parse, not
- * something any tool declares, so replaying it would hand the tool a parameter
- * it has never heard of. Threads stored before arguments were split per call
- * still hold those, and they replay as `{}` rather than as a blob.
+ * `{ _raw }` is the adapter's own marker for text it could not parse, not a
+ * parameter any tool declares, so threads stored before arguments were split
+ * per call replay as `{}` rather than as a blob.
  */
 export function toolCallReplayArguments(
   argsText: string | undefined,
@@ -108,17 +103,15 @@ export function toolCallReplayArguments(
   if (
     typeof argsText === "string" &&
     argsText.length > 0 &&
-    // One JSON object, because that is what `function.arguments` is. A run of
-    // them, an array, a bare scalar or a half-written object are all things a
-    // strict chat template rejects for the whole request rather than for the
-    // one call, so the structured args below stand in instead.
+    // One object, because that is what `function.arguments` is. A run of them,
+    // an array, a scalar or a half-written object all get the whole request
+    // rejected, not just the one call.
     isSingleJsonObject(argsText)
   ) {
     return argsText;
   }
   const serialized = JSON.stringify(args ?? {});
-  // An array, a scalar, `null`, or something JSON.stringify refuses is not a
-  // set of named parameters, whatever else it might be.
+  // Not a set of named parameters, whatever else it might be.
   if (serialized === undefined || !isSingleJsonObject(serialized)) {
     return "{}";
   }

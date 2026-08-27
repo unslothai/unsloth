@@ -5143,9 +5143,9 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
-      // An id for a call the stream never named one for: a slot that turned out
-      // to hold several parallel calls (issue #9807). Counted rather than
-      // random so a rerun of the same stream reads the same way in a log.
+      // An id for a call the stream never gave one: a slot that turned out to
+      // hold several parallel calls (issue #9807). Counted, not random, so a
+      // rerun of the same stream reads the same way in a log.
       let splitToolCallSeq = 0;
       const mintSplitToolCallId = (deltaIndex: number | undefined): string => {
         let candidate = "";
@@ -5157,10 +5157,9 @@ export function createOpenAIStreamAdapter(
         return candidate;
       };
       /**
-       * Parts for the calls after the first, in a slot that turned out to hold
-       * several. Nothing that belongs to one call alone is copied across: no
-       * result, no provenance, and the thought signature this delta carries
-       * belongs to the call it closes, which is the last one.
+       * Parts for the calls after the first, in a slot holding several. Nothing
+       * per-call is copied across: no result, no provenance, and the thought
+       * signature goes only to the call this delta closes, the last one.
        */
       const bornSplitToolCalls = (
         extraSegments: string[],
@@ -5191,10 +5190,9 @@ export function createOpenAIStreamAdapter(
             ...(isLast && extraContent !== undefined
               ? { extra_content: extraContent }
               : {}),
-            // A finished object is spoken for. Without this an id stamped on a
-            // later fragment takes the newest unclaimed part in the slot, which
-            // would be a call that has already closed, and appends to it -- the
-            // same gluing, one step further along.
+            // A closed object is spoken for: otherwise an id stamped on a later
+            // fragment claims the newest unclaimed part in the slot, a call
+            // that has already closed, and appends to it.
             ...(isLast && tailIsOpen ? {} : { _has_stable_id: true }),
             ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
           };
@@ -6724,29 +6722,26 @@ export function createOpenAIStreamAdapter(
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
                     const merged = (existing.argsText ?? "") + argsFragment;
-                    // One call's arguments are one JSON object, so a slot
-                    // holding two whole objects is holding two calls: the
-                    // stream reused this index rather than opening the next
-                    // one, which is how vLLM's id-less parallel deltas glue
-                    // `{"url":"a"}{"url":"b"}` into a single unparsable string
-                    // (issue #9807). Cut on the object boundary, not on a
-                    // change of function name: the same tool called twice is
-                    // the common case and has no name change to cut on.
-                    // Deltas carrying an id address their own call already.
+                    // A call's arguments are one JSON object, so a slot holding
+                    // two whole objects is holding two calls: the stream reused
+                    // this index instead of opening the next, which is how
+                    // vLLM's id-less parallel deltas glue `{"url":"a"}` and
+                    // `{"url":"b"}` into one unparsable string (issue #9807).
+                    // Cut on the object boundary, not on a change of function
+                    // name: the same tool called twice has no name to cut on.
+                    // A delta carrying an id addresses its own call already.
                     const split = stablePartId
                       ? { complete: [], tail: "" }
                       : splitTopLevelJsonObjects(merged);
-                    // The last segment is the object still being written, if
-                    // there is one. Whether it is finished decides who may go
-                    // on writing to it.
+                    // Whether the last segment is still being written decides
+                    // who may go on writing to it.
                     const splitTailIsOpen = split.tail.length > 0;
                     const segments = splitTailIsOpen
                       ? [...split.complete, split.tail]
                       : split.complete;
                     const isSplit = segments.length > 1;
                     // The slot keeps the object it opened with, under the name
-                    // and id it already had; the objects after it are calls
-                    // this delta introduced.
+                    // and id it had; the rest are calls this delta introduced.
                     const slotText = isSplit ? segments[0] : merged;
                     let parsedArgs: ToolCallMessagePart["args"] =
                       existing.args ?? {};
@@ -6791,10 +6786,9 @@ export function createOpenAIStreamAdapter(
                     };
                     toolCallParts[existingIndex] = updated;
                     if (isSplit) {
-                      // Appended, not inserted beside the slot: a call the
-                      // stream opened third reads third, whichever index it
-                      // reused. This is where the branch below puts a call
-                      // that arrives with its own slot, too.
+                      // Appended, not inserted beside the slot, so a call the
+                      // stream opened third reads third whichever index it
+                      // reused. Where the branch below puts one, too.
                       toolCallParts.push(
                         ...bornSplitToolCalls(
                           segments.slice(1),
@@ -6804,8 +6798,7 @@ export function createOpenAIStreamAdapter(
                           splitTailIsOpen,
                         ),
                       );
-                      // These are calls the thread did not have a moment ago,
-                      // so they are state and must not wait on the pacing gate.
+                      // New calls are state, so they never wait on the gate.
                       addedToolCall = true;
                     }
                   } else {
@@ -6815,10 +6808,9 @@ export function createOpenAIStreamAdapter(
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
                     }
-                    // A slot can arrive holding several calls already, in one
-                    // fragment: vLLM bundles parallel calls into a single delta
-                    // when the model writes them in one pass. Same boundary,
-                    // same treatment as a slot that fills up over time.
+                    // A slot can arrive already holding several calls in one
+                    // fragment: vLLM bundles them into a single delta when the
+                    // model writes them in one pass. Same boundary as above.
                     const freshSplit = stablePartId
                       ? { complete: [], tail: "" }
                       : splitTopLevelJsonObjects(argsFragment);

@@ -354,15 +354,15 @@ class ToolLoopPolicy:
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
     """The top-level JSON objects in ``text``, and any object still unfinished.
 
-    One tool call's ``function.arguments`` is one JSON object, so a second
-    top-level ``{`` can only mean one index slot took a second parallel call.
-    Text that is not a run of whole objects -- a top-level array or scalar,
-    trailing junk, an unbalanced brace -- comes back whole as the tail with no
-    complete objects, so a stream this was never meant for is left alone.
+    A call's ``function.arguments`` is one JSON object, so a second top-level
+    ``{`` means one index slot took a second parallel call. Text that is not a
+    run of whole objects (top-level array or scalar, trailing junk, unbalanced
+    brace) comes back whole as the tail, so a stream this was never meant for
+    is left alone.
 
     Mirrors ``splitTopLevelJsonObjects`` in
-    ``studio/frontend/src/features/chat/tool-call-arguments.ts``; the two see
-    the same provider deltas and have to agree on where a call ends.
+    ``studio/frontend/src/features/chat/tool-call-arguments.ts``: the two see
+    the same deltas and have to agree on where a call ends.
     """
     unsplit: tuple[list[str], str] = ([], text)
     complete: list[str] = []
@@ -373,8 +373,7 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
 
     for i, ch in enumerate(text):
         if in_string:
-            # A backslash escapes exactly the next character, so a run of them
-            # toggles rather than accumulates.
+            # A backslash escapes one character, so a run of them toggles.
             if escaped:
                 escaped = False
             elif ch == "\\":
@@ -403,7 +402,7 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
                 try:
                     json.loads(segment)
                 except (ValueError, TypeError):
-                    # Balanced but not valid JSON, so the brace count was a
+                    # Balanced but invalid, so the brace count was a
                     # coincidence and cutting here would invent a call.
                     return unsplit
                 complete.append(segment)
@@ -593,9 +592,9 @@ class _Turn:
                     current["function"]["arguments"] += function["arguments"]
                     if not (isinstance(call_id, str) and call_id):
                         # The id fork above cannot see this one: an id-less
-                        # stream has no ids to differ. Appending glued the two
-                        # calls' JSON into one unparseable blob, which then
-                        # rides into the next request verbatim (issue #9807).
+                        # stream has no ids to differ, so appending glued two
+                        # calls into one unparseable blob that then rides into
+                        # the next request verbatim (issue #9807).
                         self._fork_glued_arguments(
                             index,
                             key,
@@ -613,14 +612,13 @@ class _Turn:
         if len(segments) < 2:
             return
         # The slot keeps the object it opened with, under the name and id it
-        # already had. Nothing per-call rides along: extra_content carries this
-        # call's thoughtSignature, and two calls claiming it is a rejected turn.
+        # had. Nothing per-call rides along: extra_content carries this call's
+        # thoughtSignature, and two calls claiming it is a rejected turn.
         current["function"]["arguments"] = segments[0]
-        # A name arriving with this delta names the calls this delta opened, so
-        # the slot goes back to the one it had. Without this the two dialects
-        # above merge the second call's name into the first: "alpha" and
-        # "gamma" at one index become "alphagamma", which matches no enabled
-        # tool and silently never runs.
+        # A name arriving with this delta names the calls it opened, so the slot
+        # goes back to its own. Without this the two dialects above merge them:
+        # "alpha" then "gamma" at one index becomes "alphagamma", matching no
+        # enabled tool and silently never running.
         born_name = incoming_name or name_before
         current["function"]["name"] = name_before or born_name
         open_key: Any = key
@@ -634,8 +632,7 @@ class _Turn:
             }
             self.order.append(born_key)
             open_key = born_key
-        # Later id-less fragments continue the call still being written, which
-        # is the last one, finished or not.
+        # Later id-less fragments continue the last call, finished or not.
         self.open_key_by_index[index] = open_key
 
     def calls(self, taken: set[str] | None = None) -> list[dict[str, Any]]:
