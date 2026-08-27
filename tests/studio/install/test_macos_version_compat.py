@@ -358,10 +358,12 @@ class TestTheProbeEnvironment:
 
         def capture(command, **kwargs):
             seen.update(kwargs.get("env") or {})
+
             class Result:
                 returncode = 0
                 stdout = ""
                 stderr = ""
+
             return Result()
 
         monkeypatch.setattr(ILP, "run_capture", capture)
