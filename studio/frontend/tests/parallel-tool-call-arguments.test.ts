@@ -509,3 +509,44 @@ test("a late id opens its own call when every call in the slot has closed", () =
     ],
   );
 });
+
+test("an opening delta after a closed call does not claim it", () => {
+  // The conventional opening delta carries the id and the name with empty
+  // arguments. Landing it on the finished card stamps that card with the id, so
+  // the arguments delta that follows matches and glues on, losing the call the
+  // delta was announcing.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ id: "call_b", index: 0, function: { name: "beta", arguments: "" } }],
+    [{ id: "call_b", index: 0, function: { arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["beta", '{"b":2}'],
+  ]);
+  const ids = parts.map((p) => p.toolCallId);
+  assert.equal(ids[1], "call_b");
+  assert.equal(new Set(ids).size, ids.length, `ids collide: ${ids.join(",")}`);
+});
+
+test("a name held for the next call grows across deltas", () => {
+  // OpenAI streams a name as "web" then "_search"; llama-server resends "web"
+  // then "web_search". Last-write-wins opens the call as "_search", which
+  // matches no enabled tool and silently never runs.
+  for (const fragments of [
+    ["web", "_search"],
+    ["web", "web_search"],
+  ]) {
+    const parts = run([
+      [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+      ...fragments.map((name) => [{ index: 0, function: { name } }]),
+      [{ index: 0, function: { arguments: '{"q":"x"}' } }],
+    ]);
+
+    assert.deepEqual(shape(parts), [
+      ["alpha", '{"a":1}'],
+      ["web_search", '{"q":"x"}'],
+    ]);
+  }
+});

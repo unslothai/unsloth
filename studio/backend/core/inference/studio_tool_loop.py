@@ -585,7 +585,14 @@ class _Turn:
             # Whitespace after a closing brace is legal JSON and says nothing
             # about another call, so a provider that chunks it off on its own
             # must not open one.
-            opens_next_call = bool(isinstance(new_arguments, str) and new_arguments.strip())
+            # An id, though, names a call outright, so one that is not the closed
+            # call's own opens the next one even before its arguments arrive --
+            # the conventional opening delta carries id and name with empty
+            # arguments, and letting it land on the finished call would put the
+            # next call's arguments there too.
+            opens_next_call = bool(
+                isinstance(new_arguments, str) and new_arguments.strip()
+            ) or bool(isinstance(call_id, str) and call_id)
             # An id names its call, so a fragment repeating the id this slot
             # already holds continues it however complete its arguments look --
             # llama-server grows the name across deltas, and forking there gives
@@ -607,7 +614,16 @@ class _Turn:
             suppress_name = False
             if slot_is_closed and not opens_next_call:
                 if isinstance(new_name, str) and new_name:
-                    self.pending_name_by_index[index] = new_name
+                    # Held across deltas, so the two dialects the accumulator
+                    # below reconciles have to be reconciled here too: a name
+                    # streamed as "web" then "_search" must open its call as
+                    # "web_search", not as whichever fragment arrived last.
+                    pending_before = self.pending_name_by_index.get(index, "")
+                    self.pending_name_by_index[index] = (
+                        new_name
+                        if new_name.startswith(pending_before)
+                        else pending_before + new_name
+                    )
                     suppress_name = True
             if slot_is_closed and opens_next_call:
                 self.split_seq += 1

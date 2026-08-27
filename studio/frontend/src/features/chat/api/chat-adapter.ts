@@ -6994,12 +6994,28 @@ export function createOpenAIStreamAdapter(
                   // resends a name it is still growing. Hold it until arguments
                   // say which call it names, rather than renaming the finished
                   // one.
+                  // An id, though, names a call outright, so one that is not the
+                  // closed call's own opens the next one even before its
+                  // arguments arrive: the conventional opening delta carries id
+                  // and name with empty arguments, and letting it claim the
+                  // finished card would draw the next call's arguments there.
+                  const opensNextCall =
+                    closedSlot && (bringsArgs || !!stablePartId);
                   const suppressName =
-                    closedSlot && !bringsArgs && !!call.function?.name;
+                    closedSlot && !opensNextCall && !!call.function?.name;
                   if (suppressName) {
-                    pendingNameByIndex.set(idx, call.function?.name ?? "");
+                    // Held across deltas, so a name streamed as "web" then
+                    // "_search" opens its call as "web_search" rather than as
+                    // whichever fragment arrived last.
+                    const pendingBefore = pendingNameByIndex.get(idx) ?? "";
+                    const fragment = call.function?.name ?? "";
+                    pendingNameByIndex.set(
+                      idx,
+                      fragment.startsWith(pendingBefore)
+                        ? fragment
+                        : pendingBefore + fragment,
+                    );
                   }
-                  const opensNextCall = closedSlot && bringsArgs;
                   const existing = opensNextCall ? undefined : matched;
 
                   if (
@@ -7125,9 +7141,15 @@ export function createOpenAIStreamAdapter(
                       : freshSplit.complete;
                     const freshIsSplit = freshSegments.length > 1;
                     // The name a name-only delta parked for whichever call the
-                    // arguments turned out to open.
-                    const freshName =
-                      call.function?.name ?? pendingNameByIndex.get(idx) ?? "";
+                    // arguments turned out to open, continued by whatever this
+                    // delta adds to it.
+                    const pendingName = pendingNameByIndex.get(idx) ?? "";
+                    const nameFragment = call.function?.name ?? "";
+                    const freshName = !nameFragment
+                      ? pendingName
+                      : nameFragment.startsWith(pendingName)
+                        ? nameFragment
+                        : pendingName + nameFragment;
                     pendingNameByIndex.delete(idx);
                     const argsText = freshIsSplit
                       ? freshSegments[0]

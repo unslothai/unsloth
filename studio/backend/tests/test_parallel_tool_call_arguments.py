@@ -267,3 +267,34 @@ def test_nonstandard_numeric_constants_are_not_object_boundaries():
         ['{"a":1.5e3}', '{"b":2}'],
         "",
     )
+
+
+def test_an_opening_delta_after_a_closed_call_does_not_claim_it():
+    # The conventional opening delta carries the id and the name with empty
+    # arguments. Landing it on the finished call would put that call's id on it,
+    # so the arguments delta that follows would match and glue on, losing the
+    # call the delta was announcing.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "beta", "", call_id = "call_b")])
+    turn.merge_structured([_delta(0, None, '{"b":2}', call_id = "call_b")])
+
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+    ids = [call["id"] for call in turn.calls()]
+    assert ids[1] == "call_b"
+    assert len(set(ids)) == len(ids)
+
+
+def test_a_name_held_for_the_next_call_grows_across_deltas():
+    # Both dialects the accumulator reconciles reach the held name too: OpenAI
+    # streams "web" then "_search", llama-server resends "web" then
+    # "web_search". Last-write-wins would open the call as "_search", which
+    # matches no enabled tool and silently never runs.
+    for fragments in (("web", "_search"), ("web", "web_search")):
+        turn = _Turn()
+        turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+        for fragment in fragments:
+            turn.merge_structured([_delta(0, fragment, "")])
+        turn.merge_structured([_delta(0, None, '{"q":"x"}')])
+
+        assert _shape(turn) == [("alpha", '{"a":1}'), ("web_search", '{"q":"x"}')]
