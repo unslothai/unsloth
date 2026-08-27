@@ -5634,21 +5634,75 @@ def _dill_install_root(origin):
     return parent or None
 
 
-def _dill_module_is_importable_by_name(module, roots = ()):
+def _dill_distribution_top_levels(root):
+    """The import names some INSTALLED DISTRIBUTION put into `root`.
+
+    Read from the `.dist-info` / `.egg-info` directories pip writes beside the
+    packages it installs: `top_level.txt` when it exists, otherwise the first
+    path component of every `RECORD` entry, which covers modern wheels that
+    ship no `top_level.txt` and single-module distributions like `dill.py`.
+
+    Being under the directory is NOT the question. `pip install --target .` and
+    a Lambda deployment bundle put dependencies into the application's own
+    directory, so the root is shared with the user's project, and treating the
+    whole tree as dependency-owned would move `myproj.config` to by-reference
+    too. Its mutable state would then stop participating in a `recurse=True`
+    fingerprint, and `datasets` would serve a stale cached result after
+    `config.VALUE` changed -- silently, which is worse than the crash this
+    whole patch exists to prevent. Installed metadata is what separates the two.
+    """
+    names = set()
+    try:
+        entries = os.listdir(root)
+    except Exception:
+        return names
+    for entry in entries:
+        if not entry.endswith((".dist-info", ".egg-info")):
+            continue
+        meta = os.path.join(root, entry)
+        top_level = os.path.join(meta, "top_level.txt")
+        try:
+            if os.path.isfile(top_level):
+                with open(top_level, encoding = "utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            names.add(line.replace("/", ".").split(".")[0])
+                continue
+            record = os.path.join(meta, "RECORD")
+            if not os.path.isfile(record):
+                continue
+            with open(record, encoding = "utf-8") as f:
+                for line in f:
+                    path = line.split(",", 1)[0].strip().replace("\\", "/")
+                    head = path.split("/", 1)[0]
+                    if not head or head.startswith((".", "_", "-")):
+                        continue
+                    if head.endswith((".dist-info", ".egg-info", ".data")):
+                        continue
+                    if "/" in path:
+                        names.add(head)
+                    elif head.endswith(".py"):
+                        names.add(head[:-3])
+        except Exception:
+            continue
+    return names
+
+
+def _dill_module_is_importable_by_name(module, roots = (), provided = ()):
     """Whether pickling `module` BY REFERENCE is valid AND in scope.
 
     Valid exactly when an unpickler can get the same object back with
     `import <name>`, which is what an ordinary site-packages install already
     does for every one of these modules.
 
-    In scope only when the module lives in one of the install ROOTS that made
-    this environment dill-hostile in the first place. That restriction is not
-    tidiness. A user's own project module normally sits outside site-packages,
-    so dill pickles it BY VALUE and its mutable state participates in a
-    `recurse=True` fingerprint; widening the predicate for every live module
-    would flip that, and `config.VALUE = 2` would stop changing the fingerprint
-    while `datasets` served a stale cached result. Only the misplaced LIBRARIES
-    are moved back to the behaviour they would have in an ordinary install.
+    In scope only when the module was INSTALLED into one of the roots that made
+    this environment dill-hostile: it must live under a root and its top-level
+    name must be one an installed distribution there claims (`provided`). Root
+    containment alone is not enough, because dependencies are routinely
+    installed into a directory the user's own code already occupies -- see
+    `_dill_distribution_top_levels`. Only the misplaced LIBRARIES are moved
+    back to the behaviour they would have in an ordinary install.
 
     Deliberately narrow in three further ways: the module must be the live
     entry in `sys.modules` under its own name, must be file-backed, and
@@ -5665,7 +5719,9 @@ def _dill_module_is_importable_by_name(module, roots = ()):
     origin = getattr(spec, "origin", None)
     if not origin:
         return False
-    if not roots:
+    if not roots or not provided:
+        return False
+    if name.split(".")[0] not in provided:
         return False
     try:
         real = os.path.realpath(origin)
@@ -5722,15 +5778,28 @@ def fix_dill_module_by_value_pickling():
     if probe is None or not roots:
         return False
 
+    # Read once, at patch time: the answer is a property of the install, and
+    # re-scanning per pickled module would put directory listings inside every
+    # fingerprint. A root carrying no installed metadata at all contributes
+    # nothing, so the patch declines rather than fall back to "everything under
+    # the directory is a dependency" -- a loud crash beats a stale cache.
+    provided = set()
+    for root in roots:
+        provided |= _dill_distribution_top_levels(root)
+    if not provided:
+        return False
+
     @functools.wraps(original)
-    def _is_builtin_module(module, _original = original, _roots = tuple(roots)):
+    def _is_builtin_module(
+        module, _original = original, _roots = tuple(roots), _provided = frozenset(provided),
+    ):
         try:
             if _original(module):
                 return True
         except Exception:
             return False
         try:
-            return _dill_module_is_importable_by_name(module, _roots)
+            return _dill_module_is_importable_by_name(module, _roots, _provided)
         except Exception:
             return False
 

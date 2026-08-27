@@ -44,6 +44,7 @@ bug is about where a file lives on disk.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -105,6 +106,18 @@ _HOSTILE_TREE = {
             return create_arrowTable
         """
     ),
+    # The user's OWN module, in the same directory, which is what
+    # `pip install --target .` and a Lambda bundle produce. No distribution
+    # claims it, so it must keep dill's by-value treatment and keep its mutable
+    # state inside a `recurse=True` fingerprint.
+    "projcfg.py": "VALUE = 1\n",
+    # What pip writes beside the packages it installs. Two distributions rather
+    # than one so the two readers are both exercised: `top_level.txt` where pip
+    # emitted one, and RECORD -- the only metadata a modern wheel is guaranteed
+    # to carry -- where it did not.
+    "pyarrow-0.0.dist-info/RECORD": "pyarrow.py,,\npyarrow-0.0.dist-info/RECORD,,\n",
+    "ovdep-0.0.dist-info/top_level.txt": "ovmod\novuser\n",
+    "ovdep-0.0.dist-info/RECORD": "ovmod.py,,\novuser.py,,\n",
 }
 
 _DRIVER = textwrap.dedent(
@@ -128,6 +141,16 @@ _DRIVER = textwrap.dedent(
     out["affected"] = fixes._dill_environment_is_affected()
     out["session_binding_patched"] = (
         _session._is_builtin_module is _core._is_builtin_module)
+
+    # Asked of dill's LIVE predicate, so it reports what dill will really do.
+    # `projcfg` is the user's own module sitting in the same directory as the
+    # dependencies, which is what `pip install --target .` produces: it must
+    # stay by value or its mutable state drops out of every fingerprint.
+    import pyarrow, ovmod, projcfg
+    out["by_reference"] = {
+        name: bool(_core._is_builtin_module(sys.modules[name]))
+        for name in ("pyarrow", "ovmod", "projcfg")
+    }
 
     import dill, ovuser
     try:
@@ -167,12 +190,18 @@ def _run_on_hostile_tree(
     *,
     apply,
     extra_env = None,
+    omit_metadata = False,
 ):
     """Build the tree OUTSIDE any sys prefix and run the driver against it."""
     overlay = tmp_path / "overlay_leg"  # deliberately not "site-packages"
     overlay.mkdir()
     for name, body in _HOSTILE_TREE.items():
-        (overlay / name).write_text(body, encoding = "utf-8")
+        target = overlay / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_text(body, encoding = "utf-8")
+    if omit_metadata:
+        for meta in overlay.glob("*.dist-info"):
+            shutil.rmtree(meta)
     driver = tmp_path / "driver.py"
     driver.write_text(_DRIVER, encoding = "utf-8")
 
@@ -226,6 +255,40 @@ def test_the_fix_makes_the_same_tree_picklable(tmp_path):
     assert got["dumps"] == "ok", got["dumps"]
 
 
+def test_a_co_located_project_module_keeps_its_by_value_state(tmp_path):
+    """P1 from review, executed rather than reasoned about.
+
+    `pip install --target .` and a Lambda deployment bundle put dependencies
+    into the application's OWN directory, so the install root is shared with
+    the user's code. Root containment alone would move `projcfg` to
+    by-reference along with the libraries, its mutable state would leave the
+    `recurse=True` fingerprint, and `datasets` would serve a stale cached
+    result after `projcfg.VALUE` changed. Installed metadata is what tells the
+    two apart, and this asks dill's live predicate which side each landed on.
+    """
+    got = _run_on_hostile_tree(tmp_path, apply = True)
+    assert got["applied"] is True
+    assert got["by_reference"] == {
+        "pyarrow": True, "ovmod": True, "projcfg": False,
+    }, got["by_reference"]
+
+
+def test_a_root_with_no_installed_metadata_is_left_alone(tmp_path):
+    """Nothing there says which files are dependencies, so nothing is widened.
+
+    A hand-assembled vendor directory reaches the same crash, and the honest
+    answer is to decline: the crash is loud and immediate, while guessing would
+    silently pin fingerprints on whatever the user keeps beside it.
+    """
+    got = _run_on_hostile_tree(tmp_path, apply = True, omit_metadata = True)
+    assert got["affected"] is True, "the layout is still the hostile one"
+    assert got["applied"] is False, (
+        "the patch installed itself with no way to tell a dependency from the "
+        "user's own module"
+    )
+    assert got["dumps"].startswith("PicklingError"), got["dumps"]
+
+
 def test_it_is_idempotent(tmp_path):
     """Applied twice, dill must not end up wrapping the wrapper: a second layer
     is invisible until something recurses."""
@@ -266,21 +329,23 @@ def test_the_widening_only_covers_modules_that_import_back():
     dill treats the user's own script."""
     from unsloth.import_fixes import _dill_module_is_importable_by_name
 
-    # Every call now carries the install ROOTS, because the widening is scoped
-    # to them; `json` stands in for a library that landed in one.
+    # Every call now carries the install ROOTS and the names installed there,
+    # because the widening is scoped to both; `json` stands in for a library
+    # that landed in one.
     roots = (os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or "")),)
     roots = (os.path.dirname(roots[0]),)  # the package's install root
+    provided = frozenset({"json", "not_in_sys_modules", "json_lookalike"})
     real = sys.modules["json"]
-    assert _dill_module_is_importable_by_name(real, roots)
+    assert _dill_module_is_importable_by_name(real, roots, provided)
 
     orphan = types.ModuleType("not_in_sys_modules")
     orphan.__spec__ = types.SimpleNamespace(name = "not_in_sys_modules", origin = "/x.py")
-    assert not _dill_module_is_importable_by_name(orphan, roots)
+    assert not _dill_module_is_importable_by_name(orphan, roots, provided)
 
     no_spec = types.ModuleType("json_lookalike")
     sys.modules["json_lookalike"] = no_spec
     try:
-        assert not _dill_module_is_importable_by_name(no_spec, roots)
+        assert not _dill_module_is_importable_by_name(no_spec, roots, provided)
     finally:
         del sys.modules["json_lookalike"]
 
@@ -297,7 +362,7 @@ def test_the_widening_only_covers_modules_that_import_back():
         previous = sys.modules.get(hostile)
         sys.modules[hostile] = fake
         try:
-            assert not _dill_module_is_importable_by_name(fake, roots), (
+            assert not _dill_module_is_importable_by_name(fake, roots, provided), (
                 f"{hostile} would be pickled by reference, which changes dill's "
                 "contract for the user's own code"
             )
@@ -311,7 +376,7 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(namespace_like, roots), (
+        assert not _dill_module_is_importable_by_name(namespace_like, roots, provided), (
             "a module with no file backing it is not safely importable by name"
         )
     finally:
@@ -423,15 +488,63 @@ def test_a_project_module_outside_the_install_root_keeps_its_by_value_state():
     )
     sys.modules["pretend_library"] = library
     sys.modules["pretend_project"] = project
+    # The user's own module in the SAME directory as the dependencies, which is
+    # what `pip install --target .` and a Lambda bundle produce. Root
+    # containment cannot separate it from `library`; installed metadata can.
+    colocated = types.ModuleType("pretend_colocated")
+    colocated.__spec__ = types.SimpleNamespace(
+        name = "pretend_colocated", origin = "/opt/layer/python/pretend_colocated.py"
+    )
+    sys.modules["pretend_library"] = library
+    sys.modules["pretend_project"] = project
+    sys.modules["pretend_colocated"] = colocated
     try:
         roots = ("/opt/layer/python",)
-        assert _dill_module_is_importable_by_name(library, roots)
-        assert not _dill_module_is_importable_by_name(project, roots), (
+        provided = frozenset({"pretend_library"})
+        assert _dill_module_is_importable_by_name(library, roots, provided)
+        assert not _dill_module_is_importable_by_name(project, roots, provided), (
             "a project module outside the install root would be pickled by "
             "reference, so its mutable state would drop out of the fingerprint"
         )
-        # No roots at all means no widening whatsoever.
-        assert not _dill_module_is_importable_by_name(library, ())
+        assert not _dill_module_is_importable_by_name(colocated, roots, provided), (
+            "a co-located project module no distribution claims would be "
+            "pickled by reference, so `config.VALUE = 2` would stop changing "
+            "the fingerprint and datasets would serve a stale cached result"
+        )
+        # No roots at all, or nothing installed there, means no widening.
+        assert not _dill_module_is_importable_by_name(library, (), provided)
+        assert not _dill_module_is_importable_by_name(library, roots, ())
     finally:
         del sys.modules["pretend_library"]
         del sys.modules["pretend_project"]
+        del sys.modules["pretend_colocated"]
+
+
+def test_only_installed_distributions_claim_a_top_level_name(tmp_path):
+    """`_dill_distribution_top_levels`, driven against a real directory.
+
+    Both readers matter: pip emits `top_level.txt` for some wheels and not
+    others, and RECORD is the only file every wheel install is guaranteed to
+    leave behind.
+    """
+    from unsloth.import_fixes import _dill_distribution_top_levels
+
+    root = tmp_path / "target"
+    (root / "withtop-1.0.dist-info").mkdir(parents = True)
+    (root / "withtop-1.0.dist-info" / "top_level.txt").write_text(
+        "pkgone\n\n# comment\n", encoding = "utf-8"
+    )
+    (root / "onlyrecord-1.0.dist-info").mkdir()
+    (root / "onlyrecord-1.0.dist-info" / "RECORD").write_text(
+        "pkgtwo/__init__.py,sha256=x,10\n"
+        "singlemod.py,sha256=y,4\n"
+        "onlyrecord-1.0.dist-info/RECORD,,\n"
+        "onlyrecord-1.0.data/scripts/thing,,\n",
+        encoding = "utf-8",
+    )
+    (root / "myproj.py").write_text("VALUE = 1\n", encoding = "utf-8")
+
+    assert _dill_distribution_top_levels(str(root)) == {
+        "pkgone", "pkgtwo", "singlemod",
+    }, "a name no distribution installed is being claimed, or one is missing"
+    assert _dill_distribution_top_levels(str(tmp_path / "absent")) == set()
