@@ -169,10 +169,8 @@ def test_non_crash_exits_still_fall_back_in_process(exitcode):
     ],
 )
 def test_a_windows_native_fault_is_a_crash_not_an_inconclusive_exit(monkeypatch, status):
-    """Windows reports no signal: multiprocessing returns GetExitCodeProcess verbatim, so a
-    faulting child arrives as a positive NTSTATUS (0xC0000005 == 3221225477) and never as
-    -SIGSEGV. Read as inconclusive, the parent re-runs the proven-fatal probe in the backend
-    and the containment this module exists for does not apply on Windows at all."""
+    """A faulting child on Windows is a positive NTSTATUS (0xC0000005 == 3221225477), never
+    -SIGSEGV; read as inconclusive, the parent re-runs the proven-fatal probe in the backend."""
     monkeypatch.setattr(tq, "_sys", types.SimpleNamespace(platform = "win32"))
     verdict = tq._crashed_child_verdict(_Proc(status), "cuda")
     assert verdict == {scheme: False for scheme in tq.TQ_SCHEMES}
@@ -180,16 +178,14 @@ def test_a_windows_native_fault_is_a_crash_not_an_inconclusive_exit(monkeypatch,
 
 @pytest.mark.parametrize("exitcode", [0, 1, 3, 42, -15, 0x40000015, 0x80000003])
 def test_a_windows_exit_that_is_not_an_error_status_still_falls_back(monkeypatch, exitcode):
-    """The floor is the NTSTATUS error severity, so a deliberate exit code, our own TERMINATE
-    mapping, and the informational / warning severities all stay inconclusive."""
+    """Below the error severity: a deliberate exit, TERMINATE, and the lesser severities."""
     monkeypatch.setattr(tq, "_sys", types.SimpleNamespace(platform = "win32"))
     assert tq._crashed_child_verdict(_Proc(exitcode), "cuda") is None
 
 
 @pytest.mark.parametrize("status", [0xC0000005, 0xC0000409])
 def test_a_positive_status_off_windows_is_not_a_crash(monkeypatch, status):
-    """POSIX encodes a fatal signal negatively, so a large positive exit code there is the
-    child's own choice, not a fault."""
+    """POSIX encodes a fatal signal negatively, so a large positive code is the child's choice."""
     monkeypatch.setattr(tq, "_sys", types.SimpleNamespace(platform = "linux"))
     assert tq._crashed_child_verdict(_Proc(status), "cuda") is None
 

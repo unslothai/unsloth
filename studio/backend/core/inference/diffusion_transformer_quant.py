@@ -579,10 +579,9 @@ def _scheme_supported(
     # get_device_capability() (0 MiB after both, 614 MiB after the first tensor). Worth a child
     # because /images/download-plan calls assert_precision_available while the user is only
     # STAGING, so a plan alone cost the backend ~700 MiB it can never give back.
-    # Use the same card-qualified key as _smoke_probe; a bare "cuda" key hid child verdicts.
-    # The CHILD is asked about that same card, never the bare device: a fresh spawn starts on
-    # ordinal 0 whatever this thread is pinned to, so a bare "cuda" there would file card 0's
-    # verdict under the card this load actually runs on.
+    # _smoke_probe's card-qualified key, and the child is asked about that same card: a spawn
+    # starts on ordinal 0 whatever this thread is pinned to, so a bare "cuda" would file card 0's
+    # verdict under the card the load runs on (and a bare key hid child verdicts entirely).
     card = _smoke_cache_device_key(device)
     if (scheme, card) not in _SMOKE_CACHE:
         with _CHILD_PROBE_LOCK:
@@ -727,11 +726,10 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
 # SIGKILL may be OOM and SIGTERM is timeout cleanup, so neither is a scheme verdict.
 _PROBE_CRASH_SIGNALS = frozenset({4, 6, 7, 8, 11})  # ILL, ABRT, BUS, FPE, SEGV
 
-# Windows reports no signal here. multiprocessing hands back GetExitCodeProcess verbatim, so a
-# native fault arrives as the raw NTSTATUS -- an access violation is 0xC0000005 (3221225477), and
-# UCRT's abort() __fastfail's to 0xC0000409 -- never as -SIGSEGV. Only TERMINATE is mapped to a
-# negative (-SIGTERM), which is why the sign is tested before this floor: the error severity bits
-# say the child did not choose to exit, while a deliberate sys.exit stays in the small positives.
+# Windows has no signal here: multiprocessing returns GetExitCodeProcess verbatim, so a fault is
+# the raw NTSTATUS (access violation 0xC0000005, UCRT abort 0xC0000409), never -SIGSEGV. Only
+# TERMINATE is negative, hence the sign test first; the severity bits then separate a fault from
+# a deliberate sys.exit.
 _NTSTATUS_ERROR_FLOOR = 0xC0000000
 
 
