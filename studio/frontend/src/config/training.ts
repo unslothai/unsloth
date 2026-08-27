@@ -1,69 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelType, StepConfig } from "@/types/training";
+import type { ModelType } from "@/types/training";
 import type { PipelineType } from "@huggingface/hub";
-
-export const STEPS: StepConfig[] = [
-  {
-    number: 1,
-    title: "Model Type",
-    subtitle: "Select type",
-    description: "Choose the type of model you want to fine-tune",
-  },
-  {
-    number: 2,
-    title: "Model",
-    subtitle: "Select model",
-    description: "Choose a base model and training method",
-  },
-  {
-    number: 3,
-    title: "Dataset",
-    subtitle: "Add dataset",
-    description: "Select or upload a training dataset",
-  },
-  {
-    number: 4,
-    title: "Parameters",
-    subtitle: "Configure",
-    description: "Fine-tune your training hyperparameters",
-  },
-  {
-    number: 5,
-    title: "Summary",
-    subtitle: "Review",
-    description: "Review your configuration before starting",
-  },
-];
-
-export const MODEL_TYPES: ReadonlyArray<{
-  value: ModelType;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: "text",
-    label: "Text",
-    description: "Language models",
-  },
-  {
-    value: "vision",
-    label: "Vision",
-    description: "Image understanding models",
-  },
-  {
-    value: "audio",
-    label: "Audio",
-    description: "Audio and speech models",
-  },
-  {
-    value: "embeddings",
-    label: "Embeddings",
-    description: "Text embedding models",
-  },
-];
-
 export const CONTEXT_LENGTHS = [
   512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144,
 ];
@@ -120,7 +59,7 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
 ];
 
 /** Method-aware learning rate defaults; the backend mirrors these in
-* studio/backend/assets/configs/. */
+ * studio/backend/assets/configs/. */
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;

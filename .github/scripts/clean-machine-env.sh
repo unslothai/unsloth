@@ -8,8 +8,11 @@
 #
 #   mask   Make the toolchain genuinely ABSENT: scrub PATH to OS defaults and (with
 #          --remove) move the real toolchain aside so `command -v git` correctly
-#          FAILS. Deliberately no "poison shims": a failing shim is still FOUND by
-#          `command -v`, which reports the tool as present, the opposite of clean.
+#          FAILS. Deliberately no general "poison shims": a failing shim is still FOUND
+#          by `command -v`, which reports the tool as present, the opposite of clean.
+#          macOS has one observation-only exception: install_name_tool gets a logging
+#          sentinel because the installer must shadow Apple's dialog-producing shim and
+#          never uses this command to decide whether a dependency is installed.
 #   trace  Leave the toolchain working behind wrappers that log the call then exec
 #          the real binary, answering whether the installer ever REACHES for a
 #          compiler/git without changing behaviour.
@@ -22,6 +25,9 @@
 #   bash .github/scripts/clean-machine-env.sh trace
 #   source ./clean-machine.env
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_NAME_TOOL_HELPER="$SCRIPT_DIR/clean-machine-install-name-tool.sh"
 
 MODE="${1:-}"
 REMOVE=0
@@ -45,7 +51,11 @@ printf '#!/usr/bin/env bash\n# Undo clean-machine-env.sh --remove. Safe to run t
 chmod +x "$RESTORE"
 
 # The toolchain we care about: a consumer install must need none of it.
-TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja cargo rustc"
+# cctools binaries are included because their /usr/bin shims can trigger the same
+# developer-tools dialog. uv's exact optional install_name_tool self-ID patch is
+# observed separately and narrowly allow-listed by clean-machine-assert.sh.
+TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja cargo rustc
+install_name_tool lipo otool objdump vtool strip nm"
 
 note() { echo "[clean-machine] $*"; }
 
@@ -85,6 +95,14 @@ scrub_path() {
 # ── mask ──────────────────────────────────────────────────────────────────────
 if [ "$MODE" = "mask" ]; then
   NEWPATH="$(scrub_path)"
+  if [ "$OS" = "Darwin" ]; then
+    # Do not execute /usr/bin/install_name_tool as a self-test on a CLT-free Mac: that
+    # is the GUI prompt this lane exists to prevent. This sentinel is ahead of /usr/bin,
+    # logs argv with explicit argc and hex-encoded argument boundaries, and fails without
+    # touching a dylib. install.sh's still-more-local uv guard must win over it.
+    bash "$INSTALL_NAME_TOOL_HELPER" write sentinel "$BIN/install_name_tool"
+    NEWPATH="$BIN:$NEWPATH"
+  fi
   {
     echo "export PATH='$NEWPATH'"
     # UNSET, not a fake path: `xcode-select -p` honours DEVELOPER_DIR and prints it
@@ -94,6 +112,8 @@ if [ "$MODE" = "mask" ]; then
     echo "unset SDKROOT CC CXX CFLAGS CXXFLAGS LDFLAGS CMAKE_GENERATOR CMAKE_PREFIX_PATH || true"
     echo "export HOMEBREW_NO_AUTO_UPDATE=1"
     echo "export UNSLOTH_CLEAN_MACHINE=1"
+
+    echo "export UNSLOTH_TOOL_TRACE='$TRACE'"
   } >> "$ENV_FILE"
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Darwin" ]; then
@@ -210,12 +230,17 @@ if [ "$MODE" = "trace" ]; then
     real="$(command -v "$tool" 2>/dev/null || true)"
     [ -n "$real" ] || continue
     # Logs then execs the REAL binary, so behaviour is unchanged and the trace answers
-    # "did the installer reach for this?" honestly.
-    cat > "$BIN/$tool" <<WRAP
+    # "did the installer reach for this?" honestly. install_name_tool needs preserved
+    # argument boundaries via hex so the assertion can require exact -id PATH PATH argv.
+    if [ "$tool" = "install_name_tool" ]; then
+      bash "$INSTALL_NAME_TOOL_HELPER" write passthrough "$BIN/$tool" "$real"
+    else
+      cat > "$BIN/$tool" <<WRAP
 #!/bin/sh
 printf '%s\t%s\n' "$tool" "\$*" >> "$TRACE"
 exec "$real" "\$@"
 WRAP
+    fi
     chmod +x "$BIN/$tool"
   done
   {

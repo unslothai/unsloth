@@ -18,7 +18,7 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -81,6 +81,13 @@ function formatDuration(value?: number | null): string {
 
 function formatCount(value: number): string {
   return value.toLocaleString();
+}
+
+function formatTokPerSec(value?: number | null): string | null {
+  if (value == null || value <= 0) {
+    return null;
+  }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} tok/s`;
 }
 
 function compactEndpoint(endpoint: string): string {
@@ -262,7 +269,11 @@ function RequestRow({
           {entry.model}
         </div>
         {entry.error ? (
-          <div className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400">
+          // Backend error text can quote the request, so keep it out too.
+          <div
+            data-reload-snapshot-sensitive
+            className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400"
+          >
             {entry.error}
           </div>
         ) : null}
@@ -298,11 +309,16 @@ function RequestRow({
         <span className="truncate text-ui-11 text-muted-foreground">
           {entry.model}
         </span>
-        <span className="ml-auto shrink-0 text-ui-11 tabular-nums text-muted-foreground">
-          {formatTime(entry.started_at)}
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-ui-11 tabular-nums text-muted-foreground">
+          {formatTokPerSec(entry.tok_per_sec) ? (
+            <span>{formatTokPerSec(entry.tok_per_sec)}</span>
+          ) : null}
+          <span>{formatTime(entry.started_at)}</span>
         </span>
       </div>
+      {/* A prompt or reply excerpt, same as the expanded payload below it. */}
       <p
+        data-reload-snapshot-sensitive
         className={cn(
           "line-clamp-2 pl-4 text-ui-11 leading-[1.45]",
           entry.error
@@ -346,7 +362,9 @@ function PayloadBlock({
           ) : null}
         </div>
       </div>
+      {/* Prompt and reply bodies, so keep them out of the reload snapshot. */}
       <pre
+        data-reload-snapshot-sensitive
         className={cn(
           "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
@@ -377,6 +395,7 @@ function RequestDetail({
   const reply = detailIsCurrent
     ? (detail.reply ?? entry.reply_preview)
     : entry.reply_preview;
+
 
   return (
     <div className="flex min-w-0 flex-col gap-5 p-5">
@@ -441,6 +460,27 @@ function RequestDetail({
                 ? formatCount(entry.context_length)
                 : "–",
           },
+          {
+            label: "First token",
+            value: entry.ttft_ms != null ? formatDuration(entry.ttft_ms) : "–",
+          },
+          // Duration minus this is the queue wait, not slow decoding.
+          {
+            label: "Generating",
+            value: entry.decode_ms != null ? formatDuration(entry.decode_ms) : "–",
+          },
+          {
+            label: "Prompt speed",
+            value: formatTokPerSec(entry.prompt_tok_per_sec) ?? "–",
+          },
+          {
+            label: "Generation speed",
+            value: formatTokPerSec(entry.tok_per_sec) ?? "–",
+          },
+          {
+            label: "Stop reason",
+            value: entry.stop_reason ?? "–",
+          },
         ].map((item) => (
           <div key={item.label} className="flex min-w-0 flex-col gap-0.5">
             <dt className="truncate text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
@@ -498,6 +538,14 @@ export function ApiMonitorPage(): ReactElement {
     loadingDetails,
     requestDetail,
   } = useApiMonitor();
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (loading || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [loading]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
@@ -780,6 +828,22 @@ export function ApiMonitorPage(): ReactElement {
             {statusCopy}
           </span>
         </div>
+        {data?.queue ? (
+          <div className="flex min-w-0 flex-col">
+            <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
+              Slots
+            </span>
+            <span
+              className={cn(
+                "text-ui-12 tabular-nums text-foreground",
+                data.queue.queued > 0 && "text-amber-700 dark:text-amber-500",
+              )}
+            >
+              {data.queue.active}/{data.queue.capacity} busy
+              {data.queue.queued > 0 ? ` · ${data.queue.queued} queued` : ""}
+            </span>
+          </div>
+        ) : null}
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
             Loaded model
@@ -846,7 +910,7 @@ export function ApiMonitorPage(): ReactElement {
               ? "–"
               : `${stats.tokensPerSecond.toFixed(1)} tok/s`
           }
-          hint={`${formatCount(stats.totalTokens)} tokens`}
+          hint={`${formatCount(stats.totalTokens)} tokens · generation only`}
         />
       </section>
 
@@ -897,7 +961,7 @@ export function ApiMonitorPage(): ReactElement {
                 {entries.length > 0
                   ? "No requests match this filter."
                   : loggingDisabled
-                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Studio to re-enable."
+                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
                     : "No API traffic yet. Point a client at the base URL above to see requests here."}
               </p>
             ) : (

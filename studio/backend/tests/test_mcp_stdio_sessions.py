@@ -45,8 +45,23 @@ class FakeClient:
         # Models a dead stdio transport: real Client.is_connected() stays True
         # after the subprocess dies, so liveness is probed via the transport.
         self.dead = False
+        # A server still stuck on an abandoned call fails the liveness probe.
+        self.probe_ok = True
+        self.probe_error = False
+        self.probes = 0
         self.transport = SimpleNamespace(_is_session_dead = lambda: self.dead)
         FakeClient.instances.append(self)
+
+    async def list_tools_mcp(self) -> SimpleNamespace:
+        self.probes += 1
+        if self.probe_error:
+            raise RuntimeError("probe failed")
+        if not self.probe_ok:
+            await asyncio.sleep(30)
+        return SimpleNamespace(tools = [])
+
+    async def list_tools(self) -> list:
+        raise AssertionError("the liveness probe must use the single-page tools/list")
 
     async def __aenter__(self):
         self.entered += 1
@@ -150,9 +165,9 @@ def test_http_stays_one_shot(fake_clients):
     assert all(c.entered == 1 and c.exited == 1 for c in fake_clients)
 
 
-def test_timeout_discards_stdio_session(fake_clients):
+def test_timeout_keeps_a_responsive_stdio_session(fake_clients):
+    # A stateful server (browser, DB handle) must survive one slow call.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
-    key = mcp_client._session_key(STDIO_URL, None, "chat")
     fake_clients[0].call_delay = 0.5
     out = call_tool_sync(
         STDIO_URL,
@@ -164,10 +179,210 @@ def test_timeout_discards_stdio_session(fake_clients):
         scope = "chat",
     )
     assert "timed out" in out
-    assert fake_clients[0].exited == 1
-    assert key not in mcp_client._stdio_key_locks
+    fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-2"
+    assert len(fake_clients) == 1
+    assert fake_clients[0].exited == 0
+
+
+def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
+    # A server that never answers the probe is wedged, so it is replaced rather
+    # than reused.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    key = mcp_client._session_key(STDIO_URL, None, "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].probe_ok = False
+    out = call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    assert "timed out" in out
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
+    assert fake_clients[0].exited == 1
+    assert key in mcp_client._stdio_sessions
+
+
+def test_dirty_session_probe_stays_inside_the_caller_timeout(fake_clients):
+    # The probe that gates reuse shares the call's deadline; it must not add a
+    # window of its own on top of it.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].probe_ok = False  # probe hangs for 30s
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    started = time.monotonic()
+    call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.2, scope = "chat")
+    assert time.monotonic() - started < mcp_client._STDIO_LIVENESS_TIMEOUT
+
+
+def test_failed_probe_replaces_the_session(fake_clients):
+    # Only a completed round-trip proves the abandoned call is done, so a probe
+    # that errors is not enough to reuse the session.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].probe_error = True
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
+    assert len(fake_clients) == 2
+    assert fake_clients[0].exited == 1
+
+
+def test_successful_probe_is_not_repeated(fake_clients):
+    # Once a round-trip clears the flag, later calls dispatch without probing.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-2"
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-3"
+    assert fake_clients[0].probes == 1
+
+
+def test_stop_interrupts_a_hanging_dirty_probe(fake_clients):
+    # The recovery probe honors Stop like connect and the call itself do.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].probe_ok = False  # probe hangs for 30s
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+    started = time.monotonic()
+    out = call_tool_sync(
+        STDIO_URL,
+        None,
+        "t",
+        {},
+        scope = "chat",
+        cancel_event = cancel,
+        timeout = 30,
+    )
+    assert out == "Error: MCP tool 't' cancelled"
+    assert time.monotonic() - started < mcp_client._STDIO_LIVENESS_TIMEOUT
+
+
+def test_unwind_budget_comes_out_of_the_caller_deadline():
+    budget = mcp_client._unwind_budget
+    assert budget(2.0, 0.05, 0.05) == 0.0  # deadline already spent
+    assert budget(2.0, 300.0, 2.0) == 2.0  # Stop early in a long call
+    assert budget(2.0, 3.0, 2.5) == pytest.approx(0.5)  # only the remainder
+    assert budget(2.0, None, 99.0) == 2.0  # no deadline at all
+    assert budget(0.0, 300.0, 1.0) == 0.0  # one-shot callers never wait
+
+
+def test_liveness_probe_runs_without_the_wedge_margin(fake_clients, monkeypatch):
+    # The probe's whole budget is its window, so a wedged loop must not add the
+    # 15s margin on top of the caller's timeout.
+    margins = []
+    real_run = mcp_client._StdioSession.run
+
+    def spy(
+        self,
+        coro,
+        timeout,
+        margin = mcp_client._STDIO_WEDGE_MARGIN,
+    ):
+        margins.append(margin)
+        return real_run(self, coro, timeout, margin)
+
+    monkeypatch.setattr(mcp_client._StdioSession, "run", spy)
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    fake_clients[0].call_delay = 0.0
+    margins.clear()
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    # The dirty session is probed first, then the call itself dispatches.
+    assert margins == [0.0, mcp_client._STDIO_WEDGE_MARGIN]
+
+
+def test_unwind_wait_only_for_cached_sessions(fake_clients, monkeypatch):
+    # Only a cached session needs the cancelled call to finish unwinding. HTTP
+    # and scope-less stdio clients are discarded either way, so a Stop on those
+    # must return without waiting for one.
+    seen = []
+    real = mcp_client._race_tool_call
+
+    async def spy(
+        coro,
+        timeout,
+        cancel_event,
+        unwind_timeout = 0.0,
+    ):
+        seen.append(unwind_timeout)
+        return await real(coro, timeout, cancel_event, unwind_timeout)
+
+    monkeypatch.setattr(mcp_client, "_race_tool_call", spy)
+    call_tool_sync(HTTP_URL, None, "t", {})
+    call_tool_sync(STDIO_URL, None, "t", {})  # no scope: ephemeral, closed after
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    assert seen == [0.0, 0.0, mcp_client._CANCEL_UNWIND_TIMEOUT]
+
+
+def test_cancel_preserves_stateful_session(fake_clients):
+    # Pressing Stop must not tear down the server and its state.
+    call_tool_sync(STDIO_URL, None, "browser_navigate", {}, scope = "chat")
+    fake_clients[0].call_delay = 1.0
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+    out = call_tool_sync(
+        STDIO_URL,
+        None,
+        "browser_snapshot",
+        {},
+        scope = "chat",
+        cancel_event = cancel,
+        timeout = 5,
+    )
+    assert out == "Error: MCP tool 'browser_snapshot' cancelled"
+    fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "browser_snapshot", {}, scope = "chat") == "call-2"
+    assert len(fake_clients) == 1
 
 
 def test_no_timeout_allows_long_call(fake_clients):

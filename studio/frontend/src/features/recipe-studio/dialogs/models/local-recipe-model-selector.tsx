@@ -19,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon, RefreshCwIcon } from "lucide-react";
+import { ggufVariantDisplayLabel } from "@/features/hub";
 import {
   type ComponentPropsWithoutRef,
   type ReactElement,
@@ -207,7 +208,10 @@ function LocalGgufVariantList({
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono">
-                {variant.quant}
+                {/* The key is the selection identity and can be path-qualified
+                    ("distilled/ltx-2.3-22b-distilled-Q6_K"); the label is what it reads as.
+                    onSelect and the recommended check still key on variant.quant. */}
+                {ggufVariantDisplayLabel(variant)}
               </span>
               {variant.quant === defaultVariant ? (
                 <Badge variant="secondary" className="h-4 px-1.5 text-ui-10">

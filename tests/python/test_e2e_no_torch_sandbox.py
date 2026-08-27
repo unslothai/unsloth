@@ -864,8 +864,9 @@ class TestInstallPythonStackFiltering:
         if not extras.is_file():
             pytest.skip("extras.txt not found")
 
-        result_path = ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES)
-        filtered = Path(result_path).read_text(encoding = "utf-8").lower()
+        result_path = Path(ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES))
+        filtered = result_path.read_text(encoding = "utf-8").lower()
+        result_path.unlink()  # written beside extras.txt; do not leave it in the tree
         lines = [
             l.strip() for l in filtered.splitlines() if l.strip() and not l.strip().startswith("#")
         ]
@@ -883,8 +884,9 @@ class TestInstallPythonStackFiltering:
         if not extras.is_file():
             pytest.skip("extras.txt not found")
 
-        result_path = ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES)
-        filtered_text = Path(result_path).read_text(encoding = "utf-8").lower()
+        result_path = Path(ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES))
+        filtered_text = result_path.read_text(encoding = "utf-8").lower()
+        result_path.unlink()
 
         must_survive = ["scikit-learn", "loguru", "tiktoken", "einops"]
         original_text = extras.read_text(encoding = "utf-8").lower()

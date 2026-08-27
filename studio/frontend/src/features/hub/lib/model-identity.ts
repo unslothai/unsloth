@@ -108,6 +108,16 @@ function hfCacheRepoId(path: string): string | null {
 }
 
 /**
+* Whether *identifier* is an HF cache snapshot dir, so its public id names the repo rather
+* than the revision inside it. Mirrors ``hf_cache_repo_id`` in core/inference/model_ids.py.
+*/
+export function isHfCacheSnapshotPath(
+  identifier: string | null | undefined,
+): boolean {
+  return identifier != null && hfCacheRepoId(identifier) !== null;
+}
+
+/**
 * The clean id the backend reports for a model loaded by path. Mirrors ``public_model_id`` in
 * core/inference/model_ids.py, which is what ``/api/inference/status`` puts in ``active_model``:
 * an HF cache snapshot becomes its repo id, any other local GGUF its filename stem.
@@ -126,6 +136,30 @@ export function publicModelId(identifier: string): string {
     .replace(TRAILING_SLASHES_RE, "");
   const name = slashPath.slice(slashPath.lastIndexOf("/") + 1);
   return name.replace(GGUF_SUFFIX_RE, "") || trimmed;
+}
+
+/** `org/name`, including Hub repos named `org/name.gguf`. A file reference carries a
+* repo id plus a filename, so two or more slashes. */
+function isHubRepoId(identifier: string): boolean {
+  if (identifier.split("/").length - 1 !== 1) {
+    return false;
+  }
+  return !looksLikeModelPath(identifier.replace(GGUF_SUFFIX_RE, ""));
+}
+
+/**
+* The short label for a model id with no catalog entry to take a name from. Mirrors
+* ``display_model_name`` in core/inference/model_ids.py: the public id's trailing
+* segment, so a repo id and the HF cache snapshot it loads from read alike. Splitting
+* the raw id leaks the host layout on Windows, where ``C:\\Users\\...`` holds no ``/``.
+*/
+export function modelDisplayName(identifier: string): string {
+  const trimmed = identifier.trim();
+  if (isHubRepoId(trimmed)) {
+    return trimmed.slice(trimmed.indexOf("/") + 1);
+  }
+  const clean = publicModelId(trimmed);
+  return clean.slice(clean.lastIndexOf("/") + 1) || clean;
 }
 
 /**
@@ -160,12 +194,18 @@ export function residentModelIdMatches(
 }
 
 // Ollama's blobs reach the picker through a symlink dir that local_model_resolver.py refuses
-// to index, so mirroring their settings would advertise a load that cannot happen.
+// to index, so mirroring their settings would advertise a load that cannot happen. The
+// inventory's opaque `ollama-manifest:` references resolve to those same skipped links, so
+// they carry the same non-promise.
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
+const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
   if (!modelId) {
     return false;
+  }
+  if (modelId.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) {
+    return true;
   }
   return modelId
     .replace(BACKSLASHES_RE, "/")

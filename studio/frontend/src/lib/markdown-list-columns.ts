@@ -4,10 +4,10 @@
 /**
  * CommonMark measures a block's indentation from its container, not the left
  * margin: four spaces at document level and four under a bullet mean different
- * things. Tracking the open items lets both changelog scanners ask "is this
+ * things. Tracking the open items lets both release-note scanners ask "is this
  * indented code?" the way a renderer would.
  *
- * Ported from `_open_lists` in studio/backend/utils/changelog.py so the three
+ * Ported from `_open_lists` in studio/backend/utils/release_notes.py so the three
  * scanners classify a line the same way.
  */
 
@@ -272,7 +272,7 @@ export const NO_QUOTE: QuoteState = { inQuote: false, quoted: false };
  * content column of the item `line` sits in. A quote owns the paragraph its own
  * lines hold, so a marker written outside the quote opens a list of its own
  * rather than reading as more of that paragraph. Ported from `in_quote` tracking
- * in changelog.py.
+ * in release_notes.py.
  */
 export function quoteState(
   line: string,

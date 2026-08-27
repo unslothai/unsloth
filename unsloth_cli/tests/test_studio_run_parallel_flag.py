@@ -13,6 +13,7 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from io import BytesIO
@@ -178,8 +179,9 @@ def _install_reexec_capture(monkeypatch, *, platform):
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
 
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    fake_python = fake_venv / "bin" / "python"
-    fake_bin = fake_venv / "bin" / "unsloth"
+    host_is_windows = sys.platform == "win32"
+    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
+    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
 
     real_is_file = Path.is_file
@@ -199,6 +201,12 @@ def _install_reexec_capture(monkeypatch, *, platform):
     )
 
     monkeypatch.setattr(sys, "platform", platform)
+    # Emulate Windows re-exec without calling Win32 APIs on non-Windows hosts.
+    monkeypatch.setattr(
+        studio_mod,
+        "_studio_runtime_launch_guard",
+        lambda **_kwargs: contextlib.nullcontext(True),
+    )
 
     def capture(kind, argv):
         captured.append(
@@ -408,7 +416,7 @@ def test_reexec_forwards_context_length_alias(monkeypatch):
 
 
 def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
-    """An explicit manual policy must survive the Studio venv re-exec."""
+    """An explicit manual policy must survive the Unsloth venv re-exec."""
     result, captured = _invoke_run(
         monkeypatch,
         _BASE + ["--gpu-memory-mode", "manual"],
@@ -419,7 +427,7 @@ def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
 
 
 def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
-    """The default stays compatible with older Studio venv launchers."""
+    """The default stays compatible with older Unsloth venv launchers."""
     result, captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, result.output
     assert "--gpu-memory-mode" not in captured[0]["argv"]
@@ -434,6 +442,17 @@ def test_reexec_forwards_speculative_options(monkeypatch):
     argv = captured[0]["argv"]
     assert _value_after(argv, "--speculative-type") == "dspark", argv
     assert _value_after(argv, "--spec-draft-n-max") == "3", argv
+
+
+def test_reexec_forwards_dflash_speculative_type(monkeypatch):
+    """SpeculativeType is what Typer validates the option against, so a mode missing
+    from the literal is rejected before any loading code runs."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--speculative-type", "dflash"],
+    )
+    assert len(captured) == 1, result.output
+    assert _value_after(captured[0]["argv"], "--speculative-type") == "dflash"
 
 
 def test_reexec_omits_unset_speculative_options(monkeypatch):

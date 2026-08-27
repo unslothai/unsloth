@@ -199,9 +199,10 @@ def _apply_levers(
     engaged: dict[str, Any] = {"te": None, "attn": None, "cache": None, "speed_optims": {}}
 
     if cfg["te"] != "none":
+        # Returns (mode, reason, status) now; this bench only reports the mode that engaged.
         engaged["te"] = quantize_text_encoders(
             pipe, tgt, mode = cfg["te"], family = fam_obj.name, logger = logger
-        )
+        ).mode
 
     speed_mode = cfg["speed"]
     engaged["attn"] = apply_attention_backend(

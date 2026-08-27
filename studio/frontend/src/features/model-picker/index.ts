@@ -3,6 +3,7 @@
 
 export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
+export { invalidateLlamaFlagCatalog } from "./api/llama-flags";
 export { ModelRowMenu } from "./components/model-selector/model-row-menu";
 export {
   makePinRank,
@@ -29,6 +30,7 @@ export {
 export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
+  ExternalConnectionRef,
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
@@ -43,9 +45,15 @@ export {
 } from "./model-config/apply-per-model-config";
 export {
   DEFAULT_MAX_SEQ_LENGTH,
+  DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  PER_MODEL_CONFIG_STORAGE_KEY,
+  PER_MODEL_CONFIG_UPDATED_EVENT,
   adoptLegacyConfigKey,
+  listPerModelConfigs,
+  isServedByMlx,
+  presetLoadSettingNames,
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";

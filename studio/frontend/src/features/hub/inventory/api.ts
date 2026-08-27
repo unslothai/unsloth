@@ -12,6 +12,7 @@ import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+import type { ScanFolderStatus } from "../lib/scan-folder-status";
 import type { LocalSource } from "./constants";
 import { bumpGgufVariantsCacheVersion } from "./gguf-variants-cache-events";
 
@@ -51,8 +52,11 @@ export interface CachedGgufRepo {
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
 }
@@ -70,8 +74,11 @@ export interface CachedModelRepo {
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -98,8 +105,11 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -120,6 +130,8 @@ export interface CachedDatasetRepo {
   load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
 }
 
 export type LocalDatasetInfo = {
@@ -146,21 +158,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
-}
-
-export interface BrowseEntry {
-  name: string;
-  has_models: boolean;
-  hidden: boolean;
-}
-
-export interface BrowseFoldersResponse {
-  current: string;
-  parent: string | null;
-  entries: BrowseEntry[];
-  suggestions: string[];
-  truncated?: boolean;
-  model_files_here?: number;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: ScanFolderStatus;
 }
 
 export interface GgufVariantDetail {
@@ -169,10 +168,17 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  /** Bytes a resume still has to fetch. Set only on a partial variant. */
+  download_remaining_bytes?: number | null;
   downloaded?: boolean;
   update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
+  /** Variants sharing this key share one companion download footprint, so a
+   *  footprint resolved for one of them is correct for all of them. */
+  dependency_key?: string | null;
 }
 
 export interface GgufVariantsResponse {
@@ -280,19 +286,78 @@ export async function deleteCachedDataset(
   bumpInventoryVersion();
 }
 
+export interface CompanionAssetInfo {
+  repo_id: string;
+  size_bytes: number;
+  needed_by: string[];
+}
+
+export interface DeleteImpact {
+  repo_id: string;
+  variant?: string | null;
+  reclaimed_bytes: number;
+  retained_companions: CompanionAssetInfo[];
+  freeable_companions: CompanionAssetInfo[];
+  blocked_by: string[];
+}
+
+/** What a delete would actually reclaim and leave behind. Never throws: the confirm dialog
+ * still has to open if this preview is unavailable, it just falls back to the plain wording. */
+export async function fetchDeleteImpact(
+  repoId: string,
+  variant?: string | null,
+): Promise<DeleteImpact | null> {
+  try {
+    const response = await authFetch("/api/hub/delete-impact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        variant ? { repo_id: repoId, variant } : { repo_id: repoId },
+      ),
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as DeleteImpact;
+  } catch {
+    return null;
+  }
+}
+
+export interface OrphanCompanion {
+  repo_id: string;
+  size_bytes: number;
+  cache_path?: string | null;
+}
+
+export async function fetchOrphanCompanions(): Promise<{
+  companions: OrphanCompanion[];
+  total_bytes: number;
+}> {
+  const response = await authFetch("/api/hub/orphan-companions");
+  return await parseJsonOrThrow<{
+    companions: OrphanCompanion[];
+    total_bytes: number;
+  }>(response);
+}
+
 export async function deleteCachedModel(
   repoId: string,
   variant?: string,
   hfToken?: string | null,
   cachePath?: string | null,
+  onlyIfOrphan?: boolean,
 ): Promise<void> {
-  const payload: Record<string, string> = { repo_id: repoId };
+  const payload: Record<string, string | boolean> = { repo_id: repoId };
   if (variant) {
     payload.variant = variant;
   }
   // Scope the delete to this row's cache so copies in other caches survive.
   if (cachePath) {
     payload.cache_path = cachePath;
+  }
+  // Free up space acts on a list that can be minutes old. The server re-derives the orphan
+  // condition just before unlinking and 409s if a download turned the row into a real model.
+  if (onlyIfOrphan) {
+    payload.only_if_orphan = true;
   }
   const response = await authFetch("/api/hub/delete-cached", {
     method: "DELETE",
@@ -330,26 +395,6 @@ export async function removeScanFolder(id: number): Promise<void> {
   });
   await throwIfNotOk(response);
   bumpInventoryVersion();
-}
-
-export async function browseFolders(
-  path?: string,
-  showHidden = false,
-  signal?: AbortSignal,
-): Promise<BrowseFoldersResponse> {
-  const params = new URLSearchParams();
-  if (path !== undefined && path !== null) {
-    params.set("path", path);
-  }
-  if (showHidden) {
-    params.set("show_hidden", "true");
-  }
-  const qs = params.toString();
-  const response = await authFetch(
-    `/api/hub/browse-folders${qs ? `?${qs}` : ""}`,
-    signal ? { signal } : undefined,
-  );
-  return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }
 
 const GGUF_VARIANTS_TTL_MS = 30 * 1000;

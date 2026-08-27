@@ -7,6 +7,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -114,9 +115,7 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             4096,
             main_module,
-            request_max_bytes_getter = lambda path: (
-                128 if path.endswith("/transcribe/raw") else 4096
-            ),
+            request_max_bytes_getter = lambda path: 128 if path.endswith("/transcribe/raw") else 4096,
         )
         c = TestClient(app)
 
@@ -137,7 +136,9 @@ class TestMaxBodyMiddleware:
         from utils.upload_limits import (
             STT_AUDIO_JSON_MAX_BYTES,
             STT_AUDIO_RAW_MAX_BYTES,
+            upload_request_limit_bytes,
         )
+
         assert (
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
             == STT_AUDIO_RAW_MAX_BYTES
@@ -146,6 +147,18 @@ class TestMaxBodyMiddleware:
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
             == STT_AUDIO_JSON_MAX_BYTES
         )
+        # The OpenAI transcriptions route is multipart, so it gets headroom over the raw cap, on both mounts.
+        for path in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
+            assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
+                STT_AUDIO_RAW_MAX_BYTES
+            ), path
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
+            assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -297,10 +310,12 @@ class TestMaxBodyMiddleware:
 
     def test_v1_surface_is_body_protected(self, main_module):
         # /images/generations is mounted at both /api/inference and /v1, and every /v1 POST must be body-capped via the blanket
-        # prefix or an unbounded prompt buffers outside the Studio request limit. Also confirms /v1 chat/completions stays protected.
+        # prefix or an unbounded prompt buffers outside the Unsloth request limit. Also confirms /v1 chat/completions stays protected.
         for path in (
             "/v1/images/generations",
             "/v1/audio/generate",
+            "/v1/audio/speech",
+            "/v1/audio/transcriptions",
             "/v1/embeddings",
             "/v1/responses",
             "/v1/messages",
@@ -452,6 +467,140 @@ class TestSecurityHeadersMiddleware:
         assert "'unsafe-inline'" not in plain.split("script-src", 1)[1].split(";", 1)[0]
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
+
+    def test_docs_csp_never_widens_script_src(self, main_module):
+        # The docs pages run vendored bundles off this origin, so the docs branch may relax
+        # style/font/worker only. A third party in script-src here would reach the tokens
+        # localStorage holds for the whole origin.
+        docs = main_module._build_csp(docs = True)
+        directives = {
+            chunk.strip().split(" ", 1)[0]: chunk.strip()
+            for chunk in docs.split(";")
+            if chunk.strip()
+        }
+        assert directives["script-src"] == "script-src 'self'"
+        assert "'unsafe-inline'" not in directives["script-src"]
+        assert "cdn.jsdelivr.net" not in docs
+        nonced = main_module._build_csp("XYZ", docs = True)
+        assert "script-src 'self' 'nonce-XYZ';" in nonced
+
+        assert "blob:" in directives["worker-src"]
+        assert main_module._DOCS_FONT_CSS in directives["style-src"]
+        assert main_module._DOCS_FONT_FILES in directives["font-src"]
+
+        plain = main_module._build_csp()
+        assert main_module._DOCS_FONT_CSS not in plain
+        assert main_module._DOCS_FONT_FILES not in plain
+        assert "worker-src 'self';" in plain
+        assert "font-src 'self' data:;" in plain
+
+    def test_docs_paths_get_the_relaxed_csp(self, main_module):
+        assert "/docs" in main_module._DOCS_PATHS
+        assert "/redoc" in main_module._DOCS_PATHS
+        assert "/docs/oauth2-redirect" in main_module._DOCS_PATHS
+
+    def test_middleware_relaxes_only_the_docs_paths(self, main_module):
+        # _DOCS_PATHS matches scope["path"] exactly, so the trailing-slash twin stays strict.
+        app = _make_csp_app(main_module)
+
+        @app.get("/docs")
+        async def docs():
+            return {"ok": True}
+
+        @app.get("/docs/")
+        async def docs_slash():
+            return {"ok": True}
+
+        c = TestClient(app)
+        relaxed = c.get("/docs").headers["content-security-policy"]
+        assert main_module._DOCS_FONT_CSS in relaxed
+
+        for path in ("/docs/", "/plain"):
+            strict = c.get(path).headers["content-security-policy"]
+            assert main_module._DOCS_FONT_CSS not in strict, path
+
+    def test_docs_pages_load_no_third_party_script(self, main_module):
+        # FastAPI's built-in docs pages point at cdn.jsdelivr.net. They are re-registered on
+        # the same paths against assets/docs_ui so nothing off-origin executes where the
+        # tokens live, and the built-ins must stay off or they would win the path.
+        assert main_module.app.docs_url is None
+        assert main_module.app.redoc_url is None
+        assert main_module.app.swagger_ui_oauth2_redirect_url is None
+
+        paths = {getattr(route, "path", None) for route in main_module.app.routes}
+        assert {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"} <= paths
+
+        c = TestClient(main_module.app)
+        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            body = c.get(path).text
+            assert "cdn.jsdelivr.net" not in body, path
+            assert "fastapi.tiangolo.com" not in body, path
+
+    def test_docs_inline_script_runs_off_the_response_nonce(self, main_module):
+        # Swagger's init is inline, so a strict script-src needs the nonce spliced into the
+        # header to match the tag. A mismatch renders blank, which is what CDN-era /docs did.
+        c = TestClient(main_module.app)
+        for path in ("/docs", "/docs/oauth2-redirect"):
+            r = c.get(path)
+            csp = r.headers["content-security-policy"]
+            nonce = re.search(r"'nonce-([^']+)'", csp)
+            assert nonce, f"{path} served no nonce"
+            assert f'<script nonce="{nonce.group(1)}">' in r.text, path
+            # The hand-off header is internal and must not reach the client.
+            assert main_module._CSP_SCRIPT_NONCE_HEADER not in {k.lower() for k in r.headers}
+
+        # ReDoc has no inline script, so it gets no nonce to leak.
+        assert (
+            "nonce-"
+            not in TestClient(main_module.app).get("/redoc").headers["content-security-policy"]
+        )
+
+    def test_docs_urls_follow_the_root_path(self, main_module):
+        # Behind a path-stripping proxy the browser sees a prefix the server never does, so
+        # every URL the pages emit has to carry it, as FastAPI's own docs routes do.
+        c = TestClient(main_module.app, root_path = "/studio")
+        docs = c.get("/docs").text
+        assert "'/studio/openapi.json'" in docs
+        assert "'/studio/docs/oauth2-redirect'" in docs
+        for name in ("swagger-ui-bundle.js", "swagger-ui.css", "favicon-32x32.png"):
+            assert f"/studio/docs-assets/{name}" in docs, name
+
+        redoc = c.get("/redoc").text
+        assert 'spec-url="/studio/openapi.json"' in redoc
+        assert "/studio/docs-assets/redoc.standalone.js" in redoc
+
+        # Unprefixed deployments, which is every default Unsloth, stay unprefixed.
+        plain = TestClient(main_module.app).get("/docs").text
+        assert "/studio/" not in plain
+        assert "'/openapi.json'" in plain
+
+    def test_swagger_nonce_survives_a_reflowed_upstream_template(self, main_module):
+        # fastapi is unpinned, so the tag is matched by what follows it. A version that
+        # reflows the page or drops the comment must still get the nonce, not a 500.
+        reflowed = (
+            "<html><body><script src='/docs-assets/swagger-ui-bundle.js'></script>\n"
+            "<script>\n  const ui = SwaggerUIBundle({url: '/openapi.json'})\n</script>\n"
+            "</body></html>"
+        )
+        r = main_module._nonced_docs_response(reflowed, tag = main_module._SWAGGER_INIT_TAG)
+        nonce = r.headers[main_module._CSP_SCRIPT_NONCE_HEADER]
+        body = r.body.decode()
+        assert f'<script nonce="{nonce}">' in body
+        # The bundle's own tag keeps its src and gains nothing.
+        assert "<script src='/docs-assets/swagger-ui-bundle.js'></script>" in body
+
+        with pytest.raises(RuntimeError):
+            main_module._nonced_docs_response(
+                "<html><body>no inline script</body></html>",
+                tag = main_module._SWAGGER_INIT_TAG,
+            )
+
+    def test_docs_assets_are_served_from_this_origin(self, main_module):
+        c = TestClient(main_module.app)
+        for name in ("swagger-ui-bundle.js", "swagger-ui.css", "redoc.standalone.js"):
+            r = c.get(f"{main_module._DOCS_ASSETS_URL}/{name}")
+            assert r.status_code == 200, name
+            assert len(r.content) > 10_000, name
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many
@@ -793,6 +942,11 @@ def health_app(tmp_path, monkeypatch):
 
     import main as _main
 
+    # This fixture exercises bearer redaction, not hardware startup. Keep the
+    # payload settled even on macOS while MLX self-repair holds the live verdict.
+    # (chat_only, chat_only_reason, chat_only_detail): health_check reads all three, so a
+    # two-tuple here raised IndexError once main added the detail field.
+    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None))
     app = FastAPI()
     app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
 

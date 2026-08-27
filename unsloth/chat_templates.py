@@ -2312,9 +2312,19 @@ def to_sharegpt(
         if type(convo) is list:
             raise TypeError("Unsloth: Your dataset is probably already in ShareGPT format!")
 
-    possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
-    formatter = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
-    dataset = dataset.map(formatter, batched = True, desc = "Merging columns")
+    if merged_prompt:
+        possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
+        formatter = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
+        dataset = dataset.map(formatter, batched = True, desc = "Merging columns")
+    elif merged_column_name not in dataset.column_names:
+        # Without a merged_prompt there is nothing to build the input from, so the
+        # column has to be there already. Running the formatter anyway would fill
+        # merged_column_name with empty strings and silently blank every human turn.
+        raise KeyError(
+            f"Unsloth: `to_sharegpt` needs an input column named '{merged_column_name}', "
+            f"but the dataset has {dataset.column_names}. Pass `merged_column_name` to "
+            "name the existing column, or `merged_prompt` to build the input from several."
+        )
 
     def __convert_to_sharegpt__(examples):
         users      = examples[merged_column_name]
@@ -2324,10 +2334,14 @@ def to_sharegpt(
                 "Unsloth: Input and output columns must have matching batch lengths. "
                 f"Got {len(users)} {merged_column_name} rows and {len(assistants)} {output_column_name} rows."
             )
+        # A null cell is an absent value, not the word "None". _create_formatter
+        # already coalesces it on the merged path, and skipping the merge must
+        # not reintroduce it; the output column never went through that path at
+        # all, so it leaked here either way.
         texts = [
             [
-                {"from" : "human", "value" : str(user)     },
-                {"from" : "gpt",   "value" : str(assistant)},
+                {"from" : "human", "value" : "" if user      is None else str(user)     },
+                {"from" : "gpt",   "value" : "" if assistant is None else str(assistant)},
             ] \
             for user, assistant in zip(users, assistants)
         ]
@@ -2702,6 +2716,7 @@ extra_eos_tokens = None,
             system_part = system_part.replace(tokenizer.bos_token, "", 1)
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
         partial_system = partial_system.replace("{SYSTEM}", "")
+        system_expr = partial_system
 
         if "{SYSTEM}" in partial_system:
             if default_system_message is None:
@@ -2726,7 +2741,12 @@ extra_eos_tokens = None,
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:
-            partial_system += "{% endif %}"
+            # Emit a static prefix on both branches so the collapse below
+            # makes it unconditional.
+            partial_system += "{% else %}"\
+                "{{ " + system_expr + " }}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
 
         jinja_template = partial_system + jinja_template
 
@@ -2743,7 +2763,7 @@ extra_eos_tokens = None,
 
     # Check if system part is the same!
     jinja_template = re.sub(
-        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.+?)' \}\}"\
+        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.*?)' \}\}"\
         r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
         r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}"\
         r"\{\% for message in loop\_messages \%\}",

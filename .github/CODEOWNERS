@@ -54,6 +54,12 @@
 /tests/ @danielhanchen
 /scripts/ @danielhanchen
 
+# CI definitions. A workflow change can hand a fork PR the base repo's
+# secrets, or skip the very lint that would have caught it, and no CI gate
+# can stop a PR that disables its own gate. Owner review is the control.
+/.github/workflows/ @danielhanchen
+/.github/CODEOWNERS @danielhanchen
+
 # Snapshot data for the notebook linter / Colab oracle. Drift in these
 # files changes the pin floor for every Unsloth notebook, so refreshes
 # must be reviewed by the notebook owners directly. CODEOWNERS later

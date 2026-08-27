@@ -646,6 +646,37 @@ class TestCachedGgufForLoadProbe:
 
 
 class TestLoadHubDownloadExclusion:
+    def test_remote_intent_carries_the_verified_cache_hint(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_verified_cache_hint",
+            "routes/inference.py",
+        )
+        verified = (REPO, VARIANT, "/cached/model.gguf", ((MAIN, 123),))
+        config = SimpleNamespace(
+            identifier = REPO,
+            gguf_hf_repo = REPO,
+            gguf_variant = VARIANT,
+            gguf_verified = verified,
+            is_vision = False,
+        )
+
+        intent = route._resolve_gguf_load_intent(
+            config,
+            LoadRequest(model_path = REPO, gguf_variant = VARIANT),
+            native_grant_backed = False,
+            chat_template_override = None,
+            extra_args = None,
+            placement = SimpleNamespace(
+                resolved_gpu_ids = None,
+                gpu_ids_are_vulkan_ordinals = None,
+            ),
+            n_parallel = 1,
+        )
+
+        assert intent.verified_gguf == verified
+
     def test_resident_local_directory_intent_uses_variant_until_path_is_resolved(self):
         from models.inference import LoadRequest
 
@@ -809,6 +840,45 @@ class TestLoadHubDownloadExclusion:
 
         with pytest.raises(AttributeError, match = "runtime response fields"):
             route._llama_runtime_fields(incomplete_backend)
+
+    def test_real_backend_resolves_every_runtime_response_field(self):
+        # The shipped class, not a fake: an unresolved field 500s every load and poll.
+        from core.inference.llama_cpp import LlamaCppBackend
+        from models.inference import _InferenceRuntimeFields
+
+        route = _load_route_module(
+            "inference_route_module_for_real_backend_projection_test",
+            "routes/inference.py",
+        )
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend.__init__()
+        supplied = {
+            "requires_trust_remote_code",
+            "speculative_type",
+            "requested_parallel_slots",
+            "parallel_slots",
+            "is_mlx",
+            "mlx_kv_bits",
+            "mlx_kv_bits_requested",
+            "mlx_kv_quant_eligibility",
+            "mlx_kv_quant_reason",
+            "mlx_kv_quant_note",
+            "chat_template_override_reason",
+            # Read from requested_extra_args, which is what the load was invoked
+            # with rather than the rewritten launch list.
+            "requested_llama_extra_args",
+        }
+        unresolved = sorted(
+            name
+            for name in _InferenceRuntimeFields.model_fields
+            if name not in supplied and not (hasattr(backend, name) or hasattr(backend, f"_{name}"))
+        )
+        assert unresolved == []
+
+        fields = route._llama_runtime_fields(backend)
+        assert fields["is_mlx"] is False
+        assert fields["mlx_kv_bits_requested"] is None
 
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)
@@ -990,7 +1060,12 @@ class TestLoadHubDownloadExclusion:
 
         class FakeBackend:
             @_with_gguf_load_marker
-            def load_model(self, intent):
+            # The marker forwards the scoped cancel event, so a loader must accept it.
+            def load_model(
+                self,
+                intent,
+                load_cancel_event = None,
+            ):
                 started.set()
                 release.wait(timeout = 2)
                 finished.set()

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { carriesOverSeed, seededMeasuredTransfer } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
@@ -21,7 +22,6 @@ import {
   HIDDEN_POLL_INTERVAL_MS,
   IDLE_EVICT_GRACE_MS,
   INVENTORY_BUMP_DEBOUNCE_MS,
-  MAX_PROGRESS_FRACTION,
   POLL_BACKOFF_AFTER_MS,
   POLL_BACKOFF_INTERVAL_MS,
   POLL_DEGRADED_AFTER_MS,
@@ -65,6 +65,19 @@ import type {
   Terminal,
 } from "./download-manager-types";
 import {
+  XET_NOTICE_TITLE,
+  composeNoticeDescription,
+  shouldShowXetNotice,
+} from "./xet-progress-notice";
+import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
+import {
+  currentRoute,
+  dismissStartToast,
+  liveCallerToast,
+  showCallerToast,
+  showStartToast,
+} from "./start-toast";
+import {
   getState,
   hasActiveRepoPeer,
   isCurrent,
@@ -77,11 +90,15 @@ import {
   setExpectedBytesForJob,
 } from "./download-manager-state";
 import {
+  hasObservedExpectedBytes,
+  resolveProgressUpdate,
+} from "./progress-reconcile";
+import {
   clearWatchdog,
   runtimeRegistry,
   teardownRuntime,
 } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 
 function notify(
   job: ManagedDownload,
@@ -129,75 +146,7 @@ function withDownloadTimeout<T>(
   return withPollRequestTimeout(null, request);
 }
 
-export function hasObservedExpectedBytes(job: ManagedDownload): boolean {
-  // Finalized bytes only: an `.incomplete` blob hitting expected size isn't
-  // finished until the backend verifies it's usable on disk.
-  return (
-    job.expectedBytes > 0 &&
-    job.completedBytes >= job.expectedBytes &&
-    job.completeOnDisk
-  );
-}
-
-export function resolveProgressUpdate(
-  job: ManagedDownload,
-  progressResp: ProgressLike,
-  opts: { resetMonotonic?: boolean } = {},
-): {
-  expected: number;
-  downloadedBytes: number;
-  completedBytes: number;
-  completeOnDisk: boolean;
-  fraction: number;
-  madeProgress: boolean;
-} {
-  const reported = progressResp.expected_bytes;
-  const isGgufVariantJob =
-    job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null;
-  const backendOwnsGgufProgress = isGgufVariantJob && reported > 0;
-  // GGUF totals are backend-owned (non-monotonic); snapshots stay monotonic to
-  // absorb jitter, but a generation bump (XET redownload, restart, re-adoption)
-  // must drop the stale high-water mark and snap to the new run's bytes.
-  const trustBackend = backendOwnsGgufProgress || opts.resetMonotonic === true;
-  const expected = trustBackend
-    ? reported > 0
-      ? reported
-      : job.expectedBytes
-    : Math.max(reported > 0 ? reported : job.expectedBytes, job.expectedBytes);
-  const previousDownloadedBytes = job.downloadedBytes;
-  const downloadedBytes = trustBackend
-    ? Math.max(0, progressResp.downloaded_bytes)
-    : Math.max(previousDownloadedBytes, progressResp.downloaded_bytes);
-  const completedBytes = trustBackend
-    ? Math.max(0, progressResp.completed_bytes ?? 0)
-    : Math.max(job.completedBytes, progressResp.completed_bytes ?? 0);
-  const completeOnDisk = progressResp.complete_on_disk === true;
-  const madeProgress =
-    opts.resetMonotonic === true ||
-    downloadedBytes > previousDownloadedBytes ||
-    expected !== job.expectedBytes;
-  const rawFraction =
-    progressResp.progress > 0
-      ? progressResp.progress
-      : expected > 0
-        ? downloadedBytes / expected
-        : 0;
-  const cappedFraction = Math.min(rawFraction, MAX_PROGRESS_FRACTION);
-  // Keep the GGUF variant bar monotonic: backend progress is recomputed from the
-  // shared per-repo blobs/ dir, so a sibling quant, generation bump, or
-  // no-metadata poll can dip one reading. Resets via startJob's seed fraction.
-  const fraction = isGgufVariantJob
-    ? Math.max(cappedFraction, job.fraction)
-    : cappedFraction;
-  return {
-    expected,
-    downloadedBytes,
-    completedBytes,
-    completeOnDisk,
-    fraction,
-    madeProgress,
-  };
-}
+export { hasObservedExpectedBytes, resolveProgressUpdate };
 
 export function applyProgressUpdate(
   key: string,
@@ -208,6 +157,7 @@ export function applyProgressUpdate(
   patchJob(key, {
     expectedBytes: resolved.expected,
     downloadedBytes: resolved.downloadedBytes,
+    measuredTransfer: resolved.measuredTransfer,
     completedBytes: resolved.completedBytes,
     completeOnDisk: resolved.completeOnDisk,
     fraction: resolved.fraction,
@@ -244,6 +194,7 @@ function markPollFailure(key: string, rt: JobRuntime): void {
   patchJob(key, {
     error: POLL_DEGRADED_MESSAGE,
     bytesPerSec: 0,
+    etaSeconds: 0,
   });
 }
 
@@ -254,6 +205,10 @@ export function finalize(
 ): void {
   const job = getState().jobs[key];
   teardownRuntime(key);
+  // The 8s duration is a cap, not a description of the transfer: a finished download
+  // left the toast still claiming it was running. Before the early returns below, so
+  // a job already in a terminal display state still clears it.
+  dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
   if (job.kind === DOWNLOAD_KIND.MODEL) {
@@ -279,12 +234,18 @@ export function finalize(
       completedBytes: bytes,
       completeOnDisk: true,
       bytesPerSec: 0,
+      etaSeconds: 0,
       error: null,
     });
     notify(job, "onComplete", bytes);
     scheduleRemoval(key, COMPLETE_LINGER_MS);
   } else if (outcome === "cancelled") {
-    patchJob(key, { state: "cancelled", bytesPerSec: 0, error: null });
+    patchJob(key, {
+      state: "cancelled",
+      bytesPerSec: 0,
+      etaSeconds: 0,
+      error: null,
+    });
     notify(job, "onCancelled", 0);
     scheduleRemoval(key, CANCELLED_LINGER_MS);
   } else {
@@ -297,6 +258,7 @@ export function finalize(
       error:
         opts.error === null ? null : (pollAccessErrorMessage(rawError) ?? rawError),
       bytesPerSec: 0,
+      etaSeconds: 0,
     });
     notify(job, "onError", 0);
     scheduleRemoval(key, ERROR_LINGER_MS);
@@ -379,10 +341,13 @@ function applySpeedSample(
   downloadedBytes: number,
   expectedBytes: number,
   nowMs: number,
-): number {
+): { bytesPerSec: number; etaSeconds: number } {
   appendSample(rt.speedSamples, nowMs / 1000, downloadedBytes);
   const stats = computeTransferStats(rt.speedSamples, expectedBytes);
-  return stats.stable ? stats.rateBytesPerSecond : 0;
+  return {
+    bytesPerSec: stats.stable ? stats.rateBytesPerSecond : 0,
+    etaSeconds: stats.stable ? stats.etaSeconds : 0,
+  };
 }
 
 function reconcileProgressAndSpeed(
@@ -392,18 +357,33 @@ function reconcileProgressAndSpeed(
   progressResp: ProgressLike,
   generationChanged: boolean,
 ): { madeProgress: boolean } {
-  const { expected, downloadedBytes, completedBytes, completeOnDisk, fraction, madeProgress } =
-    resolveProgressUpdate(current, progressResp, {
-      resetMonotonic: generationChanged,
-    });
-  const bytesPerSec = applySpeedSample(rt, downloadedBytes, expected, Date.now());
-  patchJob(key, {
-    expectedBytes: expected,
+  const {
+    expected,
     downloadedBytes,
+    measuredTransfer,
     completedBytes,
     completeOnDisk,
     fraction,
-    bytesPerSec,
+    madeProgress,
+  } = resolveProgressUpdate(current, progressResp, {
+    resetMonotonic: generationChanged,
+  });
+  if (generationChanged) {
+    // Another server owns this transfer now, so the old samples describe a
+    // different run. The counter cannot say so: a restart resumes from the
+    // same cache and never goes backwards for appendSample to catch.
+    rt.speedSamples.length = 0;
+  }
+  const speed = applySpeedSample(rt, downloadedBytes, expected, Date.now());
+  patchJob(key, {
+    expectedBytes: expected,
+    downloadedBytes,
+    measuredTransfer,
+    completedBytes,
+    completeOnDisk,
+    fraction,
+    bytesPerSec: speed.bytesPerSec,
+    etaSeconds: speed.etaSeconds,
   });
   markPollSuccess(key, rt);
   return { madeProgress };
@@ -468,7 +448,12 @@ async function tick(key: string): Promise<void> {
     );
     if (!isCurrent(key, epoch)) return;
 
-    const generationChanged = syncServerGeneration(key, job, status);
+    // syncServerGeneration persists the new generation immediately, so a change
+    // seen on a tick that returns before the progress path would look unchanged
+    // on the next one. Hold it until a progress poll actually consumes it.
+    if (syncServerGeneration(key, job, status)) {
+      rt.pendingGenerationChange = true;
+    }
 
     const terminalKind = terminalKindFromState(status.state);
     if (terminalKind !== null) {
@@ -499,6 +484,8 @@ async function tick(key: string): Promise<void> {
     const current = getState().jobs[key];
     if (!current) return;
 
+    const generationChanged = rt.pendingGenerationChange === true;
+    rt.pendingGenerationChange = false;
     const { madeProgress } = reconcileProgressAndSpeed(
       rt,
       key,
@@ -594,9 +581,13 @@ export async function startJob(
     state?: DownloadJobState;
     transport?: ResolvedTransport;
     cancelTransport?: ResolvedTransport | null;
+    /** The surface this start was asked for, to hold its toast against. Passed by
+     * `requestStart`, whose preflight is itself navigable; else taken here. */
+    originRoute?: string;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
+  const startRoute = opts.originRoute ?? currentRoute();
   // Peer guard stops a FRESH start from double-starting a variant already
   // downloading (or colliding with a no-variant snapshot). Skipped when ADOPTING:
   // the restored own entry would look like a peer and freeze the bar; adoptJob's
@@ -636,9 +627,14 @@ export async function startJob(
   // An explicit opts.useXet (a retry pinning a transport) wins; otherwise carry the stored
   // preference UNRESOLVED so "auto" survives to effectiveTransportMode(). Collapsing it to a
   // boolean here would read "auto" as "not xet" and send every download over HTTP.
-  const requestedMode: TransportMode =
-    opts.useXet === undefined
-      ? getTransportMode()
+  // Never for an adopted job: that branch ignores requestedMode, and resolving it is now a
+  // settings round trip. Suspending here left pollingStarted=false long enough for the other
+  // concurrent adoptJob caller to replace this runtime, and both continuations then reached
+  // beginPolling, leaving duplicate timers and a leaked visibility listener.
+  const requestedMode: TransportMode = opts.adopt
+    ? TRANSPORT.HTTP
+    : opts.useXet === undefined
+      ? await resolveTransportMode()
       : opts.useXet
         ? TRANSPORT.XET
         : TRANSPORT.HTTP;
@@ -651,9 +647,21 @@ export async function startJob(
     teardownRuntime(key);
     throw error;
   }
-  const seedDownloaded = opts.adopt ? (existing?.downloadedBytes ?? 0) : 0;
-  const seedCompleted = opts.adopt ? (existing?.completedBytes ?? 0) : 0;
-  const seedFraction = opts.adopt ? (existing?.fraction ?? 0) : 0;
+  const carryOverSeed = carriesOverSeed(
+    opts.adopt === true,
+    existing?.serverGeneration,
+    opts.generation,
+  );
+  const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
+  const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
+  const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
+  // Whatever the counters mean, they keep meaning it. Seeding the bytes without
+  // this said "measured" for a figure the poll only held, which is the
+  // "0 B left" the guard exists to stop.
+  const seedMeasuredTransfer = seededMeasuredTransfer(
+    carryOverSeed,
+    existing?.measuredTransfer,
+  );
   // An adopted job never called apiStart, so it learns the run's generation from
   // the probe (or persisted value) to scope a later cancel to this exact run.
   const seedGeneration = opts.adopt
@@ -679,6 +687,7 @@ export async function startJob(
     kind: req.kind,
     repoId: req.repoId,
     variant: req.variant,
+    etaSeconds: 0,
     state: adoptingCancel ? "cancelling" : "running",
     downloadedBytes: seedDownloaded,
     completedBytes: seedCompleted,
@@ -696,6 +705,9 @@ export async function startJob(
     ...(adopted.cancelTransport
       ? { cancelTransport: adopted.cancelTransport }
       : {}),
+    ...(seedMeasuredTransfer !== undefined
+      ? { measuredTransfer: seedMeasuredTransfer }
+      : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
@@ -704,6 +716,12 @@ export async function startJob(
       ? { scopedFiles: [...req.files] }
       : opts.adopt && existing?.scopedFiles
         ? { scopedFiles: existing.scopedFiles }
+        : {}),
+    // The staged plan's own verdict on which entry is the picked model, so the panel labels it without guessing from file extensions. An adopted job keeps the existing record, since only the stager can supply it.
+    ...(req.checkpoint !== undefined
+      ? { checkpoint: req.checkpoint }
+      : opts.adopt && existing?.checkpoint !== undefined
+        ? { checkpoint: existing.checkpoint }
         : {}),
   });
 
@@ -733,6 +751,50 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
+    // One start, one toast: the only place a start is announced. A cancel can land
+    // mid-flight (the reissue above is the giveaway), and neither message is true
+    // of a start that is already stopping.
+    const stopping = rt.cancelRequested;
+    // Everything above was round trips the user could navigate during. Checked BEFORE
+    // reserving, since a reservation is one of three for the life of the install:
+    // spending one on a toast that will be discarded on arrival is how starting a
+    // download and going to watch it burns all three unseen.
+    const onOriginRoute = currentRoute() === startRoute;
+    if (
+      onOriginRoute &&
+      shouldShowXetNotice({
+        kind: req.kind,
+        transport: started,
+        attached: result.attached === true,
+        live: result.state === "running" && !stopping,
+      })
+    ) {
+      // Async (it asks the backend for one of the three) and nothing below waits on
+      // a toast. A lost reservation still leaves the caller owed its message.
+      void reserveXetNoticeFromServer().then(({ granted }) => {
+        // This round trip can outlive the transfer: finalize() dismisses by id before
+        // it resolves, so raising here would leave a finished or cancelled job claiming
+        // to run for another 8s, or hand a restart on the same key a stale message.
+        if (!isCurrent(key, epoch) || rt.cancelRequested) return;
+        // The caller's line can go stale while the notice stays true: chat moved
+        // thread, so nothing auto-loads, but the 0% still needs explaining.
+        const caller = liveCallerToast(req.callerToast);
+        if (granted) {
+          showStartToast(
+            key,
+            {
+              title: XET_NOTICE_TITLE,
+              description: composeNoticeDescription(caller),
+            },
+            startRoute,
+          );
+          return;
+        }
+        showCallerToast(key, caller, startRoute);
+      });
+    } else if (!stopping && onOriginRoute) {
+      showCallerToast(key, liveCallerToast(req.callerToast), startRoute);
+    }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {

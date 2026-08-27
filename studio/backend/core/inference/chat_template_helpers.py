@@ -918,7 +918,7 @@ def _neutralize_replayed_tool_call(
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
     argument echoing pasted text can close the call block and open a "<|tool_response>" or
     "<|turn>model" of its own (#7066). The rewrite is the identity on every dispatchable
-    name (Studio composes ^[a-zA-Z0-9_-]{1,64}$), and a tool result's "name" takes the same
+    name (Unsloth composes ^[a-zA-Z0-9_-]{1,64}$), and a tool result's "name" takes the same
     rewrite, so the two still agree when Gemma-4 pairs them by name.
 
     Both replay shapes are swept, the OpenAI nested one and the flat {"id", "name",
@@ -1139,7 +1139,7 @@ def neutralize_control_markup_in_messages(
                 new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
                 # A media part is only opaque where something RESOLVES it, and nothing does
-                # inside a tool result: Studio's vision and audio paths build from the last
+                # inside a tool result: Unsloth's vision and audio paths build from the last
                 # user message, while Llama-3.1's tool branch serializes the whole content
                 # iterable with tojson, so an exempt URL there lands in the prompt as live
                 # structure. That branch keys on "tool" OR "ipython" (chat_templates.py:517),
@@ -1983,18 +1983,32 @@ class ReasoningChannelNormalizer:
     available to downstream parsers.
     """
 
-    def __init__(self, opening_marker: str, closing_marker: str):
+    def __init__(
+        self,
+        opening_marker: str,
+        closing_marker: str,
+        *,
+        in_reasoning: bool = False,
+    ):
         self._opening_marker = opening_marker
         self._closing_marker = closing_marker
         self._buffer = ""
-        self._in_reasoning = False
+        self._in_reasoning = in_reasoning
         self._reasoning_done = False
+        # Only a generated opener carries the protocol newline; from the prompt it is
+        # already consumed, so a streamed newline is content.
         self._skip_opening_newline = False
+        # A prompt-supplied opener never reaches the stream, so <think> is owed to the
+        # first delta carrying text.
+        self._pending_open = in_reasoning
 
     def feed(self, text: str) -> str:
         """Consume a raw text delta and return the stable canonical delta."""
         self._buffer += text or ""
         output: list[str] = []
+        if self._pending_open and self._buffer:
+            output.append(_THINK_OPEN)
+            self._pending_open = False
         while self._buffer:
             if self._reasoning_done:
                 output.append(self._buffer)
@@ -2028,10 +2042,17 @@ class ReasoningChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a naturally completed stream and close an open think block."""
+        """Flush a stream that ended and close an open think block.
+
+        Ended, not merely finished generating: a stop sequence ends a turn as a stop
+        token does, and the block it cut inside is still owed its close.
+        """
         output = self.drain()
         if self._in_reasoning:
-            output += _THINK_CLOSE
+            # Nothing generated: no block at all, rather than a close with no opener.
+            if not self._pending_open:
+                output += _THINK_CLOSE
+            self._pending_open = False
             self._in_reasoning = False
             self._reasoning_done = True
         return output
@@ -2043,20 +2064,61 @@ class ReasoningChannelNormalizer:
         return output
 
 
+def prompt_opens_reasoning_channel(
+    prompt: Optional[str],
+    markers: Optional[tuple[str, str]],
+    continued: bool = False,
+) -> bool:
+    """Whether a rendered prompt *ends* by opening the native reasoning channel.
+
+    Gemma-style templates end a post-tool generation prompt with the opener, so
+    generation starts inside reasoning and emits only the closing marker.
+
+    Only the tail decides -- the rule ``strip_open_reasoning_prefill`` already uses
+    for ``<think>``. Position alone cannot tell a template's own prefill from
+    replayed history, which keeps this markup through
+    ``neutralize_control_markup_in_messages``, so an opener with content after it
+    reads as closed; otherwise history could hide a plain answer in a think block.
+    The cost is that a spliced continuation resuming inside a channel also reads as
+    closed, leaving its reasoning visible as it was before.
+
+    ``continued`` means this render resumed a trailing assistant turn, so the prompt
+    ends on client text whose tail proves nothing. It is the render's own state, not
+    the request flag, which outlives the continuation: the next tool-loop pass keeps
+    the flag but renders an ordinary post-tool prompt that must still be read.
+    """
+    if continued or not prompt or not markers:
+        return False
+    opening_marker = markers[0]
+    opened_at = prompt.rfind(opening_marker)
+    if opened_at < 0:
+        return False
+    return not prompt[opened_at + len(opening_marker) :].strip()
+
+
 def normalize_reasoning_snapshots(
     stream,
     tokenizer = None,
     cancel_event = None,
     markers: Optional[tuple[str, str]] = None,
     tools = None,
+    prompt: Optional[str] = None,
+    continued: bool = False,
+    ended = None,
 ):
-    """Normalize a prefix-monotonic cumulative text stream when supported."""
+    """Normalize a prefix-monotonic cumulative text stream when supported.
+
+    ``ended`` is read after the stream: a turn a stop sequence ended still owes
+    its open block a close, even if a cancel landed on the same step."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
         return
 
-    normalizer = ReasoningChannelNormalizer(*markers)
+    normalizer = ReasoningChannelNormalizer(
+        *markers,
+        in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+    )
     raw_output = ""
     normalized_output = ""
     for snapshot in stream:
@@ -2068,7 +2130,9 @@ def normalize_reasoning_snapshots(
             normalized_output += delta
             yield normalized_output
 
-    cancelled = cancel_event is not None and cancel_event.is_set()
+    cancelled = (
+        not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
+    )
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:
         normalized_output += tail
@@ -2299,6 +2363,121 @@ def markup_for_tokenizer(
     return profile
 
 
+def trailing_assistant_text(messages: list) -> Optional[str]:
+    """Plain text of a trailing assistant turn, else None.
+
+    Only plain text resumes: tool calls and image parts have no resume point.
+    """
+    if not messages:
+        return None
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "assistant":
+        return None
+    if last.get("tool_calls"):
+        return None
+    content = last.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "text":
+                return None
+            texts.append(str(part.get("text") or ""))
+        return "".join(texts)
+    return None
+
+
+def last_user_text(messages: list) -> str:
+    """Text of the newest user turn, with any ``<img>`` markup stripped.
+
+    Scans back rather than reading ``messages[-1]``: a continuation ends on the
+    assistant partial. Stops at the newest user turn even when it is empty (an
+    image-only message), so an older question is never resurrected.
+    """
+    from core.inference.message_content import content_to_text
+
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        return re.sub(r"<img[^>]*>", "", content_to_text(message.get("content"))).strip()
+    return ""
+
+
+def append_assistant_turn(
+    conversation: list,
+    assistant_msg: dict,
+    *,
+    continue_final_message: bool = False,
+) -> None:
+    """Append a generated assistant turn to *conversation*.
+
+    A continuation leaves the resumed partial trailing, and the partial plus what the
+    model just added are one turn, so they are merged: appending would instead give two
+    consecutive assistant messages and break role alternation. Self-limiting, since
+    after a tool result the conversation no longer ends with a plain assistant turn.
+
+    Merge over the resumed turn rather than replacing it, or every key the partial
+    carried but the continuation does not repeat is lost. ``extra_content`` is such a
+    key, and Gemini reads the text part's thought signature back from it alone, so a
+    resumed turn replayed without it is rejected.
+    """
+    # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
+    prev_text = trailing_assistant_text(conversation) if continue_final_message else None
+    if prev_text is not None and isinstance(assistant_msg.get("content"), str):
+        # Copy rather than mutate: the caller owns assistant_msg and may still read it.
+        merged_msg = {**conversation[-1], **assistant_msg}
+        merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        conversation[-1] = merged_msg
+        return
+    conversation.append(assistant_msg)
+
+
+def strip_open_reasoning_prefill(prefix: str) -> str:
+    """Drop a generation prompt's unclosed ``<think>`` opener.
+
+    A splice appends the visible partial to this prefix, so on a template that prefills
+    an open block (DeepSeek-R1, QwQ, Qwen3-Thinking) the answer would resume as reasoning.
+    Only an opener the prompt itself ends on counts: a bare "<think>" typed into an
+    earlier turn is rendered text, and cutting there would eat the transcript.
+    """
+    open_at = prefix.rfind(_THINK_OPEN)
+    if open_at == -1 or open_at < prefix.rfind(_THINK_CLOSE):
+        return prefix
+    if prefix[open_at + len(_THINK_OPEN) :].strip():
+        return prefix
+    return prefix[:open_at]
+
+
+def render_prompt_with_boundary(
+    processor,
+    messages: list,
+    continue_final_message: bool = False,
+) -> str:
+    """Render *messages* through a renderer's own chat template.
+
+    With *continue_final_message* the prompt ends inside the trailing assistant turn, so
+    the model resumes it. Processors predating the kwarg get a manual splice, taking the
+    partial from *messages* (which the caller already swept) rather than a separate copy:
+    a raw partial could close the turn or open another role instead of resuming (#7066).
+    """
+    partial = trailing_assistant_text(messages) if continue_final_message else None
+    if not partial:
+        return processor.apply_chat_template(messages, add_generation_prompt = True, tokenize = False)
+    try:
+        return processor.apply_chat_template(
+            messages,
+            add_generation_prompt = False,
+            continue_final_message = True,
+            tokenize = False,
+        )
+    except TypeError:
+        prefix = processor.apply_chat_template(
+            messages[:-1], add_generation_prompt = True, tokenize = False
+        )
+        return f"{strip_open_reasoning_prefill(prefix)}{partial}"
+
+
 def apply_chat_template_for_generation(
     tokenizer,
     messages: list,
@@ -2307,10 +2486,14 @@ def apply_chat_template_for_generation(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
+    continue_final_message: bool = False,
 ) -> str:
     """Render the chat prompt. Try richest kwargs first; drop one
     group at a time on TypeError. Jinja / missing-variable errors
-    propagate."""
+    propagate.
+
+    With *continue_final_message* the prompt ends inside the trailing assistant
+    turn, so the model resumes the partial instead of restarting it."""
     # Shared choke point for the transformers and MLX backends (#7066). Gated on the
     # loaded model's own markers, so text naming another family's sentinel is left alone.
     _markup = markup_for_tokenizer(tokenizer, tools)
@@ -2357,14 +2540,25 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
-    def _render(msgs: list) -> str:
+    # Anything not continuable (an empty partial included, matching the route guard and
+    # render_prompt_with_boundary) renders as an ordinary new turn.
+    _continue_text = trailing_assistant_text(messages) if continue_final_message else None
+    _continuing = bool(_continue_text)
+    _boundary_kwargs = (
+        {"add_generation_prompt": False, "continue_final_message": True}
+        if _continuing
+        else {"add_generation_prompt": True}
+    )
+
+    def _render(msgs: list, boundary: Optional[dict] = None) -> str:
+        boundary = _boundary_kwargs if boundary is None else boundary
         last_exc: Optional[Exception] = None
         for kwargs in attempts:
             try:
                 return tokenizer.apply_chat_template(
                     _swept_for(kwargs, msgs),
                     tokenize = False,
-                    add_generation_prompt = True,
+                    **boundary,
                     **kwargs,
                 )
             except TypeError as e:
@@ -2377,8 +2571,34 @@ def apply_chat_template_for_generation(
             raise last_exc
         raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
 
+    def _render_continuation_manually(msgs: list) -> str:
+        """For tokenizers predating ``continue_final_message`` (TypeError above).
+
+        Prefix and partial come from the SAME swept copy: an attempt that drops the tools
+        kwarg re-sweeps for the default template, whose markup would otherwise survive raw.
+        """
+        for kwargs in attempts:
+            swept = _swept_for(kwargs, msgs)
+            try:
+                prefix = tokenizer.apply_chat_template(
+                    swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
+                )
+            except TypeError:
+                continue
+            partial = trailing_assistant_text(swept) or _continue_text
+            return f"{strip_open_reasoning_prefill(prefix)}{partial}"
+        raise TypeError("no attempt rendered the continuation prefix")
+
+    def _render_with_fallback(msgs: list) -> str:
+        try:
+            return _render(msgs)
+        except TypeError:
+            if not _continuing:
+                raise
+            return _render_continuation_manually(msgs)
+
     try:
-        return _render(messages)
+        return _render_with_fallback(messages)
     except Exception:
         # Retry with repairs applied cumulatively. Originals render first, so
         # working templates stay byte-identical.
@@ -2391,7 +2611,7 @@ def apply_chat_template_for_generation(
             candidates.append(split)
         for candidate in candidates:
             try:
-                return _render(candidate)
+                return _render_with_fallback(candidate)
             except Exception:
                 continue
         raise
@@ -2445,6 +2665,7 @@ def render_native_template(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
+    continue_final_message: bool = False,
     apply_fn = None,
     hf_token: Optional[str] = None,
     return_metadata: bool = False,
@@ -2505,6 +2726,7 @@ def render_native_template(
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
         no_tools = apply_fn(
             render_tokenizer,
@@ -2513,6 +2735,7 @@ def render_native_template(
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
     except Exception as exc:
         logger.warning(
@@ -2553,6 +2776,7 @@ def render_with_native_template_fallback(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
+    continue_final_message: bool = False,
     apply_fn = None,
     hf_token: Optional[str] = None,
     return_metadata: bool = False,
@@ -2608,6 +2832,7 @@ def render_with_native_template_fallback(
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
     except Exception as exc:
         logger.warning(
@@ -2626,6 +2851,7 @@ def render_with_native_template_fallback(
         enable_thinking = enable_thinking,
         reasoning_effort = reasoning_effort,
         preserve_thinking = preserve_thinking,
+        continue_final_message = continue_final_message,
         apply_fn = apply_fn,
         hf_token = hf_token,
         return_metadata = return_metadata,

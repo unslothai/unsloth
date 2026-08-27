@@ -3,7 +3,8 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
-import { createScopedSingleFlightRequest } from "../lib/single-flight-request";
+import { openStreamResponse } from "@/lib/open-stream-response";
+import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import {
   type ParsedTrainingProgressEvent,
   consumeTrainingProgressStream,
@@ -252,6 +253,10 @@ interface TrainingJobScope {
   expectedJobId?: string;
 }
 
+interface RequiredTrainingJobScope {
+  expectedJobId: string;
+}
+
 function scopedTrainingBody(
   payload: Record<string, unknown>,
   scope?: TrainingJobScope,
@@ -265,8 +270,8 @@ function scopedTrainingBody(
 }
 
 export async function stopTraining(
-  save = true,
-  scope?: TrainingJobScope,
+  save: boolean,
+  scope: RequiredTrainingJobScope,
 ): Promise<TrainingStopResponse> {
   const response = await authFetch("/api/train/stop", {
     method: "POST",
@@ -277,17 +282,12 @@ export async function stopTraining(
 }
 
 export async function resetTraining(
-  scope?: TrainingJobScope,
+  scope: RequiredTrainingJobScope,
 ): Promise<TrainingResetResponse> {
-  const hasScope = scope?.expectedJobId !== undefined;
   const response = await authFetch("/api/train/reset", {
     method: "POST",
-    ...(hasScope
-      ? {
-          headers: { "Content-Type": "application/json" },
-          body: scopedTrainingBody({}, scope),
-        }
-      : {}),
+    headers: { "Content-Type": "application/json" },
+    body: scopedTrainingBody({}, scope),
   });
   return parseJson<TrainingResetResponse>(response);
 }
@@ -364,13 +364,10 @@ export async function streamTrainingProgress(options: {
   }
 
   const expectedJobId = encodeURIComponent(options.expectedJobId);
-  const response = await authFetch(
+  const response = await openStreamResponse(
+    authFetch,
     `/api/train/progress?expected_job_id=${expectedJobId}`,
-    {
-      method: "GET",
-      headers,
-      signal: options.signal,
-    },
+    { headers, signal: options.signal },
     { retryNetworkErrors: false },
   );
 

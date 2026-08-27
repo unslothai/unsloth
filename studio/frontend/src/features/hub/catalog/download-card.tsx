@@ -69,6 +69,7 @@ export function DownloadCard({
             <DownloadProgressBar
               progress={progress}
               bytesPerSec={job.bytesPerSec}
+              etaSeconds={job.etaSeconds}
             />
           </div>
         )}
@@ -233,7 +234,7 @@ export function DownloadActionButton({
   cancelling,
   loading = false,
   isPartial = false,
-  partialTransport = null,
+  partialResumable = false,
   stopMode = "cancel",
   progressPercent = null,
   disabled,
@@ -244,7 +245,8 @@ export function DownloadActionButton({
   cancelling: boolean;
   loading?: boolean;
   isPartial?: boolean;
-  partialTransport?: string | null;
+  /** This row's partial can be continued byte for byte (backend verdict). */
+  partialResumable?: boolean;
   /** What stopping the running job costs; see downloadStopMode. */
   stopMode?: DownloadStopMode;
   progressPercent?: number | null;
@@ -285,7 +287,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {downloadActionLabel(isPartial, partialTransport)}
+          {downloadActionLabel(isPartial, partialResumable)}
         </>
       )}
     </button>
@@ -299,6 +301,7 @@ export function DeleteConfirmDialog({
   title,
   description,
   deleting,
+  blocked = false,
   onConfirm,
 }: {
   open: boolean;
@@ -306,6 +309,8 @@ export function DeleteConfirmDialog({
   title: string;
   description: ReactNode;
   deleting: boolean;
+  /** Another installed model needs these files. Confirming would 400, so do not offer it. */
+  blocked?: boolean;
   onConfirm: () => void;
 }) {
   return (
@@ -319,7 +324,7 @@ export function DeleteConfirmDialog({
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={deleting}
+            disabled={deleting || blocked}
             onClick={(e) => {
               e.preventDefault();
               onConfirm();

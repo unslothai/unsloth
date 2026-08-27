@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import {
   Popover,
   PopoverContent,
@@ -65,6 +67,7 @@ import {
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
@@ -79,6 +82,11 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
+  /** False for a local diffusion / audio / video GGUF: it runs through the media
+   *  planner rather than llama.cpp, so the KV estimator describes the wrong
+   *  runtime -- and it still falls back to the file size, so it draws a
+   *  confident weights-only verdict rather than nothing. */
+  showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
   modelFormat: ModelInventoryFormat | null;
@@ -110,7 +118,10 @@ interface LocalOnDeviceCardProps {
    * it came from this card's selector or was derived from the resident model, which
    * decides whether a fresher status read may override it.
    */
-  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
+  onOpenSettings?: (
+    ggufVariant: string | null,
+    quantIsUserPicked: boolean,
+  ) => void;
 }
 
 function formatAdapterLabel(
@@ -208,6 +219,7 @@ export function LocalOnDeviceCard({
   sourceLabel,
   source,
   path,
+  showMemoryBar = true,
   isGguf,
   requiresVariant = false,
   modelFormat,
@@ -263,6 +275,7 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -322,10 +335,20 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
+        // Both sides measure the same cache; keep the local reading and let the
+        // remote one cover a row the local listing could not price.
+        download_remaining_bytes:
+          variant.download_remaining_bytes ??
+          remoteVariant.download_remaining_bytes,
         update_available: remoteVariant.update_available === true,
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
+  // The same live VRAM Budget the memory bar on this card reads. Without it the
+  // quant menu ranked against the 0.97 default while the bar beside it used the
+  // saved fraction, so an over-budget variant could sit above a smaller one that
+  // actually fits.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
       variants
@@ -334,6 +357,7 @@ export function LocalOnDeviceCard({
             activeGgufVariant: isActive ? activeGgufVariant : null,
             gpuGb,
             systemRamGb,
+            budgetFraction,
           })
         : null,
     [
@@ -343,6 +367,7 @@ export function LocalOnDeviceCard({
       activeGgufVariant,
       gpuGb,
       systemRamGb,
+      budgetFraction,
     ],
   );
   const preferredQuant = preferredFile
@@ -698,6 +723,31 @@ export function LocalOnDeviceCard({
             </button>
           </div>
         </div>
+        {/* Below the action row, not inside it: the row is a horizontal flex
+            container, so a full-width bar there becomes another flex item and
+            squeezes the Run/Train buttons. */}
+        {/* A direct .gguf path skips variant selection entirely, so selectedQuant
+            is null for exactly the local files this is meant to cover. The path
+            names the weights on its own there, and the backend resolves a
+            direct file without needing a quant to match. */}
+        {showMemoryBar &&
+        (repoId || localGgufPath) &&
+        (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
+          <ModelMemoryBarFor
+            // The card's own path is what Run opens, so it is the identity the
+            // estimate has to use: a repo cached under several roots or revisions
+            // can otherwise resolve a different snapshot and chart weights the
+            // click does not load. It is also the only identity a custom or local
+            // GGUF has, where repoId is null and the bar used to be suppressed
+            // outright despite a perfectly good path being right here.
+            repoId={repoId || localGgufPath}
+            loadId={localGgufPath}
+            quant={selectedQuant ?? ""}
+            sizeBytes={selectedVariant?.size_bytes}
+            gpuGb={gpuGb}
+            className="px-3 pb-2"
+          />
+        ) : null}
       </div>
       {baseModel && (
         <BaseModelReference
@@ -714,12 +764,16 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
+        // Same gate the model row menu applies: when an installed image model still needs these
+        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
           <>
             This will remove{" "}
             <span className="font-medium text-foreground">{repoId}</span> and
             its downloaded files from disk. You can re-download it later.
+            <DeleteImpactSummary impact={deleteImpact} />
           </>
         }
       />

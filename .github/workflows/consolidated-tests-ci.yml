@@ -7,7 +7,7 @@
 #
 # Why a separate workflow:
 #   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 17
+#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 21
 #     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
 #     historically excluded with their GPU siblings); pulling them out into
 #     a sibling job keeps the existing 760-passed baseline stable while we
@@ -41,8 +41,17 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
-    branches: [main, pip]
+    branches: [main]
+    paths:
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'studio/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
     inputs:
       unsloth_zoo_ref:
@@ -51,8 +60,12 @@ on:
         default: 'main'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -120,20 +133,28 @@ jobs:
       # bootstrap accepts it. Setting it has no effect on unsloth itself.
       UNSLOTH_IS_PRESENT: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: consolidated
+          key-files: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       # Node 22 unblocks tests/studio/test_chat_preset_builtin_invariants.py's
       # `node --experimental-strip-types` subprocess. Cheap to install; keeps
       # the consolidated job self-sufficient even if studio-backend-ci.yml
       # changes its node setup.
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
@@ -200,17 +221,22 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -r studio/backend/requirements/studio.txt
+          # CPU torch FIRST, before anything that depends on torch. peft, accelerate and
+          # datasets all declare a torch dependency, so installing them first made pip
+          # resolve it from PyPI: the default CUDA build, plus 14 nvidia_* wheels and
+          # cuda-toolkit, roughly 2.3 GB, which the pinned CPU wheel below then replaced
+          # seconds later. Same end state either way; this just stops paying for the
+          # download. torchvision: unsloth_zoo.vision_utils imports it at module scope.
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install \
             python-multipart aiofiles sqlalchemy cryptography \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest==9.0.3 pytest-asyncio httpx \
+            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
             ipython
-          # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
           # transformers + trl from the matrix combo.
           pip install "$RESOLVED_TRANSFORMERS_SPEC"
           pip install "$RESOLVED_TRL_SPEC"
@@ -280,7 +306,11 @@ jobs:
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
-          python -m pytest --collect-only -q "$RUNNER_TEMP/unsloth-zoo/tests/"
+          # Collect from the zoo checkout, not from here: this repo ships a real
+          # tests/ package, so a zoo test doing "from tests.foo import bar" binds
+          # "tests" to OUR package and dies with ModuleNotFoundError. The later
+          # full zoo runs already set working-directory for the same reason.
+          (cd "$RUNNER_TEMP/unsloth-zoo" && python -m pytest --collect-only -q tests/)
 
       - name: import_fixes drift detectors (18 tests, HARD GATE)
         # One drift detector per fix_* / patch_* function in
@@ -377,7 +407,7 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
-        # The Studio file runs here rather than in studio-backend-ci, which
+        # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
         # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases
@@ -416,7 +446,8 @@ jobs:
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
             tests/test_raw_text_json_loading.py \
-            tests/test_map_eos_token.py
+            tests/test_map_eos_token.py \
+            tests/test_apertus_instruct_mapping.py
           # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
           # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
           # monkeypatches that name, so it no longer needs flash_attn on this runner.
@@ -435,10 +466,62 @@ jobs:
         # here unblocks unsloth CI until the loader fixture is fixed.
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
-          python -m pytest -q --tb=short tests/ \
+          # Two passes: everything in parallel, then the two files that cannot share a
+          # process with the rest of the suite.
+          #
+          # Measured on a staging runner across all three matrix cells, whole suite:
+          #
+          #     cell                      serial   -n 4 --dist loadfile
+          #     HF=latest + TRL=latest      580s                  253s
+          #     HF=4.57.6 + TRL<1           517s                  229s
+          #     HF=default + TRL=default    568s                  246s
+          #
+          # Across two runs of all three cells, four agreed exactly -- failure sets and
+          # skip sets both -- and two produced 14 failures serial does not: 8 in
+          # test_mlx_generate.py and 6 in test_moe_bnb4bit_per_expert_conversions.py.
+          #
+          # The same 14 every time, and NOT the same cell: the second run moved them from
+          # HF=default to HF=latest. So this is not a dependency combination, it is worker
+          # scheduling, and roughly one cell per run draws the losing order.
+          #
+          # Both files pass on their own, and pass under xdist on their own, so they are
+          # self-contained. What breaks them is another file running first in the same
+          # worker -- an ordering serial never produces, because serial is alphabetical.
+          # So the parallel speedup is real and the divergence is real, and the two are
+          # separable: run those two files in their own process, where they are reliable.
+          #
+          # This is a mitigation, not a cure. The suite has cross-file pollution that
+          # alphabetical ordering happens to hide, and the right fix is in unsloth_zoo,
+          # on whichever file leaks. Pinning here keeps CI honest meanwhile: what these
+          # two files prove is unchanged, because a fresh process is what they get today.
+          #
+          # test_hf_xet_fallback.py is here for a different reason, found the same way.
+          # It drives a stall detector against the real clock -- 27 sub-second sleeps,
+          # one of them commented "within the unmeasurable window" -- and under four
+          # workers on four cores it reported "Download appears stalled (xet transport)
+          # -- no progress for 0s". Nothing was stalled; the test was descheduled. No
+          # ordering fix helps a wall-clock margin, so it gets the quiet process too.
+          #
+          # It is the only file in the suite with that shape: two use sub-second sleeps
+          # and the other one (test_mlx_save_export_edge_cases.py) sleeps 0.01s to widen
+          # a race window without asserting on elapsed time.
+          #
+          # loadfile rather than the default `load`: 34 of the 236 files touch sys.modules
+          # or importlib.reload, so tests within a file must stay on one worker, in order.
+          python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
+            --ignore=tests/test_mlx_generate.py \
+            --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
+            --ignore=tests/test_hf_xet_fallback.py \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device \
             --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through
+
+          # The pair, serially, in a process of their own. Not optional: without this the
+          # ignores above delete 51 tests from CI and the job still goes green.
+          python -m pytest -q --tb=short \
+            tests/test_mlx_generate.py \
+            tests/test_moe_bnb4bit_per_expert_conversions.py \
+            tests/test_hf_xet_fallback.py
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
         # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,
@@ -1072,6 +1155,41 @@ jobs:
               return sorted(s.name for s in pkgutil.iter_modules(tm.__path__) if s.ispkg)
 
 
+          def _compile_one(model_type):
+              """Classify one model_type. Top level so `spawn` can pickle it.
+
+              Returns (model_type, outcome, message) with outcome one of
+              "skipped" / "ok" / "fail". The caller, not this function, decides
+              whether a "fail" is known-broken, so the classification rules stay
+              in one place.
+
+              The SIGALRM cap is installed per call, in the worker's own main
+              thread, so it still bounds a single infinite-looping model_type.
+              """
+              import importlib as _il
+              import signal
+              try:
+                  _il.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
+              except (ModuleNotFoundError, ImportError):
+                  return (model_type, "skipped", "no modeling file")
+
+              def _on_timeout(signum, frame):
+                  raise TimeoutError("compile exceeded per-model budget")
+
+              prev_handler = signal.signal(signal.SIGALRM, _on_timeout)
+              signal.alarm(60)
+              try:
+                  unsloth_compile_transformers(
+                      model_type=model_type, fast_lora_forwards=False,
+                  )
+                  return (model_type, "ok", "")
+              except Exception as e:
+                  return (model_type, "fail", f"{type(e).__name__}: {str(e)[:200]}")
+              finally:
+                  signal.alarm(0)
+                  signal.signal(signal.SIGALRM, prev_handler)
+
+
           def test_compile_every_transformers_model_type():
               """Run unsloth_compile_transformers across every model_type
               the matrix's transformers ships. Allowed outcomes:
@@ -1081,57 +1199,86 @@ jobs:
                 known   -> in KNOWN_BROKEN_COMPILE; tracked for follow-up.
               Any uncaught failure fails the cell.
 
-              Per-model SIGALRM cap so one infinite-looping model_type
-              cannot wedge the whole sweep + nuke the job timeout
-              (observed on transformers >=5,<6 -- 30+ min hang before
-              this guard landed)."""
-              import importlib as _il
-              import signal
+              Run across a process pool. The models are independent -- each
+              compile reads one transformers modeling module and writes its own
+              cache file -- and compilation, not importing, is essentially all
+              of the cost (measured 359 models: 81.8s compiling against 2.6s
+              importing). Serial, this step was the second most expensive in
+              Core and it ran once per matrix leg.
+
+              `spawn`, not `fork`: these workers come up after torch is already
+              loaded in the parent, and forking a loaded torch is a known
+              hazard. Each worker re-imports this module, which re-runs the
+              hermetic-cache setup at the top, so every worker compiles into a
+              cache directory of its own. Nothing here asserts on the cache
+              path; the per-model file assertions live in
+              test_compile_real_modeling_module, which stays in-process.
+
+              Ordered imap, so the known / new-failure report keeps the same
+              model order it had when this was a serial loop."""
+              import multiprocessing as _mp
+              import os as _os
               ok = 0
               skipped = []
               known = []
               new_failures = []
               models = _all_model_types()
-              def _on_timeout(signum, frame):
-                  raise TimeoutError("compile exceeded per-model budget")
-              prev_handler = signal.signal(signal.SIGALRM, _on_timeout)
-              try:
-                  for i, model_type in enumerate(models):
+              # Matches the runner's 4 vCPUs; more workers would only add
+              # transformers imports and memory without more parallelism.
+              workers = max(1, min(4, _os.cpu_count() or 1))
+              print(f"  sweeping {len(models)} model_types across {workers} workers", flush=True)
+              ctx = _mp.get_context("spawn")
+              with ctx.Pool(workers) as pool:
+                  # next(timeout=...) rather than a plain for loop. A worker that dies
+                  # mid-task (segfault, OOM killer) never sets its result, and
+                  # Pool.imap then blocks forever -- python/cpython#66587, still open.
+                  # The serial loop could not lose a worker: a segfault killed pytest
+                  # outright and turned the leg red in seconds. Without this the same
+                  # crash would sit until the job's 35 minute timeout, which costs far
+                  # more than running the sweep pooled ever saves.
+                  #
+                  # 600s is a "nothing is moving" detector, not a per-model budget:
+                  # the per-model cap is the 60s SIGALRM inside _compile_one.
+                  #
+                  # chunksize=1 is required, not incidental: Pool.imap only returns an
+                  # IMapIterator (the thing with a timeout) when chunksize == 1. For
+                  # chunksize > 1 it returns a bare generator expression over the
+                  # chunks, which has no next(timeout=...) at all. Per-task IPC is
+                  # noise next to a ~1s compile.
+                  results = pool.imap(_compile_one, models, chunksize=1)
+                  i = -1
+                  while True:
+                      try:
+                          model_type, outcome, msg = results.next(timeout=600)
+                      except StopIteration:
+                          break
+                      except _mp.TimeoutError:
+                          raise AssertionError(
+                              f"compile sweep stalled after {i + 1}/{len(models)} "
+                              "model_types with no result for 600s; a pool worker "
+                              "most likely died (segfault or OOM)"
+                          ) from None
+                      i += 1
                       if i % 25 == 0:
                           print(f"  sweep progress: {i}/{len(models)} -> {model_type}", flush=True)
-                      modeling_path = f"transformers.models.{model_type}.modeling_{model_type}"
-                      try:
-                          _il.import_module(modeling_path)
-                      except (ModuleNotFoundError, ImportError):
-                          skipped.append((model_type, "no modeling file"))
-                          continue
-                      signal.alarm(60)
-                      try:
-                          unsloth_compile_transformers(
-                              model_type=model_type, fast_lora_forwards=False,
-                          )
-                      except Exception as e:
-                          signal.alarm(0)
-                          msg = f"{type(e).__name__}: {str(e)[:200]}"
+                      if outcome == "skipped":
+                          skipped.append((model_type, msg))
+                      elif outcome == "fail":
                           if model_type in KNOWN_BROKEN_COMPILE:
                               known.append((model_type, msg))
                           else:
                               new_failures.append((model_type, msg))
-                          continue
-                      signal.alarm(0)
-                      if model_type in KNOWN_BROKEN_COMPILE:
-                          # Came back green unexpectedly -- that's GOOD news,
-                          # the bug was fixed. Surface it so we can drop the
-                          # entry from KNOWN_BROKEN_COMPILE.
-                          print(
-                              f"  UNEXPECTED-OK {model_type}: was in "
-                              "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
-                              "Drop the entry."
-                          )
-                      ok += 1
-              finally:
-                  signal.alarm(0)
-                  signal.signal(signal.SIGALRM, prev_handler)
+                      else:
+                          if model_type in KNOWN_BROKEN_COMPILE:
+                              # Came back green unexpectedly -- that's GOOD news,
+                              # the bug was fixed. Surface it so we can drop the
+                              # entry from KNOWN_BROKEN_COMPILE.
+                              print(
+                                  f"  UNEXPECTED-OK {model_type}: was in "
+                                  "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
+                                  "Drop the entry."
+                              )
+                          ok += 1
               print(f"\nCompile sweep: ok={ok} skipped={len(skipped)} "
                     f"known-broken={len(known)} new-failures={len(new_failures)}")
               for m, r in known:
@@ -2173,10 +2320,18 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
-          echo "  - 17 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 21 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
           echo "  - 168 dataset_num_proc worker-bound guards (#2693)"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   llama-cpp-smoke:
     # Standalone llama.cpp build + smoke. Earlier this lived inside every
@@ -2200,14 +2355,22 @@ jobs:
       UNSLOTH_COMPILE_DISABLE: '1'
       UNSLOTH_IS_PRESENT: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: llama-cpp-smoke
+          key-files: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       - name: Install runtime deps for unsloth_zoo.llama_cpp
         # unsloth_zoo's `__init__` imports `temporary_patches`, which
@@ -2265,6 +2428,10 @@ jobs:
           pip show unsloth_zoo
 
       - name: llama.cpp install via unsloth_zoo.llama_cpp + CLI `--help` smoke
+        # Bounds the apt preamble below rather than leaving the job's 25m to do
+        # it: 2 x 300s of attempts plus a lock wait is 12m of the 22, and the
+        # llama.cpp build that follows has the rest.
+        timeout-minutes: 22
         # Exercise the canonical `unsloth_zoo.llama_cpp.install_llama_cpp`
         # flow that GGUF export uses at runtime: clone ggml-org/llama.cpp
         # into ~/.unsloth/llama.cpp, build the LLAMA_CPP_TARGETS list
@@ -2300,9 +2467,9 @@ jobs:
           # libssl-dev / libcurl4-openssl-dev are needed by llama.cpp's
           # cmake build for HTTPS support; install up-front so the
           # `install_llama_cpp` requirement-check is a no-op.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential cmake git curl \
-            libgomp1 libssl-dev libcurl4-openssl-dev
+          RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=300 \
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev; }'
           python <<'PY'
           import os, shutil, subprocess, sys, pathlib
           # Apply the same CPU spoof the pytest shims use BEFORE any
@@ -2403,3 +2570,12 @@ jobs:
               f"and llama-quantize at {quantizer}."
           )
           PY
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+

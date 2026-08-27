@@ -52,6 +52,10 @@ _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
 
+# Whether the GGUF tensor table contains a sequence-classification head. None
+# means the file could not be read or parsed, so callers can fail closed.
+_CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
+
 # GGUF header dims for the staged/deferred-load UI: context_length, layer_count
 # (block_count), and moe_layer_count (block_count minus leading dense layers; 0
 # if not MoE). One cached pass fills all three so the staged sheet can size every
@@ -345,6 +349,91 @@ def _skip_gguf_value(f, vtype: int) -> bool:
     return True
 
 
+def _parse_gguf_has_classifier_head(path: str) -> Optional[bool]:
+    """Whether the GGUF tensor table contains llama.cpp's ``cls.*`` head."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, tensor_count, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or tensor_count > 1 << 20 or kv_count > 1 << 20:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20 or len(f.read(klen)) < klen:
+                    return None
+                vtype_bytes = f.read(4)
+                if len(vtype_bytes) < 4 or not _skip_gguf_value(
+                    f, struct.unpack("<I", vtype_bytes)[0]
+                ):
+                    return None
+
+            for _ in range(tensor_count):
+                nlen_bytes = f.read(8)
+                if len(nlen_bytes) < 8:
+                    return None
+                nlen = struct.unpack("<Q", nlen_bytes)[0]
+                if nlen > 1 << 20:
+                    return None
+                name_bytes = f.read(nlen)
+                ndim_bytes = f.read(4)
+                if len(name_bytes) < nlen or len(ndim_bytes) < 4:
+                    return None
+                n_dimensions = struct.unpack("<I", ndim_bytes)[0]
+                if n_dimensions > 16:
+                    return None
+                # dimensions (u64 each), ggml type (u32), and data offset (u64)
+                trailer_size = n_dimensions * 8 + 4 + 8
+                if len(f.read(trailer_size)) < trailer_size:
+                    return None
+                if name_bytes.decode("utf-8", "replace").startswith("cls."):
+                    return True
+    except OSError as e:
+        logger.debug(f"_parse_gguf_has_classifier_head: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_has_classifier_head: parse failure on {path}: {e}")
+        return None
+    return False
+
+
+def _gguf_shard_has_classifier_head(path: str) -> Optional[bool]:
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _CLASSIFIER_HEAD_CACHE:
+            return _CLASSIFIER_HEAD_CACHE[key]
+    result = _parse_gguf_has_classifier_head(path)
+    with _CACHE_LOCK:
+        while len(_CLASSIFIER_HEAD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _CLASSIFIER_HEAD_CACHE.pop(next(iter(_CLASSIFIER_HEAD_CACHE)))
+            except StopIteration:
+                break
+        _CLASSIFIER_HEAD_CACHE[key] = result
+    return result
+
+
+def _gguf_has_classifier_head(path: str) -> Optional[bool]:
+    try:
+        from utils.models.model_config import colocated_split_shards
+        shards, complete = colocated_split_shards(Path(path))
+    except Exception:
+        return None
+    if not complete:
+        return None
+    results = [_gguf_shard_has_classifier_head(str(shard)) for shard in shards]
+    if any(result is True for result in results):
+        return True
+    return False if results and all(result is False for result in results) else None
+
+
 def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
     """Bool value of ``wanted_key`` (GGUF vtype 7), or ``None`` if absent /
     unreadable. Mirrors ``_parse_gguf_header`` for a single bool key."""
@@ -489,11 +578,56 @@ def read_gguf_chat_template(path: str) -> Optional[str]:
     return None
 
 
+def read_gguf_architecture(path: str) -> Optional[str]:
+    """``general.architecture``, or ``None`` when absent / unreadable / not a GGUF.
+
+    Reads only the requested key instead of walking the rest of the header."""
+    architecture = _read_gguf_string(path, "general.architecture")
+    if isinstance(architecture, str) and architecture.strip():
+        return architecture.strip()
+    return None
+
+
 def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's
     gemma4ua): ``True``/``False`` if present, ``None`` if absent/unreadable.
     Flags audio-input models independently of tokenizer token names."""
     return _read_gguf_bool(path, "clip.has_audio_encoder")
+
+
+def read_mmproj_projector_type(path: str) -> Optional[str]:
+    """``clip.projector_type`` from an mmproj GGUF, or None if absent/unreadable.
+
+    The family name llama.cpp keys its per-projector image-token limits on
+    (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an
+    image will occupy can look the ceiling up instead of assuming one.
+    """
+    return _read_gguf_string(path, "clip.projector_type")
+
+
+def read_mmproj_vision_capability(path: str) -> Optional[bool]:
+    """``clip.has_vision_encoder`` from an mmproj GGUF: ``True``/``False`` if
+    present, ``None`` if absent/unreadable."""
+    return _read_gguf_bool(path, "clip.has_vision_encoder")
+
+
+def mmproj_capabilities(path: str) -> Tuple[bool, bool]:
+    """``(declares_audio_encoder, accepts_image)`` for the projector at *path*.
+
+    A projector serving both modalities declares both (Qwen2.5-Omni), so an audio-only
+    declaration (ultravox, Voxtral, Qwen3-ASR) is evidence of no vision tower. One
+    declaring neither -- an older convert, or a file this reader could not open -- is
+    unknown rather than audio-only and stays image-capable.
+    """
+    vision = read_mmproj_vision_capability(path)
+    audio = read_mmproj_audio_capability(path)
+    return audio is True, (vision is True or audio is not True)
+
+
+def mmproj_accepts_image(path: str) -> bool:
+    """Whether images may be sent to the model this projector serves; see
+    :func:`mmproj_capabilities`."""
+    return mmproj_capabilities(path)[1]
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
@@ -506,21 +640,116 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
     return t.lower() == "mmproj"
 
 
+def _normalize_url(url: str) -> Optional[str]:
+    value = (url or "").strip().rstrip("/")
+    if not value:
+        return None
+    if value.lower().endswith(".git"):
+        value = value[:-4]
+    lower = value.lower()
+    has_url_host = False
+    for scheme in ("https://", "http://"):
+        if lower.startswith(scheme):
+            value = value[len(scheme) :]
+            has_url_host = True
+            break
+    if not has_url_host:
+        return value
+    host, separator, path = value.partition("/")
+    return host.lower() + (separator + path if separator else "")
+
+
+def _repo_path_from_url(url: str) -> Optional[str]:
+    value = _normalize_url(url)
+    if not value:
+        return None
+    lower = (url or "").strip().lower()
+    if lower.startswith(("https://", "http://")):
+        _, separator, path = value.partition("/")
+        return path if separator and path else None
+    return value
+
+
+def _same_repo_reference(left: str, right: str) -> bool:
+    left_normalized = _normalize_url(left)
+    right_normalized = _normalize_url(right)
+    if left_normalized == right_normalized:
+        return True
+    left_is_url = (left or "").strip().lower().startswith(("https://", "http://"))
+    right_is_url = (right or "").strip().lower().startswith(("https://", "http://"))
+    if left_is_url == right_is_url:
+        return False
+    hosted = left_normalized if left_is_url else right_normalized
+    host, _, _ = hosted.partition("/")
+    return host == "huggingface.co" and _repo_path_from_url(left) == _repo_path_from_url(right)
+
+
+def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+    value = _repo_path_from_url(url)
+    if not value:
+        return None
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return parts[-1]
+
+
+def _slug_extends_base(derived: str, base: str) -> bool:
+    if derived == base or not derived.startswith(base):
+        return False
+    if derived[len(base)] not in "-_.":
+        return False
+    suffix = derived[len(base) :].lstrip("-_.").lower()
+    if not suffix:
+        return False
+    qualifier = suffix.split("-", 1)[0].split("_", 1)[0].split(".", 1)[0]
+    return qualifier in {
+        "gguf",
+        "quant",
+        "quantized",
+        "qat",
+        "awq",
+        "gptq",
+        "mlx",
+        "unsloth",
+        "bnb",
+        "4bit",
+        "8bit",
+    }
+
+
+def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_url: str) -> bool:
+    weight_slug = _hf_repo_slug_from_url(weight_url)
+    projector_slug = _hf_repo_slug_from_url(projector_url)
+    if not weight_slug or not projector_slug:
+        return False
+    return _slug_extends_base(weight_slug, projector_slug)
+
+
 def pairing_score(
     weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
-    """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
-    60 = basename, -1 = definitive mismatch, 0 = decide from filename."""
+    """Pairing confidence: 100 = base_model URL match, 90 = derivative URL,
+    80 = basename + org, 60 = basename, -1 = definitive mismatch,
+    0 = decide from filename."""
     if not weight_meta or not mmproj_meta:
         return 0
 
     w_url = weight_meta.get("general.base_model.0.repo_url")
     p_url = mmproj_meta.get("general.base_model.0.repo_url")
-    if w_url and p_url:
-        return 100 if w_url.strip().rstrip("/") == p_url.strip().rstrip("/") else -1
-
     w_base = weight_meta.get("general.basename")
     p_base = mmproj_meta.get("general.basename")
+    if w_url and p_url:
+        if _same_repo_reference(w_url, p_url):
+            return 100
+        if _weight_url_looks_like_derivative_of_projector(w_url, p_url):
+            if not (w_base and p_base):
+                return -1
+            if w_base.lower() != p_base.lower():
+                return -1
+            return 90
+        return -1
+
     w_org = weight_meta.get("general.base_model.0.organization") or weight_meta.get(
         "general.organization"
     )
@@ -536,3 +765,96 @@ def pairing_score(
         return 60 if w_base.lower() == p_base.lower() else -1
 
     return 0
+
+
+# GGUF ``general.architecture`` values that intrinsically identify embedding
+# models in llama.cpp. Generic ``bert`` is deliberately absent: without
+# pooling_type its required CLS/MEAN pooling cannot be recovered safely.
+# A ``cls.*`` tensor makes an encoder a sequence-classification/reranker model
+# instead, so architecture matches are gated on the tensor table below.
+GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
+    {
+        "modern-bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "neo-bert",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "eurobert",
+        "gemma-embedding",
+        "pangu-embedded",
+        "llama-embed",
+    }
+)
+
+# Name hints for model, file and intrinsic GGUF names whose architecture is not yet above.
+_EMBEDDING_NAME_HINTS: tuple[str, ...] = (
+    "nomic-embed",
+    "llama-embed",
+    "embed-text",
+    "embedding",
+    "bge-",
+    "gte-",
+    "e5-",
+    "minilm",
+)
+_RERANKER_NAME_HINTS: tuple[str, ...] = ("reranker", "rerank")
+
+
+def is_gguf_embedding_architecture(architecture: Optional[str]) -> bool:
+    """True when ``architecture`` is a dedicated llama.cpp embedding arch."""
+    return bool(architecture and architecture.strip().lower() in GGUF_EMBEDDING_ARCHITECTURES)
+
+
+def _has_embedding_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _EMBEDDING_NAME_HINTS))
+
+
+def _has_reranker_name_hint(value: Optional[str]) -> bool:
+    return bool(value and any(needle in value.strip().lower() for needle in _RERANKER_NAME_HINTS))
+
+
+def is_gguf_embedding_model(
+    gguf_path: str,
+    model_identifier: Optional[str] = None,
+    architecture: Optional[str] = None,
+) -> bool:
+    """Whether a GGUF should be launched with ``--embedding`` for /v1/embeddings."""
+    meta = read_gguf_general_metadata(gguf_path) or {}
+    identifier_basename = None
+    if model_identifier:
+        identifier_basename = model_identifier.strip().replace("\\", "/").rsplit("/", 1)[-1]
+    try:
+        file_basename: Optional[str] = Path(gguf_path).name
+    except Exception:
+        file_basename = None
+    name_candidates = (
+        identifier_basename,
+        file_basename,
+        meta.get("general.name"),
+        meta.get("general.basename"),
+        meta.get("general.base_model.0.name"),
+    )
+    if any(_has_reranker_name_hint(value) for value in name_candidates):
+        return False
+
+    arch = (architecture or meta.get("general.architecture") or "").strip().lower()
+    if arch == "bert":
+        # A classifier head can prove that generic BERT is a reranker, but its
+        # absence cannot recover the missing pooling strategy. llama-server
+        # otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
+        return False
+    if is_gguf_embedding_architecture(arch):
+        # Generic BERT-family architectures also back cross-encoder rerankers.
+        # Their standardized cls.* tensors are intrinsic evidence of that role;
+        # an unreadable tensor table stays unclassified rather than guessing.
+        return _gguf_has_classifier_head(gguf_path) is False
+    return any(_has_embedding_name_hint(value) for value in name_candidates)
+
+
+# ── speech / codec architectures ────────────────────────────────────────────
+
+# Not defined here, and deliberately not re-exported either: they live in the leaf module
+# ``utils.gguf_archs``, because importing anything from THIS package runs
+# ``utils.models.__init__``, which pulls in ``model_config`` and therefore PyYAML, and
+# ``core.inference.llama_cpp`` needs the verdict at import time. Import it from there.

@@ -17,6 +17,9 @@ Enforced by:
   globally and simplifying reasoning about partial state during a SIGKILL.
 - Letting ``prepare_cache_for_transport`` purge any pre-existing
   ``.incomplete`` blobs not provably from the same sequential writer.
+- Restoring huggingface_hub's 1.17 append-mode writer where that is safe
+  (see :mod:`hub.utils.resumable_partials`); 1.18+ writes a process-unique
+  partial and unlinks it, which leaves this loop nothing to resume from.
 
 If the final byte count doesn't match what HF declared, huggingface_hub
 raises ``EnvironmentError`` ("Consistency check failed: …"); we surface
@@ -39,16 +42,27 @@ _BACKEND = _HERE.parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+# Fresh interpreter: main.py's truststore injection does not survive the spawn.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 from hub.utils.snapshot_filters import (
     SNAPSHOT_IGNORE_PATTERNS,
 )
 from hub.utils.gguf_plan import (
     GgufVariantPlan,
     build_gguf_variant_plans,
+    plan_for_variant,
     plan_from_expected_files,
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
+from hub.utils.resumable_partials import restore_resumable_partials
+
+# Put huggingface_hub's 1.17 HTTP writer back where it is safe to. The SIGKILL then restart loop
+# documented above reads ``.incomplete`` for its resume offset, and 1.18+ leaves nothing to read.
+_PARTIALS_RESUMABLE = restore_resumable_partials()
 
 # typing.Union, not `str | bool | None`: an alias is evaluated on import and PEP 604 raises below 3.10.
 HfTokenArg = Union[str, bool, None]
@@ -610,7 +624,10 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
-    return build_gguf_variant_plans(list(info.siblings)).get(variant.lower())
+    # plan_for_variant, not .get: a repo that files every variant under one shared container
+    # qualifies every key, and a stored pin or an explicit repo:Q4_K_M then missed the map and
+    # the worker exited with "No GGUF shards matching variant".
+    return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
 
 
 def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:

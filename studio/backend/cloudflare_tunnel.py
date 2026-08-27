@@ -91,6 +91,24 @@ def _lifetime_kwargs() -> dict:
         return {}
 
 
+def _adopt_pid(pid: int) -> None:
+    """Record cloudflared so a force quit does not strand it (macOS has no
+    PDEATHSIG). Best-effort, like _lifetime_kwargs above."""
+    try:
+        from utils.process_lifetime import adopt_pid
+        adopt_pid(pid)
+    except Exception:
+        pass
+
+
+def _forget_pid(pid: int) -> None:
+    try:
+        from utils.process_lifetime import forget_pid
+        forget_pid(pid)
+    except Exception:
+        pass
+
+
 def _spawn_child(spawn):
     """Fork on a process-lifetime thread so the PDEATHSIG above means "die with
     the parent process", not "die when the worker thread that forked me returns"."""
@@ -447,6 +465,10 @@ class CloudflareTunnel:
             except Exception:
                 _set_studio_tunnel_runtime_active(self, False)
                 raise
+            # Adopted before the lock drops: a stop() that got in first would
+            # otherwise reap and forget it while nothing was tracked, and this
+            # would then record whatever inherited the pid.
+            _adopt_pid(proc.pid)
             self._proc = proc
         threading.Thread(
             target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
@@ -522,6 +544,7 @@ class CloudflareTunnel:
         except Exception:
             pass
         if _process_exited(proc):
+            _forget_pid(proc.pid)
             _set_studio_tunnel_runtime_active(self, False)
             return True
         else:

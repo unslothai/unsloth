@@ -18,11 +18,13 @@ interface BackendTrainingDefaults {
   max_seq_length?: number;
   num_epochs?: number;
   learning_rate?: number | string;
+  embedding_learning_rate?: number | string | null;
   optim?: string;
   lr_scheduler_type?: string;
   batch_size?: number;
   gradient_accumulation_steps?: number;
   warmup_steps?: number;
+  warmup_ratio?: number;
   max_steps?: number;
   save_steps?: number;
   eval_steps?: number;
@@ -31,7 +33,8 @@ interface BackendTrainingDefaults {
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
-  gradient_checkpointing?: "none" | "true" | "unsloth";
+  // Shipped YAML may decode this value as a boolean.
+  gradient_checkpointing?: "none" | "true" | "unsloth" | boolean;
   trust_remote_code?: boolean;
 }
 
@@ -71,6 +74,9 @@ export interface ModelConfigResponse {
   is_vision: boolean;
   is_embedding?: boolean;
   is_audio: boolean;
+  // False when the repo's tokenizer_config.json was unreadable (gated, offline,
+  // upstream error), so is_audio false means unknown rather than "not audio".
+  audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;

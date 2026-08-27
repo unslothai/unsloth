@@ -77,6 +77,9 @@ class DownloadStartResponse(BaseModel):
     job_key: str
     state: str
     accepted: bool
+    # True when this start attached to a job already running rather than
+    # starting one. Accepted either way.
+    attached: bool = False
     generation: int
     # The transport the job is really on: the one the backend resolved for a
     # fresh start, or the running job's own when this start adopted one.
@@ -132,6 +135,9 @@ class TransportCapabilities(BaseModel):
     xet: TransportCapability
     auto_resolves_to: Literal["xet", "http"] = "xet"
     auto_reason: Optional[str] = None
+    # False when the installed huggingface_hub refetches an interrupted file from zero, so no
+    # transport can offer a byte-resume and the UI must not label one.
+    partials_resumable: bool = True
 
 
 class TransportStatusResponse(BaseModel):
@@ -154,6 +160,21 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
+    cache_measured: bool = Field(
+        True,
+        description = (
+            "False when the cache could not be scanned at all (an unreadable root). The "
+            "reading is then unknown, not empty: cache_path is null either way, and "
+            "hydration must not retire a persisted job on a scan that never happened."
+        ),
+    )
+    target_present: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether this TARGET (variant) has anything in the cache, as opposed to the "
+            "shared repo directory existing. Null where it cannot be established."
+        ),
+    )
 
 
 class DownloadDatasetRequest(BaseModel):
@@ -199,6 +220,8 @@ class DatasetDownloadStartResponse(BaseModel):
     repo_id: str
     state: str
     accepted: bool
+    # Attached to a job already running, rather than starting one (see above).
+    attached: bool = False
     generation: int
     # The transport the job is really on, and its cancel marker (see above).
     transport: Optional[str] = None

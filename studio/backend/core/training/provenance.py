@@ -105,6 +105,38 @@ def effective_training_load_in_4bit(
     return not latest_tier_active
 
 
+def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
+    """Would activating the latest-transformers sidecar strand this stored run?
+
+    ``effective_training_load_in_4bit`` raises ``ExactResumeResourcesUnavailable`` for a
+    4-bit run with exact-resource provenance the moment ``latest_tier_active_for`` turns
+    true, and that sidecar is a persistent overlay: once installed the checkpoint never
+    resumes in the load mode it was attested with. Callers offering the install ahead of
+    a resume ask this first, rather than trade a working resume for an upgrade the run
+    does not need.
+
+    Takes the run's STORED config (``config_json``), so it recomputes the requirement
+    from the provenance marker: ``require_exact_resume_resources`` and
+    ``require_exact_model_resource`` are stripped before persistence and exist only on
+    the live worker config ``/train/start`` assembles.
+
+    Never raises. A provenance already refusing a resume returns False: nothing the
+    install does makes that checkpoint any less resumable.
+    """
+    if not bool(config.get("load_in_4bit")):
+        return False
+    try:
+        requires_exact_model, _ = exact_resume_resource_requirements(config)
+    except ExactResumeResourcesUnavailable:
+        return False
+    except Exception:
+        return False
+    # The same disjunction effective_training_load_in_4bit tests: routes/training.py
+    # fills require_exact_model_resource from exact_resume_resource_requirements and
+    # require_exact_resume_resources from resource_provenance_is_complete.
+    return bool(requires_exact_model or resource_provenance_is_complete(config))
+
+
 def _normalized_repo_id(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
@@ -840,6 +872,24 @@ def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
     return model_snapshot, dataset_snapshot
 
 
+def _provenance_awaiting_attestation(marker: dict[str, Any], config: dict[str, Any]) -> bool:
+    """Training stopped before the worker attested loaded hub resources.
+
+    Stop-and-save can finish while provenance is still the initial ``pending`` marker
+    written at run start. Those runs have a valid checkpoint but no attested revision
+    pins yet; resume should behave like a legacy run without exact resource requirements.
+    """
+    if marker.get("status") != "pending":
+        return False
+    if marker.get("model_status") is not None or marker.get("dataset_status") is not None:
+        return False
+    if config.get("actual_model_repo_id"):
+        return False
+    if config.get("model_snapshot_path") or config.get("dataset_snapshot_path"):
+        return False
+    return True
+
+
 def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bool]:
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
@@ -850,6 +900,8 @@ def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bo
         or marker.get("status") not in {"pending", "incomplete", "complete"}
     ):
         raise ExactResumeResourcesUnavailable("The resource provenance is invalid.")
+    if _provenance_awaiting_attestation(marker, config):
+        return False, False
 
     from utils.paths import is_local_path
 

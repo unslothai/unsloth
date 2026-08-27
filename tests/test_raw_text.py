@@ -37,7 +37,6 @@ class MockDataset:
 datasets_mock = type(sys)("datasets")
 datasets_mock.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
 datasets_mock.Dataset = MockDataset
-sys.modules["datasets"] = datasets_mock
 
 # Import raw_text directly to avoid unsloth/__init__.py dependencies.
 current_dir = os.path.dirname(__file__)
@@ -45,7 +44,20 @@ raw_text_path = os.path.join(os.path.dirname(current_dir), "unsloth", "dataprep"
 
 spec = importlib.util.spec_from_file_location("raw_text", raw_text_path)
 raw_text_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(raw_text_module)
+
+# The mock is only in place while raw_text executes its `from datasets import
+# Dataset`. Leaving it in sys.modules poisoned every later test module in the
+# same session: `from datasets import IterableDataset` then raised ImportError
+# and tests/utils/test_packing.py failed to collect.
+_real_datasets = sys.modules.get("datasets")
+sys.modules["datasets"] = datasets_mock
+try:
+    spec.loader.exec_module(raw_text_module)
+finally:
+    if _real_datasets is None:
+        del sys.modules["datasets"]
+    else:
+        sys.modules["datasets"] = _real_datasets
 
 RawTextDataLoader = raw_text_module.RawTextDataLoader
 TextPreprocessor = raw_text_module.TextPreprocessor
@@ -362,6 +374,61 @@ def test_smart_chunk_text_empty_input_returns_no_chunks():
     return True
 
 
+def test_negative_stride_is_rejected():
+    """chunk_size > 0 and stride < chunk_size both pass for a negative stride, but
+    `start_idx += chunk_size - stride` then advances by MORE than chunk_size, so the
+    tokens between one chunk's end and the next chunk's start are never emitted.
+    Nothing raises and nothing is logged, so the caller trains on a corpus with holes
+    in it: chunk_size = 10 with stride = -5 emits 70 of a 100 token document."""
+
+    class CharTokenizer:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(32 + (t % 90)) for t in token_ids)
+
+    tokenizer = CharTokenizer()
+    text = "x" * 100
+
+    # Both entry points validate stride, so both need the lower bound.
+    try:
+        RawTextDataLoader(tokenizer, chunk_size = 10, stride = -5)
+        assert False, "the constructor should reject a negative stride"
+    except ValueError as e:
+        assert "stride" in str(e) and "non-negative" in str(e), str(e)
+
+    loader = RawTextDataLoader(tokenizer, chunk_size = 10, stride = 0)
+    try:
+        loader.smart_chunk_text(text, chunk_size = 10, stride = -5)
+        assert False, "smart_chunk_text should reject a negative stride"
+    except ValueError as e:
+        assert "stride" in str(e) and "non-negative" in str(e), str(e)
+
+    # stride = 0 stays valid: it just means the chunks do not overlap.
+    chunks = loader.smart_chunk_text(text, chunk_size = 10, stride = 0)
+    assert len(chunks) > 0, "stride = 0 should still produce chunks"
+
+    print("test_negative_stride_is_rejected passed")
+    return True
+
+
 def test_load_from_files_all_empty_raises():
     """All-empty file list must raise (like load_from_file) instead of returning
     a 0-row text-column dataset in return_tokenized mode."""
@@ -584,13 +651,46 @@ def test_validate_dataset_streams_instead_of_materialising_columns():
     return True
 
 
+def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
+    """`min_length` must not come back as infinity.
+
+    It is seeded with float("inf") and only ever lowered inside the loop, on exactly
+    the iterations that also append to `text_lengths`. The inf->0 normalisation sat
+    inside `if text_lengths:`, so within that guard it could never see inf: the branch
+    was dead, and the case it existed for, a dataset where no sample has content,
+    skipped the line entirely and returned min_length = inf to the caller.
+
+    The warning guard has to move with it. With the normalisation hoisted, min_length
+    becomes 0 for an empty dataset, and `0 < 10` would newly claim "some samples are
+    very short" about zero measured samples.
+    """
+
+    preprocessor = TextPreprocessor()
+
+    for label, texts in (("all blank", ["", "   ", "\n"]), ("no rows", [])):
+        stats = preprocessor.validate_dataset({"text": texts})
+        assert stats["min_length"] == 0, (label, stats)
+        assert stats["max_length"] == 0, (label, stats)
+        assert not any("very short" in w for w in stats["warnings"]), (label, stats)
+
+    # a genuinely short sample must still be reported
+    stats = preprocessor.validate_dataset({"text": ["hi", "a much longer sample of text"]})
+    assert stats["min_length"] == 2, stats
+    assert any("very short" in w for w in stats["warnings"]), stats
+
+    print("test_validate_dataset_reports_zero_min_length_when_nothing_has_content passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
     success = test_load_from_file_skips_non_object_json_lines() and success
     success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
     success = test_load_from_files_all_empty_raises() and success
+    success = test_negative_stride_is_rejected() and success
     success = test_validate_dataset_handles_tokenized_and_text_columns() and success
     success = test_validate_dataset_accepts_objects_without_column_names() and success
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
+    success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
     sys.exit(0 if success else 1)

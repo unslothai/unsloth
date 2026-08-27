@@ -1,0 +1,244 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Cache janitor
+
+# Keeps Actions cache usage clear of the 50 GiB ceiling. At the ceiling GitHub
+# deletes whole entries by last-access date, regardless of reachability, so the
+# live entry of a family can go between the run that wrote it and the run that
+# needs it. The documented result is cache thrashing: entries created and deleted
+# at a high frequency, the hit rate collapsing with nothing failing.
+#
+# The ceiling is per-repository and admin-set. 50 GiB is this repo's; the zoo's
+# is 20 GiB, where the same constant copied across was wrong for a week and the
+# warning could never fire. If someone raises it, this number and the threshold
+# at the bottom are the two places to change.
+#
+# Four families are pruned.
+#
+#   1. Caches on refs/pull/N/* whose PR is closed or merged. Lookup is scoped
+#      by ref and nothing but that PR's own runs can restore its merge ref, so
+#      once the PR is not open the entry is unreachable for good, and GitHub
+#      does not collect it on merge. Almost everything here already saves on
+#      main only, so this is a backstop rather than the main event. The PR state
+#      decides, not age: an open PR's caches are live no matter how old, and a
+#      lookup that errors keeps the cache.
+#
+#   2. Superseded generations of families whose keys embed a build identity:
+#        codeql-overlay-base-database-*  keys embed commit SHA + run id
+#        v0-rust-*                       Swatinem/rust-cache
+#
+#   3. Superseded generations of pip-v2-*, the pip HTTP caches written by
+#      .github/actions/pip-cache-save. `name` is inside the prefix as of the
+#      commit that added it, so each installing job is its own family and its
+#      generations rank against each other and nothing else. Before that every
+#      job sat under `pip-<os>-<arch>-py<ver>-`, five of them sharing one key,
+#      and no prefix could tell five live caches from five generations of one --
+#      so this family could not be pruned at all, and 57 entries were still
+#      resident on 2026-08-26 having last been read a day or more earlier.
+#
+#      Legacy `pip-<os>-...` keys are deliberately NOT matched. `Linux` is a
+#      valid name, so an old key is indistinguishable from a new one whose job
+#      is called `linux`; they are left to expire on their own 7-day timer
+#      rather than be ranked against keys they have nothing to do with.
+#
+#   4. Superseded generations of uv-* (the uv download cache) and fe-dist-* (the
+#      built frontend). One key formula each across all their call sites, so the
+#      prefix is unambiguous without a name. fe-dist takes no restore-keys by
+#      design, so an older generation answers only an exact revert of the
+#      frontend sources; 59 entries in 3 families had accumulated there.
+#
+# "Older" is not the same as unreachable. rust-cache passes its full key to
+# restoreCache, which tries an exact match first, so a build returning to an
+# earlier dependency state (a re-run of an old commit, a lockfile revert) can
+# still hit an older generation exactly. The pip and uv caches are the same
+# shape. keep is the dial, and it is set for hit rate, not for headroom: the budget exists to be
+# spent, so a generation that can still answer something stays. What goes is what
+# can answer nothing -- unreachable refs, and generations past keep.
+#
+# Everything else is left alone. The hf-* / *-gguf-* model caches use exact keys,
+# so an entry that looks superseded is the only one its key will ever match and
+# deleting it costs a multi-GB re-download.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report = list candidates, delete nothing. delete = prune.'
+        type: choice
+        options: [report, delete]
+        default: report
+      keep:
+        description: 'Generations kept per prefix. 2 so an in-flight run cannot lose the cache it just resolved, and so a reverted dependency bump still hits.'
+        type: string
+        default: '2'
+
+# Two sweeps would race on the same ids and spend their DELETEs on 404s.
+concurrency:
+  group: cache-janitor-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: Prune superseded caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Prune
+        continue-on-error: true  # housekeeping must never page anyone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Opt-in string, not a boolean: GitHub coerces an absent input and
+          # `false` alike, so `inputs.mode == false` is true when unset.
+          DELETE: ${{ (github.event_name == 'schedule' || inputs.mode == 'delete') && 'yes' || 'no' }}
+          KEEP: ${{ inputs.keep || '2' }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          all="$RUNNER_TEMP/caches.tsv"
+          live="$RUNNER_TEMP/live.tsv"
+          grouped="$RUNNER_TEMP/grouped.tsv"
+
+          # Whitelist 1..99. Anything `[ n -le KEEP ]` cannot compare exits 2,
+          # and since that test is the left operand of `&&` set -e does not
+          # fire: the `continue` is skipped and every generation gets deleted,
+          # exit 0. All-digit is not enough, since a value past bash's integer
+          # range fails the same way.
+          case "$KEEP" in [1-9]|[1-9][0-9]) ;; *) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
+
+          gib() { awk -v b="${1:-0}" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
+
+          # Report a failed inventory. Deleting nothing is the safe direction,
+          # but silence means a broken janitor looks identical to a clean repo
+          # and nothing notices until the ceiling does.
+          if ! gh api --paginate "repos/$repo/actions/caches?per_page=100" \
+                 -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .version, .key] | @tsv' \
+                 > "$all"; then
+            echo "::warning::could not list caches for $repo; nothing pruned this run"
+            exit 0
+          fi
+
+          total=$(awk -F'\t' '{s+=$3} END {printf "%d", s+0}' "$all")
+          count=$(grep -c . "$all" || true)
+          echo "$count caches, $(gib "$total") GiB, delete=$DELETE keep=$KEEP"
+
+          freed=0; deleted=0; stale_pr=0
+
+          # Pass 1: caches belonging to a PR that is no longer open. Unreachable
+          # regardless of generation, so this runs before ranking and removes
+          # them from it -- otherwise a merged PR's entries occupy the keep slots
+          # of their own (ref, version, prefix) group and shield each other.
+          declare -A prstate=()
+          : > "$live"
+          while IFS=$'\t' read -r id created size ref ver key; do
+            [ -z "${id:-}" ] && continue
+            num=""
+            case "$ref" in
+              refs/pull/*/merge|refs/pull/*/head)
+                num="${ref#refs/pull/}"; num="${num%/*}" ;;
+            esac
+            if [ -n "$num" ]; then
+              case "$num" in
+                ''|*[!0-9]*) num="" ;;  # not a PR number; fall through to ranking
+              esac
+            fi
+            if [ -n "$num" ]; then
+              if [ -z "${prstate[$num]:-}" ]; then
+                # An error must not read as "closed". Default to open so a rate
+                # limit or a transient 5xx keeps the cache instead of freeing it.
+                prstate[$num]=$(gh api "repos/$repo/pulls/$num" -q '.state' < /dev/null 2>/dev/null || echo open)
+                [ -n "${prstate[$num]}" ] || prstate[$num]=open
+              fi
+              if [ "${prstate[$num]}" != "open" ]; then
+                echo "stale PR #$num ($(gib "$size") GiB): $key"
+                stale_pr=$(( stale_pr + 1 ))
+                if [ "$DELETE" != "yes" ]; then
+                  freed=$(( freed + size )); deleted=$(( deleted + 1 )); continue
+                fi
+                if gh api -X DELETE "repos/$repo/actions/caches/$id" --silent < /dev/null 2>/dev/null; then
+                  freed=$(( freed + size )); deleted=$(( deleted + 1 ))
+                fi
+                continue
+              fi
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$created" "$size" "$ref" "$ver" "$key" >> "$live"
+          done < "$all"
+
+          # Pass 2: rank the survivors by generation within each family.
+          : > "$grouped"
+          while IFS=$'\t' read -r id created size ref ver key; do
+            [ -z "${id:-}" ] && continue
+            case "$key" in
+              codeql-overlay-base-database-*)
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}-[0-9]+-[0-9]+$//') ;;
+              v0-rust-*)
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//') ;;
+              pip-v2-*|uv-*|fe-dist-*)
+                # Strip only the trailing dependency hash. Everything before it --
+                # the job name for pip-v2, the OS for uv and fe-dist -- stays in the
+                # prefix on purpose: those are separate keys that never substitute
+                # for one another, and folding them into one group would rank live
+                # caches as generations of each other and delete all but two.
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//') ;;
+              *) continue ;;
+            esac
+            # Unshortened means the suffix did not match, which would make
+            # generation 1 look like generation N. Skip rather than guess.
+            [ "$pre" = "$key" ] && continue
+            # Group per (ref, version), not per key. Lookup is scoped by all
+            # three: a branch cannot restore a sibling's cache, and a path or
+            # compression change mints a new version that is restored
+            # independently. Ranking them together lets two entries from one
+            # scope evict every usable entry of another.
+            printf '%s\t%s\t%s\t%s\n' "$ref|$ver|$pre" "$created" "$id" "$size" >> "$grouped"
+          done < "$live"
+
+          sort -t"$(printf '\t')" -k1,1 -k2,2r -o "$grouped" "$grouped"
+
+          prev=""; n=0; superseded=0
+          while IFS=$'\t' read -r pre created id size; do
+            [ -z "${pre:-}" ] && continue
+            if [ "$pre" != "$prev" ]; then prev="$pre"; n=1; else n=$(( n + 1 )); fi
+            [ "$n" -le "$KEEP" ] && continue
+            superseded=$(( superseded + 1 ))
+            if [ "$DELETE" != "yes" ]; then
+              freed=$(( freed + size )); deleted=$(( deleted + 1 )); continue
+            fi
+            # </dev/null or gh eats the loop's stdin and the sweep stops after one.
+            if gh api -X DELETE "repos/$repo/actions/caches/$id" --silent < /dev/null 2>/dev/null; then
+              freed=$(( freed + size )); deleted=$(( deleted + 1 ))
+            fi
+          done < "$grouped"
+
+          after=$(( total - freed ))
+          verb="pruned"; [ "$DELETE" = "yes" ] || verb="would prune"
+          echo "$verb $deleted caches, $(gib "$freed") GiB"
+          {
+            echo "### Cache janitor"
+            echo ""
+            echo "| metric | value |"
+            echo "| --- | --- |"
+            echo "| mode | $([ "$DELETE" = yes ] && echo delete || echo 'report only') |"
+            echo "| kept per prefix | $KEEP |"
+            echo "| caches total | $count |"
+            echo "| closed-PR candidates | $stale_pr |"
+            echo "| superseded candidates | $superseded |"
+            echo "| candidates $verb | $deleted |"
+            echo "| freed | $(gib "$freed") GiB |"
+            echo "| usage before | $(gib "$total") GiB of 50 GiB |"
+            echo "| usage after | $(gib "$after") GiB of 50 GiB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 80% of the 50 GiB ceiling. Above this a single dependency bump can
+          # push the repo over between two scheduled sweeps.
+          if [ "$after" -gt 42949672960 ]; then
+            echo "::warning::Cache usage is $(gib "$after") GiB of 50 GiB after pruning. Lower keep to 1, or find the family that grew."
+          fi

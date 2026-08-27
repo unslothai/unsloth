@@ -201,6 +201,20 @@ def test_static_prefix_without_system_still_rejects_system_message():
         )
 
 
+@pytest.mark.parametrize("default_system_message", [None, "You are helpful."])
+def test_static_prefix_without_system_renders_in_every_conversation(default_system_message):
+    """A static prefix must render regardless of the default system message."""
+    modelfile, jinja_template, _, _ = construct_chat_template(
+        tokenizer = _SuccessFakeTokenizer(),
+        chat_template = _NO_SYSTEM_CHAT_TEMPLATE,
+        default_system_message = default_system_message,
+        extra_eos_tokens = ["</s>"],
+    )
+    rendered = _render(jinja_template, [{"role": "user", "content": "Hi"}])
+    assert rendered.startswith("PREAMBLE\n"), rendered
+    assert "PREAMBLE\n" in modelfile.split("TEMPLATE ")[1]
+
+
 def test_auto_appended_eos_prefers_the_tokenizer_eos_deterministically():
     """When the template has no EOS after {OUTPUT}, construct_chat_template appends one
     itself and picks `extra_eos_tokens[0]`. `extra_eos_tokens.insert(0, tokenizer.eos_token)`
@@ -317,3 +331,22 @@ def test_bos_token_with_quote_or_backslash_is_not_emitted_twice():
     ):
         rendered = _render(jinja_template, messages, bos_token = bos)
         assert rendered.count(bos) == 1, rendered
+
+
+def test_bos_only_prefix_still_rejects_system_message():
+    bos = _BosFakeTokenizer.bos_token
+    _, jinja_template, _, _ = construct_chat_template(
+        tokenizer = _BosFakeTokenizer(),
+        chat_template = bos + _NO_SYSTEM_CHAT_TEMPLATE.removeprefix("PREAMBLE\n"),
+        default_system_message = None,
+        extra_eos_tokens = ["</s>"],
+    )
+    with pytest.raises(RuntimeError, match = "Only user and assistant roles are supported!"):
+        _render(
+            jinja_template,
+            [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "Hi"},
+            ],
+            bos_token = bos,
+        )

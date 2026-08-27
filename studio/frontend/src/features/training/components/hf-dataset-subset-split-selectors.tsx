@@ -23,9 +23,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useEffect, useState } from "react";
 import { nextHfDatasetOptionSelection } from "../lib/hf-dataset-option-selection";
 import {
+  type ManualDatasetOptionDrafts,
   type ManualDatasetOptionError,
+  createManualDatasetOptionDrafts,
+  manualDatasetOptionsFormKey,
   manualDatasetSplitDefault,
   normalizeManualDatasetOption,
+  synchronizeManualDatasetOptionDrafts,
   validateManualDatasetSplit,
   validateManualDatasetSubset,
 } from "../lib/manual-dataset-options";
@@ -44,7 +48,29 @@ type Props = {
   setDatasetSplit: (v: string | null) => void;
   datasetEvalSplit: string | null;
   setDatasetEvalSplit: (v: string | null) => void;
+  datasetStreaming: boolean;
+  setManualDatasetOptionsValid: (v: boolean) => void;
+  markManualDatasetOptionsEdited: (optionsValid: boolean) => void;
 };
+
+function manualDatasetDraftsAreValid(
+  subset: string,
+  split: string,
+  evalSplit: string,
+  requireExplicitSplit: boolean,
+  allowSplitInstructions: boolean,
+) {
+  return (
+    validateManualDatasetSubset(subset) === null &&
+    validateManualDatasetSplit(
+      split,
+      requireExplicitSplit,
+      allowSplitInstructions,
+    ) === null &&
+    validateManualDatasetSplit(evalSplit, false, allowSplitInstructions) ===
+      null
+  );
+}
 
 export function HfDatasetSubsetSplitSelectors({
   variant,
@@ -60,6 +86,9 @@ export function HfDatasetSubsetSplitSelectors({
   setDatasetSplit,
   datasetEvalSplit,
   setDatasetEvalSplit,
+  datasetStreaming,
+  setManualDatasetOptionsValid,
+  markManualDatasetOptionsEdited,
 }: Props) {
   const t = useT();
   const {
@@ -183,7 +212,11 @@ export function HfDatasetSubsetSplitSelectors({
 
       {requiresManualEntry && datasetName && (
         <ManualDatasetOptions
-          key={JSON.stringify([datasetName, localPath, preferLocalCache])}
+          key={manualDatasetOptionsFormKey(
+            datasetName,
+            localPath,
+            preferLocalCache,
+          )}
           variant={variant}
           datasetSubset={datasetSubset}
           setDatasetSubset={setDatasetSubset}
@@ -191,6 +224,9 @@ export function HfDatasetSubsetSplitSelectors({
           setDatasetSplit={setDatasetSplit}
           datasetEvalSplit={datasetEvalSplit}
           setDatasetEvalSplit={setDatasetEvalSplit}
+          datasetStreaming={datasetStreaming}
+          setManualDatasetOptionsValid={setManualDatasetOptionsValid}
+          markManualDatasetOptionsEdited={markManualDatasetOptionsEdited}
           requireExplicitSplit={preferLocalCache}
         />
       )}
@@ -206,6 +242,9 @@ function ManualDatasetOptions({
   setDatasetSplit,
   datasetEvalSplit,
   setDatasetEvalSplit,
+  datasetStreaming,
+  setManualDatasetOptionsValid,
+  markManualDatasetOptionsEdited,
   requireExplicitSplit,
 }: Pick<
   Props,
@@ -216,35 +255,63 @@ function ManualDatasetOptions({
   | "setDatasetSplit"
   | "datasetEvalSplit"
   | "setDatasetEvalSplit"
+  | "datasetStreaming"
+  | "setManualDatasetOptionsValid"
+  | "markManualDatasetOptionsEdited"
 > & {
   requireExplicitSplit: boolean;
 }) {
   const t = useT();
   const defaultSplit = manualDatasetSplitDefault(requireExplicitSplit);
-  const [subsetDraft, setSubsetDraft] = useState(datasetSubset ?? "");
-  const [splitDraft, setSplitDraft] = useState(datasetSplit ?? defaultSplit);
-  const [evalDraft, setEvalDraft] = useState(datasetEvalSplit ?? "");
-  const [subsetError, setSubsetError] =
-    useState<ManualDatasetOptionError | null>(null);
-  const [splitError, setSplitError] = useState<ManualDatasetOptionError | null>(
-    null,
+  const allowSplitInstructions = !datasetStreaming;
+  const draftSources = {
+    datasetSubset,
+    datasetSplit,
+    datasetEvalSplit,
+    defaultSplit,
+  };
+  const [storedDrafts, setStoredDrafts] = useState<ManualDatasetOptionDrafts>(
+    () => createManualDatasetOptionDrafts(draftSources),
   );
-  const [evalError, setEvalError] = useState<ManualDatasetOptionError | null>(
-    null,
+  const drafts = synchronizeManualDatasetOptionDrafts(
+    storedDrafts,
+    draftSources,
   );
+  if (drafts !== storedDrafts) {
+    // Persist observed prop transitions so an A -> B -> A cycle cannot revive
+    // an obsolete draft. The identity guard makes this a single adjustment.
+    setStoredDrafts(drafts);
+  }
+  const subsetDraft = drafts.subset.value;
+  const splitDraft = drafts.split.value;
+  const evalDraft = drafts.evalSplit.value;
+  const subsetError = drafts.subset.error;
+  const splitError = drafts.split.error;
+  const evalError = drafts.evalSplit.error;
 
   useEffect(() => {
-    setSubsetDraft(datasetSubset ?? "");
-    setSubsetError(null);
-  }, [datasetSubset]);
-  useEffect(() => {
-    setSplitDraft(datasetSplit ?? defaultSplit);
-    setSplitError(null);
-  }, [datasetSplit, defaultSplit]);
-  useEffect(() => {
-    setEvalDraft(datasetEvalSplit ?? "");
-    setEvalError(null);
-  }, [datasetEvalSplit]);
+    setManualDatasetOptionsValid(
+      manualDatasetDraftsAreValid(
+        subsetDraft,
+        splitDraft,
+        evalDraft,
+        requireExplicitSplit,
+        allowSplitInstructions,
+      ),
+    );
+  }, [
+    subsetDraft,
+    splitDraft,
+    evalDraft,
+    requireExplicitSplit,
+    allowSplitInstructions,
+    setManualDatasetOptionsValid,
+  ]);
+
+  useEffect(
+    () => () => setManualDatasetOptionsValid(true),
+    [setManualDatasetOptionsValid],
+  );
 
   const errorMessage = (error: ManualDatasetOptionError | null) => {
     if (error === "required") {
@@ -265,53 +332,136 @@ function ManualDatasetOptions({
   };
   const commitSubset = () => {
     const nextError = validateManualDatasetSubset(subsetDraft);
-    setSubsetError(nextError);
     if (nextError) {
+      setStoredDrafts({
+        ...drafts,
+        subset: { ...drafts.subset, error: nextError },
+      });
+      setManualDatasetOptionsValid(false);
       return;
     }
     const normalized = normalizeManualDatasetOption(subsetDraft);
     const value = normalized || null;
     if (value === datasetSubset) {
+      setStoredDrafts({
+        ...drafts,
+        subset: {
+          committedValue: value,
+          value: normalized,
+          error: null,
+        },
+      });
       return;
     }
+    const nextDrafts: ManualDatasetOptionDrafts = {
+      subset: {
+        committedValue: value,
+        value: normalized,
+        error: null,
+      },
+      split: {
+        committedValue: null,
+        value: defaultSplit,
+        error: null,
+      },
+      evalSplit: {
+        committedValue: null,
+        value: "",
+        error: null,
+      },
+    };
     setDatasetSubset(value);
-    setSplitDraft(defaultSplit);
-    setEvalDraft("");
-    setSplitError(null);
-    setEvalError(null);
+    // It nulls datasetEvalSplit but not evalSteps, so this is what stops evaluation staying
+    // armed with no split (a 422 once streaming is on). setDatasetSplit(null) is not needed:
+    // it only adds a runDatasetCheck against an assumed "train" split.
+    setDatasetEvalSplit(null);
+    setStoredDrafts(nextDrafts);
+    setManualDatasetOptionsValid(
+      manualDatasetDraftsAreValid(
+        nextDrafts.subset.value,
+        nextDrafts.split.value,
+        nextDrafts.evalSplit.value,
+        requireExplicitSplit,
+        allowSplitInstructions,
+      ),
+    );
   };
   const commitSplit = () => {
     const nextError = validateManualDatasetSplit(
       splitDraft,
       requireExplicitSplit,
+      allowSplitInstructions,
     );
-    setSplitError(nextError);
     if (nextError) {
-      if (requireExplicitSplit && datasetSplit !== null) {
-        setDatasetSplit(null);
-      }
+      setStoredDrafts({
+        ...drafts,
+        split: { ...drafts.split, error: nextError },
+      });
+      setManualDatasetOptionsValid(false);
       return;
     }
     const normalized = normalizeManualDatasetOption(splitDraft);
     const value = normalized || null;
-    if (value === null && requireExplicitSplit === false) {
-      setSplitDraft(defaultSplit);
-    }
+    const nextSplitDraft = value ?? defaultSplit;
+    const nextDrafts: ManualDatasetOptionDrafts = {
+      ...drafts,
+      split: {
+        committedValue: value,
+        value: nextSplitDraft,
+        error: null,
+      },
+    };
     if (value !== datasetSplit) {
       setDatasetSplit(value);
     }
+    setStoredDrafts(nextDrafts);
+    setManualDatasetOptionsValid(
+      manualDatasetDraftsAreValid(
+        nextDrafts.subset.value,
+        nextDrafts.split.value,
+        nextDrafts.evalSplit.value,
+        requireExplicitSplit,
+        allowSplitInstructions,
+      ),
+    );
   };
   const commitEvalSplit = () => {
-    const nextError = validateManualDatasetSplit(evalDraft, false);
-    setEvalError(nextError);
+    const nextError = validateManualDatasetSplit(
+      evalDraft,
+      false,
+      allowSplitInstructions,
+    );
     if (nextError) {
+      setStoredDrafts({
+        ...drafts,
+        evalSplit: { ...drafts.evalSplit, error: nextError },
+      });
+      setManualDatasetOptionsValid(false);
       return;
     }
     const normalized = normalizeManualDatasetOption(evalDraft);
     const value = normalized || null;
+    const nextDrafts: ManualDatasetOptionDrafts = {
+      ...drafts,
+      evalSplit: {
+        committedValue: value,
+        value: normalized,
+        error: null,
+      },
+    };
     if (value !== datasetEvalSplit) {
       setDatasetEvalSplit(value);
     }
+    setStoredDrafts(nextDrafts);
+    setManualDatasetOptionsValid(
+      manualDatasetDraftsAreValid(
+        nextDrafts.subset.value,
+        nextDrafts.split.value,
+        nextDrafts.evalSplit.value,
+        requireExplicitSplit,
+        allowSplitInstructions,
+      ),
+    );
   };
 
   const fields = (
@@ -326,8 +476,21 @@ function ManualDatasetOptions({
           placeholder={t("studio.dataset.selectors.manualSubsetPlaceholder")}
           aria-invalid={subsetError !== null}
           onChange={(event) => {
-            setSubsetDraft(event.target.value);
-            setSubsetError(null);
+            const value = event.target.value;
+            const nextDrafts: ManualDatasetOptionDrafts = {
+              ...drafts,
+              subset: { ...drafts.subset, value, error: null },
+            };
+            setStoredDrafts(nextDrafts);
+            markManualDatasetOptionsEdited(
+              manualDatasetDraftsAreValid(
+                nextDrafts.subset.value,
+                nextDrafts.split.value,
+                nextDrafts.evalSplit.value,
+                requireExplicitSplit,
+                allowSplitInstructions,
+              ),
+            );
           }}
           onBlur={commitSubset}
           onKeyDown={blurOnEnter}
@@ -344,8 +507,21 @@ function ManualDatasetOptions({
           placeholder={t("studio.dataset.selectors.selectSplit")}
           aria-invalid={splitError !== null}
           onChange={(event) => {
-            setSplitDraft(event.target.value);
-            setSplitError(null);
+            const value = event.target.value;
+            const nextDrafts: ManualDatasetOptionDrafts = {
+              ...drafts,
+              split: { ...drafts.split, value, error: null },
+            };
+            setStoredDrafts(nextDrafts);
+            markManualDatasetOptionsEdited(
+              manualDatasetDraftsAreValid(
+                nextDrafts.subset.value,
+                nextDrafts.split.value,
+                nextDrafts.evalSplit.value,
+                requireExplicitSplit,
+                allowSplitInstructions,
+              ),
+            );
           }}
           onBlur={commitSplit}
           onKeyDown={blurOnEnter}
@@ -362,8 +538,21 @@ function ManualDatasetOptions({
           placeholder={t("studio.dataset.selectors.none")}
           aria-invalid={evalError !== null}
           onChange={(event) => {
-            setEvalDraft(event.target.value);
-            setEvalError(null);
+            const value = event.target.value;
+            const nextDrafts: ManualDatasetOptionDrafts = {
+              ...drafts,
+              evalSplit: { ...drafts.evalSplit, value, error: null },
+            };
+            setStoredDrafts(nextDrafts);
+            markManualDatasetOptionsEdited(
+              manualDatasetDraftsAreValid(
+                nextDrafts.subset.value,
+                nextDrafts.split.value,
+                nextDrafts.evalSplit.value,
+                requireExplicitSplit,
+                allowSplitInstructions,
+              ),
+            );
           }}
           onBlur={commitEvalSplit}
           onKeyDown={blurOnEnter}

@@ -20,6 +20,10 @@ import { useInventoryVersion } from "../stores/inventory-events";
 import { useCallback, useEffect, useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import {
+  inventoryRefreshDecision,
+  nextRevalidationStamp,
+} from "./inventory-freshness";
 
 export type DeviceInventorySource =
   | "cachedGguf"
@@ -42,6 +46,8 @@ export type DeviceInventorySourceState<Rows extends readonly unknown[]> = {
   ready: boolean;
   error: string | null;
   key: string | null;
+  refreshedAt: number | null;
+  revalidatedAt: number | null;
 };
 
 type DeviceInventoryState = {
@@ -66,6 +72,7 @@ type UseDeviceInventoryResult<
   Sources extends readonly DeviceInventorySource[],
 > = Pick<DeviceInventoryState, Sources[number]> & {
   refresh: () => Promise<void>;
+  refreshIfOlderThan: (maxAgeMs: number) => Promise<void>;
 };
 
 const TOKEN_SCOPED_SOURCES = new Set<DeviceInventorySource>([
@@ -86,6 +93,8 @@ function emptySource<
     ready: false,
     error: null,
     key: null,
+    refreshedAt: null,
+    revalidatedAt: null,
   };
 }
 
@@ -214,7 +223,12 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     forceQueue.set(key, refetch);
     return refetch;
   }
-  if (!options.force && current.ready && current.key === key) {
+  if (
+    !options.force &&
+    current.ready &&
+    current.error === null &&
+    current.key === key
+  ) {
     return Promise.resolve(current.rows);
   }
 
@@ -225,17 +239,34 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     ready: current.ready,
     error: null,
     key,
+    refreshedAt: current.key === key ? current.refreshedAt : null,
+    revalidatedAt: current.key === key ? current.revalidatedAt : null,
   });
 
   const request = runSourceFetch(source, options.hfToken)
     .then((rows) => {
       if (useDeviceInventoryStore.getState()[source].key === key) {
+        const refreshedAt = Date.now();
         updateSourceState(source, {
           rows,
           loading: false,
           ready: true,
           error: null,
           key,
+          refreshedAt,
+          revalidatedAt: nextRevalidationStamp({
+            force: Boolean(options.force),
+            requestKey: key,
+            previous: {
+              key: current.key,
+              ready: current.ready,
+              error: current.error,
+              rowCount: current.rows.length,
+              revalidatedAt: current.revalidatedAt,
+            },
+            rowCount: rows.length,
+            now: refreshedAt,
+          }),
         });
       }
       return rows;
@@ -261,23 +292,6 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
 
   inFlight.set(key, request);
   return request;
-}
-
-export function inventoryEmptyRevalidationSignature(
-  sources: readonly Pick<
-    DeviceInventorySourceState<readonly unknown[]>,
-    "error" | "key" | "ready"
-  >[],
-): string {
-  return sources
-    .map((source) =>
-      [
-        source.key ?? "pending",
-        source.ready ? "ready" : "pending",
-        source.error ?? "",
-      ].join("\u0001"),
-    )
-    .join("\u0002");
 }
 
 export function useTokenScopedInventoryRequestOptions(
@@ -368,6 +382,43 @@ export function useDeviceInventorySources<
     }
   }, [sourceList, hfToken, tokenFingerprint, inventoryVersion]);
 
+  const refreshIfOlderThan = useCallback(
+    async (maxAgeMs: number) => {
+      const now = Date.now();
+      const requests = sourceList.flatMap((source) => {
+        const key = sourceRequestKey(
+          source,
+          inventoryVersion,
+          tokenFingerprint,
+        );
+        const current = useDeviceInventoryStore.getState()[source];
+        const decision = inventoryRefreshDecision(current, key, now, maxAgeMs);
+        if (decision === "reuse") return [];
+        return [
+          {
+            source,
+            request: fetchInventorySource(source, {
+              hfToken,
+              tokenFingerprint,
+              inventoryVersion,
+              force: decision === "refresh",
+            }),
+          },
+        ];
+      });
+      const results = await Promise.allSettled(
+        requests.map(({ request }) => request),
+      );
+      for (const [index, result] of results.entries()) {
+        if (result.status === "rejected") {
+          const source = requests[index]?.source;
+          if (source) logInventorySourceFailure(source, result.reason);
+        }
+      }
+    },
+    [sourceList, hfToken, tokenFingerprint, inventoryVersion],
+  );
+
   useEffect(() => {
     if (!enabled) {
       return;
@@ -384,5 +435,6 @@ export function useDeviceInventorySources<
   return {
     ...state,
     refresh,
+    refreshIfOlderThan,
   } as UseDeviceInventoryResult<Sources>;
 }

@@ -44,6 +44,8 @@ class RawTextDataLoader:
     ):
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride < 0:
+            raise ValueError(f"stride must be non-negative, got {stride}")
         if stride >= chunk_size:
             raise ValueError(f"stride ({stride}) must be smaller than chunk_size ({chunk_size})")
         self.tokenizer = tokenizer
@@ -138,6 +140,11 @@ class RawTextDataLoader:
         """
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride < 0:
+            raise ValueError(
+                f"stride must be non-negative, got {stride}: a negative stride advances the loop by "
+                f"more than chunk_size and silently skips the tokens in between"
+            )
         if stride >= chunk_size:
             raise ValueError(
                 f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
@@ -417,7 +424,11 @@ class TextPreprocessor:
         # Calculate average length
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
-            stats["min_length"] = stats["min_length"] if stats["min_length"] != float("inf") else 0
+
+        # No sample had content, so min_length is still its float("inf") seed. Report 0,
+        # like max_length and avg_length beside it, rather than handing back an infinity.
+        if stats["min_length"] == float("inf"):
+            stats["min_length"] = 0
 
         # Generate warnings
         if stats["empty_samples"] > 0:
@@ -429,7 +440,9 @@ class TextPreprocessor:
         if stats["encoding_issues"] > 0:
             stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
-        if stats["min_length"] < 10:
+        # Guard on text_lengths, not on min_length: with nothing measured it is now 0,
+        # and zero measured samples is not "some samples are very short".
+        if text_lengths and stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")
 
         return stats

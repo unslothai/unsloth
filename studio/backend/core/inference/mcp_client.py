@@ -8,13 +8,19 @@ import atexit
 import concurrent.futures
 import hashlib
 import json
+import mimetypes
 import os
+import re
 import shlex
+import shutil
 import sys
 import threading
 import time
 import uuid
+from functools import wraps
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
+from weakref import WeakKeyDictionary
 
 from loggers import get_logger
 
@@ -155,6 +161,35 @@ def stdio_mcp_enabled() -> bool:
     return True
 
 
+def stdio_mcp_disabled_reason() -> str:
+    """User-facing reason local commands are off, mirroring stdio_mcp_enabled().
+
+    Telling a user whose gate is suspended by an active tunnel to set
+    UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 would re-enable local command execution on
+    a published API, so the suspended cases must name their actual cause."""
+    from state.tool_policy import get_tool_policy
+    from utils.host_policy import loopback_default_active, remote_connector_active
+
+    if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1" and loopback_default_active():
+        if remote_connector_active():
+            return (
+                "Local commands are disabled while Remote Access is on, because the "
+                "server is reachable from outside this machine. Turn off Remote Access "
+                "to use local MCP servers, or use an http:// or https:// URL instead."
+            )
+        if get_tool_policy() is False:
+            return (
+                "Local commands are disabled because tools are disabled for this "
+                "server. Restart without --disable-tools, or use an http:// or "
+                "https:// URL instead."
+            )
+    return (
+        "Local commands aren't enabled on this server. To allow them, set "
+        "UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Unsloth, or use an "
+        "http:// or https:// URL instead."
+    )
+
+
 # Probe timeouts for discovering a server's tool list. OAuth needs minutes for
 # first-connect/expired-token browser sign-in; stdio allows for first-run
 # package download (e.g. `npx -y ...`); HTTP fails fast.
@@ -212,6 +247,104 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
+_IS_WINDOWS = os.name == "nt"
+_NODE_COMMANDS = frozenset({"node", "npm", "npx"})
+_WINDOWS_LAUNCHER_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1")
+
+
+def _launcher_name(command: str) -> str:
+    """argv[0] reduced to its bare launcher name, Windows suffix stripped."""
+    name = os.path.basename(command).lower()
+    for suffix in _WINDOWS_LAUNCHER_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _is_node_command(command: str) -> bool:
+    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a
+    Python or other stdio server keeps the toolchain its own env pinned."""
+    return _launcher_name(command) in _NODE_COMMANDS
+
+
+def _command_selects_runtime(command: Optional[str]) -> bool:
+    """A path to a ``node`` launcher picks the runtime explicitly and runs regardless of
+    PATH, so handing its children a different Node would only split the two."""
+    return (
+        command is not None and bool(os.path.dirname(command)) and _launcher_name(command) == "node"
+    )
+
+
+def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
+    """``(needs npm, needs npx)`` for argv[0]. Each launcher asks only for what it runs,
+    so an unrelated missing launcher cannot shadow a good runtime: node needs neither, npm
+    needs npm, and npx needs npx alone -- npx never shells out to an ``npm`` executable,
+    its npx-cli.js delegates in-process to the npm library it ships with, so a PATH
+    exposing node and npx without a separate npm runs it fine and must be left alone.
+    A pathed npm/npx is already located and only needs a node for its shebang, so it
+    does not require a second copy of itself on PATH either."""
+    name = _launcher_name(command) if command is not None else None
+    if name == "node":
+        return False, False
+    if command is not None and os.path.dirname(command):
+        return False, False
+    if name == "npm":
+        return True, False
+    if name == "npx":
+        return False, True
+    return True, True
+
+
+def _path_key(env: dict) -> str:
+    """The key holding PATH. Windows env names are case-insensitive, so a config may
+    spell it ``Path``; on POSIX only the exact name counts."""
+    if _IS_WINDOWS:
+        for key in env:
+            if key.upper() == "PATH":
+                return key
+    return "PATH"
+
+
+def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Optional[dict]:
+    """Process env for a stdio server: its own vars, plus the managed Node bin dir
+    on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
+    env = dict(headers or {})
+    key = _path_key(env)
+    base = env.get(key)
+    if isinstance(base, str) and not base:
+        # An explicitly empty PATH is a deliberate sandbox: hand it over untouched.
+        return env
+    if command is not None and not _is_node_command(command):
+        return env or None
+    if _command_selects_runtime(command):
+        return env or None
+    if not isinstance(base, str):
+        base = os.environ.get("PATH", "")
+    try:
+        from utils.node_runtime import path_with_managed_node
+        require_npm, require_npx = _runtime_requirements(command)
+        patched = path_with_managed_node(base, require_npm = require_npm, require_npx = require_npx)
+    except (ImportError, OSError, ValueError):
+        patched = base
+    if patched and patched != env.get(key):
+        env[key] = patched
+    return env or None
+
+
+def _stdio_argv(parts: list, env: Optional[dict]) -> list:
+    """argv with argv[0] resolved against the child's PATH. Windows resolves the
+    command against the parent environment before ``env`` applies, so a managed-only
+    ``npx`` has to be handed over as a full path."""
+    path = (env or {}).get(_path_key(env or {}))
+    if not isinstance(path, str):
+        path = os.environ.get("PATH", "")
+    try:
+        resolved = shutil.which(parts[0], path = path)
+    except OSError:
+        resolved = None
+    return [resolved or parts[0], *parts[1:]]
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -230,11 +363,13 @@ def _client(
             raise ValueError(f"Empty stdio command: {url!r}")
         # env vars ride the headers field (merged over the SDK default env).
         # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
+        env = _stdio_env(headers, parts[0])
+        argv = _stdio_argv(parts, env)
         return Client(
             StdioTransport(
-                command = parts[0],
-                args = parts[1:],
-                env = headers or None,
+                command = argv[0],
+                args = argv[1:],
+                env = env,
                 keep_alive = False,
             )
         )
@@ -262,6 +397,8 @@ _STDIO_SESSION_REAP_INTERVAL = 30.0
 _STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
 _STDIO_CLOSE_TIMEOUT = 10.0
 _STDIO_WEDGE_MARGIN = 15.0
+_STDIO_LIVENESS_TIMEOUT = 5.0
+_CANCEL_UNWIND_TIMEOUT = 2.0
 # Cap concurrent persistent sessions: each owns a subprocess + loop thread, and
 # the scope includes a caller-supplied thread_id, so an unbounded cache is a
 # resource-exhaustion surface. Overridable via env for large deployments.
@@ -308,6 +445,35 @@ def _transport_dead(session) -> bool:
     return False
 
 
+def _session_responsive(
+    session,
+    budget: Optional[float] = None,
+    cancel_event = None,
+) -> bool:
+    """Whether a session left dirty by an abandoned call can be reused: the
+    server must answer inside ``budget`` (the caller's remaining deadline).
+    Proves the server is alive, not that the abandoned call finished -- MCP
+    requests are concurrent. Probes with a raw single-page tools/list: ping
+    answers "Method not found" on a modern-era connection, and list_tools()
+    auto-paginates up to 250 pages."""
+    client = session.client
+    if client is None:
+        return False
+    window = _STDIO_LIVENESS_TIMEOUT if budget is None else min(_STDIO_LIVENESS_TIMEOUT, budget)
+    if window <= 0:
+        return False
+    probe = getattr(client, "list_tools_mcp", None) or client.list_tools
+    try:
+        # margin=0: a wedged loop must fail inside the window, not 15s past it.
+        session.run(_race_tool_call(probe(), window, cancel_event), window, margin = 0.0)
+    except _MCPCancelled:
+        raise
+    except Exception:  # noqa: BLE001
+        return False
+    session.dirty = False
+    return True
+
+
 class _SessionWedged(Exception):
     pass
 
@@ -332,6 +498,7 @@ class _StdioSession:
         self.client = None
         self.closed = threading.Event()
         self.defunct = False  # discarded; close once in_flight drains (see _retire)
+        self.dirty = False  # a call was abandoned on it; ping before reuse
         self._close_lock = threading.Lock()
         self.call_lock = threading.Lock()  # serializes tool calls on this session
         self.last_used = time.monotonic()
@@ -394,14 +561,20 @@ class _StdioSession:
         except Exception:
             return False
 
-    def run(self, coro, timeout: Optional[float]):
+    def run(
+        self,
+        coro,
+        timeout: Optional[float],
+        margin: float = _STDIO_WEDGE_MARGIN,
+    ):
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         # The coroutine enforces the tool timeout; the margin only catches a
         # wedged loop. No deadline at all when the caller set none -- but poll
         # so a session closed under us (server update/delete) can't hang the
-        # request thread forever on a stopped loop.
-        deadline = None if timeout is None else time.monotonic() + timeout + _STDIO_WEDGE_MARGIN
+        # request thread forever on a stopped loop. Callers whose whole budget is
+        # the timeout (the liveness probe) pass margin=0.
+        deadline = None if timeout is None else time.monotonic() + timeout + margin
         try:
             while True:
                 try:
@@ -774,6 +947,28 @@ _tool_cache: dict[str, list[dict]] = {}
 # eviction.
 _probe_cooloff_until: dict[str, float] = {}
 
+# Coordinate off-loop token-count snapshots with row and schema-cache mutations.
+_mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    WeakKeyDictionary()
+)
+
+
+def mcp_server_snapshot_guard() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    return _mcp_server_snapshot_locks.setdefault(loop, asyncio.Lock())
+
+
+def serialize_mcp_server_mutation(handler):
+    """Run an MCP mutation from validation through row/cache commit as one snapshot."""
+
+    @wraps(handler)
+    async def _serialized(*args, **kwargs):
+        async with mcp_server_snapshot_guard():
+            return await handler(*args, **kwargs)
+
+    return _serialized
+
+
 # MCP server fields whose change invalidates a server's discovered tools: the
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
 # all (is_enabled). A rename does not. The update route's eviction and
@@ -813,29 +1008,132 @@ MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 
+def _block_text(block: Any) -> Optional[str]:
+    text = getattr(block, "text", None)
+    if text:
+        return str(text)
+    resource = getattr(block, "resource", None)
+    if resource is not None:
+        text = getattr(resource, "text", None)
+        return str(text) if text else None
+    return None
+
+
+def _block_link(block: Any) -> Optional[str]:
+    # keep host-generated link text from suppressing structured_content
+    uri = getattr(block, "uri", None)
+    if uri and getattr(block, "type", None) == "resource_link":
+        name = getattr(block, "name", None)
+        return f"[resource: {name} <{uri}>]" if name else f"[resource: <{uri}>]"
+    return None
+
+
+# fastmcp File(data=..., format=...) labels payloads as application/<format>
+_IMAGE_SUBTYPES = {
+    "apng": "image/apng",
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "avif": "image/avif",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "ico": "image/vnd.microsoft.icon",
+    "svg": "image/svg+xml",
+    "svg+xml": "image/svg+xml",
+}
+
+
+# What tool-fallback.tsx may interpolate into data:<type>;base64,... : an RFC 9110
+# 8.3.1 token subtype, minus "*", which names a range and never a payload.
+_MEDIA_TYPE = re.compile(r"^image/[a-z0-9][a-z0-9!#$%&'^_`|~.+-]*$")
+
+
+def _uri_mime(uri: Any) -> Optional[str]:
+    """Guess a media type from the part of a URI that names the resource.
+
+    mimetypes only stopped reading the query and fragment in 3.11.9 / 3.12.3 / 3.13
+    (CPython gh-117217), and on older supported interpreters 'gen.png?download=1'
+    guessed nothing while 'download?name=gen.png' guessed image/png. Dropping both
+    keeps every interpreter in agreement. The scheme stays so a data: URI still
+    resolves; a bare host goes, since a host name is not a file name."""
+    split = urlsplit(str(uri))
+    cleaned = urlunsplit((split.scheme, split.netloc if split.path else "", split.path, "", ""))
+    return mimetypes.guess_type(cleaned, strict = False)[0]
+
+
+def _image_mime(mime: Any) -> Optional[str]:
+    if not isinstance(mime, str):
+        return None
+    # media type names are case-insensitive; data urls need only the essence
+    essence = mime.partition(";")[0].strip().lower()
+    if essence.startswith("image/"):
+        resolved = essence
+    else:
+        subtype = essence[len("application/") :] if essence.startswith("application/") else ""
+        resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
+    # one gate for every branch. Lowercased again because a registry answer carries the
+    # host's spelling: Windows returns image/JXL for .jxl, Linux and macOS image/jxl.
+    resolved = resolved.lower() if resolved else ""
+    return resolved if _MEDIA_TYPE.match(resolved) else None
+
+
+def _resource_mime(obj: Any) -> Any:
+    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
+    mime = getattr(obj, "mimeType", None)
+    return mime if mime is not None else getattr(obj, "mime_type", None)
+
+
+def _block_image(block: Any) -> Optional[tuple[str, str]]:
+    # embedded resources keep binary data on resource.blob
+    data = getattr(block, "data", None)
+    mime = _resource_mime(block)
+    if not data:
+        resource = getattr(block, "resource", None)
+        if resource is None:
+            return None
+        data = getattr(resource, "blob", None)
+        mime = _resource_mime(resource)
+        if not mime:
+            uri = getattr(resource, "uri", None)
+            mime = _uri_mime(uri) if uri else None
+    mime = _image_mime(mime)
+    if data and mime:
+        return str(data), mime
+    return None
+
+
 def _flatten_result(result: Any) -> str:
     parts = []
     images = []
     omitted = 0
+    has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
+        text = _block_text(block)
         if text:
-            parts.append(str(text))
+            parts.append(text)
+            has_text = True
             continue
-        data = getattr(block, "data", None)
-        mime = getattr(block, "mimeType", None)
-        if data and isinstance(mime, str) and mime.startswith("image/"):
-            data = str(data)
+        link = _block_link(block)
+        if link:
+            parts.append(link)
+            continue
+        image = _block_image(block)
+        if image is not None:
+            data, mime = image
             if len(data) > budget:
                 omitted += 1
                 continue
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
-    if not body:
+    if not has_text:
         structured = getattr(result, "structured_content", None)
-        body = str(structured) if structured is not None else ""
+        if structured is not None:
+            body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted:
         notes = []
         if images:
@@ -854,9 +1152,26 @@ def _flatten_result(result: Any) -> str:
     return body
 
 
-async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> Any:
+def _unwind_budget(unwind_timeout: float, timeout: Optional[float], elapsed: float) -> float:
+    """How long a cancelled call may take to unwind: whatever is left of the
+    caller's window, so the wait is never charged on top of an expired deadline."""
+    if not unwind_timeout:
+        return 0.0
+    if timeout is None:
+        return unwind_timeout
+    return min(unwind_timeout, max(0.0, timeout - elapsed))
+
+
+async def _race_tool_call(
+    call_coro,
+    timeout: Optional[float],
+    cancel_event,
+    unwind_timeout: float = 0.0,
+) -> Any:
     """Await ``call_coro`` under ``timeout``, polling ``cancel_event`` so a
-    /cancel POST interrupts even mid-network-read."""
+    /cancel POST interrupts even mid-network-read. ``unwind_timeout`` waits up to
+    that long for a cancelled call to finish unwinding; only callers that hand the
+    client back to a cache need it (one-shot clients are discarded anyway)."""
 
     async def _watch_cancel() -> None:
         while cancel_event is not None and not cancel_event.is_set():
@@ -865,6 +1180,7 @@ async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> 
     if cancel_event is not None and cancel_event.is_set():
         call_coro.close()
         raise _MCPCancelled
+    started = time.monotonic()
     call_task = asyncio.create_task(call_coro)
     if cancel_event is None:
         return await asyncio.wait_for(call_task, timeout = timeout)
@@ -879,6 +1195,11 @@ async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> 
         for t in (call_task, watch_task):
             if not t.done():
                 t.cancel()
+        # Let a cancelled call unwind before its session is reused, out of the
+        # caller's remaining budget. Outlasting it just leaves the session dirty.
+        left = _unwind_budget(unwind_timeout, timeout, time.monotonic() - started)
+        if left:
+            await asyncio.wait({call_task, watch_task}, timeout = left)
     if not done:
         raise asyncio.TimeoutError
     if call_task in done:
@@ -969,6 +1290,13 @@ def _call_stdio_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
+            elif session.dirty and not _session_responsive(session, _remaining(), cancel_event):
+                # Still stuck on the abandoned call; only now is a fresh one needed.
+                discard_session = True
+                if attempt == 0:
+                    retry = True
+                else:
+                    raise RuntimeError("MCP server is not responding")
             else:
                 rem = _remaining()
                 # raise_on_error=False for the same reason as the one-shot path.
@@ -976,13 +1304,14 @@ def _call_stdio_tool(
                     session.client.call_tool(name, args, raise_on_error = False),
                     rem,
                     cancel_event,
+                    # Only a cached session is worth waiting on.
+                    0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
-            # _race_tool_call cancels the pending call but cancellation is
-            # cooperative. Never return this client to the cache while the
-            # timed-out/cancelled operation might still run on its transport.
-            discard_session = True
+            # Keep the session so a Stop doesn't destroy the server's state; the
+            # SDK drops the abandoned reply, and reuse is gated on a live probe.
+            session.dirty = True
             raise
         except _SessionWedged:
             discard_session = True

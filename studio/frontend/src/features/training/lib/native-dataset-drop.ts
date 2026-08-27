@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { nativeDropPointToCss } from "../../native-intents/native-drop-position.ts";
+
 export const TRAINING_DATASET_UPLOAD_EXTENSIONS = [
   ".csv",
   ".jsonl",
@@ -79,10 +81,7 @@ export function nativeDropPositionHitsBounds(
   scaleFactor: number,
   bounds: { left: number; right: number; top: number; bottom: number },
 ): boolean {
-  const scale =
-    Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
-  const x = position.x / scale;
-  const y = position.y / scale;
+  const { x, y } = nativeDropPointToCss(position, scaleFactor);
   return (
     x >= bounds.left &&
     x <= bounds.right &&

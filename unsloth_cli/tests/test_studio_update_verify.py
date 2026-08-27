@@ -5,7 +5,7 @@
 
 pip considers a distribution with intact metadata already satisfied, so an
 update reinstalls nothing when a package's files are damaged. Before this check
-it printed "Unsloth Studio Installed" and exited 0 while Studio died at boot
+it printed "Unsloth Studio Installed" and exited 0 while Unsloth died at boot
 with `cannot import name 'Depends' from 'fastapi'` -- and a missing-package
 check could not have caught it, because `import fastapi` still succeeded.
 
@@ -46,17 +46,21 @@ def _make_dist(
     name: str,
     files: dict[str, bytes],
     record_sizes = None,
+    version: str = "1.0",
 ):
     """Install `files` under `site` and write a dist-info RECORD describing them.
 
     `record_sizes` overrides the size RECORD claims, which is how damage is
     simulated without having to corrupt anything after the fact.
     """
-    info = site / f"{name}-1.0.dist-info"
+    info = site / f"{name}-{version}.dist-info"
     info.mkdir(parents = True, exist_ok = True)
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
     (info / "WHEEL").write_text("Wheel-Version: 1.0\n")
-    rows = [f"{name}-1.0.dist-info/METADATA,,", f"{name}-1.0.dist-info/RECORD,,"]
+    rows = [
+        f"{name}-{version}.dist-info/METADATA,,",
+        f"{name}-{version}.dist-info/RECORD,,",
+    ]
     for rel, body in files.items():
         target = site / rel
         target.parent.mkdir(parents = True, exist_ok = True)
@@ -88,6 +92,59 @@ def site(tmp_path, monkeypatch):
 def test_an_intact_install_reports_nothing(site):
     _make_dist(site, "alpha", {"alpha/__init__.py": b"x = 1\n"})
     assert _deps().damaged_installed_files() == []
+
+
+def test_superseded_metadata_is_not_treated_as_file_damage(site):
+    removed = "studio/frontend/dist/assets/removed-hash.js"
+    _make_dist(site, "unsloth", {removed: b"old\n"}, version = "1.0")
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version = "2.0")
+    (site / removed).unlink()
+
+    assert _deps().damaged_installed_files() == []
+    conflicts = _deps().installed_metadata_conflicts()
+    assert len(conflicts) == 1
+    assert "unsloth" in conflicts[0]
+    assert "1.0" in conflicts[0] and "2.0" in conflicts[0]
+
+
+def test_duplicate_metadata_names_are_canonicalized(site):
+    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version = "1.0")
+    info = site / "foo_bar-1.0.dist-info"
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: foo.bar\nVersion: 1.0\n")
+    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version = "2.0")
+    info = site / "foo_bar-2.0.dist-info"
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: foo-bar\nVersion: 2.0\n")
+
+    conflicts = _deps().installed_metadata_conflicts()
+    assert len(conflicts) == 1 and conflicts[0].startswith("foo-bar:")
+
+
+def test_duplicate_metadata_conflicts_can_be_scoped_by_canonical_name(site):
+    _make_dist(site, "unsloth", {"unsloth/old.py": b"old\n"}, version = "1.0")
+    _make_dist(site, "unsloth", {"unsloth/new.py": b"new\n"}, version = "2.0")
+    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version = "1.0")
+    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version = "2.0")
+
+    deps = _deps()
+    included = deps.installed_metadata_conflicts(names = ("foo.bar",))
+    excluded = deps.installed_metadata_conflicts(exclude_names = ("foo-bar",))
+
+    assert len(included) == 1 and included[0].startswith("foo-bar:")
+    assert len(excluded) == 1 and excluded[0].startswith("unsloth:")
+
+
+def test_duplicate_metadata_does_not_hide_another_packages_damage(site):
+    _make_dist(site, "unsloth", {"studio/old.py": b"old\n"}, version = "1.0")
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version = "2.0")
+    _make_dist(
+        site,
+        "fastapi",
+        {"fastapi/__init__.py": b""},
+        record_sizes = {"fastapi/__init__.py": 1081},
+    )
+
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "fastapi/__init__.py" in found[0]
 
 
 def test_a_truncated_file_is_reported(site):
@@ -275,6 +332,69 @@ def test_a_clean_tree_passes_through(monkeypatch):
     studio._fail_if_install_damaged()  # must not raise
 
 
+def test_duplicate_metadata_gets_its_own_actionable_failure(monkeypatch, capsys):
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps,
+        "installed_metadata_conflicts",
+        lambda *a, **k: [
+            "unsloth: multiple metadata records "
+            "(2026.8.12 at unsloth-2026.8.12.dist-info, "
+            "2026.8.15 at unsloth-2026.8.15.dist-info)"
+        ],
+    )
+
+    def _file_scan_must_not_run(*_args, **_kwargs):
+        raise AssertionError("ambiguous RECORDs reached the file-damage scan")
+
+    monkeypatch.setattr(studio._studio_deps, "damaged_installed_files", _file_scan_must_not_run)
+    with pytest.raises(typer.Exit) as excinfo:
+        studio._fail_if_install_damaged()
+
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Unsloth package metadata is inconsistent" in err
+    assert "cannot safely choose" in err
+    assert "Recreate the managed environment before" in err
+    assert "pip install" not in err
+    assert "installed files are damaged" not in err
+    assert "Unsloth will keep failing to start" not in err
+
+
+@pytest.mark.parametrize("package", ["typer", "torch"])
+def test_other_duplicate_metadata_warns_without_an_unsafe_command(monkeypatch, capsys, package):
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+
+    def conflicts(
+        *_args,
+        names = None,
+        exclude_names = (),
+    ):
+        if names is not None:
+            return []
+        assert "unsloth" in exclude_names and "unsloth-zoo" in exclude_names
+        return [
+            f"{package}: multiple metadata records "
+            f"(1.0 at {package}-1.0.dist-info, 2.0 at {package}-2.0.dist-info)"
+        ]
+
+    monkeypatch.setattr(studio._studio_deps, "installed_metadata_conflicts", conflicts)
+    monkeypatch.setattr(studio._studio_deps, "damaged_installed_files", lambda: [])
+
+    studio._fail_if_install_damaged()
+
+    err = capsys.readouterr().err
+    assert "Warning: some other packages have duplicate metadata" in err
+    assert f"{package}: multiple metadata records" in err
+    assert "skipped file verification" in err
+    assert "original package source" in err
+    assert "pip install" not in err
+
+
 def test_a_damaged_tree_exits_nonzero_and_names_the_files(monkeypatch, capsys):
     import typer
 
@@ -312,7 +432,7 @@ def test_a_system_python_is_not_treated_as_the_managed_venv(monkeypatch, tmp_pat
     # Colab has no Unsloth venv: studio/setup.sh installs the backend into the
     # system Python on purpose. Distro-packaged RECORDs there list files the
     # distro never installed (PEP 627), so running the file check would accuse
-    # the distro of damaging Studio. Reproduced on Ubuntu system Python, which
+    # the distro of damaging Unsloth. Reproduced on Ubuntu system Python, which
     # reports an apt-owned `markdown-it-py: ../scripts/markdown-it is missing`.
     prefix = tmp_path / "usr"
     prefix.mkdir()
@@ -368,12 +488,24 @@ def test_the_verify_help_does_not_promise_an_import_check():
 
 def _run_update(monkeypatch, argv, verified):
     studio = _studio()
+
+    class _NoopLauncherUpdate:
+        def __enter__(self):
+            return self
+
+        def validate_launcher(self):
+            pass
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda *a, **k: None)
+    monkeypatch.setattr(studio, "_WindowsLauncherUpdateTransaction", _NoopLauncherUpdate)
     monkeypatch.setattr(studio, "_run_setup_script", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_release_self_exe_lock_windows", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_cleanup_self_exe_lock_windows", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: verified.append(True))
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda package: verified.append(package)
+    )
     return CliRunner().invoke(studio.studio_app, ["update", *argv])
 
 
@@ -381,7 +513,7 @@ def test_update_verifies_by_default(monkeypatch):
     verified = []
     result = _run_update(monkeypatch, [], verified)
     assert result.exit_code == 0, result.output
-    assert verified == [True]
+    assert verified == ["unsloth"]
 
 
 def test_no_verify_skips_the_check(monkeypatch):
@@ -399,7 +531,7 @@ def test_a_tauri_update_is_verified_too(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TAURI_UPDATE", "1")
     result = _run_update(monkeypatch, [], verified)
     assert result.exit_code == 0, result.output
-    assert verified == [True]
+    assert verified == ["unsloth"]
 
 
 @pytest.mark.parametrize(
@@ -534,7 +666,7 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
     # nothing, and the installer never recreates the venv, so damage in an
     # orphan from an older release survives the reinstall it recommends and
     # would report the same failure forever. The scan is deliberately not
-    # scoped to Studio's dependency closure: under-including there would let
+    # scoped to Unsloth's dependency closure: under-including there would let
     # real damage through, which is the failure this whole check exists to
     # catch. So the message has to carry the fallback instead.
     import typer
@@ -585,3 +717,147 @@ def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, 
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
     assert expected in capsys.readouterr().err
+
+
+# ── runtime-irrelevant rows must not fail an update ──────────────────
+
+
+def test_a_shared_top_level_test_tree_is_not_damage(site):
+    # Reported as `einx: test/conftest.py is missing`. einx and torchao both
+    # ship it, and install_python_stack.py force-reinstalls torchao every
+    # update, so pip removes the file and the pinned torchao does not ship it.
+    # Nothing imports another project's fixtures, and no reinstall repairs it.
+    _make_dist(site, "einx", {"einx/__init__.py": b"e\n"})
+    (site / "einx-1.0.dist-info" / "RECORD").write_text(
+        "einx/__init__.py,sha256=x,2\ntest/conftest.py,sha256=x,20650\n"
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_an_installer_rewritten_lockfile_is_not_damage(site):
+    # Reported as `package-lock.json is 27225 bytes, expected 28473`.
+    # setup.ps1/setup.sh run `npm install` inside the installed tree, and npm
+    # dedupes hoisted entries under legacy-peer-deps, shrinking the file.
+    lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", lock: b"L" * 27225},
+        record_sizes = {lock: 28473},
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_a_deleted_installer_rewritten_file_is_still_damage(site):
+    # Only the SIZE of these drifts, because npm rewrites the lockfile in place.
+    # It never deletes it, so a missing one is real damage and must be reported.
+    lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", lock: b"L" * 100})
+    (site / lock).unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "package-lock.json is missing" in found[0]
+
+
+def test_a_shared_top_level_scripts_tree_is_not_damage(site):
+    # unsloth_zoo ships a top-level scripts/, the same squatted-namespace shape
+    # as einx's test/. It has no __init__.py, so nothing imports it.
+    _make_dist(site, "upsilon", {"upsilon/__init__.py": b"u\n"})
+    (site / "upsilon-1.0.dist-info" / "RECORD").write_text(
+        "upsilon/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_a_package_owned_tests_subdirectory_is_still_checked(site):
+    # Only the shared top-level namespace is exempt; a tests/ tree inside a
+    # package is that package's alone, so a deletion there is real.
+    _make_dist(site, "rho", {"rho/tests/helper.py": b"h\n"})
+    (site / "rho" / "tests" / "helper.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "rho/tests/helper.py is missing" in found[0]
+
+
+def test_a_top_level_module_named_like_a_test_root_is_still_checked(site):
+    # The exemption is for a shared directory, not for a name prefix.
+    _make_dist(site, "sigma", {"tests.py": b"t\n"})
+    (site / "tests.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "tests.py is missing" in found[0]
+
+
+def test_runtime_damage_still_fails_when_ignored_rows_are_present(site):
+    # The exemption must not blind the scan to a torn runtime module.
+    lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", lock: b"L" * 10},
+        record_sizes = {lock: 28473},
+    )
+    (site / "unsloth" / "__init__.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "unsloth/__init__.py is missing" in found[0]
+
+
+def test_ignored_rows_do_not_consume_the_finding_budget(site):
+    # Filtering happens while RECORD is read, so harmless rows cannot crowd a
+    # real one off a capped list. Unfiltered, these 40 fill limit = 3.
+    files = {f"test/t{i}.py": b"x" for i in range(40)}
+    files["tau/__init__.py"] = b"t\n"
+    _make_dist(site, "tau", files)
+    for rel in files:
+        (site / rel).unlink()
+    found = _deps().damaged_installed_files(limit = 3)
+    assert len(found) == 1 and "tau/__init__.py is missing" in found[0]
+
+
+def test_our_own_shared_top_level_trees_are_exempt_too(site):
+    # Reported as `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429`
+    # on an install that was already current, so the update failed on every
+    # retry. 11429 is the size in the 2026.8.5 wheel, which shipped a top-level
+    # tests/ that any other wheel using that name overwrites. Squatting the
+    # namespace does not make it ours, and nothing imports it at runtime.
+    conftest = "tests/conftest.py"
+    _make_dist(
+        site,
+        "unsloth_zoo",
+        {"unsloth_zoo/__init__.py": b"z\n", conftest: b"c" * 8107},
+        record_sizes = {conftest: 11429},
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_two_distributions_claiming_one_shared_path(site):
+    # The real shape: a third party also ships tests/conftest.py and lands last,
+    # so the bytes on disk match its RECORD and are shorter than unsloth_zoo's.
+    # Neither the drift nor the deletion can affect startup.
+    rel = "tests/conftest.py"
+    _make_dist(site, "unsloth_zoo", {rel: b"u" * 11429})
+    _make_dist(site, "upsilon", {rel: b"c" * 8107})
+    assert (site / rel).stat().st_size == 8107
+    assert _deps().damaged_installed_files() == []
+    (site / rel).unlink()
+    assert _deps().damaged_installed_files() == []
+
+
+def test_our_own_shared_top_level_trees_may_also_vanish(site):
+    # Same path, deleted rather than overwritten: the einx shape, but claimed by
+    # a distribution of ours. No reinstall repairs it either.
+    _make_dist(site, "unsloth_zoo", {"unsloth_zoo/__init__.py": b"z\n"})
+    (site / "unsloth_zoo-1.0.dist-info" / "RECORD").write_text(
+        "unsloth_zoo/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_our_own_runtime_trees_are_still_checked(site):
+    # The exemption is scoped to the shared roots. Everything Unsloth actually
+    # imports lives outside them and must still fail an update when damaged.
+    _make_dist(
+        site,
+        "unsloth_zoo",
+        {"unsloth_zoo/__init__.py": b"z\n", "unsloth_zoo/tests/helper.py": b"h\n"},
+    )
+    (site / "unsloth_zoo" / "tests" / "helper.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "unsloth_zoo/tests/helper.py is missing" in found[0]

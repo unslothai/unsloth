@@ -14,6 +14,7 @@ import {
   createChatArtifact,
   hashArtifactCode,
 } from "../src/features/chat/artifacts/types.ts";
+import { openingTag } from "./helpers/tsx-ast.ts";
 
 // The shipped helper the component keys on, not a copy of it.
 const sourceKey = buildArtifactSourceKey;
@@ -85,13 +86,6 @@ const SURFACE_PATH = fileURLToPath(
     import.meta.url,
   ),
 );
-
-/** The opening tag of `node`, for both `<x>` and `<x />`. */
-const openingTag = (node: ts.Node): ts.JsxOpeningLikeElement | null => {
-  if (ts.isJsxSelfClosingElement(node)) return node;
-  if (ts.isJsxElement(node)) return node.openingElement;
-  return null;
-};
 
 /** The `key` expression on the source view's Streamdown, or null if unkeyed. */
 function readStreamdownKey(): string | null {

@@ -18,12 +18,14 @@ import { type ReactElement, useEffect } from "react";
 import {
   ensureResearchRunFollowed,
   ingestResearchUpdate,
+  runningResearchActivityTitle,
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchMessageMetadata } from "../types/research";
+import { researchReplyOwnsRun } from "../utils/research-run-binding";
 import { researchStatusLabel } from "./research-activity-panel";
 
-export function ResearchMessage(): ReactElement {
+export function ResearchMessage(): ReactElement | null {
   const metadata = useAuiState(
     ({ message }) =>
       (message.metadata as { custom?: ResearchMessageMetadata } | undefined)
@@ -35,13 +37,18 @@ export function ResearchMessage(): ReactElement {
       .map((part) => part.text)
       .join("\n"),
   );
+  const messageId = useAuiState(({ message }) => message.id);
   const runId = metadata.researchRunId ?? metadata.researchRun?.id ?? "";
   const session = useResearchRunStore((state) => state.sessions[runId]);
   const openPanel = useResearchRunStore((state) => state.openPanel);
   const initialRun = metadata.researchRun;
+  const ownsRun = researchReplyOwnsRun(
+    session?.run?.assistantMessageId,
+    messageId,
+  );
 
   useEffect(() => {
-    if (!runId) {
+    if (!runId || !ownsRun) {
       return;
     }
     if (initialRun) {
@@ -50,9 +57,9 @@ export function ResearchMessage(): ReactElement {
     if (!session?.following) {
       ensureResearchRunFollowed(runId, initialRun);
     }
-  }, [runId, initialRun, session?.following]);
+  }, [runId, initialRun, ownsRun, session?.following]);
 
-  const run = session?.run ?? metadata.researchRun;
+  const run = ownsRun ? (session?.run ?? metadata.researchRun) : undefined;
   if (!run) {
     if (fallbackText.trim()) {
       return (
@@ -61,6 +68,9 @@ export function ResearchMessage(): ReactElement {
           className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-15p5"
         />
       );
+    }
+    if (!ownsRun) {
+      return null;
     }
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -107,6 +117,7 @@ export function ResearchMessage(): ReactElement {
         <MarkdownPreview
           markdown={run.report}
           className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-15p5"
+          defer={true}
         />
         <SourcesGroup sources={sources} allowRemoteIcons={false} />
         <DocumentSourcesGroup sources={documentSources} />
@@ -117,6 +128,11 @@ export function ResearchMessage(): ReactElement {
   const failed = run.status === "failed";
   const cancelled = run.status === "cancelled";
   const needsApproval = run.status === "awaiting_approval";
+  // Name the current model call, so the long silent phases read as work rather than a stall.
+  const liveDetail =
+    runningResearchActivityTitle(session?.activities) ??
+    run.plan?.title ??
+    "Building a rigorous research plan…";
   return (
     <div
       className={cn(
@@ -159,7 +175,7 @@ export function ResearchMessage(): ReactElement {
                   ? "Review the approach before the agent starts gathering evidence."
                   : cancelled
                     ? "The activity gathered so far is still available."
-                    : (run.plan?.title ?? "Building a rigorous research plan…")}
+                    : liveDetail}
           </p>
           <Button
             size="sm"

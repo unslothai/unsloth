@@ -84,6 +84,73 @@ def test_flux1_krea_dev_generation_defaults():
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
+def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
+    for size in ("4B", "9B"):
+        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (50, 4.0)
+        assert default_generation_params(f"unsloth/FLUX.2-klein-{size}") == (4, 1.0)
+
+
+# ── z-image: the undistilled base ────────────────────────────────────────────
+def test_zimage_base_is_trusted_so_the_gguf_keeps_its_companion_base():
+    # unsloth/Z-Image-GGUF carries base_model: Tongyi-MAI/Z-Image, and _resolve_base_repo drops a
+    # tag that fails this gate. While it did, that pick fell back to the Turbo companions and
+    # denoised on their shift 3.0 scheduler instead of the base's 6.0.
+    assert _is_trusted_diffusion_repo("Tongyi-MAI/Z-Image")
+    assert _is_trusted_diffusion_repo("Tongyi-MAI/Z-Image-Turbo")
+    assert not _is_trusted_diffusion_repo("someone/Z-Image-finetune")
+
+
+def test_zimage_base_has_no_hosted_prequant_to_inherit():
+    # Both hosted checkpoints are baked from the Turbo transformer. Falling back to them for the
+    # undistilled base made planning treat an unrelated artifact as usable: auto declined the dense
+    # path when it was uncached, and an explicit int8/fp8 request downloaded it, hit the
+    # base_model_id refusal, then had no dense shards staged to fall back to.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    assert fam is not None and fam.name == "z-image"
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/Z-Image-Turbo-FP8"
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Tongyi-MAI/Z-Image-Turbo")
+            == "unsloth/Z-Image-Turbo-FP8"
+        )
+        assert family_prequant_repo(fam, scheme, base_repo = "Tongyi-MAI/Z-Image") is None
+        # However the id was typed, and through the mirror the loader actually fetches.
+        assert family_prequant_repo(fam, scheme, base_repo = "  tongyi-mai/Z-IMAGE ") is None
+
+
+def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
+    # family_prequant_repo is shared with the VIDEO loader, whose VideoFamily has no
+    # prequant_excluded_bases. A plain attribute read raises AttributeError here, and the only
+    # caller wraps this in a bare except that turns any raise into "no hosted checkpoint", so
+    # every video family would quietly drop to the dense path whenever a base_repo is passed.
+    from core.inference.diffusion_families import family_prequant_repo
+    from core.inference.diffusion_prequant import resolve_prequant_source
+    from core.inference.video_families import detect_video_family
+
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None
+    assert not hasattr(h3, "prequant_excluded_bases")
+    for scheme in ("int8", "fp8"):
+        # The base_repo argument is the trigger: an empty base short-circuits before the read.
+        assert (
+            family_prequant_repo(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
+            == "unsloth/MiniMax-H3-FP8"
+        )
+        source = resolve_prequant_source(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
+        assert source is not None and source.location == "unsloth/MiniMax-H3-FP8"
+
+
+def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
+    # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
+    # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.
+    assert default_generation_params("Tongyi-MAI/Z-Image") == (20, 4.0)
+    assert default_generation_params("unsloth/Z-Image-GGUF") == (20, 4.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (9, 0.0)
+    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (9, 0.0)
+
+
 # ── lumina-2 family ──────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "repo_id",
