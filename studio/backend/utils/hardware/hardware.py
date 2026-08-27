@@ -2334,8 +2334,10 @@ def _windows_rocm_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) ->
     shared_positions = [
         position for position, device in enumerate(devices) if device.get("shared_memory")
     ]
-    gfx_available = bool(records) and all(record.get("gfx") for record in records) and all(
-        devices[position].get("_rocm_gfx") for position in shared_positions
+    gfx_available = (
+        bool(records)
+        and all(record.get("gfx") for record in records)
+        and all(devices[position].get("_rocm_gfx") for position in shared_positions)
     )
     candidates_by_position: dict[int, set[int]] = {}
     for position in shared_positions:
