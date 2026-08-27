@@ -17,33 +17,67 @@ export const TARGET_MODULES = [
   "down_proj",
 ];
 
-/** CPT trains embeddings via modules_to_save; the UI still lists them for visibility. */
+/** CPT trains embeddings via modules_to_save; keep them visible in the UI. */
 export const CPT_EMBEDDING_MODULES = ["embed_tokens", "lm_head"] as const;
 
 /** CPT requires embed_tokens and lm_head in addition to standard LoRA modules. */
-export const CPT_TARGET_MODULES = [
-  ...TARGET_MODULES,
-  ...CPT_EMBEDDING_MODULES,
-];
+export const CPT_TARGET_MODULES = [...TARGET_MODULES, ...CPT_EMBEDDING_MODULES];
 
-/** Preserve architecture-specific all-linear defaults when entering CPT. */
+const CPT_UI_TARGET_MODULES = ["all-linear", ...CPT_TARGET_MODULES] as const;
+
+export function isCptAllLinearTargetModules(
+  targetModules: readonly string[],
+): boolean {
+  const loraTargetModules = targetModules.filter(
+    (module) =>
+      !CPT_EMBEDDING_MODULES.some(
+        (embeddingModule) => embeddingModule === module,
+      ),
+  );
+  return (
+    loraTargetModules.length === 1 && loraTargetModules[0] === "all-linear"
+  );
+}
+
+/** Preserve all-linear model defaults for CPT. */
 export function resolveCptTargetModules(
   currentTargetModules: readonly string[],
 ): string[] {
-  if (currentTargetModules.includes("all-linear")) {
+  if (isCptAllLinearTargetModules(currentTargetModules)) {
     return ["all-linear", ...CPT_EMBEDDING_MODULES];
   }
   return [...CPT_TARGET_MODULES];
 }
 
-/** Target-module chips shown in the CPT advanced-settings UI. */
-export function getCptUiTargetModules(
+export function getCptUiTargetModules(): readonly string[] {
+  return CPT_UI_TARGET_MODULES;
+}
+
+export function isCptTargetModuleActive(
   targetModules: readonly string[],
-): readonly string[] {
-  if (targetModules.includes("all-linear")) {
-    return ["all-linear", ...CPT_EMBEDDING_MODULES];
+  module: string,
+): boolean {
+  return module === "all-linear"
+    ? isCptAllLinearTargetModules(targetModules)
+    : targetModules.includes(module);
+}
+
+export function toggleCptTargetModule(
+  targetModules: readonly string[],
+  module: string,
+): string[] {
+  if (module === "all-linear") {
+    return isCptAllLinearTargetModules(targetModules)
+      ? [...CPT_TARGET_MODULES]
+      : ["all-linear", ...CPT_EMBEDDING_MODULES];
   }
-  return CPT_TARGET_MODULES;
+
+  const namedTargetModules = targetModules.filter(
+    (candidate) => candidate !== "all-linear",
+  );
+  return targetModules.includes(module)
+    ? namedTargetModules.filter((candidate) => candidate !== module)
+    : [...namedTargetModules, module];
 }
 
 export const OPTIMIZER_OPTIONS: ReadonlyArray<{

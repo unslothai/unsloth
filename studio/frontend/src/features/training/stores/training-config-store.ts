@@ -325,6 +325,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...get().trainingMethodProvenance,
                       learningRateManuallySet: false,
                       modelAdapterLearningRate,
+                      ...(get().trainingMethod === "cpt" &&
+                      modelDefaultsPatch.targetModules !== undefined
+                        ? {
+                            targetModulesBeforeCpt: [
+                              ...modelDefaultsPatch.targetModules,
+                            ],
+                          }
+                        : {}),
                     },
                   }
                 : {}),

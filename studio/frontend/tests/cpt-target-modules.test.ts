@@ -12,7 +12,9 @@ const {
   CPT_TARGET_MODULES,
   DEFAULT_HYPERPARAMS,
   getCptUiTargetModules,
+  isCptTargetModuleActive,
   resolveCptTargetModules,
+  toggleCptTargetModule,
 } = await import("../src/config/training.ts");
 
 test("resolveCptTargetModules keeps all-linear for architecture-specific models", () => {
@@ -30,10 +32,51 @@ test("resolveCptTargetModules keeps Llama defaults for standard adapters", () =>
   );
 });
 
-test("getCptUiTargetModules exposes all-linear in the CPT settings UI", () => {
+test("resolveCptTargetModules treats all-linear as an exclusive sentinel", () => {
   assert.deepEqual(
-    getCptUiTargetModules(["all-linear", "embed_tokens", "lm_head"]),
+    resolveCptTargetModules(["all-linear", "embed_tokens", "lm_head"]),
     ["all-linear", "embed_tokens", "lm_head"],
   );
-  assert.deepEqual(getCptUiTargetModules(CPT_TARGET_MODULES), CPT_TARGET_MODULES);
+  assert.deepEqual(
+    resolveCptTargetModules(["all-linear", "q_proj"]),
+    CPT_TARGET_MODULES,
+  );
+});
+
+test("CPT target controls switch all-linear without mixed state", () => {
+  assert.deepEqual(getCptUiTargetModules(), [
+    "all-linear",
+    ...CPT_TARGET_MODULES,
+  ]);
+  assert.equal(
+    isCptTargetModuleActive(
+      ["all-linear", "embed_tokens", "lm_head"],
+      "all-linear",
+    ),
+    true,
+  );
+  assert.equal(
+    isCptTargetModuleActive(["all-linear", "q_proj"], "all-linear"),
+    false,
+  );
+  assert.equal(
+    isCptTargetModuleActive(["all-linear", "q_proj"], "q_proj"),
+    true,
+  );
+  assert.deepEqual(
+    toggleCptTargetModule(
+      ["all-linear", "embed_tokens", "lm_head"],
+      "all-linear",
+    ),
+    CPT_TARGET_MODULES,
+  );
+  assert.deepEqual(toggleCptTargetModule(CPT_TARGET_MODULES, "all-linear"), [
+    "all-linear",
+    "embed_tokens",
+    "lm_head",
+  ]);
+  assert.deepEqual(
+    toggleCptTargetModule(["all-linear", "embed_tokens", "lm_head"], "q_proj"),
+    ["embed_tokens", "lm_head", "q_proj"],
+  );
 });
