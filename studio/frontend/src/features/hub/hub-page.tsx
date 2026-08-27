@@ -16,6 +16,7 @@ import { hfModelFitsDevice } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -383,51 +384,58 @@ export function ModelsPage() {
         .catch(() => idleUnloadArmed.current),
     [],
   );
-  const refreshResidentModelStatus = useCallback((): Promise<void> => {
-    const seq = ++residentStatusSeq.current;
-    const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
-      .then(([status, idleUnloadArmed]) => {
-        if (seq !== residentStatusSeq.current)
-          return supersedingRefresh(residentStatusSupersession.current, seq);
-        const store = useChatRuntimeStore.getState();
-        adoptResidentModelStatus(
-          {
-            // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
-            // Null for a speech model: this page is the other writer of params.checkpoint,
-            // so adopting one here made it the chat model just as the mount sync did.
-            checkpointId: isSpeechOnlyStatus(status)
-              ? null
-              : resolveInferenceCheckpointId(status),
-            speechOnly: isSpeechOnlyStatus(status),
-            ggufVariant: status.gguf_variant ?? null,
-          },
-          {
-            checkpoint: store.params.checkpoint,
-            checkpointIsExternal: isExternalModelId(store.params.checkpoint),
-            activeGgufVariant: store.activeGgufVariant,
-            modelLoading: store.modelLoading,
-            idleUnloadArmed,
-          },
-          {
-            setCheckpoint: (checkpointId, ggufVariant) => {
-              store.setCheckpoint(checkpointId, ggufVariant);
+  const refreshResidentModelStatus = useCallback(
+    (
+      { preserveIdleUnloaded = true }: {
+        preserveIdleUnloaded?: boolean;
+      } = {},
+    ): Promise<void> => {
+      const seq = ++residentStatusSeq.current;
+      const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+        .then(([status, idleUnloadArmed]) => {
+          if (seq !== residentStatusSeq.current)
+            return supersedingRefresh(residentStatusSupersession.current, seq);
+          const store = useChatRuntimeStore.getState();
+          adoptResidentModelStatus(
+            {
+              // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
+              // Null for a speech model: this page is the other writer of params.checkpoint,
+              // so adopting one here made it the chat model just as the mount sync did.
+              checkpointId: isSpeechOnlyStatus(status)
+                ? null
+                : resolveInferenceCheckpointId(status),
+              speechOnly: isSpeechOnlyStatus(status),
+              ggufVariant: status.gguf_variant ?? null,
             },
-            clearCheckpoint: () => {
-              store.clearCheckpoint();
+            {
+              checkpoint: store.params.checkpoint,
+              checkpointIsExternal: isExternalModelId(store.params.checkpoint),
+              activeGgufVariant: store.activeGgufVariant,
+              modelLoading: store.modelLoading,
+              idleUnloadArmed: preserveIdleUnloaded && idleUnloadArmed,
             },
-            applyStatus: (previous) => {
-              applyActiveModelStatusToStore(status, {
-                previousCheckpoint: previous.checkpoint ?? undefined,
-                previousGgufVariant: previous.ggufVariant,
-              });
+            {
+              setCheckpoint: (checkpointId, ggufVariant) => {
+                store.setCheckpoint(checkpointId, ggufVariant);
+              },
+              clearCheckpoint: () => {
+                store.clearCheckpoint();
+              },
+              applyStatus: (previous) => {
+                applyActiveModelStatusToStore(status, {
+                  previousCheckpoint: previous.checkpoint ?? undefined,
+                  previousGgufVariant: previous.ggufVariant,
+                });
+              },
             },
-          },
-        );
-      })
-      .catch(() => undefined);
-    registerRefresh(residentStatusSupersession.current, seq, read);
-    return read;
-  }, [readIdleUnloadArmed]);
+          );
+        })
+        .catch(() => undefined);
+      registerRefresh(residentStatusSupersession.current, seq, read);
+      return read;
+    },
+    [readIdleUnloadArmed],
+  );
 
   useEffect(() => {
     let active = true;
@@ -443,6 +451,15 @@ export function ModelsPage() {
       unsubscribe();
     };
   }, [refreshResidentModelStatus]);
+
+  useEffect(
+    () =>
+      subscribeModelLifecycle(({ runtime }) => {
+        if (runtime === "chat" || runtime === "stt") return;
+        void refreshResidentModelStatus({ preserveIdleUnloaded: false });
+      }),
+    [refreshResidentModelStatus],
+  );
 
   const { tab, setTab: setModelsTab } = useModelsTabState();
   const [query, setQuery] = useState("");

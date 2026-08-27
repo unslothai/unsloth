@@ -94,7 +94,7 @@ test("residency remains a cache mutation safety input", () => {
   );
   assert.match(
     hubPage,
-    /adoptResidentModelStatus\([\s\S]*?modelLoading: store\.modelLoading,\s*idleUnloadArmed,/,
+    /adoptResidentModelStatus\([\s\S]*?modelLoading: store\.modelLoading,\s*idleUnloadArmed: preserveIdleUnloaded && idleUnloadArmed,/,
   );
   assert.match(hubPage, /\.catch\(\(\) => idleUnloadArmed\.current\)/);
   assert.match(
@@ -114,6 +114,14 @@ test("residency remains a cache mutation safety input", () => {
   assert.match(
     hubPage,
     /subscribeResidentStatusRefresh\(\s*refreshResidentModelStatus/,
+  );
+  assert.match(
+    hubPage,
+    /subscribeModelLifecycle\(\(\{ runtime \}\) => \{\s*if \(runtime === "chat" \|\| runtime === "stt"\) return;\s*void refreshResidentModelStatus\(\{ preserveIdleUnloaded: false \}\);\s*\}\)/,
+  );
+  assert.match(
+    hubPage,
+    /idleUnloadArmed: preserveIdleUnloaded && idleUnloadArmed/,
   );
   assert.ok((hubPage.match(/residentModelIdMatches\(/g) ?? []).length >= 2);
   assert.ok((hubPage.match(/selectedModel\.loadId/g) ?? []).length >= 2);
