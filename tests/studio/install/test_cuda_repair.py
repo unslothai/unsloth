@@ -751,6 +751,7 @@ def _run_flavor_invariant(
     cvd = None,
     index_family = None,
     index_url = None,
+    win_arm64 = False,
 ):
     """Invoke _ensure_expected_torch_flavor against a fully mocked venv.
 
@@ -819,6 +820,7 @@ def _run_flavor_invariant(
         patch.object(stack_mod, "NO_TORCH", no_torch),
         patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
         patch.object(stack_mod.platform, "machine", return_value = "AMD64"),
+        patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = True),
@@ -1193,6 +1195,41 @@ class TestExpectedXpuFlavorIsEnforced:
         mock_pip.rocm_repair.assert_called_once()
         mock_pip.assert_not_called()
         assert ok is False
+
+
+class TestWindowsOnArmKeepsTheNoTorchaudioException:
+    """No win_arm64 torchaudio wheel is published on any index.
+
+    setup.ps1 drops it from all four of its install trios ($WinArm64NoAudio), so asking
+    for it here would turn a repairable venv into a failed install, and the venv the
+    repair rebuilds could not have been installed in the first place.
+    """
+
+    def test_torchaudio_is_dropped_on_windows_arm64(self):
+        ok, mock_pip = _run_flavor_invariant(repaired = "2.10.0+cu124", win_arm64 = True)
+        assert ok is True
+        args = [str(a) for a in mock_pip.call_args.args]
+        assert not any(a.startswith("torchaudio") for a in args)
+        assert any(a.startswith("torch>=") for a in args)
+        assert any(a.startswith("torchvision") for a in args)
+        assert _index_url(mock_pip).endswith("/cu124")
+
+    def test_the_xpu_trio_drops_it_too(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            repaired = "2.9.1+xpu",
+            expected_env = "xpu",
+            win_arm64 = True,
+        )
+        assert ok is True
+        args = [str(a) for a in mock_pip.call_args.args]
+        assert not any(a.startswith("torchaudio") for a in args)
+        assert "torch>=2.6,<2.11.0" in args
+
+    def test_x64_windows_still_installs_all_three(self):
+        _ok, mock_pip = _run_flavor_invariant(repaired = "2.10.0+cu124")
+        args = [str(a) for a in mock_pip.call_args.args]
+        assert any(a.startswith("torchaudio") for a in args)
 
 
 class TestAnExplicitPinOutranksTheManifest:

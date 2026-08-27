@@ -3135,18 +3135,23 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     _torch_pkg, _vision_pkg, _audio_pkg = (
         _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
     )
+    # No win_arm64 torchaudio wheel exists on any index, so asking for one turns a
+    # repairable venv into a failed install. setup.ps1 drops it from all four of its
+    # trios ($WinArm64NoAudio); the repair has to preserve the same exception, or the
+    # venv it rebuilds could not have been installed in the first place.
+    _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
+    if _is_windows_arm64():
+        _trio = [_torch_pkg, _vision_pkg]
     # --force-reinstall, not install.ps1's uv-only --reinstall-package trio: pip_install
     # falls back to pip when uv fails, and _build_pip_cmd would hand pip a flag it has no
-    # word for. Same effect on the three packages named here, which is all that is passed.
+    # word for. Same effect on the packages named here, which is all that is passed.
     # constrain=False for the same reason as every other torch repair: constraints.txt is
     # resolved against PyPI's torch, which is what put this venv here.
     pip_install(
         "PyTorch flavor repair",
         "--force-reinstall",
         "--no-cache-dir",
-        _torch_pkg,
-        _vision_pkg,
-        _audio_pkg,
+        *_trio,
         "--index-url",
         index_url,
         constrain = False,
