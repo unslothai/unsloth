@@ -9,7 +9,10 @@ import {
 } from "@assistant-ui/react";
 import { GlobeIcon } from "lucide-react";
 
-import { isSearchImagesToolResult } from "@/features/chat";
+import {
+  isSearchImagesToolResult,
+  useToolAwaitingApproval,
+} from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
@@ -88,6 +91,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   // Coerced, like image_queries below: a local model routinely emits a number or an
   // object here, and .trim() on one crashes the card that was meant to show the call.
@@ -140,10 +144,19 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
+  // Ask permission mode gates every local tool call, and the query or code
+  // being approved lives inside ToolFallbackContent while Allow/Deny render
+  // outside the card, so a collapsed card asks for a decision about text the
+  // trigger only shows truncated.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={
           isUrlFetch

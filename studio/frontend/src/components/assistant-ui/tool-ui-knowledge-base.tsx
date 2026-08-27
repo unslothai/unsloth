@@ -10,6 +10,7 @@ import {
 import { FileTextIcon, LibraryBigIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 
+import { useToolAwaitingApproval } from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useMemo } from "react";
 import { Badge } from "./badge";
@@ -77,6 +78,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   const query = toolArgText((args as { query?: unknown })?.query);
   const isRunning = status?.type === "running";
@@ -97,10 +99,19 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
+  // Ask permission mode gates every local tool call, and the query or code
+  // being approved lives inside ToolFallbackContent while Allow/Deny render
+  // outside the card, so a collapsed card asks for a decision about text the
+  // trigger only shows truncated.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={query ? `Searched documents for "${query}"` : "Knowledge search"}
         status={status}

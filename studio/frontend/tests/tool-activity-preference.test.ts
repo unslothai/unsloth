@@ -478,9 +478,15 @@ test("a card awaiting approval opens above the preference", async () => {
     "the collapse preference can suppress an approval prompt's context",
   );
 
+  // Every card that (a) is wrapped in withToolConfirmation and (b) can be closed by
+  // the preference. Ask permission mode gates all of these, and each renders the
+  // thing being approved -- command, script, query, code -- inside the collapsible.
   for (const file of [
     "../src/components/assistant-ui/tool-ui-terminal.tsx",
     "../src/components/assistant-ui/tool-ui-python.tsx",
+    "../src/components/assistant-ui/tool-ui-web-search.tsx",
+    "../src/components/assistant-ui/tool-ui-knowledge-base.tsx",
+    "../src/components/assistant-ui/tool-ui-code-execution.tsx",
   ]) {
     const card = await sourceOf(file);
     const attribute = jsxAttribute(

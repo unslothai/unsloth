@@ -118,13 +118,19 @@ function Output({ lines }: { lines: number }) {
 function ControlledCard({
   isRunning,
   hasText,
+  awaitingApproval,
 }: {
   isRunning: boolean;
   hasText: boolean;
+  awaitingApproval: boolean;
 }) {
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         data-probe="controlled-trigger"
         toolName="controlled_tool"
@@ -254,7 +260,11 @@ function App() {
       </div>
       <div data-probe="cards" key={generation}>
         {shows("controlled") && (
-          <ControlledCard isRunning={isRunning} hasText={hasText} />
+          <ControlledCard
+            isRunning={isRunning}
+            hasText={hasText}
+            awaitingApproval={awaitingApproval}
+          />
         )}
         {shows("uncontrolled") && <UncontrolledCard isRunning={isRunning} />}
         {shows("approval") && (

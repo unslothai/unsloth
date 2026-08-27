@@ -17,13 +17,12 @@ Scenes, each named for the claim it settles:
   4   live toggle         a mounted, open card AND a mounted, open group both adopt the
                           preference (the second Codex P2, and the group asymmetry)
   5   persistence         the preference survives a reload and still collapses
-  6   scroll              RECORDED, NOT ASSERTED. A close the preference causes settles the
-                          page somewhere different from a close a click causes, and this
-                          scene measures both so a future change has a baseline. It is not
-                          a pass/fail gate because the desired number is not yet known:
-                          routing the preference-driven close through useCollapseScrollLock
-                          -- the obvious fix -- was tried and moved the numbers not at all,
-                          so the lock is not the mechanism and a real fix needs design.
+  6   scroll              a close the preference causes must move the page exactly as far as
+                          a close a click causes. Both arms are driven with the card already
+                          in view, which is the whole trick: Playwright's click() scrolls its
+                          target into view first, so an arm whose card is off-screen gets a
+                          free scroll the other arm never gets, and the two then differ by
+                          how they were driven rather than by what they ran.
   7   approval            with the preference on, a parked call still shows the command it
                           is asking approval for -- and collapses once approval is granted
   8   strict mode         the render-phase setState survives React's double render
@@ -247,42 +246,53 @@ def run(base_url: str, pw) -> dict:
             p.append(f"5: {card} is open after a reload with the preference stored")
 
     # --- 6 scroll ---------------------------------------------------------
-    def close_one_card(via: str) -> int:
-        """Close ONE card, two ways, from an identical start. Returns px moved.
+    def close_one_card(via: str) -> tuple[int, int]:
+        """Close ONE card, two ways, from an identical start.
 
-        `only=uncontrolled` is what makes this a comparison rather than a
-        coincidence: with the whole page rendered, the preference closes every
-        card and the chevron closes one, so the two arms would differ by how
-        much content collapsed rather than by which code path ran.
+        Two things make this a comparison rather than a coincidence. `only=uncontrolled`
+        renders a single card, so both arms collapse the same content. And the card is
+        scrolled INTO VIEW rather than the answer being centred: Playwright's click()
+        scrolls its target into view before clicking, so centring the answer puts the card
+        off-screen and hands the chevron arm a scroll the preference arm never gets. Driven
+        that way the two arms appear to differ by ~665px; driven fairly they agree exactly.
         """
         fresh(page, base_url, False, query = "&only=uncontrolled")
         page.evaluate(
-            """() => document.querySelector('[data-probe="answer"]')
-                       .scrollIntoView({block: "center"})"""
+            """() => document.querySelector('[data-probe="uncontrolled-trigger"]')
+                       .scrollIntoView({block: "start"})"""
         )
         settle(page)
-        top_before = probe(page)["answer_top"]
+        before = probe(page)
         if via == "preference":
             page.evaluate("() => window.__setPreference(true)")
         else:
             page.click('[data-probe="uncontrolled-trigger"]')
         settle(page)
-        return probe(page)["answer_top"] - top_before
+        after = probe(page)
+        return (
+            after["answer_top"] - before["answer_top"],
+            after["scroll_top"] - before["scroll_top"],
+        )
 
     chevron = [close_one_card("chevron") for _ in range(3)]
     preference = [close_one_card("preference") for _ in range(3)]
+    chevron_answer = statistics.median(m[0] for m in chevron)
+    preference_answer = statistics.median(m[0] for m in preference)
     s["6_scroll"] = {
-        "chevron_answer_px": chevron,
-        "preference_answer_px": preference,
-        "chevron_median": statistics.median(chevron),
-        "preference_median": statistics.median(preference),
-        "note": (
-            "recorded, not asserted. On chromium a clicked close leaves the answer "
-            "roughly where it was and a preference-driven close pulls it up by most of "
-            "the collapsed height. Adding a scroll lock to the preference path changes "
-            "neither number, so the lock is not the mechanism."
-        ),
+        "chevron": chevron,
+        "preference": preference,
+        "chevron_answer_median": chevron_answer,
+        "preference_answer_median": preference_answer,
     }
+    # A few pixels of slack for sub-pixel rounding; the two paths measure identical.
+    if abs(preference_answer - chevron_answer) > 8:
+        p.append(
+            "6: a preference-driven close moves the page differently from a clicked close "
+            f"({preference_answer}px vs {chevron_answer}px)"
+        )
+    for label, runs in (("chevron", chevron), ("preference", preference)):
+        if any(m[1] != 0 for m in runs):
+            p.append(f"6: a {label} close moved the scroll position: {[m[1] for m in runs]}")
 
     # --- 7 approval -------------------------------------------------------
     fresh(page, base_url, True)
@@ -293,8 +303,9 @@ def run(base_url: str, pw) -> dict:
     settle(page)
     granted = probe(page)
     s["7_approval"] = {"parked": parked, "granted": granted}
-    if parked["approval"]["aria_expanded"] != "true":
-        p.append("7: a card awaiting approval is collapsed by the preference")
+    for card in ("approval", "controlled"):
+        if parked[card]["aria_expanded"] != "true":
+            p.append(f"7: the {card} card awaiting approval is collapsed by the preference")
     if not parked["approval_command_visible"]:
         p.append("7: the command being approved is not rendered")
     if APPROVAL_TAIL not in parked["approval_command_text"]:
@@ -302,8 +313,9 @@ def run(base_url: str, pw) -> dict:
             "7: only the truncated command is on screen -- 'Always allow' would be "
             "granted for text the user never saw"
         )
-    if granted["approval"]["aria_expanded"] == "true":
-        p.append("7: the card stayed pinned open after approval was granted")
+    for card in ("approval", "controlled"):
+        if granted[card]["aria_expanded"] == "true":
+            p.append(f"7: the {card} card stayed pinned open after approval was granted")
 
     # --- 8 strict mode ----------------------------------------------------
     fresh(page, base_url, True, query = "&strict=1")
