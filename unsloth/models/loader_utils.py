@@ -719,7 +719,11 @@ def _get_new_mapper():
                 targets = [statement.target]
             return {target.id for target in targets if isinstance(target, ast.Name)}
 
-        def _executed_nodes(body, shadowed = frozenset(), class_body = False):
+        def _executed_nodes(
+            body,
+            shadowed = frozenset(),
+            class_body = False,
+        ):
             # Returns what ENDED the suite, so a caller that recursed into a nested
             # one knows what it means: `"return"` leaves the whole function and
             # `True` leaves only the suite it is in. `if True: return` inside
