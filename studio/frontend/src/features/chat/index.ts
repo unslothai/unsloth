@@ -54,6 +54,11 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  hydrateModelDisclaimerPreference,
+  refreshModelDisclaimerPreference,
+  saveModelDisclaimerPreference,
+} from "./sync-model-disclaimer-preference";
 export { useChatActive, useInComparePane } from "./runtime-provider";
 export {
   CHAT_RAG_CAPTION_KEY,
