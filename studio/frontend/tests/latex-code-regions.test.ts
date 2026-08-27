@@ -60,6 +60,7 @@ test("ordinary code spans and fences are unchanged", () => {
   // Nothing that was already non-overlapping may move.
   const cases: [string, string][] = [
     ["`costs $5`", "`costs $5`"],
+    ["``a ` \\$x\\$ b``", "``a ` \\$x\\$ b``"],
     ["`costs $5`\n\n`x`", "`costs $5`\n\n`x`"],
     ["```\ncosts $5\n```", "```\ncosts $5\n```"],
     ["```\ncosts $5\n```\n\n`x`", "```\ncosts $5\n```\n\n`x`"],
@@ -67,6 +68,7 @@ test("ordinary code spans and fences are unchanged", () => {
     ["costs $5 outside", "costs \\$5 outside"],
     ["costs $5 outside\n\n`x`", "costs \\$5 outside\n\n`x`"],
     ["```\n`inner`\n```", "```\n`inner`\n```"],
+    ["```tex\n\\$x\\$\n", "```tex\n\\$x\\$\n"],
     ["`\\(x\\)` and \\(y\\)", "`\\(x\\)` and $y$"],
     ["```\n\\(x\\)\n```\n\nthen \\(y\\)", "```\n\\(x\\)\n```\n\nthen $y$"],
   ];
@@ -115,6 +117,7 @@ test("escaped math recovery preserves literal and non-math dollars", () => {
     ["$5 to $10 is a price range", "\\$5 to \\$10 is a price range"],
     ["`\\$v_s\\$` is code", "`\\$v_s\\$` is code"],
     [String.raw`    \$v_s\$`, String.raw`    \$v_s\$`],
+    [String.raw`>     \$v_s\$`, String.raw`>     \$v_s\$`],
     [
       String.raw`- item
     \$v_s\$`,

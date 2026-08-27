@@ -11,9 +11,12 @@
 
 import {
   EMPTY_LIST_STATE,
+  containerContent,
   indentWidth,
   openLists,
+  quoteDepth,
 } from "./markdown-list-columns.ts";
+import { codeSpans } from "./markdown-code-spans.ts";
 
 /**
  * Matches a single $ followed by a number pattern (currency), e.g.:
@@ -54,28 +57,53 @@ function mergeRegions(
   return merged;
 }
 
+const FENCE_LINE_RE =
+  /(^|\r\n|\n|\r)(?:(?:[ \t]*>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*(`{3,}|~{3,})([^\r\n]*)/g;
+const INDENTED_CODE_CANDIDATE_RE =
+  /(^|\r\n|\n|\r)(?: {0,3}>[ \t]?)*(?: {4}|\t)/g;
+
 /**
  * Find code regions (fenced, indented, and inline) to skip.
  * Returns a sorted, non-overlapping array of [start, end] index pairs.
  */
 export function findCodeBlockRegions(content: string): Array<[number, number]> {
-  // Fenced code blocks: ```...``` and ~~~...~~~ (both are code in GFM)
+  // Fenced blocks, including the open tail present on a streaming frame.
   const fenced: Array<[number, number]> = [];
-  const fencedRe = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
   let match: RegExpExecArray | null;
-  while ((match = fencedRe.exec(content)) !== null) {
-    fenced.push([match.index, match.index + match[0].length]);
+  let openFence: { start: number; marker: string } | null = null;
+  FENCE_LINE_RE.lastIndex = 0;
+  while ((match = FENCE_LINE_RE.exec(content)) !== null) {
+    const start = match.index + match[0].indexOf(match[2]);
+    const marker = match[2];
+    const tail = match[3];
+    if (openFence === null) {
+      if (marker[0] === "`" && tail.includes("`")) continue;
+      openFence = { start, marker };
+      continue;
+    }
+    if (
+      marker[0] === openFence.marker[0] &&
+      marker.length >= openFence.marker.length &&
+      !tail.trim()
+    ) {
+      fenced.push([openFence.start, match.index + match[0].length]);
+      openFence = null;
+    }
   }
+  if (openFence !== null) fenced.push([openFence.start, content.length]);
 
   const indented: Array<[number, number]> = [];
-  // Root-level indented code cannot interrupt a paragraph. The cheap boundary
-  // check keeps the per-frame streaming path from allocating every line unless
-  // a block can actually start at the document root or after a blank line.
-  if (
-    /^(?: {4}|\t)|(?:\r\n|\n|\r)[^\S\r\n]*(?:\r\n|\n|\r)(?: {4}|\t)/.test(
-      content,
-    )
-  ) {
+  // Avoid allocating every line on the per-frame path unless an indentation
+  // candidate exists outside a fenced block.
+  let hasIndentedCandidate = false;
+  INDENTED_CODE_CANDIDATE_RE.lastIndex = 0;
+  while ((match = INDENTED_CODE_CANDIDATE_RE.exec(content)) !== null) {
+    if (!isInRegion(match.index + match[0].length - 1, fenced)) {
+      hasIndentedCandidate = true;
+      break;
+    }
+  }
+  if (hasIndentedCandidate) {
     const lines = content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g);
     let blockStart = -1;
     let blockEnd = -1;
@@ -86,10 +114,10 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
       if (!line) break;
       const start = lineMatch.index;
       const text = line.replace(/(?:\r\n|\n|\r)$/, "");
-      const blank = /^\s*$/.test(text);
       lists = openLists(text, lists, !previousBlank);
-      const containerColumn = lists.columns.at(-1) ?? 0;
-      const code = indentWidth(text) - containerColumn >= 4;
+      const inner = containerContent(text, lists, quoteDepth(text));
+      const blank = /^\s*$/.test(inner);
+      const code = indentWidth(inner) >= 4;
       if (blockStart >= 0) {
         if (code || blank) {
           blockEnd = start + line.length;
@@ -109,24 +137,10 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
   }
 
   const blocks = mergeRegions(fenced, indented);
-
-  // Inline code: `...`, skipped when inside a block. Both loops yield
-  // ascending matches, so walk the block list with a cursor rather than
-  // rescanning it per match (was quadratic on code-heavy text).
-  const inline: Array<[number, number]> = [];
-  const inlineRe = /`[^`\n]+`/g;
-  let blockIndex = 0;
-  while ((match = inlineRe.exec(content)) !== null) {
-    const start = match.index;
-    const end = start + match[0].length;
-    while (blockIndex < blocks.length && blocks[blockIndex][1] <= start) {
-      blockIndex += 1;
-    }
-    const block = blockIndex < blocks.length ? blocks[blockIndex] : null;
-    if (!(block && start >= block[0] && end <= block[1])) {
-      inline.push([start, end]);
-    }
-  }
+  const inline = codeSpans(content).map(({ start, end }): [number, number] => [
+    start,
+    end,
+  ]);
 
   // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
   // the binary search land on the inner span and miss the outer one.
