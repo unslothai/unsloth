@@ -3486,9 +3486,9 @@ def test_an_unmapped_load_is_priced_against_the_cards_the_pin_left_it(
     cmd = result["cmd"]
 
     assert cmd, "the pinned unmapped load never spawned llama-server"
-    assert not _unmapped_tokens(cmd), (
-        f"the child still loads unmapped, priced against a card the pin hid: {cmd}"
-    )
+    assert not _unmapped_tokens(
+        cmd
+    ), f"the child still loads unmapped, priced against a card the pin hid: {cmd}"
     assert "memory mapping instead" in (backend.last_load_warning or "")
 
 
@@ -3541,9 +3541,9 @@ def test_a_restored_cpu_fallback_is_priced_against_host_ram(tmp_path, monkeypatc
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     warning = backend.last_load_warning or ""
-    assert "20 GB" in warning, (
-        f"a restored CPU-only session reported nothing about paging the model: {warning!r}"
-    )
+    assert (
+        "20 GB" in warning
+    ), f"a restored CPU-only session reported nothing about paging the model: {warning!r}"
 
 
 def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkeypatch):

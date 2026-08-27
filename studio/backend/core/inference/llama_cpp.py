@@ -21555,9 +21555,7 @@ class LlamaCppBackend:
                 # pinned away is not VRAM it can spend: crediting it prices the spill
                 # too low and leaves an unmapped oversized load unrewritten, which is
                 # an OOM rather than the slow load the override exists to produce.
-                _reachable_gpus = self._rows_the_child_can_reach(
-                    _detected_gpus, _launch_pinned_ids
-                )
+                _reachable_gpus = self._rows_the_child_can_reach(_detected_gpus, _launch_pinned_ids)
                 # reads the argv the child gets, not the mid-fit state that produced it
                 _offload_msg = self._launch_host_shortfall_message(
                     cmd,

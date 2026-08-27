@@ -457,17 +457,15 @@ class TestAutoLayersWithTheFitterTurnedOff:
         )
         assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
 
-    def test_the_no_kv_cap_keeps_the_raised_floor_while_a_fitter_runs(
-        self, tmp_path, monkeypatch
-    ):
+    def test_the_no_kv_cap_keeps_the_raised_floor_while_a_fitter_runs(self, tmp_path, monkeypatch):
         """The control: same path, fitter left on, so the exemption stands and the
         command carries no -c at all, leaving the child to size the context. What
         must NOT happen is this arm quietly adopting llama.cpp's lower floor for a
         launch that still has a fitter to come down from."""
         cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144)
-        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)], (
-            f"the raised ceiling was given up on a launch that still has a fitter: {cmd}"
-        )
+        assert _ctx_values(cmd) == [
+            str(_FIT_MIN_CTX)
+        ], f"the raised ceiling was given up on a launch that still has a fitter: {cmd}"
 
     def test_a_zero_override_alongside_it_is_still_dropped(self, tmp_path, monkeypatch):
         cmd, _ = _launch(
