@@ -726,10 +726,14 @@ def test_the_last_export_producing_call_is_the_one_read(monkeypatch):
     added, either way through the upgrade-only NotImplementedError.
     """
     lines = REAL_MAPPER.splitlines(True)
-    insert = next(
-        i for i, line in enumerate(lines)
-        if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
-    ) + 1
+    insert = (
+        next(
+            i
+            for i, line in enumerate(lines)
+            if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
+        )
+        + 1
+    )
     rebuilt = "".join(
         lines[:insert]
         + [
@@ -785,5 +789,6 @@ def test_an_addition_after_a_breaking_loop_is_still_read(monkeypatch):
         tables = loader_utils._get_new_mapper()
     assert any(
         table.get("vendor/after-break") == "unsloth/after-break"
-        for table in tables if isinstance(table, dict)
+        for table in tables
+        if isinstance(table, dict)
     ), "an addition after a loop that only breaks was dropped"
