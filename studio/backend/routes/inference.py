@@ -1665,11 +1665,10 @@ def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
 def _openai_llama_admission_image_tokens(llama_backend) -> int:
     """Per-image KV allowance for the backend that is actually running.
 
-    ``--image-max-tokens`` is not an Unsloth-managed flag, so a load can raise the
-    projector's ceiling through ``llama_extra_args`` and make one image cost far more
-    than the default. Measured on b10639 with ``--image-max-tokens 8192``: a 4096x4096
-    Qwen3-VL image costs 8102, against 4098 at the default. Reserving the default
-    against that backend would admit concurrent requests the cache cannot hold.
+    ``--image-max-tokens`` is not Unsloth-managed, so ``llama_extra_args`` can raise the
+    projector ceiling. Measured on b10639 with ``--image-max-tokens 8192``: a 4096x4096
+    Qwen3-VL image costs 8102, against 4098 at the default, so reserving the default
+    would admit concurrent requests the cache cannot hold.
     """
     cap = _extra_args_image_max_tokens(getattr(llama_backend, "_extra_args", None))
     if cap is None:
@@ -27877,10 +27876,9 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
             )
         )
     )
-    # `_legacy_image_is_distinct`, not "the messages carry no image": Studio's echo is
-    # byte-equal to a part already here and must not be spliced twice, but a legacy
-    # image the thread does not hold is a real attachment, and dropping it answers
-    # without the image the client just sent. Admission charges on the same predicate.
+    # Distinctness, not "the messages carry no image": Studio's echo is byte-equal to a
+    # part already here and must not be spliced twice, but a legacy image the thread
+    # does not hold is a real attachment. Admission charges on the same predicate.
     if _legacy_image_is_distinct(payload):
         # Legacy bytes can be any format; the normalizer below sniffs and
         # re-encodes to PNG, so the declared mime is rewritten anyway.
