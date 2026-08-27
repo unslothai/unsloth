@@ -1608,6 +1608,73 @@ def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
     assert llama_cpp._sticky_compaction_state(None) == (0, False)
 
 
+def test_lowering_the_extra_trim_discards_the_deeper_boundary(monkeypatch):
+    """The "When context fills" ratio has to do something on an already-compacted chat.
+
+    Phase one of `fit_rolling_context` re-applies the saved count before anything else and
+    stops as soon as the result fits, so a boundary cut at 25% extra trim would replay in
+    full and the phase that reads the new ratio would never run. Moving the setting DOWN
+    would then change nothing at all.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {
+                "custom": {
+                    "contextTruncation": {
+                        "fits": True,
+                        "boundary_messages": 12,
+                        "boundary_headroom_ratio": 0.25,
+                    }
+                }
+            },
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.05) == 0
+    ), "a boundary cut with more extra trim than this request wants must be recomputed"
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 0
+    ), "no extra trim has to hand back what the 25% cut took"
+
+    # Asking for MORE needs no refusal: phase two moves the boundary out by itself.
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 12
+
+    # Rows saved before the ratio was recorded replay exactly as they did.
+    del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+
+    # A checkpoint reset ignores headroom, so its depth is never refused over the ratio.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": True,
+        "boundary_messages": 12,
+        "boundary_headroom_ratio": 0.25,
+        "checkpoint": True,
+    }
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+
+
+def test_the_recorded_boundary_carries_the_ratio_that_cut_it():
+    from core.inference import llama_cpp
+
+    before = [{"role": "user", "content": f"q{i}"} for i in range(6)]
+    fitted = before[4:]
+
+    assert llama_cpp._boundary_metadata(fitted, before)["boundary_headroom_ratio"] == 0.25
+    assert llama_cpp._boundary_metadata(fitted, before, 0.05)["boundary_headroom_ratio"] == 0.05
+    # Out-of-range values are clamped by the same gate the fit uses, never stored raw.
+    assert llama_cpp._boundary_metadata(fitted, before, 5.0)["boundary_headroom_ratio"] == 0.9
+
+
 def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
     """Recording a rescue's depth must not make it sticky.
 

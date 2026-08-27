@@ -1518,8 +1518,10 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     assert "branch_messages = _request_branch" not in text
     assert 'kwargs["conversation_branch"] = _request_branch' not in text
     # And the boundary is still measured against the client's messages, which is what it
-    # will be re-applied to.
-    assert "_branch_boundary(conversation, _request_branch)" in text
+    # will be re-applied to. Recorded through `_boundary_metadata`, which is the only
+    # writer, so the depth, its anchor and the headroom that produced it stay together.
+    assert "_boundary_metadata( conversation, _request_branch," in text
+    assert '"boundary_messages": _branch_boundary(fitted, before),' in text
 
 
 # --- The instruction the user gave, and the follow-up that says nothing ---

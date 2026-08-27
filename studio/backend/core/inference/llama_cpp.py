@@ -50,6 +50,8 @@ from typing import (
 import httpx
 
 from core.inference.context_window import (
+    _COMPACTION_HEADROOM_RATIO,
+    clamp_compaction_headroom_ratio,
     prompt_budget,
     estimate_messages_tokens,
     estimate_messages_tokens_dense,
@@ -884,6 +886,31 @@ def _records_boundary(truncation: dict) -> bool:
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
 
 
+def _effective_headroom_ratio(compaction_headroom_ratio: Optional[float] = None) -> float:
+    """The extra-trim share this request's rolling fit actually used."""
+    ratio = clamp_compaction_headroom_ratio(compaction_headroom_ratio)
+    return _COMPACTION_HEADROOM_RATIO if ratio is None else ratio
+
+
+def _boundary_metadata(
+    fitted: list[dict],
+    before: Optional[list[dict]],
+    compaction_headroom_ratio: Optional[float] = None,
+) -> dict:
+    """Where this fit put the boundary, and under how much extra trim.
+
+    The ratio rides with the depth because the depth cannot be read without it: phase one
+    of `fit_rolling_context` re-applies the saved count before anything else, so a chat
+    that moves from 25% extra trim down to 5% would replay the deeper cut and never reach
+    the phase that consults the new setting.
+    """
+    return {
+        "boundary_messages": _branch_boundary(fitted, before),
+        "boundary_anchor": _branch_boundary_anchor(fitted, before),
+        "boundary_headroom_ratio": _effective_headroom_ratio(compaction_headroom_ratio),
+    }
+
+
 def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
     """The branch as ``_branch_boundary`` counts it: system and developer turns removed."""
     return [
@@ -982,6 +1009,7 @@ def _sticky_compaction_state(
     branch_messages: Optional[list[dict]] = None,
     context_policy: Optional[str] = None,
     can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
 ) -> tuple[int, bool]:
     """How many leading messages this thread last compacted away, and who compacted them.
 
@@ -1003,6 +1031,7 @@ def _sticky_compaction_state(
     """
     if not thread_id:
         return 0, False
+    requested_ratio = _effective_headroom_ratio(compaction_headroom_ratio)
     try:
         from storage import studio_db
 
@@ -1082,6 +1111,17 @@ def _sticky_compaction_state(
                 return 0, False
             if not recorded_checkpoint and effective_checkpoint and can_reset:
                 return 0, False
+            # Lowering the extra trim has to hand the history back. Phase one of
+            # `fit_rolling_context` re-applies this count before anything else and returns
+            # as soon as the result fits, so a boundary cut under MORE headroom than this
+            # request asks for would never reach the phase that reads the new ratio, and
+            # the user's smaller setting would do nothing. A deeper request needs no
+            # refusal: phase two moves the boundary out on its own. Absent on rows saved
+            # before the ratio was recorded, which keep replaying as they did.
+            if not recorded_checkpoint:
+                recorded_ratio = truncation.get("boundary_headroom_ratio")
+                if recorded_ratio is not None and float(recorded_ratio) > requested_ratio:
+                    return 0, False
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was
             # recorded: equal for a single fit, too large for a turn that refit often.
@@ -1114,10 +1154,15 @@ def _sticky_compaction_boundary(
     branch_messages: Optional[list[dict]] = None,
     context_policy: Optional[str] = None,
     can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
 ) -> int:
     """`_sticky_compaction_state` without the provenance, for callers that only fit."""
     return _sticky_compaction_state(
-        thread_id, branch_messages, context_policy = context_policy, can_reset = can_reset
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
     )[0]
 
 
@@ -25687,7 +25732,11 @@ class LlamaCppBackend:
                     tools_withheld = tools_withheld,
                 )
                 _sticky, _sticky_is_checkpoint = _sticky_compaction_state(
-                    thread_id, _before_fit, context_policy = context_policy, can_reset = _can_reset
+                    thread_id,
+                    _before_fit,
+                    context_policy = context_policy,
+                    can_reset = _can_reset,
+                    compaction_headroom_ratio = compaction_headroom_ratio,
                 )
                 openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
@@ -25745,8 +25794,9 @@ class LlamaCppBackend:
                 if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
-                        "boundary_messages": _branch_boundary(openai_messages, _before_fit),
-                        "boundary_anchor": _branch_boundary_anchor(openai_messages, _before_fit),
+                        **_boundary_metadata(
+                            openai_messages, _before_fit, compaction_headroom_ratio
+                        ),
                     }
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
@@ -26413,6 +26463,7 @@ class LlamaCppBackend:
                             _request_branch,
                             context_policy = context_policy,
                             can_reset = _iteration_can_reset,
+                            compaction_headroom_ratio = compaction_headroom_ratio,
                         )
                     )
                     conversation, truncation = _fit_with_instruction_pins(
@@ -26500,9 +26551,8 @@ class LlamaCppBackend:
                     if truncation and _records_boundary(truncation):
                         truncation = {
                             **truncation,
-                            "boundary_messages": _branch_boundary(conversation, _request_branch),
-                            "boundary_anchor": _branch_boundary_anchor(
-                                conversation, _request_branch
+                            **_boundary_metadata(
+                                conversation, _request_branch, compaction_headroom_ratio
                             ),
                         }
                     # `fits` False too: it carries the does-not-fit diagnosis.
@@ -26627,11 +26677,10 @@ class LlamaCppBackend:
                     )
                     if truncation:
                         if _records_boundary(truncation):
-                            truncation["boundary_messages"] = _branch_boundary(
-                                conversation, _request_branch
-                            )
-                            truncation["boundary_anchor"] = _branch_boundary_anchor(
-                                conversation, _request_branch
+                            truncation.update(
+                                _boundary_metadata(
+                                    conversation, _request_branch, compaction_headroom_ratio
+                                )
                             )
                         # Report every shortened retry, including a rescued refusal.
                         _respawn_truncations.append(truncation)
@@ -28064,6 +28113,7 @@ class LlamaCppBackend:
                         _request_branch,
                         context_policy = context_policy,
                         can_reset = _final_can_reset,
+                        compaction_headroom_ratio = compaction_headroom_ratio,
                     )
                 )
                 conversation, truncation = _fit_with_instruction_pins(
@@ -28129,8 +28179,9 @@ class LlamaCppBackend:
                 if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
-                        "boundary_messages": _branch_boundary(conversation, _request_branch),
-                        "boundary_anchor": _branch_boundary_anchor(conversation, _request_branch),
+                        **_boundary_metadata(
+                            conversation, _request_branch, compaction_headroom_ratio
+                        ),
                     }
                 # `fits` False too: it carries the diagnosis the client needs to explain
                 # WHY. Otherwise the user only sees llama-server's error, which reports
@@ -28231,11 +28282,10 @@ class LlamaCppBackend:
                 )
                 if truncation:
                     if _records_boundary(truncation):
-                        truncation["boundary_messages"] = _branch_boundary(
-                            conversation, _request_branch
-                        )
-                        truncation["boundary_anchor"] = _branch_boundary_anchor(
-                            conversation, _request_branch
+                        truncation.update(
+                            _boundary_metadata(
+                                conversation, _request_branch, compaction_headroom_ratio
+                            )
                         )
                     _final_respawn_truncations.append(truncation)
             except Exception as exc:

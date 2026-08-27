@@ -779,6 +779,10 @@ export interface OpenAIChatChunk {
     // evicted prompt shortens that transcript; without the anchor the replayed count then
     // evicts live turns instead. Carried through untouched, like boundary_messages.
     boundary_anchor?: string;
+    // How much extra trim the fit that set the boundary above used. Replayed against the
+    // request's own ratio: a boundary cut under more headroom than the caller now asks for
+    // is discarded, so lowering the setting hands the history back.
+    boundary_headroom_ratio?: number;
     // Whose message that is: in a tool loop the last one is often a tool result rather
     // than anything the user typed.
     latest_turn_role?: string;
