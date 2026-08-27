@@ -58,6 +58,7 @@ def _run_install(
     torch_probe = None,
     installed_family = None,
     rocm_gpu_visible = True,
+    torch_owns_rocm = True,
 ):
     """Drive _ensure_rocm_torch() over a host with ``gfx_devices`` and return the pip calls."""
     probe = MagicMock()
@@ -90,6 +91,7 @@ def _run_install(
         patch.object(stack_mod, "_detect_rocm_version", return_value = rocm_version),
         patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd), create = True),
         patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = installed_family),
+        patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = torch_owns_rocm),
         patch.dict(os.environ, _env, clear = False),
     ):
         for _stale in (
@@ -597,3 +599,53 @@ def test_every_strix_arch_has_a_leaf_in_the_shared_map():
     for an arch the map does not name; the Strix set must stay inside it."""
     for arch in ("gfx1150", "gfx1151", "gfx1152"):
         assert stack_mod._GFX_TO_AMD_INDEX_ARCH.get(arch) == arch, arch
+
+
+def test_a_generic_torch_beside_a_stale_rocm_meta_package_is_still_repaired():
+    """Measured on 2026-08-27: force-reinstalling generic rocm7.1 torch over an AMD
+    per-arch install leaves `rocm` and rocm-sdk-libraries-gfx110X-all in place, so the
+    family still reads gfx110x-all while torch is 2.10.0+rocm7.1 with no gfx1103 kernels.
+    torch.version.hip is set on both builds, so only torch's own requires separates them."""
+    calls = _run_install(
+        gfx_devices = ("gfx1103",),
+        torch_probe = _ROCM_GENERIC_TORCH,
+        installed_family = "gfx110x-all",
+        torch_owns_rocm = False,
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+# Verbatim `metadata.requires("torch")` for both builds, read on an AMD DevLab host
+# after installing generic rocm7.1 torch over an AMD gfx110X-all one.
+_AMD_TORCH_REQUIRES = [
+    "filelock",
+    "typing-extensions>=4.10.0",
+    "setuptools<82",
+    "sympy>=1.13.3",
+    "networkx>=2.5.1",
+    "jinja2",
+    "fsspec>=0.8.5",
+    "rocm[libraries]==7.13.0",
+    "triton==3.6.0+rocm7.13.0",
+]
+_GENERIC_TORCH_REQUIRES = [
+    "filelock",
+    "typing-extensions>=4.10.0",
+    'setuptools; python_version >= "3.12"',
+    "sympy>=1.13.3",
+    "networkx>=2.5.1",
+    "jinja2",
+    "fsspec>=0.8.5",
+    'triton-rocm==3.6.0; platform_system == "Linux"',
+]
+
+
+@pytest.mark.parametrize(
+    "requires, owns",
+    [(_AMD_TORCH_REQUIRES, True), (_GENERIC_TORCH_REQUIRES, False), ([], False)],
+)
+def test_the_ownership_check_reads_torchs_own_requires(requires, owns):
+    """Only AMD's torch declares `rocm[libraries]`. triton-rocm rides along on the generic
+    ROCm build and rocm-sdk-core is a sibling distribution, so neither may match."""
+    with patch("importlib.metadata.requires", return_value = requires):
+        assert stack_mod._torch_requires_rocm_sdk() is owns

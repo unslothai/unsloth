@@ -1388,6 +1388,31 @@ def _installed_rocm_wheel_family() -> str | None:
     return None
 
 
+def _torch_requires_rocm_sdk() -> bool:
+    """Whether the INSTALLED torch is an AMD per-arch build, i.e. torch itself pulls in the
+    `rocm` SDK meta-package that names the family.
+
+    _installed_rocm_wheel_family() reads that family off `rocm`, but pip leaves `rocm` and
+    its arch-specific runtime behind when a generic pytorch.org ROCm torch is
+    force-reinstalled over an AMD per-arch one: measured on 2026-08-27, torch went
+    2.11.0+rocm7.13.0 -> 2.10.0+rocm7.1 and dropped `rocm[libraries]` from its own requires,
+    while `rocm` kept naming rocm-sdk-libraries-gfx110X-all. torch.version.hip is set on both
+    builds, so a caller that SKIPS work on a family match must ask this too, or the orphan
+    makes a generic wheel look like the per-arch build and the repair never runs. A caller
+    that reinstalls on a mismatch is already fail-safe and does not need it.
+    """
+    try:
+        from importlib import metadata
+        for _req in metadata.requires("torch") or []:
+            # The distribution named exactly `rocm`: "rocm[libraries]==7.13.0". Anchored so
+            # rocm-sdk-core and triton-rocm, which both builds can carry, do not match.
+            if re.match(r"\s*rocm\s*(?:\[|[=<>!~;,]|$)", _req):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _detect_bnb_rocm_dll_ver() -> str | None:
     """Scan the installed bitsandbytes package for libbitsandbytes_rocm{VER}.dll.
 
@@ -3315,13 +3340,15 @@ def _ensure_rocm_torch() -> None:
                 # --force-reinstall --no-cache-dir of the multi-GB ROCm stack, and
                 # _ensure_rocm_torch runs twice per install (initial check, then final
                 # repair), so a leaf derived from hardware alone re-downloads it twice
-                # on every install and again on every later update. Mirrors the Windows
-                # repick: act only on a family read back positively from a torch that
-                # really links HIP, never on a guess -- an unknowable family is None
-                # here and reinstalls, as does a CPU/CUDA torch.
+                # on every install and again on every later update. Act only on a family
+                # read back positively, never on a guess: an unknowable family is None
+                # here and reinstalls, as does a CPU/CUDA torch, and _torch_requires_rocm_sdk
+                # rejects a stale `rocm` orphan left beside a generic ROCm torch, which
+                # would otherwise name the right family for a wheel that has no kernels.
                 _already_on_leaf = (
                     _leaf is not None
                     and has_hip_torch
+                    and _torch_requires_rocm_sdk()
                     and _installed_rocm_wheel_family() == _leaf.lower()
                 )
                 if _already_on_leaf:
