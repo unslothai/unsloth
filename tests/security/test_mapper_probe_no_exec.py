@@ -377,11 +377,14 @@ def test_a_table_cleared_after_the_builder_stays_cleared(monkeypatch):
     """
     lines = REAL_MAPPER.splitlines(True)
     insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
-    added = "".join(
-        lines[:insert]
-        + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/late", "unsloth/late")\n']
-        + lines[insert:]
-    ) + "\nMAP_TO_UNSLOTH_16bit = {}\n"
+    added = (
+        "".join(
+            lines[:insert]
+            + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/late", "unsloth/late")\n']
+            + lines[insert:]
+        )
+        + "\nMAP_TO_UNSLOTH_16bit = {}\n"
+    )
     with _serving(added, monkeypatch):
         tables = loader_utils._get_new_mapper()
     for table in tables:

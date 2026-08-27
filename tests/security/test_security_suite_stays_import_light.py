@@ -548,7 +548,9 @@ def test_a_renamed_importlib_alias_is_not_a_skip_guard(tmp_path):
     cases = {
         'from importlib import import_module as load\n\n\ndef t():\n    load("torch")\n': {"torch"},
         'from pytest import importorskip as load\n\n\ndef t():\n    load("torch")\n': set(),
-        'from importlib import import_module as load\n\n\ndef t():\n    load("torch")\n    import torch\n': {"torch"},
+        'from importlib import import_module as load\n\n\ndef t():\n    load("torch")\n    import torch\n': {
+            "torch"
+        },
     }
     for source, expected in cases.items():
         sample = tmp_path / "sample.py"
