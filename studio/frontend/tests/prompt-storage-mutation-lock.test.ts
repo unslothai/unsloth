@@ -206,3 +206,30 @@ test("a delete clears its selection only after the row is gone", async () => {
     "the unawaited refresh is back",
   );
 });
+
+// DialogContent is overflow-hidden, so anything the dialog's own children add up
+// to past its height is gone, not scrollable. A minimum height on the body has
+// to predict the header and search block above it, and that block gets taller
+// when its text wraps on a narrow dialog. At 320x320 the guess left the body
+// 57px too tall and Use, Save and Run fell outside the clip.
+test("the dialog body claims no height it has to guess", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    source,
+    /min-h-\[[^\]]*dvh/,
+    "the body floor is measured against the viewport again",
+  );
+  assert.match(
+    source,
+    /flex-1 min-h-0 overflow-y-auto px-4 sm:px-6/,
+    "the body no longer shrinks to whatever the chrome leaves it",
+  );
+  // The row minimums are what actually keeps each pane usable.
+  assert.match(source, /grid-rows-\[minmax\(132px,30%\)_minmax\(272px,1fr\)\]/);
+});

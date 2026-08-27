@@ -2492,12 +2492,12 @@ export function PromptStorageDialog({
           </div>
 
           {/* */}
-          {/* The floor subtracts the ~13rem of non-shrinking chrome above it, so
-              it cannot add up past DialogContent's 94dvh and clip the detail
-              actions. Each pane keeps the minimum its own chrome needs and the
-              body scrolls when those do not fit; shrinking the tracks alone did
-              not help, since their contents did not shrink with them. */}
-          <div className="flex-1 min-h-[max(0px,min(420px,calc(94dvh_-_13rem)))] overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
+          {/* min-h-0, not a floor: the grid rows below already carry the minimum
+              each pane's chrome needs, and the body scrolls to them. A floor
+              here has to guess the height of the header and search above it,
+              which grows when their text wraps on a narrow dialog, and the
+              excess lands in DialogContent's overflow-hidden. */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
             <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
