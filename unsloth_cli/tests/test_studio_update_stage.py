@@ -25,7 +25,9 @@ def _make_venv(root: Path, prefix: Path | None = None) -> Path:
     (venv / "bin" / "unsloth").write_text(
         f"#!{prefix}/bin/python\nimport sys\nprint('cli')\n", encoding = "utf-8"
     )
-    (venv / "bin" / "pip").write_text(f"#!{prefix}/bin/python3.13\nprint('pip')\n", encoding = "utf-8")
+    (venv / "bin" / "pip").write_text(
+        f"#!{prefix}/bin/python3.13\nprint('pip')\n", encoding = "utf-8"
+    )
     (venv / "bin" / "activate").write_text(f"VIRTUAL_ENV='{prefix}'\n", encoding = "utf-8")
     (venv / "bin" / "env-script").write_text("#!/usr/bin/env python\nprint(1)\n", encoding = "utf-8")
     (venv / "bin" / "native").write_bytes(b"\x7fELF\x02\x01\x01")
@@ -54,7 +56,11 @@ def test_make_relocatable_rewrites_only_venv_python_shebangs(tmp_path):
         assert text.startswith(_studio_stage.RELOCATABLE_SHEBANG)
         assert "realpath" in text.splitlines()[1]
     assert (venv / "bin" / "unsloth").read_text(encoding = "utf-8").endswith("print('cli')\n")
-    assert (venv / "bin" / "env-script").read_text(encoding = "utf-8").startswith("#!/usr/bin/env python")
+    assert (
+        (venv / "bin" / "env-script")
+        .read_text(encoding = "utf-8")
+        .startswith("#!/usr/bin/env python")
+    )
     assert (venv / "bin" / "native").read_bytes() == b"\x7fELF\x02\x01\x01"
     assert (venv / "bin" / "activate").read_text(encoding = "utf-8") == f"VIRTUAL_ENV='{venv}'\n"
     assert "relocatable = true" in (venv / "pyvenv.cfg").read_text(encoding = "utf-8")
@@ -96,7 +102,9 @@ def test_stage_builds_a_ready_marker_from_a_successful_update(monkeypatch, tmp_p
     monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
     echoed: list[str] = []
 
-    result = _studio_stage.stage(home, update_args = ["--package", "unsloth"], echo = echoed.append, run_update = fake_update)
+    result = _studio_stage.stage(
+        home, update_args = ["--package", "unsloth"], echo = echoed.append, run_update = fake_update
+    )
 
     root = home / _studio_stage.STAGE_DIR_NAME
     assert seen == {"root": root, "args": ["--package", "unsloth"]}
@@ -105,8 +113,10 @@ def test_stage_builds_a_ready_marker_from_a_successful_update(monkeypatch, tmp_p
     assert marker["backend_version"] == "2026.9.1"
     assert marker["shell_version"] == "0.1.900-beta"
     assert (root / _studio_stage.VENV_NAME / "pyvenv.cfg").is_file()
-    assert (home / _studio_stage.VENV_NAME / "bin" / "unsloth").read_text(encoding = "utf-8").startswith(
-        f"#!{home / _studio_stage.VENV_NAME}/bin/python"
+    assert (
+        (home / _studio_stage.VENV_NAME / "bin" / "unsloth")
+        .read_text(encoding = "utf-8")
+        .startswith(f"#!{home / _studio_stage.VENV_NAME}/bin/python")
     )
     assert echoed == ["[TAURI:STEP] clone", "[TAURI:STEP] update", "[TAURI:STEP] verify"]
 
@@ -117,7 +127,9 @@ def test_stage_discards_the_tree_when_the_update_fails(monkeypatch, tmp_path):
     monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
 
     with pytest.raises(_studio_stage.StageError, match = "staged update failed"):
-        _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 1)
+        _studio_stage.stage(
+            home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 1
+        )
 
     assert not (home / _studio_stage.STAGE_DIR_NAME).exists()
     assert (home / _studio_stage.VENV_NAME / "pyvenv.cfg").is_file()
@@ -133,14 +145,18 @@ def test_stage_discards_the_tree_when_verification_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(_studio_stage, "installed_version", broken)
 
     with pytest.raises(_studio_stage.StageError, match = "no unsloth"):
-        _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0)
+        _studio_stage.stage(
+            home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0
+        )
 
     assert not (home / _studio_stage.STAGE_DIR_NAME).exists()
 
 
 def test_stage_refuses_without_a_managed_environment(tmp_path):
     with pytest.raises(_studio_stage.StageError, match = "no managed environment"):
-        _studio_stage.stage(tmp_path, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0)
+        _studio_stage.stage(
+            tmp_path, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0
+        )
 
 
 def test_child_environment_points_the_staged_cli_at_the_stage_root(monkeypatch, tmp_path):

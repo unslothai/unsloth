@@ -22,7 +22,7 @@ PROBE_TIMEOUT_SECONDS = 300
 
 RELOCATABLE_SHEBANG = (
     "#!/bin/sh\n"
-    "'''exec' \"$(dirname -- \"$(realpath -- \"$0\")\")\"/'python' \"$0\" \"$@\"\n"
+    '\'\'\'exec\' "$(dirname -- "$(realpath -- "$0")")"/\'python\' "$0" "$@"\n'
     "' '''\n"
 )
 
