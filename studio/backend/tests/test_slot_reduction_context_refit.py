@@ -25,6 +25,19 @@ from test_llama_cpp_placement import _backend, _launch  # noqa: E402
 MIB = 1024 * 1024
 NATIVE_CTX = 262144
 CARD_MIB = 12 * 1024  # usable 11,919 MiB at the 0.97 pin fraction
+
+# The weights these cases are built on, named for the slot count the reduction
+# leaves them at on CARD_MIB when four are asked for. The reduction only has
+# something to do inside a band, and the band moves with _FIT_MIN_CTX, since the
+# search prices every candidate slot count at the floor: raising it 4096 -> 8192
+# moved the band down about 1,400 MiB and left the old weights either fitting
+# whole at the floor under `--fit on` or collapsing to one slot for every ask.
+# These were re-measured against the floor rather than nudged until green -- each
+# keeps the role its test needs (a three-slot survivor, a two-slot survivor, and
+# an ask that still discriminates), which is what the assertions below are about.
+_KEEPS_THREE_MIB = 9_200
+_KEEPS_TWO_MIB = 9_800
+_ASK_STILL_MATTERS_MIB = 9_400
 MIXED_CARDS = (CARD_MIB, 1_280)  # a primary plus a card too small to plan onto
 
 # Qwen3.8-27B-GGUF metadata.
@@ -113,9 +126,9 @@ class TestTheLaunchedCountOwnsTheContext:
     @pytest.mark.parametrize(
         "weights_mib,asked,slots,ctx",
         [
-            (9_600, 4, 3, 5_888),  # main: 3 slots, 4096
-            (10_200, 4, 2, 7_680),  # main: 2 slots, 4096
-            (10_200, 8, 2, 7_680),  # main: 2 slots, 4096
+            (_KEEPS_THREE_MIB, 4, 3, 12_288),
+            (_KEEPS_TWO_MIB, 4, 2, 13_824),
+            (_KEEPS_TWO_MIB, 8, 2, 13_824),  # the same answer from a larger ask
         ],
     )
     def test_auto_context_follows_the_reduction(self, tmp_path, weights_mib, asked, slots, ctx):
@@ -123,7 +136,9 @@ class TestTheLaunchedCountOwnsTheContext:
         assert (got["slots"], got["fit"]) == (slots, "off")
         assert got["ctx"] == got["ceiling"] == ctx
 
-    @pytest.mark.parametrize("weights_mib,asked,final", [(9_600, 4, 3), (10_200, 4, 2)])
+    @pytest.mark.parametrize(
+        "weights_mib,asked,final", [(_KEEPS_THREE_MIB, 4, 3), (_KEEPS_TWO_MIB, 4, 2)]
+    )
     def test_reducing_to_a_count_matches_starting_at_it(self, tmp_path, weights_mib, asked, final):
         """A reduced plan matches one started at its final slot count."""
         reduced = _plan(tmp_path, weights_mib = weights_mib, n_parallel = asked, spec = "off")
@@ -131,10 +146,17 @@ class TestTheLaunchedCountOwnsTheContext:
         assert reduced["slots"] == direct["slots"] == final
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
 
-    def test_the_published_ceiling_is_not_the_4096_anchor(self, tmp_path):
-        """The published ceiling follows the final slot count."""
-        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
-        assert got["ceiling"] == 7_680
+    def test_the_published_ceiling_is_not_the_fit_floor_anchor(self, tmp_path):
+        """The published ceiling follows the final slot count.
+
+        Named for the floor rather than 4096 because the anchor it must not be is
+        whatever _FIT_MIN_CTX currently is: the reduction prices its search there,
+        so a ceiling that came back equal to the floor would mean the search result
+        was published instead of the context the final slot count actually affords.
+        """
+        got = _plan(tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off")
+        assert got["ceiling"] == 13_824
+        assert got["ceiling"] != llama_cpp._FIT_MIN_CTX
 
     def test_a_layer_split_across_two_cards_re_fits_the_same_way(self, tmp_path):
         """The same invariant holds for a two-card layer split."""
@@ -154,24 +176,30 @@ class TestTheRefitStaysOnTheCardsTheReductionChose:
     alone, and only the small card can hold a longer context."""
 
     def test_the_refit_does_not_pull_in_another_card(self, tmp_path):
-        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS)
+        got = _plan(
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+        )
         assert (got["slots"], got["fit"], got["devices"]) == (2, "off", "0")
-        assert got["ctx"] == 7_680
+        assert got["ctx"] == 13_824
 
     def test_it_matches_a_request_started_at_the_final_count(self, tmp_path):
         reduced = _plan(
-            tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
         )
-        direct = _plan(tmp_path, weights_mib = 10_200, n_parallel = 2, spec = "off", vram_mib = MIXED_CARDS)
+        direct = _plan(
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 2, spec = "off", vram_mib = MIXED_CARDS
+        )
         assert reduced["devices"] == direct["devices"] == "0"
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
 
     def test_the_ceiling_still_counts_the_card_the_launch_left_out(self, tmp_path):
         """The ceiling keeps measuring across both cards, not just the launched one."""
-        mixed = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS)
-        alone = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
-        assert mixed["ctx"] == alone["ctx"] == 7_680
-        assert (mixed["ceiling"], alone["ceiling"]) == (9_472, 7_680)
+        mixed = _plan(
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+        )
+        alone = _plan(tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off")
+        assert mixed["ctx"] == alone["ctx"] == 13_824
+        assert (mixed["ceiling"], alone["ceiling"]) == (14_848, 13_824)
 
 
 class TestAutoSpeculationStillDecidesBeforeTheReduction:
@@ -239,8 +267,8 @@ class TestWhatMustNotMove:
     @pytest.mark.parametrize(
         "weights_mib,slots,ctx",
         [
-            (9_200, 3, 4_864),  # main: 3 slots, 4096
-            (10_000, 1, 6_144),  # main: 1 slot,  4096
+            (8_200, 3, 8_704),
+            (9_000, 1, 9_984),
         ],
     )
     def test_a_dense_target_gains_only_its_compute_buffer(self, tmp_path, weights_mib, slots, ctx):
@@ -267,23 +295,26 @@ class TestTheReductionIsPricedAtTheFitFloor:
 
     #9492 raised the constant 4096 -> 8192 and, through this one shared read, moved
     placement. The arithmetic, on the 12 GiB card these tests use (budget
-    12288 x 0.97 = 11,919.36 MiB) at 10,200 MiB of weights: the candidates are
-    707 MiB apart (557.75 MiB of per-slot compute buffer plus 149.625 MiB of per-slot
-    Mamba state), while probing 256 tokens higher costs a uniform 64 KiB/token. The
-    2-slot candidate is 11,685.0 MiB at 4096 and 11,947.0 MiB at 8192, so a display
-    constant moved it across the budget by 27.6 MiB.
+    12288 x 0.97 = 11,919.36 MiB) at the 10,200 MiB of weights this block was first
+    written against: the candidates are 707 MiB apart (557.75 MiB of per-slot
+    compute buffer plus 149.625 MiB of per-slot Mamba state), while probing 256
+    tokens higher costs a uniform 64 KiB/token. The 2-slot candidate was 11,685.0
+    MiB at a 4096 probe and 11,947.0 MiB at 8192, so a display constant moved it
+    across the budget by 27.6 MiB. The weights above are lighter now only because
+    _FIT_MIN_CTX itself moved to 8192 and carried the reducible band down with it;
+    the margins being this thin is the reason the sweep below exists.
     """
 
     # A band that a reduction rescues from offload. Every one of these launched
     # `--fit off` before #9492 and `--fit on` after it, which is the ~3x decode
     # collapse (#6718) the reduction was written to avoid.
     RESCUED = [
-        (10_900, HYBRID),
-        (11_000, HYBRID),
-        (11_100, HYBRID),
-        (9_800, DENSE),
-        (10_000, DENSE),
-        (10_500, DENSE),
+        (10_200, HYBRID),
+        (10_400, HYBRID),
+        (10_600, HYBRID),
+        (9_000, DENSE),
+        (9_200, DENSE),
+        (9_400, DENSE),
     ]
 
     @pytest.mark.parametrize("offload_ctx", _OFFLOAD_SWEEP)
@@ -296,8 +327,8 @@ class TestTheReductionIsPricedAtTheFitFloor:
         satisfied by re-baselining the constant into the expectation.
         """
         monkeypatch.setattr(llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
-        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
-        assert (got["slots"], got["fit"], got["ctx"], got["devices"]) == (2, "off", 7_680, "0")
+        got = _plan(tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off")
+        assert (got["slots"], got["fit"], got["ctx"], got["devices"]) == (2, "off", 13_824, "0")
 
     @pytest.mark.parametrize("weights_mib,metadata", RESCUED)
     @pytest.mark.parametrize("offload_ctx", _OFFLOAD_SWEEP[:2])
@@ -323,7 +354,7 @@ class TestTheReductionIsPricedAtTheFitFloor:
     def test_asking_for_more_slots_never_returns_fewer(self, tmp_path):
         """Monotone in the ask. At head, asking for 2 got 2 and asking for 3 got 1."""
         finals = [
-            _plan(tmp_path, weights_mib = 10_200, n_parallel = n, spec = "off")["slots"]
+            _plan(tmp_path, weights_mib = _ASK_STILL_MATTERS_MIB, n_parallel = n, spec = "off")["slots"]
             for n in (1, 2, 3, 4, 6, 8)
         ]
         assert finals == sorted(finals), finals
@@ -379,18 +410,23 @@ class TestTheLoggedReserveFollowsTheLaunch:
         monkeypatch.setattr("core.inference.llama_cpp.logger", _Recorder())
         assert planner_logger is not None  # the real one is restored on teardown
 
+        # Asks that converge on one plan at this floor. 2 is not among them any
+        # more: at _FIT_MIN_CTX 8192 two slots fit on this card outright, so the
+        # ask survives untouched and Auto settles on ngram-mod with no MTP reserve
+        # to log. That is a different launch, not a differing reserve, so pinning
+        # it here would test the fixture rather than the claim.
         seen = []
-        for asked in (2, 4, 8):
+        for asked in (4, 6, 8):
             lines.clear()
-            got = _plan(tmp_path, weights_mib = 8_000, n_parallel = asked, spec = "auto", vram_mib = 9_728)
+            got = _plan(tmp_path, weights_mib = 7_600, n_parallel = asked, spec = "auto", vram_mib = 9_728)
             reserves = set(re.findall(r"MTP reserve: ([\d.]+) GB", "\n".join(lines)))
             assert reserves, "the reserve was never logged"
             seen.append((got["slots"], got["ctx"], got["spec"], reserves))
 
-        assert seen[0][:3] == (1, 5_632, "draft-mtp")
+        assert seen[0][:3] == (1, 11_520, "draft-mtp")
         assert len({row[:3] for row in seen}) == 1, "the three launches differ"
         assert len({frozenset(row[3]) for row in seen}) == 1, seen
-        assert seen[0][3] == {"0.31"}
+        assert seen[0][3] == {"0.34"}
 
 
 # KV-estimable metadata without a native context length.

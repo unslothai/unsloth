@@ -85,6 +85,7 @@ from core.inference.llama_server_args import (
     extra_args_disable_mmproj,
     extra_args_select_load_mode,
     fit_is_enabled_in,
+    force_pageable_load,
     memory_env_selects_load_mode,
     memory_state_satisfies_settings,
     fit_is_effectively_on,
@@ -3028,11 +3029,35 @@ _CTX_FIT_VRAM_FRACTION = 0.97
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
-# _fit_context_to_vram's floor, and llama.cpp's (common_params.fit_params_min_ctx), so a
-# 4096 from either is that floor rather than a measurement. The Metal branch re-prices
+# _fit_context_to_vram's floor: the shortest context the search will settle for, so a
+# value equal to it is that floor rather than a measurement. The Metal branch re-prices
 # from _FIT_FLOOR_MIN_CTX (the search's 256 alignment step) before trusting it.
-_FIT_MIN_CTX = 4096
+#
+# 8192, not llama.cpp's own 4096 (common_params.fit_params_min_ctx). 4096 is too short
+# to be useful for chat once tools and a system prompt are in the window, and the fit
+# search would settle there rather than spilling weights it could spill instead. The two
+# floors are now deliberately different numbers: llama.cpp's still governs ITS fitter,
+# and Unsloth does not pass -fitc, so a launch that hands llama.cpp an explicit -c can
+# still be reduced below this by the child's own fit step.
+#
+# Every arm now floors here, Metal included. The Apple arm used to hold a separate
+# hardcoded 4096, which made a Mac publish half the context a discrete GPU published
+# for the same model. Being BELOW llama.cpp's own floor is what made that safe to
+# raise: -c 8192 is a request the child's --fit can still reduce, down to its 4096,
+# so the arm hands over a ceiling rather than a commitment. The one arm still on a
+# bare 4096 is _plan_tensor_parallel's no-KV fallback, which cannot prove a safe cap
+# at all and is a different question from this floor.
+_FIT_MIN_CTX = 8192
 _FIT_FLOOR_MIN_CTX = 256
+
+# llama.cpp's OWN reduction floor: common_params.fit_params_min_ctx, 4096
+# (common/common.h), the smallest context its --fit step will shrink a request to.
+# Named because the paragraph above spends the whole justification for _FIT_MIN_CTX on
+# it: -c 8192 is safe to hand a Mac only as a ceiling the child's fitter can still come
+# down from, and this is how far down. A launch that hands over 8192 with the fitter
+# NOT running has no such backstop, so it must hand over this number itself rather than
+# the ceiling that assumed one.
+_LLAMA_FIT_MIN_CTX = 4096
 
 # Auto only reaches this path when no discrete-GPU subset can hold the model.
 # llama.cpp must offload layers to host RAM either way, so prefer a context that
@@ -4922,6 +4947,26 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 _HOST_RAM_HEADROOM_MIB = 2048
+# Appended to whichever shortfall warning an oversized non-pageable launch produced,
+# after _page_an_oversized_unmapped_load rewrote the mode. One string, so the three
+# call sites cannot describe the same override differently.
+_PAGEABLE_OVERRIDE_NOTE = (
+    " This model was set to load without memory mapping, which reads every byte into "
+    "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
+    "mapping instead."
+)
+# What memory_warning says when the text-only fallback removed the CPU-pinned projector
+# whose bytes were what made the load oversized, on a launch that had already had its
+# unmapped load mode overridden for that shortfall. The override is REPORTED and not
+# taken back: the argv was rewritten and spawned, and force_pageable_load rewrote the
+# shared child env in place, so the running server is memory-mapped whatever this says.
+_PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
+    "This model was set to load without memory mapping, and with its vision projector "
+    "in system RAM it was too large to load that way, so Unsloth loaded it with memory "
+    "mapping instead. The projector then failed to start and this session is text-only, "
+    "which the weights alone would have fit. The running server keeps the memory "
+    "mapping it started with; load the model again to run it as you asked."
+)
 _CGROUP_ROOT = "/sys/fs/cgroup"
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
 
@@ -5200,6 +5245,10 @@ class LlamaCppBackend:
         """
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        # Advisory memory notice from the load in flight, handed back on LoadResponse.
+        # Reset by _begin_load_warnings so one load's notice is never reported against
+        # the next.
+        self._last_load_warning: Optional[str] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
         # Snapshot of the exact file(s) handed to the resident process. A local
@@ -8084,6 +8133,8 @@ class LlamaCppBackend:
         caller_owns_budget: bool,
         native_ctx: Optional[int],
         max_available_ctx: Optional[int] = None,
+        *,
+        fitter_runs: bool = True,
     ) -> int:
         """Context to start at when Metal would otherwise be sent "-c 0", else 0.
 
@@ -8100,24 +8151,41 @@ class LlamaCppBackend:
 
         Either way the child over-commits unified memory, surfacing as
         llama-server's "Compute error." at decode (#5118, #6529). Floor to the
-        same 4096 the cap falls back to without a KV estimate.
+        same ``_FIT_MIN_CTX`` the cap falls back to without a KV estimate.
+
+        ``fitter_runs`` is whether the child's own --fit step will actually run, and
+        both the exemption and the floor VALUE depend on it. _FIT_MIN_CTX sits above
+        llama.cpp's own ``fit_params_min_ctx`` on purpose: 8192 is defensible on a Mac
+        only because it is a request the fitter can still reduce, down to 4096. Turn
+        the fitter off and that backstop is gone, and this arm would hand a machine
+        with room for 4096 but not 8192 a context nothing can bring down -- a startup
+        failure or a "Compute error." at decode, the very thing the floor exists to
+        prevent. So a launch with no fitter is floored at ``_LLAMA_FIT_MIN_CTX``, the
+        number the fitter would have reduced to, rather than at the ceiling that
+        assumed one. Conservative on purpose: --fit off is a flag the user typed, and
+        overriding it to keep our own invented floor would be Unsloth taking back a
+        setting the user asked for, on the path where they most likely asked for it
+        because the fitter misbehaves on their host.
 
         Exemptions: no Metal budget (0 off Apple Silicon, so this is inert
-        there); ``auto_fit``, which omits -c so --fit sizes it, and which the
-        caller passes only while --fit will actually run; and
+        there); ``auto_fit``, which omits -c so --fit sizes it, and which is
+        therefore honoured only while ``fitter_runs`` -- the conjunction is taken
+        here rather than trusted to the caller, since without it the exemption hands
+        the child no -c and no fitter, which is llama.cpp's native length; and
         ``caller_owns_budget``, a manual mode with a fixed layer count where the
         user owns memory management. That last is read off the REQUEST, because
         the paravirtual CPU pin rewrites every placement to manual/0 first and
         would make a plain Auto request look caller-owned.
         """
-        if effective_ctx > 0 or auto_fit or caller_owns_budget:
+        if effective_ctx > 0 or (auto_fit and fitter_runs) or caller_owns_budget:
             return 0
         if not LlamaCppBackend._apple_metal_memory_budget_bytes():
             return 0
+        floor = _FIT_MIN_CTX if fitter_runs else _LLAMA_FIT_MIN_CTX
         # Never above a ceiling the cap already worked out: on the exception path
         # max_available_ctx survives the reset, and its KV-based answer can sit
-        # below 4096. Floating back up would re-create the over-commit.
-        return min(4096, native_ctx or 4096, max_available_ctx or 4096)
+        # below the floor. Floating back up would re-create the over-commit.
+        return min(floor, native_ctx or floor, max_available_ctx or floor)
 
     @staticmethod
     def _metal_drops_zero_ctx_override(
@@ -9093,6 +9161,29 @@ class LlamaCppBackend:
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
 
+    @staticmethod
+    def _rows_the_child_can_reach(detected_gpus, pinned_ids) -> list:
+        """``detected_gpus`` narrowed to the cards THIS launch pinned the child to.
+
+        ``_launch_host_shortfall_message`` sums free VRAM over every row it is handed,
+        which is right for an advisory about the host and wrong for a decision about
+        one launch: a child pinned to a subset cannot spend the VRAM on the cards it
+        cannot see, so crediting them prices the spill too low and can leave an
+        unmapped oversized load unrewritten, which is an OOM rather than a slow load.
+
+        ``pinned_ids`` is the narrowing this load performed, not the visibility mask
+        in ``env``. An inherited CUDA_VISIBLE_DEVICES is already applied: the probe
+        only ever reported the cards it left visible, so re-applying it here would
+        subtract the same pin twice and price a single-card host as having none.
+        None means nothing narrowed the launch, which is not the same as an empty
+        pin, and physical ids match ``row[0]``.
+        """
+        rows = list(detected_gpus or ())
+        if pinned_ids is None:
+            return rows
+        visible = set(pinned_ids)
+        return [row for row in rows if row[0] in visible]
+
     def _shared_heap_budget(
         self,
         gpus: Iterable[tuple],
@@ -9157,14 +9248,17 @@ class LlamaCppBackend:
         child_has_no_gpu: bool = False,
         avail_mib: Optional[int] = None,
         shared_gpu_ids: Iterable[int] = (),
+        honor_opt_out: bool = True,
     ) -> Optional[str]:
-        """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
+        """Warning when the weights alone do not fit in free VRAM plus available RAM.
+
+        Advisory only. Nothing here blocks a load: callers log this and launch anyway.
 
         Weights only, against the whole free pool, is a strict lower bound on what the
         launch must hold: the KV cache, projector, drafter and compute buffers all add
         to it, and a layer or device pin only narrows the VRAM actually reachable. So
         every term this leaves out moves the estimate down, never up, and no missing
-        term can turn an allowed load into a refused one. That is what keeps the check
+        term can turn a quiet load into a warned one. That is what keeps the check
         a floor with no placement modelling to keep in step with llama.cpp.
 
         Read from the finished argv, so the model path is the one the child opens. An
@@ -9173,8 +9267,14 @@ class LlamaCppBackend:
         placement it already knows reaches no card, rather than one it could not read:
         there the whole model is host-resident and takes no VRAM credit.
 
-        UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright, so a user who accepts the
-        paging can still load a variant the picker offers.
+        UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright. DEPRECATED: it was the opt-out
+        from the old refusal, so all it does now is silence the warning. Still honoured
+        so existing scripts and docs keep working.
+
+        ``honor_opt_out=False`` prices the shortfall with that variable ignored, for a
+        caller that needs the FACT rather than the warning. Silencing the message must
+        never disable the pageable-load override, which is what lets an oversized
+        unmapped load finish at all: see ``_page_an_oversized_unmapped_load``.
 
         ``avail_mib`` overrides the host figure for a caller that runs before the resident
         owners are released; the launch reads what is available now. ``shared_gpu_ids``
@@ -9187,12 +9287,7 @@ class LlamaCppBackend:
         model_path = _extra_args_device(argv, self._ARGV_MODEL)
         if not model_path:
             return None
-        # the user's own opt-out, so read the real environment, not the curated child env
-        if os.environ.get("UNSLOTH_ALLOW_HOST_OFFLOAD", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-        ):
+        if honor_opt_out and self._host_offload_warning_opted_out():
             logger.info("UNSLOTH_ALLOW_HOST_OFFLOAD set: skipping the host-RAM preflight.")
             return None
         # rpc places layers on remote devices this cannot size, in either spelling
@@ -9233,10 +9328,14 @@ class LlamaCppBackend:
         avail_mib: Optional[int],
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[str]:
-        """On a unified-memory APU, return a user-facing refusal when the weights
-        cannot fit in available system RAM (else None). Weights only: KV/context
-        auto-reduce, so counting them too would refuse loads that would succeed.
-        None avail (unknown RAM) never refuses."""
+        """On a unified-memory APU, return a user-facing WARNING when the weights
+        do not fit in available system RAM (else None). Weights only: KV/context
+        auto-reduce, so counting them too would warn about loads that are fine.
+        None avail (unknown RAM) never warns.
+
+        Advisory, never a refusal: the load goes ahead and llama.cpp reports what
+        actually happens rather than Studio pre-empting a failure it predicted.
+        """
         if avail_mib is None:
             return None
         need_mib = model_size_bytes / (1024 * 1024)
@@ -9245,9 +9344,10 @@ class LlamaCppBackend:
         return (
             f"This model needs about {need_mib / 1024:.0f} GB but only about "
             f"{avail_mib / 1024:.0f} GB of memory is available. On a unified-memory "
-            "APU the weights load into system RAM, so a larger model is stopped by "
-            "the OS mid-load. Use a smaller or more quantized GGUF, or free memory "
-            "(on WSL, raise the memory limit in .wslconfig)."
+            "APU the weights load into system RAM, so the OS may stop the load. "
+            "Loading anyway. If it does not complete, use a smaller or more "
+            "quantized GGUF, or free memory (on WSL, raise the memory limit in "
+            ".wslconfig)."
         )
 
     @staticmethod
@@ -9256,12 +9356,17 @@ class LlamaCppBackend:
         avail_mib: Optional[int],
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
     ) -> Optional[str]:
-        """On a discrete GPU, return a user-facing refusal when the part of a load
-        that misses VRAM cannot fit in available system RAM (else None). The spill is
-        mmap'd, so an oversized one thrashes the mapping instead of failing, until the
-        OS kills the app. Priced against free VRAM with no margin subtracted, so it
-        under-states the spill and only an unambiguous shortfall refuses. None avail
-        (unknown RAM), and anything VRAM-resident, never refuse."""
+        """On a discrete GPU, return a user-facing WARNING when the part of a load
+        that misses VRAM does not fit in available system RAM (else None). Priced
+        against free VRAM with no margin subtracted, so it under-states the spill and
+        only an unambiguous shortfall warns. None avail (unknown RAM), and anything
+        VRAM-resident, never warn.
+
+        Advisory, never a refusal. The spill is mmap'd, so the weights page in from disk
+        rather than failing: off fast storage that is a deliberate way to run a quant
+        larger than the machine's fast memory, and this check cannot tell how fast the
+        backing store is. It reports the cost; the user decides.
+        """
         if offload_bytes <= 0 or avail_mib is None:
             return None
         need_mib = offload_bytes / (1024 * 1024)
@@ -9275,9 +9380,278 @@ class LlamaCppBackend:
             f"from system RAM. Only about {avail_mib / 1024:.0f} GB is available and "
             f"{headroom_mib / 1024:.0f} GB of that is kept free for the rest of the "
             f"system, leaving about {usable_gb} GB usable. The weights are memory-mapped, "
-            "so the machine pages them in and out until it stops responding and the OS "
-            "kills the app. Use a smaller or more quantized GGUF, free memory, or set "
-            "UNSLOTH_ALLOW_HOST_OFFLOAD=1 to load it anyway."
+            "so the machine pages them in from disk as it runs. Loading anyway: expect "
+            "slow generation, and slower still on a hard disk than on an SSD. A smaller "
+            "or more quantized GGUF, or more free memory, would run faster."
+        )
+
+    @staticmethod
+    def _host_offload_warning_opted_out() -> bool:
+        """Whether UNSLOTH_ALLOW_HOST_OFFLOAD silences the host-RAM warning.
+
+        The user's own opt-out, so it reads the REAL environment rather than the
+        curated child env. DEPRECATED and warning-scoped: it was the escape from a
+        refusal that no longer exists, so all it may do is suppress a message. It must
+        never reach a decision that changes what the child runs.
+        """
+        return os.environ.get("UNSLOTH_ALLOW_HOST_OFFLOAD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+    def _page_an_oversized_unmapped_load(
+        self, cmd: Iterable[str], env: Optional[dict], oversized
+    ) -> tuple[list, Optional[str]]:
+        """Rewrite a launch that is BOTH oversized and non-pageable into a pageable one.
+
+        Returns ``(cmd, note)``: the argv to launch, and the sentence to append to
+        whatever warning is emitted, or None when nothing was overridden and ``cmd``
+        comes back unchanged.
+
+        The host-RAM shortfall is survivable only because the weights are mmap'd: the
+        whole premise is that the spill pages in from disk as the model runs. Modes
+        "none" and "mlock" have no such fallback -- upstream sets use_mmap for
+        mmap/mmap+mlock/auto and nothing else (llama-model-loader.cpp), so those two
+        read the weights into a buffer llama.cpp allocates. The same shortfall is then
+        an allocation failure or an OOM kill during loading, not slow generation.
+        Reached by ``--load-mode``, by the deprecated ``--no-mmap`` / ``--no-direct-io``
+        spellings, and by the LLAMA_ARG_* twins llama.cpp reads before argv, so the
+        EFFECTIVE state is what decides, not the tokens Unsloth happens to have emitted.
+
+        This never blocks a load, so the unmapped request is OVERRIDDEN rather than
+        refused: the pageable equivalent goes in (a lock is kept, as mmap+mlock) so the
+        load the user asked for can actually finish. Only on a real shortfall -- an
+        unmapped load that fits is exactly what was asked for and is left byte for byte
+        as written. Said out loud, since a silent override is its own surprise: in the
+        returned note when a warning is emitted, and in the log either way, so a load
+        whose warning was silenced is still traceable.
+
+        One helper for every launch that can discover a shortfall (the APU preflight,
+        the discrete host guard, the arch-crash retry), because the decision belongs to
+        the CONDITION and not to any one warning: a site that only recorded, or a
+        warning the environment suppressed, would otherwise skip the remap and hand the
+        child a load it cannot complete. ``oversized`` is the per-site shortfall
+        predicate, called only once the cheap non-pageable test has passed, so a
+        comfortable launch pays for no pricing.
+        """
+        # The caller's own list back on every no-op path, not a rebuilt copy: an
+        # untouched launch must stay byte for byte, and the same token objects, as
+        # whatever built it.
+        original = cmd if isinstance(cmd, list) else list(cmd or ())
+        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(original, env)
+        if not _reserves_ram_now:
+            return original, None
+        try:
+            if not (oversized() if callable(oversized) else oversized):
+                return original, None
+        except Exception:
+            # Advisory pricing: an unreadable host or GGUF leaves the launch alone.
+            logger.debug("Could not price the load for a pageable override.", exc_info = True)
+            return original, None
+        paged, overridden = force_pageable_load(original, env)
+        if not overridden:
+            return original, None
+        logger.warning(
+            "Overriding the unmapped load mode (%s) for an oversized model: it would "
+            "allocate the whole model in host RAM instead of paging it in.",
+            ", ".join(overridden),
+        )
+        return paged, _PAGEABLE_OVERRIDE_NOTE
+
+    @property
+    def last_load_warning(self) -> Optional[str]:
+        """Advisory notice from the most recent load, or None. Read by the route."""
+        return self._last_load_warning
+
+    def _begin_load_warnings(self) -> None:
+        """Drop the previous load's advisory notice, at the point a load commits to
+        replacing the resident server. Without it a warned load followed by a
+        comfortable one would report the first load's notice against the second.
+
+        Called from the Phase 1 teardown, not from the top of ``load_model``: an
+        attempt rejected before that point leaves the old child serving, and its
+        advisory has to survive with it (the route still answers ``already_loaded``
+        from that child). The arch-crash retry calls it again for the same reason in
+        reverse -- the placement everything was priced against is the one that just
+        died."""
+        self._last_load_warning = None
+
+    def _record_load_warning(self, message: Optional[str]) -> None:
+        """Log an advisory memory notice and keep it for the route to hand back.
+
+        Never raises: these replace what used to be a refusal, and an oversized GGUF
+        pages from disk instead of failing, so the load is the user's call. First notice
+        wins, since the earliest priced the whole pool and later ones see a narrowed
+        selection.
+        """
+        if not message:
+            return
+        logger.warning(message)
+        if self._last_load_warning is None:
+            self._last_load_warning = message
+
+    def _amend_load_warning(self, note: Optional[str]) -> None:
+        """Append to the notice already recorded for this load, if there is one.
+
+        The pageable-load override can be settled after an earlier guard has already
+        recorded its warning: the APU preflight runs long before ``cmd`` and ``env``
+        exist, which is where the override has to be applied. First notice wins, so
+        that earlier text is what the route hands back, and appending is what keeps the
+        override named in the message the user actually sees. A load whose warning was
+        suppressed has nothing to amend and keeps the log line as its only record.
+        """
+        if note and self._last_load_warning:
+            self._last_load_warning += note
+
+    def _reprice_after_dropping_pinned_projector(
+        self,
+        *,
+        apu_msg: Optional[str],
+        host_msg: Optional[str],
+        model_size: Optional[int],
+        pinned_bytes: int,
+        avail_mib: Optional[int],
+    ) -> None:
+        """Re-price the APU RAM advisory once a text-only retry drops a CPU-pinned
+        vision projector.
+
+        The APU preflight charges ``model_size + _mmproj_pinned_bytes``, because a
+        projector pinned to the CPU loads into the same system RAM as the weights. When
+        that projector then fails to start and the retry strips ``--mmproj``, the child
+        that came up healthy never read those bytes: the recorded shortfall describes a
+        load nothing is running. Priced again without them, so the notice matches what
+        the serving process actually holds -- rewritten to the smaller need if the
+        weights alone still do not fit, handed to the discrete guard's notice if that
+        one also found a shortfall, and otherwise dropped.
+
+        What is NOT undone is the pageable-load override. It rewrote the argv and, in
+        ``force_pageable_load``, the shared child env in place, and the child was
+        spawned from both long before this runs, so the server IS memory-mapped and
+        nothing here can change that; reverting it would need yet another respawn of a
+        process that just came up healthy, on the recovery rung that exists because this
+        model has already failed to start once. So an override that the reprice shows
+        was not needed is reported rather than reverted: whatever note the message
+        carried is kept, and a load whose only remaining news is the override says that
+        and nothing else.
+
+        A no-op unless the projector was actually charged and the APU advisory is
+        actually what the route would hand back -- an opt-out that silenced it, or any
+        other notice that first-notice-wins kept, is left exactly as it is.
+        """
+        if not apu_msg or pinned_bytes <= 0 or model_size is None or avail_mib is None:
+            return
+        current = self._last_load_warning
+        if not current or not current.startswith(apu_msg):
+            return
+        # Whatever _amend_load_warning appended (the pageable-override note), carried
+        # over rather than rebuilt, so a reprice cannot describe the override in
+        # different words than the launch site did.
+        suffix = current[len(apu_msg) :]
+        # ``avail_mib`` is the figure the PREFLIGHT read, carried down rather than taken
+        # again here. By this point the text-only child is healthy and holding the
+        # weights, so a fresh reading is the pool minus the very model being priced:
+        # it would charge ``model_size`` against ``avail - model_size`` and report a
+        # shortfall for a load that demonstrably just started. Same pool, one term
+        # removed, is the only comparison that answers the question being asked.
+        repriced = self._apu_ram_shortfall_message(model_size, avail_mib)
+        if repriced:
+            self._last_load_warning = repriced + suffix
+        elif host_msg:
+            # The discrete guard priced the same launch and lost first-notice-wins.
+            # It reads the model path off the argv and never charged the projector,
+            # so dropping the projector leaves its verdict standing.
+            self._last_load_warning = host_msg + suffix
+        elif suffix.strip():
+            self._last_load_warning = _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+        else:
+            self._last_load_warning = None
+        logger.info(
+            "Text-only fallback dropped the CPU-pinned vision projector (%.0f MiB); "
+            "re-priced the host memory advisory against the weights alone.",
+            pinned_bytes / (1024 * 1024),
+        )
+
+    def _reprice_after_cpu_only_fallback(
+        self,
+        *,
+        host_msg: Optional[str],
+        cpu_cmd: Iterable[str],
+        env: Optional[Mapping[str, str]],
+        avail_mib: Optional[int],
+        pageable_note: Optional[str] = None,
+    ) -> None:
+        """Re-price the host memory advisory once a Vulkan crash is replayed on CPU.
+
+        The replay launches with ``--gpu-layers 0 --device none``, so no VRAM is
+        credited to it at all: the child that serves the session holds the WHOLE model
+        in system RAM and pages it from disk. Two things follow, and the preflight
+        notice gets neither right.
+
+        A load that was warned about its spill was warned about the spill of the GPU
+        placement that just died. The replay's spill is the whole model, which is
+        strictly larger, so the recorded figure understates what the running child
+        actually pages. And a load that FIT in VRAM was never warned at all, yet it is
+        the one the user most needs told: it now runs entirely from host RAM on a host
+        that may not hold it, and ``memory_warning`` was null for it.
+
+        Priced against ``avail_mib``, the figure the PREFLIGHT read, for the same reason
+        the projector reprice carries its own snapshot down: this runs after
+        ``_spawn_and_wait`` reports the CPU child healthy, so a fresh reading is the
+        pool minus the model being priced and would report a shortfall for a load that
+        demonstrably just started.
+
+        Called only where the replay is known healthy, never where it is chosen. A
+        failed replay is not terminal on every rung -- the drafter replay reports "not
+        recovered" and the caller tries the drafterless argv next -- so pricing at the
+        decision would describe a placement about to be abandoned.
+
+        The pageable-load override is NOT re-decided here, and nothing claims it was
+        reverted. ``force_pageable_load`` rewrote the argv and the shared child env in
+        place before the first spawn, and ``_cpu_isolated_replay`` strips placement
+        alone, so the replay inherits both and the CPU child really is memory-mapped.
+        Whatever note the preflight message carried is carried over verbatim onto the
+        re-priced text rather than rebuilt, so a reprice cannot describe the override in
+        different words than the launch site did.
+
+        ``pageable_note`` is the override ``_prepare_cpu_fallback_launch`` decided on
+        the REPLAY, which the preflight message cannot have carried: a launch that fit
+        in VRAM was priced as pageable-enough and left the user's unmapped mode alone,
+        and only the replay's own footprint (no VRAM credited) turns it into a full
+        host allocation. Both notes cannot be set at once -- if the preflight had
+        already overridden, the replay it built from is mapped and the second pricing
+        finds nothing to rewrite -- so this appends rather than replaces. Priced against
+        the same ``avail_mib`` the rewrite used, so the advisory cannot describe an
+        unmapped load the same pool reading has just made mapped.
+
+        A no-op unless the notice the route would hand back is the one this path can
+        speak for: an opt-out that silenced it (the re-pricing call honours it too), or
+        any other notice first-notice-wins kept, is left exactly as it is. The note
+        follows the message: an override on a silenced load stays in the log alone,
+        exactly as it does on the main launch path.
+        """
+        repriced = self._launch_host_shortfall_message(
+            cpu_cmd,
+            (),
+            env,
+            child_has_no_gpu = True,
+            avail_mib = avail_mib,
+        )
+        note = pageable_note or ""
+        current = self._last_load_warning
+        if current is None:
+            # The model fit in VRAM, so nothing warned; on CPU it fits nowhere but disk.
+            self._record_load_warning((repriced + note) if repriced else None)
+            return
+        if not host_msg or not current.startswith(host_msg) or not repriced:
+            # Nothing here can be re-priced, but an override still changed the child:
+            # say so on whatever notice first-notice-wins kept.
+            self._amend_load_warning(pageable_note)
+            return
+        self._last_load_warning = repriced + current[len(host_msg) :] + note
+        logger.info(
+            "Re-priced the host memory advisory for the CPU replay: it runs with no "
+            "GPU, so the whole model is charged to system RAM."
         )
 
     def _fits_without_paging(
@@ -10202,7 +10576,7 @@ class LlamaCppBackend:
         ctx: int,
         usable_mib: Iterable[float],
         reserve_bytes_fn: Callable[[int], int],
-        min_ctx: int = 4096,
+        min_ctx: int = 8192,
     ) -> int:
         """Largest context in [``min_ctx``, ``ctx``] whose replicated per-device reserve
         still fits the SMALLEST card of a layer-split subset; 0 when even ``min_ctx``
@@ -10924,7 +11298,7 @@ class LlamaCppBackend:
     # Context the projector's residency is priced at. The placement loop shrinks the
     # context to this floor long before it would spill a layer, so this is the length
     # at which "does it fit" means "does every layer stay on the GPU".
-    _MMPROJ_FIT_FLOOR_CTX = 4096
+    _MMPROJ_FIT_FLOOR_CTX = 8192
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
@@ -11180,7 +11554,7 @@ class LlamaCppBackend:
         available_mib: int,
         model_size_bytes: int,
         cache_type_kv: Optional[str] = None,
-        min_ctx: int = 4096,
+        min_ctx: int = 8192,
         *,
         swa_full: bool = False,
         n_parallel: int = 1,
@@ -11579,24 +11953,25 @@ class LlamaCppBackend:
             logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
         return None
 
-    def host_offload_refusal_for_intent(self, intent) -> Optional[str]:
-        """The host-RAM verdict for a resolved load intent, or None.
+    def host_offload_warning_for_intent(self, intent) -> Optional[str]:
+        """The host-RAM advisory for a resolved load intent, or None.
 
-        ``_launch_host_shortfall_message`` stays authoritative, since it reads the finished
-        argv, but it runs after the ROUTE has evicted a resident Images/Video pipeline via
-        ``acquire_for(CHAT)`` and cancelled the running generations. Asking here first spares
-        both, exactly as the non-chat header check above does.
+        Advisory, never a refusal: the route LOGS this and loads anyway. It does not
+        reach the load response -- it records nothing, and ``load_model`` clears the
+        previous notice at its teardown anyway; the response carries the launch-time
+        notice instead. What this buys is a line in the log before ``acquire_for(CHAT)``
+        evicts a resident Images/Video pipeline, rather than only from deep inside
+        ``load_model`` once that teardown has happened.
 
         Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
         resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
         a host KV cache, CPU-offloaded weights and locked mappings, host RAM as well, and the
         route and ``load_model`` reclaim all of it after this runs. Pricing against the free
-        readings would refuse a switch to a model the reclaimed machine holds easily. Each
+        readings would warn about a switch to a model the reclaimed machine holds easily. Each
         total is the ceiling on what the launch can ever see, and every narrowing the launch
         applies to the pool (the ROCm arch gate, the Vulkan discrete preference, a ``gpu_ids``
         pin) only shrinks it further, so this charges no more than the launch copy and can
-        refuse nothing the launch would allow. What survives is the pick no reclaim can
-        rescue, which is the one worth catching before the teardown.
+        warn about nothing the launch would call comfortable.
 
         Only a local path is priced. An HF repo may not be downloaded yet, and resolving one
         here would start a download the route has not committed to.
@@ -15948,7 +16323,19 @@ class LlamaCppBackend:
         server_caps: Mapping[str, object],
         *,
         drop_full_offload_threads: bool = False,
-    ) -> Optional[tuple[list[str], Optional[str]]]:
+        avail_mib: Optional[int] = None,
+    ) -> Optional[tuple[list[str], Optional[str], Optional[str]]]:
+        """Build the CPU replay, or None when this install cannot host one.
+
+        Returns ``(argv, cwd, pageable_note)``. The note is the sentence
+        ``_page_an_oversized_unmapped_load`` produces when it had to override an
+        unmapped load mode, for the caller to put in front of the user; None when
+        nothing was rewritten.
+
+        ``avail_mib`` is the host pool the preflight read, carried down so the rewrite
+        below and ``_reprice_after_cpu_only_fallback`` price the replay against the same
+        number and cannot reach opposite conclusions about the same child.
+        """
         # Staging only removes GPU backends; a non-Vulkan install would report a
         # Vulkan crash that never happened.
         if not self._is_vulkan_backend(binary):
@@ -15967,6 +16354,33 @@ class LlamaCppBackend:
                 "Load mode: dropping the fit's --load-mode none for the CPU "
                 "fallback; it runs entirely from host RAM."
             )
+        # A user's own "--load-mode none" / "--no-mmap" survives that strip, by design,
+        # and on this rung it is no longer the mode they were priced for: the replay
+        # appends "--gpu-layers 0 --fit off --device none", so nothing credits VRAM and
+        # the child holds the WHOLE model in host RAM. Unmapped that is one allocation
+        # of the whole file rather than a mapping the kernel pages, i.e. an OOM kill on
+        # a host that cannot hold it -- which the main launch path would have rewritten
+        # before spawning. So price the replay on its OWN footprint (never the preflight
+        # verdict, which credited a GPU placement this argv has just deleted) and apply
+        # the same override.
+        _priced_replay = replay
+        replay, pageable_note = self._page_an_oversized_unmapped_load(
+            replay,
+            env,
+            # honor_opt_out=False for the same reason _launch_is_oversized reads it that
+            # way: UNSLOTH_ALLOW_HOST_OFFLOAD silences a message and must never withdraw
+            # the rewrite that makes the load possible.
+            lambda: bool(
+                self._launch_host_shortfall_message(
+                    _priced_replay,
+                    (),
+                    env,
+                    child_has_no_gpu = True,
+                    avail_mib = avail_mib,
+                    honor_opt_out = False,
+                )
+            ),
+        )
         cpu_binary = self._cpu_isolated_binary(binary)
         if cpu_binary is None:
             return None
@@ -15976,7 +16390,7 @@ class LlamaCppBackend:
         replay[0] = cpu_binary
         # Staging covers only the executable and libraries, so keep Unsloth's working
         # directory: relative paths in user extra args resolve against it.
-        return replay, None
+        return replay, None, pageable_note
 
     def _cpu_isolated_binary(self, binary: Optional[str]) -> Optional[str]:
         """Stage managed llama.cpp without GPU backend libraries.
@@ -16638,8 +17052,22 @@ class LlamaCppBackend:
                 return False
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
+            # The previous load's advisory is dropped HERE, at the one point this call
+            # commits to replacing the resident server, rather than on the first line of
+            # load_model. Everything above can stand down with that server still serving
+            # (the update-in-progress refusal, the duplicate-load fast path, an
+            # unenumerated Vulkan pin, a diffusion or non-chat refusal, a cancel), and
+            # clearing on the way past retired the advisory of a child that keeps
+            # running -- so the next `already_loaded` answered memory_warning: null for
+            # an oversized model that is still paging from disk. Placing the reset at
+            # the teardown rather than restoring it on each rejected path is what keeps
+            # that true for early returns added later: this is the line that separates
+            # "the old child survives" from "the old child is gone", so a new stand-down
+            # above it is covered by construction and needs no bookkeeping of its own.
+            # Nothing between the top of load_model and this point records a warning.
             _replaying_cpu_fallback = intent.cpu_fallback
             with self._lock:
+                self._begin_load_warnings()
                 self._kill_process()
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
@@ -17200,6 +17628,18 @@ class LlamaCppBackend:
                 # the same reason as _detected_gpus: the except path (--fit on) falls
                 # through to the launch, which reads it.
                 _arch_gate_forced_cpu = False
+                # The GPUs THIS launch pinned the child to, or None when it pinned
+                # nothing. Set where the pin is emitted, and read by the pageable
+                # override so it prices against VRAM the child can actually spend.
+                # Not derived from env: an inherited mask is already applied by the
+                # probe, so re-reading it there would subtract the same pin twice.
+                _launch_pinned_ids: Optional[list] = None
+                # The pageable rewrite a CPU replay applied, kept across attempts: the
+                # env is shared, so only the first replay to need it produces a note.
+                _replay_pageable_override: Optional[str] = None
+                # Set by the restored cpu_fallback path, consumed once the launch is
+                # healthy: str carries that replay's override note, True means none.
+                _restored_cpu_reprice: Union[str, bool, None] = None
                 # Whether Unsloth's placement planner actually RAN and came back
                 # unable to fit the model. `use_fit` alone cannot answer that: it
                 # starts True at its declaration below and is also what the except
@@ -18080,9 +18520,9 @@ class LlamaCppBackend:
                         # An EXPLICIT context gets its requested length, because there
                         # the reasoning points the other way: the loop honors a pinned
                         # context verbatim, so the only give left is `--fit on`, which
-                        # spills MODEL LAYERS and collapses decode ~3x. Asking at 4096
-                        # would answer "fits", keep the projector, and pay in offloaded
-                        # weights -- this probe's trade at its worst rate.
+                        # spills MODEL LAYERS and collapses decode ~3x. Asking at the
+                        # floor instead would answer "fits", keep the projector, and pay
+                        # in offloaded weights -- this probe's trade at its worst rate.
                         #
                         # The drafter IS charged: this runs before the drop probe, so
                         # speculative decoding is still in the footprint. Priced exactly
@@ -18840,6 +19280,18 @@ class LlamaCppBackend:
                         # ggml-metal's free-memory report, blind to Unsloth's own footprint
                         # and the wired limit. See _metal_context_overcommit_message.
                         native_ctx_for_cap = self._context_length or effective_ctx
+                        # This arm's floor, which is _FIT_MIN_CTX only while the child's
+                        # fitter can come down from it. With --fit off (argv or
+                        # LLAMA_ARG_FIT) nothing reduces what we emit, so hand over the
+                        # number llama.cpp's own fitter would have reduced to instead.
+                        # _metal_zero_ctx_floor draws the same distinction but never sees
+                        # these paths: they assign a POSITIVE context, and its first
+                        # condition returns 0 for any positive effective_ctx.
+                        _metal_floor_ctx = (
+                            _FIT_MIN_CTX
+                            if fit_is_effectively_on(extra_args, os.environ)
+                            else _LLAMA_FIT_MIN_CTX
+                        )
                         # Only a ceiling backed by a real KV estimate may refuse; the 4096
                         # fallback below is a guess and would block working loads.
                         _apple_measured_ceiling: Optional[int] = None
@@ -18892,7 +19344,8 @@ class LlamaCppBackend:
                             cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
                             _cap_footprint_mib = _apple_footprint_mib(cap)
                             # Fit returns the request unchanged when it fits OR weights
-                            # exceed budget; only the latter over-commits, so floor to 4096.
+                            # exceed budget; only the latter over-commits, so floor to
+                            # _FIT_MIN_CTX.
                             if _cap_footprint_mib <= _apple_fit_budget_mib:
                                 max_available_ctx = cap
                                 _apple_measured_ceiling = cap
@@ -18900,12 +19353,15 @@ class LlamaCppBackend:
                                 # Two states land here, only one unmeasurable. Weights
                                 # alone over budget: the fit returned the request
                                 # untouched, priced nothing, and no context rescues it.
-                                # Or the weights fit and it is the helper's own 4096 floor
-                                # that does not -- a floor, not a measurement, so re-price
-                                # under it before concluding nothing was measured. Without
-                                # that pass a Mac with room for no tested context skipped
-                                # the refusal and reached llama-server, whose --fit cannot
-                                # reduce below 4096 either.
+                                # Or the weights fit and it is the helper's own
+                                # _FIT_MIN_CTX floor that does not -- a floor, not a
+                                # measurement, so re-price under it before concluding
+                                # nothing was measured. Without that pass a Mac with room
+                                # for no tested context skipped the refusal and reached
+                                # llama-server, whose own --fit stops at LLAMA.CPP's
+                                # fit_params_min_ctx (4096, a different number from ours
+                                # since this arm's floor became _FIT_MIN_CTX) and so
+                                # cannot rescue it either.
                                 _floor_cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_FLOOR_MIN_CTX)
                                 # Ask the budget directly rather than inferring the
                                 # weights-only state from the two fits disagreeing: both
@@ -18923,7 +19379,7 @@ class LlamaCppBackend:
                                     # whose weights alone miss the budget, and that is the
                                     # host-RAM guard's failure. Floor for the UI, but do
                                     # not refuse against a number the fit never vouched for.
-                                    max_available_ctx = min(4096, native_ctx_for_cap)
+                                    max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                                 elif _apple_footprint_mib(_floor_cap) <= _apple_fit_budget_mib:
                                     max_available_ctx = _floor_cap
                                     _apple_measured_ceiling = _floor_cap
@@ -18933,15 +19389,16 @@ class LlamaCppBackend:
                                     # too, and the strongest available: nothing fits, so
                                     # there is no number to lower to and every explicit
                                     # request over-commits. Auto is untouched as everywhere
-                                    # else here -- it keeps the 4096 floor it has always
-                                    # launched at, since changing that is a larger claim
-                                    # than this guard makes.
-                                    max_available_ctx = min(4096, native_ctx_for_cap)
+                                    # else here -- it keeps this arm's floor, which is now
+                                    # _FIT_MIN_CTX like every other arm, rather than the
+                                    # separate 4096 Metal used to hold.
+                                    max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                                     _apple_nothing_fits = True
                         else:
                             # No KV estimate: mirror the discrete file-size-only fallback
-                            # and floor to 4096 rather than launch at native and over-commit.
-                            max_available_ctx = min(4096, native_ctx_for_cap)
+                            # and floor to _FIT_MIN_CTX rather than launch at native and
+                            # over-commit.
+                            max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
                         elif (
@@ -18978,11 +19435,12 @@ class LlamaCppBackend:
                             ):
                                 _extended_ceiling = _apple_ctx_fit(effective_ctx, _FIT_MIN_CTX)
                                 if _apple_footprint_mib(_extended_ceiling) > _apple_fit_budget_mib:
-                                    # 4096 is the helper's floor, not a measurement, and
-                                    # the cap above re-prices under it for the same reason.
+                                    # _FIT_MIN_CTX is the helper's floor, not a
+                                    # measurement, and the cap above re-prices under it
+                                    # for the same reason.
                                     # It bites here whenever native is below the floor: the
                                     # request is above native and the floor above what
-                                    # fits, so the probe hands back a non-fitting 4096, the
+                                    # fits, so the probe hands back a non-fitting floor, the
                                     # check discards it, and the refusal keeps naming the
                                     # native-sized cap -- "the largest that fits is 2,048"
                                     # on a 2048-native model whose machine launches 3,072
@@ -19565,6 +20023,26 @@ class LlamaCppBackend:
                 else:
                     self._gpu_ids = None
 
+                # Did the APU preflight below find a shortfall. Carried to the launch
+                # site, which is where `cmd` and `env` first exist and so the only place
+                # the pageable-load override can be applied. Without it an oversized
+                # unmapped load on an APU is never remapped: _shared_gpu_ids is
+                # populated for Vulkan alone, so the discrete guard downstream credits
+                # the APU's reported GPU pool against the weights, finds no spill and
+                # abstains, while the RAM this launch actually loads into cannot hold
+                # them. "none" and "mlock" do not mmap, so that is an OOM kill.
+                _apu_ram_oversized = False
+                # The two shortfall notices this load recorded, kept verbatim (and
+                # un-amended) so the text-only fallback further down can re-price them
+                # once it drops the CPU-pinned projector whose bytes they charged. Both
+                # are re-stated by the arch-crash retry, which starts its own warning
+                # scope, so what these hold is always the pair behind the notice the
+                # route would hand back right now.
+                _apu_ram_msg: Optional[str] = None
+                _host_ram_msg: Optional[str] = None
+                # The RAM figure those notices were priced against, kept with them.
+                _apu_avail_mib: Optional[int] = None
+
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
                 # oversize load the OS would otherwise kill mid-flight. Base model
@@ -19575,30 +20053,52 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and self._amd_apu_wants_unified_memory(gpu_indices)
                 ):
+                    # Read ONCE and kept, because the text-only fallback re-prices this
+                    # same decision much later, with the weights already resident. A
+                    # second live reading there would be the pool MINUS the model the
+                    # reprice is asking about, which double-charges it.
+                    _apu_avail_mib = self._available_system_memory_mib()
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
                         # this guard exists to stop an oversize load being OOM-killed
                         # mid-read, so it has to weigh the projector either way.
                         model_size + _mmproj_pinned_bytes,
-                        self._available_system_memory_mib(),
+                        _apu_avail_mib,
                     )
                     # gpu_indices is None for a launch nothing pinned, so the guard
                     # priced every visible card, including an APU the gate is about to
                     # drop and whose shared pool the narrowed child never touches.
-                    # Re-ask for the set the child will actually see. Refusal branch
+                    # Re-ask for the set the child will actually see. Warned branch
                     # only, so a passing launch pays for no probe; an empty answer
-                    # keeps the refusal.
+                    # keeps the warning.
                     if _ram_msg and gpu_indices is None and not gpu_ids:
                         _gated_pin = self._arch_gate_survivors(binary)
                         if _gated_pin and not self._amd_apu_wants_unified_memory(_gated_pin):
                             logger.info(
-                                "Skipping the APU RAM refusal: the arch gate pins "
+                                "Skipping the APU RAM warning: the arch gate pins "
                                 "this launch to discrete GPU(s) %s.",
                                 _gated_pin,
                             )
                             _ram_msg = None
-                    if _ram_msg:
-                        raise RuntimeError(_ram_msg)
+                    # The condition, not the message: read after the arch-gate skip
+                    # above, so a launch the gate moves onto discrete cards is not
+                    # remapped for a shortfall it no longer has. Independent of
+                    # UNSLOTH_ALLOW_HOST_OFFLOAD, which this preflight never consulted.
+                    _apu_ram_oversized = bool(_ram_msg)
+                    # ...and the MESSAGE is the one thing the deprecated opt-out may
+                    # take away. _apu_ram_shortfall_message prices RAM and never reads
+                    # it, so without this UNSLOTH_ALLOW_HOST_OFFLOAD silenced the
+                    # discrete guard next door and left the APU advisory in
+                    # memory_warning, against a contract that is only ever "silences
+                    # the warning". Read AFTER the verdict above, so the rewrite the
+                    # verdict drives is untouched.
+                    if _ram_msg and self._host_offload_warning_opted_out():
+                        logger.info(
+                            "UNSLOTH_ALLOW_HOST_OFFLOAD set: not recording the APU RAM advisory."
+                        )
+                        _ram_msg = None
+                    _apu_ram_msg = _ram_msg
+                    self._record_load_warning(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names. A projector passed only via
@@ -19662,15 +20162,19 @@ class LlamaCppBackend:
                     )
                 _metal_floor = self._metal_zero_ctx_floor(
                     effective_ctx,
-                    # Auto-layers earns its exemption by leaving the context to --fit,
-                    # so it only holds while --fit actually runs. Extras land after
-                    # Unsloth's own "--fit on" and win, and a "--fit off" there would
-                    # otherwise leave a command with no -c and no fitter, which is
-                    # llama.cpp's native context.
-                    auto_fit and fit_is_effectively_on(extra_args),
+                    auto_fit,
                     _caller_owns_budget,
                     self._context_length,
                     max_available_ctx,
+                    # Whether the child's own fitter runs at all, which decides both the
+                    # Auto-layers exemption and how far the floor may reach. Every branch
+                    # that can reach the floor emits "--fit on" or nothing (llama.cpp
+                    # defaults it on); the one branch that emits "--fit off" is manual
+                    # with a fixed layer count, which _caller_owns_budget exempts. So the
+                    # only ways off here are the user's own, and both are read: extras
+                    # land after Unsloth's flag and win, and LLAMA_ARG_FIT is applied
+                    # before argv when argv sets nothing.
+                    fitter_runs = fit_is_effectively_on(extra_args, os.environ),
                 )
                 if _metal_floor:
                     effective_ctx = _metal_floor
@@ -21006,6 +21510,7 @@ class LlamaCppBackend:
                     self._emit_child_gpu_visibility(
                         env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
                     )
+                    _launch_pinned_ids = list(gpu_indices)
                 elif not is_vulkan_backend and not gpu_ids:
                     # Nothing above pinned the child. Two shapes land here and the gate
                     # breaks both the same way, so they share one probe: `--fit on`
@@ -21077,6 +21582,8 @@ class LlamaCppBackend:
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
                         )
+                        # Narrower than any pin above, so it replaces it.
+                        _launch_pinned_ids = list(_survivors)
                     elif manual_tensor_split_emitted:
                         # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                         # no mask above): the UI built --tensor-split in ascending
@@ -21084,28 +21591,106 @@ class LlamaCppBackend:
                         # The whole visible set stays in use, only its order is fixed.
                         self._pin_visible_gpu_order_for_split(env)
 
+                _child_has_no_gpu = (
+                    # each names a device present but unusable, so it owns the empty pool
+                    _arch_gate_forced_cpu
+                    or _paravirtual_cpu_forced
+                    # neither says a device exists, so an empty pool stays unreadable
+                    or (
+                        bool(_detected_gpus)
+                        and (
+                            _cpu_only_zero_offload or self._binary_ships_no_gpu_backend(binary, env)
+                        )
+                    )
+                )
+                # The host pool as it stands before ANYTHING spawns, kept for the Vulkan
+                # CPU replay to re-price against. That replay only runs once a CPU-only
+                # child is healthy and holding the whole model in system RAM, where a
+                # live reading is the pool minus the very model being priced. Taken
+                # here, and handed to the guard below as well, so the two verdicts
+                # differ in exactly one term -- the VRAM credit the replay loses -- and
+                # never in the pool they were read against. Only on the path that can
+                # use it: a load with no CPU replay available pays for no probe, and
+                # None restores the guard's own live reading.
+                _preflight_avail_mib = (
+                    self._available_system_memory_mib() if _cpu_fallback_eligible else None
+                )
+                # Only the cards this child can reach. VRAM on a card this launch
+                # pinned away is not VRAM it can spend: crediting it prices the spill
+                # too low and leaves an unmapped oversized load unrewritten, which is
+                # an OOM rather than the slow load the override exists to produce.
+                _reachable_gpus = self._rows_the_child_can_reach(_detected_gpus, _launch_pinned_ids)
                 # reads the argv the child gets, not the mid-fit state that produced it
                 _offload_msg = self._launch_host_shortfall_message(
                     cmd,
-                    _detected_gpus,
+                    _reachable_gpus,
                     env,
-                    child_has_no_gpu = (
-                        # each names a device present but unusable, so it owns the empty pool
-                        _arch_gate_forced_cpu
-                        or _paravirtual_cpu_forced
-                        # neither says a device exists, so an empty pool stays unreadable
-                        or (
-                            bool(_detected_gpus)
-                            and (
-                                _cpu_only_zero_offload
-                                or self._binary_ships_no_gpu_backend(binary, env)
-                            )
-                        )
-                    ),
+                    child_has_no_gpu = _child_has_no_gpu,
+                    avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
-                if _offload_msg:
-                    raise RuntimeError(_offload_msg)
+                # Snapshotted BEFORE the override note is appended below, so a re-price
+                # that promotes this notice appends that note once rather than twice.
+                _host_ram_msg = _offload_msg
+
+                def _launch_is_oversized() -> bool:
+                    """Whether SOMETHING about to launch does not fit, warning aside.
+
+                    Three readings, because one alone misses a shape the override has
+                    to cover. The APU preflight, whose shortfall this guard cannot see:
+                    _shared_gpu_ids covers Vulkan only, so a ROCm APU's reported pool is
+                    credited here as if it were dedicated VRAM and the spill prices out
+                    at zero. The warning just produced, which is the discrete case. And,
+                    only when the deprecated opt-out silenced that warning, the same
+                    pricing with the opt-out ignored: the variable's contract is that it
+                    hides a message, and hiding a message must not withdraw the rewrite
+                    that makes the load possible.
+                    """
+                    if _apu_ram_oversized or _offload_msg:
+                        return True
+                    if not self._host_offload_warning_opted_out():
+                        return False
+                    return bool(
+                        self._launch_host_shortfall_message(
+                            cmd,
+                            _reachable_gpus,
+                            env,
+                            child_has_no_gpu = _child_has_no_gpu,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            honor_opt_out = False,
+                        )
+                    )
+
+                cmd, _pageable_note = self._page_an_oversized_unmapped_load(
+                    cmd, env, _launch_is_oversized
+                )
+                if _pageable_note:
+                    # Only onto a warning that is actually emitted; when the opt-out
+                    # suppressed it the override still went to the log, which is what
+                    # keeps a silenced load traceable.
+                    if _offload_msg:
+                        _offload_msg += _pageable_note
+                    # And onto whatever is already recorded, which is not the same
+                    # thing. First notice wins, so when the APU preflight also warned
+                    # its text is what the route hands back and the _offload_msg
+                    # amended just above is dropped by _record_load_warning below --
+                    # leaving memory_warning silent about an override that did change
+                    # the child's argv. A no-op when nothing was recorded, including a
+                    # load the opt-out silenced, and it cannot double-append: the note
+                    # reaches at most one of the two strings.
+                    self._amend_load_warning(_pageable_note)
+                    # The recorded state has to describe the argv that launches, or the
+                    # reload comparator judges this child against a mode it no longer
+                    # runs. The snapshot too: the arch-crash retry restores it over
+                    # `cmd`, which now carries the override.
+                    self._memory_state = resolve_effective_memory_state(cmd, env)
+                    _mem_policy_for_cmd = (
+                        _mem_host_resident,
+                        self._memory_state,
+                        self._memory_policy_active,
+                        self._memory_mlock_applicable,
+                    )
+                self._record_load_warning(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
@@ -21471,6 +22056,7 @@ class LlamaCppBackend:
                     worth replaying.
                     """
                     nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
+                    nonlocal _replay_pageable_override
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
                     # GGML_ASSERT is a signal on POSIX and a CRT abort (exit 3) on
                     # MSVC, so Windows needs both. Cancel-checked like every retry
@@ -21487,6 +22073,9 @@ class LlamaCppBackend:
                         env,
                         server_caps,
                         drop_full_offload_threads = _drop_full_offload_threads,
+                        # The same host pool the preflight and the reprice below read,
+                        # so the rewrite and the advisory answer one question once.
+                        avail_mib = _preflight_avail_mib,
                     )
                     if prepared is None:
                         return False
@@ -21496,7 +22085,16 @@ class LlamaCppBackend:
                         # remove; take it back here.
                         self._cleanup_cpu_fallback_runtime()
                         return False
-                    replay, _spawn_cwd = prepared
+                    replay, _spawn_cwd, _cpu_pageable_note = prepared
+                    # The rewrite mutates the SHARED env in place, so it happens once
+                    # even when several argvs are replayed. A non-terminal failure
+                    # below returns without the note, and the next replay then finds an
+                    # already-pageable env and produces none of its own -- so whichever
+                    # attempt finally comes up would report ordinary paging and never
+                    # say the user's load mode had been overridden. Carried instead.
+                    if _cpu_pageable_note:
+                        _replay_pageable_override = _cpu_pageable_note
+                    _cpu_pageable_note = _cpu_pageable_note or _replay_pageable_override
 
                     logger.warning(
                         "The auto-selected Vulkan backend hard-crashed during "
@@ -21529,7 +22127,12 @@ class LlamaCppBackend:
                     # make, and a later "Don't reserve system RAM" would demand a
                     # pointless reload. From _last_spawn_cmd, the argv that really
                     # started, so this cannot undo a record a --fit retry wrote.
-                    if self._fit_load_mode_flags:
+                    #
+                    # Or the pageable override rewrote a mode this replay no longer runs
+                    # with: the record has to describe the argv that started, whichever
+                    # of the two changed it, or the reload comparator judges this child
+                    # against a mode it does not have.
+                    if self._fit_load_mode_flags or _cpu_pageable_note:
                         self._memory_state = resolve_effective_memory_state(_last_spawn_cmd, env)
                     intent = self._apply_cpu_fallback_state(
                         intent,
@@ -21551,6 +22154,17 @@ class LlamaCppBackend:
                     tensor_split = intent.tensor_split
                     gpu_indices = None
                     use_fit = False
+                    # Everything above records that this session runs on no GPU; the
+                    # advisory has to say so too. Here and not at the decision above,
+                    # because only a child that came up is evidence of what is running
+                    # and a failed replay can still fall through to another argv.
+                    self._reprice_after_cpu_only_fallback(
+                        host_msg = _host_ram_msg,
+                        cpu_cmd = _last_spawn_cmd,
+                        env = env,
+                        avail_mib = _preflight_avail_mib,
+                        pageable_note = _cpu_pageable_note,
+                    )
                     logger.warning(
                         "llama-server loaded successfully on CPU after the "
                         "auto-selected Vulkan backend crashed. GPU acceleration "
@@ -21625,19 +22239,37 @@ class LlamaCppBackend:
                             env,
                             server_caps,
                             drop_full_offload_threads = _drop_full_offload_threads,
+                            avail_mib = _preflight_avail_mib,
                         )
                         if prepared is None:
                             _raise_terminal_load_failure(
                                 "The prior Vulkan CPU fallback could not be reconstructed; run "
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
                             )
-                        cmd, _spawn_cwd = prepared
+                        cmd, _spawn_cwd, _replay_pageable_note = prepared
                         # Same reason as the crash path, recomputed from the stripped
                         # `cmd` before anything spawns. The arch-crash rung re-derives it
                         # from `cmd` too, so the _mem_policy_for_cmd snapshot it restores
-                        # cannot put the stale pair back.
-                        if self._fit_load_mode_flags:
+                        # cannot put the stale pair back. The pageable override rewrites
+                        # the same field, so either one having fired makes the record stale.
+                        if self._fit_load_mode_flags or _replay_pageable_note:
                             self._memory_state = resolve_effective_memory_state(cmd, env)
+                        # The preflight above priced and, where needed, rewrote the argv
+                        # this replay was built FROM; an override settled here is news it
+                        # could not have carried. Appended to whatever notice is recorded,
+                        # the same way the APU preflight's override reaches the message,
+                        # and a no-op on a load whose warning the opt-out silenced, which
+                        # keeps the log line as its only record.
+                        self._amend_load_warning(_replay_pageable_note)
+                        # This replay is CPU-only by construction (--device none), so
+                        # the advisory has to describe the whole model in host RAM. The
+                        # amend above can only add to a notice that already exists, and
+                        # on a restored fallback there often is none: an empty Vulkan
+                        # probe leaves _child_has_no_gpu False, so the preflight
+                        # abstained and memory_warning was null for a session paging
+                        # everything from disk. Deferred rather than priced here,
+                        # because only a child that came up is evidence of what runs.
+                        _restored_cpu_reprice = _replay_pageable_note or True
                         # Same normalization the crash path applies, so a client that
                         # sent only the flag cannot leave a CPU-only server reporting
                         # an Auto/GPU placement (which then fails holds_no_vram).
@@ -21731,30 +22363,53 @@ class LlamaCppBackend:
                     )
                     if _remaining:
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
+                        # Everything recorded so far priced the CRASHED selection, and
+                        # that placement is gone: the canonical #7624 shape pins the APU
+                        # whose shared-pool "free memory" outranked the dGPU, warns that
+                        # system RAM cannot hold the weights, then crashes and respawns
+                        # on the discrete sibling that holds them in VRAM. First notice
+                        # wins, so without this the served child reports a shortfall on
+                        # a device it never touches. The two checks below price exactly
+                        # the set the respawn reaches, and both are wider than their
+                        # upstream twins (the same weights against a NARROWED pool), so
+                        # a shortfall that still stands is re-recorded here.
+                        #
+                        # Both are also kept in a variable: the pageable-load override
+                        # at the END of this block, after every rewrite `cmd` still has
+                        # coming, reads them as its shortfall condition and amends
+                        # whichever one first-notice-wins recorded.
+                        self._begin_load_warnings()
+                        # ...and the re-price snapshots go with the scope they describe:
+                        # the preflight's pair priced the crashed placement, so leaving
+                        # them standing would let the text-only fallback re-price the
+                        # notice this block is about to record against the wrong pool.
+                        _apu_ram_msg = None
+                        _host_ram_msg = None
+                        _apu_avail_mib = None
                         # The APU RAM preflight upstream ran against the CRASHED
-                        # selection, discrete on this arm by construction, so it never
-                        # fired. The mirror shape (crash on the dGPU, retry on the
+                        # selection. The mirror shape (crash on the dGPU, retry on the
                         # unified-memory sibling) makes the respawn the first load into
-                        # system RAM. Unchecked, an oversized GGUF is OOM-killed
-                        # mid-load instead of getting the refusal the same host gives
-                        # when the APU is picked first.
+                        # system RAM, so price it here too. Advisory: the respawn goes
+                        # ahead either way.
+                        _retry_apu_msg = None
                         if model_size is not None and _retry_wants_unified:
-                            _retry_ram_msg = self._apu_ram_shortfall_message(
+                            _apu_avail_mib = self._available_system_memory_mib()
+                            _retry_apu_msg = self._apu_ram_shortfall_message(
                                 model_size + _mmproj_pinned_bytes,
-                                self._available_system_memory_mib(),
+                                _apu_avail_mib,
                             )
-                            if _retry_ram_msg:
-                                self._kill_process()
-                                raise RuntimeError(_retry_ram_msg)
+                            # Same contract as the preflight above: the opt-out takes
+                            # the message and nothing else. _retry_apu_msg itself stays
+                            # set, so _retry_is_oversized below still sees the
+                            # shortfall and the pageable rewrite still happens.
+                            if not self._host_offload_warning_opted_out():
+                                _apu_ram_msg = _retry_apu_msg
+                                self._record_load_warning(_retry_apu_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
-                        _retry_offload_msg = self._launch_host_shortfall_message(
-                            cmd,
-                            [row for row in _detected_gpus if row[0] in set(_remaining)],
-                            env,
-                        )
-                        if _retry_offload_msg:
-                            self._kill_process()
-                            raise RuntimeError(_retry_offload_msg)
+                        _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
+                        _retry_host_msg = self._launch_host_shortfall_message(cmd, _retry_rows, env)
+                        _host_ram_msg = _retry_host_msg
+                        self._record_load_warning(_retry_host_msg)
                         logger.warning(
                             f"llama-server crashed with a HIP kernel-image error on "
                             f"GPU(s) {_crashed} -- the llama.cpp build has no kernels "
@@ -21919,6 +22574,37 @@ class LlamaCppBackend:
                                 "recomputed Model Memory (%s).",
                                 " ".join(_retry_managed) if _retry_managed else "no page-lock",
                             )
+
+                        # Last, because everything above still rewrites `cmd`: the
+                        # tensor-split drop, the split-mode drop, the fit's load-mode
+                        # strip and the re-armed page-lock. The narrowed pool is where a
+                        # load that FIT its first placement can meet its first shortfall,
+                        # and nothing upstream remapped it, so an unmapped respawn would
+                        # allocate the whole model in host RAM and be OOM-killed. Same
+                        # condition, same helper, before the respawn rather than after.
+                        def _retry_is_oversized() -> bool:
+                            if _retry_apu_msg or _retry_host_msg:
+                                return True
+                            # The opt-out silences the message, never the rewrite.
+                            if not self._host_offload_warning_opted_out():
+                                return False
+                            return bool(
+                                self._launch_host_shortfall_message(
+                                    cmd, _retry_rows, env, honor_opt_out = False
+                                )
+                            )
+
+                        cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
+                            cmd, env, _retry_is_oversized
+                        )
+                        if _retry_pageable_note:
+                            # Onto whichever notice first-notice-wins kept above; a
+                            # suppressed one leaves the log line as the only record,
+                            # which is the intended contract for the opt-out.
+                            self._amend_load_warning(_retry_pageable_note)
+                            # From the argv, like the fit-strip above: `cmd` is what
+                            # the respawn runs, and the record has to match it.
+                            self._memory_state = resolve_effective_memory_state(cmd, env)
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
@@ -22292,6 +22978,21 @@ class LlamaCppBackend:
                             self._start_llama_process(cmd, env)
                             if self._wait_for_health(timeout = 600.0):
                                 healthy = True
+                                # The child that serves this session never read the
+                                # CPU-pinned projector, so the host-memory advisory the
+                                # APU preflight charged it against is now describing a
+                                # load nothing is running. Priced again here, and not at
+                                # the strip above, because a failed text-only retry can
+                                # still replay the ORIGINAL vision argv on CPU further
+                                # down -- projector and all -- and that child does load
+                                # the bytes. Only a healthy text-only server is evidence.
+                                self._reprice_after_dropping_pinned_projector(
+                                    apu_msg = _apu_ram_msg,
+                                    host_msg = _host_ram_msg,
+                                    model_size = model_size,
+                                    pinned_bytes = _mmproj_pinned_bytes,
+                                    avail_mib = _apu_avail_mib,
+                                )
                             else:
                                 # Read the exit code before _kill_process() clears it, so
                                 # an OS-killed text-only retry still gets the OOM message.
@@ -22369,6 +23070,22 @@ class LlamaCppBackend:
                                 )
                             )
 
+                if _restored_cpu_reprice is not None:
+                    # The child that answered is the CPU-only replay, so price the
+                    # advisory against the whole model in system RAM, against the pool
+                    # the preflight read rather than a live one taken with the weights
+                    # already resident.
+                    self._reprice_after_cpu_only_fallback(
+                        host_msg = _host_ram_msg,
+                        cpu_cmd = _last_spawn_cmd or cmd,
+                        env = env,
+                        avail_mib = _preflight_avail_mib,
+                        pageable_note = (
+                            _restored_cpu_reprice
+                            if isinstance(_restored_cpu_reprice, str)
+                            else None
+                        ),
+                    )
                 self._healthy = True
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full

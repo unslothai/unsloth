@@ -6033,6 +6033,10 @@ def _gguf_load_response(
         inference = load_inference_config(
             inference_identifier or llama_backend.model_identifier or model
         ),
+        # Advisory, and None on nearly every load. Recorded by load_model when the
+        # weights outgrow fast memory, so the client can say why generation is slow.
+        # getattr: older/custom backend doubles predate this additive field.
+        memory_warning = getattr(llama_backend, "last_load_warning", None),
         **_llama_runtime_fields(llama_backend),
     )
 
@@ -12436,13 +12440,15 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
-            # same reason: the host-RAM guard reads the finished argv, so it answers too late
-            _host_offload = await asyncio.to_thread(
-                llama_backend.host_offload_refusal_for_intent, gguf_intent
+            # Advisory, not a gate: an oversized GGUF mmaps and pages from disk rather
+            # than failing, which off fast storage is a deliberate way to run a quant
+            # bigger than fast memory, so the load goes ahead. Asked here as well as at
+            # launch because load_model's copy runs too deep to reach the response.
+            _host_offload_warning = await asyncio.to_thread(
+                llama_backend.host_offload_warning_for_intent, gguf_intent
             )
-            if _host_offload:
-                logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
-                raise HTTPException(status_code = 400, detail = _host_offload)
+            if _host_offload_warning:
+                logger.warning("Loading an oversized GGUF: %s", _host_offload_warning)
 
         if chat_load_needs_gpu:
             gpu_acquire_kwargs = {} if allow_gpu_owner_eviction else {"allow_evict": False}
