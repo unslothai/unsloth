@@ -181,23 +181,40 @@ _STAGE_PACKAGE = {
     "datasets": "datasets",
 }
 
+# Hold the import lock across a bare import and its failure cleanup. Locking only
+# the purge leaves a window where a queued importer can reuse stale submodules.
+# Hardware and transformers acquire additional locks, so exclude them to avoid
+# lock-order inversions.
+_BARE_IMPORT_STAGES = frozenset({"datasets"})
+
+
+@contextmanager
+def _held_import_lock(name: str, package: Optional[str]):
+    """Hold ``package``'s import lock for a bare-import stage; a no-op for the rest."""
+    if package is None or name not in _BARE_IMPORT_STAGES:
+        yield
+        return
+    with _ModuleLockManager(package):
+        yield
+
 
 def _run_stage(name: str, fn) -> None:
+    package = _STAGE_PACKAGE.get(name)
     started = time.perf_counter()
-    try:
-        fn()
-    except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
-        _status["stages"][name] = {"ok": False, "error": repr(exc)}
-        # warning, not debug: the stage stays cold and the first request pays for it.
-        logger.warning("torch warm stage %r failed: %r", name, exc)
-        package = _STAGE_PACKAGE.get(name)
-        if package:
-            purge_partial_import(package)
-    else:
-        _status["stages"][name] = {
-            "ok": True,
-            "seconds": round(time.perf_counter() - started, 3),
-        }
+    with _held_import_lock(name, package):
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
+            _status["stages"][name] = {"ok": False, "error": repr(exc)}
+            # warning, not debug: the stage stays cold and the first request pays for it.
+            logger.warning("torch warm stage %r failed: %r", name, exc)
+            if package:
+                purge_partial_import(package)
+        else:
+            _status["stages"][name] = {
+                "ok": True,
+                "seconds": round(time.perf_counter() - started, 3),
+            }
 
 
 def _warm_hardware(epoch: Optional[int] = None) -> None:

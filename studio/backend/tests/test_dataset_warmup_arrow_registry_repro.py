@@ -113,3 +113,77 @@ def test_datasets_reimport_waits_for_arrow_registry_cleanup():
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
+
+
+def test_a_request_queued_on_the_failing_warm_import_still_gets_a_working_datasets():
+    """A request queued on a failing warm import must wait through cleanup."""
+    probe = textwrap.dedent(
+        """
+        import importlib
+        import importlib.abc
+        import sys
+        import threading
+        import time
+
+        # Fail late, after PyArrow registration, while holding the import lock.
+        FAIL_TARGET = "datasets.packaged_modules"
+        at_failure = threading.Event()
+        release = threading.Event()
+        armed = {"on": True}
+
+        class LateFailure(importlib.abc.MetaPathFinder):
+            def find_spec(self, name, path=None, target=None):
+                if name == FAIL_TARGET and armed["on"]:
+                    armed["on"] = False
+                    at_failure.set()
+                    assert release.wait(30), "the warm import was never released"
+                    raise RuntimeError("injected late warm failure")
+                return None
+
+        sys.meta_path.insert(0, LateFailure())
+
+        from utils import torch_warmup
+
+        warm = threading.Thread(
+            target=lambda: torch_warmup._run_stage("datasets", torch_warmup._warm_datasets),
+            daemon=True,
+        )
+        warm.start()
+        assert at_failure.wait(30), "the warm never reached the injected failure"
+
+        outcome = {}
+
+        def request():
+            try:
+                module = importlib.import_module("datasets")
+                outcome["rows"] = module.Dataset.from_dict({"text": ["hello"]})[0]
+            except BaseException as exc:
+                outcome["error"] = exc
+
+        requester = threading.Thread(target=request, daemon=True)
+        requester.start()
+        time.sleep(0.5)
+        # Confirm the request is blocked on the paused warm import.
+        assert requester.is_alive(), "the request did not queue behind the warm import"
+
+        release.set()
+        requester.join(30)
+        warm.join(30)
+
+        assert not requester.is_alive(), "the request never finished"
+        assert not warm.is_alive(), "the warm never finished"
+        assert torch_warmup._status["stages"]["datasets"]["ok"] is False
+        assert "error" not in outcome, repr(outcome["error"])
+        assert outcome["rows"]["text"] == "hello"
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd = BACKEND,
+        text = True,
+        capture_output = True,
+        timeout = 120,
+        check = False,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
