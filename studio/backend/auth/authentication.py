@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import base64
+import hashlib
+import hmac
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
@@ -14,10 +18,13 @@ from starlette.concurrency import run_in_threadpool
 from .storage import (
     API_KEY_PREFIX,
     DEFAULT_ADMIN_USERNAME,
+    LINK_TOKEN_EXPIRE_SECONDS,
+    consume_link_token,
     credential_generation,
     get_jwt_secret,
     get_user_and_secret,
     load_jwt_secret,
+    save_link_token,
     save_refresh_token,
     validate_api_key_with_credential,
     verify_refresh_token,
@@ -186,6 +193,17 @@ class _BearerOrKeyless(HTTPBearer):
         return await super().__call__(request)
 
 
+# Domain-separation label for the link-token signing key. The key is derived from
+# the user's JWT secret (so a password change, which rotates that secret,
+# invalidates outstanding link tokens) but is NOT the JWT secret itself: a link
+# token must never be accepted as a bearer access token, so it is signed with a
+# different key and can't validate on the access-token path. That separation now
+# also has to hold against the keyless schemes above: _BearerOrKeyless only ever
+# yields KEYLESS_SCHEME or a real Bearer credential, and neither path consults
+# this key, so a link token has no way onto the access-token path.
+_LINK_TOKEN_KEY_LABEL = b"unsloth-studio-link-token-v1"
+
+
 # scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
 security = _BearerOrKeyless(scheme_name = "HTTPBearer")  # Reads Authorization: Bearer <token>
 
@@ -313,6 +331,173 @@ def reload_secret() -> None:
     Auth now resolves the current signing secret directly from SQLite.
     """
     load_jwt_secret()
+
+
+# ---------------------------------------------------------------------------
+# One-time link tokens (opt-in Colab same-tab handoff)
+# ---------------------------------------------------------------------------
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def _b64url_decode_canonical(value: str) -> Optional[bytes]:
+    """Decode unpadded base64url, rejecting every non-canonical spelling.
+
+    urlsafe_b64decode is not injective: it silently discards non-alphabet
+    characters, accepts already-present "=" padding, and ignores the unused pad
+    bits of the final character (RFC 4648 s3.5 puts the zero-pad-bits MUST on
+    encoders, and only lets decoders reject). A 32-byte HMAC therefore has four
+    spellings that decode to the same bytes, so flipping the last character of a
+    signature still passes compare_digest whenever it is canonically "A" -- about
+    1 in 16 tokens. Re-encoding the decoded bytes and requiring an exact match
+    makes the mapping one-to-one, so any altered signature text is rejected.
+    Returns None instead of raising, so callers reject without leaking which
+    check failed.
+    """
+    try:
+        raw = _b64url_decode(value)
+    except (ValueError, TypeError):
+        return None
+    if _b64url_encode(raw) != value:
+        return None
+    return raw
+
+
+def _link_token_key(subject: str) -> Optional[bytes]:
+    """Derive the link-token signing key for *subject* from their JWT secret.
+
+    Returns None when the subject has no secret (unknown user), so a forged token
+    naming a non-existent user is rejected before any comparison.
+    """
+    secret = get_jwt_secret(subject)
+    if secret is None:
+        return None
+    return hmac.new(secret.encode("utf-8"), _LINK_TOKEN_KEY_LABEL, hashlib.sha256).digest()
+
+
+def _decode_link_payload(payload_b64: str) -> Optional[dict]:
+    """Parse the (still unverified) payload, or None for anything unparseable.
+
+    RecursionError is caught alongside the parse errors: on Python 3.10/3.11 the
+    json scanner raises it at ~1000 nesting levels, and 1000 nested arrays encode
+    to well under LINK_TOKEN_MAX_LENGTH, so an unauthenticated caller could
+    otherwise turn every /link-exchange POST into a 500 that never reaches the
+    failure counter and so is never rate limited. Both are rejected here as a
+    plain bad token instead. (3.12+ raises no error for that depth; the catch
+    keeps every supported version on the same path.)
+    """
+    raw = _b64url_decode_canonical(payload_b64)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+
+
+def create_link_token(subject: str) -> str:
+    """Mint a one-time, short-TTL HMAC-signed link token bound to *subject*.
+
+    The token is ``<payload_b64>.<sig_b64>`` where the payload carries the
+    subject, a random single-use id (jti), and an expiry, and the signature is
+    HMAC-SHA256 over the payload under a key derived from the subject's JWT
+    secret. The jti is recorded so the token can be exchanged exactly once.
+
+    SECURITY: the returned value is a bearer credential. NEVER log it, and only
+    ever place it on the private same-tab URL, never on a shared/public link.
+    """
+    key = _link_token_key(subject)
+    if key is None:
+        raise RuntimeError(f"Cannot mint a link token for unknown subject {subject!r}")
+    jti = secrets.token_urlsafe(24)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds = LINK_TOKEN_EXPIRE_SECONDS)
+    expires_iso = expires_at.isoformat()
+    save_link_token(jti, subject, expires_iso)
+    payload = {"sub": subject, "jti": jti, "exp": expires_iso}
+    payload_b64 = _b64url_encode(json.dumps(payload, separators = (",", ":")).encode("utf-8"))
+    sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    return f"{payload_b64}.{_b64url_encode(sig)}"
+
+
+def exchange_link_token_with_secret(token: str) -> Optional[Tuple[str, str]]:
+    """Validate and consume a one-time link token, returning ``(subject, secret)``.
+
+    ``secret`` is the JWT secret whose derived key validated the signature. The
+    session-issuing route binds the tokens it mints to this exact secret: a
+    concurrent password change rotates the secret, and if it rotated between this
+    consumption and issuance the route revokes the just-minted session and rejects.
+    Without that binding a pre-change link token consumed just before the rotation
+    committed could mint a session under the NEW secret and survive the change --
+    the consume-before-rotation TOCTOU (cf. Keycloak CVE-2026-1035, where
+    non-atomic single-use enforcement undermined refresh-token rotation).
+
+    Enforced in order: well-formed structure, a valid constant-time signature
+    (bound to the named subject's derived key), matching subject claim, unexpired,
+    and single-use consumption of the jti. Any failure returns None without a hint
+    about which check failed.
+    """
+    if not isinstance(token, str) or token.count(".") != 1:
+        return None
+    payload_b64, sig_b64 = token.split(".", 1)
+    if not payload_b64 or not sig_b64:
+        return None
+
+    # Read the claimed subject from the (still-unverified) payload only to select
+    # the signing key; the signature check below is what actually authenticates it.
+    claims = _decode_link_payload(payload_b64)
+    if not isinstance(claims, dict):
+        return None
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    # Capture the secret (not just the derived key) so the caller can detect a
+    # rotation that races issuance; None means an unknown user -> reject.
+    secret = get_jwt_secret(subject)
+    if secret is None:
+        return None
+    key = hmac.new(secret.encode("utf-8"), _LINK_TOKEN_KEY_LABEL, hashlib.sha256).digest()
+    expected_sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    # Canonical decode: a permissive base64url decode would accept three sibling
+    # spellings of the same signature bytes, so a tampered trailing character
+    # could still verify (see _b64url_decode_canonical).
+    provided_sig = _b64url_decode_canonical(sig_b64)
+    if provided_sig is None:
+        return None
+    if not hmac.compare_digest(expected_sig, provided_sig):
+        return None
+
+    jti = claims.get("jti")
+    expires_iso = claims.get("exp")
+    if not isinstance(jti, str) or not isinstance(expires_iso, str):
+        return None
+    # Expiry is defense-in-depth; consume_link_token also drops expired rows.
+    try:
+        if datetime.now(timezone.utc) > datetime.fromisoformat(expires_iso):
+            return None
+    except ValueError:
+        return None
+
+    if not consume_link_token(jti, subject):
+        return None
+    return subject, secret
+
+
+def exchange_link_token(token: str) -> Optional[str]:
+    """Validate and consume a one-time link token, returning its subject or None.
+
+    Thin wrapper over :func:`exchange_link_token_with_secret` for callers that do
+    not issue a session and so need only the subject.
+    """
+    result = exchange_link_token_with_secret(token)
+    return result[0] if result is not None else None
 
 
 async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:

@@ -1100,11 +1100,19 @@ from utils.upload_limits import (  # noqa: E402
     upload_request_limit_bytes,
 )
 
+# Public auth routes (/api/auth/login, /refresh, /link-exchange, ...) are
+# unauthenticated and take only small JSON bodies, so cap them well below the
+# default upload-sized limit: /api/auth/link-exchange in particular accepts an
+# attacker-controlled token that FastAPI buffers and exchange_link_token_with_secret
+# then scans/decodes/HMACs, so bound the buffered body here before it is read.
+AUTH_REQUEST_BODY_MAX_BYTES = 64 * 1024
+
 _BODY_PROTECTED_PREFIXES = (
     # Blanket-protect the whole /v1 surface, like /api/inference: every /v1 POST buffers a JSON
     # body and none is a multipart passthrough, so one prefix caps them all.
     "/v1",
     "/p/",
+    "/api/auth",
     "/api/inference",
     "/api/picker",
     "/api/data-recipe",
@@ -1157,6 +1165,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
 
 
 def _get_request_body_max_bytes(path: str) -> int:
+    if path.startswith("/api/auth"):
+        return AUTH_REQUEST_BODY_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe/raw"):
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):

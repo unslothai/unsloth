@@ -979,6 +979,19 @@ def _connect_auth_db() -> sqlite3.Connection:
         );
         """
     )
+    # Mirror backend storage.get_connection: one-time link tokens live in the SAME
+    # auth.db. The CLI never mints them, but _cli_update_password revokes any
+    # outstanding rows in its password transaction (as the backend does), so the
+    # table must exist here even on a DB the CLI created before the backend ran.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_tokens (
+            jti        TEXT PRIMARY KEY,
+            username   TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        """
+    )
     auth_columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in auth_columns:
         conn.execute(
@@ -1241,6 +1254,12 @@ def _cli_update_password(
     (``reset_password``, ``_apply_supplied_password_before_launch``) rely on the
     revocations running even when the UPDATE matches nothing, e.g. a renamed
     admin row.
+
+    Revoking link_tokens here mirrors backend storage.update_password: a link
+    token is signed with a key derived from the JWT secret rotated in this same
+    statement, so a leftover row would let a concurrent exchange that read the old
+    key before the rotation still consume its jti and mint a session. Deleting the
+    rows in the SAME transaction as the rotation closes that race.
     """
     password_salt, password_hash = _hash_password(new_password)
     guard = " AND must_change_password = 1" if require_must_change else ""
@@ -1256,6 +1275,7 @@ def _cli_update_password(
         if require_must_change and cursor.rowcount == 0:
             return False
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
         conn.execute(
             "DELETE FROM app_secrets WHERE key IN (?, ?)",
             (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),

@@ -9,6 +9,15 @@ from pydantic import BaseModel, Field
 
 from auth.storage import MIN_PASSWORD_LENGTH
 
+# A well-formed link token is `<payload_b64>.<sig_b64>`: a small JSON payload
+# (subject, a 32-char jti, an ISO expiry) plus a 43-char signature, so it is only
+# a few hundred bytes even for a long custom username. `/api/auth/link-exchange`
+# is unauthenticated and public, and `/api/auth` sits behind its own small body
+# cap (main.AUTH_REQUEST_BODY_MAX_BYTES); this field-level bound is the second
+# layer, rejecting an oversized token before exchange_link_token_with_secret()
+# scans, base64-decodes, and HMACs attacker-controlled data.
+LINK_TOKEN_MAX_LENGTH = 4096
+
 
 class AuthLoginRequest(BaseModel):
     """Login payload: username/password to obtain a JWT."""
@@ -27,6 +36,16 @@ class RefreshTokenRequest(BaseModel):
     """Refresh token payload to obtain new access + refresh tokens."""
 
     refresh_token: str = Field(..., description = "Refresh token from a previous login or refresh")
+
+
+class LinkTokenRequest(BaseModel):
+    """One-time link-token exchange payload (opt-in Colab same-tab handoff)."""
+
+    link_token: str = Field(
+        ...,
+        max_length = LINK_TOKEN_MAX_LENGTH,
+        description = "One-time, short-lived link token to exchange",
+    )
 
 
 class AuthStatusResponse(BaseModel):

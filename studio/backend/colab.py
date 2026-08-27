@@ -591,6 +591,44 @@ def _display_admin_credentials(
             return False
 
 
+def _mint_same_tab_link_token() -> "str | None":
+    """Opt-in: mint a ONE-TIME link token for the SAME-TAB Colab proxy URL only.
+
+    Never call this for the shared Cloudflare link. Returns None on any failure,
+    in which case the same-tab URL simply carries no token and the login page
+    still works. The returned token is a bearer credential: it is placed ONLY on
+    the private same-tab URL and is never logged.
+    """
+    try:
+        from auth.storage import DEFAULT_ADMIN_USERNAME, ensure_default_admin
+        from auth.authentication import create_link_token
+
+        ensure_default_admin()
+        return create_link_token(DEFAULT_ADMIN_USERNAME)
+    except Exception as e:
+        logger.info(f"Could not mint a same-tab link token ({e}); showing the plain URL.")
+        return None
+
+
+def _append_link_token(url: str, token: "str | None") -> str:
+    """Append ``?link_token=...`` to the same-tab URL. No-op when token is None."""
+    if not token:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}link_token={token}"
+
+
+def _link_token_opt_in(explicit: bool) -> bool:
+    """Whether to mint a same-tab link token: the explicit arg OR the env flag."""
+    if explicit:
+        return True
+    return os.environ.get("UNSLOTH_STUDIO_COLAB_LINK_TOKEN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 # Literal on purpose: the strip below must run even if importing auth fails, so it
 # cannot depend on auth.terminal_prompt.SUPPLIED_PASSWORD_ENV being importable. A
 # test asserts the two stay equal.
@@ -842,15 +880,28 @@ def _embed_kernel_port_iframe(port: int) -> bool:
         return False
 
 
-def _embed_html_iframe(url: str, port: int) -> bool:
-    """Fallback embed: raw HTML iframe when the Colab helper is unavailable."""
+def _embed_html_iframe(
+    url: str,
+    port: int,
+    *,
+    same_tab_url: "str | None" = None,
+) -> bool:
+    """Fallback embed: raw HTML iframe when the Colab helper is unavailable.
+
+    *same_tab_url* (opt-in) is the token-bearing same-tab proxy URL used ONLY as the
+    iframe ``src``; it may carry a one-time ``?link_token=...`` bearer credential and is
+    never logged. The visible header still shows the truncated, token-free *url*, and
+    when *same_tab_url* is None the plain *url* is used as the src.
+    """
     try:
         from IPython.display import HTML, display
     except ImportError:
         return False
 
+    # Header shows the truncated, token-free URL; the token (if any) rides only on the
+    # iframe src via *same_tab_url*, never in the visible header or logs.
     short_url = _short_colab_url(url, port)
-    iframe_src = url
+    iframe_src = same_tab_url or url
     iframe_id = f"unsloth-studio-{port}"
     try:
         display(
@@ -884,16 +935,32 @@ def _show_and_embed(
     cloudflare_url: "str | None" = None,
     colab_login: "tuple[str, str] | None" = None,
     cloudflare_requested: bool = False,
+    same_tab_link_token: "str | None" = None,
 ):
     """Render the Unsloth ready card + iframe for *port*.
 
     Prefer Colab's ``serve_kernel_port_as_iframe`` on real Colab; raw HTML iframe is the
     fallback. Cloudflare cards stay clickable.
+
+    *same_tab_link_token* (opt-in) is appended as ``?link_token=...`` to the SAME-TAB
+    proxy URL ONLY (never the shared *cloudflare_url*) and rides solely on the HTML
+    iframe ``src``. It is a bearer credential, so it is never logged and never placed on
+    the visible header. The kernel-port helper takes only the port and so cannot carry it.
+
+    TODO(frontend): the built UI does not yet read ``?link_token`` from the URL, POST it
+    to ``/api/auth/link-exchange``, store the returned JWT, and scrub the query with
+    ``history.replaceState``. Until it does, the token is emitted but unused; the same-tab
+    login page still works normally. Wire the frontend exchange + scrub to complete the
+    one-time auto-login handoff.
     """
     url = get_colab_url(port)
+    # Log the token-free URL; the token must never be written to logs.
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:
         logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
+
+    # Same-tab URL may carry the one-time token; the shared link never does.
+    same_tab_url = _append_link_token(url, same_tab_link_token)
 
     _warn_colab_cloudflare_missing(
         use_cloudflare = cloudflare_requested,
@@ -942,10 +1009,15 @@ def _show_and_embed(
     if _is_colab_runtime():
         if _embed_kernel_port_iframe(port):
             return
-    _embed_html_iframe(url, port)
+    _embed_html_iframe(url, port, same_tab_url = same_tab_url)
 
 
-def start(port: int = 8888, *, cloudflare: "bool | None" = None):
+def start(
+    port: int = 8888,
+    *,
+    cloudflare: "bool | None" = None,
+    link_token: bool = False,
+):
     """Start Unsloth Studio in Colab and display the URL.
 
     Args:
@@ -958,16 +1030,24 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
             credential cannot be surfaced, so the link is never published under the
             default credential. The cell output is saved with the notebook, so clear
             it before sharing or exporting (the card says so too).
+        link_token: Opt in (default OFF; also enabled by
+            ``UNSLOTH_STUDIO_COLAB_LINK_TOKEN=1``) to append a ONE-TIME, short-TTL
+            link token to the SAME-TAB proxy URL for a one-click login handoff. The
+            token is never added to the shared Cloudflare link. See the frontend
+            TODO in ``_show_and_embed``: the token is emitted but the UI does not
+            consume it yet, so today it is a no-op the login page ignores.
 
     Usage:
         start()                    # Cloudflare link on Colab (auto); proxy iframe elsewhere
         start(cloudflare=False)    # Colab proxy iframe only (often blank on current Colab)
         start(cloudflare=True)     # force Cloudflare link on any runtime
+        start(link_token=True)     # same-tab URL carries a one-time link token
     """
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
+    want_link_token = _link_token_opt_in(link_token)
 
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):
@@ -988,6 +1068,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
                 port,
                 cloudflare_url = cf_url,
                 cloudflare_requested = use_cloudflare,
+                same_tab_link_token = _mint_same_tab_link_token() if want_link_token else None,
             )
             for _ in range(10000):
                 time.sleep(300)
@@ -1059,6 +1140,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
             actual_port,
             cloudflare_url = cf_url,
             cloudflare_requested = use_cloudflare,
+            same_tab_link_token = _mint_same_tab_link_token() if want_link_token else None,
         )
 
         # Keep kernel alive so the daemon server thread runs.
