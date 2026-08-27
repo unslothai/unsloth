@@ -59,6 +59,86 @@ OWNER_MARKER = ".unsloth-studio-owned"
 # It matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding the lock forever; cancel_event is the user-facing abort.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
 
+_PRIVATE_TEXT_OPTIONS = frozenset({"--prompt", "--negative-prompt", "-p", "-n"})
+
+
+def _verbose_native_logs() -> bool:
+    """Return whether Studio verbose logging is enabled."""
+    try:
+        from loggers.config import verbose_logging_requested
+        return verbose_logging_requested()
+    except Exception:
+        return False
+
+
+def _last_option_value(cmd: list[str], option: str) -> Optional[str]:
+    """Return an option's effective last value, including ``--option=value`` form."""
+    value = None
+    prefix = f"{option}="
+    for index, token in enumerate(cmd):
+        if token == option and index + 1 < len(cmd):
+            value = str(cmd[index + 1])
+        elif str(token).startswith(prefix):
+            value = str(token)[len(prefix) :]
+    return value
+
+
+def _sd_cpp_command_for_log(cmd: list[str]) -> list[str]:
+    """Redact prompt text from argv before logging."""
+    out: list[str] = []
+    index = 0
+    while index < len(cmd):
+        token = str(cmd[index])
+        if token in _PRIVATE_TEXT_OPTIONS:
+            out.append(token)
+            if index + 1 < len(cmd):
+                out.append("<redacted>")
+                index += 2
+                continue
+            index += 1
+            continue
+        replaced = False
+        for option in _PRIVATE_TEXT_OPTIONS:
+            if token.startswith(f"{option}="):
+                out.append(f"{option}=<redacted>")
+                replaced = True
+                break
+        if not replaced:
+            out.append(token)
+        index += 1
+    return out
+
+
+def _compact_log_value(value: str, limit: int = 48) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _sd_cpp_command_summary(cmd: list[str], *, default_mode: str = "img_gen") -> str:
+    """Summarize argv without paths or prompt text."""
+    mode = _compact_log_value(_last_option_value(cmd, "--mode") or default_mode)
+    fields = [f"mode={mode}"]
+    model = _last_option_value(cmd, "--diffusion-model")
+    if model:
+        model_name = str(model).replace("\\", "/").rsplit("/", 1)[-1]
+        fields.append(f"model={_compact_log_value(model_name)}")
+    width = _last_option_value(cmd, "--width")
+    height = _last_option_value(cmd, "--height")
+    if width is not None and height is not None:
+        fields.append(f"size={_compact_log_value(width)}x{_compact_log_value(height)}")
+    for label, option in (
+        ("steps", "--steps"),
+        ("frames", "--video-frames"),
+        ("fps", "--fps"),
+        ("seed", "--seed"),
+        ("port", "--listen-port"),
+        ("threads", "--threads"),
+    ):
+        value = _last_option_value(cmd, option)
+        if value is not None:
+            fields.append(f"{label}={_compact_log_value(value)}")
+    return " ".join(fields)
+
 
 # sd-cli redraws its progress bar IN PLACE. Each redraw is one printf + fflush shaped
 # "\r<bar> <step>/<steps> - <speed>\033[K", with a trailing newline only on the final step of a
@@ -747,7 +827,12 @@ class SdCppEngine:
         if env:
             base.update(env)
         run_env = runtime_env(self._require_binary(), base)
-        logger.info("sd-cli run: %s", " ".join(cmd))
+        summary = _sd_cpp_command_summary(cmd)
+        verbose_logs = _verbose_native_logs()
+        if verbose_logs:
+            logger.info("sd-cli run: %s", " ".join(_sd_cpp_command_for_log(cmd)))
+        else:
+            logger.info("sd-cli run started: %s", summary)
 
         t0 = time.time()
         proc = subprocess.Popen(
@@ -825,7 +910,11 @@ class SdCppEngine:
                 f"sd-cli reported success but no image at {out}. Last output:\n"
                 + "\n".join(tail[-12:])
             )
-        logger.info("sd-cli run ok in %.1fs -> %s", time.time() - t0, out)
+        elapsed = time.time() - t0
+        if verbose_logs:
+            logger.info("sd-cli run ok in %.1fs -> %s", elapsed, out)
+        else:
+            logger.info("sd-cli run completed: %s elapsed=%.1fs", summary, elapsed)
         return out
 
 

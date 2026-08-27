@@ -1360,6 +1360,58 @@ def test_generate_progress_derives_total_steps_and_fraction(fake_runtime):
     assert gen["step"] == 5 and gen["fraction"] == 0.25
 
 
+@pytest.mark.parametrize(
+    "video, error, total, expected",
+    [
+        (
+            {"id": "clip-1"},
+            None,
+            12,
+            {
+                "phase": "completed",
+                "percent": 100,
+                "step": 12,
+                "total_steps": 12,
+                "video_id": "clip-1",
+            },
+        ),
+        (
+            None,
+            "negative_prompt is not supported by this family.",
+            0,
+            {
+                "phase": "failed",
+                "percent": 0,
+                "step": 0,
+                "total_steps": 0,
+                "error": "negative_prompt is not supported by this family.",
+            },
+        ),
+    ],
+)
+def test_finish_generate_job_logs_each_terminal_outcome_once(
+    fake_runtime, monkeypatch, video, error, total, expected
+):
+    import core.inference.video as video_mod
+
+    events = []
+
+    class _Recorder:
+        def info(self, event, **fields):
+            events.append((event, fields))
+
+    monkeypatch.setattr(video_mod, "logger", _Recorder())
+    backend = VideoBackend()
+    token = object()
+    backend._generate_job_token = token
+    backend._generate_job_active = True
+
+    backend._finish_generate_job(job_token = token, video = video, error = error, total = total)
+    backend._finish_generate_job(job_token = token, video = video, error = error, total = total)
+
+    assert events == [("video_generation_progress", expected)]
+
+
 def test_failed_background_generate_retains_terminal_error(fake_runtime, tmp_path, monkeypatch):
     # A page mounted AFTER a background job failed reads the outcome from this retained terminal record, so a failure must stay pollable until the next job.
     backend = VideoBackend()

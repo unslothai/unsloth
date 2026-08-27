@@ -156,7 +156,9 @@ def _server_with(popen, client):
 # ── start / readiness ──────────────────────────────────────────────────────────
 
 
-def test_start_becomes_ready_when_capabilities_200(patched):
+def test_start_becomes_ready_when_capabilities_200(patched, caplog):
+    patched.setattr(srv, "_verbose_native_logs", lambda: False)
+    caplog.set_level("INFO", logger = srv.__name__)
     popen = _FakePopen(lines = ["loading model", "listening on: http://127.0.0.1:1"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
     s = _server_with(
@@ -165,6 +167,10 @@ def test_start_becomes_ready_when_capabilities_200(patched):
     s.start(_FILES, startup_timeout = 5.0)
     assert s.is_alive() is True
     assert s.port is not None
+    messages = [record.getMessage() for record in caplog.records if record.name == srv.__name__]
+    start = next(message for message in messages if message.startswith("starting sd-server:"))
+    assert start.startswith("starting sd-server: mode=server model=z.gguf port=")
+    assert "/m/z.gguf" not in start
 
 
 def test_start_fails_fast_when_process_exits(patched):

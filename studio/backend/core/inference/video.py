@@ -5243,6 +5243,14 @@ class VideoBackend:
                     "total": 0,
                     "eta_seconds": None,
                 }
+                logger.info(
+                    "video_generation_progress",
+                    phase = "failed",
+                    percent = 0,
+                    step = 0,
+                    total_steps = 0,
+                    error = error,
+                )
             else:
                 self._gen = {
                     "active": False,
@@ -5252,6 +5260,14 @@ class VideoBackend:
                     "total": total,
                     "eta_seconds": None,
                 }
+                logger.info(
+                    "video_generation_progress",
+                    phase = "completed",
+                    percent = 100,
+                    step = total,
+                    total_steps = total,
+                    video_id = (video or {}).get("id"),
+                )
 
     def generate(
         self,
