@@ -234,9 +234,11 @@ import {
   resumesExactly,
 } from "../utils/continuation";
 import {
+  claimLiveGenerationRun,
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
+  releaseLiveGenerationRun,
 } from "../utils/chat-generation-recovery";
 import {
   generateAudio,
@@ -6131,6 +6133,9 @@ export function createOpenAIStreamAdapter(
                     if (generationDecision === "durable") return;
                   } else {
                     generationRunId = generationRun.id;
+                    // This tab is the producer for this run, so the recovery follower must
+                    // not also replay it from storage. Released in the finally below.
+                    claimLiveGenerationRun(generationRunId);
                     generationStatus = generationRun.status;
                     if (generationStopRequested) {
                       void cancelChatGenerationRun(generationRun.id).catch(
@@ -7594,6 +7599,9 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
+        // Unconditional: a run left claimed after its stream died is one this tab would
+        // never recover.
+        if (generationRunId) releaseLiveGenerationRun(generationRunId);
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.
