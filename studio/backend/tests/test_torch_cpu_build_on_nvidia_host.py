@@ -201,6 +201,12 @@ def test_the_windows_amd_adapters_are_inventoried_too(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
+    # A registry record only counts when the live scan sees the card too.
+    monkeypatch.setattr(
+        hw,
+        "_windows_live_adapter_names",
+        lambda: ["AMD Radeon RX 7900 XT", "AMD Radeon(TM) Graphics"],
+    )
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -829,6 +835,9 @@ def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(
+        hw, "_windows_live_adapter_names", lambda: ["Intel(R) Arc(TM) A770 Graphics"]
+    )
+    monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
         lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
@@ -971,3 +980,164 @@ def test_a_process_that_cannot_start_a_thread_keeps_the_stale_answer(monkeypatch
     assert hw.get_physical_gpu_inventory(block = False) is warm
     # And the single-flight flag is released, or every later refresh is suppressed.
     assert hw._physical_gpu_inventory_refreshing is False
+
+
+# ========== Round six ==========
+
+
+def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
+    """The DirectX registry outlives the hardware.
+
+    setup.ps1 says so and uses these records only to RE-LABEL an adapter its live WMI
+    scan also returned, never to add one. A CPU-only machine with a driver record left
+    behind would otherwise be told it has an unusable GPU and offered a repair that
+    cannot restore absent hardware.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, "", returncode = 9)
+    monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["Microsoft Basic Display"])
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+            {0x1: {"name": "AMD Radeon RX 6800", "dedicated_memory_bytes": 16 * 1024**3}}
+            if vendor_id == hw._AMD_PCI_VENDOR_ID
+            else {}
+        ),
+    )
+
+    inventory = hw.get_physical_gpu_inventory()
+    assert inventory["devices"] == []
+    assert inventory["sources"] == []
+
+
+def test_a_live_scan_that_cannot_answer_reports_unknown_rather_than_guessing(monkeypatch):
+    # Neither "this card is real" nor "this card is gone" is knowable then, and unknown
+    # is what keeps a settled verdict instead of inventing one.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, "", returncode = 9)
+    monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: None)
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+            {0x1: {"name": "AMD Radeon RX 6800"}} if vendor_id == hw._AMD_PCI_VENDOR_ID else {}
+        ),
+    )
+
+    inventory = hw.get_physical_gpu_inventory()
+    assert inventory["devices"] == []
+    assert inventory["unknown"] is True
+
+
+@pytest.mark.parametrize(
+    "registry,live,matched",
+    [
+        ("AMD Radeon RX 7900 XT", "AMD Radeon RX 7900 XT", True),
+        # The two sources spell the same card differently; either may be the prefix.
+        ("AMD Radeon RX 7900 XT", "AMD Radeon RX 7900 XT Graphics", True),
+        ("Intel(R) Arc(TM) A770 Graphics", "Intel(R) Arc(TM) A770", True),
+        ("AMD Radeon RX 6800", "NVIDIA GeForce RTX 4090", False),
+        ("", "AMD Radeon RX 6800", False),
+        ("AMD Radeon RX 6800", "", False),
+    ],
+)
+def test_the_registry_to_live_join_matches_setup_ps1(registry, live, matched):
+    assert hw._adapter_name_is_live(registry, [live]) is matched
+
+
+def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_path):
+    """setup.sh does not autodetect Linux XPU, and setup.ps1 limits it to Arc.
+
+    An Intel UHD iGPU beside a CPU wheel is the correct state of that machine, so
+    counting it would report a broken install and offer a repair that reinstalls the
+    very CPU build it just replaced.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+
+    igpu = [{"vendor": "intel", "name": None, "index": 0}]
+    assert hw._devices_that_can_establish_a_mismatch(igpu) == []
+
+    # An Arc card by name does, and so do NVIDIA and AMD unconditionally.
+    arc = [{"vendor": "intel", "name": "Intel(R) Arc(TM) A770 Graphics", "index": 0}]
+    assert hw._devices_that_can_establish_a_mismatch(arc) == arc
+    others = [{"vendor": "nvidia", "index": 0}, {"vendor": "amd", "index": 0}]
+    assert hw._devices_that_can_establish_a_mismatch(others) == others
+
+
+def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
+    # The Linux sysfs walk publishes no name, which is why the expectation and the
+    # installed runtime are consulted as well.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    nameless = [{"vendor": "intel", "name": None, "index": 0}]
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+
+    manifest = tmp_path / "unsloth_install_manifest.json"
+    manifest.write_text('{"schema": 1, "expected_torch_tag": "xpu"}', encoding = "utf-8")
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
+
+    manifest.write_text('{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8")
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == []
+
+    # An installed XPU wheel counts too: that venv plainly expected an Intel GPU.
+    xpu_torch = _fake_torch("cpu")
+    xpu_torch.__version__ = "2.9.0+xpu"
+    monkeypatch.setitem(sys.modules, "torch", xpu_torch)
+    assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
+
+
+def test_an_accelerator_that_came_back_retires_the_cached_verdict(monkeypatch):
+    """Only reason and detail are refreshed here; DEVICE and CHAT_ONLY are not.
+
+    So a driver that finished restarting left Train and Export disabled AND the UI
+    saying there is no GPU, which is worse than the stale mismatch it replaced.
+    """
+    import sys
+
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
+    monkeypatch.setattr(hw, "_REDETECTION_REQUESTED", False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
+    calls = {"n": 0}
+    monkeypatch.setattr(hw, "invalidate_detection", lambda: calls.__setitem__("n", calls["n"] + 1))
+
+    # The current answer is kept for now; the next detection pass publishes the real one.
+    assert hw.current_chat_only_verdict() == ("torch_cuda_unavailable", "2.6.0+cu124")
+    assert calls["n"] == 1
+
+    # At most one request per recovery: a poll every few seconds must not retire the
+    # epoch on every call and starve detection of a chance to settle.
+    hw.current_chat_only_verdict()
+    hw.current_chat_only_verdict()
+    assert calls["n"] == 1
+
+
+def test_a_host_whose_accelerator_never_came_back_is_not_re_detected(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    monkeypatch.setattr(hw, "_REDETECTION_REQUESTED", False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [{"vendor": "nvidia"}]}
+    )
+    calls = {"n": 0}
+    monkeypatch.setattr(hw, "invalidate_detection", lambda: calls.__setitem__("n", calls["n"] + 1))
+
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+    assert calls["n"] == 0

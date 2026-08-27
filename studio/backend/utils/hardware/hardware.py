@@ -35,6 +35,9 @@ from loggers import get_logger
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
 
 logger = get_logger(__name__)
 
@@ -355,6 +358,9 @@ _PHYSICAL_GPU_INVENTORY_TTL_SECONDS = 60.0
 _physical_gpu_inventory_lock = threading.Lock()
 _physical_gpu_inventory_refresh_lock = threading.Lock()
 _physical_gpu_inventory_refreshing = False
+# One re-detection request per recovery, so a poll every few seconds cannot
+# retire the epoch on every call and starve detection of a chance to settle.
+_REDETECTION_REQUESTED = False
 _physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
 
 
@@ -390,6 +396,12 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     # registry records every adapter with its dedicated memory, and
     # _rocm_windows_per_device_vram already trusts that map for the System tab.
     if platform.system() == "Windows":
+        # The registry outlives the hardware. setup.ps1 says so in as many words and
+        # uses these records only to RE-LABEL an adapter its live WMI scan also
+        # returned, never to add one, "an unmatched entry is a driver record outliving
+        # its card". A CPU-only machine with a stale record would otherwise be told it
+        # has an unusable GPU and offered a repair that cannot restore absent hardware.
+        _live = _windows_live_adapter_names()
         for _vendor, _vendor_id in (
             ("amd", _AMD_PCI_VENDOR_ID),
             # An Arc host whose XPU wheel was replaced by a CPU one has exactly the
@@ -405,7 +417,18 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                 unknown = True
             if not records:
                 continue
-            for ordinal, luid in enumerate(sorted(records)):
+            if _live is None:
+                # The live scan could not answer. Reporting an uncorroborated record as
+                # a physical GPU is the failure mode above, so contribute nothing and
+                # say so, which keeps a settled verdict rather than inventing one.
+                unknown = True
+                continue
+            _corroborated = [
+                luid
+                for luid in sorted(records)
+                if _adapter_name_is_live(records[luid].get("name"), _live)
+            ]
+            for ordinal, luid in enumerate(_corroborated):
                 record = records[luid]
                 dedicated = record.get("dedicated_memory_bytes")
                 devices.append(
@@ -419,7 +442,7 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                         "source": "directx-registry",
                     }
                 )
-            if "directx-registry" not in sources:
+            if _corroborated and "directx-registry" not in sources:
                 sources.append("directx-registry")
 
     # Linux AMD. The failure shape #8473 actually reported: a ROCm wheel replaced by a
@@ -447,6 +470,55 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         # Devices found is an answer, whatever some other vendor's probe did.
         "unknown": bool(unknown and not devices),
     }
+
+
+def _windows_live_adapter_names() -> Optional[list[str]]:
+    """Display adapter names Windows reports as PRESENT, or None when it could not say.
+
+    Win32_VideoController is the same live source setup.ps1 scans. None is the important
+    third answer: "the scan failed" must not read as "no adapters", or a corroboration
+    step would silently drop every real card on a host whose WMI is unavailable.
+    """
+    if platform.system() != "Windows":
+        return None
+    try:
+        ps = (
+            "(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue"
+            ' | Select-Object -ExpandProperty Name) -join "`n"'
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("Live Windows adapter scan failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    return [line.strip() for line in (r.stdout or "").splitlines() if line.strip()]
+
+
+def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
+    """Whether a registry adapter name corresponds to one the live scan returned.
+
+    Substring in either direction, because the two sources spell the same card
+    differently: the registry carries the driver's own description while WMI carries the
+    display name, and one is often a prefix of the other. setup.ps1 joins them the same
+    way, with Contains.
+    """
+    candidate = (name or "").strip().lower()
+    if not candidate:
+        return False
+    return any(
+        candidate in live.lower() or live.lower() in candidate
+        for live in live_names
+        if live.strip()
+    )
 
 
 def _linux_drm_sysfs_records() -> list[Dict[str, Any]]:
@@ -748,6 +820,62 @@ def classify_torch_build() -> Optional[str]:
         return None
 
 
+# setup.ps1's own rule for what counts as an XPU card, verbatim in intent: only Arc and
+# Data Center GPU are autodetected as XPU. An ordinary Intel iGPU is a display adapter,
+# not a training device.
+_XPU_ADAPTER_NAME_RE = re.compile(r"intel.*(arc|data center gpu)", re.IGNORECASE)
+
+
+def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """The subset of the inventory whose presence means PyTorch OUGHT to have a GPU.
+
+    NVIDIA and AMD qualify outright. Intel does not, by itself: setup.sh does not
+    autodetect Linux XPU at all, and setup.ps1 limits automatic XPU detection to Arc and
+    Data Center GPU by name. An Intel UHD iGPU beside a CPU wheel is the expected,
+    correct state of that machine, so counting it would report a mismatch and offer a
+    repair that reinstalls the very CPU build it just replaced.
+
+    An Intel card still counts when it is one this stack would have installed XPU torch
+    for: a name that matches setup.ps1's rule, or an XPU expectation recorded for this
+    venv, or a torch that carries an XPU runtime. The Linux sysfs walk publishes no
+    name, which is exactly why the expectation and the runtime are consulted too.
+    """
+    xpu_expected = _expected_xpu_flavor_was_chosen() or _torch_reports_an_xpu_runtime()
+    keep: list[Dict[str, Any]] = []
+    for device in devices:
+        if device.get("vendor") != "intel":
+            keep.append(device)
+            continue
+        if xpu_expected or _XPU_ADAPTER_NAME_RE.search(str(device.get("name") or "")):
+            keep.append(device)
+    return keep
+
+
+def _expected_xpu_flavor_was_chosen() -> bool:
+    """Whether this install selected an XPU wheel, by pin or by recorded flavor."""
+    for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
+        if _torch_index_leaf(os.environ.get(var) or "") == "xpu":
+            return True
+    try:
+        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
+        with open(path, encoding = "utf-8") as fh:
+            recorded = json.load(fh).get("expected_torch_tag")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(recorded, str) and recorded.strip().lower() == "xpu"
+
+
+def _torch_reports_an_xpu_runtime() -> bool:
+    """Whether the installed torch is an XPU build, however unusable it currently is."""
+    try:
+        import torch
+        if "+xpu" in str(getattr(torch, "__version__", "")).lower():
+            return True
+        return getattr(getattr(torch, "version", None), "xpu", None) is not None
+    except Exception:
+        return False
+
+
 def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     """``physical_devices`` + ``mismatch`` for a host whose GPUs PyTorch cannot use.
 
@@ -760,7 +888,7 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     if reason is None:
         return {}
     inventory = get_physical_gpu_inventory()
-    physical = inventory.get("devices") or []
+    physical = _devices_that_can_establish_a_mismatch(inventory.get("devices") or [])
     if not physical:
         # Torch cannot use a GPU and there is no GPU: "no_gpu" is the honest answer
         # and the caller already gives it.
@@ -924,6 +1052,9 @@ def detect_hardware() -> DeviceType:
             return device
         DETECTION_GENERATION += 1
         DETECTION_COMPLETE.set()
+        # A pass has settled, so a later recovery may ask for another one.
+        global _REDETECTION_REQUESTED
+        _REDETECTION_REQUESTED = False
         return device
 
 
@@ -1120,7 +1251,10 @@ def _detect_hardware_locked() -> DeviceType:
         CHAT_ONLY_REASON = "no_gpu"
         if torch_ok:
             build_reason = classify_torch_build()
-            if build_reason is not None and get_physical_gpu_inventory().get("devices"):
+            _physical = _devices_that_can_establish_a_mismatch(
+                get_physical_gpu_inventory().get("devices") or []
+            )
+            if build_reason is not None and _physical:
                 CHAT_ONLY_REASON = build_reason
                 CHAT_ONLY_DETAIL = _torch_version_label()
                 logger.warning(
@@ -1145,6 +1279,46 @@ def get_device() -> DeviceType:
     return ensure_hardware_detected()
 
 
+def _torch_reports_a_usable_accelerator() -> bool:
+    """Whether torch can open a GPU right now. Never raises."""
+    try:
+        import torch
+        for probe in (
+            getattr(getattr(torch, "cuda", None), "is_available", None),
+            getattr(getattr(torch, "xpu", None), "is_available", None),
+        ):
+            try:
+                if callable(probe) and probe():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        return False
+    return False
+
+
+def _request_hardware_redetection() -> None:
+    """Ask for a fresh detection pass, at most one per recovery. Never raises.
+
+    Retiring the epoch is what the rest of this module already uses to mean "the
+    published verdict is stale"; recomputing DEVICE here instead would publish from a
+    request thread and race the detection lock.
+    """
+    global _REDETECTION_REQUESTED
+    if _REDETECTION_REQUESTED:
+        return
+    try:
+        _REDETECTION_REQUESTED = True
+        invalidate_detection()
+        logger.info(
+            "An accelerator became usable after startup; retiring the cached hardware "
+            "verdict so the next detection pass republishes it."
+        )
+    except Exception as e:
+        _REDETECTION_REQUESTED = False
+        logger.debug("Could not request hardware re-detection: %s", e)
+
+
 def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     """``(reason, detail)``, re-derived when the physical inventory can still change it.
 
@@ -1166,12 +1340,23 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
         return reason, detail
     try:
         build_reason = classify_torch_build()
+        if build_reason is None and _torch_reports_a_usable_accelerator():
+            # The accelerator came BACK: a driver finished restarting, or a usable eGPU
+            # was attached. Only reason and detail are refreshed here, so DEVICE and
+            # CHAT_ONLY would stay frozen at CPU while this started reporting no_gpu --
+            # Train and Export disabled AND the UI insisting there is no GPU, until a
+            # restart. Retire the detection instead and keep the current answer for now;
+            # the next detection pass publishes the real one.
+            _request_hardware_redetection()
+            return reason, detail
         # block=False: /api/health and /api/liveness both reach here, and the NVIDIA
         # half of the inventory shells out with a 10 second timeout. A hung driver is
         # the very host this exists for, and stalling liveness behind it would turn a
         # reporting improvement into an outage.
         inventory = get_physical_gpu_inventory(block = False)
-        if build_reason is not None and inventory.get("devices"):
+        if build_reason is not None and _devices_that_can_establish_a_mismatch(
+            inventory.get("devices") or []
+        ):
             return build_reason, _torch_version_label()
         if inventory.get("unknown"):
             # The probe declined to answer, which is not the same as finding nothing.
