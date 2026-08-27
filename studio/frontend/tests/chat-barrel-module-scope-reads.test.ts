@@ -287,6 +287,18 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
   ) {
     return true;
   }
+  // `new Promise(executor)` calls the executor synchronously before returning,
+  // so a function handed to it runs during initialization like an IIFE. Only
+  // Promise: an arbitrary callback argument may be stored and called much later,
+  // and treating those as eager would report reads that never happen at load.
+  if (
+    ts.isNewExpression(parent) &&
+    ts.isIdentifier(parent.expression) &&
+    parent.expression.text === "Promise" &&
+    parent.arguments?.[0] === current
+  ) {
+    return true;
+  }
   // `.call(...)` and `.apply(...)` invoke on the spot too, but they put a
   // property access between the function expression and the call, so the check
   // above reads the body as deferred and the walk never looks inside it.
@@ -353,18 +365,37 @@ function isNonReference(node: ts.Identifier): boolean {
   return false;
 }
 
+/** What an eager call or construction in this scope can be followed into. */
+interface Targets {
+  functions: Map<string, ts.Node>;
+  classes: Map<string, ts.ClassLikeDeclaration>;
+  objects: Map<string, ts.ObjectLiteralExpression>;
+}
+
 /**
- * Module-scope functions, by name, so an eager call can be followed into one.
+ * The callables a scope's own statements declare, layered over the enclosing
+ * scope's.
  *
- * Only the top level is collected. A function nested inside another function
- * cannot be called during module initialization without its parent being called
- * too, and that outer call is what gets followed.
+ * Collected per scope rather than only at the top level. A helper declared
+ * inside a function that is itself called during initialization is reached by
+ * that outer call, so `function outer() { function inner() { return K; } return
+ * inner(); }` needs `inner` visible while outer's body is walked; a map built
+ * from `source.statements` alone leaves it unresolvable and the read inside it
+ * unseen.
  */
-function moduleScopeFunctions(source: ts.SourceFile): Map<string, ts.Node> {
-  const functions = new Map<string, ts.Node>();
-  for (const statement of source.statements) {
+function collectTargets(statements: readonly ts.Statement[], inherited?: Targets): Targets {
+  const targets: Targets = {
+    functions: new Map(inherited?.functions),
+    classes: new Map(inherited?.classes),
+    objects: new Map(inherited?.objects),
+  };
+  for (const statement of statements) {
     if (ts.isFunctionDeclaration(statement) && statement.name) {
-      functions.set(statement.name.text, statement);
+      targets.functions.set(statement.name.text, statement);
+      continue;
+    }
+    if (ts.isClassDeclaration(statement) && statement.name) {
+      targets.classes.set(statement.name.text, statement);
       continue;
     }
     if (!ts.isVariableStatement(statement)) continue;
@@ -372,19 +403,53 @@ function moduleScopeFunctions(source: ts.SourceFile): Map<string, ts.Node> {
       const initializer = declaration.initializer;
       if (!initializer || !ts.isIdentifier(declaration.name)) continue;
       if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
-        functions.set(declaration.name.text, initializer);
+        targets.functions.set(declaration.name.text, initializer);
+      } else if (ts.isClassExpression(initializer)) {
+        targets.classes.set(declaration.name.text, initializer);
+      } else if (ts.isObjectLiteralExpression(initializer)) {
+        // Reading a property off this object can run a getter defined on it.
+        targets.objects.set(declaration.name.text, initializer);
       }
     }
   }
-  return functions;
+  return targets;
+}
+
+/** The scope a declaration belongs to. */
+function declaringScopeOf(node: ts.Node): ts.Node | undefined {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (isScope(current)) return current;
+  }
+  return undefined;
 }
 
 /**
- * Source position where this body first suspends, or null if it never does.
+ * True when this name really refers to that target here.
  *
- * Nested functions are skipped: an `await` inside a callback declared here does
- * not suspend the function that declares it.
+ * A plain "is it shadowed anywhere above" test cannot answer this once helpers
+ * resolve per scope, because a nested helper's own declaration IS a binding
+ * above the call and reads as a shadow of itself. So walk out and ask which
+ * comes first: the scope the target is declared in, or some other scope that
+ * binds the same name.
  */
+function resolvesToTarget(identifier: ts.Identifier, target: ts.Node): boolean {
+  const home = declaringScopeOf(target);
+  if (!home) return false;
+  for (let node: ts.Node | undefined = identifier.parent; node; node = node.parent) {
+    if (!isScope(node)) continue;
+    if (node === home) return true;
+    if (declaredIn(node).has(identifier.text)) return false;
+    if (ts.isSourceFile(node)) return false;
+  }
+  return false;
+}
+
+/** True when this node carries the given modifier. */
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+  return Boolean(modifiers?.some((m) => m.kind === kind));
+}
+
 function firstSuspensionPos(body: ts.Node): number | null {
   let earliest: number | null = null;
   const visit = (node: ts.Node): void => {
@@ -417,13 +482,33 @@ function visitUntil(
 function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
   if (names.size === 0) return [];
 
-  const functions = moduleScopeFunctions(source);
+  const moduleTargets = collectTargets(source.statements);
   // Guards against recursion, and stops a function called twice from being
   // reported twice.
   const entered = new Set<ts.Node>();
 
   const found: string[] = [];
-  const visit = (node: ts.Node, deferred: boolean): void => {
+
+  /**
+   * Walk a callable an eager call reached, holding back what does not run yet.
+   *
+   * Defaults are evaluated on entry, before the body. A generator call only
+   * builds an iterator, and an async function resumes past initialization, so
+   * the body is walked only as far as its first suspension.
+   */
+  const enterCallable = (target: ts.Node, targets: Targets): void => {
+    const fn = target as ts.FunctionLikeDeclaration;
+    for (const parameter of fn.parameters ?? []) {
+      if (parameter.initializer) visit(parameter.initializer, false, targets);
+    }
+    if (!fn.body || fn.asteriskToken) return;
+    const inner = ts.isBlock(fn.body) ? collectTargets(fn.body.statements, targets) : targets;
+    const suspendsAt = firstSuspensionPos(fn.body);
+    if (suspendsAt === null) visit(fn.body, false, inner);
+    else visitUntil(fn.body, suspendsAt, (n, d) => visit(n, d, inner));
+  };
+
+  const visit = (node: ts.Node, deferred: boolean, targets: Targets): void => {
     // The import declaration binds these names; it does not read them.
     if (ts.isImportDeclaration(node)) return;
     // `export { X }` re-exports the binding without evaluating it.
@@ -443,18 +528,46 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
     // this the guard's own advice -- move the read into a function -- could be
     // followed to the letter and still leave the crash in place.
     if (!deferred && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const target = functions.get(node.expression.text);
-      if (target && !entered.has(target) && !isShadowed(node.expression)) {
+      const target = targets.functions.get(node.expression.text);
+      if (target && !entered.has(target) && resolvesToTarget(node.expression, target)) {
         entered.add(target);
-        const fn = target as ts.FunctionLikeDeclaration;
-        // Calling a generator only builds an iterator; nothing in the body runs
-        // until someone advances it, which is never during module load.
-        if (fn.body && !fn.asteriskToken) {
-          const suspendsAt = firstSuspensionPos(fn.body);
-          // An async function runs synchronously up to its first await and
-          // resumes in a later microtask, so only the part before it is eager.
-          if (suspendsAt === null) visit(fn.body, false);
-          else visitUntil(fn.body, suspendsAt, visit);
+        enterCallable(target, targets);
+      }
+    }
+    // `new C()` runs the constructor and every instance field initializer now,
+    // for a named class exactly as for an inline function expression.
+    if (!deferred && ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
+      const cls = targets.classes.get(node.expression.text);
+      if (cls && !entered.has(cls) && resolvesToTarget(node.expression, cls)) {
+        entered.add(cls);
+        for (const member of cls.members) {
+          if (ts.isConstructorDeclaration(member) && member.body) {
+            enterCallable(member, targets);
+          } else if (
+            ts.isPropertyDeclaration(member) &&
+            member.initializer &&
+            !hasModifier(member, ts.SyntaxKind.StaticKeyword)
+          ) {
+            visit(member.initializer, false, targets);
+          }
+        }
+      }
+    }
+    // `obj.value` runs a getter defined on obj synchronously, so an eager read
+    // of the property is an eager read of whatever the accessor body touches.
+    if (!deferred && ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+      const object = targets.objects.get(node.expression.text);
+      if (object && resolvesToTarget(node.expression, object)) {
+        for (const property of object.properties) {
+          if (
+            ts.isGetAccessorDeclaration(property) &&
+            ts.isIdentifier(property.name) &&
+            property.name.text === node.name.text &&
+            !entered.has(property)
+          ) {
+            entered.add(property);
+            enterCallable(property, targets);
+          }
         }
       }
     }
@@ -472,10 +585,10 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
       const eagerName =
         (child === (node as ts.NamedDeclaration).name && ts.isComputedPropertyName(child)) ||
         ts.isDecorator(child);
-      visit(child, eagerName ? deferred : next);
+      visit(child, eagerName ? deferred : next, targets);
     });
   };
-  source.forEachChild((child) => visit(child, false));
+  source.forEachChild((child) => visit(child, false, moduleTargets));
   return found;
 }
 
@@ -728,6 +841,33 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nclass C { [K] = 1; }\n`,
     ],
     [
+      // Defaults are evaluated on entry, before the body runs.
+      "default parameter of an eagerly called function",
+      `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread();\n`,
+    ],
+    [
+      // Reachable only because its caller runs at load.
+      "helper declared and called inside an eagerly called function",
+      `import { K } from "${BARREL}";\nfunction outer() { function inner() { return K; } return inner(); }\nouter();\n`,
+    ],
+    [
+      "constructor of a named class built at module scope",
+      `import { K } from "${BARREL}";\nclass C { constructor() { consume(K); } }\nnew C();\n`,
+    ],
+    [
+      "instance field of a named class built at module scope",
+      `import { K } from "${BARREL}";\nclass C { f = K; }\nnew C();\n`,
+    ],
+    [
+      // The Promise constructor runs its executor before it returns.
+      "promise executor",
+      `import { K } from "${BARREL}";\nnew Promise(() => consume(K));\n`,
+    ],
+    [
+      "getter run by an eager property read",
+      `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\nconst v = obj.value;\n`,
+    ],
+    [
       // Constructing a function expression runs its body on the spot.
       "function expression invoked with new",
       `import { K } from "${BARREL}";\nnew (function () { consume(K); })();\n`,
@@ -834,6 +974,24 @@ test("deferred reads and non-references are left alone", () => {
     [
       "parameter of the same name, read in its own function",
       `import { K } from "${BARREL}";\nfunction f(K) { return K; }\n`,
+    ],
+    [
+      "a getter nobody reads",
+      `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\n`,
+    ],
+    [
+      // An ordinary callback may be stored and invoked long after load.
+      "callback handed to an unknown function",
+      `import { K } from "${BARREL}";\nregister(() => consume(K));\n`,
+    ],
+    [
+      "a named class nobody constructs",
+      `import { K } from "${BARREL}";\nclass C { constructor() { consume(K); } }\n`,
+    ],
+    [
+      // The parameter shadows the module function, so the call is not that one.
+      "a call through a name a parameter rebinds",
+      `import { K } from "${BARREL}";\nfunction read() { return K; }\nfunction outer(read) { return read(); }\n`,
     ],
     [
       // `var` binds to the function, not the `if` block it sits in, so the read
