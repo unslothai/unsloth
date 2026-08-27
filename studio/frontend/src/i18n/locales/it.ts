@@ -786,7 +786,7 @@ export const it = {
         embeddingModel: "Modello di embedding",
         embeddingModelDescription:
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
-        searchPlaceholder: "Cerca modelli di embedding",
+        searchPlaceholder: "Cerca qualsiasi modello su HF",
         reindexWarning:
           "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
         emptyError:
@@ -796,7 +796,24 @@ export const it = {
         saveError: "Salvataggio del modello di embedding non riuscito.",
         saved: "Modello di embedding salvato.",
         saveAnyway: "Salva comunque",
-        resetAction: "Ripristina il valore predefinito",
+        recommended: "Consigliato",
+        onDevice: "Sul dispositivo",
+        searching: "Ricerca su Hugging Face…",
+        checking: "Verifica…",
+        noResults: "Nessun modello di embedding trovato",
+        download: "Scarica",
+        unload: "Scarica dalla memoria",
+        unloadFailed: "Impossibile scaricare il modello di embedding",
+        downloadingStatus: "Download in corso…",
+        notDownloaded: "Non scaricato",
+        notDownloadedSized: "Non scaricato · {size}",
+        loaded: "Caricato",
+        downloading: "Download di {model}",
+        downloadingDescription:
+          "L'avanzamento è nel pannello dei download. L'indicizzazione lo userà al termine.",
+        downloadFailed: "Impossibile avviare il download",
+        downloadConflict: "Riprendi questo download dall'Hub",
+        downloadBusy: "Download già in corso",
       },
       storage: {
         sectionTitle: "Archiviazione",

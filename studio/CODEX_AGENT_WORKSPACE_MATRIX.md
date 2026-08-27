@@ -1,6 +1,6 @@
 # Unsloth Studio agent workspace QA matrix
 
-Snapshot date: 2026-08-26
+Snapshot date: 2026-08-27
 
 Local branch: `feat/codex-agent-workspace`
 
@@ -12,9 +12,7 @@ Full CI matrix hardening commit: `b1e6809d14d7a87d2213093f7a4676022744acfa`
 
 CI matrix contract commit: `abc3b2cf4`
 
-Current upstream integration commit: `cfcd35354`
-
-Fetched `upstream/main`: `40b4702cd39f3e51b3f5404b1525c3e1c4fc5bd8`
+Integrated `upstream/main`: `fd31302d1`
 
 The feature branch contains that upstream tip through a normal merge and is reviewable ordinary source. Publication state and remote CI must be verified on PR #9673 after each push. Nothing in this document claims that a packaged build, physical platform, live provider, or release candidate has passed.
 
@@ -31,7 +29,7 @@ Status meanings:
 | Gate | Result | Evidence or remaining gate |
 | --- | --- | --- |
 | G0: reviewable feature diff | PASS on feature branch | Python, TypeScript, React, Rust, tests, workflow, and documentation are committed as ordinary source. Verify the live PR head and changed-file count after publication. |
-| G1: current with upstream main | PASS at snapshot | Merge commit `cfcd35354` contains fetched `upstream/main` at `40b4702cd`. Refresh immediately before publication. |
+| G1: current with upstream main | PASS at snapshot | The branch contains fetched `upstream/main` at `fd31302d1` through a normal merge. Refresh immediately before publication. |
 | G2: ordinary source changes | PASS | Recovery payload files and the unsafe restore workflow are removed. The replacement is directly reviewable source. |
 | G3: backend, frontend, and Tauri wiring | PASS locally | Native folder selection, signed grants, persistence, project context, agent workflow routes, and the Agent Workspace panel are connected. |
 | G4: feature-specific automation | PASS for the merged feature suites | Exact local counts are recorded below. Full repository, remote CI, packaged app, and live runtime results are not implied. |
@@ -162,11 +160,11 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 
 The following local results were recorded after merging the fetched upstream tip. Overlapping suites are identified and must not be added into one synthetic total:
 
-- Consolidated POSIX-compatible backend and workflow suite: 682 passed, 1 Linux-only AF_UNIX check skipped on the local macOS host.
+- Consolidated POSIX-compatible backend and workflow suite: 683 passed, 1 Linux-only AF_UNIX check skipped on the local macOS host.
 - Provider, research, and tool-loop compatibility suite: 1,042 passed.
 - Latest upstream GPU integration lane: 224 passed, 4 platform skips, and 6 subtests. The merge also fixes an order-dependent test fixture that previously unloaded imported NumPy and Torch modules through a broad `sys.modules` restoration.
 - Security-focused workspace lane: 180 passed, 5 platform skips. The broader repository security run recorded 402 passed and 26 skipped; 5 Linux AppImage inspection checks were environment-blocked on macOS because no `readelf` implementation was installed.
-- Full frontend Node test suite: 5,553 passed, 0 failed.
+- Full frontend Node test suite: 5,604 passed, 0 failed.
 - Frontend production build: passed. Vite reported existing chunk-size and mixed dynamic-import warnings.
 - Frontend TypeScript typecheck and targeted ESLint: passed.
 - Targeted Biome: exited 0 with 132 warning-level diagnostics. This is not described as warning-free.

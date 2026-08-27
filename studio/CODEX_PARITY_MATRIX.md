@@ -1,10 +1,10 @@
 # Unsloth Studio Codex parity contract
 
-Snapshot date: 2026-08-26
+Snapshot date: 2026-08-27
 
 This document describes the product contract implemented by the current local working tree. It complements [CODEX_AGENT_WORKSPACE_MATRIX.md](./CODEX_AGENT_WORKSPACE_MATRIX.md), which records the exact QA rows and focused evidence.
 
-Feature source commit `3af2f62e6d72564b2fa0840ca491a48817f12c3d` is merged with fetched `upstream/main` at `40b4702cd39f3e51b3f5404b1525c3e1c4fc5bd8` through merge commit `cfcd35354`. Final Deep Research project-context hardening is committed at `59995084d`; the full CI matrix is committed at `b1e6809d1` and locked by the matrix contract at `abc3b2cf4`. The implementation is ordinary source. The live PR head and remote checks must be verified after publication.
+Feature source commit `3af2f62e6d72564b2fa0840ca491a48817f12c3d` is integrated with fetched `upstream/main` at `fd31302d1` through a normal merge. Final Deep Research project-context hardening is committed at `59995084d`; the full CI matrix is committed at `b1e6809d1` and locked by the matrix contract at `abc3b2cf4`. The implementation is ordinary source. The live PR head and remote checks must be verified after publication.
 
 The product target is the Codex agent coding experience inside Unsloth, not a visual clone: a durable project root, stable project context, local administrative commands, constrained tools, reviewable Git operations, recoverable background work, isolated worktrees, and one agent contract across local and hosted runtimes.
 

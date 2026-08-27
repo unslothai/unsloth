@@ -451,7 +451,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "pendingSettings.some((entry) => entry.threadIds.has(threadId))" in QUEUED_SETTINGS
     queued_run_failure = _between(
         CHAT_ADAPTER,
-        "try {\n        yield* adapter.run(args);",
+        "try {\n        const commandText = latestSlashCommandText(args.messages);",
         "} finally {",
     )
     assert "if (!args.abortSignal.aborted)" in queued_run_failure
@@ -657,7 +657,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < first_draft_check
         < gpu_discovery_index
         < second_draft_check
-        < send_flow.index("clearSubmittedDraft();")
+        < send_flow.index("clearSubmittedDraft();", second_draft_check)
     )
     assert "requestLocalPromptQueueStop(" in SHARED_COMPOSER
     assert "compareStopDecision?.preStreamRunTokens ?? []" in SHARED_COMPOSER
@@ -704,11 +704,37 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
     assert ".setThreadContextUsage(usageThreadKey, usage)" in CHAT_ADAPTER
-    assert (
-        "usageThreadIsVisible &&\n"
-        "            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint"
-        in CHAT_ADAPTER
+    assert re.search(
+        r"usageThreadIsVisible\s*&&\s*"
+        r"useChatRuntimeStore\.getState\(\)\.params\.checkpoint\s*===\s*params\.checkpoint",
+        CHAT_ADAPTER,
     )
+
+
+def test_base64_media_turns_stay_on_the_legacy_stream():
+    candidate = _between(
+        CHAT_ADAPTER,
+        "const generationCandidate = Boolean(",
+        ");",
+    )
+    assert "!imageBase64" in candidate
+    assert "!audioBase64" in candidate
+    assert "!videoBase64" in candidate
+
+
+def test_continuations_stay_on_the_legacy_stream():
+    """Continue yields its seeded partial before the request starts.
+
+    That autosave can reach storage before durable admission does, and admission refuses a
+    placeholder that already has content with a 409, which is not one of the errors that
+    falls back to the legacy stream. So the turn would fail outright rather than generate.
+    """
+    candidate = _between(
+        CHAT_ADAPTER,
+        "const generationCandidate = Boolean(",
+        ");",
+    )
+    assert "!continuation" in candidate
 
 
 def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
@@ -756,7 +782,7 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
     changed_draft = _between(
         send_flow,
         "const keepChangedDraft = () =>",
-        "const clearSubmittedDraft = () =>",
+        "let compareStopDecision:",
     )
     assert "releaseCompareModelLifecycle();" in changed_draft
     assert "resetPromptQueue();" in changed_draft
@@ -770,7 +796,7 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
 
     compare_run = _between(
         send_flow,
-        "setComparing(true);",
+        'const toastId = toast("Comparing models…"',
         "} else {",
     )
     failed_compare = _between(compare_run, "} catch (err) {", "} finally {")

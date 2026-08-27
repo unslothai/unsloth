@@ -105,7 +105,8 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "modelId:" not in create_block
     assert "prompt," not in create_block
     assert "instructions: researchInstructions" in create_block
-    assert "resolveChatInstructions" in adapter
+    assert "resolveUserSystemPrompt" in adapter
+    assert "The backend owns project instruction and goal context" in adapter
 
 
 def test_research_handoff_transition_honors_the_original_run_stop() -> None:
@@ -155,7 +156,7 @@ def test_research_metadata_and_server_merge_are_persisted() -> None:
     runtime = source("features/chat/runtime-provider.tsx")
     assert "researchRunId: run.id" in adapter
     assert "serverManaged: true" in adapter
-    assert "getResearchThreadState(remoteId)" in runtime
+    assert re.search(r"getResearchThreadState\(\s*remoteId,?\s*\)", runtime)
     assert "preserveServerManaged" in runtime
     assert "sameResearchRun" in runtime
     assert "existingRevision > incomingRevision" in runtime

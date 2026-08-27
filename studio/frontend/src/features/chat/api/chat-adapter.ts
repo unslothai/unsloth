@@ -212,6 +212,11 @@ import {
   resumesExactly,
 } from "../utils/continuation";
 import {
+  generationChunkCountsTowardTiming,
+  generationChunkHasSubstantiveDelta,
+  generationIsSettled,
+} from "../utils/chat-generation-recovery";
+import {
   createImageGateRunOwner,
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
@@ -281,10 +286,31 @@ import {
   isProviderKeyRotationError,
 } from "./providers-api";
 import { cancelResearchRun, createResearchRun } from "./research-api";
+import {
+  cancelChatGenerationRun,
+  chatGenerationStopPlan,
+  isLegacyFallbackChatGenerationAdmissionError,
+  type ChatGenerationRun,
+  type ChatGenerationStatus,
+  createChatGenerationRunUntilAbort,
+  explicitStopSignal,
+  followChatGenerationRun,
+  supportsChatGenerationRuns,
+} from "./chat-generation-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+class ChatGenerationTerminalError extends Error {
+  readonly generationStatus: "cancelled" | "failed";
+
+  constructor(generationStatus: "cancelled" | "failed", message: string) {
+    super(message);
+    this.name = "ChatGenerationTerminalError";
+    this.generationStatus = generationStatus;
+  }
+}
 
 type ThreadRecordReader = () => Promise<ThreadRecord | undefined>;
 
@@ -2362,10 +2388,10 @@ function snapshotVisibleModelState(
 function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   const liveUsage = useChatRuntimeStore.getState();
   liveUsage.setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
-      trackQueuedSettings: false,
-      // The model being stepped off is the one the background load put there.
-      persist: false,
-    });
+    trackQueuedSettings: false,
+    // The model being stepped off is the one the background load put there.
+    persist: false,
+  });
   useChatRuntimeStore.setState({
     ...snapshot.runtime,
     ...snapshot.settings,
@@ -3788,47 +3814,48 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           store.setModels([...store.models, defaultModel]);
         }
         useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength:
-          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        ...reasoningCapsFromLoad(loadResp),
+          ggufContextLength: loadResp.context_length ?? 131072,
+          ggufMaxContextLength:
+            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+          supportsReasoning: loadResp.supports_reasoning ?? false,
+          reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+          reasoningEnabled: loadResp.supports_reasoning ?? false,
+          ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
-        preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
-        supportsTools: loadResp.supports_tools ?? false,
-        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        ...mlxRuntimeStateFrom(loadResp),
-        // The request above omits n_parallel: a staged override left from a
-        // preset would read as applied and be re-sent by the next Apply.
-        nParallel: null,
-        loadedNParallel: null,
-        nBatch: null,
-        loadedNBatch: null,
-        nUbatch: null,
-        loadedNUbatch: null,
-        ...clearedServerTuningState(),
-        tensorParallel: loadResp.tensor_parallel ?? false,
-        loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        loadedDisableVision: loadResp.disable_vision ?? false,
-        // The request above omits disable_vision, so the echo is what the load
-        // ran with; adopting it stops a previous model's Vision-off carrying over.
-        disableVision: loadResp.disable_vision ?? false,
-        loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
-        ...loadedGpuMemoryFields(loadResp),
-        // Drives the GPU Memory controls' diffusion gate; set alongside the
-        // GPU fields on every load path so the gate can't read stale.
-        loadedIsDiffusion: loadResp.is_diffusion ?? false,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedIsMultimodal: isMultimodalResponse(loadResp),
-        mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
-        activeModelIsLocal: loadResp.is_local_model ?? false,
-        ...resolveLoadedSpeculativeSettings(loadResp),
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
+          supportsTools: loadResp.supports_tools ?? false,
+          ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+          kvCacheDtype: loadResp.cache_type_kv ?? null,
+          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(loadResp),
+          // The request above omits n_parallel: a staged override left from a
+          // preset would read as applied and be re-sent by the next Apply.
+          nParallel: null,
+          loadedNParallel: null,
+          nBatch: null,
+          loadedNBatch: null,
+          nUbatch: null,
+          loadedNUbatch: null,
+          ...clearedServerTuningState(),
+          tensorParallel: loadResp.tensor_parallel ?? false,
+          loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
+          // The request above omits disable_vision, so the echo is what the load
+          // ran with; adopting it stops a previous model's Vision-off carrying over.
+          disableVision: loadResp.disable_vision ?? false,
+          loadedVisionDisabledByUser:
+            loadResp.vision_disabled_by_user ?? false,
+          ...loadedGpuMemoryFields(loadResp),
+          // Drives the GPU Memory controls' diffusion gate; set alongside the
+          // GPU fields on every load path so the gate can't read stale.
+          loadedIsDiffusion: loadResp.is_diffusion ?? false,
+          defaultChatTemplate: loadResp.chat_template ?? null,
+          chatTemplateOverride: null,
+          loadedIsMultimodal: isMultimodalResponse(loadResp),
+          mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
+          activeModelIsLocal: loadResp.is_local_model ?? false,
+          ...resolveLoadedSpeculativeSettings(loadResp),
         });
         recordLastLocalModelLoad({
           id: DEFAULT_CHAT_MODEL_REPO,
@@ -4259,10 +4286,10 @@ export function createOpenAIStreamAdapter(
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
               ? {
                   kb_id: runtime.ragSource.kbId,
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
               : {
                   ...(runtime.ragEnabled
@@ -4271,10 +4298,10 @@ export function createOpenAIStreamAdapter(
                   ...(projectRagEnabled && researchProjectId
                     ? { project_id: researchProjectId }
                     : {}),
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
             : undefined;
 
@@ -4734,12 +4761,12 @@ export function createOpenAIStreamAdapter(
         local: studioLocalCodeTools,
         hosted: hostedCodeToolsForThisTurn,
       } = selectCodeToolNames({
-          codeToolsEnabled,
-          hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
-          providerHostsCodeExecution: providerHostsCodeExecution(
-            externalProvider?.providerType,
-          ),
-        });
+        codeToolsEnabled,
+        hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          externalProvider?.providerType,
+        ),
+      });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -5035,6 +5062,51 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
+      const generationUserMessage = [...survivingMessages]
+        .reverse()
+        .find((message) => message.role === "user");
+      const generationCandidate = Boolean(
+        !isExternalRequest &&
+          !activeModel?.isAudio &&
+          !runtime.loadedIsDiffusion &&
+          !imageBase64 &&
+          !audioBase64 &&
+          !videoBase64 &&
+          // Continue seeds the partial into the sibling assistant and yields it before the
+          // request starts, so the autosave can land before admission does. Admission
+          // refuses a substantive placeholder with a 409, which is not a fallback error,
+          // and the turn would fail outright. Continuations keep the legacy stream.
+          !continuation &&
+          resolvedThreadId &&
+          !isThreadIncognito(resolvedThreadId) &&
+          unstable_assistantMessageId &&
+          generationUserMessage,
+      );
+      let generationDecision: "pending" | "durable" | "legacy" =
+        generationCandidate ? "pending" : "legacy";
+      let generationRun: ChatGenerationRun | null = null;
+      let generationRunId: string | null = null;
+      let generationSeq = 0;
+      let generationStatus: ChatGenerationStatus | null = null;
+      let generationFirstChunkAt: number | undefined;
+      let generationChunkCount = 0;
+      let generationStopRequested = false;
+      const generationCustom = () =>
+        generationRunId
+          ? {
+              generationRunId,
+              generationSeq,
+              generationStatus,
+              generationFirstChunkAt,
+              generationChunkCount,
+              generationSettled: generationIsSettled(
+                generationStatus,
+                generationSeq,
+                generationRun?.lastEventSeq ?? Number.POSITIVE_INFINITY,
+              ),
+              serverManaged: true,
+            }
+          : {};
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
@@ -5211,6 +5283,7 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
         incomplete: { reason: "cancelled" as const },
+        ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
@@ -5397,6 +5470,15 @@ export function createOpenAIStreamAdapter(
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
+        generationStopRequested = true;
+        const stopPlan = chatGenerationStopPlan(
+          generationDecision,
+          generationRunId,
+        );
+        if (stopPlan.cancelRunId) {
+          void cancelChatGenerationRun(stopPlan.cancelRunId).catch(() => {});
+        }
+        if (!stopPlan.postLegacyCancel) return;
         const body: Record<string, string> = { cancel_id: cancelId };
         if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
@@ -6053,7 +6135,104 @@ export function createOpenAIStreamAdapter(
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            const stream = streamChatCompletions(requestPayload, runSignal);
+            if (generationDecision === "pending") {
+              const clientTools = (
+                requestPayload as unknown as { tools?: unknown }
+              ).tools;
+              if (
+                requestPayload.enable_tools === true ||
+                (Array.isArray(clientTools) && clientTools.length > 0)
+              ) {
+                // Confirmation and browser-executed tool chains still use the
+                // subscriber-owned stream in this PR.
+                generationDecision = "legacy";
+              } else {
+                const admission = explicitStopSignal(runSignal);
+                const supported = await supportsChatGenerationRuns(
+                  resolvedThreadId!,
+                  admission.signal,
+                ).finally(admission.dispose);
+                if (!supported) {
+                  generationDecision = "legacy";
+                } else {
+                  generationDecision = "durable";
+                  try {
+                    generationRun = await createChatGenerationRunUntilAbort(
+                      {
+                        runId: cancelId,
+                        threadId: resolvedThreadId!,
+                        userMessageId: generationUserMessage!.id,
+                        assistantMessageId: unstable_assistantMessageId!,
+                        requestPayload,
+                      },
+                      runSignal,
+                    );
+                  } catch (error) {
+                    if (!isLegacyFallbackChatGenerationAdmissionError(error)) {
+                      throw error;
+                    }
+                    // Durable recovery does not yet replay server-side tool events.
+                    // Use the subscriber-owned stream for this policy-forced case.
+                    generationDecision = "legacy";
+                  }
+                  if (!generationRun) {
+                    if (generationDecision === "durable") return;
+                  } else {
+                    generationRunId = generationRun.id;
+                    generationStatus = generationRun.status;
+                    if (generationStopRequested) {
+                      void cancelChatGenerationRun(generationRun.id).catch(
+                        () => {},
+                      );
+                    }
+                  }
+                }
+              }
+            }
+
+            const durableStream = async function* () {
+              for await (const update of followChatGenerationRun(
+                generationRunId!,
+                {
+                  initialRun: generationRun!,
+                  replayFrom: 0,
+                  signal: runSignal,
+                },
+              )) {
+                generationRun = update.run;
+                generationStatus = update.run.status;
+                if (update.event) {
+                  generationSeq = Math.max(generationSeq, update.event.seq);
+                  if (update.event.type === "chunk") {
+                    const chunk = update.event.payload as OpenAIChatChunk;
+                    if (generationChunkCountsTowardTiming(chunk)) {
+                      generationChunkCount += 1;
+                      if (generationChunkHasSubstantiveDelta(chunk)) {
+                        generationFirstChunkAt ??= update.event.createdAt;
+                      }
+                    }
+                    yield chunk;
+                  }
+                }
+              }
+              if (generationStatus === "failed") {
+                throw new ChatGenerationTerminalError(
+                  "failed",
+                  generationRun?.error ||
+                    "The Studio backend restarted during generation.",
+                );
+              }
+              if (generationStatus === "cancelled" && !runSignal.aborted) {
+                throw new ChatGenerationTerminalError(
+                  "cancelled",
+                  "Generation was cancelled.",
+                );
+              }
+            };
+            const stream =
+              generationDecision === "durable"
+                ? durableStream()
+                : streamChatCompletions(requestPayload, runSignal);
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
 
@@ -7328,6 +7507,7 @@ export function createOpenAIStreamAdapter(
                 : undefined,
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
+              ...generationCustom(),
             },
           },
         };
@@ -7345,6 +7525,15 @@ export function createOpenAIStreamAdapter(
                 "chat Settings or turn off thinking, then retry.",
               duration: 8000,
             });
+          } else if (err instanceof ChatGenerationTerminalError) {
+            if (err.generationStatus === "failed") {
+              toast.error("Response interrupted", {
+                description:
+                  err.message ||
+                  "The Studio backend stopped during generation.",
+                duration: 8000,
+              });
+            }
           } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
@@ -7444,9 +7633,13 @@ export function createOpenAIStreamAdapter(
                     reason:
                       err instanceof GenerationLengthError
                         ? "length"
-                        : "interrupted",
+                        : err instanceof ChatGenerationTerminalError &&
+                            err.generationStatus === "cancelled"
+                          ? "cancelled"
+                          : "interrupted",
                   },
                   timing: partialTiming,
+                  ...generationCustom(),
                 },
               },
             };
