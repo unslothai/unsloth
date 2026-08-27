@@ -2100,9 +2100,7 @@ def test_an_oversized_unmapped_load_is_remapped_instead_of_refused(
 
 
 @pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
-def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(
-    tmp_path, monkeypatch, extra_args
-):
+def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypatch, extra_args):
     """The control. Same request on a host with room: no shortfall, so nothing is
     overridden and no warning is invented. Loading unmapped is a legitimate choice."""
     backend, gguf = _offload_backend(
@@ -2111,9 +2109,9 @@ def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(
 
     cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
 
-    assert _unmapped_tokens(cmd) == list(extra_args), (
-        f"the fitting load lost the mode it asked for: {cmd}"
-    )
+    assert _unmapped_tokens(cmd) == list(
+        extra_args
+    ), f"the fitting load lost the mode it asked for: {cmd}"
     assert backend.last_load_warning is None
 
 
