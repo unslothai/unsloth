@@ -2488,6 +2488,22 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     return files[0] if files else None
 
 
+def _pick_mtp(candidates: list[str]) -> Optional[str]:
+    """The MTP drafter a listing offers, or None. Module level for the same reason
+    ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
+    and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
+    # Root-level only: MTP/ subdir copies now share the mtp- prefix but
+    # are explicit-selection, not auto-fetch (they'd sort ahead of root).
+    # The mtp- prefix also excludes AppleDouble shadows ("._mtp-x.gguf"), which
+    # is why this picker needs no drop_shadowed_appledouble_names of its own.
+    mtp_files = sorted(
+        f
+        for f in candidates
+        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
+    )
+    return mtp_files[0] if mtp_files else None
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
@@ -4984,20 +5000,16 @@ class LlamaCppBackend:
     def __init__(self, *, manages_processes: bool = True):
         """``manages_processes = False`` builds an INERT probe.
 
-        The constructor is not free. It reaps orphaned llama-servers, which walks
-        every entry in /proc, resolves each candidate's exe and signals the ones it
-        recognises, and it registers an atexit handler that holds this instance for
-        the life of the process. Both are right for the backend that owns the child.
+        The constructor is not free: it reaps orphaned llama-servers, walking /proc,
+        resolving each candidate's exe and signalling the ones it recognises, then
+        registers an atexit handler holding this instance for the life of the process.
+        Both are right for the backend that owns a child, neither for a probe that only
+        reads a header -- and since the memory-estimate route those helpers run on every
+        settings change. Measured on one estimate: five constructions, five /proc scans,
+        five atexit handlers, never released, so fifty estimates left 250 of them
+        holding 250 backends.
 
-        Neither is right for a probe. The sizing helpers build one only to read a GGUF
-        header and evaluate arithmetic, and since the memory-estimate route those
-        helpers run on every settings change rather than once per load. Measured on one
-        estimate: five constructions, five /proc scans, five atexit handlers -- and the
-        handlers are never released, so fifty estimates left 250 of them holding 250
-        backends. A panel that prices a load must not be able to kill a server, and a
-        slider drag must not leak.
-
-        Default is True, so every existing caller keeps the behaviour it has today.
+        Default True, so every existing caller keeps today's behaviour.
         """
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
@@ -12756,18 +12768,6 @@ class LlamaCppBackend:
         higher-precision copies under ``MTP/`` are for explicit selection and
         are intentionally skipped. Returns the local path, or None.
         """
-
-        def _pick_mtp(candidates: list[str]) -> Optional[str]:
-            # Root-level only: MTP/ subdir copies now share the mtp- prefix but
-            # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-            mtp_files = sorted(
-                f
-                for f in candidates
-                if f.lower().endswith(".gguf")
-                and "/" not in f
-                and Path(f).name.lower().startswith("mtp-")
-            )
-            return mtp_files[0] if mtp_files else None
 
         if near_path:
             cached = _companion_snapshot_sibling(near_path, _pick_mtp)
@@ -24174,7 +24174,8 @@ class LlamaCppBackend:
                     + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
                     + int(inputs.get("ctx_compute_per_device") or 0)
                 ),
-                host_ram_headroom_bytes = self._HOST_RAM_HEADROOM_MIB * 1024 * 1024,
+                # Module-level, unlike the line above, so not reachable through self.
+                host_ram_headroom_bytes = _HOST_RAM_HEADROOM_MIB * 1024 * 1024,
                 # -nkvo is not a reason to decline: it moves the cache and the
                 # recurrent state OUT of VRAM, so the deficit is smaller, not
                 # larger.

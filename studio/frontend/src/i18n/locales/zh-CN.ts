@@ -1303,6 +1303,9 @@ export const zhCN = {
         showAllQuantizations: "显示所有量化版本",
         showAllQuantizationsDescription:
           "开启：列出“On Device”中的所有量化版本，包括尚未下载的版本。关闭：仅显示已下载的量化版本。",
+        showMemoryBar: "显示显存占用条",
+        showMemoryBarDescription:
+          "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
       },
       menu: {
         title: "聊天菜单",
@@ -2273,5 +2276,14 @@ export const zhCN = {
       datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
     },
+  },
+  modelMemory: {
+    readout:
+      "权重 {model} + 上下文 {context} = {total}，可用显存 {budget}",
+    readoutWithSpec:
+      "权重 {model} + KV {kv} + MTP 草稿 {spec} = {total}，可用显存 {budget}",
+    kvRate: "KV 预先分配，约 {rate}/token",
+    oomLikely: "按当前设置可能显存不足",
+    tooLarge: "超出显存，将卸载到 CPU 运行。更小的量化版本速度更快",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

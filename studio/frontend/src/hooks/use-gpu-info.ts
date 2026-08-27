@@ -38,6 +38,9 @@ export interface GpuInfo {
   budgetKnown: boolean;
   /** true when the visible GPUs use only the host memory pool. */
   sharedMemory: boolean;
+  /** True when any device's budget is a unified host pool (a ROCm APU), which is
+   *  not a VRAM ceiling a fit verdict can be measured against. */
+  unifiedMemory: boolean;
   /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
@@ -67,6 +70,7 @@ const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
   sharedMemory: false,
+  unifiedMemory: false,
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
@@ -111,6 +115,11 @@ function toGpuInfo(
       gpuSharedHostMemoryGb(devices),
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
+    // Additive, and deliberately some() where sharedMemory above is "no dedicated
+    // pool at all": one unified part makes the aggregate total partly host RAM,
+    // which is already enough to stop it being a VRAM ceiling a fit verdict can
+    // be measured against.
+    unifiedMemory: devices.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
