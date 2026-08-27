@@ -577,17 +577,17 @@ function resolveStoredReasoningModelIds(
   ) {
     return undefined;
   }
-  const stored = normalizeReasoningModelIds(raw.reasoningModelIds);
-  if (stored !== undefined) {
-    const enabled = new Set(
-      raw.models.map((model) => modelIdKey(model)).filter((id) => id.length > 0),
-    );
-    return stored.filter((id) => enabled.has(modelIdKey(id)));
+  if (raw.reasoningModelIds === undefined) {
+    // legacy connection-level pin: every enabled model was implied
+    return raw.models
+      .map((model) => model.trim())
+      .filter((model) => model.length > 0);
   }
-  // Legacy connection-level pin: every enabled model was implied.
-  return raw.models
-    .map((model) => model.trim())
-    .filter((model) => model.length > 0);
+  const stored = normalizeReasoningModelIds(raw.reasoningModelIds) ?? [];
+  const enabled = new Set(
+    raw.models.map((model) => modelIdKey(model)).filter((id) => id.length > 0),
+  );
+  return stored.filter((id) => enabled.has(modelIdKey(id)));
 }
 
 function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
