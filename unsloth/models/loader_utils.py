@@ -814,7 +814,45 @@ def _get_new_mapper():
                             continue
                         pending.append(child)
 
-        for node, shadowed in _executed_nodes(tree.body):
+        # `build_mappers` is CALLED at module scope, so its body runs at import - and
+        # the aliases a newer mapper.py adds now live inside it, where the shipped ones
+        # were moved. The installed builder cannot know them, so its output would be
+        # missing exactly the models main had just added. Read as data, on the same
+        # terms as everything else here, and only when the fetched module really does
+        # call it: a `def` that is never called still runs nothing.
+        builder_body = []
+        builder_called = any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "build_mappers"
+            for statement in tree.body
+            for child in ast.walk(statement)
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        )
+        if builder_called:
+            for statement in tree.body:
+                if (
+                    isinstance(statement, ast.FunctionDef)
+                    and statement.name == "build_mappers"
+                ):
+                    builder_body = statement.body
+                    break
+
+        # Only the helper CALLS from the builder, not everything its body does: it
+        # starts by binding its own `INT_TO_FLOAT_MAPPER = {}` and friends, and the
+        # whole-name assignment rule below reads that as the fetched module replacing
+        # the exported table, which emptied three of the five. The aliases are the
+        # part that cannot be derived from the source table, and they are the part
+        # this reads.
+        builder_additions = [
+            (node, shadowed) for node, shadowed in _executed_nodes(builder_body)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _MAPPER_HELPERS
+        ]
+        # Materialised rather than chained: this whole body is lifted out and run in
+        # an isolated namespace by its own tests, so it cannot reach for `itertools`.
+        for node, shadowed in [*_executed_nodes(tree.body), *builder_additions]:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 # `FLOAT_TO_FP8_ROW_MAPPER["org/x"]: str = "unsloth/x-row"` runs the
                 # assignment exactly as the unannotated form does - the annotation on a

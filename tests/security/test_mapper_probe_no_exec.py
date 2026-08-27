@@ -342,6 +342,51 @@ def test_a_deferred_lambda_body_is_not_read(monkeypatch):
         assert not any("lambda" in str(key) for key in table)
 
 
+def test_an_alias_added_inside_the_builder_is_read(monkeypatch):
+    """`build_mappers` is called at import, so its body runs.
+
+    The aliases that cannot be derived from the source table live in there now, and
+    the INSTALLED builder cannot know one a newer mapper.py adds - so it would be
+    missing exactly the models main had just added.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    for index, line in enumerate(lines):
+        if line.startswith("def build_mappers("):
+            insert = index + 1
+            break
+    else:
+        raise AssertionError("build_mappers is gone from the shipped mapper")
+    added = "".join(
+        lines[:insert]
+        + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/new", "unsloth/new")\n']
+        + lines[insert:]
+    )
+    with _serving(added, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        table.get("vendor/new") == "unsloth/new"
+        for table in tables if isinstance(table, dict)
+    ), "an alias added inside the builder was dropped"
+
+
+def test_a_builder_that_is_never_called_is_not_read(monkeypatch):
+    """A `def` that nothing calls runs nothing, which is the rule everywhere here."""
+    uncalled = REAL_MAPPER.replace("= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})")
+    # The `def` line names it too, so the CALL is what has to be gone.
+    assert "= build_mappers(" not in uncalled
+    lines = uncalled.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    uncalled = "".join(
+        lines[:insert]
+        + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/dead", "unsloth/dead")\n']
+        + lines[insert:]
+    )
+    with _serving(uncalled, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/dead" in str(key) for key in table)
+
+
 def test_a_branch_that_does_run_is_still_read(monkeypatch):
     """The exclusion is about DEAD code, not about conditionals in general."""
     live = REAL_MAPPER + (
