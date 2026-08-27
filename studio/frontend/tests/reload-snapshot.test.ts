@@ -880,7 +880,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /function useCompareVariant\(pairId: string\)[\s\S]*?const modelsError = useChatRuntimeStore[\s\S]*?residentCheckpoint === undefined\) return null;[\s\S]*?s\.loras\.some[\s\S]*?s\.models\.some\(\(model\) => model\.id === cp && model\.isLora\)[\s\S]*?const hasGeneralThread = threads\.some[\s\S]*?thread\.modelType === "model1" \|\| thread\.modelType === "model2"[\s\S]*?const hasLoraThread = threads\.some[\s\S]*?thread\.modelType === "base" \|\| thread\.modelType === "lora"[\s\S]*?const variant = persistedVariant \?\? runtimeVariant;\s*if \(variant === null\) return;[\s\S]*?setResolution\(\{\s*pairId,\s*variant,[\s\S]*?resolution\.variant\s*: modelsError\s*\? "general"\s*: null/,
+    /function useCompareVariant\(pairId: string\)[\s\S]*?residentCheckpoint === undefined\) return null;[\s\S]*?s\.loras\.some[\s\S]*?s\.models\.some\(\(model\) => model\.id === cp && model\.isLora\)[\s\S]*?variant: CompareVariant \| null;[\s\S]*?thread\.modelType === "model1" \|\| thread\.modelType === "model2"[\s\S]*?thread\.modelType === "base" \|\| thread\.modelType === "lora"/,
   );
   assert.match(
     chatPageSource,
@@ -888,7 +888,16 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /\.catch\(\(error\) => \{\s*if \(!isActive\) return;\s*if \(runtimeVariant\) setResolution\(\{ pairId, variant: runtimeVariant \}\);\s*if \(!isExpectedBackgroundChatStorageError\(error\)\) throw error;/,
+    /for \(let attempt = 0; attempt < 2; attempt \+= 1\)[\s\S]*?catch \(error\) \{\s*if \(!isActive\) return;\s*if \(!isExpectedBackgroundChatStorageError\(error\)\) throw error;/,
+  );
+  const compareVariantSource = chatPageSource.slice(
+    chatPageSource.indexOf("function useCompareVariant"),
+    chatPageSource.indexOf("const CompareContent"),
+  );
+  assert.doesNotMatch(compareVariantSource, /catch \(error\)[\s\S]*?setResolution/);
+  assert.match(
+    compareVariantSource,
+    /if \(resolution\?\.pairId !== pairId\) return null;\s*return resolution\.variant \?\? \(modelsError \? "general" : null\);/,
   );
   const loraCompareSource = chatPageSource.slice(
     chatPageSource.indexOf("const LoraCompareContent"),

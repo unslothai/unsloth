@@ -554,50 +554,51 @@ function useCompareVariant(pairId: string): CompareVariant | null {
   });
   const [resolution, setResolution] = useState<{
     pairId: string;
-    variant: CompareVariant;
+    variant: CompareVariant | null;
   } | null>(null);
 
   useEffect(() => {
-    if (resolution?.pairId === pairId) return;
+    if (
+      resolution?.pairId === pairId &&
+      (resolution.variant !== null || runtimeVariant === null)
+    )
+      return;
     let isActive = true;
-    listStoredChatThreads({ pairId })
-      .then((threads) => {
-        if (!isActive) return;
-        const hasGeneralThread = threads.some(
-          (thread) =>
-            thread.modelType === "model1" || thread.modelType === "model2",
-        );
-        const hasLoraThread = threads.some(
-          (thread) =>
-            thread.modelType === "base" || thread.modelType === "lora",
-        );
-        const persistedVariant = hasGeneralThread
-          ? "general"
-          : hasLoraThread
-            ? "lora"
-            : null;
-        const variant = persistedVariant ?? runtimeVariant;
-        if (variant === null) return;
-        setResolution({
-          pairId,
-          variant,
-        });
-      })
-      .catch((error) => {
-        if (!isActive) return;
-        if (runtimeVariant) setResolution({ pairId, variant: runtimeVariant });
-        if (!isExpectedBackgroundChatStorageError(error)) throw error;
-      });
+    void (async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const threads = await listStoredChatThreads({ pairId });
+          if (!isActive) return;
+          const hasGeneralThread = threads.some(
+            (thread) =>
+              thread.modelType === "model1" || thread.modelType === "model2",
+          );
+          const hasLoraThread = threads.some(
+            (thread) =>
+              thread.modelType === "base" || thread.modelType === "lora",
+          );
+          setResolution({
+            pairId,
+            variant: hasGeneralThread
+              ? "general"
+              : hasLoraThread
+                ? "lora"
+                : runtimeVariant,
+          });
+          return;
+        } catch (error) {
+          if (!isActive) return;
+          if (!isExpectedBackgroundChatStorageError(error)) throw error;
+        }
+      }
+    })();
     return () => {
       isActive = false;
     };
-  }, [pairId, resolution?.pairId, runtimeVariant]);
+  }, [modelsError, pairId, resolution?.pairId, resolution?.variant, runtimeVariant]);
 
-  return resolution?.pairId === pairId
-    ? resolution.variant
-    : modelsError
-      ? "general"
-      : null;
+  if (resolution?.pairId !== pairId) return null;
+  return resolution.variant ?? (modelsError ? "general" : null);
 }
 
 const CompareContent = memo(function CompareContent({
