@@ -182,7 +182,7 @@ function subscribeToConfigChanges(onChange: () => void): () => void {
   const onStorage = (event: Event) => {
     const key = (event as StorageEvent).key;
     // A null key means the whole store was cleared, which counts.
-    if (key == null || WATCHED_STORAGE_KEYS.includes(key)) onConfigWrite();
+    if (key == null || watchedStorageKeys().includes(key)) onConfigWrite();
   };
   window.addEventListener("storage", onStorage);
   const unsubscribeStore = useChatRuntimeStore.subscribe(onChange);
@@ -193,8 +193,19 @@ function subscribeToConfigChanges(onChange: () => void): () => void {
   };
 }
 
-/** localStorage keys whose cross-tab writes change what the bar should show. */
-const WATCHED_STORAGE_KEYS = [
+/**
+ * localStorage keys whose cross-tab writes change what the bar should show.
+ *
+ * Read on call, not at module scope. This module sits inside an import cycle --
+ * chat-runtime-store -> presets/preset-load-config -> features/model-picker ->
+ * ... -> features/chat -> here -> chat-runtime-store -- so it can be evaluated
+ * while chat-runtime-store is still initializing. Naming CHAT_GPU_MEMORY_MODE_KEY
+ * at module scope then reads a `const` in its temporal dead zone and throws
+ * "Cannot access 'CHAT_GPU_MEMORY_MODE_KEY' before initialization", which takes
+ * the whole page down at import time rather than failing anything locally.
+ * Inside a function the read happens after every module has finished loading.
+ */
+const watchedStorageKeys = () => [
   PER_MODEL_CONFIG_STORAGE_KEY,
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
