@@ -57,18 +57,69 @@ def test_a_non_chromium_browser_refuses_the_throttle():
     )
 
 
-def test_the_refusal_precedes_the_cdp_session():
-    """Order is the whole point: after the launch it is not a refusal."""
-    guard = CODE.index("CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER")
-    cdp = CODE.index("new_cdp_session")
-    assert guard < cdp, (
-        "the CDP session is opened before the unsupported-browser check, so "
-        "firefox and webkit still raise"
+def test_the_refusal_precedes_the_first_page():
+    """Order is the whole point: after a page exists it is not a refusal.
+
+    Read against the launch function rather than the file, because the CDP call
+    now lives in a helper defined near the top -- textual order across the file
+    would say nothing about what runs first.
+    """
+    launch = CODE[CODE.index("browser_type = getattr(p, PLAYWRIGHT_BROWSER)"):]
+    guard = launch.index("CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER")
+    first_page = launch.index("ctx.new_page()")
+    assert guard < first_page, (
+        "a page is created before the unsupported-browser check, so firefox "
+        "and webkit reach the CDP call and raise"
     )
 
 
-def test_the_cdp_call_is_the_only_place_the_throttle_is_applied():
-    assert CODE.count("new_cdp_session") == 1, "a second CDP session would need its own refusal"
+def test_the_cdp_call_has_exactly_one_owner():
+    assert CODE.count("new_cdp_session") == 1, (
+        "a second CDP session would sit outside apply_cpu_throttle, so the "
+        "refusal and the recovery path would both miss it"
+    )
+    owner = re.search(
+        r"def apply_cpu_throttle\([^)]*\):(?P<body>(?:\n(?:[ \t].*)?)+?)(?=\ndef |\nclass |\Z)",
+        CODE,
+    )
+    assert owner and "new_cdp_session" in owner.group("body"), (
+        "the throttle is applied somewhere other than apply_cpu_throttle"
+    )
+
+
+def test_a_replacement_page_is_throttled_again():
+    """`Emulation.setCPUThrottlingRate` is scoped to the page TARGET.
+
+    `recover_or_replace_page` hands back a page from `ctx.new_page()` when the
+    renderer died, and that one runs at full speed. Every later step then
+    passes under exactly the conditions the throttle exists to reproduce --
+    a false pass, in the slow case, which is the case that matters.
+    """
+    assert "recover_or_replace_page as _robust_recover_or_replace_page" in CODE, (
+        "the shared helper is imported under its own name, so the call sites "
+        "bypass the wrapper that re-throttles a replacement page"
+    )
+    wrapper = re.search(
+        r"def recover_or_replace_page\([^)]*\):(?P<body>(?:\n(?:[ \t].*)?)+?)"
+        r"(?=\ndef |\nclass |\Z)",
+        CODE,
+    )
+    assert wrapper, "no local recover_or_replace_page wrapper"
+    body = wrapper.group("body")
+    assert "_robust_recover_or_replace_page" in body
+    assert "apply_cpu_throttle" in body, (
+        "the wrapper does not re-apply the throttle, so a replaced page runs "
+        "unthrottled for the rest of the driver"
+    )
+    assert "is not page" in body, (
+        "the throttle is re-applied unconditionally; only a REPLACEMENT page "
+        "needs it, and a fresh CDP session per recovery is not free"
+    )
+    assert "_robust_recover_or_replace_page(" not in CODE.replace(
+        body, "", 1
+    ).replace("recover_or_replace_page as _robust_recover_or_replace_page", "", 1), (
+        "a call site reaches the shared helper directly, skipping the wrapper"
+    )
 
 
 def test_the_driver_still_parses():

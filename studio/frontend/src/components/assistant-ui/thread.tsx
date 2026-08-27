@@ -4186,13 +4186,23 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
-      clearStoredDraft();
       // Wait mode read now, not carried from the parked submit: a run can
       // start while the settings load, and ignoring it would dispatch on top
       // of the response already streaming.
       const waitForCurrentRun =
         aui.thread().getState().isRunning ||
         hasPreStreamRunReservation(preStreamThreadIds);
+      // The project new-chat composer never queues, because queueing there
+      // binds the follow-up to the wrong thread, and every queue entry point
+      // in handleSubmit refuses it. Refuse the same way here, before the draft
+      // is cleared: visibly, with the text left in the composer. Not running
+      // means there is nothing to queue behind and this is an ordinary send,
+      // which is also what handleSubmit does with the chord alone.
+      if (disableQueue && waitForCurrentRun) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      clearStoredDraft();
       // A run started while the send was parked means this is now the same
       // situation handleSubmit queues in, whether or not the chord asked for
       // it. Sending regardless is how a message vanished: measured on a
@@ -4202,7 +4212,7 @@ const Composer: FC<{
       // -- no queue entry, no send, and the wait toast already dismissed
       // above, so nothing on screen said so. The comment on the branch below
       // had the reason exactly right; it just did not apply it here.
-      if (forceQueue || waitForCurrentRun) {
+      if (!disableQueue && (forceQueue || waitForCurrentRun)) {
         // The chord's own two branches from handleSubmit, in the same order. A
         // long paste lives in an attachment, so queueing the text alone queues
         // nothing at all when that is all there is.
@@ -4233,6 +4243,7 @@ const Composer: FC<{
     queuePastedTextPrompt,
     sendReservedComposer,
     preStreamThreadIds,
+    disableQueue,
   ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).

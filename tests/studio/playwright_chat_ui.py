@@ -26,7 +26,7 @@ from _playwright_robust import (  # noqa: E402
     install_wall_clock_watchdog,
     is_benign_console_error,
     is_benign_page_error,
-    recover_or_replace_page,
+    recover_or_replace_page as _robust_recover_or_replace_page,
     robust_evaluate,
     wait_for_health,
     click_forced,
@@ -90,6 +90,33 @@ def info(s):
 
 def fail(m):
     raise AssertionError(f"[ui] FAIL: {m}")
+
+
+def apply_cpu_throttle(ctx, page):
+    """Throttle this page, if the option is set. No-op otherwise."""
+    if CPU_THROTTLE <= 1:
+        return page
+    ctx.new_cdp_session(page).send(
+        "Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE}
+    )
+    info(f"CPU throttled {CPU_THROTTLE}x")
+    return page
+
+
+def recover_or_replace_page(page, ctx, **kwargs):
+    """The shared recovery, with the throttle carried onto a replacement page.
+
+    `Emulation.setCPUThrottlingRate` is scoped to the PAGE TARGET, so a page
+    that `ctx.new_page()` created runs at full speed however the option was
+    set. Every remaining step -- the rapid-submit one most of all -- would then
+    pass under exactly the conditions the throttle exists to reproduce, which
+    is a false pass rather than a missing one. Wrapping the import rather than
+    each call site means a fourth recovery point cannot forget this.
+    """
+    replacement = _robust_recover_or_replace_page(page, ctx, **kwargs)
+    if replacement is not page:
+        apply_cpu_throttle(ctx, replacement)
+    return replacement
 
 
 def expected_default_model():
@@ -699,9 +726,7 @@ with sync_playwright() as p:
     # 60s default (was 30s): the macos-14 runners are slow enough that
     # renders/webfonts/lazy routes routinely crowd 30s.
     page.set_default_timeout(60_000)
-    if CPU_THROTTLE > 1:
-        ctx.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE})
-        info(f"CPU throttled {CPU_THROTTLE}x")
+    apply_cpu_throttle(ctx, page)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
     console_errors: list[str] = []

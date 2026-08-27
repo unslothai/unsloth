@@ -340,11 +340,27 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     assert "hasPreStreamRunReservation(preStreamThreadIds)" in code
 
     # The gate on the queue branches, which is the fix itself.
-    assert "if (forceQueue || waitForCurrentRun) {" in code, (
+    assert "if (!disableQueue && (forceQueue || waitForCurrentRun)) {" in code, (
         "the queue branches are gated on the Cmd/Ctrl+Enter intent alone "
         "again, so an ordinary Enter parked on the settings gate is released "
-        "into a running thread"
+        "into a running thread -- or the project new-chat composer lost its "
+        "exemption and can now queue onto the wrong thread"
     )
+    # The project new-chat composer never queues: queueing there binds the
+    # follow-up to a thread that does not exist yet, which is why every queue
+    # entry point in handleSubmit refuses it. The release has to refuse the
+    # same way -- visibly, and BEFORE the draft is cleared, or the text is
+    # dropped from storage while it is still sitting in the composer.
+    refusal = code.index("if (disableQueue && waitForCurrentRun) {")
+    assert "toast.error" in code[refusal : refusal + 200], (
+        "the project composer's parked send is refused silently, which is the "
+        "same class of bug this whole test exists for"
+    )
+    assert refusal < code.index("clearStoredDraft();"), (
+        "the draft is cleared before the refusal, so a refused prompt is lost "
+        "on reload"
+    )
+    assert "disableQueue," in code, "disableQueue is missing from the effect deps"
     # Unchanged: nothing queueable still sends, and the chord's two branches
     # keep their order. A fix that stopped sending would strand the ordinary
     # case instead.
