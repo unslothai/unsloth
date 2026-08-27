@@ -97,7 +97,9 @@ def _store_reducers() -> str:
         "setCheckpoint: (modelId, ggufVariant, options) =>",
         "  // Re-apply the incoming thread's own usage",
     )
-    active = slice_between(text, "setActiveThreadId: (activeThreadId) =>", "setActiveProjectId:")
+    active = slice_between(
+        text, "setActiveThreadId: (activeThreadId) =>", "applyThreadScopedSettings:"
+    )
     usage = slice_between(text, "setContextUsage: (contextUsage) =>", "setThreadContextUsage:")
     thread_usage = slice_between(text, "setThreadContextUsage: (threadId, usage) =>", "}));")
     return (
@@ -318,9 +320,10 @@ function messagesContainImage(messages: any): boolean {
 }
 
 // The adapter's own prompt build is exercised by the request tests; here it only has
-// to turn the reconstructed branch into something countable.
-async function buildOutboundMessagesForTokenCount(messages: any): Promise<any[]> {
-  return messages.map((m: any) => ({ role: m.role, content: "x" }));
+// to turn the reconstructed branch into something countable. Same shape
+// refreshContextUsage spreads into countChatInputTokens.
+async function buildLocalTokenCountHistory(messages: any): Promise<{ messages: any[] }> {
+  return { messages: messages.map((m: any) => ({ role: m.role, content: "x" })) };
 }
 
 async function buildLocalTokenCountExtras(): Promise<Record<string, unknown>> {

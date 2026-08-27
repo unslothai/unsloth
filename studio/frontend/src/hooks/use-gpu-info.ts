@@ -38,6 +38,9 @@ export interface GpuInfo {
   budgetKnown: boolean;
   /** true when the visible GPUs use only the host memory pool. */
   sharedMemory: boolean;
+  /** True when any device's budget is a unified host pool (a ROCm APU), which is
+   *  not a VRAM ceiling a fit verdict can be measured against. */
+  unifiedMemory: boolean;
   /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
@@ -67,6 +70,7 @@ const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
   sharedMemory: false,
+  unifiedMemory: false,
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
@@ -111,6 +115,11 @@ function toGpuInfo(
       gpuSharedHostMemoryGb(devices),
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
+    // Additive, and deliberately some() where sharedMemory above is "no dedicated
+    // pool at all": one unified part makes the aggregate total partly host RAM,
+    // which is already enough to stop it being a VRAM ceiling a fit verdict can
+    // be measured against.
+    unifiedMemory: devices.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
@@ -159,6 +168,7 @@ function toGpuDevices(
         memoryFreeGb: d.vram_free_gb ?? 0,
         sharedMemory: d.shared_memory === true,
         sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+        unifiedMemory: d.unified_memory === true,
         pinnable: picksAccepted && d.index_kind === "vulkan",
         // The DiffusionGemma runner is torch-side and never speaks ggml
         // ordinals, so a Vulkan pick is not usable there.
@@ -186,6 +196,7 @@ function toGpuDevices(
       memoryFreeGb: d.vram_free_gb ?? 0,
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+      unifiedMemory: d.unified_memory === true,
       // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
       // and /validate 400 them. A Vulkan ordinal is not one of those, so it
       // stays pickable even when this list arrives from an XPU host.

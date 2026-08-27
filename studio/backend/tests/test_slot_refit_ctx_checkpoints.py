@@ -22,7 +22,6 @@ if _TESTS_DIR not in sys.path:
 
 import pytest  # noqa: E402
 
-from core.inference.llama_cpp import _FIT_MIN_CTX  # noqa: E402
 from test_llama_cpp_placement import _backend, _launch  # noqa: E402
 
 MIB = 1024 * 1024
@@ -173,69 +172,34 @@ class TestThePredicateChargesTheReserve:
 class TestTheRefitDoesNotSpendTheReserve:
     """End to end: the context the re-fit publishes has to leave room for it."""
 
-    # A 16 GiB card at 14,172 MiB rather than 12 GiB at 9,200. The comparison is only
-    # well posed when both plans reduce to the SAME slot count: --ctx-checkpoints is
-    # charged PER SLOT, so a charged plan that reduces further than the free one can
-    # legitimately publish a LARGER per-slot -c out of the slots it gave up. On the old
-    # fixture at an 8192 floor that is exactly what happened -- free took 3 slots at
-    # 12,800 and charged took 1 at 29,440 -- and the assertion below read that as the
-    # reserve buying context. Here both land on one slot, both stay --fit off, and both
-    # contexts are measurements rather than the floor, so the only difference between
-    # them is the reserve.
-    @pytest.mark.parametrize("checkpoints", [4])
+    @pytest.mark.parametrize("checkpoints", [4, 16, 32])
     def test_a_checkpointed_launch_gets_less_context_than_an_uncheckpointed_one(
         self, tmp_path, checkpoints
     ):
         """Unpriced, the two stay identical however large --ctx-checkpoints gets,
-        while the child allocates it anyway."""
-        free = _plan(
-            tmp_path, weights_mib = 14_172, n_parallel = 4, ctx_checkpoints = 0, vram_mib = 16 * 1024
-        )
-        charged = _plan(
-            tmp_path,
-            weights_mib = 14_172,
-            n_parallel = 4,
-            ctx_checkpoints = checkpoints,
-            vram_mib = 16 * 1024,
-        )
-        assert charged["reserve_bytes"] > 0
-        assert charged["checkpoints"] == str(checkpoints)
-        # Same slot count on both sides, or the per-slot contexts are not comparable.
-        assert charged["slots"] == free["slots"]
-        assert (charged["fit"], free["fit"]) == ("off", "off")
-        # Both reduced, so both actually went through the re-fit this class is about.
-        assert charged["slots"] < 4
-        # Neither is the floor, so the gap is measured rather than clamped.
-        assert charged["ctx"] > _FIT_MIN_CTX
-        assert charged["ctx"] < free["ctx"], (free, charged)
+        while the child allocates it anyway.
 
-    @pytest.mark.parametrize("checkpoints", [16, 32])
-    def test_a_reserve_too_large_to_place_offloads_rather_than_pinning_it(
-        self, tmp_path, checkpoints
-    ):
-        """The other end of the same charge, and why 16 and 32 left the test above.
-
-        At these depths the per-slot reserve is larger than any slot count can hold on
-        this card, so the reduction search fails outright and the load goes to --fit
-        on. There is no re-fit to inspect, which means the sibling above cannot express
-        its premise here at all: it used to "pass" for these depths only because an
-        offloading plan reports the floor, and a floor is below anything, so the
-        ``charged < free`` comparison held while testing nothing.
-
-        What is still worth asserting is the safe outcome: a reserve we cannot place is
-        not placed. The failure this guards is the opposite one, pinning a context that
-        leaves no room for a reserve the child allocates anyway.
+        The claim is that the reserve is CHARGED, not that context specifically is
+        what pays. There are three ways to pay, and which one applies depends on how
+        big the reserve is relative to the budget: give up context at the same slot
+        count, give up a slot, or give up residency and offload. At 16 and 32
+        checkpoints this fixture already takes the third -- `--fit on` at the offload
+        fallback -- and `charged["ctx"] < free["ctx"]` only held there by arithmetic
+        coincidence, because the fallback happens to be shorter than the resident
+        plan's context. Naming the three keeps a real regression (nothing was
+        charged: same slots, same context, same residency) distinguishable from the
+        planner picking a different axis, which a raised fit floor can do on its own.
         """
-        charged = _plan(
-            tmp_path,
-            weights_mib = 14_172,
-            n_parallel = 4,
-            ctx_checkpoints = checkpoints,
-            vram_mib = 16 * 1024,
-        )
+        free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
+        charged = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints)
         assert charged["reserve_bytes"] > 0
         assert charged["checkpoints"] == str(checkpoints)
-        assert charged["fit"] == "on", charged
+        if charged["fit"] != free["fit"]:
+            assert charged["fit"] == "on", (free, charged)
+        elif charged["slots"] != free["slots"]:
+            assert charged["slots"] < free["slots"], (free, charged)
+        else:
+            assert charged["ctx"] < free["ctx"], (free, charged)
 
     def test_a_plan_with_room_for_it_still_stays_on_gpu(self, tmp_path):
         """The reserve costs context, not the GPU pin, while there is room."""

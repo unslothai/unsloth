@@ -61,10 +61,14 @@ def sparse_adapter(tmp_path_factory):
 
 
 class _Stub:
-    """Only what the seam touches."""
+    """Only what the seam touches.
+
+    Must NOT declare _HOST_RAM_HEADROOM_MIB: that constant is module-level, so
+    declaring it here let the double supply what the real backend lacked, hiding an
+    AttributeError on every planned load.
+    """
 
     _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
-    _HOST_RAM_HEADROOM_MIB = 2048
     # Discrete by default, so every existing case here is a discrete host. The
     # unified answer is the APU's, and it is exercised deliberately below.
     _unified = False
@@ -187,6 +191,25 @@ def _plan(
 
 
 # ------------------------------------------------------------------ the gate
+
+
+def test_the_seam_reads_no_attribute_the_real_backend_lacks():
+    """The planner is default-on, so every GGUF load runs this seam against the REAL
+    class, not the double above.
+
+    _planned_tensor_spill read the headroom as self._HOST_RAM_HEADROOM_MIB, but that
+    constant is module-level, so every planned load 500'd with AttributeError (seen on
+    a 67.6 GB GGUF, Colab T4 high-RAM). The suite stayed green only because the double
+    declared it."""
+    import inspect
+
+    for name in ("_HOST_RAM_HEADROOM_MIB",):
+        assert not hasattr(_Stub, name), (
+            f"the double declares {name}, so it can hide a missing attribute on the "
+            "real backend again"
+        )
+    source = inspect.getsource(LlamaCppBackend._planned_tensor_spill)
+    assert "self._HOST_RAM_HEADROOM_MIB" not in source
 
 
 def test_the_planner_is_on_by_default():

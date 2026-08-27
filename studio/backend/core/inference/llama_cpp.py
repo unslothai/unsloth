@@ -50,6 +50,8 @@ from typing import (
 import httpx
 
 from core.inference.context_window import (
+    _COMPACTION_HEADROOM_RATIO,
+    clamp_compaction_headroom_ratio,
     prompt_budget,
     estimate_messages_tokens,
     estimate_messages_tokens_dense,
@@ -202,6 +204,33 @@ def _archive_is_degraded() -> bool:
         return False
 
 
+def _compaction_fit_kwargs(
+    context_policy: Optional[str] = None, compaction_headroom_ratio: Optional[float] = None
+) -> dict:
+    """Per-request overrides the four rolling-fit call sites share.
+
+    Unset values keep the process defaults (UNSLOTH_CONTEXT_POLICY and
+    ROLLING_COMPACTION_HEADROOM_RATIO) so an older client is unaffected.
+    """
+    extra: dict = {}
+    if context_policy in ("checkpoint", "rolling"):
+        extra["context_policy"] = context_policy
+    if compaction_headroom_ratio is not None:
+        extra["headroom_ratio"] = compaction_headroom_ratio
+    return extra
+
+
+def _request_uses_checkpoint(requested_policy: Optional[str] = None) -> bool:
+    """Process default, unless this request named checkpoint or rolling."""
+    if requested_policy == "checkpoint":
+        return True
+    if requested_policy == "rolling":
+        return False
+    from core.inference import checkpoint
+
+    return checkpoint.enabled()
+
+
 def _fit_context(messages, **kwargs):
     """The context policy in one place, so the five call sites do not each pick one.
 
@@ -209,11 +238,27 @@ def _fit_context(messages, **kwargs):
     reachable via `UNSLOTH_CONTEXT_POLICY=rolling` as the A/B arm and the escape hatch for
     a misbehaving template family. A request that may not reset (see `_can_reset_epoch`)
     silently keeps rolling, which is why the two fits share a signature.
+
+    ``context_policy`` on the request overrides the process default so Studio can offer
+    a sliding window without restarting the server.
     """
     can_reset = bool(kwargs.pop("can_reset", False))
+    # Whether `sticky_dropped` is the depth of a checkpoint RESET. Defaults to True, which
+    # is what a caller with no thread state to consult has always assumed.
+    sticky_is_checkpoint = bool(kwargs.pop("sticky_is_checkpoint", True))
+    requested_policy = kwargs.pop("context_policy", None)
+    if requested_policy not in ("checkpoint", "rolling"):
+        requested_policy = None
     try:
         from core.inference import checkpoint
-        if not can_reset and checkpoint.enabled() and int(kwargs.get("sticky_dropped") or 0) > 0:
+
+        use_checkpoint = _request_uses_checkpoint(requested_policy)
+        if (
+            not can_reset
+            and use_checkpoint
+            and sticky_is_checkpoint
+            and int(kwargs.get("sticky_dropped") or 0) > 0
+        ):
             # An epoch is in force but THIS request may not reset. Falling straight through
             # to rolling was the worst of both: it replays the checkpoint-sized (near-total)
             # eviction WITHOUT rebuilding the block that made it survivable. Measured on a
@@ -229,8 +274,12 @@ def _fit_context(messages, **kwargs):
                 return fitted, truncation
             # A checkpoint boundary means nothing to rolling, which cannot rebuild what it
             # assumed. Recomputing loses the epoch: an un-compacted window tells no lie.
+            #
+            # `sticky_is_checkpoint` false skips this branch entirely and keeps the count:
+            # rolling recorded it, rolling replays it, and the rolling fit reports no
+            # `checkpoint_started`, so `_archive_and_recall` still runs the inline recall.
             kwargs.pop("sticky_dropped", None)
-        if can_reset and checkpoint.enabled():
+        if can_reset and use_checkpoint:
             # A degraded archive downgrades reset to REPLAY rather than closing the door.
             # Refusing outright sent the request to rolling, which replays the same boundary
             # WITHOUT rebuilding the block, so a thread with an epoch silently lost its
@@ -838,6 +887,31 @@ def _records_boundary(truncation: dict) -> bool:
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
 
 
+def _effective_headroom_ratio(compaction_headroom_ratio: Optional[float] = None) -> float:
+    """The extra-trim share this request's rolling fit actually used."""
+    ratio = clamp_compaction_headroom_ratio(compaction_headroom_ratio)
+    return _COMPACTION_HEADROOM_RATIO if ratio is None else ratio
+
+
+def _boundary_metadata(
+    fitted: list[dict],
+    before: Optional[list[dict]],
+    compaction_headroom_ratio: Optional[float] = None,
+) -> dict:
+    """Where this fit put the boundary, and under how much extra trim.
+
+    The ratio rides with the depth because the depth cannot be read without it: phase one
+    of `fit_rolling_context` re-applies the saved count before anything else and stops once
+    the result fits, so a chat whose setting has moved either way would replay the old cut
+    and never reach the phase that consults the new one.
+    """
+    return {
+        "boundary_messages": _branch_boundary(fitted, before),
+        "boundary_anchor": _branch_boundary_anchor(fitted, before),
+        "boundary_headroom_ratio": _effective_headroom_ratio(compaction_headroom_ratio),
+    }
+
+
 def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
     """The branch as ``_branch_boundary`` counts it: system and developer turns removed."""
     return [
@@ -931,10 +1005,21 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
         return True
 
 
-def _sticky_compaction_boundary(
-    thread_id: Optional[str], branch_messages: Optional[list[dict]] = None
-) -> int:
-    """How many leading messages this thread last compacted away, or 0.
+def _sticky_compaction_state(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> tuple[int, bool]:
+    """How many leading messages this thread last compacted away, and who compacted them.
+
+    The provenance decides which fitter may consume the count. A rolling boundary handed
+    to `fit_checkpoint_context` reads as an epoch already in force, so the fit returns
+    `checkpoint_started` false and `_archive_and_recall` skips the recall the rolling
+    fallback would have run. Mixed provenance across surviving rows counts as rolling:
+    `min(boundaries)` below may pick either row, so the safe reading is the one that still
+    recalls.
 
     The fit is otherwise stateless: the client re-sends the whole transcript each request,
     so "keep the newest N tokens" slides forward every turn, which tells the user nothing
@@ -946,9 +1031,9 @@ def _sticky_compaction_boundary(
     a non-persisting API client, or a storage error all mean "no boundary".
     """
     if not thread_id:
-        return 0
+        return 0, False
+    requested_ratio = _effective_headroom_ratio(compaction_headroom_ratio)
     try:
-        from core.inference import checkpoint
         from storage import studio_db
 
         # The stored rows are the whole DAG, so the newest assistant turn can belong to a
@@ -960,7 +1045,7 @@ def _sticky_compaction_boundary(
         _branch = _archive_branch_transcript(branch_messages, ("assistant",))
         if branch_messages and not _branch:
             # A branch with no reply of its own has no boundary to restore.
-            return 0
+            return 0, False
         candidates = [
             message
             for message in reversed(studio_db.list_chat_messages(thread_id) or [])
@@ -968,7 +1053,7 @@ def _sticky_compaction_boundary(
             and _archive_content_on_branch(message.get("content"), _branch)
         ]
         if not candidates:
-            return 0
+            return 0, False
 
         # The newest on-branch assistant turn decides, except that the branch check is
         # textual, so two Retry siblings that both read "Done" are indistinguishable here
@@ -989,30 +1074,59 @@ def _sticky_compaction_boundary(
 
         newest = _archive_message_text(candidates[0].get("content"))
         boundaries = []
+        origins = []
         for message in candidates:
             if _archive_message_text(message.get("content")) != newest:
                 continue
             metadata = message.get("metadata") or {}
             if not isinstance(metadata, dict):
-                return 0
+                return 0, False
             truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
                 "contextTruncation"
             )
             if not isinstance(truncation, dict):
-                return 0
+                return 0, False
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
-                return 0
-            # And only under the policy that recorded it. A checkpoint boundary is the depth
-            # of a RESET, affordable only because the block is rebuilt on every replay;
-            # under `UNSLOTH_CONTEXT_POLICY=rolling` nothing rebuilds it and both
-            # `_fit_context` guards are `checkpoint.enabled()`, so the depth replays with
-            # nothing handed back (18 evicted where rolling picks 6). Refused HERE, not at
-            # the fit: `boundary_messages` is re-recorded every turn, so a rolling turn that
-            # inherited 18 would persist it with no `checkpoint` key and make the
-            # reset-sized window permanent. Let rolling compute its own.
-            if truncation.get("checkpoint") and not checkpoint.enabled():
-                return 0
+                return 0, False
+            # A boundary is valid only under the fit that will consume it, and the two
+            # directions fail differently.
+            #
+            # A checkpoint boundary is the depth of a RESET, affordable only because the
+            # block is rebuilt on every replay. Under rolling nothing rebuilds it, so the
+            # depth replays with nothing handed back (18 evicted where rolling picks 6).
+            # Refused HERE, not at the fit: `boundary_messages` is re-recorded every turn,
+            # so a rolling turn that inherited 18 would persist it with no `checkpoint` key
+            # and make the reset-sized window permanent.
+            #
+            # The other way, a rolling boundary reaching `fit_checkpoint_context` reads as
+            # an epoch already in force, so the reset returns `checkpoint_started` false
+            # and the automatic recall never runs. That only happens where the request may
+            # actually reset; `_can_reset_epoch` false means the fit stays rolling whatever
+            # the process policy says, and there the rolling boundary is the right one to
+            # replay. Rejecting it there instead let the boundary slide every turn for any
+            # model whose template cannot render tools.
+            recorded_checkpoint = bool(truncation.get("checkpoint"))
+            effective_checkpoint = _request_uses_checkpoint(context_policy)
+            if recorded_checkpoint and not effective_checkpoint:
+                return 0, False
+            if not recorded_checkpoint and effective_checkpoint and can_reset:
+                return 0, False
+            # Changing the extra trim has to change something. Phase one of
+            # `fit_rolling_context` re-applies this count before anything else and stops
+            # once the result fits, so a boundary cut under a DIFFERENT ratio never reaches
+            # the phase that reads the new one, in either direction: measured on a
+            # 121-message transcript at context_length 1600, a stored boundary of 86 gave
+            # `dropped 86` whether the request asked for 0.05 or 0.25. Refusing it makes
+            # the fit recompute, which is the only place the new ratio is read. Absent on
+            # rows saved before the ratio was recorded, which keep replaying as they did.
+            if not recorded_checkpoint:
+                recorded_ratio = truncation.get("boundary_headroom_ratio")
+                if (
+                    recorded_ratio is not None
+                    and abs(float(recorded_ratio) - requested_ratio) > 1e-9
+                ):
+                    return 0, False
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was
             # recorded: equal for a single fit, too large for a turn that refit often.
@@ -1032,10 +1146,29 @@ def _sticky_compaction_boundary(
                         recorded = min(recorded, index)
                         break
             boundaries.append(recorded)
-        return min(boundaries) if boundaries else 0
+            origins.append(recorded_checkpoint)
+        if not boundaries:
+            return 0, False
+        return min(boundaries), all(origins)
     except Exception:
-        return 0
-    return 0
+        return 0, False
+
+
+def _sticky_compaction_boundary(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> int:
+    """`_sticky_compaction_state` without the provenance, for callers that only fit."""
+    return _sticky_compaction_state(
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
+    )[0]
 
 
 def _prefix_user_text(message: dict, prefix: str) -> dict:
@@ -2487,6 +2620,22 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
         key = dspark_preference_key,
     )
     return files[0] if files else None
+
+
+def _pick_mtp(candidates: list[str]) -> Optional[str]:
+    """The MTP drafter a listing offers, or None. Module level for the same reason
+    ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
+    and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
+    # Root-level only: MTP/ subdir copies now share the mtp- prefix but
+    # are explicit-selection, not auto-fetch (they'd sort ahead of root).
+    # The mtp- prefix also excludes AppleDouble shadows ("._mtp-x.gguf"), which
+    # is why this picker needs no drop_shadowed_appledouble_names of its own.
+    mtp_files = sorted(
+        f
+        for f in candidates
+        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
+    )
+    return mtp_files[0] if mtp_files else None
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -5029,20 +5178,16 @@ class LlamaCppBackend:
     def __init__(self, *, manages_processes: bool = True):
         """``manages_processes = False`` builds an INERT probe.
 
-        The constructor is not free. It reaps orphaned llama-servers, which walks
-        every entry in /proc, resolves each candidate's exe and signals the ones it
-        recognises, and it registers an atexit handler that holds this instance for
-        the life of the process. Both are right for the backend that owns the child.
+        The constructor is not free: it reaps orphaned llama-servers, walking /proc,
+        resolving each candidate's exe and signalling the ones it recognises, then
+        registers an atexit handler holding this instance for the life of the process.
+        Both are right for the backend that owns a child, neither for a probe that only
+        reads a header -- and since the memory-estimate route those helpers run on every
+        settings change. Measured on one estimate: five constructions, five /proc scans,
+        five atexit handlers, never released, so fifty estimates left 250 of them
+        holding 250 backends.
 
-        Neither is right for a probe. The sizing helpers build one only to read a GGUF
-        header and evaluate arithmetic, and since the memory-estimate route those
-        helpers run on every settings change rather than once per load. Measured on one
-        estimate: five constructions, five /proc scans, five atexit handlers -- and the
-        handlers are never released, so fifty estimates left 250 of them holding 250
-        backends. A panel that prices a load must not be able to kill a server, and a
-        slider drag must not leak.
-
-        Default is True, so every existing caller keeps the behaviour it has today.
+        Default True, so every existing caller keeps today's behaviour.
         """
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
@@ -13131,18 +13276,6 @@ class LlamaCppBackend:
         higher-precision copies under ``MTP/`` are for explicit selection and
         are intentionally skipped. Returns the local path, or None.
         """
-
-        def _pick_mtp(candidates: list[str]) -> Optional[str]:
-            # Root-level only: MTP/ subdir copies now share the mtp- prefix but
-            # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-            mtp_files = sorted(
-                f
-                for f in candidates
-                if f.lower().endswith(".gguf")
-                and "/" not in f
-                and Path(f).name.lower().startswith("mtp-")
-            )
-            return mtp_files[0] if mtp_files else None
 
         if near_path:
             cached = _companion_snapshot_sibling(near_path, _pick_mtp)
@@ -24893,7 +25026,8 @@ class LlamaCppBackend:
                     + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
                     + int(inputs.get("ctx_compute_per_device") or 0)
                 ),
-                host_ram_headroom_bytes = self._HOST_RAM_HEADROOM_MIB * 1024 * 1024,
+                # Module-level, unlike the line above, so not reachable through self.
+                host_ram_headroom_bytes = _HOST_RAM_HEADROOM_MIB * 1024 * 1024,
                 # -nkvo is not a reason to decline: it moves the cache and the
                 # recurrent state OUT of VRAM, so the deficit is smaller, not
                 # larger.
@@ -26236,6 +26370,8 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
+        context_policy: Optional[str] = None,
+        compaction_headroom_ratio: Optional[float] = None,
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
@@ -26308,6 +26444,20 @@ class LlamaCppBackend:
         ):
             try:
                 _before_fit = openai_messages
+                # One value for both the boundary read and the fit: a boundary the fit
+                # would not consume as an epoch must not be discarded as if it would.
+                _can_reset = _can_reset_epoch(
+                    thread_id,
+                    _backend_supports_tools(self),
+                    tools_withheld = tools_withheld,
+                )
+                _sticky, _sticky_is_checkpoint = _sticky_compaction_state(
+                    thread_id,
+                    _before_fit,
+                    context_policy = context_policy,
+                    can_reset = _can_reset,
+                    compaction_headroom_ratio = compaction_headroom_ratio,
+                )
                 openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
                     context_length = self._effective_context_length,
@@ -26322,13 +26472,11 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
-                    sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
+                    sticky_dropped = _sticky,
+                    sticky_is_checkpoint = _sticky_is_checkpoint,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
-                    can_reset = _can_reset_epoch(
-                        thread_id,
-                        _backend_supports_tools(self),
-                        tools_withheld = tools_withheld,
-                    ),
+                    can_reset = _can_reset,
+                    **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -26366,8 +26514,9 @@ class LlamaCppBackend:
                 if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
-                        "boundary_messages": _branch_boundary(openai_messages, _before_fit),
-                        "boundary_anchor": _branch_boundary_anchor(openai_messages, _before_fit),
+                        **_boundary_metadata(
+                            openai_messages, _before_fit, compaction_headroom_ratio
+                        ),
                     }
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
@@ -26575,6 +26724,8 @@ class LlamaCppBackend:
                     perf_callback = perf_callback,
                     reasoning_provenance = reasoning_provenance,
                     context_overflow = retry_context_overflow,
+                    context_policy = context_policy,
+                    compaction_headroom_ratio = compaction_headroom_ratio,
                     # The retry refits for the replacement window and can evict more than
                     # the first attempt did. Without the thread those extra turns are
                     # archived nowhere and no reserve or boundary applies, on the one path
@@ -26631,6 +26782,8 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
+        context_policy: Optional[str] = None,
+        compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
     ) -> Generator[dict, None, None]:
         """
@@ -27017,6 +27170,22 @@ class LlamaCppBackend:
                 _preflight_context_length = self._effective_context_length
                 try:
                     _before_fit = conversation
+                    _iteration_can_reset = _can_reset_epoch(
+                        thread_id,
+                        _backend_supports_tools(self),
+                        tools_withheld = _memory_tool_withheld(thread_id, tools),
+                    )
+                    _iteration_sticky, _iteration_sticky_is_checkpoint = (
+                        (0, True)
+                        if _sticky_boundary_applied
+                        else _sticky_compaction_state(
+                            thread_id,
+                            _request_branch,
+                            context_policy = context_policy,
+                            can_reset = _iteration_can_reset,
+                            compaction_headroom_ratio = compaction_headroom_ratio,
+                        )
+                    )
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
@@ -27036,17 +27205,11 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
-                        can_reset = _can_reset_epoch(
-                            thread_id,
-                            _backend_supports_tools(self),
-                            tools_withheld = _memory_tool_withheld(thread_id, tools),
-                        ),
+                        can_reset = _iteration_can_reset,
                         reserve_tokens = _conversation_recall_reserve(thread_id),
-                        sticky_dropped = (
-                            0
-                            if _sticky_boundary_applied
-                            else _sticky_compaction_boundary(thread_id, _request_branch)
-                        ),
+                        sticky_dropped = _iteration_sticky,
+                        sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
+                        **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
@@ -27108,9 +27271,8 @@ class LlamaCppBackend:
                     if truncation and _records_boundary(truncation):
                         truncation = {
                             **truncation,
-                            "boundary_messages": _branch_boundary(conversation, _request_branch),
-                            "boundary_anchor": _branch_boundary_anchor(
-                                conversation, _request_branch
+                            **_boundary_metadata(
+                                conversation, _request_branch, compaction_headroom_ratio
                             ),
                         }
                     # `fits` False too: it carries the does-not-fit diagnosis.
@@ -27205,6 +27367,7 @@ class LlamaCppBackend:
                             _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
+                        **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Recorded here, not left to the forwarding below. That list is
                     # drained from INSIDE the reopened stream, so a replacement server
@@ -27234,11 +27397,10 @@ class LlamaCppBackend:
                     )
                     if truncation:
                         if _records_boundary(truncation):
-                            truncation["boundary_messages"] = _branch_boundary(
-                                conversation, _request_branch
-                            )
-                            truncation["boundary_anchor"] = _branch_boundary_anchor(
-                                conversation, _request_branch
+                            truncation.update(
+                                _boundary_metadata(
+                                    conversation, _request_branch, compaction_headroom_ratio
+                                )
                             )
                         # Report every shortened retry, including a rescued refusal.
                         _respawn_truncations.append(truncation)
@@ -28655,6 +28817,25 @@ class LlamaCppBackend:
             _final_preflight_context_length = self._effective_context_length
             try:
                 _before_final_fit = conversation
+                # Withheld, not `tools`: this is the synthesised final answer and
+                # `stream_payload` below sends no tools array at all, so the request's
+                # catalogue answers a question it does not pose and would let a NEW epoch
+                # start on the one pass that can never call `search_conversation`.
+                # Replaying an epoch already in force is unaffected.
+                _final_can_reset = _can_reset_epoch(
+                    thread_id, _backend_supports_tools(self), tools_withheld = True
+                )
+                _final_sticky, _final_sticky_is_checkpoint = (
+                    (0, True)
+                    if _sticky_boundary_applied
+                    else _sticky_compaction_state(
+                        thread_id,
+                        _request_branch,
+                        context_policy = context_policy,
+                        can_reset = _final_can_reset,
+                        compaction_headroom_ratio = compaction_headroom_ratio,
+                    )
+                )
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
@@ -28669,23 +28850,11 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
-                    can_reset = _can_reset_epoch(
-                        thread_id,
-                        _backend_supports_tools(self),
-                        # Withheld, not `tools`: this is the synthesised final answer
-                        # and `stream_payload` below sends no tools array at all, so
-                        # the request's catalogue answers a question it does not pose
-                        # and would let a NEW epoch start on the one pass that can
-                        # never call `search_conversation`. Replaying an epoch already
-                        # in force is unaffected.
-                        tools_withheld = True,
-                    ),
+                    can_reset = _final_can_reset,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
-                    sticky_dropped = (
-                        0
-                        if _sticky_boundary_applied
-                        else _sticky_compaction_boundary(thread_id, _request_branch)
-                    ),
+                    sticky_dropped = _final_sticky,
+                    sticky_is_checkpoint = _final_sticky_is_checkpoint,
+                    **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 _sticky_boundary_applied = True
                 if truncation:
@@ -28730,8 +28899,9 @@ class LlamaCppBackend:
                 if truncation and _records_boundary(truncation):
                     truncation = {
                         **truncation,
-                        "boundary_messages": _branch_boundary(conversation, _request_branch),
-                        "boundary_anchor": _branch_boundary_anchor(conversation, _request_branch),
+                        **_boundary_metadata(
+                            conversation, _request_branch, compaction_headroom_ratio
+                        ),
                     }
                 # `fits` False too: it carries the diagnosis the client needs to explain
                 # WHY. Otherwise the user only sees llama-server's error, which reports
@@ -28808,6 +28978,7 @@ class LlamaCppBackend:
                         # The final pass again, so again no tools array is sent.
                         tools_withheld = True,
                     ),
+                    **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
                     # Archive only; see the iteration respawn refit above.
@@ -28831,11 +29002,10 @@ class LlamaCppBackend:
                 )
                 if truncation:
                     if _records_boundary(truncation):
-                        truncation["boundary_messages"] = _branch_boundary(
-                            conversation, _request_branch
-                        )
-                        truncation["boundary_anchor"] = _branch_boundary_anchor(
-                            conversation, _request_branch
+                        truncation.update(
+                            _boundary_metadata(
+                                conversation, _request_branch, compaction_headroom_ratio
+                            )
                         )
                     _final_respawn_truncations.append(truncation)
             except Exception as exc:
