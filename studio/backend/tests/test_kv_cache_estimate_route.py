@@ -25,6 +25,8 @@ No GPU, no network. Cross-platform: the layout cases below construct real
 directories under ``tmp_path`` and assert against the loader's own picker.
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
 from pathlib import Path
