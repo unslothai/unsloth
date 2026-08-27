@@ -374,6 +374,29 @@ class TestMaxBodyMiddleware:
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
 
+    def test_exact_path_passthrough_without_content_length_is_capped_not_refused(self, main_module):
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_exact_paths = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda path: 1024,
+        )
+        c = TestClient(app)
+
+        def small():
+            yield b"x" * 256
+            yield b"y" * 256
+
+        r = c.post("/api/train/upload", content = small(), headers = {"content-type": "application/octet-stream"})
+        assert r.status_code == 200
+
+        def large():
+            yield b"x" * 1024
+            yield b"y" * 1024
+
+        r = c.post("/api/train/upload", content = large(), headers = {"content-type": "application/octet-stream"})
+        assert r.status_code == 413
+
     def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
         # The exact-path passthrough lifts the cap for the upload path itself, but a sibling sub-path under the same prefix stays capped.
         app = FastAPI()

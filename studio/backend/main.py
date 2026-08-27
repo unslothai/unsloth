@@ -1285,14 +1285,16 @@ class MaxBodyMiddleware:
 
         if self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
-            if declared is None:
+            if declared is not None:
+                if declared > upload_max_bytes:
+                    await _send_413(send, declared, upload_max_bytes)
+                    return
+                await self.app(scope, receive, send)
+                return
+            if path.rstrip("/") not in self.upload_passthrough_exact_paths:
                 await _send_411(send)
                 return
-            if declared > upload_max_bytes:
-                await _send_413(send, declared, upload_max_bytes)
-                return
-            await self.app(scope, receive, send)
-            return
+            max_bytes = upload_max_bytes
 
         if declared is not None and declared > max_bytes:
             await _send_413(send, declared, max_bytes)

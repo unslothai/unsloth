@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import calendar
 import hashlib as _hashlib
 import hmac as _hmac
 import re as _re
@@ -28,6 +27,7 @@ import threading
 import time as _time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -35,6 +35,7 @@ from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from auth.authentication import get_current_subject, request_admitted_without_credential
+from core.inference.model_ids import public_model_id
 from hub.dependencies import get_hf_token
 from loggers import get_logger
 from models.inference import (
@@ -874,10 +875,31 @@ def _record_epoch(record: dict) -> int:
         return int(raw)
     if isinstance(raw, str):
         try:
-            return calendar.timegm(_time.strptime(raw, "%Y-%m-%dT%H:%M:%SZ"))
+            parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
         except ValueError:
-            pass
+            return 0
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo = timezone.utc)
+        return int(parsed.timestamp())
     return 0
+
+
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+)
+
+
+def _sniff_image_type(data: bytes) -> Optional[str]:
+    for magic, mime in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return mime
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _valid_gallery_video_record(record: dict) -> bool:
@@ -894,7 +916,7 @@ def _record_to_job(record: dict, job: Optional[_VideoJob] = None) -> VideoJob:
     completed = (job.completed_at if job is not None else None) or saved_at or created
     return VideoJob(
         id = record["id"],
-        model = str(record.get("model") or (job.model if job is not None else "") or "video"),
+        model = public_model_id(str(record.get("model") or (job.model if job is not None else "") or "video")),
         status = "completed",
         progress = 100,
         created_at = created,
@@ -1068,10 +1090,13 @@ async def _reference_to_data_url(reference: Any) -> Optional[str]:
                 param = "input_reference",
             )
         content_type = (reference.content_type or "").split(";")[0].strip().lower()
-        if content_type and not content_type.startswith("image/"):
-            raise _openai_video_error(400, "input_reference must be an image.", param = "input_reference")
+        sniffed = _sniff_image_type(data)
+        if not content_type.startswith("image/"):
+            if sniffed is None:
+                raise _openai_video_error(400, "input_reference must be an image.", param = "input_reference")
+            content_type = sniffed
         encoded = base64.b64encode(data).decode("ascii")
-        return f"data:{content_type or 'image/png'};base64,{encoded}"
+        return f"data:{content_type};base64,{encoded}"
     if isinstance(reference, str):
         text = reference.strip()
         if not text:
@@ -1194,7 +1219,7 @@ async def openai_create_video(
         id = video_id,
         created_at = int(_time.time()),
         prompt = body.prompt,
-        model = str(status.get("repo_id") or body.model or "video"),
+        model = public_model_id(str(status.get("repo_id") or body.model or "video")),
         size = f"{width}x{height}" if width and height else "auto",
         seconds = seconds_text,
     )

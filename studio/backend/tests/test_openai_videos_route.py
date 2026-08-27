@@ -147,7 +147,7 @@ def _wait_terminal(client, video_id: str, timeout = 5.0) -> dict:
     raise AssertionError(f"job never reached a terminal state: {video}")
 
 
-def _save_clip(prompt: str, created_at: str, video_id: str | None = None) -> dict:
+def _save_clip(prompt: str, created_at: str, video_id: str | None = None, model: str = "unsloth/LTX-2.3-GGUF") -> dict:
     return gallery_module.save(
         b"OLD-MP4",
         {
@@ -162,7 +162,7 @@ def _save_clip(prompt: str, created_at: str, video_id: str | None = None) -> dic
             "guidance": 4.0,
             "seed": 7,
             "has_audio": True,
-            "model": "unsloth/LTX-2.3-GGUF",
+            "model": model,
             "created_at": created_at,
         },
         video_id = video_id,
@@ -402,3 +402,64 @@ def test_input_reference_refusals(client, backend):
     resp = _create(client, {"prompt": "x"}, {"input_reference": ("a.txt", b"hello", "text/plain")})
     assert resp.status_code == 400 and "must be an image" in resp.json()["error"]["message"]
     assert client.get("/v1/videos").json()["data"] == []
+
+
+def test_octet_stream_uploads_are_sniffed(client, backend, monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(backend, "begin_generate", lambda **kwargs: captured.update(kwargs))
+    jpeg = b"\xff\xd8\xff\xe0fake"
+    resp = _create(client, {"prompt": "x"}, {"input_reference": ("frame.bin", jpeg, "application/octet-stream")})
+    assert resp.status_code == 200, resp.json()
+    assert captured["first_frame"].startswith("data:image/jpeg;base64,")
+    webp = b"RIFF\x00\x00\x00\x00WEBPVP8 "
+    resp = _create(client, {"prompt": "x"}, {"input_reference": ("frame", webp, "application/octet-stream")})
+    assert resp.status_code == 200 and captured["first_frame"].startswith("data:image/webp;base64,")
+    resp = _create(client, {"prompt": "x"}, {"input_reference": ("blob.bin", b"not an image", "application/octet-stream")})
+    assert resp.status_code == 400 and resp.json()["error"]["param"] == "input_reference"
+
+
+def test_model_never_leaks_a_host_path(client, backend, monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "status",
+        lambda: {**_FakeBackend.status(backend), "repo_id": "/srv/models/ltx-2.3-Q4_K_M.gguf"},
+    )
+    job = _create(client, {"prompt": "x"}).json()
+    assert job["model"] == "ltx-2.3-Q4_K_M"
+    clip = _save_clip("old", "2026-01-01T00:00:00Z", model = "/srv/models/ltx-2.3-Q4_K_M.gguf")
+    assert client.get(f"/v1/videos/{clip['id']}").json()["model"] == "ltx-2.3-Q4_K_M"
+    assert "/srv/" not in client.get("/v1/videos").text
+
+
+def test_create_hands_the_model_to_auto_switch(client, backend, monkeypatch):
+    import core.inference.media_auto_switch as mas
+
+    calls: list = []
+
+    async def _record(model, **kwargs):
+        calls.append((model, kwargs["owner"], kwargs["openai_errors"], kwargs["hf_token"], kwargs["before_switch"] is not None))
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _record)
+    resp = client.post(
+        "/v1/videos",
+        json = {"prompt": "x", "model": "unsloth/LTX-2.3-GGUF"},
+        headers = {"X-Unsloth-HF-Token": "hf_abc"},
+    )
+    assert resp.status_code == 200, resp.json()
+    assert calls == [("unsloth/LTX-2.3-GGUF", gpu_arbiter.VIDEO, True, "hf_abc", True)]
+
+
+@pytest.mark.parametrize(
+    "created_at, expected",
+    [
+        ("2026-01-01T00:00:00Z", 1767225600),
+        ("2026-01-01T00:00:00+00:00", 1767225600),
+        ("2026-01-01T01:00:00+01:00", 1767225600),
+        ("2026-01-01T00:00:00", 1767225600),
+        (1767225600.7, 1767225600),
+        ("garbage", 0),
+        (None, 0),
+    ],
+)
+def test_record_epoch_accepts_old_and_new_sidecar_timestamps(created_at, expected):
+    assert video_routes._record_epoch({"created_at": created_at}) == expected
