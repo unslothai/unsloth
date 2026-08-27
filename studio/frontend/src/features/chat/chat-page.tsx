@@ -145,6 +145,7 @@ import {
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
+import { ProjectWorkspaceControls } from "./components/project-workspace-controls";
 import {
   buildExternalModelId,
   isExternalModelId,
@@ -1372,6 +1373,13 @@ function ProjectLanding({
 
   // Full chat actions, matching the sidebar chat menu.
   const { projects } = useChatProjects();
+  const currentProject = projects.find((project) => project.id === projectId);
+  const projectUnavailable = dataLoaded && !currentProject;
+  const folderUnavailable =
+    currentProject?.workspaceKind === "folder" &&
+    currentProject.workspaceAvailable === false;
+  const projectWorkspaceBlocked =
+    !dataLoaded || projectUnavailable || folderUnavailable;
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
   const confirmDeleteChats = useChatPreferencesStore(
@@ -1695,9 +1703,21 @@ function ProjectLanding({
               </DropdownMenu>
             </div>
 
+            {currentProject ? (
+              <ProjectWorkspaceControls project={currentProject} />
+            ) : null}
+
             <ProjectComposer
-              disabled={Boolean(pendingNewThreadId)}
-              placeholder={`New chat in ${projectName}`}
+              disabled={Boolean(pendingNewThreadId) || projectWorkspaceBlocked}
+              placeholder={
+                !dataLoaded
+                  ? "Loading project workspace..."
+                  : projectUnavailable
+                    ? "This project is no longer available"
+                    : folderUnavailable
+                      ? "Choose the local folder again to start a chat"
+                      : `New chat in ${projectName}`
+              }
             />
 
             <div className="mt-9 flex items-center gap-2">
@@ -2050,6 +2070,9 @@ function ProjectLanding({
             <AlertDialogTitle>Delete project</AlertDialogTitle>
             <AlertDialogDescription>
               Delete "{projectName}"? Its chats will be permanently deleted.
+              {currentProject?.workspaceKind === "folder"
+                ? " The existing folder and every file in it will remain on disk."
+                : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

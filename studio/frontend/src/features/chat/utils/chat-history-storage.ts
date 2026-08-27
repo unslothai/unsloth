@@ -6,6 +6,7 @@ import {
   batchListChatMessages,
   buildBackendChatExport,
   clearBackendChats,
+  changeChatProjectFolder,
   deleteChatProject,
   deleteChatThreads,
   getChatMessage,
@@ -16,11 +17,13 @@ import {
   listChatProjects,
   listChatThreads,
   notifyChatHistoryUpdated,
+  openChatProjectFolder,
   recordChatImportLedger,
   saveChatMessage,
   saveChatProject,
   saveChatThread,
   syncChatMessages,
+  disconnectChatProjectFolder,
   updateChatProject,
   type ChatThreadWritePatch,
   updateChatThread,
@@ -29,6 +32,7 @@ import { DEXIE_DB_NAME, db } from "../db";
 import type {
   MessageRecord,
   ModelType,
+  ProjectPatch,
   ProjectRecord,
   ThreadRecord,
 } from "../types";
@@ -910,9 +914,35 @@ export async function createStoredChatProject(
   });
 }
 
+export async function openStoredChatProjectFolder(
+  nativePathToken: string,
+  name: string,
+): Promise<ProjectRecord> {
+  return openChatProjectFolder(nativePathToken, name);
+}
+
+export async function changeStoredChatProjectFolder(
+  projectId: string,
+  nativePathToken: string,
+  expectedWorkspaceRevision: number,
+): Promise<ProjectRecord> {
+  return changeChatProjectFolder(
+    projectId,
+    nativePathToken,
+    expectedWorkspaceRevision,
+  );
+}
+
+export async function disconnectStoredChatProjectFolder(
+  projectId: string,
+  expectedWorkspaceRevision: number,
+): Promise<ProjectRecord> {
+  return disconnectChatProjectFolder(projectId, expectedWorkspaceRevision);
+}
+
 export async function updateStoredChatProject(
   projectId: string,
-  patch: Partial<ProjectRecord>,
+  patch: Partial<ProjectPatch>,
 ): Promise<ProjectRecord> {
   return updateChatProject(projectId, {
     ...patch,

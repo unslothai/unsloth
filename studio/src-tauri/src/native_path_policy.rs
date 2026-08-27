@@ -192,6 +192,20 @@ pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, St
     })
 }
 
+pub fn classify_native_project_folder(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::Directory {
+        return Err("Only folders can be used as project workspaces.".to_string());
+    }
+    reject_project_folder_root(&classified.canonical_path)?;
+    reject_sensitive_project_folder(&classified.canonical_path)?;
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::DocumentFolder,
+        allowed_operations: vec![NativePathOperation::OpenProject],
+        ..classified
+    })
+}
+
 pub fn classify_native_dataset_path(path: &Path) -> Result<ClassifiedPath, String> {
     let classified = classify_existing_path(path)?;
     if classified.path_type != NativePathType::File {
@@ -456,6 +470,14 @@ fn reject_document_folder_root(path: &Path) -> Result<(), String> {
     }
 }
 
+fn reject_project_folder_root(path: &Path) -> Result<(), String> {
+    if path.parent().is_none() {
+        Err("A filesystem root cannot be used as a project workspace.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
     let has_sensitive_segment = path.components().any(|component| {
         matches!(
@@ -546,6 +568,82 @@ pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String
             "Sensitive system or application folders cannot be linked as document sources."
                 .to_string(),
         )
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn reject_sensitive_project_folder(path: &Path) -> Result<(), String> {
+    let has_credential_segment = path.components().any(|component| {
+        matches!(
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .as_str(),
+            ".1password"
+                | ".aws"
+                | ".azure"
+                | ".bitwarden"
+                | ".gcloud"
+                | ".gnupg"
+                | ".kube"
+                | ".password-store"
+                | ".pki"
+                | ".ssh"
+                | "1password"
+                | "bitwarden"
+                | "keychains"
+                | "keyrings"
+        )
+    });
+    if has_credential_segment {
+        return Err("Credential folders cannot be used as project workspaces.".to_string());
+    }
+
+    let mut sensitive_roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        if same_native_path(path, &home) {
+            return Err(
+                "The entire home folder cannot be used as a project workspace.".to_string(),
+            );
+        }
+        sensitive_roots.push(home.join(".unsloth"));
+    }
+
+    #[cfg(unix)]
+    sensitive_roots.extend(
+        [
+            "/boot", "/etc", "/root", "/run", "/usr", "/var/lib", "/var/run",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    #[cfg(target_os = "macos")]
+    sensitive_roots.extend(
+        [
+            "/Library",
+            "/System",
+            "/private/etc",
+            "/private/var/db",
+            "/private/var/root",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    #[cfg(windows)]
+    for variable in ["WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+        if let Some(value) = std::env::var_os(variable) {
+            sensitive_roots.push(PathBuf::from(value));
+        }
+    }
+
+    if sensitive_roots.iter().any(|sensitive| {
+        same_path_or_descendant(path, sensitive)
+            && !(is_linux_removable_media_path(path)
+                && same_native_path(sensitive, Path::new("/run")))
+    }) {
+        Err("System or Unsloth state folders cannot be used as project workspaces.".to_string())
     } else {
         Ok(())
     }
@@ -806,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn document_folder_is_directory_with_link_only_capability() {
+    fn document_folder_is_directory_with_link_capability() {
         let path = temp_path("documents");
         fs::create_dir(&path).unwrap();
         let classified = classify_native_document_folder(&path).unwrap();
@@ -815,6 +913,20 @@ mod tests {
         assert_eq!(
             classified.allowed_operations,
             vec![NativePathOperation::LinkDocuments]
+        );
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_folder_is_directory_with_project_capability() {
+        let path = temp_path("project");
+        fs::create_dir(&path).unwrap();
+        let classified = classify_native_project_folder(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::DocumentFolder);
+        assert_eq!(classified.path_type, NativePathType::Directory);
+        assert_eq!(
+            classified.allowed_operations,
+            vec![NativePathOperation::OpenProject]
         );
         let _ = fs::remove_dir(path);
     }
@@ -837,6 +949,24 @@ mod tests {
         assert!(reject_sensitive_document_folder(&home.join("work").join(".local")).is_err());
         assert!(reject_sensitive_document_folder(&home.join("work").join("keyrings")).is_err());
         assert!(reject_sensitive_document_folder(&home.join(".unsloth").join("studio")).is_err());
+    }
+
+    #[test]
+    fn project_folder_policy_allows_coding_locations_but_not_credentials() {
+        let Some(home) = dirs::home_dir() else { return };
+        assert!(reject_sensitive_project_folder(&home.join(".config").join("project")).is_ok());
+        assert!(reject_sensitive_project_folder(&home.join(".local").join("src")).is_ok());
+        assert!(reject_sensitive_project_folder(&home.join("work").join(".ssh")).is_err());
+        assert!(reject_sensitive_project_folder(&home.join(".unsloth").join("studio")).is_err());
+        assert!(reject_sensitive_project_folder(&home).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn project_folder_policy_allows_private_temp_but_not_private_system_state() {
+        assert!(reject_sensitive_project_folder(Path::new("/private/tmp/project")).is_ok());
+        assert!(reject_sensitive_project_folder(Path::new("/private/etc")).is_err());
+        assert!(reject_sensitive_project_folder(Path::new("/private/var/db/project")).is_err());
     }
 
     #[cfg(target_os = "linux")]

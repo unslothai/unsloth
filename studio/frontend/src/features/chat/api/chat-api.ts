@@ -23,6 +23,8 @@ import {
 import type {
   MessageRecord,
   ModelType,
+  ProjectCreateRecord,
+  ProjectPatch,
   ProjectRecord,
   ThreadRecord,
 } from "../types";
@@ -49,6 +51,12 @@ import {
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
 import { maxTokensIsTheLimit } from "./generation-length.ts";
+import {
+  buildChangeProjectFolderRequest,
+  buildDisconnectProjectFolderRequest,
+  buildOpenProjectFolderRequest,
+} from "./project-folder-request";
+import { ProjectWorkspaceMutationError } from "./project-workspace-mutation";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
@@ -216,6 +224,19 @@ async function parseJsonOrThrow<T>(
   }
   if (paddedLabel !== undefined) {
     assertCompletedPaddedBody(body, paddedLabel);
+  }
+  return body as T;
+}
+
+async function parseProjectWorkspaceMutation<T>(
+  response: Response,
+): Promise<T> {
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ProjectWorkspaceMutationError(
+      response.status,
+      parseErrorText(response.status, body),
+    );
   }
   return body as T;
 }
@@ -1028,7 +1049,7 @@ export async function getChatProject(
 }
 
 export async function saveChatProject(
-  project: ProjectRecord,
+  project: ProjectCreateRecord,
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
@@ -1040,9 +1061,65 @@ export async function saveChatProject(
   return saved;
 }
 
+export async function openChatProjectFolder(
+  nativePathToken: string,
+  name: string,
+): Promise<ProjectRecord> {
+  const request = await buildOpenProjectFolderRequest(
+    nativePathToken,
+    name,
+    consumeNativePathToken,
+  );
+  const response = await authFetch(request.input, request.init);
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
+export async function changeChatProjectFolder(
+  projectId: string,
+  nativePathToken: string,
+  expectedWorkspaceRevision: number,
+): Promise<ProjectRecord> {
+  try {
+    const request = await buildChangeProjectFolderRequest(
+      projectId,
+      nativePathToken,
+      expectedWorkspaceRevision,
+      consumeNativePathToken,
+    );
+    const response = await authFetch(request.input, request.init);
+    const project = await parseProjectWorkspaceMutation<ProjectRecord>(response);
+    notifyChatProjectsUpdated();
+    return project;
+  } catch (error) {
+    notifyChatProjectsUpdated();
+    throw error;
+  }
+}
+
+export async function disconnectChatProjectFolder(
+  projectId: string,
+  expectedWorkspaceRevision: number,
+): Promise<ProjectRecord> {
+  try {
+    const request = buildDisconnectProjectFolderRequest(
+      projectId,
+      expectedWorkspaceRevision,
+    );
+    const response = await authFetch(request.input, request.init);
+    const project = await parseProjectWorkspaceMutation<ProjectRecord>(response);
+    notifyChatProjectsUpdated();
+    return project;
+  } catch (error) {
+    notifyChatProjectsUpdated();
+    throw error;
+  }
+}
+
 export async function updateChatProject(
   projectId: string,
-  patch: Partial<ProjectRecord>,
+  patch: Partial<ProjectPatch>,
 ): Promise<ProjectRecord> {
   const response = await authFetch(
     `/api/chat/projects/${encodeURIComponent(projectId)}`,

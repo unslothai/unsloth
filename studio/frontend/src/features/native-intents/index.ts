@@ -7,12 +7,14 @@ export {
   consumeNativePathToken,
   openModelsDir,
   pickNativeDocumentFolder,
+  pickNativeProjectFolder,
   pickHuggingFaceCacheDir,
   readNativeAttachmentFile,
   registerNativeAttachmentPath,
   registerNativeDatasetPath,
 } from "./api";
 export type { NativeDocumentFolderSelection } from "./api";
+export type { NativeProjectFolderSelection } from "./api";
 export { nativeFileName } from "./drop-paths";
 export { nativeDropTargetAt } from "./native-drop-targets";
 export { nativeAttachmentIntentToFile } from "./native-attachment-file";

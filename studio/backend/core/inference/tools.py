@@ -7321,6 +7321,10 @@ _removing_sessions: "set[str]" = set()
 _sessions_free = threading.Condition(_active_sessions_lock)
 
 
+class ProjectWorkspaceBusy(RuntimeError):
+    """Raised when a workspace switch races a live project tool call."""
+
+
 def _session_key(session_id: "str | None") -> str:
     """Lifecycle key for a session id.
 
@@ -7370,6 +7374,29 @@ def _session_in_flight(session_id: "str | None"):
                 with _sessions_free:
                     _removing_sessions.discard(key)
                     _sessions_free.notify_all()
+
+
+def begin_project_workspace_change(project_id: str) -> None:
+    """Fence new project tool entries and reject an in-flight workspace switch."""
+    key = _session_key(project_session_id(project_id))
+    with _sessions_free:
+        if key in _removing_sessions or _active_sessions.get(key, 0) > 0:
+            raise ProjectWorkspaceBusy(
+                "A project tool is still running. Stop it before changing the workspace."
+            )
+        _removing_sessions.add(key)
+
+
+def finish_project_workspace_change(project_id: str) -> None:
+    key = _session_key(project_session_id(project_id))
+    with _sessions_free:
+        _removing_sessions.discard(key)
+        _sessions_free.notify_all()
+
+
+def invalidate_project_workdir(project_id: str) -> None:
+    """Drop the cached cwd after a committed workspace identity change."""
+    _workdirs.pop(project_session_id(project_id), None)
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -7681,6 +7708,7 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
     if not _usable_session_id(project_id):
         return None
     suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    digest = hashlib.sha256(project_id.encode("utf-8")).hexdigest()[:12]
     try:
         from utils.paths import project_workspaces_root
         root = str(project_workspaces_root())
@@ -7688,7 +7716,10 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
     except Exception:
         return None
     for entry in names:
-        if not entry.endswith(f"-{suffix}"):
+        if not (
+            entry.endswith(f"-{suffix}-{digest}")
+            or entry.endswith(f"-{suffix}")
+        ):
             continue
         candidate = os.path.join(root, entry, "sandbox")
         if os.path.isdir(candidate) and not os.path.islink(candidate):
@@ -7779,6 +7810,10 @@ def _get_project_workdir(session_id: str) -> str | None:
         project = ensure_chat_project_workspace(project_id)
     except Exception:
         logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
+        if _project_exists(project_id):
+            raise RuntimeError(
+                "the project folder is unavailable; choose it again before running tools"
+            )
         return None
     if not project:
         # The project is gone but a chat forked out of it still shows cards for
@@ -7794,6 +7829,22 @@ def _get_project_workdir(session_id: str) -> str | None:
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
     return sandbox_real
+
+
+def _tracks_workspace_artifacts(session_id: "str | None") -> bool:
+    """Whether file-card diffing is safe and useful for this workspace."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return True
+    if _thread_exists(session_id):
+        return True
+    project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
+    try:
+        from storage.studio_db import get_chat_project
+
+        project = get_chat_project(project_id)
+    except Exception:
+        return False
+    return not project or project.get("workspaceKind", "managed") != "folder"
 
 
 # Dropped in every session directory we create. The root can be an existing
@@ -8471,14 +8522,25 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
     return _root_is_ours() and os.path.basename(workdir) == _sandbox_name(session_id)
 
 
-def _get_workdir(session_id: str | None = None) -> str:
+def _get_workdir(
+    session_id: str | None = None,
+    *,
+    resolve_project: bool = True,
+) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
     key = session_id or _ANON_KEY
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
-    if cached is not None and not _get_project_workdir(session_id or ""):
+    current_project_workdir = _project_workdir_for(session_id) if resolve_project else None
+    if (
+        cached is not None
+        and current_project_workdir is not None
+        and os.path.realpath(cached) != os.path.realpath(current_project_workdir)
+    ):
+        cached = None
+    if cached is not None and current_project_workdir is None:
         # The same checks a fresh resolve makes: the entry can have been
         # renamed and replaced with a link to another chat's directory since,
         # and containment alone accepts that.
@@ -8526,7 +8588,9 @@ def _get_workdir(session_id: str | None = None) -> str:
             _migrate_one_legacy_session(sandbox_root_path, derived)
         _start_legacy_migration()
         _start_detached_sweep()
-        project_workdir = _project_workdir_for(session_id)
+        project_workdir = current_project_workdir or (
+            _project_workdir_for(session_id) if resolve_project else None
+        )
         if project_workdir:
             workdir = project_workdir
         elif session_id:
@@ -8557,17 +8621,25 @@ def _get_workdir(session_id: str | None = None) -> str:
     return _workdirs[key]
 
 
-def get_sandbox_workdir(session_id: str | None = None) -> str:
-    return _get_workdir(session_id)
+def get_sandbox_workdir(
+    session_id: str | None = None,
+    *,
+    resolve_project: bool = True,
+) -> str:
+    return _get_workdir(session_id, resolve_project = resolve_project)
 
 
-def resolve_sandbox_workdir(session_id: str | None = None) -> str:
+def resolve_sandbox_workdir(
+    session_id: str | None = None,
+    *,
+    resolve_project: bool = True,
+) -> str:
     """Where a session's sandbox would be, without creating it.
 
     For read-only callers: serving a file must not materialise a directory for
     every id someone asks about.
     """
-    if session_id:
+    if session_id and resolve_project:
         project = _project_workdir_for(session_id)
         if project:
             return project
@@ -16009,7 +16081,8 @@ def _python_exec(
     spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
-    _before = _snapshot_workdir_files(workdir)
+    track_workspace_artifacts = _tracks_workspace_artifacts(session_id)
+    _before = _snapshot_workdir_files(workdir) if track_workspace_artifacts else {}
     try:
         # In the workdir: Python puts it on sys.path[0], so an earlier call's
         # helper.py stays importable and __file__ resolves inside the sandbox.
@@ -16075,14 +16148,14 @@ def _python_exec(
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
-                if session_id
+                if session_id and track_workspace_artifacts
                 else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
-                if session_id
+                if session_id and track_workspace_artifacts
                 else ""
             )
 
@@ -16109,7 +16182,7 @@ def _python_exec(
         # Only for a chat that has an id: without one every first turn shares
         # the _default workdir, so a card pinned to it would later download
         # whatever the next new chat wrote there.
-        if session_id:
+        if session_id and track_workspace_artifacts:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
         return result
@@ -16182,7 +16255,8 @@ def _bash_exec(
         call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
-        _before = _snapshot_workdir_files(workdir)
+        track_workspace_artifacts = _tracks_workspace_artifacts(session_id)
+        _before = _snapshot_workdir_files(workdir) if track_workspace_artifacts else {}
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
@@ -16227,12 +16301,16 @@ def _bash_exec(
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
             return ended + (
-                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, None, call_token)
+                if session_id and track_workspace_artifacts
+                else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, None, call_token)
+                if session_id and track_workspace_artifacts
+                else ""
             )
 
         result = output or ""
@@ -16247,7 +16325,7 @@ def _bash_exec(
             else "(no output)" + hint
         )
         # Only for a chat that has an id (see _python_exec).
-        if session_id:
+        if session_id and track_workspace_artifacts:
             result += _created_file_sentinels(workdir, _before, None, call_token)
         return result
 

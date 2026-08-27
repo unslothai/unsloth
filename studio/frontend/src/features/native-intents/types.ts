@@ -4,6 +4,7 @@ export type NativePathOperation =
   | "dataset-preview"
   | "dataset-import"
   | "attach"
+  | "open-project"
   | "reveal"
   | "open";
 

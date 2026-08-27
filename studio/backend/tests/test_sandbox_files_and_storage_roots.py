@@ -3432,7 +3432,9 @@ def test_a_project_delete_uses_the_membership_it_really_deleted():
     assert route.index("_cancel_active_generations(member_ids)") < route.index("_remove_sandboxes(")
     # And what survived is reported, or the folders are reachable from nothing.
     assert "sandboxes_kept = await _remove_sandboxes(member_ids" in route
-    assert "ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)" in route
+    assert "return _public_deleted_project(project, sandboxes_kept)" in route
+    public_result = inspect.getsource(chat_history._public_deleted_project)
+    assert "sandboxes_kept = sandboxes_kept" in public_result
 
 
 def test_closing_an_incognito_chat_cleans_up_its_sandbox():
@@ -4492,7 +4494,8 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
     from routes import chat_history
 
     route = inspect.getsource(chat_history.delete_project)
-    assert 'if project.get("sandboxPath"):' in route
+    assert 'if managed_sandbox_path:' in route
+    assert 'managed_root_path = project.get("managedRootPath")' in route
     assert "if not delete_files:" in route
     body = route[route.index("if not delete_files:") :]
     assert "record_orphaned_project," in body[:400]
