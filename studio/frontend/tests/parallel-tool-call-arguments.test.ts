@@ -1018,3 +1018,51 @@ test("a provider-hosted tool event does not end the provider turn", () => {
   );
   assert.match(guarded, /if \(!chunk\.choices\) \{\s*endProviderTurn\(\);/);
 });
+
+test("a late id does not rescue a fork whose object never closed", () => {
+  // _call_is_finished holds the fork back on its arguments alone, so a card
+  // kept because an id reached it is one no tool_start or tool_end can reach.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "a", arguments: '{}{"x":' } }]);
+  stream.feed([{ id: "call_z", index: 0, function: { arguments: "" } }]);
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.argsText]),
+    [
+      ["tool_call_0", "{}"],
+      ["call_z", '{"x":'],
+    ],
+  );
+  stream.feed([], true);
+  assert.deepEqual(shape(stream.parts), [["a", "{}"]]);
+});
+
+test("only the announced call takes the place reserved for it", () => {
+  // B was announced before C opened, so B goes ahead of C. The calls B's
+  // arguments introduce were never announced: _fork_glued_arguments numbers
+  // them as the arguments arrive, which is after C.
+  const parts = run([
+    [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "B" } }],
+    [{ index: 1, function: { name: "C", arguments: '{"c":1}' } }],
+    [{ index: 0, function: { arguments: '{"b":1}{"b2":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["A", '{"a":1}'],
+    ["B", '{"b":1}'],
+    ["C", '{"c":1}'],
+    ["B", '{"b2":2}'],
+  ]);
+});
+
+test("the empty status between rounds ends the provider turn", () => {
+  // A round whose calls were all rejected as disabled emits no tool_start or
+  // tool_end, and an upstream ending its turns with [DONE] sends no
+  // finish_reason, so the empty tool_status is the only boundary there is.
+  const branch = liftBetween(
+    "the tool_status branch",
+    "const toolStatusText = (",
+    "if (chunk.context_truncated) {",
+  );
+  assert.match(branch, /if \(!toolStatusText\) \{\s*endProviderTurn\(\);/);
+});

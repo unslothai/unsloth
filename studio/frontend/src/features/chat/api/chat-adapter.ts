@@ -5370,14 +5370,14 @@ export function createOpenAIStreamAdapter(
         pendingNameByIndex.clear();
         pendingExtraByIndex.clear();
         pendingSlotByIndex.clear();
-        // Same test as _call_is_finished: a run of whole objects and nothing
-        // half-written. A card that was later claimed by a real id is the
-        // provider's own call, addressed by it, and is not this fork's to drop.
+        // Same test as _call_is_finished, and on the arguments alone: the
+        // backend holds the fork back whether or not a later fragment stamped
+        // an id on it, so a card kept for the id would be one no tool_start or
+        // tool_end can ever reach.
         for (const tailId of openTailIds) {
           const at = toolCallParts.findIndex((p) => p.toolCallId === tailId);
           if (at === -1) continue;
           const part = toolCallParts[at];
-          if (part._has_stable_id) continue;
           const scanned = splitTopLevelJsonObjects(part.argsText ?? "");
           if (scanned.complete.length > 0 && !scanned.tail) continue;
           toolCallParts.splice(at, 1);
@@ -6371,6 +6371,16 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
+                // The empty status the loop yields between iterations, which is
+                // the one boundary a round always has. A round whose calls were
+                // all rejected as disabled emits no tool_start or tool_end at
+                // all, and an upstream that ends its turns with [DONE] or EOF
+                // sends no finish_reason either, so without this a name parked
+                // in that round would be prepended to whatever opens at the
+                // same index in the next one.
+                if (!toolStatusText) {
+                  endProviderTurn();
+                }
                 runtime.setToolStatus(
                   liveThreadKey(serverCancel),
                   toolStatusText || null,
@@ -7322,6 +7332,11 @@ export function createOpenAIStreamAdapter(
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts[existingIndex] = updated;
+                    // A fork whose object is still open answers to its late id
+                    // from here on, so it stays held back under that one.
+                    if (stablePartId && openTailIds.delete(existing.toolCallId)) {
+                      openTailIds.add(stablePartId);
+                    }
                     if (isSplit) {
                       // The slot keeps one segment rather than the whole string
                       // it accumulated, so the resumable scan no longer
@@ -7502,12 +7517,19 @@ export function createOpenAIStreamAdapter(
                     // where its arguments turned up, so the transcript reads in
                     // the order the backend runs them.
                     if (announcedSlot) {
-                      toolCallParts.splice(announcedSlot.at, 0, fresh, ...born);
+                      // Only the announced call takes the reserved place. The
+                      // calls this delta's later objects introduce were never
+                      // announced, and _fork_glued_arguments numbers them as
+                      // the arguments arrive, so the backend runs them after
+                      // anything that opened in between: appending is where
+                      // they belong, and it is where the split above puts them.
+                      toolCallParts.splice(announcedSlot.at, 0, fresh);
+                      toolCallParts.push(...born);
                       // Another index can be waiting on the same position,
                       // having been announced when the list was this long. It
                       // was announced later, so it belongs after this one, and
                       // splicing both at the one mark reversed them.
-                      const inserted = 1 + born.length;
+                      const inserted = 1;
                       for (const [waitingIdx, slot] of pendingSlotByIndex) {
                         if (slot.at >= announcedSlot.at) {
                           pendingSlotByIndex.set(waitingIdx, {
