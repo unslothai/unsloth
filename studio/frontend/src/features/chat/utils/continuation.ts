@@ -144,33 +144,55 @@ export function joinContinuation(
 /**
  * The merge a resumed turn applies to its cumulative text, streaming and at the end.
  *
- * Both repairs above are decided by looking at the whole continuation, so both change
- * their minds as it grows: `stripContinuationOverlap` rewrites the join as a longer
- * overlap starts matching, and `isRestart` cannot fire at all until the continuation is
- * RESTART_PROBE characters long, at which point it drops the partial entirely. Run per
- * arrival, that makes the published text NON-MONOTONIC. Driven character by character
- * over a 1602-character partial, the restart branch collapsed the published text from
- * 1649 characters to 48 in a single arrival.
+ * Both repairs above are decided by looking at the whole continuation, so run per arrival
+ * both change their minds as it grows: `stripContinuationOverlap` rewrites the join once a
+ * longer overlap starts matching, and `isRestart` cannot fire at all until the continuation
+ * reaches RESTART_PROBE characters, at which point it drops the partial entirely. That made
+ * the published text NON-MONOTONIC. Driven character by character over a 1602-character
+ * partial, the restart branch took it from 1649 characters to 48 in one arrival.
  *
- * Nothing renders a retraction gracefully: the reasoning pane draws whatever it is
- * handed, so an arrival carrying a short prefix of the previous one is a pane that
- * visibly loses its content and then gets it back.
+ * Nothing downstream renders a retraction gracefully, so an arrival carrying a short prefix
+ * of the one before it is a pane that visibly loses its content and gets it back.
  *
- * So a streamed merge is the identity. `cumulativeText` is append-only, and passing it
- * through unchanged is what makes every publish a superset of the last. The repairs run
- * once, on the finished turn, which is what `joinContinuation`'s `streaming` option was
- * always for: production never passed it, so the check it exists to suppress ran on
- * every streamed publish instead of once at the end.
+ * Repairing only at the end does not work either: assistant-ui drops what a run yields after
+ * an abort, so Stop persists the last STREAMED yield, and the terminal merge sits behind
+ * `!abortSignal.aborted`. An unrepaired live value therefore SAVES `partial + repeated tail`,
+ * and the Continue built on it replays that duplicate.
+ *
+ * So the merge WAITS for the repair to become decidable instead of dropping it. Neither
+ * decision can change once the continuation reaches `min(partial.length, MAX_OVERLAP)`: a
+ * matching overlap stays matching as more text arrives, so the trim only ever grows and is
+ * capped there, and `isRestart` reads a fixed RESTART_PROBE-character prefix. Measured over
+ * all three shapes (clean, repeated tail, restart), the trim never decreases and both answers
+ * are constant from that point.
+ *
+ * Until then the merge publishes the partial alone rather than a join it may have to take
+ * back. After it, the answer is stable and the continuation only grows, so every publish is a
+ * superset of the last AND carries the repair.
+ *
+ * There is deliberately no latch. An earlier draft cached the decision, but re-deriving it per
+ * call is equivalent precisely BECAUSE it is stable past `settleAt`, and a mutation that
+ * removed the cache changed no test. State that buys nothing is state that can go stale.
+ *
+ * One deliberate exception: a genuine restart replaces the partial with the new answer, which
+ * is shorter. That is one transition at the settle point, not a per-arrival oscillation, and it is the
+ * correct thing to show; appending a restart to the partial would read as a stutter.
  */
 export function createContinuationMerger(
   partial: string,
   repair: boolean,
 ): (cumulative: string, options?: { final?: boolean }) => string {
+  const settleAt = Math.min(partial.length, MAX_OVERLAP);
+
   return (cumulative, { final = false } = {}) => {
-    if (!partial || !repair || !final) {
+    if (!partial || !repair) {
       return cumulative;
     }
-    return joinContinuation(partial, cumulative.slice(partial.length));
+    const continuation = cumulative.slice(partial.length);
+    if (!final && continuation.length < settleAt) {
+      return partial;
+    }
+    return joinContinuation(partial, continuation);
   };
 }
 

@@ -1928,19 +1928,21 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
 // The live streaming publish path used to run the restart check on every arrival.
 //
 // `joinContinuation` takes a `streaming` option whose whole purpose is to skip that
-// check, and whose docstring says it "runs once at the end". Nothing in production
-// ever passed it: the only callers with `streaming: true` were the two tests above.
-// So on every streamed publish the adapter asked "is this a restart?" of a
-// continuation that was still 48 characters long, and the first time the answer came
-// back yes it published the continuation ALONE, dropping the entire partial.
+// check, and whose docstring says it "runs once at the end". Nothing in production ever
+// passed it: the only callers with `streaming: true` were the two tests above. So on
+// every streamed publish the adapter asked "is this a restart?" of a continuation that
+// was still 48 characters long, and the first time the answer came back yes it published
+// the continuation ALONE, dropping the entire partial. Over a 1602-character partial that
+// took the published text from 1649 characters to 48 in one arrival.
 //
-// Driven character by character over a partial of 1602 characters, that collapsed the
-// published text from 1649 characters to 48 in one arrival, a 97% regression in what
-// the pane had to render. The reasoning pane renders whatever it is handed, so an
-// arrival carrying a short prefix is a pane that visibly loses its content.
+// Repairing only at the end is not the answer either, and that is the subtle half. Stop
+// persists the last STREAMED yield, because assistant-ui drops what a run yields after an
+// abort and the terminal merge sits behind `!abortSignal.aborted`. So a live value that
+// skipped the repair SAVES `partial + repeated tail`.
 //
-// These pin the property the publish path actually needs, which is monotonicity: text
-// already shown to the user must never be withdrawn mid-stream.
+// The merge therefore latches its decisions instead of dropping or re-deciding them, and
+// these pin both halves: nothing already shown is withdrawn, and what Stop would save is
+// repaired.
 
 const { createContinuationMerger } = await import(
   "../src/features/chat/utils/continuation.ts"
@@ -1952,48 +1954,112 @@ const REASONING =
   "First I need to consider what the existing schema looks like, and " +
   "whether an online migration is even possible given the constraints. ";
 
-/** Replay a stream one character at a time and report the worst backwards step. */
-function worstDrop(partial: string, tail: string): number {
+/** Replay a stream one character at a time, collecting what each arrival would publish. */
+function replay(partial: string, tail: string): string[] {
   const merge = createContinuationMerger(partial, true);
+  const published: string[] = [];
   let cumulative = partial;
-  let previous = merge(cumulative).length;
-  let worst = 0;
+  published.push(merge(cumulative));
   for (const character of tail) {
     cumulative += character;
-    const current = merge(cumulative).length;
-    worst = Math.max(worst, previous - current);
-    previous = current;
+    published.push(merge(cumulative));
   }
-  return worst;
+  return published;
 }
 
-test("a provider that restarts cannot retract the partial mid-stream", () => {
-  const partial = REASONING.repeat(6);
-  assert.equal(
-    worstDrop(partial, `${REASONING}and so on. `),
-    0,
-    "the restart check ran per arrival and dropped the whole partial the moment it fired",
-  );
-});
+/** Every arrival where the published text got shorter than the arrival before it. */
+function retractions(published: string[]): number[] {
+  const drops: number[] = [];
+  for (let i = 1; i < published.length; i += 1) {
+    if (published[i].length < published[i - 1].length) {
+      drops.push(published[i - 1].length - published[i].length);
+    }
+  }
+  return drops;
+}
 
-test("a provider repeating its own tail cannot retract text either", () => {
+test("a provider repeating its own tail never retracts published text", () => {
   const partial = REASONING.repeat(6);
-  assert.equal(
-    worstDrop(partial, `${partial.slice(-60)}and then it continues onward. `),
-    0,
+  const published = replay(
+    partial,
+    `${partial.slice(-60)}and then it continues onward from there. `,
+  );
+
+  assert.deepEqual(
+    retractions(published),
+    [],
     "a growing overlap match rewrote the tail, withdrawing characters already published",
   );
 });
 
+test("what Stop would save mid-stream is repaired, not the duplicated tail", () => {
+  // The regression that makes "repair only at the end" wrong. Stop keeps the last streamed
+  // yield, so the live value has to be the repaired one.
+  const partial = REASONING.repeat(6);
+  const repeated = partial.slice(-60);
+  const published = replay(partial, `${repeated}and then it continues onward from there. `);
+  const saved = published[published.length - 1];
+
+  assert.equal(
+    saved.includes(`${repeated}${repeated}`),
+    false,
+    "the repeated tail survived into the value Stop persists",
+  );
+  assert.equal(saved.startsWith(partial), true, "the partial itself must be intact");
+});
+
+test("a restart retracts exactly once, when the decision latches", () => {
+  // A genuine restart replaces the partial, which is shorter, and that is correct: appending
+  // it would read as a stutter. What must not happen is the per-arrival oscillation, so the
+  // count is the assertion, not the absence.
+  const partial = REASONING.repeat(6);
+  const published = replay(partial, `${REASONING}and so on. `.repeat(3));
+
+  assert.equal(
+    retractions(published).length,
+    1,
+    "the restart decision must latch once, not be re-taken on every arrival",
+  );
+});
+
+test("nothing is published that a later arrival takes back", () => {
+  // Before the decision can be made, publishing a join would mean withdrawing it later, so
+  // the merge holds the partial rather than guessing.
+  const partial = REASONING.repeat(6);
+  const published = replay(partial, `${partial.slice(-60)}and onward. `);
+
+  assert.equal(published[0], partial, "an undecided merge publishes the partial alone");
+  for (let i = 1; i < published.length; i += 1) {
+    assert.equal(
+      published[i].startsWith(published[i - 1]) ||
+        published[i].length >= published[i - 1].length,
+      true,
+    );
+  }
+});
+
 test("the final merge still repairs a restart, which is where that check belongs", () => {
-  // Skipping the check while streaming would be a truncation bug of its own if the
-  // finished turn kept the duplicated opening, so the terminal merge must still run it.
   const partial = REASONING.repeat(6);
   const restart = `${REASONING}and so on. `;
   assert.equal(
     createContinuationMerger(partial, true)(partial + restart, { final: true }),
     restart,
     "a genuine restart is still collapsed once the turn is complete",
+  );
+});
+
+test("a short continuation that never settles is still repaired at the end", () => {
+  // The stream can stop before the decision point, so `final` has to force it.
+  const partial = REASONING.repeat(6);
+  const repeated = partial.slice(-40);
+  const merge = createContinuationMerger(partial, true);
+  const cumulative = `${partial}${repeated}rest. `;
+
+  assert.equal(merge(cumulative), partial, "undecided while short");
+  assert.equal(
+    merge(cumulative, { final: true }),
+    `${partial}rest. `,
+    "the terminal merge decides and trims the repeated tail",
   );
 });
 
