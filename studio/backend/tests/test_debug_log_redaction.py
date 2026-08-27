@@ -182,6 +182,10 @@ QUOTED = [
     ("password=\"first 'nickname' last\"", 'password="<redacted>"'),
     # Quoting puts the scheme inside the value; it stays, the credential goes.
     ('password: "Basic dXNlcjpwdw=="', 'password: "Basic <redacted>"'),
+    ("{'password': b'opaqueCredential123456'}", "{'password': b'<redacted>'}"),
+    ("{'password': br'opaqueCredential123456'}", "{'password': br'<redacted>'}"),
+    ("{'password': rb'opaqueCredential123456'}", "{'password': rb'<redacted>'}"),
+    ("{'OPENAI_API_KEY': B'opaqueCredential123456'}", "{'OPENAI_API_KEY': B'<redacted>'}"),
 ]
 
 
@@ -190,6 +194,35 @@ def test_a_quoted_credential_is_masked_whole(line, expected):
     """The value patterns used to stop at whitespace, so a quoted credential
     containing spaces was masked only up to its first space and the rest of the
     secret was printed next to the <redacted> marker."""
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            "password: [oldOpaqueSecret123456, newOpaqueSecret654321]",
+            "password: <redacted>",
+        ),
+        (
+            '{"api_key": ["oldOpaqueSecret123456", "newOpaqueSecret654321"], "model": "gpt-4o"}',
+            '{"api_key": <redacted>, "model": "gpt-4o"}',
+        ),
+        (
+            "config={'password': {'current': 'old]secret', 'previous': ['new}secret']}, 'mode': 'safe'}",
+            "config={'password': <redacted>, 'mode': 'safe'}",
+        ),
+        (
+            "password=(oldOpaqueSecret123456, {'rotated': 'newOpaqueSecret654321'}) status=401",
+            "password=<redacted> status=401",
+        ),
+        (
+            "password: [oldOpaqueSecret123456, newOpaqueSecret654321",
+            "password: <redacted>",
+        ),
+    ],
+)
+def test_a_container_valued_credential_is_masked_whole(line, expected):
     assert redact_log_text(line) == expected
 
 
@@ -328,6 +361,23 @@ def test_same_indented_yaml_sequence_credentials_remain_masked():
         "- api_key:\n",
         "  <redacted>\n",
         "  <redacted>\n",
+    ]
+
+
+def test_multiline_container_credentials_remain_masked():
+    redactor = StreamingLogRedactor()
+    records = [
+        "password: [oldOpaqueSecret123456,\n",
+        "  newOpaqueSecret654321,\n",
+        "]\n",
+        "status: failed\n",
+    ]
+
+    assert [redactor.redact_record(record) for record in records] == [
+        "password: <redacted>\n",
+        "  <redacted>\n",
+        "]\n",
+        "status: failed\n",
     ]
 
 

@@ -111,6 +111,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # the suffix, while an escaped matching quote does not end the value early.
 _QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
 _UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
+_PYTHON_BYTES_PREFIX = r"(?:[bB][rR]?|[rR][bB])"
 _SHELL_WORD_SUFFIX = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|\\[^\r\n]|[^\s\\'\";&|<>()])*"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
@@ -125,23 +126,31 @@ _STRUCTURED_ENV_KV_RE = re.compile(
     r"(?P<key_text>(?:(?P<key_quote>[\"'])(?P<quoted_key>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P=key_quote)|(?P<plain_key>[A-Za-z_][A-Za-z0-9_]*)))"
     r"(?P<sep>\s*:\s*)"
-    r"(?:(?P<quote>[\"'])(?P<quoted>" + _QUOTED_VALUE + r")(?P=quote)|"
+    r"(?:(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?(?P<quote>[\"'])"
+    r"(?P<quoted>" + _QUOTED_VALUE + r")(?P=quote)|"
     r"(?P<val>[^\"'\s,;}\]]+))"
 )
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?"
+    r"(?P<quote>[\"'])"
     r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
 _UNTERMINATED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?"
+    r"(?P<quote>[\"'])"
     r"(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
     re.MULTILINE,
+)
+_CONTAINER_KV_START_RE = re.compile(
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<open>[\[({])"
 )
 _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)"
+    r"(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
     r"(?P<val>[^\"'\s|>,;}\]][^\"'\r\n,;}\]]*)"
 )
 _ESCAPED_QUOTED_KV_RE = re.compile(
@@ -156,7 +165,8 @@ _QUOTED_HEADER_PAIR_RE = re.compile(
 )
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,;}\]]+)"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
+    r"(?P<val>[^\"'\s,;}\]]+)"
 )
 _QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
@@ -327,7 +337,46 @@ def _redact_structured_env_kv(match: re.Match[str]) -> str:
     if not _is_shell_secret_env_name(key):
         return match.group(0)
     quote = match.group("quote") or ""
-    return f"{match.group('key_text')}{match.group('sep')}" f"{quote}{REDACTED}{quote}"
+    value_bytes = match.groupdict().get("value_bytes") or ""
+    return f"{match.group('key_text')}{match.group('sep')}{value_bytes}{quote}{REDACTED}{quote}"
+
+
+def _redact_container_values(text: str) -> str:
+    """Mask balanced list, mapping, and tuple values for exact secret keys."""
+    pairs = {"[": "]", "{": "}", "(": ")"}
+    cursor = 0
+    chunks: list[str] = []
+    while match := _CONTAINER_KV_START_RE.search(text, cursor):
+        start = match.start()
+        index = match.end()
+        stack = [pairs[match.group("open")]]
+        quote: str | None = None
+        escaped = False
+        while index < len(text) and stack:
+            char = text[index]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+            elif char in "\"'":
+                quote = char
+            elif char in pairs:
+                stack.append(pairs[char])
+            elif char == stack[-1]:
+                stack.pop()
+            index += 1
+
+        if stack:
+            line_end = text.find("\n", match.end())
+            index = len(text) if line_end == -1 else line_end
+        chunks.append(text[cursor:start])
+        chunks.append(f"{match.group('key')}{match.group('sep')}{REDACTED}")
+        cursor = index
+    chunks.append(text[cursor:])
+    return "".join(chunks)
 
 
 def _is_shell_secret_env_name(name: str) -> bool:
@@ -366,12 +415,14 @@ def _redact_quoted_kv(match: re.Match[str]) -> str:
         else REDACTED
     )
     quote = match.group("quote")
-    return f"{match.group('key')}{match.group('sep')}{quote}{masked}{quote}"
+    value_bytes = match.groupdict().get("value_bytes") or ""
+    return f"{match.group('key')}{match.group('sep')}{value_bytes}{quote}{masked}{quote}"
 
 
 def _redact_unterminated_quoted_kv(match: re.Match[str]) -> str:
     quote = match.group("quote")
-    return f"{match.group('key')}{match.group('sep')}{quote}{REDACTED}"
+    value_bytes = match.groupdict().get("value_bytes") or ""
+    return f"{match.group('key')}{match.group('sep')}{value_bytes}{quote}{REDACTED}"
 
 
 def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
@@ -478,6 +529,7 @@ def redact_log_text(text: str) -> str:
         text = _ANSI_RE.sub("", text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
+    text = _redact_container_values(text)
     # Use the same env-name classifier as the tool sandbox. Shell assignments
     # end at whitespace, so later command arguments remain useful diagnostics.
     text = _ENV_ASSIGNMENT_RE.sub(_redact_env_assignment, text)
