@@ -52,6 +52,8 @@ export interface GpuInfo {
   maxDeviceMemoryGb: number;
   /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that OOMs the smaller one. */
   loadDeviceMemoryGb: number;
+  /** true when the image/video load device uses the host memory pool. */
+  loadDeviceSharedMemory: boolean;
   cpuCore: number;
   cpuThread: number;
   /** host RAM free after removing the host-backed shared GPU pool. */
@@ -72,6 +74,7 @@ const DEFAULT_GPU: GpuInfo = {
   dedicatedMemoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
   loadDeviceMemoryGb: 0,
+  loadDeviceSharedMemory: false,
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
@@ -100,6 +103,7 @@ function toGpuInfo(
     return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
   }
   const memoryTotals = gpuMemoryTotalsGb(devices);
+  const loadDevice = pickLoadDevice(devices);
   return {
     ...base,
     systemRamAvailableGb: systemRamAvailableOutsideSharedPoolGb(
@@ -118,7 +122,8 @@ function toGpuInfo(
       0,
     ),
     // Lowest visible ordinal = torch's current device = where the pipeline lands.
-    loadDeviceMemoryGb: pickLoadDevice(devices)?.memory_total_gb ?? 0,
+    loadDeviceMemoryGb: loadDevice?.memory_total_gb ?? 0,
+    loadDeviceSharedMemory: loadDevice?.shared_memory === true,
   };
 }
 
