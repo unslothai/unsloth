@@ -423,12 +423,14 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "async function resolveQueuedEmptyLocalModel(",
         "export function createOpenAIStreamAdapter",
     )
-    assert lifecycle.index("beginModelLoading()") < lifecycle.index("await getInferenceStatus()")
-    assert lifecycle.index("await getInferenceStatus()") < lifecycle.index(
-        "await autoLoadSmallestModel("
-    )
+    # The probe waits out an in-flight load rather than reading a status taken
+    # mid-replacement, which names the outgoing model alongside the incoming one.
+    probe = "await waitForSettledServerStatus({ abortSignal })"
+    assert lifecycle.index("beginModelLoading()") < lifecycle.index(probe)
+    assert lifecycle.index(probe) < lifecycle.index("await autoLoadSmallestModel(")
     assert "getInferenceStatus().catch(() => null)" not in lifecycle
-    assert "const status = await getInferenceStatus();" in lifecycle
+    assert f"const settled = {probe};" in lifecycle
+    assert "const status = settled.status;" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
     assert (
         len(
