@@ -64,10 +64,36 @@ def test_the_refusal_precedes_the_first_page():
     """
     launch = CODE[CODE.index("browser_type = getattr(p, PLAYWRIGHT_BROWSER)") :]
     guard = launch.index("CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER")
-    first_page = launch.index("ctx.new_page()")
+    first_page = launch.index("new_throttled_page(ctx)")
     assert guard < first_page, (
         "a page is created before the unsupported-browser check, so firefox "
         "and webkit reach the CDP call and raise"
+    )
+
+
+def test_every_page_the_driver_opens_goes_through_one_factory():
+    """A page opened directly is a page that is never throttled.
+
+    The setting is scoped to the page target, so the relogin path's own fresh
+    page ran at full speed and the steps after it passed under a driver that
+    reported itself throttled -- a false pass in precisely the slow case the
+    option exists to create.
+    """
+    factory = re.search(
+        r"def new_throttled_page\([^)]*\):(?P<body>(?:\n(?:[ \t].*)?)+?)(?=\ndef |\nclass |\Z)",
+        CODE,
+    )
+    assert factory, "no new_throttled_page factory"
+    body = factory.group("body")
+    assert "ctx.new_page()" in body and "apply_cpu_throttle" in body
+    assert "set_default_timeout(60_000)" in body, (
+        "the factory drops the 60s default the direct call sites carried, so "
+        "the macos-14 runners go back to timing out on ordinary renders"
+    )
+    outside = CODE.replace(body, "", 1)
+    assert "new_page()" not in outside, (
+        "a page is still opened outside new_throttled_page, so it runs "
+        "unthrottled for every step that follows it"
     )
 
 

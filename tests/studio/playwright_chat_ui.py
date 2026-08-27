@@ -99,6 +99,22 @@ def apply_cpu_throttle(ctx, page):
     return page
 
 
+def new_throttled_page(ctx):
+    """Every page this driver opens, with the settings common to all of them.
+
+    The throttle is scoped to the page TARGET, so a page opened directly runs
+    at full speed however the option was set and the steps that follow it pass
+    under exactly the conditions the throttle exists to reproduce. The 60s
+    default (was 30s) rides along for the same reason it always did: the
+    macos-14 runners are slow enough that renders, webfonts and lazy routes
+    routinely crowd 30s.
+    """
+    page = ctx.new_page()
+    page.set_default_timeout(60_000)
+    apply_cpu_throttle(ctx, page)
+    return page
+
+
 def recover_or_replace_page(page, ctx, **kwargs):
     """The shared recovery, with the throttle carried onto a replacement page.
 
@@ -717,11 +733,7 @@ with sync_playwright() as p:
             else None
         ),
     )
-    page = ctx.new_page()
-    # 60s default (was 30s): the macos-14 runners are slow enough that
-    # renders/webfonts/lazy routes routinely crowd 30s.
-    page.set_default_timeout(60_000)
-    apply_cpu_throttle(ctx, page)
+    page = new_throttled_page(ctx)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
     console_errors: list[str] = []
@@ -2232,8 +2244,7 @@ with sync_playwright() as p:
         )
     except Exception as exc:
         info(f"WARN clearing stale auth tokens failed: {exc!r}")
-    _fresh_page = ctx.new_page()
-    _fresh_page.set_default_timeout(60_000)
+    _fresh_page = new_throttled_page(ctx)
     _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
     _fresh_page.on("console", _on_console)
     try:
