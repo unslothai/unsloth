@@ -144,6 +144,7 @@ import {
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
+import { ProjectGoalBar } from "./components/project-goal-bar";
 import {
   type ProjectLandingTab,
   nextProjectLandingTab,
@@ -1748,6 +1749,8 @@ function ProjectLanding({
                 </p>
               </div>
             ) : null}
+
+            <ProjectGoalBar />
 
             <ProjectComposer
               disabled={Boolean(pendingNewThreadId) || folderUnavailable}

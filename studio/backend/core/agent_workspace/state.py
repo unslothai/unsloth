@@ -25,6 +25,7 @@ _WORKTREE_STATUSES = frozenset({"creating", "active", "removing", "removed", "ne
 _BACKGROUND_PAYLOAD_LIMIT = 256 * 1024
 _BACKGROUND_RESULT_LIMIT = 1024 * 1024
 _PLAN_SNAPSHOT_LIMIT = 512 * 1024
+_NOT_PROVIDED = object()
 
 
 def _database_key(conn: sqlite3.Connection) -> str:
@@ -262,7 +263,24 @@ def set_verification_config(
     checks: list[dict],
     *,
     require_for_goal_completion: bool = False,
+    expected_revision: Optional[int] = None,
 ) -> dict:
+    normalized_checks = []
+    seen_names: set[str] = set()
+    for check in checks:
+        normalized = dict(check)
+        name = str(normalized.get("name") or "").strip()
+        command = str(normalized.get("command") or "").strip()
+        if not name or not command:
+            raise AgentWorkspaceError("Verification check names and commands cannot be blank.")
+        name_key = name.casefold()
+        if name_key in seen_names:
+            raise AgentWorkspaceError("Verification check names must be unique.")
+        seen_names.add(name_key)
+        normalized["name"] = name
+        normalized["command"] = command
+        normalized_checks.append(normalized)
+    checks = normalized_checks
     current = now_ms()
     encoded = json.dumps(checks, separators = (",", ":"))
     if len(encoded.encode("utf-8")) > 128 * 1024:
@@ -270,21 +288,6 @@ def set_verification_config(
     conn = connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            """
-            INSERT INTO agent_verification_configs(
-                project_id, checks_json, require_for_goal_completion,
-                revision, updated_at
-            )
-            VALUES (?, ?, ?, 1, ?)
-            ON CONFLICT(project_id) DO UPDATE SET
-                checks_json = excluded.checks_json,
-                require_for_goal_completion = excluded.require_for_goal_completion,
-                revision = agent_verification_configs.revision + 1,
-                updated_at = excluded.updated_at
-            """,
-            (project_id, encoded, 1 if require_for_goal_completion else 0, current),
-        )
         row = conn.execute(
             """
             SELECT revision FROM agent_verification_configs
@@ -292,12 +295,51 @@ def set_verification_config(
             """,
             (project_id,),
         ).fetchone()
+        current_revision = int(row["revision"]) if row else 0
+        if expected_revision is not None and current_revision != expected_revision:
+            raise AgentWorkspaceError(
+                "Verification settings changed in another session. Refresh and retry."
+            )
+        revision = current_revision + 1
+        if row:
+            conn.execute(
+                """
+                UPDATE agent_verification_configs
+                SET checks_json = ?, require_for_goal_completion = ?,
+                    revision = ?, updated_at = ?
+                WHERE project_id = ?
+                """,
+                (
+                    encoded,
+                    1 if require_for_goal_completion else 0,
+                    revision,
+                    current,
+                    project_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO agent_verification_configs(
+                    project_id, checks_json, require_for_goal_completion,
+                    revision, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    encoded,
+                    1 if require_for_goal_completion else 0,
+                    revision,
+                    current,
+                ),
+            )
         conn.commit()
         return {
             "projectId": project_id,
             "checks": checks,
             "requireForGoalCompletion": require_for_goal_completion,
-            "revision": int(row["revision"]),
+            "revision": revision,
             "updatedAt": current,
         }
     except Exception:
@@ -470,7 +512,7 @@ def _plan(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     blockers = []
     for task in rendered_tasks:
         counts[task["status"]] += 1
-        if task["blocker"]:
+        if task["status"] == "blocked" and task["blocker"]:
             blockers.append({"taskId": task["id"], "text": task["blocker"]})
     return {
         "id": row["id"],
@@ -632,7 +674,7 @@ def update_plan_task(
     task_id: str,
     *,
     status: Optional[str] = None,
-    blocker: Optional[str] = None,
+    blocker: Any = _NOT_PROVIDED,
     verification: Optional[list[dict]] = None,
     expected_revision: Optional[int] = None,
 ) -> Optional[dict]:
@@ -643,9 +685,11 @@ def update_plan_task(
     if status is not None:
         assignments.append("status = ?")
         values.append(status)
-    if blocker is not None:
+    if blocker is not _NOT_PROVIDED:
         assignments.append("blocker = ?")
         values.append(blocker or None)
+    elif status is not None and status != "blocked":
+        assignments.append("blocker = NULL")
     if verification is not None:
         assignments.append("verification_json = ?")
         values.append(

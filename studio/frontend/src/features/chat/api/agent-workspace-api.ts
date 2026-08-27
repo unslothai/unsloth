@@ -345,12 +345,27 @@ export interface AgentPullRequestHandoffResult {
   connectorResultTruncated: boolean;
 }
 
+export class AgentWorkspaceRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AgentWorkspaceRequestError";
+    this.status = status;
+  }
+}
+
+export function agentWorkspaceMutationOutcomeUnknown(error: unknown): boolean {
+  return !(error instanceof AgentWorkspaceRequestError && error.status < 500);
+}
+
 async function parseAgentResponse<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(
+    throw new AgentWorkspaceRequestError(
       formatApiErrorBody(body) ??
         `Workspace request failed (${response.status})`,
+      response.status,
     );
   }
   return body as T;
@@ -407,23 +422,26 @@ export function saveAgentVerificationConfig(
   projectId: string,
   checks: AgentVerificationCheck[],
   requireForGoalCompletion: boolean,
+  expectedRevision: number,
 ): Promise<AgentVerificationConfig> {
   return request(
     agentWorkspaceRequestPath(projectId, "verification"),
     agentWorkspaceJsonRequest("PUT", {
       checks,
       requireForGoalCompletion,
+      expectedRevision,
     }),
   );
 }
 
 export function runAgentVerification(
   projectId: string,
+  configRevision: number,
   selectedNames?: string[],
 ): Promise<AgentVerificationRun> {
   return request(
     agentWorkspaceRequestPath(projectId, "verify"),
-    agentWorkspaceJsonRequest("POST", { selectedNames }),
+    agentWorkspaceJsonRequest("POST", { selectedNames, configRevision }),
   );
 }
 
@@ -595,12 +613,17 @@ export async function listAgentBackgroundTasks(
 
 export function queueAgentVerification(
   projectId: string,
+  configRevision: number,
   selectedNames?: string[],
   start = true,
 ): Promise<AgentBackgroundTask> {
   return request(
     agentWorkspaceRequestPath(projectId, "background/verification"),
-    agentWorkspaceJsonRequest("POST", { selectedNames, start }),
+    agentWorkspaceJsonRequest("POST", {
+      selectedNames,
+      configRevision,
+      start,
+    }),
   );
 }
 

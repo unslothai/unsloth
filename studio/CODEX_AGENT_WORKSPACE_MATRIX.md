@@ -45,7 +45,7 @@ Status meanings:
 | WS-01 to WS-05, WS-07, and WS-08 | PASS | Managed projects remain available. Existing folders use a native picker and purpose-bound grant, persist by canonical identity, share project cwd across chats and code tools, support bounded reads, remain separate from RAG Sources, and reuse the existing project record. |
 | WS-06 | PARTIAL | Direct project edits use descriptor-relative confinement on macOS and Linux. Windows project edits fail closed pending an equivalent confinement implementation. |
 | WS-09 to WS-12 | PASS | Equality and ancestor or descendant overlap are rejected for managed and folder-backed roots. Project deletion never deletes a user-owned repository, including `delete_files=true`. |
-| WS-13 to WS-16 | PASS | Missing, read-only, symlink-selected, replayed, and identity-replaced roots fail without corrupting the project list or creating a partial project. |
+| WS-13 to WS-16 | PASS | Missing, read-only, symlink-selected, replayed, and identity-replaced roots fail without corrupting the project list. If optional Source attachment fails after durable creation, the project still opens and reports a retryable Sources-tab recovery instead of pretending creation failed. |
 | WS-17 to WS-23 | MANUAL | Removable volume recovery, network and mapped-drive policy, Unicode paths, Windows case folding and long paths, packaged macOS access persistence, and packaged Linux folder access need platform evidence. Windows repository and `AGENTS.md` reads use handle-verified traversal; their Windows CI and packaged evidence remains pending until the remote matrix runs. |
 | WS-24 | PARTIAL | Project and worktree writes use process-local cooperative writer slots with deterministic in-process behavior. Separate Studio processes and external Git or editor writers are not serialized by that lock. |
 
@@ -82,7 +82,7 @@ Status meanings:
 
 | IDs | Result | Evidence or remaining gap |
 | --- | --- | --- |
-| VER-01 to VER-05 | PASS | Ordered test, lint, build, and custom checks persist per project. `/verify` is local and does not require inference. |
+| VER-01 to VER-05 | PASS | Ordered test, lint, build, and custom checks persist per project. Saves use optimistic config revisions, foreground and queued runs bind the exact saved revision, invalid selected names fail instead of running a subset, and `/verify` remains local without inference. |
 | VER-06 to VER-12 | PASS | Structured evidence records command, result, timing, bounded output, timeout, cancellation, process-tree cleanup, source fingerprint, freshness, and goal-completion eligibility. |
 | VER-13 | PASS on supported POSIX paths | Commands use an explicit trusted shell contract inside project confinement. Repository Git configuration, hooks, filters, diff drivers, pagers, editors, credentials, and signing are neutralized for managed Git operations. |
 | VER-14 | GAP | Windows PowerShell and cmd project execution is not implemented. The backend rejects it rather than running without an equivalent confinement boundary. |
@@ -102,7 +102,7 @@ Status meanings:
 
 | IDs | Result | Evidence or remaining gap |
 | --- | --- | --- |
-| PLAN-01 to PLAN-05 | PASS | Plans have durable IDs, goal snapshots, ordered tasks, explicit states, blocker text, and per-task verification requirements and evidence. |
+| PLAN-01 to PLAN-05 | PASS | Plans have durable IDs, goal snapshots, ordered tasks, explicit states, clearable blocker text, and per-task verification requirements and evidence. Leaving the blocked state clears stale blocker summaries. |
 | PLAN-06 to PLAN-09 | PASS | State survives restart, keeps explicit goal relationship semantics, rejects stale revisions, and supports deterministic local `/plan` lifecycle commands. |
 | PLAN-10 | PASS | Completion and review summaries include evidence, task state, and remaining blockers. |
 
@@ -134,7 +134,7 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 | REV-01 to REV-04 | PASS | The Agent Workspace panel and routes expose bounded changed-file, staged, unstaged, untracked, diff, fresh verification, goal, plan, and blocker evidence. |
 | REV-05 | PASS | Prepared-commit review is selected-path, two-phase, confirmation-bound, and non-mutating to the user branch and index. |
 | REV-06 | PASS | A bounded, redacted PR title and body draft works without GitHub credentials. |
-| REV-07 | PARTIAL | The connected GitHub handoff is wired to the exact connector schema with request digest, connector snapshot, one-use process-local confirmation, and unknown-outcome handling. Tests use a fake connector; no live GitHub request was made, and pending confirmations do not survive restart. |
+| REV-07 | PARTIAL | The connected GitHub handoff is wired to the exact connector schema with request digest, connector snapshot, and one-use process-local confirmation. Definite pre-dispatch rejections are distinguished from unknown transport or connector outcomes. Tests use a fake connector; no live GitHub request was made, and pending confirmations do not survive restart. |
 | REV-08 to REV-10 | PASS | Local paths, credentials, and secrets are redacted; large evidence is bounded; and local review works without a remote. |
 
 ## 11. Harness and model portability
@@ -152,7 +152,7 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 
 | IDs | Result | Evidence or remaining gap |
 | --- | --- | --- |
-| SEC-01 to SEC-05 | PASS | Raw renderer paths, expired grants, replay, purpose mismatch, and identity swaps are rejected. |
+| SEC-01 to SEC-05 | PASS | Raw renderer paths, expired grants, OpenProject token replay, purpose mismatch, and identity swaps are rejected. Reusable model tokens remain purpose-bound for their separate validate and load operations. |
 | SEC-06 and SEC-07 | PASS | Filesystem roots, home directories, sensitive credential roots, unsafe network roots, and managed-root overlap are rejected. |
 | SEC-08 | PARTIAL | Descriptor-relative edit confinement and POSIX child-process confinement prevent project-root escape on macOS and Linux. Windows repository and instruction reads use verified Win32 handles, while arbitrary Windows project edits and commands fail closed pending an equivalent filesystem sandbox. External processes are outside the process-local writer scheduler. |
 | SEC-09 to SEC-11 | PASS | Rollback, project deletion, worktree merge, and cleanup require ownership and fingerprint evidence and never use destructive fallback against user work. |
@@ -162,18 +162,18 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 
 The following local results were recorded after merging the fetched upstream tip. Overlapping suites are identified and must not be added into one synthetic total:
 
-- Consolidated agent-workspace backend suite: 679 passed, 5 host-specific skips. The skips are four Windows-only checks plus one Linux-only AF_UNIX check on the local macOS host.
+- Consolidated POSIX-compatible backend and workflow suite: 682 passed, 1 Linux-only AF_UNIX check skipped on the local macOS host.
 - Provider, research, and tool-loop compatibility suite: 1,042 passed.
 - Latest upstream GPU integration lane: 224 passed, 4 platform skips, and 6 subtests. The merge also fixes an order-dependent test fixture that previously unloaded imported NumPy and Torch modules through a broad `sys.modules` restoration.
-- Security-focused workspace lane: 180 passed, 5 platform skips. A broader repository security run recorded 402 passed and 26 skipped; 5 Linux AppImage inspection checks were environment-blocked on macOS because no `readelf` implementation was installed.
-- Full frontend Node test suite: 5,550 passed, 0 failed.
+- Security-focused workspace lane: 180 passed, 5 platform skips. The broader repository security run recorded 402 passed and 26 skipped; 5 Linux AppImage inspection checks were environment-blocked on macOS because no `readelf` implementation was installed.
+- Full frontend Node test suite: 5,553 passed, 0 failed.
 - Frontend production build: passed. Vite reported existing chunk-size and mixed dynamic-import warnings.
 - Frontend TypeScript typecheck and targeted ESLint: passed.
-- Targeted Biome: exited 0 with 131 warning-level diagnostics. This is not described as warning-free.
+- Targeted Biome: exited 0 with 132 warning-level diagnostics. This is not described as warning-free.
 - Full Tauri Rust test suite: 413 passed, 0 failed, with one unrelated dead-code warning.
 - Changed Rust files passed `rustfmt --check` with child modules skipped deliberately.
 - Changed Python files passed Ruff.
-- Workflow guard suite: 385 passed. A dedicated matrix contract prevents regression to targeted frontend, Rust, or incomplete research lanes. The workflow now runs the full frontend and Tauri suites, includes durable Deep Research storage and progress coverage, and bounds Linux apt operations with retries and step timeouts.
+- Workflow guard suite: 803 passed, 1 skipped. A dedicated matrix contract prevents regression to targeted frontend, Rust, or incomplete research lanes. The workflow now runs the full frontend and Tauri suites, includes durable Deep Research storage and progress coverage, and bounds Linux apt operations with retries and step timeouts.
 - The direct-source workflow parsed with two jobs, and trigger lint scanned 44 workflows without finding an unsafe trigger or cache-key collision.
 - `git diff --check` passed.
 - Repository discovery fixture: 100,000 paths in 0.693 seconds with the configured bounds enforced and disclosed.
@@ -182,4 +182,4 @@ These are source and local integration results. They do not imply remote CI, pac
 
 ## Release decision
 
-The source implementation is committed and reviewable, but the release remains not certified. Arbitrary Windows project edits and execution, real runtimes, providers, Codex transport, the product's live GitHub connector handoff, packaged builds, and physical platform smokes remain unrun. The PR can enter source review once its pushed head and CI are verified. Do not merge or describe the product as release-ready until the remaining gates have recorded evidence.
+The source implementation is committed and can enter review while fork CI awaits maintainer approval, but merge readiness still requires the pushed head and approved remote CI to pass. The release remains not certified. Arbitrary Windows project edits and execution, real runtimes, providers, Codex transport, the product's live GitHub connector handoff, packaged builds, and physical platform smokes remain unrun. Do not merge or describe the product as release-ready until the remaining gates have recorded evidence.

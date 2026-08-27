@@ -116,6 +116,21 @@ def test_unavailable_workspace_has_stable_false_capabilities(tmp_path):
     }
 
 
+def test_unavailable_workspace_error_redacts_local_paths(tmp_path, monkeypatch):
+    _folder_project(tmp_path)
+
+    def unavailable(_project_id):
+        raise AgentWorkspaceError(f"Workspace missing at {tmp_path / 'private'}")
+
+    monkeypatch.setattr(agent_workspace_routes, "project_workspace", unavailable)
+    response = _client().get("/api/agent-workspace/projects/project/workspace")
+
+    assert response.status_code == 200
+    assert response.json()["available"] is False
+    assert str(tmp_path) not in response.json()["error"]
+    assert "<local_path>" in response.json()["error"]
+
+
 def test_verification_route_persists_config_and_documents_shell_contract(tmp_path):
     _folder_project(tmp_path)
     client = _client()
@@ -124,6 +139,7 @@ def test_verification_route_persists_config_and_documents_shell_contract(tmp_pat
         "/api/agent-workspace/projects/project/verification",
         json = {
             "requireForGoalCompletion": True,
+            "expectedRevision": 0,
             "checks": [
                 {
                     "name": "test",
@@ -153,11 +169,23 @@ def test_verification_route_persists_config_and_documents_shell_contract(tmp_pat
         "/api/agent-workspace/projects/project/verification",
         json = {
             "requireForGoalCompletion": True,
+            "expectedRevision": 1,
             "checks": loaded.json()["checks"],
         },
     )
     assert resaved.status_code == 200
     assert resaved.json()["revision"] == 2
+
+    stale = client.put(
+        "/api/agent-workspace/projects/project/verification",
+        json = {
+            "requireForGoalCompletion": False,
+            "expectedRevision": 1,
+            "checks": loaded.json()["checks"],
+        },
+    )
+    assert stale.status_code == 409
+    assert "another session" in stale.text
 
 
 def test_unsupported_execution_host_disables_and_rejects_command_routes(tmp_path, monkeypatch):
@@ -170,10 +198,13 @@ def test_unsupported_execution_host_disables_and_rejects_command_routes(tmp_path
     client = _client()
 
     workspace = client.get("/api/agent-workspace/projects/project/workspace")
-    verification = client.post("/api/agent-workspace/projects/project/verify", json = {})
+    verification = client.post(
+        "/api/agent-workspace/projects/project/verify",
+        json = {"configRevision": 0},
+    )
     background = client.post(
         "/api/agent-workspace/projects/project/background/verification",
-        json = {"start": False},
+        json = {"configRevision": 0, "start": False},
     )
 
     assert workspace.status_code == 200

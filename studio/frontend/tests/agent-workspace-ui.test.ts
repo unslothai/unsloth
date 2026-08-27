@@ -18,6 +18,7 @@ import {
   agentBackgroundSnapshot,
   agentPlanProgress,
   agentRepositoryMapSummary,
+  agentStatusLabel,
   agentWorkspaceRequestIsCurrent,
   agentWorkspaceStatus,
   agentWorktreeMergeAction,
@@ -234,8 +235,11 @@ test("the verification completion policy is wired through the Agent panel", () =
 
   assert.match(
     api,
-    /agentWorkspaceJsonRequest\("PUT", \{\s*checks,\s*requireForGoalCompletion,/,
+    /agentWorkspaceJsonRequest\("PUT", \{\s*checks,\s*requireForGoalCompletion,\s*expectedRevision,/,
   );
+  assert.match(api, /selectedNames, configRevision/);
+  assert.match(panel, /queueAgentVerification\(projectId, config\.revision\)/);
+  assert.match(panel, /runAgentVerification\(projectId, config\.revision\)/);
   assert.match(panel, /Require fresh verification before goal completion/);
   assert.match(panel, /checked=\{requireVerificationForGoalCompletion\}/);
   assert.match(panel, /Saved policy revision \{verificationConfigRevision\}/);
@@ -263,6 +267,12 @@ test("background controls follow durable task state", () => {
     canCancel: false,
     canRetry: false,
   });
+});
+
+test("agent status labels are readable without changing stored values", () => {
+  assert.equal(agentStatusLabel("in_progress"), "in progress");
+  assert.equal(agentStatusLabel("timed_out"), "timed out");
+  assert.equal(agentStatusLabel("completed"), "completed");
 });
 
 test("background permission policy excludes interactive modes", () => {

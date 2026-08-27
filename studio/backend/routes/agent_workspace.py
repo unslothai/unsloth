@@ -245,6 +245,7 @@ class VerificationConfigRequest(BaseModel):
 
     checks: list[VerificationCheck] = Field(default_factory = list, max_length = 32)
     requireForGoalCompletion: bool = False
+    expectedRevision: int = Field(ge = 0)
 
 
 class VerificationRunRequest(BaseModel):
@@ -252,6 +253,7 @@ class VerificationRunRequest(BaseModel):
 
     selectedNames: Optional[list[str]] = Field(default = None, max_length = 32)
     worktreeId: Optional[str] = Field(default = None, max_length = 128)
+    configRevision: int = Field(ge = 0)
 
 
 class PlanTaskRequest(BaseModel):
@@ -405,7 +407,7 @@ def workspace_capabilities(
             "projectId": project_id,
             "workspaceKind": project.get("workspaceKind") or "managed",
             "available": False,
-            "error": str(exc),
+            "error": redact_review_text(str(exc), ""),
             "isGitRepository": False,
             "capabilities": unavailable_capabilities,
         }
@@ -548,6 +550,7 @@ def save_verification_config(
             project_id,
             [check.model_dump() for check in payload.checks],
             require_for_goal_completion = payload.requireForGoalCompletion,
+            expected_revision = payload.expectedRevision,
         )
         config["shellContract"] = (
             "Commands are trusted user configuration and run through the platform shell "
@@ -569,7 +572,10 @@ def run_verification(
     try:
         _require_execution_boundary()
         return run_project_verification(
-            project_id, payload.selectedNames, worktree_id = payload.worktreeId
+            project_id,
+            payload.selectedNames,
+            worktree_id = payload.worktreeId,
+            config_revision = payload.configRevision,
         )
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
@@ -742,14 +748,14 @@ def patch_plan_task(
     if plan is None or plan["projectId"] != project_id:
         raise HTTPException(status_code = 404, detail = "Plan not found.")
     try:
-        updated = update_plan_task(
-            plan_id,
-            task_id,
-            status = payload.status,
-            blocker = payload.blocker,
-            verification = payload.verification,
-            expected_revision = payload.expectedRevision,
-        )
+        task_updates: dict[str, Any] = {
+            "status": payload.status,
+            "verification": payload.verification,
+            "expected_revision": payload.expectedRevision,
+        }
+        if "blocker" in payload.model_fields_set:
+            task_updates["blocker"] = payload.blocker
+        updated = update_plan_task(plan_id, task_id, **task_updates)
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
     if updated is None:
@@ -771,6 +777,7 @@ def queue_background_verification(
                 project_id,
                 payload.selectedNames,
                 worktree_id = payload.worktreeId,
+                config_revision = payload.configRevision,
                 start = payload.start,
             )
         )

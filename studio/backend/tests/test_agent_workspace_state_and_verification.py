@@ -383,6 +383,61 @@ def test_verification_config_revision_is_monotonic_under_concurrent_saves(tmp_pa
     assert get_verification_config("project")["revision"] == 4
 
 
+def test_verification_config_rejects_stale_saves_and_invalid_checks(tmp_path):
+    _folder_project(tmp_path)
+    initial = set_verification_config(
+        "project",
+        [_required_check("unit")],
+        expected_revision = 0,
+    )
+
+    with pytest.raises(AgentWorkspaceError, match = "another session"):
+        set_verification_config(
+            "project",
+            [_required_check("lint")],
+            expected_revision = 0,
+        )
+    assert get_verification_config("project")["checks"][0]["name"] == "unit"
+
+    updated = set_verification_config(
+        "project",
+        [_required_check("lint")],
+        expected_revision = initial["revision"],
+    )
+    assert updated["revision"] == 2
+
+    blank = _required_check("blank")
+    blank["command"] = "   "
+    with pytest.raises(AgentWorkspaceError, match = "cannot be blank"):
+        set_verification_config("project", [blank])
+    with pytest.raises(AgentWorkspaceError, match = "must be unique"):
+        set_verification_config(
+            "project",
+            [_required_check("Test"), _required_check(" test ")],
+        )
+
+
+def test_verification_run_rejects_config_drift_and_unknown_selections(tmp_path):
+    _folder_project(tmp_path)
+    initial = set_verification_config("project", [_required_check("unit")])
+
+    with pytest.raises(AgentWorkspaceError, match = "not configured"):
+        run_project_verification(
+            "project",
+            ["unit", "typo"],
+            config_revision = initial["revision"],
+        )
+
+    changed = set_verification_config("project", [_required_check("unit")])
+    with pytest.raises(AgentWorkspaceError, match = "changed after"):
+        run_project_verification(
+            "project",
+            ["unit"],
+            config_revision = initial["revision"],
+        )
+    assert changed["revision"] == initial["revision"] + 1
+
+
 def test_goal_completion_gate_accepts_only_current_complete_primary_evidence(tmp_path):
     _folder_project(tmp_path)
     checks = [_required_check("test"), _required_check("lint")]
@@ -796,6 +851,42 @@ def test_plans_are_goal_linked_durable_and_revision_guarded(tmp_path):
         update_plan_status(plan["id"], "completed", expected_revision = 0)
 
 
+def test_plan_task_blocker_clears_explicitly_and_when_work_resumes(tmp_path):
+    _folder_project(tmp_path)
+    plan = create_plan(
+        "project",
+        "Implementation",
+        "Ship the workspace",
+        [{"title": "Build it", "status": "blocked", "blocker": "Need input"}],
+    )
+    task_id = plan["tasks"][0]["id"]
+
+    cleared = update_plan_task(
+        plan["id"],
+        task_id,
+        blocker = None,
+        expected_revision = 0,
+    )
+    assert cleared["tasks"][0]["blocker"] is None
+    assert cleared["completionSummary"]["blockers"] == []
+
+    blocked = update_plan_task(
+        plan["id"],
+        task_id,
+        status = "blocked",
+        blocker = "Waiting",
+        expected_revision = 1,
+    )
+    resumed = update_plan_task(
+        plan["id"],
+        task_id,
+        status = "running",
+        expected_revision = blocked["revision"],
+    )
+    assert resumed["tasks"][0]["blocker"] is None
+    assert resumed["completionSummary"]["blockers"] == []
+
+
 def test_restart_recovery_interrupts_running_but_preserves_queued(tmp_path):
     _folder_project(tmp_path)
     queued = create_background_task("project", "verification", {})
@@ -865,6 +956,29 @@ def test_concurrent_background_start_claims_task_once(tmp_path, monkeypatch):
     assert call_count == 1
     release.set()
     manager._executor.shutdown(wait = True)
+
+
+def test_queued_verification_is_bound_to_its_config_revision(tmp_path):
+    _folder_project(tmp_path)
+    initial = set_verification_config("project", [_required_check("unit")])
+    manager = BackgroundTaskManager(max_workers = 1)
+    try:
+        queued = manager.enqueue_verification("project", start = False)
+        assert queued["payload"]["configRevision"] == initial["revision"]
+        set_verification_config("project", [_required_check("lint")])
+
+        manager.start(queued["id"])
+        current = get_background_task(queued["id"])
+        for _ in range(300):
+            if current["status"] in {"failed", "completed", "cancelled"}:
+                break
+            time.sleep(0.01)
+            current = get_background_task(queued["id"])
+
+        assert current["status"] == "failed"
+        assert "changed after" in current["error"]
+    finally:
+        manager._executor.shutdown(wait = True)
 
 
 def test_project_deletion_cancels_queued_tasks_and_waits_for_running_worker(tmp_path, monkeypatch):

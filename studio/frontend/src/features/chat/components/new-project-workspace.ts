@@ -3,6 +3,11 @@
 
 export type ProjectWorkspaceMode = "managed" | "folder";
 
+export interface ProjectWorkspaceCreation<TProject> {
+  project: TProject;
+  sourceUploadError: unknown | null;
+}
+
 export function projectFolderPickerDisabled(args: {
   nativePathLeasesSupported: boolean;
   busy: boolean;
@@ -64,7 +69,7 @@ export async function createProjectWorkspace<
   createManaged: (name: string) => Promise<TProject>;
   openFolder: (nativePathToken: string, name: string) => Promise<TProject>;
   uploadSources: (projectId: string, sources: TSource[]) => Promise<void>;
-}): Promise<TProject> {
+}): Promise<ProjectWorkspaceCreation<TProject>> {
   const name = args.name.trim();
   if (!name) {
     throw new Error("Project name is required.");
@@ -81,7 +86,16 @@ export async function createProjectWorkspace<
   }
 
   // Workspace files stay live in place. Sources remain a separate, explicit
-  // RAG layer and are uploaded only after the project has a durable id.
-  await args.uploadSources(project.id, args.sources);
-  return project;
+  // RAG layer and are uploaded only after the project has a durable id. Source
+  // attachment is not allowed to turn a successful project creation into an
+  // apparent total failure that strands the newly created workspace.
+  let sourceUploadError: unknown | null = null;
+  if (args.sources.length > 0) {
+    try {
+      await args.uploadSources(project.id, args.sources);
+    } catch (error) {
+      sourceUploadError = error;
+    }
+  }
+  return { project, sourceUploadError };
 }

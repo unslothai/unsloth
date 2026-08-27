@@ -18,6 +18,7 @@ import {
 } from "../src/features/chat/components/agent-workspace-state.ts";
 
 type ReviewApi = {
+  agentWorkspaceMutationOutcomeUnknown(error: unknown): boolean;
   queueAgentTask(
     projectId: string,
     payload: {
@@ -430,7 +431,8 @@ test("connector failure becomes a token-free unknown outcome without retry", asy
         },
       );
       assert.fail("confirmation should fail");
-    } catch {
+    } catch (error) {
+      assert.equal(api.agentWorkspaceMutationOutcomeUnknown(error), true);
       display = pullRequestSubmissionDisplay(preview as never, "unknown");
     }
 
@@ -440,6 +442,44 @@ test("connector failure becomes a token-free unknown outcome without retry", asy
     assert.equal("confirmationToken" in display, false);
     assert.equal("requestDigest" in display, false);
     assert.equal(pullRequestHandoffCanSubmit(null, display), false);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("pre-dispatch rejection is a known non-submission outcome", async () => {
+  const fixture = handoffPreview();
+  const mock = stubFetch((call) =>
+    call.path.endsWith("/pull-request-handoff/prepare")
+      ? { body: fixture }
+      : {
+          status: 409,
+          body: { detail: "The handoff expired before submission." },
+        },
+  );
+  try {
+    const preview = await api.prepareAgentPullRequestHandoff("project-1", {
+      serverId: "github-connector",
+      owner: "unslothai",
+      repository: "unsloth",
+      base: "main",
+      head: "feature/review",
+      draft: true,
+    });
+    const confirmation = pullRequestHandoffConfirmation(preview as never);
+
+    await assert.rejects(
+      api.confirmAgentPullRequestHandoff("project-1", confirmation.handoffId, {
+        serverId: confirmation.serverId,
+        confirmationToken: confirmation.confirmationToken,
+        expectedRequestDigest: confirmation.expectedRequestDigest,
+      }),
+      (error) => {
+        assert.equal(api.agentWorkspaceMutationOutcomeUnknown(error), false);
+        assert.match(String(error), /expired before submission/);
+        return true;
+      },
+    );
   } finally {
     mock.restore();
   }

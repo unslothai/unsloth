@@ -3,6 +3,7 @@
 
 import type { ProjectRecord } from "../types";
 import {
+  type ProjectWorkspaceCreation,
   type ProjectWorkspaceMode,
   createProjectFolderPickerGuard,
   createProjectWorkspace,
@@ -170,42 +171,63 @@ export function createNewProjectDialogController<TSource>(
     patch({ busy: true });
     const origin = dependencies.currentRoute();
     try {
-      const project = await createProjectWorkspace({
-        name: trimmed,
-        workspaceMode: submitted.workspaceMode,
-        folderToken: submitted.folder?.token,
-        sources: submitted.sources,
-        createManaged: dependencies.createManaged,
-        openFolder: dependencies.openFolder,
-        uploadSources: dependencies.uploadSources,
-      });
+      let creation: ProjectWorkspaceCreation<ProjectRecord>;
+      try {
+        creation = await createProjectWorkspace({
+          name: trimmed,
+          workspaceMode: submitted.workspaceMode,
+          folderToken: submitted.folder?.token,
+          sources: submitted.sources,
+          createManaged: dependencies.createManaged,
+          openFolder: dependencies.openFolder,
+          uploadSources: dependencies.uploadSources,
+        });
+      } catch (error) {
+        dependencies.showError(
+          submitted.workspaceMode === "folder"
+            ? "Failed to open project folder"
+            : "Failed to create project",
+          submitted.workspaceMode === "folder"
+            ? "Reconnect the folder in Unsloth Desktop and try again."
+            : error instanceof Error
+              ? error.message
+              : undefined,
+        );
+        return;
+      }
       if (!mounted) {
         return;
       }
 
+      const { project, sourceUploadError } = creation;
       const stayedOnRoute = dependencies.currentRoute() === origin;
       dependencies.onOpenChange(false);
       reset();
-      if (dependencies.onCreated) {
-        await dependencies.onCreated(project, { stayedOnRoute });
+      try {
+        if (dependencies.onCreated) {
+          await dependencies.onCreated(project, { stayedOnRoute });
+        } else if (stayedOnRoute) {
+          dependencies.activateProject(project.id);
+          dependencies.navigateToProject(project.id);
+        }
+      } catch (error) {
+        dependencies.showError(
+          "Project created, but it could not be opened",
+          error instanceof Error ? error.message : "Open it from Projects.",
+        );
         return;
       }
-      if (!stayedOnRoute) {
-        return;
+
+      if (sourceUploadError) {
+        const detail =
+          sourceUploadError instanceof Error
+            ? `${sourceUploadError.message} Add the sources again from the project Sources tab.`
+            : "Add the sources again from the project Sources tab.";
+        dependencies.showError(
+          "Project created, but sources were not added",
+          detail,
+        );
       }
-      dependencies.activateProject(project.id);
-      dependencies.navigateToProject(project.id);
-    } catch (error) {
-      dependencies.showError(
-        submitted.workspaceMode === "folder"
-          ? "Failed to open project folder"
-          : "Failed to create project",
-        submitted.workspaceMode === "folder"
-          ? "Reconnect the folder in Unsloth Desktop and try again."
-          : error instanceof Error
-            ? error.message
-            : undefined,
-      );
     } finally {
       patch({ busy: false });
     }

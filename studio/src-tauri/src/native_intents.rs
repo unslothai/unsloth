@@ -344,18 +344,42 @@ impl NativeIntakeState {
         Ok(entry.clone())
     }
 
+    fn consume_entry_for_operation(
+        &self,
+        token: &str,
+        operation: NativePathOperation,
+    ) -> Result<NativePathEntry, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        prune_expired(&mut inner);
+        let entry = inner
+            .tokens
+            .get(token)
+            .ok_or_else(|| "Native path token is unavailable or expired.".to_string())?;
+        if !entry.allowed_operations.contains(&operation) {
+            return Err("Native path token does not allow this operation.".to_string());
+        }
+        inner
+            .tokens
+            .remove(token)
+            .ok_or_else(|| "Native path token is unavailable or expired.".to_string())
+    }
+
     fn sign_grant(
         &self,
         token: &str,
         operation: NativePathOperation,
     ) -> Result<NativePathLeaseResponse, String> {
-        let entry = self.entry_for_operation(token, operation)?;
+        let entry = if operation == NativePathOperation::OpenProject {
+            self.consume_entry_for_operation(token, operation)?
+        } else {
+            self.entry_for_operation(token, operation)?
+        };
         validate_entry_path(&entry, operation)?;
         sign_path_lease(
             &self.lease_secret,
             NativePathLeaseRequest {
                 operation,
-                canonical_path: entry.canonical_path.to_string_lossy().to_string(),
+                canonical_path: portable_path_string(&entry.canonical_path),
                 path_kind: entry.path_kind,
                 path_type: entry.path_type,
                 source_kind: entry.source_kind,
@@ -1189,6 +1213,9 @@ mod tests {
             selection.display_name,
             path.file_name().unwrap().to_string_lossy()
         );
+        assert!(state
+            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .is_err());
 
         let _ = fs::remove_dir(path);
     }

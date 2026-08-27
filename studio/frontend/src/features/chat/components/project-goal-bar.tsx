@@ -39,7 +39,7 @@ function ProjectGoalBarContent({ project }: { project: ProjectRecord }) {
   const view = projectGoalViewState(project);
   const { goal, status } = view;
   const activeProject = project;
-  const goalInput = useRef<HTMLInputElement>(null);
+  const goalInput = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (editing) {
@@ -133,13 +133,14 @@ function ProjectGoalBarContent({ project }: { project: ProjectRecord }) {
           Goal
         </span>
         {editing ? (
-          <input
+          <textarea
             ref={goalInput}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             maxLength={12_000}
+            rows={2}
             onKeyDown={(event) => {
-              if (event.key === "Enter") {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
                 void saveGoal();
               }
@@ -149,8 +150,8 @@ function ProjectGoalBarContent({ project }: { project: ProjectRecord }) {
               }
             }}
             disabled={saving}
-            aria-label="Project goal"
-            className="min-w-0 flex-1 rounded-lg border border-border bg-transparent px-2 py-1 text-sm outline-none focus:border-ring"
+            aria-label="Project goal. Press Control or Command Enter to save."
+            className="max-h-40 min-h-10 min-w-0 flex-1 resize-y rounded-lg border border-border bg-transparent px-2 py-1 text-sm outline-none focus:border-ring"
           />
         ) : (
           <span

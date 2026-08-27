@@ -57,6 +57,7 @@ import {
   type AgentVerificationRun,
   type AgentWorkspaceOverview,
   type AgentWorktree,
+  agentWorkspaceMutationOutcomeUnknown,
   cancelAgentBackgroundTask,
   cleanupAgentWorktree,
   confirmAgentPreparedCommit,
@@ -95,6 +96,7 @@ import {
   agentBackgroundSnapshot,
   agentPlanProgress,
   agentRepositoryMapSummary,
+  agentStatusLabel,
   agentWorkspaceRequestIsCurrent,
   agentWorkspaceStatus,
   agentWorktreeMergeAction,
@@ -171,10 +173,6 @@ function Empty({ children }: { children: ReactNode }): ReactElement {
       {children}
     </div>
   );
-}
-
-function safeSettledValue<T>(result: PromiseSettledResult<T>): T | undefined {
-  return result.status === "fulfilled" ? result.value : undefined;
 }
 
 function normalizedVerificationChecks(
@@ -279,125 +277,149 @@ export function AgentWorkspacePanel({
     activeProjectIdRef.current = projectId;
   }, [projectId]);
 
-  const loadDashboard = useCallback(async () => {
-    const requestProjectId = projectId;
-    const generation = ++generationRef.current;
-    const requestIsCurrent = () =>
-      agentWorkspaceRequestIsCurrent({
-        requestProjectId,
-        activeProjectId: activeProjectIdRef.current,
-        requestGeneration: generation,
-        activeGeneration: generationRef.current,
-      });
-    setBusy(null);
-    setLoading(true);
-    setLoadError(null);
-    setWorkspace(null);
-    setInstructions(null);
-    setRepositoryMap(null);
-    setGitStatus(null);
-    setGitDiff(null);
-    setSelectedCommitPaths(new Set());
-    setPreparedCommit(null);
-    setConfirmedCommit(null);
-    setCommitConfirmationError(null);
-    setVerificationChecks([]);
-    setRequireVerificationForGoalCompletion(false);
-    setVerificationConfigRevision(0);
-    setVerificationRuns([]);
-    setPlans([]);
-    setBackgroundTasks([]);
-    setWorktrees([]);
-    setReview(null);
-    setPullRequestDraft(null);
-    setPullRequestHandoff(null);
-    setPullRequestSubmission(null);
-    setPullRequestSubmissionResult(null);
-    try {
-      const nextWorkspace = await getAgentWorkspace(requestProjectId);
-      if (!requestIsCurrent()) return;
-      setWorkspace(nextWorkspace);
-      if (!nextWorkspace.available) {
+  const loadDashboard = useCallback(
+    async (reset = false) => {
+      const requestProjectId = projectId;
+      const generation = ++generationRef.current;
+      const requestIsCurrent = () =>
+        agentWorkspaceRequestIsCurrent({
+          requestProjectId,
+          activeProjectId: activeProjectIdRef.current,
+          requestGeneration: generation,
+          activeGeneration: generationRef.current,
+        });
+      setBusy(null);
+      setLoading(true);
+      setLoadError(null);
+      if (reset) {
+        setWorkspace(null);
         setInstructions(null);
         setRepositoryMap(null);
         setGitStatus(null);
+        setGitDiff(null);
+        setSelectedCommitPaths(new Set());
+        setPreparedCommit(null);
+        setConfirmedCommit(null);
+        setCommitConfirmationError(null);
         setVerificationChecks([]);
+        setRequireVerificationForGoalCompletion(false);
+        setVerificationConfigRevision(0);
         setVerificationRuns([]);
         setPlans([]);
         setBackgroundTasks([]);
         setWorktrees([]);
-        return;
+        setReview(null);
+        setPullRequestDraft(null);
+        setPullRequestHandoff(null);
+        setPullRequestSubmission(null);
+        setPullRequestSubmissionResult(null);
       }
-      const capabilities = nextWorkspace.capabilities;
-      const results = await Promise.allSettled([
-        capabilities.instructions
-          ? getAgentInstructions(requestProjectId)
-          : Promise.resolve(null),
-        capabilities.repositoryMap
-          ? getAgentRepositoryMap(requestProjectId, {
-              maxPaths: MAP_PATH_LIMIT,
-              maxTotalBytes: MAP_BYTE_LIMIT,
-            })
-          : Promise.resolve(null),
-        capabilities.verification
-          ? getAgentVerificationConfig(requestProjectId)
-          : Promise.resolve(null),
-        capabilities.verification
-          ? listAgentVerificationRuns(requestProjectId, 10)
-          : Promise.resolve([]),
-        capabilities.git
-          ? getAgentGitStatus(requestProjectId)
-          : Promise.resolve(null),
-        capabilities.plans
-          ? listAgentPlans(requestProjectId)
-          : Promise.resolve([]),
-        capabilities.background
-          ? listAgentBackgroundTasks(requestProjectId, 50)
-          : Promise.resolve([]),
-        capabilities.worktrees
-          ? listAgentWorktrees(requestProjectId)
-          : Promise.resolve([]),
-      ] as const);
-      if (!requestIsCurrent()) return;
+      try {
+        const nextWorkspace = await getAgentWorkspace(requestProjectId);
+        if (!requestIsCurrent()) return;
+        setWorkspace(nextWorkspace);
+        if (!nextWorkspace.available) {
+          setInstructions(null);
+          setRepositoryMap(null);
+          setGitStatus(null);
+          setVerificationChecks([]);
+          setVerificationRuns([]);
+          setPlans([]);
+          setBackgroundTasks([]);
+          setWorktrees([]);
+          return;
+        }
+        const capabilities = nextWorkspace.capabilities;
+        const results = await Promise.allSettled([
+          capabilities.instructions
+            ? getAgentInstructions(requestProjectId)
+            : Promise.resolve(null),
+          capabilities.repositoryMap
+            ? getAgentRepositoryMap(requestProjectId, {
+                maxPaths: MAP_PATH_LIMIT,
+                maxTotalBytes: MAP_BYTE_LIMIT,
+              })
+            : Promise.resolve(null),
+          capabilities.verification
+            ? getAgentVerificationConfig(requestProjectId)
+            : Promise.resolve(null),
+          capabilities.verification
+            ? listAgentVerificationRuns(requestProjectId, 10)
+            : Promise.resolve([]),
+          capabilities.git
+            ? getAgentGitStatus(requestProjectId)
+            : Promise.resolve(null),
+          capabilities.plans
+            ? listAgentPlans(requestProjectId)
+            : Promise.resolve([]),
+          capabilities.background
+            ? listAgentBackgroundTasks(requestProjectId, 50)
+            : Promise.resolve([]),
+          capabilities.worktrees
+            ? listAgentWorktrees(requestProjectId)
+            : Promise.resolve([]),
+        ] as const);
+        if (!requestIsCurrent()) return;
 
-      const nextInstructions = safeSettledValue(results[0]);
-      const nextRepositoryMap = safeSettledValue(results[1]);
-      const nextConfig = safeSettledValue(results[2]);
-      const nextRuns = safeSettledValue(results[3]);
-      const nextGit = safeSettledValue(results[4]);
-      const nextPlans = safeSettledValue(results[5]);
-      const nextBackground = safeSettledValue(results[6]);
-      const nextWorktrees = safeSettledValue(results[7]);
-      setInstructions(nextInstructions ?? null);
-      setRepositoryMap(nextRepositoryMap ?? null);
-      if (nextConfig) {
-        setVerificationChecks(nextConfig.checks);
-        setRequireVerificationForGoalCompletion(
-          nextConfig.requireForGoalCompletion,
+        if (results[0].status === "fulfilled") {
+          setInstructions(results[0].value);
+        }
+        if (results[1].status === "fulfilled") {
+          setRepositoryMap(results[1].value);
+        }
+        if (results[2].status === "fulfilled" && results[2].value) {
+          setVerificationChecks(results[2].value.checks);
+          setRequireVerificationForGoalCompletion(
+            results[2].value.requireForGoalCompletion,
+          );
+          setVerificationConfigRevision(results[2].value.revision);
+        }
+        if (results[3].status === "fulfilled") {
+          setVerificationRuns(results[3].value);
+        }
+        if (results[4].status === "fulfilled") {
+          setGitStatus(results[4].value);
+        }
+        if (results[5].status === "fulfilled") {
+          setPlans(results[5].value);
+        }
+        if (results[6].status === "fulfilled") {
+          setBackgroundTasks(results[6].value);
+        }
+        if (results[7].status === "fulfilled") {
+          setWorktrees(results[7].value);
+        }
+
+        const sectionNames = [
+          "instructions",
+          "repository map",
+          "verification policy",
+          "verification runs",
+          "Git status",
+          "plans",
+          "background tasks",
+          "worktrees",
+        ];
+        const failures = results.flatMap((result, index) =>
+          result.status === "rejected"
+            ? [
+                `${sectionNames[index] ?? "workspace section"}: ${safeAgentWorkspaceError(result.reason)}`,
+              ]
+            : [],
         );
-        setVerificationConfigRevision(nextConfig.revision);
+        if (failures.length > 0) setLoadError(failures.join("; "));
+      } catch (error) {
+        if (!requestIsCurrent()) return;
+        setLoadError(safeAgentWorkspaceError(error));
+      } finally {
+        if (requestIsCurrent()) setLoading(false);
       }
-      setVerificationRuns(nextRuns ?? []);
-      setGitStatus(nextGit ?? null);
-      setPlans(nextPlans ?? []);
-      setBackgroundTasks(nextBackground ?? []);
-      setWorktrees(nextWorktrees ?? []);
-
-      const failed = results.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
-      );
-      if (failed) setLoadError(safeAgentWorkspaceError(failed.reason));
-    } catch (error) {
-      if (!requestIsCurrent()) return;
-      setLoadError(safeAgentWorkspaceError(error));
-    } finally {
-      if (requestIsCurrent()) setLoading(false);
-    }
-  }, [projectId]);
+    },
+    [projectId],
+  );
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadDashboard(), 0);
+    const timer = window.setTimeout(() => void loadDashboard(true), 0);
     return () => {
       window.clearTimeout(timer);
       generationRef.current += 1;
@@ -592,7 +614,7 @@ export function AgentWorkspacePanel({
       setSelectedCommitPaths(new Set());
       setCommitMessage("");
       toast.success("Prepared commit ref created");
-    } catch {
+    } catch (error) {
       if (
         agentWorkspaceRequestIsCurrent({
           requestProjectId,
@@ -602,7 +624,9 @@ export function AgentWorkspacePanel({
         })
       ) {
         setCommitConfirmationError(
-          "Prepared ref outcome is unknown. Inspect Git status and Studio-owned refs before preparing another preview.",
+          agentWorkspaceMutationOutcomeUnknown(error)
+            ? "Prepared ref outcome is unknown. Inspect Git status and Studio-owned refs before preparing another preview."
+            : safeAgentWorkspaceError(error),
         );
       }
     } finally {
@@ -688,7 +712,7 @@ export function AgentWorkspacePanel({
       );
       setPullRequestSubmissionResult(result);
       toast.success("GitHub confirmed the pull request submission");
-    } catch {
+    } catch (error) {
       if (
         agentWorkspaceRequestIsCurrent({
           requestProjectId,
@@ -697,13 +721,21 @@ export function AgentWorkspacePanel({
           activeGeneration: generationRef.current,
         })
       ) {
-        setPullRequestSubmission(
-          pullRequestSubmissionDisplay(preview, "unknown"),
-        );
+        const outcomeUnknown = agentWorkspaceMutationOutcomeUnknown(error);
+        if (outcomeUnknown) {
+          setPullRequestSubmission(
+            pullRequestSubmissionDisplay(preview, "unknown"),
+          );
+          toast.error("GitHub submission outcome is unknown", {
+            description: "Check GitHub before creating another handoff.",
+          });
+        } else {
+          setPullRequestSubmission(null);
+          toast.error("GitHub handoff was rejected before submission", {
+            description: safeAgentWorkspaceError(error),
+          });
+        }
         setPullRequestSubmissionResult(null);
-        toast.error("GitHub submission outcome is unknown", {
-          description: "Check GitHub before creating another handoff.",
-        });
       }
     } finally {
       if (
@@ -745,6 +777,7 @@ export function AgentWorkspacePanel({
           projectId,
           checks,
           requireVerificationForGoalCompletion,
+          verificationConfigRevision,
         ),
       applyVerificationConfig,
       "Verification checks saved",
@@ -766,8 +799,9 @@ export function AgentWorkspacePanel({
             projectId,
             checks,
             requireVerificationForGoalCompletion,
+            verificationConfigRevision,
           );
-          const task = await queueAgentVerification(projectId);
+          const task = await queueAgentVerification(projectId, config.revision);
           return { config, task };
         },
         ({ config, task }) => {
@@ -785,8 +819,9 @@ export function AgentWorkspacePanel({
           projectId,
           checks,
           requireVerificationForGoalCompletion,
+          verificationConfigRevision,
         );
-        const run = await runAgentVerification(projectId);
+        const run = await runAgentVerification(projectId, config.revision);
         return { config, run };
       },
       ({ config, run }) => {
@@ -1697,7 +1732,7 @@ export function AgentWorkspacePanel({
                     >
                       <summary className="flex cursor-pointer list-none items-center gap-2 text-xs">
                         <Badge variant={statusBadgeVariant(run.status)}>
-                          {run.status}
+                          {agentStatusLabel(run.status)}
                         </Badge>
                         <span>{formatDate(run.startedAt)}</span>
                         {run.stale ? (
@@ -1714,7 +1749,7 @@ export function AgentWorkspacePanel({
                             className="rounded-lg bg-background/60 p-2"
                           >
                             <summary className="cursor-pointer text-xs font-medium">
-                              {result.name}: {result.status}
+                              {result.name}: {agentStatusLabel(result.status)}
                             </summary>
                             <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
                               {result.output || "No output."}
@@ -1770,7 +1805,7 @@ export function AgentWorkspacePanel({
                     >
                       <summary className="flex cursor-pointer list-none items-center gap-2 text-xs">
                         <Badge variant={statusBadgeVariant(plan.status)}>
-                          {plan.status}
+                          {agentStatusLabel(plan.status)}
                         </Badge>
                         <span className="min-w-0 flex-1 truncate font-medium">
                           {plan.title}
@@ -2096,7 +2131,7 @@ export function AgentWorkspacePanel({
                     >
                       <div className="flex items-center gap-2">
                         <Badge variant={statusBadgeVariant(task.status)}>
-                          {task.status}
+                          {agentStatusLabel(task.status)}
                         </Badge>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-xs font-medium">
@@ -2277,7 +2312,7 @@ export function AgentWorkspacePanel({
                     >
                       <div className="flex items-center gap-2">
                         <Badge variant={statusBadgeVariant(worktree.status)}>
-                          {worktree.status}
+                          {agentStatusLabel(worktree.status)}
                         </Badge>
                         <span className="min-w-0 flex-1 truncate font-mono text-xs">
                           {worktree.branch}
@@ -2321,7 +2356,7 @@ export function AgentWorkspacePanel({
                                 worktree.merge.status,
                               )}
                             >
-                              merge {worktree.merge.status}
+                              merge {agentStatusLabel(worktree.merge.status)}
                             </Badge>
                             <span>
                               {worktree.merge.targetBranch} at{" "}
@@ -2649,7 +2684,7 @@ export function AgentWorkspacePanel({
                           pullRequestSubmission.status,
                         )}
                       >
-                        {pullRequestSubmission.status}
+                        {agentStatusLabel(pullRequestSubmission.status)}
                       </Badge>
                       <span className="font-medium">
                         {pullRequestSubmission.connectorName}

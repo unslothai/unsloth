@@ -594,7 +594,7 @@ def test_project_delete_cancels_and_waits_for_direct_verification_route(tmp_path
             "updatedAt": 1,
         }
     )
-    set_verification_config(
+    verification_config = set_verification_config(
         project["id"],
         [
             {
@@ -650,7 +650,9 @@ def test_project_delete_cancels_and_waits_for_direct_verification_route(tmp_path
             route_result.append(
                 agent_workspace_routes.run_verification(
                     project["id"],
-                    agent_workspace_routes.VerificationRunRequest(),
+                    agent_workspace_routes.VerificationRunRequest(
+                        configRevision = verification_config["revision"]
+                    ),
                     current_subject = "test-user",
                 )
             )

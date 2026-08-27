@@ -200,6 +200,37 @@ test("folder Create submits once, then uploads only explicit Sources", async () 
   assert.deepEqual(controller.getState().sources, []);
 });
 
+test("source upload failure still opens the durable project", async () => {
+  const activeProjects: string[] = [];
+  const navigatedProjects: string[] = [];
+  const errors: Array<{ title: string; description?: string }> = [];
+  const controller = createNewProjectDialogController<TestSource>(
+    dependencies({
+      createManaged: (name) =>
+        Promise.resolve(project("created-project", name)),
+      uploadSources: () => Promise.reject(new Error("Upload interrupted.")),
+      activateProject: (projectId) => activeProjects.push(projectId),
+      navigateToProject: (projectId) => navigatedProjects.push(projectId),
+      showError: (title, description) => errors.push({ title, description }),
+    }),
+  );
+  controller.setName("Durable project");
+  controller.setSources([{ id: "source-1" }]);
+
+  await controller.submit();
+
+  assert.deepEqual(activeProjects, ["created-project"]);
+  assert.deepEqual(navigatedProjects, ["created-project"]);
+  assert.deepEqual(errors, [
+    {
+      title: "Project created, but sources were not added",
+      description:
+        "Upload interrupted. Add the sources again from the project Sources tab.",
+    },
+  ]);
+  assert.equal(controller.getState().busy, false);
+});
+
 test("onCreated owns follow-up behavior and receives route staleness", async () => {
   const created = deferred<ProjectRecord>();
   let route = "/projects";

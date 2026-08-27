@@ -236,6 +236,10 @@ export function agentPlanProgress(plan: Pick<AgentPlan, "tasks">): {
   };
 }
 
+export function agentStatusLabel(status: string): string {
+  return status.replaceAll("_", " ");
+}
+
 export function agentRepositoryMapSummary(
   repositoryMap: AgentRepositoryMap | null,
 ): string {
@@ -257,7 +261,7 @@ export function latestVerificationSummary(
   if (!latest) {
     return "No verification evidence";
   }
-  return `${latest.status}${latest.stale ? ", stale" : ", fresh"}`;
+  return `${agentStatusLabel(latest.status)}${latest.stale ? ", stale" : ", fresh"}`;
 }
 
 export function agentWorkspaceStatus(

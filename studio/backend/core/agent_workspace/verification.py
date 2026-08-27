@@ -281,6 +281,7 @@ def run_project_verification(
     cancel_event: Optional[threading.Event] = None,
     on_run_started = None,
     worktree_id: Optional[str] = None,
+    config_revision: Optional[int] = None,
 ) -> dict:
     cancel_event = cancel_event or threading.Event()
     invocation_id, completed = _register_project_run(project_id, cancel_event)
@@ -296,9 +297,24 @@ def run_project_verification(
             else None
         )
         config = get_verification_config(project_id)
+        if config_revision is not None and config["revision"] != config_revision:
+            raise AgentWorkspaceError(
+                "Verification settings changed after this run was prepared. Refresh and retry."
+            )
         checks = list(config["checks"])
         if selected_names is not None:
-            selected = set(selected_names)
+            normalized_names = [str(name).strip() for name in selected_names]
+            if any(not name for name in normalized_names):
+                raise AgentWorkspaceError("Verification check names cannot be blank.")
+            selected = set(normalized_names)
+            if len(selected) != len(normalized_names):
+                raise AgentWorkspaceError("Selected verification check names must be unique.")
+            configured = {str(check.get("name") or "") for check in checks}
+            missing = selected - configured
+            if missing:
+                raise AgentWorkspaceError(
+                    "One or more selected verification checks are not configured. Refresh and retry."
+                )
             checks = [check for check in checks if check.get("name") in selected]
         if not checks:
             raise AgentWorkspaceError("No verification checks are configured.")

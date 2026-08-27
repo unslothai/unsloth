@@ -21,6 +21,7 @@ from .state import (
     create_agent_background_task,
     create_background_task,
     get_background_task,
+    get_verification_config,
     list_all_active_background_tasks,
     list_active_background_tasks,
     retry_background_task,
@@ -151,14 +152,24 @@ class BackgroundTaskManager:
         selected_names: Optional[list[str]] = None,
         *,
         worktree_id: Optional[str] = None,
+        config_revision: Optional[int] = None,
         start: bool = True,
     ) -> dict:
         with self._lock:
             self._require_project_available_locked(project_id)
+            revision = (
+                get_verification_config(project_id)["revision"]
+                if config_revision is None
+                else config_revision
+            )
             task = create_background_task(
                 project_id,
                 "verification",
-                {"selectedNames": selected_names, "worktreeId": worktree_id},
+                {
+                    "selectedNames": selected_names,
+                    "worktreeId": worktree_id,
+                    "configRevision": revision,
+                },
             )
         return self.start(task["id"]) if start else task
 
@@ -456,6 +467,7 @@ class BackgroundTaskManager:
                 cancel_event = event,
                 on_run_started = lambda run_id: self._remember_run(task_id, run_id),
                 worktree_id = task["payload"].get("worktreeId"),
+                config_revision = task["payload"].get("configRevision"),
             )
             result["worktreeId"] = task["payload"].get("worktreeId")
             current = get_background_task(task_id)

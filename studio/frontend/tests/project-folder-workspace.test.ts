@@ -94,7 +94,8 @@ test("managed and existing-folder projects use separate creation paths", async (
       return Promise.resolve();
     },
   });
-  assert.equal(managed.id, "managed-1");
+  assert.equal(managed.project.id, "managed-1");
+  assert.equal(managed.sourceUploadError, null);
   assert.deepEqual(managedEvents, [
     "managed:Managed",
     "sources:managed-1:source-a",
@@ -119,7 +120,8 @@ test("managed and existing-folder projects use separate creation paths", async (
       return Promise.resolve();
     },
   });
-  assert.equal(folder.id, "folder-1");
+  assert.equal(folder.project.id, "folder-1");
+  assert.equal(folder.sourceUploadError, null);
   assert.deepEqual(folderEvents, [
     "folder:opaque-token:Existing repo",
     "sources:folder-1:explicit-rag-source",

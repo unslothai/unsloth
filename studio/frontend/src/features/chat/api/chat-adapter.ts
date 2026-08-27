@@ -182,7 +182,6 @@ import type {
 import {
   modelReadsSamplingSeed,
   type ChatModelRow,
-  type ChatModelSummary,
 } from "../types/runtime";
 import {
   getStoredChatProject,
@@ -252,6 +251,7 @@ import {
   createAgentPlan,
   getAgentGitStatus,
   getAgentReview,
+  getAgentVerificationConfig,
   getAgentWorkspace,
   listAgentPlans,
   runAgentVerification,
@@ -2100,7 +2100,15 @@ export async function executeLocalProjectSlashCommand(
         response = await executeVerifySlashCommand(
           slashCommand,
           projectId,
-          runAgentVerification,
+          async (verificationProjectId) => {
+            const config = await getAgentVerificationConfig(
+              verificationProjectId,
+            );
+            return runAgentVerification(
+              verificationProjectId,
+              config.revision,
+            );
+          },
         );
         break;
       case "plan":
