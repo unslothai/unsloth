@@ -192,3 +192,88 @@ test("aligning the constant narrows the badge/bar gap without closing it", async
   // So on a 24 GiB card it still refuses a file the bar happily fits.
   assert.notEqual(classifyGgufFit(bytes, { gpuGb: 24, systemRamGb: 64 }), "fits");
 });
+
+// ---------------------------------------------------------------------------
+// The badge must score against the SAVED budget, not just the default
+// (Codex P2 on 9830)
+
+test("a saved VRAM Budget moves the badge, not only the bar", async () => {
+  // Sharing the default constant fixed the loading and old-backend case. It did
+  // not fix the case where the user has actually saved a fraction: the badge
+  // still applied 0.97 while the bar beside it consumed the live value from
+  // `use-model-memory.ts`. Measured on a 24 GiB card with a saved 0.90, where the
+  // loader admits at 21.6 GiB and the default would score against 23.28 GiB.
+  const { classifyGgufFit, requiredGgufMemoryGb } = await import(
+    "../src/lib/gguf-fit.ts"
+  );
+  const bytes = 18 * 1024 ** 3;
+  const required = requiredGgufMemoryGb(bytes);
+  // Between the two budgets, which is the whole window in which they can differ.
+  assert.ok(
+    required > 24 * 0.9 && required <= 24 * DEFAULT_VRAM_BUDGET_FRACTION,
+    `fixture must sit between the two budgets; required=${required}`,
+  );
+  assert.equal(
+    classifyGgufFit(bytes, { gpuGb: 24, systemRamGb: 64, budgetFraction: 0.9 }),
+    "marginal",
+    "a saved 0.90 must push this over the line the loader draws",
+  );
+  assert.equal(
+    classifyGgufFit(bytes, { gpuGb: 24, systemRamGb: 64 }),
+    "fits",
+    "and without a saved fraction the default still applies, unchanged",
+  );
+});
+
+test("an absent or unusable budget falls back rather than refusing everything", async () => {
+  // `budgetFraction` arrives from a settings route. Absent is the normal state
+  // during the first paint and the permanent state on a backend predating the
+  // route, so it must mean "use the default" and not "the whole card" (which
+  // would admit loads the loader refuses) or "0" (which would refuse all of
+  // them).
+  const { classifyGgufFit } = await import("../src/lib/gguf-fit.ts");
+  const bytes = 18 * 1024 ** 3;
+  const withDefault = classifyGgufFit(bytes, { gpuGb: 24, systemRamGb: 64 });
+  for (const bad of [undefined, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(
+      classifyGgufFit(bytes, {
+        gpuGb: 24,
+        systemRamGb: 64,
+        budgetFraction: bad as number,
+      }),
+      withDefault,
+      `budgetFraction=${String(bad)} must fall back to the shared default`,
+    );
+  }
+  // And 1.0 is a legitimate saved value, not a rejected one: it means the user
+  // allowed the whole card.
+  assert.equal(
+    classifyGgufFit(bytes, { gpuGb: 24, systemRamGb: 64, budgetFraction: 1 }),
+    "fits",
+  );
+});
+
+test("the badge's call sites read the live fraction", async () => {
+  // The classifier taking a fraction is worthless if nothing passes one. Asserted
+  // on source because these are .tsx call sites the runner cannot render.
+  const { readFileSync } = await import("node:fs");
+  const card = readFileSync(
+    new URL(
+      "../src/features/hub/catalog/gguf-download-card.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    card,
+    /useVramBudgetFraction\(\)/,
+    "the Hub card must read the saved budget, not rely on the default",
+  );
+  // Every fit-scoring call on the row, not just the badge: the sort ranks with
+  // the same classifier and would otherwise order rows against a different line.
+  const passes = card.match(/budgetFraction,/g) ?? [];
+  assert.ok(
+    passes.length >= 3,
+    `expected the fraction at the badge, the sort and the menu; found ${passes.length}`,
+  );
+});

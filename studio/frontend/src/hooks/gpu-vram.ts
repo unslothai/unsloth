@@ -175,8 +175,24 @@ export interface MemoryCapacityInput {
    *  nothing is pinned; a pin answers for itself. */
   hostSharesSystemRam: boolean;
   systemRamTotalGb: number;
-  /** Apple Silicon: one pool for everything, whatever the devices say. */
+  /** One pool for everything, whatever the shared-memory flags say. True on Apple
+   *  Silicon and on a ROCm APU, which is why the pool's SIZE is a separate question
+   *  below: the two report it differently. */
   unifiedMemory: boolean;
+  /** Whether the GPU figure already describes the whole pool.
+   *
+   *  True on Apple, where `memory_total_gb` IS the machine's unified memory, so the
+   *  budgeted GPU capacity is the ceiling and adding RAM would double count.
+   *
+   *  False on a ROCm APU, where the GPU figure is a BIOS-carved window onto system
+   *  RAM -- 48 GiB of a 96 GiB machine is typical -- and taking it as the ceiling
+   *  discards the rest of the pool the weights actually load into. The backend says
+   *  so in as many words (`llama_cpp.py::_available_system_memory_mib`: "On a
+   *  unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling").
+   *
+   *  Defaults to true, which is the answer for every caller that predates the ROCm
+   *  case and passed `unifiedMemory` meaning Apple. */
+  unifiedPoolReportedAsGpuMemory?: boolean;
   /** VRAM Budget: the fraction of each GPU a load may claim, from the setting beside
    *  this row. 1 (or absent) means the whole card. Applied to the GPU figure only --
    *  it caps what llama.cpp is allowed to take, not how much RAM the host has. */
@@ -278,16 +294,17 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   return {
     gpuCapacityGb,
     totalCapacityGb: singleMemoryPool
-      ? input.unifiedMemory
+      ? input.unifiedMemory && input.unifiedPoolReportedAsGpuMemory !== false
         // Apple reports the one pool as the GPU budget already.
         ? gpuCapacityGb
-        // A Vulkan iGPU's budget is a CAPPED view of system RAM, so RAM must not be
-        // added to it -- but it must not replace it either. The pool's real size is
-        // the RAM, and taking the capped figure as the machine's whole capacity
-        // called a 20 GB CPU-offloaded load impossible on a 91 GiB host because the
-        // iGPU was allowed 12. The larger of the two is the pool; on a mixed
-        // inventory that under-counts a discrete card sitting beside it, which is
-        // the side that refuses a load rather than admitting one that cannot run.
+        // A Vulkan iGPU's budget, and a ROCm APU's, are both a CAPPED view of system
+        // RAM, so RAM must not be added to it -- but it must not replace it either.
+        // The pool's real size is the RAM, and taking the capped figure as the
+        // machine's whole capacity called a 20 GB CPU-offloaded load impossible on a
+        // 91 GiB host because the iGPU was allowed 12. The larger of the two is the
+        // pool; on a mixed inventory that under-counts a discrete card sitting beside
+        // it, which is the side that refuses a load rather than admitting one that
+        // cannot run.
         : Math.max(gpuCapacityGb, systemRamTotalGb)
       // Dedicated VRAM, not the whole GPU figure: on a mixed inventory the iGPU's
       // budget is already inside systemRamTotalGb, and adding it again inflated the

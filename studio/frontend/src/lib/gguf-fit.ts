@@ -13,6 +13,18 @@ export type GgufFitClass = "fits" | "marginal" | "partial" | "ram" | "oom";
 export interface GgufFitInput {
   gpuGb?: number;
   systemRamGb?: number;
+  /** The user's saved VRAM Budget, when it is known.
+   *
+   *  Absent means "not loaded yet, or a backend too old to serve the route", and
+   *  falls back to the shared default. It does NOT mean "the whole card": scoring
+   *  against 1.0 would call a load comfortable that the loader refuses.
+   *
+   *  This exists because the badge and the memory bar sit on the SAME ROW and the
+   *  bar already consumes the live fraction (`use-model-memory.ts`). With a saved
+   *  0.90 on a 24 GiB card the loader admits at 21.6 GiB while this file scored
+   *  against the 0.97 default's 23.28 GiB, so a 18 to 19 GiB quant was badged
+   *  `fits` beside a bar reporting an overage. */
+  budgetFraction?: number;
 }
 
 /** Fraction of GPU VRAM treated as usable.
@@ -49,14 +61,23 @@ export function requiredGgufMemoryGb(
 
 export function classifyGgufFit(
   sizeBytes: number,
-  { gpuGb, systemRamGb }: GgufFitInput,
+  { gpuGb, systemRamGb, budgetFraction }: GgufFitInput,
 ): GgufFitClass {
   const required = requiredGgufMemoryGb(sizeBytes);
   if (!gpuGb || gpuGb <= 0) {
     const ramBudget = (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
     return required <= ramBudget ? "ram" : "oom";
   }
-  const budget = gpuGb * DEFAULT_VRAM_BUDGET_FRACTION;
+  // Guarded rather than trusted: this arrives from a settings route, and a 0 or a
+  // non-finite value would score every quant as an overage.
+  const fraction =
+    typeof budgetFraction === "number" &&
+    Number.isFinite(budgetFraction) &&
+    budgetFraction > 0 &&
+    budgetFraction <= 1
+      ? budgetFraction
+      : DEFAULT_VRAM_BUDGET_FRACTION;
+  const budget = gpuGb * fraction;
   if (required <= budget) return "fits";
   if (required <= gpuGb) return "marginal";
   const combined = gpuGb + (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;

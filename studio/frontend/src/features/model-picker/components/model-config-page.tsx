@@ -2933,6 +2933,13 @@ export function ModelConfigPage({
       // cannot happen. The Hub bar gets this right and abstains on this very
       // flag; this is the panel catching up.
       unifiedMemory: hasUnifiedMemory,
+      // ...but "one pool" and "how big is the pool" are different questions, and
+      // the two platforms answer the second differently. Apple's memory_total_gb
+      // IS the machine's unified memory; a ROCm APU's is a BIOS-carved window
+      // onto system RAM, so taking it as the ceiling reported 46.56 GiB on a
+      // 96 GiB machine and warned that a 60 GiB load exceeds the host. Only the
+      // Apple half may be read as the whole pool.
+      unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
 
   const rememberChanged = remember !== savedRemember;

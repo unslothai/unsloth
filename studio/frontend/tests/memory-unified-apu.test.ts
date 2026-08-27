@@ -234,3 +234,97 @@ test("the panel asks whether EVERY governing device is unified", () => {
     "the empty set needs an explicit guard, since [].every() is true",
   );
 });
+
+// ---------------------------------------------------------------------------
+// The pool's SIZE, which is a different question from whether it is one pool
+// (Codex P2 on 9830)
+
+test("a ROCm APU's ceiling is system RAM, not its GPU-visible window", () => {
+  // Classifying the APU as one pool was right. Taking the GPU figure as the size
+  // of that pool was not: Apple's memory_total_gb IS the machine's unified
+  // memory, while a ROCm APU's is a BIOS-carved window onto system RAM. On a
+  // 96 GiB machine carving 48 GiB, the ceiling came out at 46.56 GiB, so the
+  // panel warned that a 60 GiB load exceeds a machine that holds 96.
+  //
+  // The backend already says which one is real, in
+  // llama_cpp.py::_available_system_memory_mib: "On a unified-memory APU this,
+  // not the ROCm-reported VRAM, is the real ceiling: the weights load into
+  // shared system RAM."
+  //
+  // Driven with sharedMemory false, which is what a ROCm APU reports on Linux
+  // (hardware.py sets shared_memory only on Windows). That matters: it is the
+  // case where the unified flag is the ONLY thing classifying the pool, so the
+  // capacity comes entirely from this branch.
+  const APU = { memoryTotalGb: 48, sharedMemory: false };
+  const base = {
+    pinnedDevices: [],
+    hostDevices: [APU],
+    hostGpuTotalGb: 48,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 96,
+    gpuBudgetFraction: 0.97,
+    unifiedMemory: true,
+  };
+  const rocm = resolveMemoryCapacityGb({
+    ...base,
+    unifiedPoolReportedAsGpuMemory: false,
+  });
+  assert.equal(rocm.singleMemoryPool, true, "still one pool");
+  assert.equal(
+    rocm.totalCapacityGb,
+    96,
+    "the pool is the machine's RAM, not the window the BIOS carved out of it",
+  );
+  // The GPU figure is still the budgeted window: what may sit on the GPU and how
+  // much the machine holds are different numbers even when they share silicon.
+  assert.equal(rocm.gpuCapacityGb, 46.56);
+});
+
+test("Apple is unchanged, since its GPU figure already is the whole pool", () => {
+  // The guard on the fix. Apple must keep the budgeted GPU figure as its ceiling;
+  // routing it through the RAM branch would hand back the raw 96 and quietly drop
+  // the VRAM Budget the user set.
+  const MAC = { memoryTotalGb: 96, sharedMemory: false };
+  const base = {
+    pinnedDevices: [],
+    hostDevices: [MAC],
+    hostGpuTotalGb: 96,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 96,
+    gpuBudgetFraction: 0.97,
+    unifiedMemory: true,
+  };
+  const explicit = resolveMemoryCapacityGb({
+    ...base,
+    unifiedPoolReportedAsGpuMemory: true,
+  });
+  // Absent must behave as Apple, so every caller written before the ROCm case
+  // keeps its answer without being updated.
+  const byDefault = resolveMemoryCapacityGb(base);
+  assert.equal(explicit.totalCapacityGb, 93.12);
+  assert.equal(
+    byDefault.totalCapacityGb,
+    explicit.totalCapacityGb,
+    "omitting the new flag must mean Apple, or existing callers silently move",
+  );
+  assert.notEqual(
+    explicit.totalCapacityGb,
+    96,
+    "Apple's ceiling must still respect the VRAM Budget",
+  );
+});
+
+test("the panel tells the resolver which kind of unified memory it has", () => {
+  // Source-level, like the sibling assertions: the fix is one argument in a .tsx
+  // this runner cannot render, and without this the two tests above pass on a
+  // panel that never passes the flag.
+  const source = readFileSync(PANEL, "utf8");
+  const call = source.match(/resolveMemoryCapacityGb\(\{[\s\S]*?\n\s*\}\)/);
+  assert.ok(call, "resolveMemoryCapacityGb is no longer called here");
+  assert.match(
+    call[0],
+    /unifiedPoolReportedAsGpuMemory:\s*isAppleUnifiedMemory/,
+    "only the Apple half may be read as the whole pool. Passing the general " +
+      "signal here takes a ROCm APU's carved window as the machine's ceiling.",
+  );
+});
