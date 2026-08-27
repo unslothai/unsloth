@@ -42,6 +42,7 @@ import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
 import {
   acquire,
+  lockKey,
   release,
   sameListDraft,
   samePromptDraft,
@@ -1546,7 +1547,7 @@ function PromptDetail({
     // Snapshot what is going to the server. The editor stays usable while the
     // request is in flight, so the draft can move on before it resolves.
     const submitted: PromptDraft = { name, text };
-    await runMutation(entry.id, async () => {
+    await runMutation(lockKey("prompt", entry.id), async () => {
       try {
         await savePromptEntry({
           ...entry,
@@ -1568,7 +1569,7 @@ function PromptDetail({
   }, [entry, name, text, onSaved, onRefresh, runMutation]);
 
   const handleDelete = useCallback(async () => {
-    await runMutation(entry.id, async () => {
+    await runMutation(lockKey("prompt", entry.id), async () => {
       try {
         await deletePromptEntry(entry.id);
       } catch (err) {
@@ -1874,7 +1875,7 @@ function PromptListDetail({
     if (filtered.length === 0) return;
     // See PromptDetail: the editor stays usable while the request is in flight.
     const submitted: ListDraft = { name, items };
-    await runMutation(entry.id, async () => {
+    await runMutation(lockKey("list", entry.id), async () => {
       try {
         await savePromptList({
           ...entry,
@@ -1894,7 +1895,7 @@ function PromptListDetail({
   }, [entry, name, items, onSaved, onRefresh, runMutation]);
 
   const handleDelete = useCallback(async () => {
-    await runMutation(entry.id, async () => {
+    await runMutation(lockKey("list", entry.id), async () => {
       try {
         await deletePromptList(entry.id);
       } catch (err) {
@@ -2726,7 +2727,7 @@ export function PromptStorageDialog({
                     onSaved={(submitted) =>
                       clearPromptDraftIfSaved(selectedPrompt.id, submitted)
                     }
-                    pending={mutatingIds.has(selectedPrompt.id)}
+                    pending={mutatingIds.has(lockKey("prompt", selectedPrompt.id))}
                     runMutation={runMutation}
                   />
                 ) : (
@@ -2767,7 +2768,7 @@ export function PromptStorageDialog({
                     onSaved={(submitted) =>
                       clearListDraftIfSaved(selectedList.id, submitted)
                     }
-                    pending={mutatingIds.has(selectedList.id)}
+                    pending={mutatingIds.has(lockKey("list", selectedList.id))}
                     runMutation={runMutation}
                   />
                 ) : (

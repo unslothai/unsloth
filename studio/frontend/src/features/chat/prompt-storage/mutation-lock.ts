@@ -17,6 +17,13 @@ export function acquire(held: LockSet, id: string): [LockSet, boolean] {
   return [new Set(held).add(id), true];
 }
 
+// Prompts and prompt lists are separate tables with independent ids, so the same
+// id can name one of each and an import can produce that. One set keyed on the
+// raw id would then let a prompt's save disable the unrelated list's controls.
+export function lockKey(kind: "prompt" | "list", id: string): string {
+  return `${kind}:${id}`;
+}
+
 /** Releasing an id nobody holds returns the same set, so React skips the render. */
 export function release(held: LockSet, id: string): LockSet {
   if (!held.has(id)) return held;

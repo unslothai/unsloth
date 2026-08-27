@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   type LockSet,
   acquire,
+  lockKey,
   release,
   sameListDraft,
   samePromptDraft,
@@ -385,5 +386,46 @@ test("the New form's mounted flag is set in effect setup", async () => {
     source,
     /useEffect\(\(\) => \(\) => \{ mounted\.current = false; \}, \[\]\);/,
     "the cleanup-only effect is back",
+  );
+});
+
+// Prompts and prompt lists live in separate tables with independent ids, so an
+// import can give one of each the same id. One set keyed on the raw id let a
+// prompt's save disable the unrelated list's Save and Delete.
+test("a prompt and a list with one id do not share a lock", () => {
+  let held: LockSet = new Set<string>();
+  [held] = acquire(held, lockKey("prompt", "x"));
+  assert.equal(held.has(lockKey("list", "x")), false, "the list is locked too");
+  const [, tookList] = acquire(held, lockKey("list", "x"));
+  assert.equal(tookList, true, "the list could not start its own mutation");
+  const [, tookPromptAgain] = acquire(held, lockKey("prompt", "x"));
+  assert.equal(tookPromptAgain, false, "the prompt's own lock stopped working");
+});
+
+test("no id can be crafted to collide across the two kinds", () => {
+  // The prefix is part of the key, so reaching a list key needs a list.
+  assert.notEqual(lockKey("prompt", "list:abc"), lockKey("list", "abc"));
+  assert.notEqual(lockKey("list", "prompt:abc"), lockKey("prompt", "abc"));
+});
+
+test("both panes take their lock through lockKey", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(source.split('runMutation(lockKey("prompt", entry.id)').length - 1, 2);
+  assert.equal(source.split('runMutation(lockKey("list", entry.id)').length - 1, 2);
+  assert.doesNotMatch(
+    source,
+    /runMutation\(entry\.id,/,
+    "a raw id reaches the shared lock set again",
+  );
+  assert.doesNotMatch(
+    source,
+    /mutatingIds\.has\(selected(Prompt|List)\.id\)/,
+    "a pane's pending state is read off a raw id again",
   );
 });
