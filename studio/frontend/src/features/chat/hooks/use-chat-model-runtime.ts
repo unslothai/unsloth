@@ -89,7 +89,7 @@ import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
-  resolveManualAutoCtxPin,
+  resolveLoadedCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -1764,14 +1764,13 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
-            // revert it to Auto) and retain the user's requested context so
-            // re-open/re-save keeps the intended override, not the backend's
-            // auto-fit context; null stays null.
-            const keepCustomCtx = resolveManualAutoCtxPin(
-              loadGpuMemoryMode,
-              loadGpuLayers,
-              loadCustomContextLength,
+            // The context this load was invoked with, kept so a later Apply
+            // doesn't revert it to Auto and so re-open/re-save keeps the
+            // intended override rather than the backend's auto-fit context.
+            // loadMaxSeqLength is what went on the wire as max_seq_length, so
+            // the pin cannot disagree with the launched -c; 0 (Auto) clears it.
+            const keepCustomCtx = resolveLoadedCtxPin(
+              loadResponse.is_gguf ? loadMaxSeqLength : null,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";

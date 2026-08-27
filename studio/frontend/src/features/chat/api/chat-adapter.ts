@@ -149,7 +149,7 @@ import {
 } from "../stores/chat-runtime-store";
 import {
   resolveFitMaxSeqLength,
-  resolveManualAutoCtxPin,
+  resolveLoadedCtxPin,
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -3329,15 +3329,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
       if (candidate.kind === "gguf") {
-        // Keep an explicit Manual+Auto context pin the load just applied (so a
-        // later Apply doesn't silently revert it to auto-fit sizing), mirroring
-        // the interactive path's keepCustomCtx; other cases baseline on
-        // ggufContextLength.
-        const keepCustomCtx = resolveManualAutoCtxPin(
-          effectiveGpuMemoryMode,
-          effectiveGpuLayers,
-          config.customContextLength ?? null,
-        );
+        // The context this auto-load was invoked with, kept so a later Apply
+        // doesn't silently revert it to auto-fit sizing. fitMaxSeqLength is what
+        // went on the wire as max_seq_length, mirroring the interactive path's
+        // keepCustomCtx; 0 (Auto) clears the pin.
+        const keepCustomCtx = resolveLoadedCtxPin(fitMaxSeqLength);
         // Slots this auto-load committed. Diffusion ignores --parallel, so a count
         // there would mint a phantom override a saved preset carries onto a GGUF.
         const committedSlots =
@@ -3394,9 +3390,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // Retain the saved requested context so re-saving the config keeps the
-          // override; null stays null (auto/VRAM-fit).
-          customContextLength: config.customContextLength,
+          // The same pin as the baseline above, so the control opens undirtied:
+          // the saved config and the launched -c are the same number whenever
+          // one was requested, and null stays null (auto/VRAM-fit).
+          customContextLength: keepCustomCtx,
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,

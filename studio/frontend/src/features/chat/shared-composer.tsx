@@ -122,7 +122,7 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import { resolveFitMaxSeqLength, resolveLoadedCtxPin } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -1618,16 +1618,13 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // Keep an explicit Manual+Auto context pin the load just applied (so a
-        // later Apply/Reset doesn't silently revert the model to auto-fit
-        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
-        // compare loads don't send the pin, so their baseline clears.
+        // The context this pane's load was invoked with, kept so a later
+        // Apply/Reset doesn't silently revert the model to auto-fit sizing.
+        // compareMaxSeqLength is what went on the wire as max_seq_length,
+        // mirroring the interactive path's keepCustomCtx. Non-GGUF compare loads
+        // send a sequence length rather than an n_ctx, so their baseline clears.
         const keepCustomCtx = targetIsGguf
-          ? resolveManualAutoCtxPin(
-              effectiveGpuMemoryMode,
-              effectiveGpuLayers,
-              effectiveCustomContextLength,
-            )
+          ? resolveLoadedCtxPin(compareMaxSeqLength)
           : null;
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
@@ -1699,10 +1696,10 @@ export function SharedComposer({
           activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
           // so when it becomes the active model, the UI and later reload/save use
-          // its context, not the previous/default one.
-          customContextLength: targetIsGguf
-            ? (ownConfig.customContextLength ?? keepCustomCtx)
-            : null,
+          // its context, not the previous/default one. The same value as the
+          // baseline above: both name the n_ctx this pane actually sent, so the
+          // control opens undirtied.
+          customContextLength: keepCustomCtx,
           ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
           ggufNativeContextLength: resp.is_gguf
             ? (resp.native_context_length ?? null)
