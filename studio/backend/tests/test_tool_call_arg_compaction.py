@@ -449,7 +449,12 @@ def test_compaction_does_not_reach_back_to_an_older_call_of_the_same_id():
     """
     messages = _reused_id_thread()
     messages.append(
-        {"role": "tool", "tool_call_id": "call_0", "name": "edit_file", "content": "Wrote second.html"}
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "edit_file",
+            "content": "Wrote second.html",
+        }
     )
 
     fitted = compact_executed_call_arguments(messages, "call_0")
@@ -462,7 +467,12 @@ def test_a_refusal_does_not_relabel_an_earlier_success_as_refused():
     """The worse direction: a receipt that states a write which DID happen never did."""
     messages = _reused_id_thread()
     messages.append(
-        {"role": "tool", "tool_call_id": "call_0", "name": "edit_file", "content": "Not enough context"}
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "edit_file",
+            "content": "Not enough context",
+        }
     )
 
     fitted = compact_refused_tool_arguments(messages, "call_0")
@@ -526,7 +536,12 @@ def test_a_refused_call_with_malformed_arguments_is_not_replayed_as_having_run()
                 }
             ],
         },
-        {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Not enough context"},
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "name": "edit_file",
+            "content": "Not enough context",
+        },
     ]
 
     fitted = compact_refused_tool_arguments(messages, "c1")

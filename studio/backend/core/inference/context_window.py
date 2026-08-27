@@ -563,15 +563,16 @@ def _last_index_with_call(messages: list[dict], call_id: str) -> int:
         if not isinstance(calls, list):
             continue
         if any(
-            isinstance(call, dict) and str(call.get("id") or "") == str(call_id)
-            for call in calls
+            isinstance(call, dict) and str(call.get("id") or "") == str(call_id) for call in calls
         ):
             return index
     return -1
 
 
 def _compact_one_call(
-    messages: list[dict], call_id: str, phrase: Optional[str] = None
+    messages: list[dict],
+    call_id: str,
+    phrase: Optional[str] = None,
 ) -> list[dict]:
     """Rewrite exactly one call's arguments to a receipt worded by `phrase`.
 

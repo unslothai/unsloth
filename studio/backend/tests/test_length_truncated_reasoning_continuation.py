@@ -119,7 +119,6 @@ def _texts(events, kind: str) -> list[str]:
     return [event["text"] for event in events if event.get("type") == kind]
 
 
-
 def _run_no_tools(backend, **kwargs):
     """Drives the FINAL generation, the pass taken once the tool loop is done."""
     return list(

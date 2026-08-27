@@ -134,7 +134,7 @@ def test_broken_json_is_not_healed_even_for_a_single_string_tool():
         # is exactly that shape, so "Extra data" has to be excluded by name.
         '{"a": 1} trailing',
         '{"a": 1} tail',
-        '[1,2] rest',
+        "[1,2] rest",
     ],
 )
 def test_text_that_merely_opens_with_a_brace_still_heals(raw):

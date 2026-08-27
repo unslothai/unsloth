@@ -6719,9 +6719,7 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
         if message.get("role") == "assistant"
         for call in (message.get("tool_calls") or [])
     }
-    answered = {
-        message.get("tool_call_id") for message in sent if message.get("role") == "tool"
-    }
+    answered = {message.get("tool_call_id") for message in sent if message.get("role") == "tool"}
 
     assert answered, "no tool result reached the model at all"
     assert answered <= announced, f"results with no visible call: {answered - announced}"

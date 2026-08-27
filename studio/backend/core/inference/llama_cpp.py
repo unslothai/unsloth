@@ -1309,6 +1309,8 @@ _WINDOW_NOTICE_MARKER = "chars for the model;"
 
 def _is_window_notice(result: str) -> bool:
     return _WINDOW_NOTICE_MARKER in result
+
+
 # How far back the classifier looks for llama.cpp's argument-parsing error. It
 # prints one and exits, so it is always at the end; generous enough to survive a
 # usage hint printed after it, small enough that a 10 MB unterminated line (which
@@ -27885,10 +27887,7 @@ class LlamaCppBackend:
                         # the write lands before the next request is rejected. Erring
                         # high here only costs an extra count; erring low costs the
                         # whole gate.
-                        if (
-                            estimate_messages_tokens_conservative(conversation)
-                            > 0.7 * _room_target
-                        ):
+                        if estimate_messages_tokens_conservative(conversation) > 0.7 * _room_target:
                             # Priced with a STAND-IN tool message for the call about to
                             # run, not on the conversation as it stands. A chat template
                             # renders an assistant turn's `tool_calls` only once a `tool`
@@ -28823,9 +28822,7 @@ class LlamaCppBackend:
                     None,
                     strict = True,
                     chat_template_kwargs = stream_payload.get("chat_template_kwargs"),
-                    continue_final_message = bool(
-                        stream_payload.get("continue_final_message")
-                    ),
+                    continue_final_message = bool(stream_payload.get("continue_final_message")),
                 )
             except Exception:
                 logger.debug("final continuation: prompt count failed", exc_info = True)
@@ -29012,8 +29009,7 @@ class LlamaCppBackend:
                         # Folded in before the next stream overwrites them, else the
                         # reported usage counts only the last fragment.
                         _fu_f = (
-                            _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
-                            or {}
+                            _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
                         )
                         _accumulated_completion_tokens += _fu_f.get("completion_tokens", 0)
                         _it_f = _metadata_timings or {}
@@ -29073,9 +29069,7 @@ class LlamaCppBackend:
                             # The retry ends on a USER turn, so the flag from any earlier
                             # answer continuation no longer describes this payload.
                             stream_payload.pop("continue_final_message", None)
-                            _off_kw = self._request_reasoning_kwargs(
-                                False, None, preserve_thinking
-                            )
+                            _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
                             if _off_kw is not None:
                                 stream_payload["chat_template_kwargs"] = _off_kw
                             else:
@@ -29118,9 +29112,7 @@ class LlamaCppBackend:
                             yield {"type": "status", "text": ""}
                             yield {
                                 "type": "content",
-                                "text": _thinking_exhausted_message(
-                                    self._effective_context_length
-                                ),
+                                "text": _thinking_exhausted_message(self._effective_context_length),
                             }
                             _meta = _build_metadata_event(
                                 _metadata_usage, _metadata_timings, _metadata_finish_reason
