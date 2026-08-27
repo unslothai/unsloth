@@ -541,8 +541,8 @@ async function syncInferenceStatusToStore(options?: {
         loadedIsDiffusion: false,
       });
       // A known prior resident or a definitive speech-only owner both prove the
-      // persisted Chat pick is stale. A load in flight has no active model yet
-      // either, so never clear while one is starting.
+      // persisted Chat pick is stale. Do not clear for a Chat load that this tab
+      // started. TTS is different because it owns this same slot.
       if (
         (wasResident || isSpeechOnlyStatus(statusRes)) &&
         selectedCheckpoint &&
