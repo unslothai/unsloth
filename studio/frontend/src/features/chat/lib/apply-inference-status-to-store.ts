@@ -318,6 +318,12 @@ export function applyActiveModelStatusToStore(
     remembered: remembered?.remembered
       ? (remembered.config.customContextLength ?? null)
       : null,
+    // Raw, not the normalised incomingGpuMode/incomingGpuLayers below: the rule
+    // needs "Manual with AUTO layers", and those normalise layers to null off
+    // manual, which would read as "no layers reported" rather than as Auto.
+    gpuMemoryMode: status.gpu_memory_mode ?? null,
+    gpuLayers: status.gpu_layers ?? null,
+    loadedPin: prevState.loadedCustomContextLength ?? null,
   });
   const incomingGpuMode = status.is_gguf
     ? (status.gpu_memory_mode ?? "auto")

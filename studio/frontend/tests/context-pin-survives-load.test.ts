@@ -406,3 +406,84 @@ test("the Manual-only predicate is retired, not left to be picked up again", () 
     REQUESTED,
   );
 });
+
+test("another client reloading the same model at a new context invalidates the baseline", () => {
+  // The pin here describes an invocation that is no longer running. Keeping it
+  // means the next unrelated Apply resends it and silently takes back the other
+  // client's context, so a contradicted baseline is dropped. The echo still
+  // cannot say whether a human chose the new value, so it is not adopted either.
+  const seed = (over: Partial<Parameters<typeof resolveCtxPinSeed>[0]> = {}) =>
+    resolveCtxPinSeed({
+      incoming: REQUESTED,
+      isGguf: true,
+      seedLoadParams: true,
+      modelChanged: false,
+      remembered: null,
+      ...over,
+    });
+
+  // Contradicted: we recorded 8192, the server reports it is running 262144.
+  assert.deepEqual(seed({ loadedPin: 8192 }), CLEARED);
+  // Agreeing echoes leave the control alone, which is what keeps an explicit pin
+  // alive across every ordinary poll.
+  assert.deepEqual(seed({ loadedPin: REQUESTED }), {});
+  // Auto here holds: with no pin recorded there is no baseline to contradict, and
+  // an Auto reload under a custom preset reports a positive n_ctx exactly like
+  // this. Adopting it would be the bug this file exists to prevent.
+  assert.deepEqual(seed({ loadedPin: null }), {});
+  // Our own pinned model reloaded on Auto reports the resolved context, which IS
+  // the pin, so it matches and nothing moves.
+  assert.deepEqual(seed({ loadedPin: REQUESTED, incoming: REQUESTED }), {});
+  // Still nothing mid-load: performLoad owns the pair there.
+  assert.deepEqual(seed({ loadedPin: 8192, seedLoadParams: false }), {});
+});
+
+test("a positive echo under manual memory with auto layers is an explicit pin", () => {
+  // resolveFitMaxSeqLength is what that placement sends, and it answers
+  // `customContextLength > 0 ? it : 0`, so Auto is 0 on the wire without
+  // exception and a positive echo cannot have come from Auto.
+  assert.equal(policy.resolveFitMaxSeqLength(true, "manual", -1, null, 4096), 0);
+  assert.equal(
+    policy.resolveFitMaxSeqLength(true, "manual", -1, REQUESTED, 4096),
+    REQUESTED,
+  );
+
+  const seed = (over: Partial<Parameters<typeof resolveCtxPinSeed>[0]> = {}) =>
+    resolveCtxPinSeed({
+      incoming: REQUESTED,
+      isGguf: true,
+      seedLoadParams: true,
+      modelChanged: false,
+      remembered: null,
+      gpuMemoryMode: "manual",
+      gpuLayers: -1,
+      ...over,
+    });
+  const PINNED = {
+    customContextLength: REQUESTED,
+    loadedCustomContextLength: REQUESTED,
+  };
+
+  // A fresh tab hydrating a resident pinned server, with nothing saved for it.
+  assert.deepEqual(seed(), PINNED);
+  // Same on a model change: the echo describes the model that ARRIVED, so it
+  // beats both the store's leftovers and a saved config.
+  assert.deepEqual(seed({ modelChanged: true }), PINNED);
+  // Auto in this mode still reports 0, and 0 still clears.
+  assert.deepEqual(seed({ incoming: 0 }), CLEARED);
+  // Pinned layers is a different placement: it does not send through
+  // resolveFitMaxSeqLength, so the echo is ambiguous again and is not adopted.
+  assert.deepEqual(seed({ gpuLayers: 20 }), {});
+  // Neither is Default memory, which is where the original bug lived.
+  assert.deepEqual(seed({ gpuMemoryMode: "auto", gpuLayers: -1 }), {});
+  // The mid-load window outranks it, as it does everything else here.
+  assert.deepEqual(seed({ seedLoadParams: false }), {});
+  // The applier passes the RAW status fields: the normalised ones null out
+  // layers off manual, which would read as "not reported" rather than as Auto.
+  assert.match(APPLIER, /gpuMemoryMode: status\.gpu_memory_mode \?\? null,/);
+  assert.match(APPLIER, /gpuLayers: status\.gpu_layers \?\? null,/);
+  assert.match(
+    APPLIER,
+    /loadedPin: prevState\.loadedCustomContextLength \?\? null,/,
+  );
+});
