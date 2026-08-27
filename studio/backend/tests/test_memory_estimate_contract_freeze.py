@@ -81,6 +81,7 @@ def _reach_the_planner(monkeypatch, gguf: Path) -> None:
     )
     monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
 
+
 # An ordinary GQA model. Nothing exotic: this is about the envelope, not the
 # arithmetic, and test_memory_estimate.py already owns the arithmetic.
 _PLAIN_GQA = {
@@ -96,23 +97,25 @@ _PLAIN_GQA = {
 # Every key GET /kv-cache-estimate has ever promised, as of the #7880 merge
 # (54367e59). The route returns a bare dict with no response_model, so nothing
 # in the framework enforces this and only this test does.
-_KV_CACHE_ESTIMATE_KEYS = frozenset({
-    "kv_bytes",
-    "weights_bytes",
-    "native_context",
-    "spec_bytes",
-    "n_ctx",
-    "projector_bytes",
-    "kv_checkpoint_bytes",
-    "spec_fixed_bytes",
-    "gpu_bytes",
-    "compute_bytes",
-    "total_bytes",
-    "gpu_floor_bytes",
-    "context_is_pinned",
-    "inherited_device_pin",
-    "spec_unpriced",
-})
+_KV_CACHE_ESTIMATE_KEYS = frozenset(
+    {
+        "kv_bytes",
+        "weights_bytes",
+        "native_context",
+        "spec_bytes",
+        "n_ctx",
+        "projector_bytes",
+        "kv_checkpoint_bytes",
+        "spec_fixed_bytes",
+        "gpu_bytes",
+        "compute_bytes",
+        "total_bytes",
+        "gpu_floor_bytes",
+        "context_is_pinned",
+        "inherited_device_pin",
+        "spec_unpriced",
+    }
+)
 
 
 class TestTheKvCacheEstimateEnvelope:
@@ -160,8 +163,7 @@ class TestTheKvCacheEstimateEnvelope:
             speculative_type = None,
         )
         assert out["gpu_bytes"], (
-            "the planner did not run, so this test would pass vacuously; "
-            "see _reach_the_planner"
+            "the planner did not run, so this test would pass vacuously; see _reach_the_planner"
         )
         assert out["gpu_bytes"] != quant_size, (
             "the planner's aggregate happens to equal the quant size in this fixture, "
@@ -219,17 +221,31 @@ class TestTheEstimateMemoryEnvelope:
         # The panel prints one row per term. Losing any of these silently blanks
         # a row rather than failing, so they are pinned by name.
         expected = {
-            "available", "reason", "weights_bytes", "kv_bytes", "compute_bytes",
-            "drafter_runtime_bytes", "drafter_runtime_gpu_bytes",
-            "projector_runtime_bytes", "drafter_kv_unsized", "adapters_unsized",
-            "total_bytes", "gpu_bytes", "kv_estimable", "kv_on_gpu", "n_ctx",
-            "cache_type_kv", "n_parallel", "layer_count", "gpu_layers",
+            "available",
+            "reason",
+            "weights_bytes",
+            "kv_bytes",
+            "compute_bytes",
+            "drafter_runtime_bytes",
+            "drafter_runtime_gpu_bytes",
+            "projector_runtime_bytes",
+            "drafter_kv_unsized",
+            "adapters_unsized",
+            "total_bytes",
+            "gpu_bytes",
+            "kv_estimable",
+            "kv_on_gpu",
+            "n_ctx",
+            "cache_type_kv",
+            "n_parallel",
+            "layer_count",
+            "gpu_layers",
             "moe_offload_unmodelled",
         }
         got = set(EstimateMemoryResponse.model_fields)
-        assert not expected - got, (
-            f"fields removed from a shipped response model: {sorted(expected - got)}"
-        )
+        assert (
+            not expected - got
+        ), f"fields removed from a shipped response model: {sorted(expected - got)}"
 
 
 class TestTheCollisionItself:
@@ -244,16 +260,12 @@ class TestTheCollisionItself:
         someone wrote down rather than a side effect of sharing an
         implementation. Read the module docstring before changing it.
         """
-        kv_route_meaning = (
-            models_routes.get_kv_cache_estimate.__doc__ or ""
-        )
-        inference_meaning = (
-            EstimateMemoryResponse.model_fields["weights_bytes"].description or ""
-        )
+        kv_route_meaning = models_routes.get_kv_cache_estimate.__doc__ or ""
+        inference_meaning = EstimateMemoryResponse.model_fields["weights_bytes"].description or ""
         # The inference route says so in its own words.
-        assert "projector" in inference_meaning.lower(), (
-            "the aggregate meaning is no longer documented on /estimate-memory"
-        )
+        assert (
+            "projector" in inference_meaning.lower()
+        ), "the aggregate meaning is no longer documented on /estimate-memory"
         # And the models route hands back exactly what it resolved, which the
         # sibling test above proves numerically. Here we only assert the two
         # descriptions are not the same claim, so that a future merge onto one
