@@ -477,8 +477,7 @@
             input.focus();
             return;
           }
-          // A reasoning-only reply still needs its turn: without it the next
-          // prompt repeats a role and is dropped to keep alternation.
+          // keep reasoning-only replies so the next prompt preserves role alternation.
           if (hasContent || hasReasoning) {
             const reply = { role: "assistant", content: acc };
             if (hasReasoning) reply.reasoning_content = reasoning;

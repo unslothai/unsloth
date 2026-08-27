@@ -128,8 +128,6 @@ def test_page_renders_friendly_busy_message(client):
 
 
 def test_page_renders_reasoning_stream(client):
-    # The page read only delta.content, so a thinking model's reasoning
-    # vanished and a cap spent on it left an empty bubble.
     text = client.get(f"/p/demorun?k={_sig('demorun')}").text
     assert "delta.reasoning_content" in text
     assert 'choice.finish_reason === "length"' in text
@@ -140,8 +138,6 @@ def test_page_renders_reasoning_stream(client):
 
 
 def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
-    # Without the assistant turn the next prompt repeats a role and
-    # format_chat_prompt drops it, so the follow-up is never answered.
     text = client.get(f"/p/demorun?k={_sig('demorun')}").text
     assert "if (hasContent || hasReasoning)" in text
     assert "if (hasReasoning) reply.reasoning_content = reasoning" in text
