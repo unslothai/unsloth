@@ -6192,10 +6192,38 @@ export function createOpenAIStreamAdapter(
                 );
               }
             };
+            // The window is passed so a length-stop can tell a Max Tokens the user chose
+            // from the backend's stand-in for "Max" (the whole context length). The two
+            // need opposite advice, and "Increase Max Tokens" cannot be acted on when it
+            // is already unlimited.
             const stream =
               generationDecision === "durable"
                 ? durableStream()
-                : streamChatCompletions(requestPayload, runSignal);
+                : streamChatCompletions(
+                    requestPayload,
+                    runSignal,
+                    // Only when the request targets the LOCAL model. ggufContextLength
+                    // stays populated for a resident GGUF even while an external model is
+                    // selected, so an external request with a 16K cap was being measured
+                    // against an unrelated 4096-token local window and reported as having
+                    // unlimited Max Tokens and no context left.
+                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
+                    // MLX request on this path has neither GGUF field set, and reading
+                    // that as "no window" makes every context-length stop look like a
+                    // user-set Max Tokens one -- advice to raise a value already at the
+                    // model's maximum. Same order the RAG `context_length` above uses.
+                    // `loadedCustomContextLength`, not `customContextLength`: the
+                    // latter is the EDITABLE field, and the store's own definition of a
+                    // pending edit is the two differing. A model still serving at 4096
+                    // while the field reads 8192 would make its 4096 stop look
+                    // user-imposed, and the toast would advise raising Max Tokens
+                    // instead of reloading at the larger context.
+                    isExternalRequest
+                      ? null
+                      : (runtime.loadedCustomContextLength ??
+                        runtime.ggufContextLength ??
+                        (params.maxSeqLength || null)),
+                  );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
 
@@ -7477,10 +7505,15 @@ export function createOpenAIStreamAdapter(
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
+              // The error already chose between the Max Tokens and Context Length
+              // remedies from the cap and the prompt size. Repeating the Max Tokens
+              // advice here overrode that choice in the one place the user reads,
+              // sending them to a setting that is already at its maximum.
               description:
+                msg ||
                 "The model used the full Max Tokens budget while thinking " +
-                "and did not produce a final answer. Increase Max Tokens in " +
-                "chat Settings or turn off thinking, then retry.",
+                  "and did not produce a final answer. Increase Max Tokens in " +
+                  "chat Settings or turn off thinking, then retry.",
               duration: 8000,
             });
           } else if (err instanceof ChatGenerationTerminalError) {
