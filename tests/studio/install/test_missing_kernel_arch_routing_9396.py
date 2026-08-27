@@ -367,6 +367,30 @@ def test_kfd_topology_answers_when_neither_userland_probe_is_installed():
     assert _GENERIC not in calls, calls
 
 
+@pytest.mark.parametrize("mask", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
+                                  "CUDA_VISIBLE_DEVICES"])
+@pytest.mark.parametrize("value", ["", "-1"])
+def test_a_mask_that_selects_no_gpu_is_not_undone_by_kfd(mask, value):
+    """An empty (or -1) visible-device mask selects NO GPU, and KFD is filtered by none.
+
+    _visible_devices_pinned and _pick_visible_index both document "" and "-1" as a
+    deliberate choice of no device rather than an unset variable, so the userland probe
+    coming back empty under such a mask means the user said none -- not that this host
+    lacks a ROCm userland, which is what the fallback is for. Without this the kernel
+    hands the reroute a card the user just removed: containers and CI commonly export an
+    empty mask, and /sys/class/kfd stays fully populated behind it."""
+    calls = _run_install(gfx_devices = (), kfd = ("gfx1103",), env = {mask: value})
+    assert f"{_AMD}/gfx110X-all/" not in calls, calls
+
+
+def test_a_mask_naming_a_device_still_reaches_kfd():
+    """The guard is only for a mask that selects nothing: one that names an ordinal leaves
+    a runtime-only host exactly as it was."""
+    calls = _run_install(gfx_devices = (), kfd = ("gfx1103",),
+                         env = {"HIP_VISIBLE_DEVICES": "0"})
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
 def test_a_live_probe_outranks_kfd_topology():
     """Only the userland probe is renumbered by a visible-device mask, so it leads."""
     calls = _run_install(gfx_devices = ("gfx1100",), kfd = ("gfx1103",))

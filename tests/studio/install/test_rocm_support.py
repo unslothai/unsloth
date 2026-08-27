@@ -604,6 +604,21 @@ class TestDetectRocmVersion:
 class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
 
+    @pytest.fixture(autouse = True)
+    def _no_kernel_topology(self):
+        """Hide KFD topology: these cases describe a host by its ROCm USERLAND readings.
+
+        _runtime_gfx_target falls back to /sys/class/kfd when the userland probe answers
+        nothing, and that sysfs read is filtered by no mock and no visible-device mask. On a
+        real AMD test machine it reports a GPU none of these cases asked for, so a case that
+        pins _detect_amd_gfx_codes (or leaves it to return nothing on a CI runner) silently
+        gets a different route. Same environment leak the _infer_linux_amd_gfx_arch and
+        _detect_windows_gfx_arch mocks below already guard against. Cases that mean to
+        exercise the fallback patch it themselves and win, since a decorator is applied
+        inside the fixture."""
+        with patch.object(stack_mod, "_kfd_gfx_targets", return_value = []):
+            yield
+
     # _infer_linux_amd_gfx_arch mocked to None: on a real Strix host the live
     # /proc/cpuinfo would otherwise take the inferred-install path and break
     # these "must not install" hosts (environment leak, not the code under test).
@@ -1455,6 +1470,13 @@ Agent 4
 class TestGfx906LegacyReroute:
     """gfx906 hosts on ROCm >= 6.4 must be rerouted to the rocm6.3 torch index;
     hosts already on gfx906-capable wheels are left alone."""
+
+    @pytest.fixture(autouse = True)
+    def _no_kernel_topology(self):
+        """Hide KFD topology, for the reason given on TestEnsureRocmTorch: a real AMD test
+        machine's sysfs would otherwise supply a GPU these gfx906 cases did not ask for."""
+        with patch.object(stack_mod, "_kfd_gfx_targets", return_value = []):
+            yield
 
     @staticmethod
     def _gfx906_reroute_block(source: str) -> str:

@@ -1835,7 +1835,17 @@ def _runtime_gfx_target(
     physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
     if physical_gfx is not None:
         gfx_devices = [physical_gfx]
-    if not gfx_devices:
+    # An explicitly empty (or "-1") visible-device mask selects NO GPU, which
+    # _visible_devices_pinned and _pick_visible_index both already honour verbatim. KFD
+    # topology is filtered by no mask at all, so falling back to it here would hand the
+    # reroutes below a device the user just removed -- and "the probe returned nothing"
+    # then means "the user said none", not "this host has no ROCm userland", which is the
+    # shape the fallback exists for. A mask that names a device is unaffected.
+    _mask = _first_set_visible_mask()
+    _mask_selects_no_gpu = (
+        _mask is not None and (os.environ.get(_mask) or "").strip() in ("", "-1")
+    )
+    if not gfx_devices and not _mask_selects_no_gpu:
         # The kernel's own topology: one entry per GPU node, in node order.
         gfx_devices = _kfd_gfx_targets()
         # With no userland reading to distrust, the spoof check above declined -- but the
