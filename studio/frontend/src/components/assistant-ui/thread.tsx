@@ -4192,39 +4192,63 @@ const Composer: FC<{
       const waitForCurrentRun =
         aui.thread().getState().isRunning ||
         hasPreStreamRunReservation(preStreamThreadIds);
-      // The project new-chat composer never queues, because queueing there
-      // binds the follow-up to the wrong thread, and every queue entry point
-      // in handleSubmit refuses it. Refuse the same way here, before the draft
-      // is cleared: visibly, with the text left in the composer. Not running
-      // means there is nothing to queue behind and this is an ordinary send,
-      // which is also what handleSubmit does with the chord alone.
-      if (disableQueue && waitForCurrentRun) {
-        toast.error("Wait for the current response to finish");
+      // A parked send is a submit that arrives late, so the release mirrors
+      // handleSubmit's own branches rather than inventing shorter ones.
+      // Sending regardless is how a message vanished: measured on a throttled
+      // browser, a follow-up parked on the settings gate 786 ms after the
+      // chat's first send was released 236 ms later with the first turn still
+      // streaming, went straight to sendReservedComposer(), and was refused by
+      // the runtime -- no queue entry, no send, and the wait toast already
+      // dismissed above, so nothing on screen said so.
+      //
+      // Research refuses every submit at the top of handleSubmit and the UI
+      // shows Stop research in place of Send, so a prompt released into one
+      // would be a turn started from a state where input is disabled. Keep it
+      // in the composer, draft and all, exactly as a live submit would.
+      if (isResearchActive) {
         return;
       }
-      clearStoredDraft();
-      // A run started while the send was parked means this is now the same
-      // situation handleSubmit queues in, whether or not the chord asked for
-      // it. Sending regardless is how a message vanished: measured on a
-      // throttled browser, a follow-up parked on the settings gate 786 ms
-      // after the chat's first send was released 236 ms later with the first
-      // turn still streaming, took this line, and was refused by the runtime
-      // -- no queue entry, no send, and the wait toast already dismissed
-      // above, so nothing on screen said so. The comment on the branch below
-      // had the reason exactly right; it just did not apply it here.
-      if (!disableQueue && (forceQueue || waitForCurrentRun)) {
-        // The chord's own two branches from handleSubmit, in the same order. A
-        // long paste lives in an attachment, so queueing the text alone queues
-        // nothing at all when that is all there is.
+      if (waitForCurrentRun) {
+        // The project new-chat composer never queues: queueing there binds the
+        // follow-up to a thread that does not exist yet.
+        if (disableQueue) {
+          toast.error("Wait for the current response to finish");
+          return;
+        }
+        // The draft stays until the queue actually starts. queueComposerText
+        // clears it from its onStarted callback, so a target that resolves to
+        // null leaves the text recoverable instead of erased.
         if (canQueueCurrentPrompt) {
-          queueComposerText(waitForCurrentRun);
+          queueComposerText(true);
           return;
         }
-        if (canQueuePastedTextPrompt && queuePastedTextPrompt(waitForCurrentRun)) {
+        // A long paste lives in an attachment, so queueing the text alone
+        // queues nothing at all when that is all there is.
+        if (canQueuePastedTextPrompt && queuePastedTextPrompt(true)) {
           return;
         }
-        // Nothing queueable: send, as this path did before it carried intent.
+        // Nothing queueable and a run is live. handleSubmit keeps the prompt
+        // and says why; sending here would push the attachment into the
+        // running thread, which is the collision this whole branch avoids.
+        if (overlay || hasAttachments || hasPendingAudio) {
+          toast.error("Wait for the current response to finish", {
+            description:
+              "Only text prompts can be queued while a response is running or the prompt queue is active.",
+          });
+        }
+        return;
       }
+      // Nothing running: the chord still queues up front, as it does live.
+      if (forceQueue && !disableQueue) {
+        if (canQueueCurrentPrompt) {
+          queueComposerText(false);
+          return;
+        }
+        if (canQueuePastedTextPrompt && queuePastedTextPrompt(false)) {
+          return;
+        }
+      }
+      clearStoredDraft();
       sendReservedComposer();
     }
   }, [
@@ -4244,6 +4268,10 @@ const Composer: FC<{
     sendReservedComposer,
     preStreamThreadIds,
     disableQueue,
+    isResearchActive,
+    overlay,
+    hasAttachments,
+    hasPendingAudio,
   ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
