@@ -798,6 +798,12 @@ def _upstream_is_cached(
     left in the pre-change root really do satisfy the load. OFF by default, because a
     ``from_pretrained`` is pinned to the live root and cannot see the other one -- counting those
     bytes there would send a gated base back to the 401 the mirror exists to avoid.
+
+    With BOTH roots the set is answered per FILE, because that is what those callers then do: a
+    pair split across a cache-folder change (one file fetched before it, one after) is held by
+    neither root alone, and asking each root for the whole set calls it absent and re-pulls bytes
+    the two roots already have between them. Within a root the whole-set, one-revision rule above
+    still applies, so a superseded revision cannot contribute a file.
     """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
@@ -812,6 +818,11 @@ def _upstream_is_cached(
             if fallback != roots[0]:
                 roots.append(fallback)
         wanted = tuple(files or ())
+        if wanted and len(roots) > 1:
+            return all(
+                any(_root_holds_upstream(root, repo_id, (name,)) for root in roots)
+                for name in wanted
+            )
         return any(_root_holds_upstream(root, repo_id, wanted) for root in roots)
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
         return False
