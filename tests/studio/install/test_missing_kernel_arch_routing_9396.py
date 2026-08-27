@@ -429,3 +429,13 @@ def test_a_stale_runtime_beside_a_non_rocm_torch_does_not_veto_the_repair():
     torch on disk is CPU-only; the repair must still run."""
     calls = _run_install(gfx_devices = ("gfx1103",), installed_family = "gfx110x-all")
     assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_leaf_that_needs_torch_211_keeps_its_floor():
+    """An unreadable ROCm version reads as 0.0, which is below the Strix floor, so a
+    gfx1152 host lands on this branch instead. Its leaf is one of the four whose <2.11
+    builds carry the _grouped_mm bug, and the generic branch already floors those."""
+    calls = _run_install(gfx_devices = ("gfx1152",), inferred = "gfx1152", rocm_version = None)
+    assert f"{_AMD}/gfx1152/" in calls, calls
+    assert "torch>=2.11.0,<2.12.0" in calls, calls
+    assert "torch>=2.4,<2.12.0" not in calls, calls

@@ -3283,8 +3283,16 @@ def _ensure_rocm_torch() -> None:
                         os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
                     ).rstrip("/")
                     _strix_override_url = f"{_amd_mirror}/{_leaf}/"
-                    # Keep older per-arch builds valid while bounding companion versions.
-                    _strix_override_pkgs = _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
+                    # Keep older per-arch builds valid while bounding companion versions,
+                    # except on the leaves whose sub-2.11 builds carry the _grouped_mm bug.
+                    # The Strix reroute floors those at 2.11 and the generic branch floors
+                    # the same list, but an unreadable ROCm version reads as 0.0, which is
+                    # below the Strix floor, so gfx1152 reaches this branch instead.
+                    _strix_override_pkgs = (
+                        _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+                        if _leaf.lower() in _ROCM_GFX_TORCH211_LEAVES
+                        else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
+                    )
                     _safe_print(
                         f"   {_runtime_gfx} is the runtime target, and no pytorch.org ROCm wheel\n"
                         f"   carries kernels for it -- torch would load but fault on its first\n"
