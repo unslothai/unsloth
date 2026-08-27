@@ -1222,6 +1222,34 @@ def test_zero_headroom_drops_only_the_oldest_turn_needed_to_fit():
     assert fitted == messages[2:]
 
 
+def test_a_request_that_chose_nothing_keeps_the_eviction_size_it_always_had():
+    """`keeps_boundary = False` is not a request for no extra trim.
+
+    Threadless API requests and incognito chats zero the headroom because there is no
+    boundary to remember a deeper cut with, not because anyone picked the "no extra trim"
+    option. Keying the 5% floor on `headroom` instead of the requested ratio handed them
+    the new setting anyway: measured on the messages below, eviction went from 12 messages
+    to 2 for a caller that sent no new field at all.
+    """
+    messages = []
+    for _ in range(100):
+        messages.append({"role": "user", "content": "u" * 5})
+        messages.append({"role": "assistant", "content": "a" * 5})
+    messages.append({"role": "user", "content": "x"})
+
+    _, info = fit_rolling_context(
+        messages,
+        context_length = 1100,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        keeps_boundary = False,
+    )
+
+    assert info is not None and info["fits"]
+    assert info["dropped_messages"] == 12
+    assert info["prompt_tokens_after"] == 941
+
+
 def test_clamp_compaction_headroom_ratio_rejects_junk():
     from core.inference.context_window import clamp_compaction_headroom_ratio
 

@@ -566,7 +566,10 @@ def fit_rolling_context(
     # Phase two, only if what is left still does not fit: move the boundary, taking a
     # chunk out rather than skimming to the brim so it can stay put for a while.
     trim_target = prompt_target
-    headroom = 0
+    # The 5% floor on each eviction bite, given up only by a caller that asked for no
+    # extra trim. Keyed on the ratio and not on `headroom`, which `keeps_boundary = False`
+    # zeroes for every threadless and incognito request, none of which chose anything.
+    min_bite = True
     if current_tokens > prompt_target:
         # Summed, not max()'d: the reserve is spent immediately on recalled passages, so
         # counting it as headroom would hand back room that is already taken.
@@ -580,12 +583,13 @@ def fit_rolling_context(
         ratio = clamp_compaction_headroom_ratio(headroom_ratio)
         if ratio is None:
             ratio = _COMPACTION_HEADROOM_RATIO
+        min_bite = ratio > 0
         headroom = int(prompt_target * ratio) if keeps_boundary else 0
         trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
     while current_tokens > trim_target:
         keep_ratio = trim_target / max(1, current_tokens)
-        if headroom > 0:
+        if min_bite:
             keep_ratio = min(0.95, keep_ratio)
         candidate, dropped = truncate_oldest_messages(
             fitted,
