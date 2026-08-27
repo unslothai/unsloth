@@ -898,9 +898,7 @@ def _download_transport_response(mode: str | None = None) -> DownloadTransportRe
 
 def _chat_preferences_response(enabled: bool | None = None) -> ChatPreferencesResponse:
     return ChatPreferencesResponse(
-        show_model_disclaimer = (
-            get_show_model_disclaimer() if enabled is None else enabled
-        )
+        show_model_disclaimer = (get_show_model_disclaimer() if enabled is None else enabled)
     )
 
 
@@ -1196,8 +1194,7 @@ def get_chat_preferences(
 
 @router.put("/chat-preferences", response_model = ChatPreferencesResponse)
 def update_chat_preferences(
-    payload: ChatPreferencesPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatPreferencesPayload, current_subject: str = Depends(get_current_subject)
 ) -> ChatPreferencesResponse:
     try:
         enabled = set_show_model_disclaimer(payload.show_model_disclaimer)
@@ -1214,8 +1211,7 @@ def update_chat_preferences(
 
 @router.post("/chat-preferences/migrate", response_model = ChatPreferencesResponse)
 def migrate_chat_preferences(
-    payload: ChatPreferencesMigrationPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatPreferencesMigrationPayload, current_subject: str = Depends(get_current_subject)
 ) -> ChatPreferencesResponse:
     try:
         enabled = migrate_show_model_disclaimer(payload.show_model_disclaimer)

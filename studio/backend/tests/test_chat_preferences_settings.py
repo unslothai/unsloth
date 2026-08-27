@@ -28,10 +28,7 @@ def test_legacy_value_only_seeds_an_empty_server():
 def test_disabled_or_missing_legacy_value_does_not_claim_the_server_default():
     assert preferences.migrate_show_model_disclaimer(False) is False
     assert preferences.migrate_show_model_disclaimer(None) is False
-    assert (
-        studio_db.get_app_setting(preferences.MODEL_DISCLAIMER_SETTING_KEY, None)
-        is None
-    )
+    assert studio_db.get_app_setting(preferences.MODEL_DISCLAIMER_SETTING_KEY, None) is None
     assert preferences.migrate_show_model_disclaimer(True) is True
 
 
@@ -61,9 +58,7 @@ def test_route_round_trip_and_migration(monkeypatch):
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     client = TestClient(app)
 
-    assert client.get("/chat-preferences").json() == {
-        "show_model_disclaimer": False
-    }
+    assert client.get("/chat-preferences").json() == {"show_model_disclaimer": False}
     assert client.post("/chat-preferences/migrate", json = {}).json() == {
         "show_model_disclaimer": False
     }
@@ -73,9 +68,7 @@ def test_route_round_trip_and_migration(monkeypatch):
     assert client.post(
         "/chat-preferences/migrate", json = {"show_model_disclaimer": False}
     ).json() == {"show_model_disclaimer": True}
-    assert client.put(
-        "/chat-preferences", json = {"show_model_disclaimer": False}
-    ).json() == {"show_model_disclaimer": False}
-    assert client.put(
-        "/chat-preferences", json = {"show_model_disclaimer": "yes"}
-    ).status_code == 422
+    assert client.put("/chat-preferences", json = {"show_model_disclaimer": False}).json() == {
+        "show_model_disclaimer": False
+    }
+    assert client.put("/chat-preferences", json = {"show_model_disclaimer": "yes"}).status_code == 422

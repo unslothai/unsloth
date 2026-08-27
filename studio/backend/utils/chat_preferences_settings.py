@@ -20,7 +20,6 @@ def _stored_bool(value: object) -> Optional[bool]:
 
 def get_show_model_disclaimer() -> bool:
     from storage.studio_db import get_app_setting
-
     stored = _stored_bool(get_app_setting(MODEL_DISCLAIMER_SETTING_KEY, None))
     return DEFAULT_SHOW_MODEL_DISCLAIMER if stored is None else stored
 
