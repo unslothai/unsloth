@@ -2013,13 +2013,17 @@ function PromptListDetail({
             <RotateCcwIcon className="size-3.5 mr-1" />Revert
           </Button>
         )}
-        <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
-          {preview ? (
-            <><PencilIcon className="size-3.5 mr-1" />Edit</>
-          ) : (
-            <><EyeIcon className="size-3.5 mr-1" />Preview</>
-          )}
-        </Button>
+        {/* The deferred summary renders neither editor nor preview, so the toggle
+            would only relabel itself. */}
+        {editorMounted && (
+          <Button size="sm" variant="outline" onClick={() => setPreview((v) => !v)}>
+            {preview ? (
+              <><PencilIcon className="size-3.5 mr-1" />Edit</>
+            ) : (
+              <><EyeIcon className="size-3.5 mr-1" />Preview</>
+            )}
+          </Button>
+        )}
         <Button size="sm" variant="outline" disabled={pending || !dirty || !savable} onClick={handleSave}>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
         </Button>
