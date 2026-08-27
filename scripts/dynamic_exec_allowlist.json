@@ -71,15 +71,8 @@
       "sink": "exec",
       "kind": "string concatenation",
       "hash": "ffa18102ffbe15dd",
-      "reason": "Imports names selected by `x in inner_training_loop` from dir(transformers.trainer), where the loop body is inspect.getsource(Trainer._inner_training_loop)."
-    },
-    {
-      "path": "unsloth/models/_utils.py",
-      "qualname": "patch_gradient_accumulation_fix",
-      "sink": "exec",
-      "kind": "string concatenation",
-      "hash": "ffa18102ffbe15dd",
-      "reason": "Imports names selected by `x in inner_training_loop` from dir(transformers.trainer), where the loop body is inspect.getsource(Trainer._inner_training_loop)."
+      "reason": "Imports names selected by `x in inner_training_loop` from dir(transformers.trainer), where the loop body is inspect.getsource(Trainer._inner_training_loop).",
+      "count": 2
     },
     {
       "path": "unsloth/models/llama.py",
@@ -175,15 +168,8 @@
       "sink": "eval",
       "kind": "f-string",
       "hash": "a107a7d59348af6b",
-      "reason": "`trainer_file` comes from dir(trl.trainer) filtered to lowercase names ending in '_trainer'; RLTrainer_name / RLConfig_name come from dir() of that module filtered to names ending in 'Trainer' / 'Config'; config_module_name is trainer_file with '_trainer' replaced by '_config'. All names of the installed TRL, none from user input or a downloaded artifact."
-    },
-    {
-      "path": "unsloth/models/rl.py",
-      "qualname": "_patch_trl_rl_trainers_impl",
-      "sink": "eval",
-      "kind": "f-string",
-      "hash": "a107a7d59348af6b",
-      "reason": "`trainer_file` comes from dir(trl.trainer) filtered to lowercase names ending in '_trainer'; RLTrainer_name / RLConfig_name come from dir() of that module filtered to names ending in 'Trainer' / 'Config'; config_module_name is trainer_file with '_trainer' replaced by '_config'. All names of the installed TRL, none from user input or a downloaded artifact."
+      "reason": "`trainer_file` comes from dir(trl.trainer) filtered to lowercase names ending in '_trainer'; RLTrainer_name / RLConfig_name come from dir() of that module filtered to names ending in 'Trainer' / 'Config'; config_module_name is trainer_file with '_trainer' replaced by '_config'. All names of the installed TRL, none from user input or a downloaded artifact.",
+      "count": 2
     },
     {
       "path": "unsloth/models/rl.py",
