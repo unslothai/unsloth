@@ -26344,6 +26344,7 @@ class LlamaCppBackend:
             if window and max_tokens >= window:
                 return None
             return max(0, max_tokens - _accumulated_completion_tokens - spent_this_attempt)
+
         # A forced function applies until the model produces it; execution or denial resolves it.
         _forced_choice_resolved = _auto_satisfies_forced_choice
         # A continuation re-enters this loop, so without a credit it is charged to the

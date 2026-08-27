@@ -134,7 +134,10 @@ def test_small_arguments_are_not_worth_a_receipt():
 def test_a_batch_of_small_edits_is_compacted_on_its_total():
     """No single string clears the per-leaf floor; together they are most of the window."""
     edits = [
-        {"old_string": f"def old_{i}():\n" + "    pass\n" * 60, "new_string": f"def new_{i}():\n" + "    return 1\n" * 60}
+        {
+            "old_string": f"def old_{i}():\n" + "    pass\n" * 60,
+            "new_string": f"def new_{i}():\n" + "    return 1\n" * 60,
+        }
         for i in range(20)
     ]
     messages = [
@@ -145,14 +148,13 @@ def test_a_batch_of_small_edits_is_compacted_on_its_total():
         },
         {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Applied 20 edits"},
     ]
+
     def _args(msgs):
         return msgs[0]["tool_calls"][0]["function"]["arguments"]
 
     before = len(_args(messages))
     assert all(
-        len(value) < _ARG_COMPACTION_FLOOR_CHARS
-        for edit in edits
-        for value in edit.values()
+        len(value) < _ARG_COMPACTION_FLOOR_CHARS for edit in edits for value in edit.values()
     ), "fixture must keep every leaf under the per-leaf floor"
 
     fitted, compacted = compact_completed_tool_arguments(messages)
