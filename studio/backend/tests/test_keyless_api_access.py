@@ -398,8 +398,7 @@ def test_setup_is_still_owed_after_keyless_access():
     """Admitting a keyless caller must not settle the password setup it skipped.
 
     The UI routes to /change-password off ``/api/auth/status``, which takes no auth
-    dependency, and off the 403 detail that a browser session still gets. Keyless
-    reaches neither, so both have to keep reporting the setup as outstanding.
+    dependency, and off the 403 a browser session still gets. Keyless reaches neither.
     """
     from routes.auth import auth_status
 
@@ -422,8 +421,8 @@ def test_setup_is_still_owed_after_keyless_access():
 def test_browser_guards_hold_before_password_setup():
     """A page on another site stays out while the seeded password is still in place.
 
-    The gate this file stops applying to keyless callers was incidentally doubling
-    for these on a fresh install, so they are checked on their own footing here.
+    The gate that no longer applies to keyless callers was incidentally doubling for
+    these, so they are pinned here on their own footing.
     """
     seed_user(must_change_password = True)
     set_keyless_api_access("inference")

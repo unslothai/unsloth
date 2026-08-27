@@ -451,7 +451,7 @@ def _invalid_api_key_detail(token: str) -> str:
 
 
 def _admin_credential() -> Tuple[str, Optional[str]]:
-    """resolve the local admin for keyless API access without applying the UI password gate."""
+    """Resolve the local admin for a keyless caller, without the UI password gate."""
     record = get_user_and_secret(DEFAULT_ADMIN_USERNAME)
     if record is None:
         raise HTTPException(
