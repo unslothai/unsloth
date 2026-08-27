@@ -1924,3 +1924,84 @@ test("the gate's pulse is tagged where it is fired and read where it matters", (
     "a deadline here is the arming timeout coming back, which lapses live continuations",
   );
 });
+
+// The live streaming publish path used to run the restart check on every arrival.
+//
+// `joinContinuation` takes a `streaming` option whose whole purpose is to skip that
+// check, and whose docstring says it "runs once at the end". Nothing in production
+// ever passed it: the only callers with `streaming: true` were the two tests above.
+// So on every streamed publish the adapter asked "is this a restart?" of a
+// continuation that was still 48 characters long, and the first time the answer came
+// back yes it published the continuation ALONE, dropping the entire partial.
+//
+// Driven character by character over a partial of 1602 characters, that collapsed the
+// published text from 1649 characters to 48 in one arrival, a 97% regression in what
+// the pane had to render. The reasoning pane renders whatever it is handed, so an
+// arrival carrying a short prefix is a pane that visibly loses its content.
+//
+// These pin the property the publish path actually needs, which is monotonicity: text
+// already shown to the user must never be withdrawn mid-stream.
+
+const { createContinuationMerger } = await import(
+  "../src/features/chat/utils/continuation.ts"
+);
+
+const REASONING =
+  "Okay, so the user is asking about how to structure the migration. " +
+  "Let me think through this carefully step by step before answering. " +
+  "First I need to consider what the existing schema looks like, and " +
+  "whether an online migration is even possible given the constraints. ";
+
+/** Replay a stream one character at a time and report the worst backwards step. */
+function worstDrop(partial: string, tail: string): number {
+  const merge = createContinuationMerger(partial, true);
+  let cumulative = partial;
+  let previous = merge(cumulative).length;
+  let worst = 0;
+  for (const character of tail) {
+    cumulative += character;
+    const current = merge(cumulative).length;
+    worst = Math.max(worst, previous - current);
+    previous = current;
+  }
+  return worst;
+}
+
+test("a provider that restarts cannot retract the partial mid-stream", () => {
+  const partial = REASONING.repeat(6);
+  assert.equal(
+    worstDrop(partial, `${REASONING}and so on. `),
+    0,
+    "the restart check ran per arrival and dropped the whole partial the moment it fired",
+  );
+});
+
+test("a provider repeating its own tail cannot retract text either", () => {
+  const partial = REASONING.repeat(6);
+  assert.equal(
+    worstDrop(partial, `${partial.slice(-60)}and then it continues onward. `),
+    0,
+    "a growing overlap match rewrote the tail, withdrawing characters already published",
+  );
+});
+
+test("the final merge still repairs a restart, which is where that check belongs", () => {
+  // Skipping the check while streaming would be a truncation bug of its own if the
+  // finished turn kept the duplicated opening, so the terminal merge must still run it.
+  const partial = REASONING.repeat(6);
+  const restart = `${REASONING}and so on. `;
+  assert.equal(
+    createContinuationMerger(partial, true)(partial + restart, { final: true }),
+    restart,
+    "a genuine restart is still collapsed once the turn is complete",
+  );
+});
+
+test("a merger with repair off is the identity, streaming or final", () => {
+  // Local backends resume at the exact token boundary, so nothing may be trimmed.
+  const partial = REASONING.repeat(2);
+  const merge = createContinuationMerger(partial, false);
+  const full = `${partial}${REASONING}`;
+  assert.equal(merge(full), full);
+  assert.equal(merge(full, { final: true }), full);
+});

@@ -142,6 +142,39 @@ export function joinContinuation(
 }
 
 /**
+ * The merge a resumed turn applies to its cumulative text, streaming and at the end.
+ *
+ * Both repairs above are decided by looking at the whole continuation, so both change
+ * their minds as it grows: `stripContinuationOverlap` rewrites the join as a longer
+ * overlap starts matching, and `isRestart` cannot fire at all until the continuation is
+ * RESTART_PROBE characters long, at which point it drops the partial entirely. Run per
+ * arrival, that makes the published text NON-MONOTONIC. Driven character by character
+ * over a 1602-character partial, the restart branch collapsed the published text from
+ * 1649 characters to 48 in a single arrival.
+ *
+ * Nothing renders a retraction gracefully: the reasoning pane draws whatever it is
+ * handed, so an arrival carrying a short prefix of the previous one is a pane that
+ * visibly loses its content and then gets it back.
+ *
+ * So a streamed merge is the identity. `cumulativeText` is append-only, and passing it
+ * through unchanged is what makes every publish a superset of the last. The repairs run
+ * once, on the finished turn, which is what `joinContinuation`'s `streaming` option was
+ * always for: production never passed it, so the check it exists to suppress ran on
+ * every streamed publish instead of once at the end.
+ */
+export function createContinuationMerger(
+  partial: string,
+  repair: boolean,
+): (cumulative: string, options?: { final?: boolean }) => string {
+  return (cumulative, { final = false } = {}) => {
+    if (!partial || !repair || !final) {
+      return cumulative;
+    }
+    return joinContinuation(partial, cumulative.slice(partial.length));
+  };
+}
+
+/**
  * Whether a finished MLX turn used its whole budget, i.e. stopped for length.
  *
  * MLX alone needs the inference: it reports finish_reason "stop" at the cap. Everyone
