@@ -1684,7 +1684,9 @@ function PromptDetail({
 
 // A create has no row id yet, so it cannot use the by-id mutation lock above.
 // The ref is the authority for the same reason it is there: React state is not
-// readable straight after scheduling it.
+// readable straight after scheduling it. Call this above the New forms, never
+// inside one: selecting a rail row unmounts the form, and a guard that dies with
+// it comes back false while its request is still out.
 function useCreateGuard(): {
   creating: boolean;
   create: (fn: () => Promise<void>) => Promise<void>;
@@ -1713,17 +1715,20 @@ function NewPromptForm({
   onClose,
   onRefresh,
   onCreated,
+  creating,
+  create,
 }: {
   draft: PromptDraft;
   onDraftChange: (draft: PromptDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
   onCreated: (id: string) => void;
+  creating: boolean;
+  create: (fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
   const { name, text } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setText = (value: string) => onDraftChange({ ...draft, text: value });
-  const { creating, create } = useCreateGuard();
 
   const handleSave = useCallback(
     () =>
@@ -1989,17 +1994,20 @@ function NewPromptListForm({
   onClose,
   onRefresh,
   onCreated,
+  creating,
+  create,
 }: {
   draft: ListDraft;
   onDraftChange: (draft: ListDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
   onCreated: (id: string) => void;
+  creating: boolean;
+  create: (fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
   const { name, items } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setItems = (value: string[]) => onDraftChange({ ...draft, items: value });
-  const { creating, create } = useCreateGuard();
 
   const handleSave = useCallback(
     () =>
@@ -2170,6 +2178,12 @@ export function PromptStorageDialog({
     },
     [],
   );
+
+  // Above the New forms, not inside them: selecting a rail row unmounts the
+  // form while its create is still out, and a guard mounted with it would let
+  // reopening New mint a second id for the same draft.
+  const promptCreate = useCreateGuard();
+  const listCreate = useCreateGuard();
 
   // Only drop the draft if it still holds what the request carried. Anything
   // typed while the save was in flight is newer than the server's copy and is
@@ -2594,6 +2608,8 @@ export function PromptStorageDialog({
                     }}
                     onRefresh={refreshEntries}
                     onCreated={selectCreatedPrompt}
+                    creating={promptCreate.creating}
+                    create={promptCreate.create}
                   />
                 ) : selectedPrompt ? (
                   <PromptDetail
@@ -2633,6 +2649,8 @@ export function PromptStorageDialog({
                     }}
                     onRefresh={refreshLists}
                     onCreated={selectCreatedList}
+                    creating={listCreate.creating}
+                    create={listCreate.create}
                   />
                 ) : selectedList ? (
                   <PromptListDetail

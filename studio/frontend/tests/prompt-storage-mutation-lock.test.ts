@@ -141,11 +141,23 @@ test("both create paths are guarded and report failure", async () => {
     ),
     "utf8",
   );
+  // Above the forms, like the row locks: the forms are conditionally mounted, so
+  // selecting a rail row while a create is out would otherwise hand a reopened
+  // form a fresh false guard and let it mint a second id for the same draft.
   assert.equal(
-    source.split("const { creating, create } = useCreateGuard();").length - 1,
+    source.split("= useCreateGuard();").length - 1,
     2,
-    "a New form can still start a second create over the first",
+    "the create guard is not owned once per kind above the New forms",
   );
+  const [beforeForms] = source.split("function NewPromptForm");
+  assert.doesNotMatch(
+    beforeForms,
+    /const \{ creating, create \} = useCreateGuard\(\);/,
+    "a New form owns its guard again, which a row switch resets",
+  );
+  for (const prop of ["creating={promptCreate.creating}", "creating={listCreate.creating}"]) {
+    assert.ok(source.includes(prop), `${prop} should reach its New form`);
+  }
   assert.equal(
     source.split("disabled={creating ").length - 1,
     2,
