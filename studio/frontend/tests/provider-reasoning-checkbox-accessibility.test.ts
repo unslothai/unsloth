@@ -15,3 +15,12 @@ const reasoningModelCheckbox =
 test("each Ollama reasoning model checkbox has an accessible name", () => {
   assert.match(source, reasoningModelCheckbox);
 });
+
+test("switching provider types clears draft reasoning state", () => {
+  const start = source.indexOf("if (editingProviderId) return;");
+  const end = source.indexOf("if (isCustomProviderType(value))", start);
+  assert.ok(start >= 0 && end > start);
+  const providerTypeChange = source.slice(start, end);
+  assert.match(providerTypeChange, /setIsReasoningModel\(false\)/);
+  assert.match(providerTypeChange, /setReasoningModelIds\(\[\]\)/);
+});

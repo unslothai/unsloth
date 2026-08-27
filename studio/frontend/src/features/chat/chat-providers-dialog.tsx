@@ -1370,6 +1370,8 @@ export function ChatProvidersSettings({
                     setSelectedModelIds([]);
                     setManualModelIds("");
                     setModelSearchQuery("");
+                    setIsReasoningModel(false);
+                    setReasoningModelIds([]);
                     if (isCustomProviderType(value)) {
                       setCustomProviderName(customProviderDisplayName(value));
                     }
