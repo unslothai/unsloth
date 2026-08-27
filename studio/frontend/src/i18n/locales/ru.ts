@@ -806,7 +806,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
-        searchPlaceholder: "Поиск embedding-моделей",
+        searchPlaceholder: "Поиск любой модели на HF",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",
@@ -814,7 +814,24 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Восстановить значение по умолчанию",
+        recommended: "Рекомендуется",
+        onDevice: "На устройстве",
+        searching: "Поиск в Hugging Face…",
+        checking: "Проверка…",
+        noResults: "Модели эмбеддингов не найдены",
+        download: "Скачать",
+        unload: "Выгрузить",
+        unloadFailed: "Не удалось выгрузить модель эмбеддингов",
+        downloadingStatus: "Загрузка…",
+        notDownloaded: "Не загружено",
+        notDownloadedSized: "Не загружено · {size}",
+        loaded: "Загружено",
+        downloading: "Загрузка {model}",
+        downloadingDescription:
+          "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
+        downloadFailed: "Не удалось начать загрузку",
+        downloadConflict: "Возобновите эту загрузку в Hub",
+        downloadBusy: "Загрузка уже выполняется",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -1203,6 +1220,7 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+        vramWithShared: "{vram} VRAM + {shared} общей памяти",
       },
     },
     agents: {
@@ -1232,6 +1250,15 @@ export const ru = {
       docs: "Документация",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
@@ -1324,6 +1351,9 @@ export const ru = {
         showAllQuantizations: "Показывать все квантизации",
         showAllQuantizationsDescription:
           "Включено: показываются все квантизации из раздела «On Device», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+        showMemoryBar: "Показывать шкалу использования VRAM",
+        showMemoryBarDescription:
+          "Показывает под строкой каждой скачанной модели её ожидаемое потребление VRAM: веса, KV-кеш при той длине контекста, с которой модель будет загружена, и резерв для спекулятивного черновика.",
       },
       menu: {
         title: "Меню чата",
@@ -1350,10 +1380,33 @@ export const ru = {
       rememberParamsPerModel: "Запоминать настройки для каждой модели",
       rememberParamsPerModelDescription:
         "При переключении модели восстанавливаются температура, промпт и другие настройки, которые вы использовали с ней в последний раз. Если выключено, для всех моделей действует один набор настроек.",
+      autoCompact: "Автоматически сжимать длинные чаты",
+      autoCompactDescription:
+        "Когда локальный чат GGUF достигает заданной длины контекста, удалять старые ходы вместо возврата ошибки. Это не зависит от свободной VRAM.",
+      compactionStyle: "Когда контекст заполнен",
+      compactionStyleDescription:
+        "Настройка сервера сохраняет UNSLOTH_CONTEXT_POLICY. Сброс беседы оставляет последний ход и постоянные инструкции. Скользящее окно удаляет самые старые ходы и может сохранить больше недавней истории.",
+      compactionStyleInherit: "Использовать настройку сервера",
+      compactionStyleCheckpoint: "Сбросить беседу",
+      compactionStyleRollingDefault:
+        "Удалять старые ходы (~25% дополнительного места)",
+      compactionStyleRolling10:
+        "Удалять старые ходы (~10% дополнительного места)",
+      compactionStyleRolling5:
+        "Удалять старые ходы (~5% дополнительного места)",
+      compactionStyleRollingNone:
+        "Удалять старые ходы (без дополнительного сокращения)",
+      autoCompactKeywords:
+        "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:
           "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
+      },
+      tools: {
+        collapseByDefault: "Сворачивать действия инструментов по умолчанию",
+        collapseByDefaultDescription:
+          "Входные и выходные данные инструментов остаются свёрнутыми во время работы. Разверните строку инструмента для просмотра.",
       },
       webSearch: {
         title: "Веб-поиск",
@@ -2360,5 +2413,14 @@ export const ru = {
       datasetStreaming: "Датасет: потоковая передача (без полной загрузки)",
       modelWeights: "Веса модели",
     },
+  },
+  modelMemory: {
+    readout:
+      "Веса {model} + контекст {context} = {total} из {budget} доступной VRAM",
+    readoutWithSpec:
+      "Веса {model} + KV {kv} + черновик MTP {spec} = {total} из {budget} доступной VRAM",
+    kvRate: "KV зарезервирован, ~{rate}/токен",
+    oomLikely: "При текущих настройках вероятна нехватка памяти",
+    tooLarge: "Больше объёма VRAM, часть уйдёт на CPU. Меньшая квантизация работает быстрее",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

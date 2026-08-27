@@ -857,21 +857,29 @@ _SMART_OFFLOAD_ON = ("1", "true", "yes", "on", "enabled")
 
 
 def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the launch path may plan a spill. ON unless explicitly disabled.
+    """Whether the launch path may plan a spill. OFF unless explicitly enabled.
 
-    It shipped opt-in "until it has run on more than one machine". It has: 118
-    paired runs across T4, L4, RTX PRO 6000, A100, B200 and a real gfx1151 APU,
-    faster on generation in 111, and 100% KV cache retention in all 83 runs
-    where the layer-count arm would have split the cache to host RAM.
+    This was briefly opt-OUT, on 118 paired runs across T4, L4, RTX PRO 6000,
+    A100, B200 and a gfx1151 APU. Every one of those hosts is a large one, and
+    that turned out to be the whole of the calibration set: #9861 measured 76
+    paired cells on a 6-core desktop and the planner was slower in 40 of the 43
+    it planned, by up to 8x on generation.
 
-    Default does not mean it places every load: it abstains often, and every
-    abstain still falls through to ``--fit on``.
+    The mechanism is not the host size alone. ``rank`` in offload_cost_model
+    scores a placement as prefill PLUS generation, but the planner only ever
+    calls ``generation_penalty_ms``, so prefill is not priced at all -- which is
+    why #9861 measured prefill slower in 43 of 43 planned cells, without one
+    exception. A gate that does not count half the request cannot be trusted to
+    fire by default, so it goes back behind the flag until it does.
 
-    An UNRECOGNISED value disables. The typos are not symmetric for an opt-OUT
-    flag: ``flase`` meaning off must not hand back the thing it was switching
-    off, while fumbling an on-spelling only keeps the old behaviour.
+    Off does not mean the load is unplaced: every path that would have consulted
+    the planner falls through to ``--fit on``, which is what the same report
+    measured at 0.93x to 1.16x across all 33 cells where the planner declined.
+
+    An UNRECOGNISED value disables, same as before, and now agrees with the
+    default rather than reversing it.
     """
     raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD")
     if raw is None:
-        return True
+        return False
     return str(raw).strip().lower() in _SMART_OFFLOAD_ON

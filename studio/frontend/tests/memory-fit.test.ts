@@ -415,12 +415,17 @@ test("no combination of garbage throws or produces a verdict outside the four", 
 // formatMemoryGb
 
 test("a figure is always finite and never negative", () => {
-  assert.equal(formatMemoryGb(24 * GB), "24.00 GB");
-  assert.equal(formatMemoryGb(0), "0.00 GB");
-  assert.equal(formatMemoryGb(-5 * GB), "0.00 GB");
-  assert.equal(formatMemoryGb(Number.NaN), "0.00 GB");
-  assert.equal(formatMemoryGb(Number.POSITIVE_INFINITY), "0.00 GB");
-  assert.equal(formatMemoryGb(undefined as unknown as number), "0.00 GB");
+  // GiB, not GB. The divide was always by 1024**3, so every figure this printed
+  // was a gibibyte value wearing a gigabyte label -- 7.4% high, on seven figures
+  // of the Load Model panel. Same defect #9570 fixed elsewhere; the guard test
+  // could not see this one because its regex only matches interpolations naming
+  // a `*TotalGb`.
+  assert.equal(formatMemoryGb(24 * GB), "24.00 GiB");
+  assert.equal(formatMemoryGb(0), "0.00 GiB");
+  assert.equal(formatMemoryGb(-5 * GB), "0.00 GiB");
+  assert.equal(formatMemoryGb(Number.NaN), "0.00 GiB");
+  assert.equal(formatMemoryGb(Number.POSITIVE_INFINITY), "0.00 GiB");
+  assert.equal(formatMemoryGb(undefined as unknown as number), "0.00 GiB");
 });
 
 // ---------------------------------------------------------------------------
@@ -471,7 +476,7 @@ test("the draft cache note reads its OWN placement, not the target cache's", () 
   // boolean read off the target was wrong in both directions.
   assert.equal(resolveDraftCacheNote(0, 4 * GB), "host RAM");
   // Under MTP the term is split across both placements: a third case.
-  assert.equal(resolveDraftCacheNote(1 * GB, 4 * GB), "1.00 GB on GPU");
+  assert.equal(resolveDraftCacheNote(1 * GB, 4 * GB), "1.00 GiB on GPU");
   // Entirely on the GPU is the unremarkable case and gets no caption.
   assert.equal(resolveDraftCacheNote(4 * GB, 4 * GB), undefined);
   assert.equal(resolveDraftCacheNote(Number.NaN, 4 * GB), "host RAM");

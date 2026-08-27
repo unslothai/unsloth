@@ -365,16 +365,30 @@ export function resolveFitMaxSeqLength(
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
 }
 
-// A Manual + Auto-layers load sends its positive context pin as max_seq_length;
-// keep it across a status reseed/Apply so the model isn't reverted to auto-fit
-// sizing. Anything else (Auto mode, pinned layers, no pin) baselines to null.
-// The caller keeps its own isGguf/targetIsGguf guard inline.
-export function resolveManualAutoCtxPin(
-  gpuMemoryMode: "auto" | "manual",
-  gpuLayers: number,
-  customContextLength: number | null,
+/**
+ * The context pin a completed load leaves behind: the Context Length the user
+ * EXPLICITLY set for it, or null for Auto.
+ *
+ * Takes the user's setting, never the n_ctx that went on the wire. The wire
+ * value cannot answer this: `resolveLoadMaxSeqLength`'s isReloadingCurrentGguf
+ * branch sends the resolved context on a same-model reload so the reload does
+ * not resize, so under a custom or modified preset an Auto load puts a positive
+ * n_ctx on the wire too. Reading a pin back out of that turned Auto into a
+ * numeric pin at the current context on any same-model reload, after which a GPU
+ * memory change could no longer auto-resize.
+ *
+ * Takes no GPU Memory mode, deliberately. `resolveLoadMaxSeqLength` honors a pin
+ * in every mode, but the predicate this replaces kept one only under Manual +
+ * Auto layers: a survival rule narrower than the send rule, so a load on Default
+ * sent the user's pin and then dropped it on completion. That was the bug.
+ *
+ * Callers keep their own isGguf/targetIsGguf guard inline: a non-GGUF load has
+ * no n_ctx, and its max_seq_length must not be pinned as one.
+ */
+export function resolveExplicitCtxPin(
+  customContextLength: number | null | undefined,
 ): number | null {
-  return gpuMemoryMode === "manual" && gpuLayers < 0 && (customContextLength ?? 0) > 0
+  return customContextLength && customContextLength > 0
     ? customContextLength
     : null;
 }

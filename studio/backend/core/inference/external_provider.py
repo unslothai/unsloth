@@ -590,6 +590,36 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "high"
 
 
+# ollama's openai-compatible /v1/chat/completions accepts these five values.
+# https://docs.ollama.com/api/openai-compatibility
+_OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "max"})
+_OLLAMA_REASONING_EFFORT_ALIASES = {
+    "minimal": "low",
+    "xhigh": "max",
+}
+
+
+def _apply_ollama_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    """Map API thinking controls onto Ollama's ``reasoning_effort`` field.
+
+    Requests with neither control remain unchanged. An explicit off is
+    ``none``; an on without a level is ``medium``. #9649
+    """
+    effort = (reasoning_effort or "").strip().lower()
+    if effort in _OLLAMA_REASONING_EFFORT_ALIASES:
+        effort = _OLLAMA_REASONING_EFFORT_ALIASES[effort]
+    if effort in _OLLAMA_REASONING_EFFORTS:
+        body["reasoning_effort"] = effort
+        return
+    if enable_thinking is False:
+        body["reasoning_effort"] = "none"
+        return
+    if enable_thinking is True:
+        body["reasoning_effort"] = "medium"
+
+
 # Shared client reused across all requests for HTTP connection pooling.
 # Auth headers and timeouts are passed per-request, so a single client
 # handles every provider without storing credentials.
@@ -1156,6 +1186,8 @@ class ExternalProviderClient:
                 tpl_kw = {}
             tpl_kw["enable_thinking"] = bool(enable_thinking)
             body["chat_template_kwargs"] = tpl_kw
+        elif self.provider_type == "ollama":
+            _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
         # Some routes (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.

@@ -14,6 +14,8 @@ metadata (the cap is guarded on effective_ctx > 0), and the broad
 
 from __future__ import annotations
 
+import inspect
+import re
 import struct
 import subprocess
 import sys
@@ -46,7 +48,12 @@ if "jwt" not in sys.modules:
         _jwt_stub.InvalidTokenError = type("InvalidTokenError", (Exception,), {})
         sys.modules["jwt"] = _jwt_stub
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    _FIT_MIN_CTX,
+    _LLAMA_FIT_MIN_CTX,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
 
 _floor = LlamaCppBackend._metal_zero_ctx_floor
 _drops = LlamaCppBackend._metal_drops_zero_ctx_override
@@ -179,26 +186,26 @@ def off_metal(monkeypatch):
 class TestOnMetal:
     def test_a_zero_context_is_floored(self, on_metal):
         """The exception path: auto request restored to 0 after the cap ran."""
-        assert _floor(0, False, False, 262144) == 4096
+        assert _floor(0, False, False, 262144) == _FIT_MIN_CTX
 
     def test_a_model_shorter_than_the_floor_keeps_its_own_length(self, on_metal):
         assert _floor(0, False, False, 2048) == 2048
 
     def test_no_metadata_still_gets_a_floor(self, on_metal):
         """The cap is guarded on ctx > 0, so this GGUF was never capped."""
-        assert _floor(0, False, False, None) == 4096
+        assert _floor(0, False, False, None) == _FIT_MIN_CTX
 
     def test_a_cap_below_the_floor_wins(self, on_metal):
         """The exception path keeps max_available_ctx, whose KV answer can sit
-        under 4096. Floating back up would re-create the over-commit."""
+        under the floor. Floating back up would re-create the over-commit."""
         assert _floor(0, False, False, 262144, 2048) == 2048
 
     def test_a_cap_above_the_floor_does_not_raise_it(self, on_metal):
-        assert _floor(0, False, False, 262144, 131072) == 4096
+        assert _floor(0, False, False, 262144, 131072) == _FIT_MIN_CTX
 
     def test_no_cap_yet_still_floors(self, on_metal):
         """The no-metadata path never ran the cap, so there is no ceiling to respect."""
-        assert _floor(0, False, False, None, 0) == 4096
+        assert _floor(0, False, False, None, 0) == _FIT_MIN_CTX
 
     def test_a_positive_context_is_left_alone(self, on_metal):
         assert _floor(8192, False, False, 262144) == 0
@@ -210,6 +217,73 @@ class TestOnMetal:
     def test_manual_offload_is_left_alone(self, on_metal):
         """There the user owns memory management, context cap included."""
         assert _floor(0, False, True, 262144) == 0
+
+
+def test_every_caller_of_the_floor_states_whether_the_fitter_runs():
+    """``fitter_runs`` defaults to True, the permissive value, so a call that omits it
+    gets the 8192 ceiling and the auto_fit exemption back.
+
+    That default is deliberate: there is one production caller and 60-odd test call
+    sites, and making it required would churn the latter to constrain the former. What
+    it costs is that a SECOND production caller could reintroduce this bug by saying
+    nothing, which is how the previous version of this arm went wrong -- a docstring
+    claim about what callers pass, with nothing checking that they do. So the claim is
+    checked here instead of asserted in prose.
+    """
+    source = Path(inspect.getfile(LlamaCppBackend)).read_text(encoding = "utf-8")
+    calls = [m for m in re.finditer(r"self\._metal_zero_ctx_floor\(", source)]
+    assert calls, "the floor is no longer called from the backend; this guard is stale"
+    for match in calls:
+        line = source[: match.start()].count("\n") + 1
+        # Balance the parens rather than stopping at the first ")": the argument this
+        # guard is looking for is itself a call, so a naive scan ends inside it.
+        depth, end = 1, match.end()
+        while end < len(source) and depth:
+            depth += {"(": 1, ")": -1}.get(source[end], 0)
+            end += 1
+        args = source[match.end() : end - 1]
+        assert "fitter_runs" in args, (
+            f"llama_cpp.py:{line} calls _metal_zero_ctx_floor without fitter_runs, so it "
+            "takes the default True and can hand a Mac 8192 tokens with the child fitter "
+            "off, which nothing can then reduce. Pass fit_is_effectively_on(...) for this "
+            "launch."
+        )
+
+
+class TestWithNoFitterToReduceIt:
+    """_FIT_MIN_CTX is a ceiling the child's --fit is expected to come down from.
+
+    "Being BELOW llama.cpp's own floor is what made that safe to raise" -- so with
+    the fitter off, this arm has to hand over what the fitter would have reduced
+    to instead, or a Mac with room for 4096 and not 8192 has no way down.
+    """
+
+    def test_the_floor_drops_to_llama_cpps_own(self, on_metal):
+        assert _floor(0, False, False, 262144, fitter_runs = False) == _LLAMA_FIT_MIN_CTX
+        assert _LLAMA_FIT_MIN_CTX < _FIT_MIN_CTX
+
+    def test_a_running_fitter_still_gets_the_raised_floor(self, on_metal):
+        """The control: nothing about the ordinary Metal Auto path moved."""
+        assert _floor(0, False, False, 262144, fitter_runs = True) == _FIT_MIN_CTX
+        assert _floor(0, False, False, 262144) == _FIT_MIN_CTX
+
+    def test_the_auto_layers_exemption_is_withdrawn_with_the_fitter(self, on_metal):
+        """The docstring's claim, taken here rather than trusted to the caller:
+        auto_fit means "--fit sizes it", which is false once --fit is off."""
+        assert _floor(0, True, False, 262144, fitter_runs = False) == _LLAMA_FIT_MIN_CTX
+        assert _floor(0, True, False, 262144, fitter_runs = True) == 0
+
+    def test_a_measured_ceiling_below_it_still_wins(self, on_metal):
+        assert _floor(0, False, False, 262144, 2048, fitter_runs = False) == 2048
+
+    def test_a_model_shorter_than_it_keeps_its_own_length(self, on_metal):
+        assert _floor(0, False, False, 2048, fitter_runs = False) == 2048
+
+    def test_a_caller_owned_budget_is_still_exempt(self, on_metal):
+        assert _floor(0, False, True, 262144, fitter_runs = False) == 0
+
+    def test_it_stays_inert_off_apple_silicon(self, off_metal):
+        assert _floor(0, False, False, 262144, fitter_runs = False) == 0
 
 
 class TestEverywhereElse:
@@ -251,18 +325,18 @@ class TestTheEmittedCommand:
 
     def test_a_zero_override_does_not_outlive_the_floor(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         # Only the context is dropped; the rest of the user's extras survive.
         assert "--top-k" in cmd and "5" in cmd
 
     def test_the_long_spelling_is_dropped_too(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--ctx-size=0"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_a_capped_context_also_drops_the_zero_override(self, tmp_path, monkeypatch):
         """The Apple cap ran, so the floor stays inert -- the drop still has to fire."""
         cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144, extra_args = ["-c", "0"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_the_context_studio_computed_is_what_survives(self, tmp_path, monkeypatch):
         """Not a constant: the cap's own answer stands, here the model's 2048.
@@ -279,7 +353,7 @@ class TestTheEmittedCommand:
 
     def test_without_an_override_the_floor_stands(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_off_metal_nothing_is_touched(self, tmp_path, monkeypatch):
         """Linux and Windows keep today's behaviour, zero override included."""
@@ -338,13 +412,60 @@ class TestAutoLayersWithTheFitterTurnedOff:
     Extras land after Unsloth's own "--fit on" and win, so a pass-through
     "--fit off" leaves a command carrying no -c and no fitter, which is
     llama.cpp's native context and the over-commit this branch prevents.
+
+    The floor that replaces it cannot be _FIT_MIN_CTX either. 8192 is defensible
+    on a Mac only as a ceiling the child's own --fit can still reduce, down to
+    llama.cpp's fit_params_min_ctx; with the fitter off there is no reduction
+    path at all, so a Mac with room for 4096 and not 8192 fails at startup or at
+    decode. The user typed --fit off, so the conservative context is what gives
+    way, not their flag.
     """
 
     AUTO_LAYERS = {"gpu_memory_mode": "manual", "gpu_layers": -1}
 
     def test_the_floor_applies_once_fitting_is_off(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "off"], **self.AUTO_LAYERS)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
+
+    def test_the_users_fit_off_is_not_taken_back_to_keep_the_higher_floor(
+        self, tmp_path, monkeypatch
+    ):
+        """The other shape this could have taken. Overriding an explicit --fit off
+        would let the floor stay at 8192, and would also re-arm a fitter the user
+        may have turned off because it aborts on their host."""
+        cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "off"], **self.AUTO_LAYERS)
+        assert cmd[-2:] == ["--fit", "off"]
+
+    def test_the_no_kv_cap_lands_on_the_same_floor(self, tmp_path, monkeypatch):
+        """The cap path, not the zero-context one, and in DEFAULT memory mode.
+
+        Manual with Auto layers resolves an Auto request to 0, so it never reaches
+        the cap; the default mode expands it to the model's native length, which
+        does.
+
+        A GGUF that DOES carry a context length takes the Apple cap, which assigns
+        a positive context of its own. _metal_zero_ctx_floor never sees it: its
+        first condition returns 0 for any positive effective_ctx, so the no-fitter
+        reduction has to be made where the cap is chosen. Without that, this arm
+        hands a Mac 8192 with nothing able to bring it down.
+        """
+        cmd, _ = _launch(
+            tmp_path,
+            monkeypatch,
+            ctx_metadata = 262144,
+            extra_args = ["--fit", "off"],
+        )
+        assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
+
+    def test_the_no_kv_cap_keeps_the_raised_floor_while_a_fitter_runs(self, tmp_path, monkeypatch):
+        """The control: same path, fitter left on, so the exemption stands and the
+        command carries no -c at all, leaving the child to size the context. What
+        must NOT happen is this arm quietly adopting llama.cpp's lower floor for a
+        launch that still has a fitter to come down from."""
+        cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144)
+        assert _ctx_values(cmd) == [
+            str(_FIT_MIN_CTX)
+        ], f"the raised ceiling was given up on a launch that still has a fitter: {cmd}"
 
     def test_a_zero_override_alongside_it_is_still_dropped(self, tmp_path, monkeypatch):
         cmd, _ = _launch(
@@ -353,7 +474,14 @@ class TestAutoLayersWithTheFitterTurnedOff:
             extra_args = ["--fit", "off", "-c", "0"],
             **self.AUTO_LAYERS,
         )
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
+
+    def test_an_inherited_fit_off_reaches_the_same_floor(self, tmp_path, monkeypatch):
+        """llama.cpp applies LLAMA_ARG_FIT before argv, so the env twin turns the
+        fitter off just as an extra does and withdraws the same exemption."""
+        monkeypatch.setenv("LLAMA_ARG_FIT", "off")
+        cmd, _ = _launch(tmp_path, monkeypatch, **self.AUTO_LAYERS)
+        assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
 
     def test_an_explicit_fit_on_keeps_the_exemption(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "on"], **self.AUTO_LAYERS)
@@ -403,7 +531,7 @@ class TestAnInheritedContextEnvironment:
     def test_an_emitted_context_leaves_the_environment_alone(self, tmp_path, monkeypatch):
         """Automatic mode passes -c, and argv is parsed after the environment."""
         cmd, env_ctx = _launch_env(tmp_path, monkeypatch, env_ctx = "0")
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         assert env_ctx == "0"
 
     def test_a_caller_owned_budget_is_left_alone(self, tmp_path, monkeypatch):
@@ -437,17 +565,17 @@ class TestAVirtualisedMetalDevice:
 
     def test_an_auto_request_still_gets_the_floor(self, tmp_path, monkeypatch):
         cmd, _ = self._launch_pv(tmp_path, monkeypatch)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_an_auto_request_still_drops_a_zero_override(self, tmp_path, monkeypatch):
         cmd, _ = self._launch_pv(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         assert "--top-k" in cmd and "5" in cmd
 
     def test_auto_layers_is_treated_the_same(self, tmp_path, monkeypatch):
         """The pin took the layer freedom --fit needed, so the floor applies."""
         cmd, _ = self._launch_pv(tmp_path, monkeypatch, gpu_memory_mode = "manual", gpu_layers = -1)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_a_fixed_manual_layer_count_is_still_the_callers(self, tmp_path, monkeypatch):
         cmd, _ = self._launch_pv(
@@ -488,7 +616,7 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
 
     def test_the_native_length_is_not_advertised_after_the_floor(self, on_metal):
         floor = _floor(0, False, False, self.NATIVE, self.NATIVE)
-        assert floor == 4096
+        assert floor == _FIT_MIN_CTX
         # What load_model now publishes: the floor itself, not max(ceiling, floor).
         assert floor < self.NATIVE
 
@@ -499,8 +627,8 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
     def test_the_published_ceiling_is_never_above_what_we_launch(self, on_metal):
         for max_avail in (None, 3000, 4096, self.NATIVE):
             floor = _floor(0, False, False, self.NATIVE, max_avail)
-            assert floor <= (max_avail or 4096)
-            assert floor <= 4096
+            assert floor <= (max_avail or _FIT_MIN_CTX)
+            assert floor <= _FIT_MIN_CTX
 
 
 class TestTheStripDoesNotRewriteWhatWasRequested:
@@ -528,7 +656,7 @@ class TestTheStripDoesNotRewriteWhatWasRequested:
         monkeypatch.setattr(_llama_cpp, "_paravirtual_draft_ngl_flag", lambda caps: None)
         requested = ["-md", str(draft), "-c", "0", "--top-k", "5"]
         cmd, backend = _launch(tmp_path, monkeypatch, extra_args = list(requested), paravirtual = True)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         assert backend._requested_extra_args == requested
 
     @pytest.mark.parametrize("mode,layers", [("auto", -1), ("manual", -1)])
