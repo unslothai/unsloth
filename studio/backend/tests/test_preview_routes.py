@@ -729,7 +729,7 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
     import inspect
     import threading
 
-    src = inspect.getsource(inference.openai_chat_completions)
+    src = inspect.getsource(inference.produce_openai_chat_completions)
     assert src.count("_mark_cancelled_json_response_failed(request, cancel_event)") == 3
 
     _reset_keepwarm_counters()

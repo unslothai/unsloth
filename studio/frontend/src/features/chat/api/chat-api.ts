@@ -1107,10 +1107,13 @@ export async function getChatMessage(
 
 export async function saveChatMessage(
   message: MessageRecord,
-  options: { coalesce?: boolean } = {},
+  options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
 ): Promise<MessageRecord> {
+  const editQuery = options.allowGenerationEdit
+    ? "?allowGenerationEdit=true"
+    : "";
   const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1127,7 +1130,7 @@ export async function saveChatMessage(
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<MessageRecord[]> {
   const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
@@ -1137,6 +1140,7 @@ export async function syncChatMessages(
       body: JSON.stringify({
         messages,
         pruneMissing: options.pruneMissing ?? false,
+        deletedMessageIds: options.deletedMessageIds ?? [],
       }),
     },
   );
