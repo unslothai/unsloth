@@ -64,12 +64,10 @@ function ToolGroupRoot({
   ...props
 }: ToolGroupRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  // Same treatment as ToolFallbackRoot. Without it the group is the one
-  // disclosure the preference cannot reach: a group the user expanded by hand
-  // stays expanded when the setting is turned on, while every card inside it
-  // closes. ToolGroupImpl hands us `undefined` whenever it is not forcing the
-  // group open, so this uncontrolled state is what is on screen for most of a
-  // group's life.
+  // Same treatment as ToolFallbackRoot. ToolGroupImpl passes `undefined`
+  // whenever it is not forcing the group open, so this uncontrolled state is
+  // what is on screen for most of a group's life -- without the sync, a group
+  // expanded by hand stays open while every card inside it closes.
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.collapseToolActivityByDefault,
   );
@@ -291,9 +289,8 @@ const ToolGroupImpl: FC<
   );
   // Keep the group open once a confirmation or live output forced it (so an
   // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
-  // Only latch what could have forced the group open in the first place: a
-  // latch set while collapsed is a force nobody saw, and turning the preference
-  // off mid-turn would then snap every such group open at once.
+  // Only latch what could have forced it open: a latch set while collapsed is
+  // a force nobody saw, and turning the preference off would snap them all open.
   const forcedOpenRef = useRef(false);
   if (hasPendingConfirmation || (hasLiveOutput && !collapseByDefault)) {
     forcedOpenRef.current = true;

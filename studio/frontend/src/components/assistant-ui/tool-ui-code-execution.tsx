@@ -178,10 +178,8 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  // Ask permission mode gates every local tool call, and the query or code
-  // being approved lives inside ToolFallbackContent while Allow/Deny render
-  // outside the card, so a collapsed card asks for a decision about text the
-  // trigger only shows truncated.
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 

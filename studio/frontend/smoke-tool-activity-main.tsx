@@ -3,29 +3,19 @@
 
 // Harness page for tests/studio/playwright_tool_activity.py.
 //
-// The node suite can reach the two open-state reducers and the preferences
-// store, but not a rendered Radix Collapsible: there is no jsdom and no JSX
-// loader, so `aria-expanded`, whether closed content is in the DOM at all, and
-// what a close does to scroll position are only answerable here.
+// The node suite reaches the open-state reducers and the store, but not a
+// rendered Radix Collapsible, so aria-expanded, whether closed content is in
+// the DOM, and scroll movement are only answerable here.
 //
-// It mounts the four disclosure paths the preference has to reach, because they
-// arrive at the same primitive by different routes and a fix that lands in one
-// can miss the others:
+// Four disclosure paths reach the same primitive by different routes, and a fix
+// landing in one can miss the others:
+//   controlled    useToolActivityOpen -- web search, knowledge base, code exec
+//   uncontrolled  <ToolFallbackRoot defaultOpen> -- terminal, generic/MCP
+//   approval      the same card with awaitingApproval, which must stay open
+//   group         <ToolGroupRoot>, whose open state is its own
 //
-//   controlled    useToolActivityOpen(isRunning, hasText) -- web search,
-//                 knowledge base, code execution. Collapses from an effect.
-//   uncontrolled  <ToolFallbackRoot defaultOpen={isRunning}> -- terminal and
-//                 every generic/MCP tool. Collapses during render.
-//   approval      the same card with awaitingApproval set. Its payload is the
-//                 command being approved, and Allow/Deny render outside the
-//                 card, so this one must stay open whatever the preference says.
-//   group         <ToolGroupRoot> -- the multi-call wrapper, which owns its
-//                 open state separately from the cards inside it.
-//
-// Tall filler sits above the cards so a collapse can be measured for viewport
-// movement, and an explicit `overflow-y: auto` ancestor exists because that is
-// what useCollapseScrollLock walks up to find; against a plain document body
-// the hook finds nothing and silently does nothing.
+// The explicit `overflow-y: auto` ancestor exists because that is what
+// useCollapseScrollLock walks up to find.
 
 import "@/index.css";
 

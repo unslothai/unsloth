@@ -52,10 +52,9 @@ export type ToolFallbackRootProps = Omit<
   onOpenChange?: (open: boolean) => void;
   defaultOpen?: boolean;
   /**
-   * The call is parked on an allow/deny decision. Pins the card open, above the
-   * collapse preference and above `open`, because the thing being approved has
-   * to be readable while the buttons to approve it are on screen. The group
-   * does the same with `hasPendingConfirmation` (tool-group.tsx).
+   * Parked on an allow/deny decision. Pins the card open above `open` and the
+   * collapse preference, so what is being approved stays readable. Groups do
+   * the same with `hasPendingConfirmation`.
    */
   awaitingApproval?: boolean;
 };

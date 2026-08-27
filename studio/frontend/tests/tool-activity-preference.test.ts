@@ -4,16 +4,11 @@
 // The transition table for the collapse-tool-activity preference, the store's
 // compatibility promise, and the JSX wiring that carries both.
 //
-// On the shape of the assertions here: the two state machines live in a plain
-// .ts module precisely so they can be called, and the store is importable, so
-// those claims are made by running the code. The cards are .tsx, which this
-// runner cannot execute -- no jsdom, no JSX loader, and
-// --experimental-strip-types does not strip JSX -- so their claims are made
-// against the TypeScript AST rather than against a substring of their source.
-// The difference matters: a substring assertion passes for any file that
-// contains the characters, so it survives the feature being broken and dies on
-// a reformat, which is the wrong way round. Rendered behaviour is covered by
-// tests/studio/playwright_tool_activity.py.
+// The reducers and the store are plain .ts, so those claims run the code. The
+// cards are .tsx and this runner cannot execute JSX (no jsdom, no JSX loader),
+// so their claims go through the TypeScript AST, not a substring of the source:
+// a substring passes on broken code and fails on a reformat, which is backwards.
+// Rendered behaviour lives in tests/studio/playwright_tool_activity.py.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
