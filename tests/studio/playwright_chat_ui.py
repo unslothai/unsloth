@@ -96,9 +96,7 @@ def apply_cpu_throttle(ctx, page):
     """Throttle this page, if the option is set. No-op otherwise."""
     if CPU_THROTTLE <= 1:
         return page
-    ctx.new_cdp_session(page).send(
-        "Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE}
-    )
+    ctx.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE})
     info(f"CPU throttled {CPU_THROTTLE}x")
     return page
 

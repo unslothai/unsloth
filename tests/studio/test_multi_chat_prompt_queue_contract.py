@@ -357,8 +357,7 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
         "same class of bug this whole test exists for"
     )
     assert refusal < code.index("clearStoredDraft();"), (
-        "the draft is cleared before the refusal, so a refused prompt is lost "
-        "on reload"
+        "the draft is cleared before the refusal, so a refused prompt is lost on reload"
     )
     assert "disableQueue," in code, "disableQueue is missing from the effect deps"
     # Unchanged: nothing queueable still sends, and the chord's two branches

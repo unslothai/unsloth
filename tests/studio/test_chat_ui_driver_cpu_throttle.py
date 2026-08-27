@@ -64,7 +64,7 @@ def test_the_refusal_precedes_the_first_page():
     now lives in a helper defined near the top -- textual order across the file
     would say nothing about what runs first.
     """
-    launch = CODE[CODE.index("browser_type = getattr(p, PLAYWRIGHT_BROWSER)"):]
+    launch = CODE[CODE.index("browser_type = getattr(p, PLAYWRIGHT_BROWSER)") :]
     guard = launch.index("CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER")
     first_page = launch.index("ctx.new_page()")
     assert guard < first_page, (
@@ -82,9 +82,9 @@ def test_the_cdp_call_has_exactly_one_owner():
         r"def apply_cpu_throttle\([^)]*\):(?P<body>(?:\n(?:[ \t].*)?)+?)(?=\ndef |\nclass |\Z)",
         CODE,
     )
-    assert owner and "new_cdp_session" in owner.group("body"), (
-        "the throttle is applied somewhere other than apply_cpu_throttle"
-    )
+    assert owner and "new_cdp_session" in owner.group(
+        "body"
+    ), "the throttle is applied somewhere other than apply_cpu_throttle"
 
 
 def test_a_replacement_page_is_throttled_again():
@@ -115,11 +115,9 @@ def test_a_replacement_page_is_throttled_again():
         "the throttle is re-applied unconditionally; only a REPLACEMENT page "
         "needs it, and a fresh CDP session per recovery is not free"
     )
-    assert "_robust_recover_or_replace_page(" not in CODE.replace(
-        body, "", 1
-    ).replace("recover_or_replace_page as _robust_recover_or_replace_page", "", 1), (
-        "a call site reaches the shared helper directly, skipping the wrapper"
-    )
+    assert "_robust_recover_or_replace_page(" not in CODE.replace(body, "", 1).replace(
+        "recover_or_replace_page as _robust_recover_or_replace_page", "", 1
+    ), "a call site reaches the shared helper directly, skipping the wrapper"
 
 
 def test_the_driver_still_parses():
