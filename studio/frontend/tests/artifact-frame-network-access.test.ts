@@ -414,3 +414,80 @@ test("the banner deep-links to the network access setting", () => {
   assert.match(deepLinks[0].options, /scrollTarget:\s*"chat-canvas-network"/);
   assert.equal(deepLinks[0].handler, "onClick");
 });
+
+/** The opening tag of whichever element carries `ref={<name>}`. */
+function readTagWithRef(name: string): string {
+  const source = sourceFile(FRAME);
+  let text: string | undefined;
+  const visit = (node: ts.Node): void => {
+    const opening = openingTag(node);
+    if (opening?.getText().includes(`ref={${name}}`)) {
+      text = opening.getText();
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(text, `no element carries ref={${name}}`);
+  return text;
+}
+
+// Turning the setting on unmounts the button that opened the dialog, and the
+// settings dialog only restores an opener that is still connected. Without a
+// target that outlives the banner, closing the dialog drops focus on <body>.
+test("the settings deep link parks focus somewhere that outlives the banner", () => {
+  const source = sourceFile(FRAME);
+  const handlers: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText().endsWith(".openDialog")
+    ) {
+      for (let at: ts.Node = node; at.parent; at = at.parent) {
+        if (ts.isJsxAttribute(at.parent)) {
+          handlers.push(at.getText());
+          break;
+        }
+      }
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.equal(handlers.length, 1, "the deep link is not in one JSX handler");
+  const handler = handlers[0];
+  const focusAt = handler.indexOf("frameRef.current?.focus");
+  const openAt = handler.indexOf(".openDialog");
+  assert.ok(focusAt >= 0, "the handler must hand the frame focus");
+  assert.ok(
+    focusAt < openAt,
+    "the frame must take focus BEFORE the dialog captures its opener",
+  );
+});
+
+test("the frame itself can hold that focus", () => {
+  assert.match(readTagWithRef("frameRef"), /tabIndex=\{-1\}/);
+});
+
+// Alert is assertive and atomic, so any change inside it re-reads the title,
+// the description and the actions. The count climbs once per blocked URL, so
+// left in the region a CDN-heavy canvas interrupts a screen reader repeatedly.
+test("the climbing blocked count is kept out of the assertive alert", () => {
+  const source = sourceFile(FRAME);
+  let paragraph: string | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isJsxElement(node) &&
+      node.openingElement.tagName.getText() === "p" &&
+      node.getText().includes("blockedBanner")
+    ) {
+      paragraph = node.getText();
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(paragraph, "the paragraph carrying the blocked count is missing");
+  assert.match(
+    paragraph,
+    /aria-live="off"/,
+    "the count line must opt out of the live region",
+  );
+});

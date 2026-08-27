@@ -111,6 +111,10 @@ export function ArtifactHtmlFrame({
 }) {
   const t = useT();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Focus target the settings deep link hands off to. The banner button that
+  // opens the dialog unmounts as soon as the setting goes on, and the dialog
+  // only restores an opener that is still connected.
+  const frameRef = useRef<HTMLDivElement>(null);
   // Every canvas honors this, fence or tool. Off by default; the standing half
   // of the gate, alongside the per-canvas grant below.
   const networkAccessEnabled = useChatRuntimeStore(
@@ -218,7 +222,11 @@ export function ArtifactHtmlFrame({
       : shownHosts;
 
   return (
-    <div className={cn("relative", fill ? "h-full" : undefined)}>
+    <div
+      ref={frameRef}
+      tabIndex={-1}
+      className={cn("relative outline-none", fill ? "h-full" : undefined)}
+    >
       <iframe
         ref={iframeRef}
         src={src}
@@ -245,7 +253,11 @@ export function ArtifactHtmlFrame({
             </AlertAction>
             <AlertTitle>{t("settings.chat.artifacts.blockedTitle")}</AlertTitle>
             <AlertDescription>
-              <p>
+              {/* Alert is an assertive live region, and the count climbs once per
+                  blocked URL, up to BLOCKED_URIS_TRACKED. Excluding this line
+                  keeps the appearance announced once instead of the whole alert
+                  re-reading on every report. */}
+              <p aria-live="off">
                 {t(
                   blockedForCanvas.uris.length === 1
                     ? "settings.chat.artifacts.blockedBanner"
@@ -260,11 +272,15 @@ export function ArtifactHtmlFrame({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() =>
+                  onClick={() => {
+                    // Focus the canvas before the dialog captures its opener:
+                    // this button is gone by the time the dialog closes, and an
+                    // opener that unmounted leaves focus on <body>.
+                    frameRef.current?.focus({ preventScroll: true });
                     useSettingsDialogStore.getState().openDialog("chat", {
                       scrollTarget: "chat-canvas-network",
-                    })
-                  }
+                    });
+                  }}
                 >
                   {t("settings.chat.artifacts.blockedSettingsAction")}
                 </Button>
