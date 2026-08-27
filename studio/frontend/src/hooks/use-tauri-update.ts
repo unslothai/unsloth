@@ -25,6 +25,7 @@ import {
   preparationStatus,
   restartPlan,
   stagingDecision,
+  waitForBackendIdle,
   type UpdatePreparation,
 } from "@/lib/update-preparation";
 
@@ -91,7 +92,6 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   releaseTagPrefix: "v",
 };
 
-const IDLE_POLL_MS = 20_000;
 const PREPARATION_STATUSES: ReadonlySet<UpdateStatus> = new Set([
   "available",
   "preparing",
@@ -440,12 +440,23 @@ export function useTauriUpdate(isExternalServer = false) {
         return;
       }
       patchPreparation({ backend: "waiting" });
-      while (preparingVersionRef.current === version) {
-        const trainingActive = isTrainingStartPending(useTrainingRuntimeStore.getState());
-        if (backendIdle(await fetchHealth(), trainingActive)) break;
-        await wait(IDLE_POLL_MS);
+      const outcome = await waitForBackendIdle({
+        cancelled: () => preparingVersionRef.current !== version,
+        probe: async () =>
+          backendIdle(
+            await fetchHealth(),
+            isTrainingStartPending(useTrainingRuntimeStore.getState()),
+          ),
+        sleep: wait,
+        now: () => Date.now(),
+      });
+      if (outcome === "cancelled") return;
+      if (outcome === "timeout") {
+        // "skipped" still settles the offer into ready, and restartPlan falls back
+        // to the classic update because the backend was never staged.
+        patchPreparation({ backend: "skipped" });
+        return;
       }
-      if (preparingVersionRef.current !== version) return;
       patchPreparation({ backend: "staging" });
       await startStagedUpdate(appendLog);
       if (preparingVersionRef.current !== version) return;

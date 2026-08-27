@@ -138,6 +138,34 @@ def probe_cli(venv: Path, env: dict[str, str]) -> None:
         raise StageError(f"staged CLI failed to start: {result.stderr.strip()[-2000:]}")
 
 
+def console_script(venv: Path) -> Path:
+    return venv / "bin" / "unsloth"
+
+
+def probe_console_script(venv: Path, env: dict[str, str]) -> None:
+    """POSIX runs this file, not `python -m`, so it is the probe that counts.
+
+    An installer rewrites it with a shebang naming the interpreter by absolute
+    path, and activation moves the venv out of that path, so a stale one shows up
+    nowhere else. Windows is exempt: resolve_managed_cli_invocation_with runs
+    python.exe there, and quarantine can take the unsigned launcher stub off a
+    working install, so its absence would fail a stage that is fine.
+    """
+    if platform.system() == "Windows":
+        return
+    script = console_script(venv)
+    if not script.is_file():
+        raise StageError(f"staged environment has no launcher at {script}")
+    try:
+        result = _run([str(script), "-h"], cwd = venv.parent, env = env)
+    except OSError as exc:
+        # A shebang naming an interpreter that is not there fails here, not with a
+        # return code: the kernel refuses the exec.
+        raise StageError(f"staged launcher is not executable: {exc}") from exc
+    if result.returncode != 0:
+        raise StageError(f"staged launcher failed to start: {result.stderr.strip()[-2000:]}")
+
+
 def child_environment(root: Path) -> dict[str, str]:
     env = dict(os.environ)
     env[STAGE_ROOT_ENV] = str(root)
@@ -188,9 +216,14 @@ def stage(
         if run_update(root, update_args) != 0:
             raise StageError("staged update failed")
         echo("[TAURI:STEP] verify")
+        # The update reinstalls the package, and every console script it writes
+        # names the interpreter under the stage by absolute path. Activation moves
+        # the venv out of that path, so relocate what the update just wrote.
+        make_relocatable(root / VENV_NAME)
         env = child_environment(root)
         version = installed_version(root / VENV_NAME, env)
         probe_cli(root / VENV_NAME, env)
+        probe_console_script(root / VENV_NAME, env)
         shell_version = (os.environ.get(SHELL_VERSION_ENV) or "").strip() or None
         write_ready_marker(root, version, shell_version)
     except BaseException:

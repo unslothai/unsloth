@@ -100,6 +100,7 @@ def test_stage_builds_a_ready_marker_from_a_successful_update(monkeypatch, tmp_p
 
     monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
     monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
+    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
     echoed: list[str] = []
 
     result = _studio_stage.stage(
@@ -253,3 +254,52 @@ def test_update_stage_reports_an_unexpected_failure_as_a_tauri_error(monkeypatch
     assert result.exit_code == 1
     assert "[TAURI:ERROR] OSError:" in result.output
     assert "No space left on device" in result.output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
+def test_stage_relocates_the_launcher_the_update_rewrote(monkeypatch, tmp_path):
+    home = tmp_path / "studio"
+    _make_venv(home)
+    stage_venv = home / _studio_stage.STAGE_DIR_NAME / _studio_stage.VENV_NAME
+
+    def reinstalling_update(root: Path, args: list[str]) -> int:
+        # What pip/uv do on every upgrade: rewrite the console script with the
+        # interpreter named by absolute path, inside the stage.
+        (root / _studio_stage.VENV_NAME / "bin" / "unsloth").write_text(
+            f"#!{root / _studio_stage.VENV_NAME}/bin/python\nprint('cli')\n", encoding = "utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
+    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
+    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
+
+    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = reinstalling_update)
+
+    launcher = (stage_venv / "bin" / "unsloth").read_text(encoding = "utf-8")
+    # Activation moves the venv out of .update-stage, so an absolute shebang into
+    # it would leave the activated backend unable to start at all.
+    assert launcher.startswith(_studio_stage.RELOCATABLE_SHEBANG)
+    assert str(_studio_stage.STAGE_DIR_NAME) not in launcher.splitlines()[1]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
+def test_probe_console_script_rejects_a_launcher_that_cannot_start(tmp_path):
+    venv = _make_venv(tmp_path)
+    launcher = venv / "bin" / "unsloth"
+    launcher.write_text("#!/nonexistent/python\n", encoding = "utf-8")
+    launcher.chmod(0o755)
+
+    with pytest.raises(_studio_stage.StageError, match = "launcher"):
+        _studio_stage.probe_console_script(venv, dict(os.environ))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
+def test_probe_console_script_accepts_a_relocated_launcher(tmp_path):
+    venv = _make_venv(tmp_path)
+    (venv / "bin" / "python").write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    (venv / "bin" / "python").chmod(0o755)
+    _studio_stage.make_relocatable(venv)
+    (venv / "bin" / "unsloth").chmod(0o755)
+
+    _studio_stage.probe_console_script(venv, dict(os.environ))

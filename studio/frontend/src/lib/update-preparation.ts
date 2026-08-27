@@ -98,3 +98,31 @@ export function preparationShortLabel(preparation: UpdatePreparation): string {
       return "starting";
   }
 }
+
+export const IDLE_POLL_MS = 20_000;
+// A backend that is stopped, crashed, or will not start never reports idle, and
+// the update offer is the user's way out of exactly that. Waiting forever leaves
+// the pill with no action and the settings button disabled, so the wait is bounded
+// and the offer falls back to the classic update.
+export const IDLE_WAIT_MS = 5 * 60_000;
+
+export type IdleWaitOutcome = "idle" | "timeout" | "cancelled";
+
+export async function waitForBackendIdle(deps: {
+  cancelled: () => boolean;
+  probe: () => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  pollMs?: number;
+  timeoutMs?: number;
+}): Promise<IdleWaitOutcome> {
+  const pollMs = deps.pollMs ?? IDLE_POLL_MS;
+  const deadline = deps.now() + (deps.timeoutMs ?? IDLE_WAIT_MS);
+  while (!deps.cancelled()) {
+    if (await deps.probe()) return "idle";
+    if (deps.cancelled()) return "cancelled";
+    if (deps.now() >= deadline) return "timeout";
+    await deps.sleep(pollMs);
+  }
+  return "cancelled";
+}

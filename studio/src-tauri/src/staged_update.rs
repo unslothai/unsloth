@@ -132,7 +132,7 @@ fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
     );
     let trash = home.join(format!("{ROLLBACK_TRASH_PREFIX}{}", std::process::id()));
     fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
-    swap_entries(home, &prev, &trash)?;
+    swap_entries(home, &prev, &trash, true)?;
     write_versions(&home.join(FAILED_MARKER), &versions)?;
     let _ = fs::remove_dir_all(&prev);
     std::thread::spawn(move || {
@@ -172,11 +172,11 @@ fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     let prev = home.join(PREV_DIR);
     let _ = fs::remove_dir_all(&prev);
     fs::create_dir_all(&prev).map_err(|e| e.to_string())?;
-    swap_entries(home, &stage, &prev)?;
+    swap_entries(home, &stage, &prev, false)?;
     if let Err(error) = write_versions(&prev.join(PENDING_MARKER), &versions) {
         // Without the marker the next launch drops the previous runtime instead of
         // restoring it, so an unverified backend would become permanent. Put it back.
-        let _ = swap_entries(home, &prev, &stage);
+        let _ = swap_entries(home, &prev, &stage, false);
         let _ = fs::remove_dir_all(&prev);
         return Err(error);
     }
@@ -197,15 +197,29 @@ fn shell_order(current: &str, required: &str) -> Ordering {
     }
 }
 
-fn swap_entries(home: &Path, incoming: &Path, outgoing: &Path) -> Result<(), String> {
+/// `evict_extra` moves a live entry the incoming tree does not have out of the way
+/// instead of leaving it. Rollback needs it: a legacy install with no tiered
+/// sidecars has nothing to put in `.update-prev` for them, so without this the
+/// failed update's sidecars stay live beside the restored backend, which then
+/// imports from an environment that was never confirmed. Activation must not do
+/// it -- there the live tree is the one being preserved.
+fn swap_entries(
+    home: &Path,
+    incoming: &Path,
+    outgoing: &Path,
+    evict_extra: bool,
+) -> Result<(), String> {
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = (|| {
         for name in RUNTIME_ENTRIES {
             let staged = incoming.join(name);
+            let live = home.join(name);
             if !staged.exists() {
+                if evict_extra && live.exists() {
+                    rename_tracked(&live, &outgoing.join(name), &mut moved)?;
+                }
                 continue;
             }
-            let live = home.join(name);
             if live.exists() {
                 rename_tracked(&live, &outgoing.join(name), &mut moved)?;
             }
@@ -422,7 +436,7 @@ mod tests {
         fs::create_dir_all(&blocker).unwrap();
         fs::write(blocker.join("occupied"), "").unwrap();
 
-        let result = swap_entries(&home, &stage, &prev);
+        let result = swap_entries(&home, &stage, &prev, false);
 
         assert!(result.is_err());
         for name in RUNTIME_ENTRIES {
@@ -442,16 +456,40 @@ mod tests {
         let prev = home.join(PREV_DIR);
         fs::create_dir_all(&prev).unwrap();
 
-        swap_entries(&home, &stage, &prev).unwrap();
+        swap_entries(&home, &stage, &prev, false).unwrap();
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         // What the failed-marker branch runs: the previous runtime goes back and the
         // staged one returns to the stage, so the next launch can try it again.
-        swap_entries(&home, &prev, &stage).unwrap();
+        swap_entries(&home, &prev, &stage, false).unwrap();
 
         for name in RUNTIME_ENTRIES {
             assert_eq!(tag(&home, name), "old", "{name}");
             assert_eq!(tag(&stage, name), "new", "{name}");
         }
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn rollback_takes_back_sidecars_the_failed_update_added() {
+        let home = temp_home("rollback-extra");
+        // A legacy install: the managed venv is there, the tiered sidecars are not.
+        fs::create_dir_all(home.join("unsloth_studio")).unwrap();
+        fs::write(home.join("unsloth_studio").join("tag"), "old").unwrap();
+        // The staged update builds all of them.
+        stage_ready(&home, &versions(None));
+        reconcile_at_launch(&home, "0.1.900-beta");
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        assert_eq!(tag(&home, ".venv_t5_530"), "new");
+
+        // The new backend never became healthy.
+        reconcile_at_launch(&home, "0.1.900-beta");
+
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        for name in [".venv_t5_530", ".venv_t5_550", ".venv_t5_510"] {
+            // The restored backend must not find the unconfirmed update's sidecars.
+            assert!(!home.join(name).exists(), "{name}");
+        }
+        assert_eq!(status(&home).state, "failed");
         fs::remove_dir_all(home).unwrap();
     }
 

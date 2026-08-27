@@ -10,6 +10,7 @@ import {
   preparationStatus,
   restartPlan,
   stagingDecision,
+  waitForBackendIdle,
   type StagedUpdateStatus,
   type UpdatePreparation,
 } from "../src/lib/update-preparation.ts";
@@ -79,4 +80,65 @@ test("download progress clamps to a whole percentage", () => {
   assert.equal(downloadPercent(0, null), 0);
   assert.equal(downloadPercent(50, 200), 25);
   assert.equal(downloadPercent(300, 200), 100);
+});
+
+function clock() {
+  let now = 0;
+  return {
+    now: () => now,
+    sleep: async (ms: number) => {
+      now += ms;
+    },
+  };
+}
+
+test("the idle wait stops at the first idle probe", async () => {
+  const c = clock();
+  let probes = 0;
+  const outcome = await waitForBackendIdle({
+    cancelled: () => false,
+    probe: async () => ++probes >= 3,
+    sleep: c.sleep,
+    now: c.now,
+  });
+  assert.equal(outcome, "idle");
+  assert.equal(probes, 3);
+});
+
+test("an unreachable backend gives up instead of waiting forever", async () => {
+  const c = clock();
+  let probes = 0;
+  const outcome = await waitForBackendIdle({
+    cancelled: () => false,
+    // What fetchHealth() returns when the backend is stopped or will not start.
+    probe: async () => {
+      probes += 1;
+      return false;
+    },
+    sleep: c.sleep,
+    now: c.now,
+    pollMs: 20_000,
+    timeoutMs: 60_000,
+  });
+  assert.equal(outcome, "timeout");
+  assert.equal(probes, 4);
+  // And the offer still settles, so the pill gets its Restart and the restart runs
+  // the classic update rather than leaving the user with no way to update at all.
+  assert.equal(preparationStatus(prep({ shell: "done", backend: "skipped" })), "ready");
+  assert.equal(restartPlan(prep({ shell: "done", backend: "skipped" })), "classic");
+});
+
+test("a newer offer cancels the wait", async () => {
+  const c = clock();
+  let probes = 0;
+  const outcome = await waitForBackendIdle({
+    cancelled: () => probes >= 2,
+    probe: async () => {
+      probes += 1;
+      return false;
+    },
+    sleep: c.sleep,
+    now: c.now,
+  });
+  assert.equal(outcome, "cancelled");
 });
