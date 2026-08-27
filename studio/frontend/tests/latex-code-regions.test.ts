@@ -95,6 +95,7 @@ test("escaped inline math from local models is recovered inside lists", () => {
 });
 
 test("escaped math recovery preserves literal and non-math dollars", () => {
+  const longBody = "a".repeat(201);
   const cases: [string, string][] = [
     [
       String.raw`\$5\$ is intentionally literal currency`,
@@ -105,14 +106,34 @@ test("escaped math recovery preserves literal and non-math dollars", () => {
       String.raw`\$5\$ + \$10\$ and \$v_s\$`,
       String.raw`\$5\$ + \$10\$ and $v_s$`,
     ],
+    [
+      String.raw`$5 + \$v_s\$ costs $10`,
+      String.raw`\$5 + $v_s$ costs \$10`,
+    ],
     ["$ v_s $ already works", "$ v_s $ already works"],
     ["$5 to $10 is a price range", "\\$5 to \\$10 is a price range"],
     ["`\\$v_s\\$` is code", "`\\$v_s\\$` is code"],
+    [String.raw`    \$v_s\$`, String.raw`    \$v_s\$`],
+    [String.raw`- item
+    \$v_s\$`, "- item\n    $v_s$"],
     [
       String.raw`[\$v_s\$](https://example.com/\$literal\$)`,
       String.raw`[$v_s$](https://example.com/\$literal\$)`,
     ],
     ["$$\n v_s \n$$", "$$\n v_s \n$$"],
+    [
+      String.raw`$$
+\text{Revenue: \$USD\$}
+$$`,
+      String.raw`$$
+\text{Revenue: \$USD\$}
+$$`,
+    ],
+    [String.raw`\$a\$\$b\$`, "$a$ $b$"],
+    [
+      String.raw`\$${longBody}\$ + \$x\$`,
+      String.raw`\$${longBody}\$ + $x$`,
+    ],
     [String.raw`\$v_s is incomplete`, String.raw`\$v_s is incomplete`],
     ["\\$a\nb\\$ crosses a line", "\\$a\nb\\$ crosses a line"],
   ];

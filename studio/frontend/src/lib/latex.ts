@@ -49,7 +49,7 @@ function mergeRegions(
 }
 
 /**
- * Find code-block regions (``` ... ```, ~~~ ... ~~~, and ` ... `) to skip.
+ * Find code regions (fenced, indented, and inline) to skip.
  * Returns a sorted, non-overlapping array of [start, end] index pairs.
  */
 export function findCodeBlockRegions(content: string): Array<[number, number]> {
@@ -61,19 +61,59 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
     fenced.push([match.index, match.index + match[0].length]);
   }
 
-  // Inline code: `...`, skipped when inside a fenced block. Both loops yield
-  // ascending matches, so walk the fenced list with a cursor rather than
+  const indented: Array<[number, number]> = [];
+  // Root-level indented code cannot interrupt a paragraph. The cheap boundary
+  // check keeps the per-frame streaming path from allocating every line unless
+  // a block can actually start at the document root or after a blank line.
+  if (
+    /^(?: {4}|\t)|(?:\r\n|\n|\r)[^\S\r\n]*(?:\r\n|\n|\r)(?: {4}|\t)/.test(
+      content,
+    )
+  ) {
+    const lines = content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g);
+    let blockStart = -1;
+    let blockEnd = -1;
+    let previousBlank = true;
+    for (const lineMatch of lines) {
+      const line = lineMatch[0];
+      if (!line) break;
+      const start = lineMatch.index;
+      const text = line.replace(/(?:\r\n|\n|\r)$/, "");
+      const blank = /^\s*$/.test(text);
+      const code = /^(?: {4}|\t)/.test(text);
+      if (blockStart >= 0) {
+        if (code || blank) {
+          blockEnd = start + line.length;
+          previousBlank = blank;
+          continue;
+        }
+        indented.push([blockStart, blockEnd]);
+        blockStart = -1;
+      }
+      if (code && previousBlank) {
+        blockStart = start;
+        blockEnd = start + line.length;
+      }
+      previousBlank = blank;
+    }
+    if (blockStart >= 0) indented.push([blockStart, blockEnd]);
+  }
+
+  const blocks = mergeRegions(fenced, indented);
+
+  // Inline code: `...`, skipped when inside a block. Both loops yield
+  // ascending matches, so walk the block list with a cursor rather than
   // rescanning it per match (was quadratic on code-heavy text).
   const inline: Array<[number, number]> = [];
   const inlineRe = /`[^`\n]+`/g;
-  let fencedIndex = 0;
+  let blockIndex = 0;
   while ((match = inlineRe.exec(content)) !== null) {
     const start = match.index;
     const end = start + match[0].length;
-    while (fencedIndex < fenced.length && fenced[fencedIndex][1] <= start) {
-      fencedIndex += 1;
+    while (blockIndex < blocks.length && blocks[blockIndex][1] <= start) {
+      blockIndex += 1;
     }
-    const block = fencedIndex < fenced.length ? fenced[fencedIndex] : null;
+    const block = blockIndex < blocks.length ? blocks[blockIndex] : null;
     if (!(block && start >= block[0] && end <= block[1])) {
       inline.push([start, end]);
     }
@@ -81,7 +121,7 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
 
   // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
   // the binary search land on the inner span and miss the outer one.
-  return mergeRegions(fenced, inline);
+  return mergeRegions(blocks, inline);
 }
 
 /**
@@ -243,7 +283,6 @@ function hasInlineMathCloser(
   return false;
 }
 
-/** True when Markdown treats the dollar at `offset` as escaped. */
 function isEscapedDollar(content: string, offset: number): boolean {
   if (content[offset] !== "$") return false;
   let slashes = 0;
@@ -253,24 +292,77 @@ function isEscapedDollar(content: string, offset: number): boolean {
   return slashes % 2 === 1;
 }
 
+/** Find existing `$...$` and `$$...$$` regions outside code and links. */
+function findDollarMathRegions(
+  content: string,
+  skipRegions: Array<[number, number]>,
+): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  for (let opening = 0; opening < content.length; opening += 1) {
+    if (
+      content[opening] !== "$" ||
+      isEscapedDollar(content, opening) ||
+      isInRegion(opening, skipRegions)
+    ) {
+      continue;
+    }
+    const display = content[opening + 1] === "$";
+    const bodyStart = opening + (display ? 2 : 1);
+    const limit = Math.min(content.length, bodyStart + (display ? 4096 : 200));
+    for (let closing = bodyStart; closing < limit; closing += 1) {
+      if (!display && /[\r\n]/.test(content[closing])) break;
+      if (
+        content[closing] !== "$" ||
+        isEscapedDollar(content, closing) ||
+        isInRegion(closing, skipRegions)
+      ) {
+        continue;
+      }
+      if (display !== (content[closing + 1] === "$")) continue;
+      if (
+        !display &&
+        (content[closing - 1] === "$" || content[closing + 1] === "$")
+      ) {
+        break;
+      }
+      if (!display && /\d/.test(content[closing + 1] ?? "")) continue;
+      if (!display && !looksLikeMathBody(content.slice(bodyStart, closing))) {
+        break;
+      }
+      const end = closing + (display ? 2 : 1);
+      regions.push([opening, end]);
+      opening = end - 1;
+      break;
+    }
+  }
+  return regions;
+}
+
 /**
- * Recover math-looking spans whose dollar delimiters were escaped by a model.
- *
- * Local models sometimes emit `\$v_s\$`. Markdown correctly treats those as
- * literal dollars, so the UI shows `$v_s$` even while a `$$...$$` equation in
- * the same reply renders. Only paired, same-line, math-looking spans are
- * recovered. Currency, code, link destinations, even-backslash runs and
- * incomplete spans remain literal; the bounded closer scan stays linear.
+ * Recover math-looking `\$...\$` spans emitted by local models. Existing
+ * math, currency, code, links, even-backslash runs, and incomplete spans stay
+ * literal. Same-line pairs are consumed once and bodies are capped.
  */
 function normalizeEscapedInlineMath(content: string): string {
   if (!content.includes("\\$")) return content;
 
-  const skipRegions = mergeRegions(
+  let skipRegions = mergeRegions(
     findCodeBlockRegions(content),
     findLinkDestinationRegions(content),
   );
+  skipRegions = mergeRegions(
+    skipRegions,
+    findDollarMathRegions(content, skipRegions),
+  );
   const parts: string[] = [];
   let last = 0;
+  let lastChar = "";
+  const append = (chunk: string): void => {
+    if (!chunk) return;
+    if (lastChar === "$" && chunk.startsWith("$")) parts.push(" ");
+    parts.push(chunk);
+    lastChar = chunk[chunk.length - 1];
+  };
 
   for (let opening = 0; opening < content.length; opening += 1) {
     if (
@@ -283,34 +375,32 @@ function normalizeEscapedInlineMath(content: string): string {
       continue;
     }
 
-    const limit = Math.min(content.length, opening + 202);
-    for (let closing = opening + 1; closing < limit; closing += 1) {
+    const opener = opening;
+    for (let closing = opening + 1; closing < content.length; closing += 1) {
       if (content[closing] === "\n" || content[closing] === "\r") break;
       if (content[closing] !== "$" || !isEscapedDollar(content, closing)) {
         continue;
       }
+      opening = closing;
       if (content[closing + 1] === "$" || isInRegion(closing, skipRegions)) {
         break;
       }
 
-      const body = content.slice(opening + 1, closing - 1);
+      const body = content.slice(opener + 1, closing - 1);
       const trimmed = body.trim();
-      if (!looksLikeMathBody(trimmed)) {
-        // This is the opener's matching literal closer. Do not reconsider it
-        // as an opener and accidentally pair across two currency spans.
-        opening = closing;
+      if (body.length > 200 || !looksLikeMathBody(trimmed)) {
         break;
       }
 
-      parts.push(content.slice(last, opening - 1), `$${trimmed}$`);
+      append(content.slice(last, opener - 1));
+      append(`$${trimmed}$`);
       last = closing + 1;
-      opening = closing;
       break;
     }
   }
 
   if (parts.length === 0) return content;
-  parts.push(content.slice(last));
+  append(content.slice(last));
   return parts.join("");
 }
 
