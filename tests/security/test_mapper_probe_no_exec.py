@@ -692,7 +692,8 @@ def test_the_builder_call_that_binds_the_exports_is_the_one_read(monkeypatch):
     """A validation call over a dummy table before the real one is not the source."""
     lines = REAL_MAPPER.splitlines(True)
     insert = next(
-        i for i, line in enumerate(lines)
+        i
+        for i, line in enumerate(lines)
         if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
     )
     # Walk back to the start of that assignment statement.
@@ -712,7 +713,7 @@ def test_the_builder_call_that_binds_the_exports_is_the_one_read(monkeypatch):
         tables = loader_utils._get_new_mapper()
     assert any(expected)
     for table in tables:
-        assert not any("vendor/dummy" in str(key) for key in table), (
-            "the dummy call was read as the one that populates the exports"
-        )
+        assert not any(
+            "vendor/dummy" in str(key) for key in table
+        ), "the dummy call was read as the one that populates the exports"
     assert tables == expected

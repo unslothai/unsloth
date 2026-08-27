@@ -861,8 +861,11 @@ def _get_new_mapper():
         # afterwards must not be the one this reads.
         # The names the module exports, which is what the probe answers with.
         exported_names = (
-            "INT_TO_FLOAT_MAPPER", "FLOAT_TO_INT_MAPPER", "MAP_TO_UNSLOTH_16bit",
-            "FLOAT_TO_FP8_BLOCK_MAPPER", "FLOAT_TO_FP8_ROW_MAPPER",
+            "INT_TO_FLOAT_MAPPER",
+            "FLOAT_TO_INT_MAPPER",
+            "MAP_TO_UNSLOTH_16bit",
+            "FLOAT_TO_FP8_BLOCK_MAPPER",
+            "FLOAT_TO_FP8_ROW_MAPPER",
         )
 
         def _binds_the_exports(statement):
@@ -877,8 +880,7 @@ def _get_new_mapper():
             for target in targets:
                 if isinstance(target, (ast.Tuple, ast.List)):
                     bound |= {
-                        element.id for element in target.elts
-                        if isinstance(element, ast.Name)
+                        element.id for element in target.elts if isinstance(element, ast.Name)
                     }
                 elif isinstance(target, ast.Name):
                     bound.add(target.id)
@@ -889,8 +891,7 @@ def _get_new_mapper():
         first_call = None
         for index, statement in enumerate(tree.body):
             calls = [
-                node for node, _shadowed in _executed_nodes([statement])
-                if _calls_the_builder(node)
+                node for node, _shadowed in _executed_nodes([statement]) if _calls_the_builder(node)
             ]
             if not calls:
                 continue
