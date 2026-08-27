@@ -2836,6 +2836,14 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 # floors are now deliberately different numbers: llama.cpp's still governs ITS fitter,
 # and Unsloth does not pass -fitc, so a launch that hands llama.cpp an explicit -c can
 # still be reduced below this by the child's own fit step.
+#
+# Every arm now floors here, Metal included. The Apple arm used to hold a separate
+# hardcoded 4096, which made a Mac publish half the context a discrete GPU published
+# for the same model. Being BELOW llama.cpp's own floor is what made that safe to
+# raise: -c 8192 is a request the child's --fit can still reduce, down to its 4096,
+# so the arm hands over a ceiling rather than a commitment. The one arm still on a
+# bare 4096 is _plan_tensor_parallel's no-KV fallback, which cannot prove a safe cap
+# at all and is a different question from this floor.
 _FIT_MIN_CTX = 8192
 _FIT_FLOOR_MIN_CTX = 256
 
@@ -7930,7 +7938,7 @@ class LlamaCppBackend:
 
         Either way the child over-commits unified memory, surfacing as
         llama-server's "Compute error." at decode (#5118, #6529). Floor to the
-        same 4096 the cap falls back to without a KV estimate.
+        same ``_FIT_MIN_CTX`` the cap falls back to without a KV estimate.
 
         Exemptions: no Metal budget (0 off Apple Silicon, so this is inert
         there); ``auto_fit``, which omits -c so --fit sizes it, and which the
@@ -7946,8 +7954,8 @@ class LlamaCppBackend:
             return 0
         # Never above a ceiling the cap already worked out: on the exception path
         # max_available_ctx survives the reset, and its KV-based answer can sit
-        # below 4096. Floating back up would re-create the over-commit.
-        return min(4096, native_ctx or 4096, max_available_ctx or 4096)
+        # below the floor. Floating back up would re-create the over-commit.
+        return min(_FIT_MIN_CTX, native_ctx or _FIT_MIN_CTX, max_available_ctx or _FIT_MIN_CTX)
 
     @staticmethod
     def _metal_drops_zero_ctx_override(
@@ -18950,7 +18958,8 @@ class LlamaCppBackend:
                             cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
                             _cap_footprint_mib = _apple_footprint_mib(cap)
                             # Fit returns the request unchanged when it fits OR weights
-                            # exceed budget; only the latter over-commits, so floor to 4096.
+                            # exceed budget; only the latter over-commits, so floor to
+                            # _FIT_MIN_CTX.
                             if _cap_footprint_mib <= _apple_fit_budget_mib:
                                 max_available_ctx = cap
                                 _apple_measured_ceiling = cap
@@ -18958,12 +18967,15 @@ class LlamaCppBackend:
                                 # Two states land here, only one unmeasurable. Weights
                                 # alone over budget: the fit returned the request
                                 # untouched, priced nothing, and no context rescues it.
-                                # Or the weights fit and it is the helper's own 4096 floor
-                                # that does not -- a floor, not a measurement, so re-price
-                                # under it before concluding nothing was measured. Without
-                                # that pass a Mac with room for no tested context skipped
-                                # the refusal and reached llama-server, whose --fit cannot
-                                # reduce below 4096 either.
+                                # Or the weights fit and it is the helper's own
+                                # _FIT_MIN_CTX floor that does not -- a floor, not a
+                                # measurement, so re-price under it before concluding
+                                # nothing was measured. Without that pass a Mac with room
+                                # for no tested context skipped the refusal and reached
+                                # llama-server, whose own --fit stops at LLAMA.CPP's
+                                # fit_params_min_ctx (4096, a different number from ours
+                                # since this arm's floor became _FIT_MIN_CTX) and so
+                                # cannot rescue it either.
                                 _floor_cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_FLOOR_MIN_CTX)
                                 # Ask the budget directly rather than inferring the
                                 # weights-only state from the two fits disagreeing: both
@@ -18981,7 +18993,7 @@ class LlamaCppBackend:
                                     # whose weights alone miss the budget, and that is the
                                     # host-RAM guard's failure. Floor for the UI, but do
                                     # not refuse against a number the fit never vouched for.
-                                    max_available_ctx = min(4096, native_ctx_for_cap)
+                                    max_available_ctx = min(_FIT_MIN_CTX, native_ctx_for_cap)
                                 elif _apple_footprint_mib(_floor_cap) <= _apple_fit_budget_mib:
                                     max_available_ctx = _floor_cap
                                     _apple_measured_ceiling = _floor_cap
@@ -18991,15 +19003,16 @@ class LlamaCppBackend:
                                     # too, and the strongest available: nothing fits, so
                                     # there is no number to lower to and every explicit
                                     # request over-commits. Auto is untouched as everywhere
-                                    # else here -- it keeps the 4096 floor it has always
-                                    # launched at, since changing that is a larger claim
-                                    # than this guard makes.
-                                    max_available_ctx = min(4096, native_ctx_for_cap)
+                                    # else here -- it keeps this arm's floor, which is now
+                                    # _FIT_MIN_CTX like every other arm, rather than the
+                                    # separate 4096 Metal used to hold.
+                                    max_available_ctx = min(_FIT_MIN_CTX, native_ctx_for_cap)
                                     _apple_nothing_fits = True
                         else:
                             # No KV estimate: mirror the discrete file-size-only fallback
-                            # and floor to 4096 rather than launch at native and over-commit.
-                            max_available_ctx = min(4096, native_ctx_for_cap)
+                            # and floor to _FIT_MIN_CTX rather than launch at native and
+                            # over-commit.
+                            max_available_ctx = min(_FIT_MIN_CTX, native_ctx_for_cap)
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
                         elif (
@@ -19036,11 +19049,12 @@ class LlamaCppBackend:
                             ):
                                 _extended_ceiling = _apple_ctx_fit(effective_ctx, _FIT_MIN_CTX)
                                 if _apple_footprint_mib(_extended_ceiling) > _apple_fit_budget_mib:
-                                    # 4096 is the helper's floor, not a measurement, and
-                                    # the cap above re-prices under it for the same reason.
+                                    # _FIT_MIN_CTX is the helper's floor, not a
+                                    # measurement, and the cap above re-prices under it
+                                    # for the same reason.
                                     # It bites here whenever native is below the floor: the
                                     # request is above native and the floor above what
-                                    # fits, so the probe hands back a non-fitting 4096, the
+                                    # fits, so the probe hands back a non-fitting floor, the
                                     # check discards it, and the refusal keeps naming the
                                     # native-sized cap -- "the largest that fits is 2,048"
                                     # on a 2048-native model whose machine launches 3,072

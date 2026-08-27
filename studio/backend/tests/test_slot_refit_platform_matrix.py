@@ -35,6 +35,18 @@ MIB = 1024 * 1024
 NATIVE_CTX = 262144
 CARD_MIB = 12 * 1024
 
+# Weights that actually REACH the re-fit on a GPU host, which every cell here depends
+# on: the block sits behind `if not _uf_slots:`, so it runs only when the slot search
+# found a count that fits. On this 12 GiB card that is a band -- under ~8,000 MiB the
+# load holds all four slots and never reduces, over ~9,400 no count fits and it
+# offloads -- and the band moves with the fit floor, because the search is priced at
+# it. 10,200 was inside it at a 4096 floor and is past the top at 8192, which took
+# every cell in this file to zero entries: the nine REACHABLE ones failed, and the
+# four exclusion cells kept passing while asserting nothing, since "excluded" and
+# "never got there" both read as entries == 0. test_the_scenario_still_reaches_the
+# _refit_at_all pins both edges so that cannot recur silently.
+REFIT_BAND_WEIGHTS_MIB = 8_800
+
 DENSE = {
     "_architecture": "qwen3",
     "_vocab_size": 248320,
@@ -100,7 +112,7 @@ def _plan(
     *,
     os_key,
     vendor,
-    weights_mib = 10_200,
+    weights_mib = REFIT_BAND_WEIGHTS_MIB,
     n_parallel = 4,
     vram_mib = CARD_MIB,
     n_ctx = 0,
@@ -169,6 +181,21 @@ def _plan(
 
 
 class TestWhoTheRefitIsAllowedToTouch:
+    @pytest.mark.parametrize("weights_mib,enters", [(7_600, False), (8_800, True), (9_600, False)])
+    def test_the_scenario_still_reaches_the_refit_at_all(self, tmp_path, weights_mib, enters):
+        """Brackets the band ``REFIT_BAND_WEIGHTS_MIB`` has to stay inside.
+
+        Every ``entries == 0`` assertion in this file is satisfied by a scenario that
+        never reaches the re-fit, so without this the whole matrix can go quietly
+        vacuous: the exclusion cells keep passing and only the nine REACHABLE ones
+        report, which is what a moving fit floor did to it. The two outer rows are the
+        two ways out of the band -- 7,600 holds all four slots so nothing reduces,
+        9,600 holds no count so it offloads -- and both must stay OUT while the middle
+        one stays IN.
+        """
+        _, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia", weights_mib = weights_mib)
+        assert (entries > 0) is enters
+
     @pytest.mark.parametrize("os_key,vendor", ALL_CELLS, ids = [f"{o}-{v}" for o, v in ALL_CELLS])
     def test_only_a_gpu_host_enters_the_refit(self, tmp_path, os_key, vendor):
         """Metal and CPU-only hosts must not reach the new block at all."""
@@ -184,27 +211,35 @@ class TestWhoTheRefitIsAllowedToTouch:
         got, entries = _plan(tmp_path, os_key = os_key, vendor = "nvidia")
         assert entries == 0
         assert got["ngl"] is None  # never pinned to a device that does not exist
+        # The control: the same weights on an enumerating host DO re-fit, so the zero
+        # above is macOS being excluded rather than the scenario never arriving.
+        _, on_gpu = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
+        assert on_gpu > 0
 
     def test_tensor_parallel_is_excluded(self, tmp_path):
         """The tensor arm has no --fit valve, so the re-fit must stay out."""
-        _, entries = _plan(
-            tmp_path,
-            os_key = "linux",
-            vendor = "nvidia",
-            tensor_parallel = True,
-            vram_mib = 24 * 1024,
-        )
+        kwargs = dict(os_key = "linux", vendor = "nvidia", vram_mib = 24 * 1024)
+        _, entries = _plan(tmp_path, tensor_parallel = True, **kwargs)
         assert entries == 0
+        # Same card without the tensor flag must reach the re-fit, or the exclusion is
+        # untested. The 24 GiB card has its own band (20,000-21,000 MiB here), so this
+        # weight is scaled to the card rather than shared with the 12 GiB default.
+        _, layer_split = _plan(tmp_path, weights_mib = 20_500, **kwargs)
+        assert layer_split > 0
 
     def test_manual_memory_mode_is_excluded(self, tmp_path):
         """Manual mode is the caller taking the budget over."""
         _, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia", gpu_memory_mode = "manual")
         assert entries == 0
+        _, auto = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
+        assert auto > 0, "the Auto control stopped re-fitting; this proves nothing"
 
     def test_a_single_slot_request_is_excluded(self, tmp_path):
         """Nothing to reduce, so nothing to re-fit."""
         _, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia", n_parallel = 1)
         assert entries == 0
+        _, many = _plan(tmp_path, os_key = "linux", vendor = "nvidia", n_parallel = 4)
+        assert many > 0, "the multi-slot control stopped re-fitting; this proves nothing"
 
 
 class TestWindowsPlansLikeLinux:

@@ -46,7 +46,11 @@ if "jwt" not in sys.modules:
         _jwt_stub.InvalidTokenError = type("InvalidTokenError", (Exception,), {})
         sys.modules["jwt"] = _jwt_stub
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    _FIT_MIN_CTX,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
 
 _floor = LlamaCppBackend._metal_zero_ctx_floor
 _drops = LlamaCppBackend._metal_drops_zero_ctx_override
@@ -179,26 +183,26 @@ def off_metal(monkeypatch):
 class TestOnMetal:
     def test_a_zero_context_is_floored(self, on_metal):
         """The exception path: auto request restored to 0 after the cap ran."""
-        assert _floor(0, False, False, 262144) == 4096
+        assert _floor(0, False, False, 262144) == _FIT_MIN_CTX
 
     def test_a_model_shorter_than_the_floor_keeps_its_own_length(self, on_metal):
         assert _floor(0, False, False, 2048) == 2048
 
     def test_no_metadata_still_gets_a_floor(self, on_metal):
         """The cap is guarded on ctx > 0, so this GGUF was never capped."""
-        assert _floor(0, False, False, None) == 4096
+        assert _floor(0, False, False, None) == _FIT_MIN_CTX
 
     def test_a_cap_below_the_floor_wins(self, on_metal):
         """The exception path keeps max_available_ctx, whose KV answer can sit
-        under 4096. Floating back up would re-create the over-commit."""
+        under the floor. Floating back up would re-create the over-commit."""
         assert _floor(0, False, False, 262144, 2048) == 2048
 
     def test_a_cap_above_the_floor_does_not_raise_it(self, on_metal):
-        assert _floor(0, False, False, 262144, 131072) == 4096
+        assert _floor(0, False, False, 262144, 131072) == _FIT_MIN_CTX
 
     def test_no_cap_yet_still_floors(self, on_metal):
         """The no-metadata path never ran the cap, so there is no ceiling to respect."""
-        assert _floor(0, False, False, None, 0) == 4096
+        assert _floor(0, False, False, None, 0) == _FIT_MIN_CTX
 
     def test_a_positive_context_is_left_alone(self, on_metal):
         assert _floor(8192, False, False, 262144) == 0
@@ -251,18 +255,18 @@ class TestTheEmittedCommand:
 
     def test_a_zero_override_does_not_outlive_the_floor(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         # Only the context is dropped; the rest of the user's extras survive.
         assert "--top-k" in cmd and "5" in cmd
 
     def test_the_long_spelling_is_dropped_too(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--ctx-size=0"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_a_capped_context_also_drops_the_zero_override(self, tmp_path, monkeypatch):
         """The Apple cap ran, so the floor stays inert -- the drop still has to fire."""
         cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144, extra_args = ["-c", "0"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_the_context_studio_computed_is_what_survives(self, tmp_path, monkeypatch):
         """Not a constant: the cap's own answer stands, here the model's 2048.
@@ -279,7 +283,7 @@ class TestTheEmittedCommand:
 
     def test_without_an_override_the_floor_stands(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_off_metal_nothing_is_touched(self, tmp_path, monkeypatch):
         """Linux and Windows keep today's behaviour, zero override included."""
@@ -344,7 +348,7 @@ class TestAutoLayersWithTheFitterTurnedOff:
 
     def test_the_floor_applies_once_fitting_is_off(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "off"], **self.AUTO_LAYERS)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_a_zero_override_alongside_it_is_still_dropped(self, tmp_path, monkeypatch):
         cmd, _ = _launch(
@@ -353,7 +357,7 @@ class TestAutoLayersWithTheFitterTurnedOff:
             extra_args = ["--fit", "off", "-c", "0"],
             **self.AUTO_LAYERS,
         )
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_an_explicit_fit_on_keeps_the_exemption(self, tmp_path, monkeypatch):
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "on"], **self.AUTO_LAYERS)
@@ -403,7 +407,7 @@ class TestAnInheritedContextEnvironment:
     def test_an_emitted_context_leaves_the_environment_alone(self, tmp_path, monkeypatch):
         """Automatic mode passes -c, and argv is parsed after the environment."""
         cmd, env_ctx = _launch_env(tmp_path, monkeypatch, env_ctx = "0")
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         assert env_ctx == "0"
 
     def test_a_caller_owned_budget_is_left_alone(self, tmp_path, monkeypatch):
@@ -437,17 +441,17 @@ class TestAVirtualisedMetalDevice:
 
     def test_an_auto_request_still_gets_the_floor(self, tmp_path, monkeypatch):
         cmd, _ = self._launch_pv(tmp_path, monkeypatch)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_an_auto_request_still_drops_a_zero_override(self, tmp_path, monkeypatch):
         cmd, _ = self._launch_pv(tmp_path, monkeypatch, extra_args = ["-c", "0", "--top-k", "5"])
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         assert "--top-k" in cmd and "5" in cmd
 
     def test_auto_layers_is_treated_the_same(self, tmp_path, monkeypatch):
         """The pin took the layer freedom --fit needed, so the floor applies."""
         cmd, _ = self._launch_pv(tmp_path, monkeypatch, gpu_memory_mode = "manual", gpu_layers = -1)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
 
     def test_a_fixed_manual_layer_count_is_still_the_callers(self, tmp_path, monkeypatch):
         cmd, _ = self._launch_pv(
@@ -488,7 +492,7 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
 
     def test_the_native_length_is_not_advertised_after_the_floor(self, on_metal):
         floor = _floor(0, False, False, self.NATIVE, self.NATIVE)
-        assert floor == 4096
+        assert floor == _FIT_MIN_CTX
         # What load_model now publishes: the floor itself, not max(ceiling, floor).
         assert floor < self.NATIVE
 
@@ -499,8 +503,8 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
     def test_the_published_ceiling_is_never_above_what_we_launch(self, on_metal):
         for max_avail in (None, 3000, 4096, self.NATIVE):
             floor = _floor(0, False, False, self.NATIVE, max_avail)
-            assert floor <= (max_avail or 4096)
-            assert floor <= 4096
+            assert floor <= (max_avail or _FIT_MIN_CTX)
+            assert floor <= _FIT_MIN_CTX
 
 
 class TestTheStripDoesNotRewriteWhatWasRequested:
@@ -528,7 +532,7 @@ class TestTheStripDoesNotRewriteWhatWasRequested:
         monkeypatch.setattr(_llama_cpp, "_paravirtual_draft_ngl_flag", lambda caps: None)
         requested = ["-md", str(draft), "-c", "0", "--top-k", "5"]
         cmd, backend = _launch(tmp_path, monkeypatch, extra_args = list(requested), paravirtual = True)
-        assert _ctx_values(cmd) == ["4096"]
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)]
         assert backend._requested_extra_args == requested
 
     @pytest.mark.parametrize("mode,layers", [("auto", -1), ("manual", -1)])

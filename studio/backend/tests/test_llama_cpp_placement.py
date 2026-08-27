@@ -1557,6 +1557,42 @@ def test_a_cpu_offloaded_sidecar_reserves_no_gpu_despite_an_embedded_head(tmp_pa
     assert not any(reserved), f"mtp_engaged should be False throughout, got {reserved}"
 
 
+def _shrink_to_hold_both_backend(
+    tmp_path, *, model_gb, native_ctx, kv_mib_per_tok, mtp_mib_per_tok
+):
+    """Two 24 GiB cards and a DSpark sidecar, with every VRAM term context-linear.
+
+    ``kv_mib_per_tok`` prices the target's cache and ``mtp_mib_per_tok`` the whole
+    drafter reserve, weights included: the stub replaces
+    ``_estimate_mtp_overhead_bytes`` outright, so the sidecar's file size never
+    reaches the arithmetic and only these rates decide what holds what.
+    """
+    gb = 1024**3
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._get_gguf_size_bytes = lambda path: (
+        8 * gb if str(path) == str(sidecar) else int(model_gb * gb)
+    )
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", native_ctx)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx * kv_mib_per_tok * 1024**2)
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
+    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(
+        ctx * mtp_mib_per_tok * 1024**2
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf, sidecar
+
+
 def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_path):
     """The placement loop does not walk past a subset that fails with the drafter.
 
@@ -1565,27 +1601,25 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     load takes, and the drafter gets paid for in context. Believing a later,
     larger subset would rescue it keeps the drafter and shrinks the context, which
     is the trade this exists to refuse.
+
+    The shrink has to land ABOVE the fit floor to be a measurement rather than the
+    floor itself, which is what makes this scenario 32768-native rather than 8192.
+    On one card, budget 23838 MiB: the target alone is 14336 + 320 = 14656 MiB and
+    holds 32768 (+8192 MiB of cache) with room to spare, the drafter's 8192 MiB on
+    top does not, and 14336 + 544 leaves 8958 MiB, which at 0.5 MiB/token both ways
+    re-caps to 17664. That is the shrink the loop takes and the drafter is refused
+    for. Two cards WOULD have held both at the full 32768 (32288 of 47677 MiB
+    pooled), so the refusal is a choice and not an absence of alternatives; see
+    test_widening_beats_shrinking_below_the_fit_floor for the case where the shrink
+    is not available and widening is what happens instead.
     """
-    gb = 1024**3
-    backend, gguf = _backend(
-        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    backend, gguf, sidecar = _shrink_to_hold_both_backend(
+        tmp_path,
+        model_gb = 14,
+        native_ctx = 32_768,
+        kv_mib_per_tok = 0.25,
+        mtp_mib_per_tok = 0.25,
     )
-    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
-    sidecar.write_bytes(b"draft")
-    backend._get_gguf_size_bytes = lambda path: 8 * gb if str(path) == str(sidecar) else 16 * gb
-    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 8192)
-    backend._can_estimate_kv = lambda: True
-    # Context-linear throughout, so GPU0 alone can shrink its way to holding both.
-    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx * 0.5 * 1024**2)
-    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
-    backend._estimate_compute_buffer_bytes = lambda **k: 1
-    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
-    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(ctx * 0.75 * 1024**2)
-    backend.probe_server_capabilities = lambda _binary = None: {
-        "supports_dspark": True,
-        "supports_ngram_mod": True,
-        "spec_draft_n_max_flag": "--spec-draft-n-max",
-    }
 
     result = _launch(
         backend,
@@ -1598,7 +1632,49 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     cmd = result["cmd"]
     assert "--model-draft" not in cmd
     assert backend.spec_fallback_reason == "drafter_no_vram"
+    assert cmd[cmd.index("-c") + 1] == "32768"
+    # One card: the point is that the loop stopped here rather than widening.
+    assert result["env"].get("CUDA_VISIBLE_DEVICES") == "0"
+
+
+def test_widening_beats_shrinking_below_the_fit_floor(tmp_path):
+    """The other side of the same branch: no shrink is on offer, so the loop widens.
+
+    Same machine, sized so one card can only hold both BELOW the fit floor. The
+    re-cap with the drafter charged is bounded by that floor, so it cannot return
+    the shrink, the caller re-prices its answer and rejects it, and the loop walks
+    on to the two-card subset that holds the target AND the drafter at the full
+    context. Keeping the drafter for free is the whole reason the floor exists, and
+    the placement is a real fit rather than a floored one: 17952 MiB of weights and
+    overhead plus 4096 of cache plus 6144 of drafter is 28192 of a 47677 MiB pool,
+    about 14 GiB on each 24 GiB card.
+
+    Pinning it because the shape that would flip it back is silent: the re-cap
+    helper returns ``min_ctx`` rather than 0 when even ``min_ctx`` does not fit, so
+    the only thing standing between this and a one-card placement that OOMs is the
+    caller's own footprint re-check.
+    """
+    backend, gguf, sidecar = _shrink_to_hold_both_backend(
+        tmp_path,
+        model_gb = 16,
+        native_ctx = 8192,
+        kv_mib_per_tok = 0.5,
+        mtp_mib_per_tok = 0.75,
+    )
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 0,
+    )
+
+    cmd = result["cmd"]
+    assert "--model-draft" in cmd
+    assert backend.spec_fallback_reason is None
     assert cmd[cmd.index("-c") + 1] == "8192"
+    assert result["env"].get("CUDA_VISIBLE_DEVICES") == "0,1"
 
 
 def _restore_host_guard(backend):
