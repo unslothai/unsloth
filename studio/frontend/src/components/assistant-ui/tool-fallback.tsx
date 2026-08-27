@@ -51,6 +51,13 @@ export type ToolFallbackRootProps = Omit<
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   defaultOpen?: boolean;
+  /**
+   * The call is parked on an allow/deny decision. Pins the card open, above the
+   * collapse preference and above `open`, because the thing being approved has
+   * to be readable while the buttons to approve it are on screen. The group
+   * does the same with `hasPendingConfirmation` (tool-group.tsx).
+   */
+  awaitingApproval?: boolean;
 };
 
 function ToolFallbackRoot({
@@ -58,6 +65,7 @@ function ToolFallbackRoot({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   defaultOpen = false,
+  awaitingApproval = false,
   children,
   ...props
 }: ToolFallbackRootProps) {
@@ -82,7 +90,9 @@ function ToolFallbackRoot({
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : syncedUncontrolledState.open;
+  const isOpen =
+    awaitingApproval ||
+    (isControlled ? controlledOpen : syncedUncontrolledState.open);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {

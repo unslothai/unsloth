@@ -75,7 +75,15 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 
   return (
     // Open mid-run so command and live output show, collapsed from history.
-    <ToolFallbackRoot defaultOpen={isRunning}>
+    // awaitingApproval pins it open past the collapse preference: the command
+    // lives inside ToolFallbackContent, and Allow/Always allow/Deny render
+    // outside the card, so a collapsed card would ask for a decision about a
+    // command the user cannot read -- the trigger only carries its first 60
+    // characters, untruncated and with no ellipsis to say so.
+    <ToolFallbackRoot
+      defaultOpen={isRunning}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}
         status={status}
