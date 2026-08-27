@@ -1033,8 +1033,7 @@ def test_windows_demotes_a_non_x86_host_too():
         "check, which then expects cpu, wipes a working +rocm venv, and exits."
     )
 
-    reach = next((ln for ln in text.splitlines()
-                  if ln.startswith("$AmdWheelsReachThisHost =")), "")
+    reach = next((ln for ln in text.splitlines() if ln.startswith("$AmdWheelsReachThisHost =")), "")
     assert "Get-HostMachineArch" in reach and '-ne "arm64"' in reach, (
         "nothing demotes an ARM64 host any more, so a Windows-on-ARM box whose arch is in "
         "$_rocmWheelArches would be accused of a fault that is the documented routing."
@@ -1045,12 +1044,15 @@ def test_windows_demotes_a_non_x86_host_too():
 def test_the_arm64_demotion_reaches_only_the_report():
     """One consumer, and it is the reconciliation gate."""
     text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
-    users = [ln.strip() for ln in text.splitlines()
-             if "$AmdWheelsReachThisHost" in ln and not ln.strip().startswith("#")]
+    users = [
+        ln.strip()
+        for ln in text.splitlines()
+        if "$AmdWheelsReachThisHost" in ln and not ln.strip().startswith("#")
+    ]
     assert len(users) == 2, f"expected the assignment plus one reader, got {users}"
-    assert any(ln.startswith("$_gpuCheckArm64Amd =") for ln in users), (
-        "the ARM64 demotion is read somewhere other than the GPU visibility gate."
-    )
+    assert any(
+        ln.startswith("$_gpuCheckArm64Amd =") for ln in users
+    ), "the ARM64 demotion is read somewhere other than the GPU visibility gate."
 
 
 def test_a_local_cpu_fallback_is_not_a_mismatch():
