@@ -1084,6 +1084,64 @@ def test_windows_rocm_apu_reports_only_the_host_backed_pool_overlap(monkeypatch)
     assert result["devices"][0]["shared_memory_host_backed_gb"] == 68.0
 
 
+def test_windows_rocm_apu_uses_arch_when_registry_name_differs(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0x14CF5: {
+                "name": "AMD Radeon(TM) Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 32 * 1024**3,
+            },
+            0x24CF5: {
+                "name": "AMD Radeon 8060S Graphics",
+                "gfx": "gfx1103",
+                "dedicated_memory_bytes": 2 * 1024**3,
+            },
+        },
+    )
+
+    result = hw.get_backend_visible_gpu_info()
+
+    assert result["devices"][0]["shared_memory_host_backed_gb"] == 68.0
+
+
+def test_windows_rocm_apu_declines_an_ambiguous_arch_fallback(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0x14CF5: {
+                "name": "AMD Radeon(TM) Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 32 * 1024**3,
+            },
+            0x24CF5: {
+                "name": "AMD Radeon(TM) Graphics 2",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 16 * 1024**3,
+            },
+        },
+    )
+
+    result = hw.get_backend_visible_gpu_info()
+
+    assert result["devices"][0]["shared_memory_host_backed_gb"] is None
+
+
 @pytest.mark.parametrize(
     ("torch_total", "sysfs_total", "expected_shared"),
     [(_APU_GTT_TOTAL, _APU_CARVE_OUT, True), (_APU_CARVE_OUT, _APU_CARVE_OUT, False)],

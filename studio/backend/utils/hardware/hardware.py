@@ -1597,6 +1597,10 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                 # Keep the carve-out rather than dropping the device: an
                 # understated total still beats no device at all.
                 logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
+            try:
+                rocm_gfx = str(getattr(props, "gcnArchName", "") or "")
+            except Exception:
+                rocm_gfx = ""
             devices.append(
                 {
                     "index": phys_idx,
@@ -1611,6 +1615,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                         else None
                     ),
                     "_rocm_known_unified": known_unified,
+                    "_rocm_gfx": rocm_gfx,
                 }
             )
         except Exception as e:
@@ -2325,31 +2330,70 @@ def _windows_rocm_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) ->
     """Map shared ROCm devices to the host-backed part of their Windows pool."""
     if platform.system() != "Windows":
         return {}
-    records_by_name: dict[str, list[Dict[str, Any]]] = {}
-    for record in _windows_amd_adapter_records_by_luid().values():
-        if "dedicated_memory_bytes" not in record:
-            continue
-        name = _normalize_adapter_name(str(record.get("name", "")))
-        if name:
-            records_by_name.setdefault(name, []).append(record)
+    records = list(_windows_amd_adapter_records_by_luid().values())
+    shared_positions = [
+        position for position, device in enumerate(devices) if device.get("shared_memory")
+    ]
+    matches: dict[int, int] = {}
+    matched_records: set[int] = set()
 
-    device_positions_by_name: dict[str, list[int]] = {}
-    for position, device in enumerate(devices):
-        if not device.get("shared_memory"):
+    for field, record_key, device_key in (
+        (
+            "name",
+            lambda record: _normalize_adapter_name(str(record.get("name", ""))),
+            lambda device: _normalize_adapter_name(str(device.get("name", ""))),
+        ),
+        (
+            "gfx",
+            lambda record: _parse_adapter_family_gfx(str(record.get("gfx", ""))),
+            lambda device: _parse_adapter_family_gfx(str(device.get("_rocm_gfx", ""))),
+        ),
+    ):
+        if field == "gfx" and (
+            not all(record.get("gfx") for record in records)
+            or not all(devices[position].get("_rocm_gfx") for position in shared_positions)
+        ):
             continue
-        name = _normalize_adapter_name(str(device.get("name", "")))
-        if name:
-            device_positions_by_name.setdefault(name, []).append(position)
+        records_by_key: dict[str, list[int]] = {}
+        for record_position, record in enumerate(records):
+            if record_position in matched_records:
+                continue
+            key = record_key(record)
+            if key:
+                records_by_key.setdefault(key, []).append(record_position)
+        devices_by_key: dict[str, list[int]] = {}
+        for position in shared_positions:
+            if position in matches:
+                continue
+            key = device_key(devices[position])
+            if key:
+                devices_by_key.setdefault(key, []).append(position)
+        for key, positions in devices_by_key.items():
+            record_positions = records_by_key.get(key, [])
+            if len(positions) == 1 and len(record_positions) == 1:
+                position = positions[0]
+                record_position = record_positions[0]
+                if field == "name":
+                    device_gfx = _parse_adapter_family_gfx(
+                        str(devices[position].get("_rocm_gfx", ""))
+                    )
+                    record_gfx = _parse_adapter_family_gfx(
+                        str(records[record_position].get("gfx", ""))
+                    )
+                    if device_gfx and record_gfx and device_gfx != record_gfx:
+                        continue
+                matches[position] = record_position
+                matched_records.add(record_position)
 
     host_gb_by_index: Dict[int, float] = {}
-    for name, positions in device_positions_by_name.items():
-        records = records_by_name.get(name, [])
-        if len(positions) != 1 or len(records) != 1:
+    for position, record_position in matches.items():
+        record = records[record_position]
+        if "dedicated_memory_bytes" not in record:
             continue
-        device = devices[positions[0]]
+        device = devices[position]
         index = device.get("index")
         total_gb = float(device.get("total_gb") or 0.0)
-        dedicated_gb = float(records[0]["dedicated_memory_bytes"]) / (1024**3)
+        dedicated_gb = float(record["dedicated_memory_bytes"]) / (1024**3)
         if not isinstance(index, int) or total_gb <= 0 or not (0 <= dedicated_gb <= total_gb):
             continue
         host_gb_by_index[index] = round(total_gb - dedicated_gb, 2)
