@@ -3,7 +3,7 @@
 
 """Where a HEAVY thread stalls, as a curve over how much content the thread holds.
 
-Users report Studio and Desktop going sluggish "after long generations with any code cells
+Users report Unsloth and Desktop going sluggish "after long generations with any code cells
 and/or text": typing, scrolling, opening a message menu, deleting and re-opening the thread all
 lag once a session has accumulated a few very long replies. That report is about CONTENT VOLUME,
 not message count, so the axis here is characters of thread content, not messages, and the
@@ -40,7 +40,7 @@ So the primary four, all portable:
 
 A MessageChannel ping-pong is the usual way to build the stall detector and it was measured and
 rejected here: it spins ~150k times a second, and on Firefox that HALVED the frame rate of the
-page under test (38 frames -> 14, median frame 17ms -> 34ms) before any Studio code ran. The
+page under test (38 frames -> 14, median frame 17ms -> 34ms) before any Unsloth code ran. The
 1ms setTimeout loop ticks ~150 times a second, costs nothing measurable on any of the three
 engines, and reported the same 120ms synthetic stall on all three.
 
@@ -60,9 +60,12 @@ Playwright's WebKit is a PROXY, not the webview Desktop embeds. It is Apple's We
 Playwright, driven headless, with no Tauri IPC layer and no WebKitGTK compositor. Read it as
 "JavaScriptCore plus WebKit layout", not as "Unsloth Desktop on macOS".
 
-Desktop Linux under Wayland is WORSE than any number this file can produce, and not by a little:
-studio/src-tauri/src/linux_webkit.rs sets WEBKIT_DMABUF_RENDERER_FORCE_SHM=1, which forces the
-software rendering transport. Everything below runs on a normal compositor path.
+Desktop Linux is WORSE than any number this file can produce, and not by a little:
+studio/src-tauri/src/linux_webkit.rs drops the webview off the hardware DMA-BUF transport on
+Wayland and on NVIDIA under either display server. It forces the shared-memory transport with
+WEBKIT_DMABUF_RENDERER_FORCE_SHM=1, or, on Wayland and on old WebKitGTK, disables the renderer
+outright with WEBKIT_DISABLE_DMABUF_RENDERER=1, which turns accelerated compositing off for the
+whole process. Everything below runs on a normal compositor path.
 
 THIS HARNESS MEASURES, IT DOES NOT GATE. It prints the table and exits 0 on any timing. It exits
 non-zero only when the harness itself is broken: the seed did not land, an element it drives went
@@ -105,7 +108,7 @@ needs its own port: a killed run can leave its vite dev server holding the previ
 
 The dev server is deliberate and is a limitation to read the numbers against: React runs in
 development mode, nothing is minified, and vite serves unbundled modules. Absolute milliseconds
-are therefore higher than a packaged Studio's. The curve across sizes and the ranking across
+are therefore higher than a packaged Unsloth's. The curve across sizes and the ranking across
 actions are what this file is for.
 """
 
@@ -499,7 +502,7 @@ async (settleMs) => {
   await window.__nextPaint();
   window.__hv.begin();
   const started = performance.now();
-  // The wheel event first, and it is load-bearing. Studio replaces assistant-ui's autoscroll
+  // The wheel event first, and it is load-bearing. Unsloth replaces assistant-ui's autoscroll
   // with an intent-aware one, and a bare scrollTo from the bottom is read as programmatic and
   // snapped straight back: measured, the jump landed at the bottom it started from and the whole
   // column timed nothing. A wheel is what says a person did this.
@@ -657,12 +660,14 @@ async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
   const started = performance.now();
   api.closeThread();
   // Unmount first, or "already back" is indistinguishable from "never left".
-  // Counted, not assumed. `growth()` subtracts one paint floor per double-rAF wait a metric is
-  // clocked across, and that count was hand-declared per axis in GROWTH_AXES. Reopening is
-  // driven by a React state update, so the count check immediately after openThread() always
-  // still sees the unmounted tree and the loop always pays at least one __nextPaint() before it
-  // can observe the rebuilt messages -- the same floor already subtracted from jump and delete.
-  // Reporting it lets the harness check its own declared constant instead of trusting it.
+  // `paintWaits` below is REPORTED, not subtracted. Reopening is driven by a React state update,
+  // so the count check immediately after openThread() always still sees the unmounted tree and
+  // the loop always pays at least one __nextPaint() before it can observe the rebuilt messages.
+  // That one wait is the observation floor GROWTH_AXES removes (REOPEN_OBSERVATION_FLOOR), the
+  // same floor already subtracted from jump and delete. Any wait beyond it is a frame the
+  // APPLICATION spent committing rows, so it stays in the number. Reporting the count lets the
+  // harness verify it paid at least the floor it removes, and puts the progressive mount's frame
+  // count in the table as a diagnostic in its own right.
   let closedMs = null;
   let closePaintWaits = 0;
   while (performance.now() - started < timeoutMs) {
@@ -1197,7 +1202,17 @@ TABLE_ROWS = (
     ("messages rendered", lambda r: r["counts"]["messages"]),
     ("dom nodes", lambda r: r["counts"]["domNodes"]),
     ("code blocks", lambda r: r["counts"]["codeBlocks"]),
+    # Side by side deliberately: `code chars` is what the fixture built and does not move when a
+    # fence defers, while `highlighted tokens` and `deferred fences` are how much of it the
+    # viewport reached. Only the first is a statement about the fixture.
+    ("code chars", lambda r: r["counts"].get("codeChars", 0)),
     ("highlighted tokens", lambda r: r["counts"]["highlightedTokens"]),
+    ("fence blocks", lambda r: r["counts"].get("fenceBlocks", 0)),
+    ("deferred fences", lambda r: r["counts"].get("deferredFences", 0)),
+    (
+        "mounted but unhighlighted fences",
+        lambda r: r["counts"].get("unhighlightedMountedFences", 0),
+    ),
     ("tool parts", lambda r: r["counts"]["toolParts"]),
     ("collapsible tool outputs", lambda r: r["counts"]["collapsibleOutputs"]),
     ("code execution panes", lambda r: r["counts"]["codeExecutionPanes"]),
@@ -1306,6 +1321,42 @@ def print_table(results: dict) -> None:
         info(name.ljust(label_width) + "".join(cell.rjust(cell_width) for cell in cells))
 
 
+# The double-rAF waits inside `reopen ms` that are OBSERVATION rather than latency.
+#
+# Exactly one. Reopening is driven by a React state update, so the count check immediately after
+# openThread() always still sees the unmounted tree, and the loop always pays one __nextPaint()
+# before a completed reopen can be seen at all. That wait is the instrument, not the application,
+# and it comes out of the number.
+#
+# Every FURTHER wait the loop pays is not overhead. The poll runs in the same rAF queue as the
+# application's own commits, so on a build that brings a long thread back over several animation
+# frames those waits ARE the application mounting rows, and the time inside them is real
+# convergence latency that a reader waits through.
+#
+# This is why the count is a constant and not `_floor_from("reopen", "paintWaits")`. The measured
+# count is 1 on a build that rebuilds in one commit and rises with thread size on one that mounts
+# progressively (1 at 25K, 8 at 100K, 24 at 300K on a 220-message fixture), so subtracting all of
+# them removed ~33ms from one arm's 300K cell and ~800ms from the other's. That is asymmetric
+# between the two arms of a comparison AND grows with the axis being varied: it reported a reopen
+# curve that rises faster than the single-commit build's (7.60x against 7.08x from 25K to 300K) as
+# one that rises slower (5.07x), which is the opposite sign. A floor exists to remove a CONSTANT
+# the instrument adds, and the moment it tracks the thing being measured it is no longer a floor.
+REOPEN_OBSERVATION_FLOOR = 1
+# `<action> wall ms` spans the whole recorder window and normally takes the window's measured
+# `paint_waits`, because for every other action those waits are harness-imposed idle time between
+# driven steps. Reopen is the exception for the reason above: its window holds the close loop and
+# the reopen loop, and on a progressive-mount build the reopen loop's waits are the application's
+# commit frames. The observation floors in that window are the two terminal waits, one per loop.
+WALL_FLOOR_OVERRIDES = {"reopen": 1 + REOPEN_OBSERVATION_FLOOR}
+
+
+def _wall_floor(action: str):
+    """The floor for `<action> wall ms`: the measured window count, unless the action overrides it
+    because part of that count is application work rather than instrument idle."""
+    override = WALL_FLOOR_OVERRIDES.get(action)
+    return _floor_from(action, "paint_waits") if override is None else override
+
+
 # Growth axes: the whole point of the harness is that these rise with content. The third field is
 # HOW MANY double-rAF waits the metric is clocked across; each one carries its own ~33ms vsync
 # floor, and left in, that floor compresses every ratio towards 1 and lets a real regression sit
@@ -1320,8 +1371,10 @@ GROWTH_AXES = tuple(
     # roughly `paint_waits * paint_floor_ms` of constant baseline in both ends of the ratio.
     # MENU_JS is the clearest case: it opens the recorder before opening the menu and closes it
     # after closing it, so it crosses the same two waits `menu open+close ms` correctly declares,
-    # and `menu wall ms` was declaring none of them.
-    + [(f"{a} wall ms", _action(a, "wall_ms"), _floor_from(a, "paint_waits")) for a in ACTIONS]
+    # and `menu wall ms` was declaring none of them. The one exception is in WALL_FLOOR_OVERRIDES:
+    # reading the row is only right while the waits in the window are the harness idling between
+    # driven steps, and reopen's are not.
+    + [(f"{a} wall ms", _action(a, "wall_ms"), _wall_floor(a)) for a in ACTIONS]
     + [
         # The rule for the entries below: an axis measured from `__hv.startedAt` spans the WHOLE
         # recorder window, so it carries every double-rAF wait in it and takes the measured
@@ -1350,10 +1403,12 @@ GROWTH_AXES = tuple(
         # close. The window count is zero here and would remove a floor that is really there.
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
-        # 1, not 0: see paintWaits in REOPEN_JS. Leaving it at 0 left a full ~33ms vsync floor
-        # of constant baseline in both ends of the ratio, which compresses it towards 1 and can
-        # report a real reopen curve as flat when the smallest fixture rebuilds near the floor.
-        ("reopen ms", _action("reopen", "ms"), 1),
+        # The OBSERVATION floor only, and deliberately a constant rather than the measured
+        # `paintWaits`: see REOPEN_OBSERVATION_FLOOR above. Leaving it at 0 is still wrong, that
+        # left a full ~33ms vsync floor of constant baseline in both ends; subtracting all the
+        # waits was worse, because the count tracks the progressive mount and so removes the
+        # thing the axis exists to measure.
+        ("reopen ms", _action("reopen", "ms"), REOPEN_OBSERVATION_FLOOR),
     ]
 )
 # A ratio at or below this from the smallest size to the largest means the axis did not respond
@@ -1562,10 +1617,14 @@ def print_growth(results: dict, report: dict) -> None:
 
 
 # The declared double-rAF count for each axis whose action reports how many it actually paid.
-# GROWTH_AXES holds the declaration; the action holds the observation; a harness that declares a
-# floor it does not pay, or pays one it does not declare, subtracts the wrong constant from both
-# ends of every ratio it publishes. Only reopen reports its waits today, so only reopen is
-# checkable here; the entry exists so adding a counter to another action wires it in by name.
+# GROWTH_AXES holds the declaration; the action holds the observation; a harness that subtracts a
+# floor the metric never waited out invents time it never spent. Only reopen reports its waits
+# today, so only reopen is checkable here; the entry exists so adding a counter to another action
+# wires it in by name.
+#
+# The check is a LOWER BOUND, not equality. Paying more waits than are subtracted is the normal
+# state of a progressive mount and is not a fault: those extra waits are the application
+# committing rows, and REOPEN_OBSERVATION_FLOOR keeps them in the number on purpose.
 # axis name in GROWTH_AXES -> (action, the field on that action reporting its own wait count)
 FLOOR_COUNTERS = {"reopen ms": ("reopen", "paintWaits")}
 
@@ -1584,7 +1643,7 @@ def declared_floor(axis_name: str) -> int | None:
 
 
 def floor_declaration_problems(results: dict) -> list[str]:
-    """Axes whose subtracted paint floor does not match the waits the action actually paid."""
+    """Axes that subtract more double-rAF floors than the action actually waited out."""
     problems: list[str] = []
     for engine in results["engines"]:
         for size in results["sizes"]:
@@ -1605,13 +1664,18 @@ def floor_declaration_problems(results: dict) -> list[str]:
                         f"paint floor subtracted from '{axis_name}' is unverified"
                     )
                     continue
-                declared = declared_floor(axis_name)
-                if declared == observed:
+                # Resolved against THIS row, so an axis whose floor is read from the row (see
+                # `_floor_from`) is verified as what it will actually subtract rather than
+                # compared as a callable and reported wrong every time. A hand-declared literal
+                # resolves to itself, so it is still caught the moment it exceeds the waits the
+                # action paid, which is the whole point of this check.
+                declared = resolve_floor(declared_floor(axis_name), row)
+                if observed >= declared:
                     continue
                 problems.append(
                     f"{engine} at {size} chars paid {observed} paint wait(s) in {action} but "
-                    f"GROWTH_AXES subtracts {declared} from '{axis_name}'; the ratio is computed "
-                    "after removing the wrong constant from both ends"
+                    f"GROWTH_AXES subtracts {declared} from '{axis_name}'; a metric cannot be "
+                    "credited with a floor it never waited out"
                 )
     return problems
 
@@ -1706,6 +1770,21 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     )
             if counts.get("highlightedTokens", 0) <= 0:
                 failures.append(f"{where} highlighted nothing; Shiki never ran")
+            # DEFERRAL IS EXPECTED. AN UNHIGHLIGHTED MOUNTED FENCE IS NOT.
+            #
+            # A floor on total tokens no longer separates "settled" from "the reader is not looking
+            # at most of the code", so ask per block: a fence is either a deferred shell, which is
+            # a named state with an attribute, or highlighted. The third state -- mounted, not
+            # deferred, still on streamdown's fallback -- lasts a frame while the highlighter's
+            # passive effect runs, and a settled thread must hold none. Stricter than the total it
+            # replaces, which one stuck block passed as long as the others made the count up.
+            stuck = counts.get("unhighlightedMountedFences", 0)
+            if stuck:
+                failures.append(
+                    f"{where} left {stuck} of {counts.get('fenceBlocks', 0)} code fences mounted "
+                    f"but unhighlighted after settling, neither deferred nor coloured; the "
+                    "thread had not finished building itself when it was measured"
+                )
             viewport = row["viewport"]
             if viewport["scrollHeight"] <= viewport["clientHeight"]:
                 failures.append(

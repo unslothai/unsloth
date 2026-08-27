@@ -8,6 +8,7 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
   StudioModelDictationAdapter,
   fetchSttStatus,
@@ -34,9 +35,22 @@ export function cancelActiveStudioDictation(): void {
  * Routes dictation to the engine chosen in Voice settings, resolved at listen()
  * time so switching engines applies without reloading the chat runtime.
  */
-/** Both local engines (Transformers and GGUF) record via MediaRecorder. */
-function usesModelRecording(dictationEngine: DictationEngine): boolean {
-  return dictationEngine === "model";
+/** local and custom transcription record through the media recorder. */
+function usesRecordedAudio(dictationEngine: DictationEngine): boolean {
+  return dictationEngine !== "browser";
+}
+
+function customSttConfigured(): boolean {
+  const { sttProviderId, sttProviderModel } = useVoiceSettingsStore.getState();
+  const { connectionsEnabled, providers } =
+    useExternalProvidersStore.getState();
+  const providerId = sttProviderId.trim();
+  return Boolean(
+    connectionsEnabled &&
+      providerId &&
+      sttProviderModel.trim() &&
+      providers.some((provider) => provider.id === providerId),
+  );
 }
 
 export class StudioDictationAdapter implements DictationAdapter {
@@ -52,7 +66,10 @@ export class StudioDictationAdapter implements DictationAdapter {
     dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
       .dictationEngine,
   ): boolean {
-    return usesModelRecording(dictationEngine)
+    if (dictationEngine === "custom" && !customSttConfigured()) {
+      return false;
+    }
+    return usesRecordedAudio(dictationEngine)
       ? StudioModelDictationAdapter.isSupported()
       : StudioWebSpeechDictationAdapter.isSupported();
   }
@@ -77,12 +94,19 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   private createSession(): StudioDictationSession {
     const { dictationEngine } = useVoiceSettingsStore.getState();
-    if (usesModelRecording(dictationEngine)) {
+    if (usesRecordedAudio(dictationEngine)) {
+      if (dictationEngine === "custom" && !customSttConfigured()) {
+        throw new Error(
+          "Custom transcription is not configured. Pick a connection and model in Settings → Voice.",
+        );
+      }
       if (StudioModelDictationAdapter.isSupported()) {
         return new StudioModelDictationAdapter({ chatId: this.chatId }).listen();
       }
       throw new Error(
-        "Local model dictation is not supported in this browser.",
+        dictationEngine === "custom"
+          ? "Voice recording is not supported in this browser."
+          : "Local model dictation is not supported in this browser.",
       );
     }
     if (StudioWebSpeechDictationAdapter.isSupported()) {
@@ -109,12 +133,18 @@ export function notifyStudioDictationUnavailable(
   if (typeof window !== "undefined" && !window.isSecureContext) {
     toast.error("Voice typing needs a secure connection.", {
       description:
-        "Open Studio at http://127.0.0.1 (localhost) or over HTTPS to dictate.",
+        "Open Unsloth at http://127.0.0.1 (localhost) or over HTTPS to dictate.",
     });
     return;
   }
-  if (usesModelRecording(dictationEngine)) {
-    // Defensive: MediaRecorder is effectively always present here.
+  if (dictationEngine === "custom" && !customSttConfigured()) {
+    toast.error("Custom transcription isn't configured.", {
+      description: "Pick a connection and model in Voice settings.",
+    });
+    return;
+  }
+  if (usesRecordedAudio(dictationEngine)) {
+    // defensive: media recording is effectively always present here.
     toast.error("Voice recording isn't available in this browser.");
     return;
   }

@@ -47,7 +47,7 @@ import {
 } from "../lib/per-model-params";
 import {
   type ChatLoraSummary,
-  type ChatModelSummary,
+  type ChatModelRow,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
@@ -63,6 +63,7 @@ import {
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
@@ -100,6 +101,7 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
+export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
@@ -460,19 +462,71 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   }
 }
 
+// Flushes handed to the network and not yet answered. pendingPatch and
+// pendingTimer are both empty across that window, so they cannot answer "is a
+// settings write still outstanding" on their own.
+let unsettledFlushes = 0;
+
+function enqueueSettingsFlush(): Promise<void> {
+  unsettledFlushes += 1;
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch())
+    .finally(() => {
+      unsettledFlushes -= 1;
+    });
+  return inflightFlush;
+}
+
 function scheduleSettingsFlush(): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
-    inflightFlush = inflightFlush
-      .catch(() => undefined)
-      .then(() => flushSettingsPatch());
+    void enqueueSettingsFlush();
   }, SETTINGS_DEBOUNCE_MS);
 }
 
 function saveSettingsPatch(patch: SettingsPatch): void {
   mergePatch(pendingPatch, patch);
   scheduleSettingsFlush();
+}
+
+// A wedged PATCH must not hold a send open. Past this the run goes ahead on the
+// value the server already has, which is exactly where it stood before.
+const SETTINGS_FLUSH_TIMEOUT_MS = 2000;
+
+/**
+ * Send the debounced settings patch now and wait for it.
+ *
+ * Some settings are read by the backend out of SQLite at call time rather than
+ * being carried in the request -- Search images picks the web_search schema that
+ * way -- and the mirror above is a trailing-edge debounce, so a message sent
+ * inside that window would run on the value before the toggle. Returns
+ * immediately when nothing is queued, which is every send but one right after a
+ * settings change.
+ */
+export async function flushPendingChatSettings(): Promise<void> {
+  const queued = pendingTimer !== null || Object.keys(pendingPatch).length > 0;
+  // Not just what is queued: the debounce may have fired already and handed its
+  // patch to a request the server has not answered, which leaves both of those
+  // empty while the value the backend reads is still the old one.
+  if (!queued && unsettledFlushes === 0) return;
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  if (queued) void enqueueSettingsFlush();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      inflightFlush.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, SETTINGS_FLUSH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 // Best-effort flush of any pending patch when the page is going away. keepalive
@@ -649,6 +703,7 @@ const MIRRORED_SETTINGS = {
     storageKey: CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     ...BOOLEAN_SETTING,
   },
+  searchImages: { storageKey: CHAT_SEARCH_IMAGES_KEY, ...BOOLEAN_SETTING },
   mcpEnabledForChat: { storageKey: CHAT_MCP_ENABLED_KEY, ...BOOLEAN_SETTING },
   confirmToolCalls: {
     storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
@@ -904,6 +959,14 @@ function heldThreadScopedParamValue(key: string): unknown {
 }
 
 /**
+ * The first value that is actually set. `??` cannot do this any more: `seed` is null when
+ * the pin is cleared, and null there is the chat's own choice rather than a missing key.
+ */
+function firstSetThreadScopedValue(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+/**
  * Put back the sampling keys the open chat owns, so a model load or status poll applying
  * that model's recommendation leaves the chat running on what it stored. Only an unpinned
  * chat falls through to the model's values.
@@ -911,8 +974,12 @@ function heldThreadScopedParamValue(key: string): unknown {
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
-    // ?? and not ||: 0, "" and -1 are all values a user sets on purpose here.
-    const held = heldThreadScopedParamValue(key) ?? threadScopedOverride(key);
+    // Not ||, and not ?? either: 0, "", -1 and a cleared seed's null are all values a
+    // user sets on purpose here.
+    const held = firstSetThreadScopedValue(
+      heldThreadScopedParamValue(key),
+      threadScopedOverride(key),
+    );
     if (held === undefined || isSameThreadScopedValue(held, params[key])) {
       continue;
     }
@@ -950,10 +1017,11 @@ function withoutActiveThreadParams(
     if (held === undefined && threadScopedOverride(key) === undefined) continue;
     // For a held key the installation copy can still be null and the store no longer
     // holds the pre-edit value; the sample taken when the window opened is that value.
-    const own =
-      remembered?.[key] ??
-      globalThreadScopedDefaults?.[key] ??
-      (held !== undefined ? pairingWindowDefaults?.[key] : undefined);
+    const own = firstSetThreadScopedValue(
+      remembered?.[key],
+      globalThreadScopedDefaults?.[key],
+      held !== undefined ? pairingWindowDefaults?.[key] : undefined,
+    );
     if (own === undefined || isSameThreadScopedValue(own, params[key])) {
       continue;
     }
@@ -1394,6 +1462,30 @@ export async function awaitThreadScopedSettingsWrite(
   // A rejection is the held-edit merge path, which throws on failure.
   const landed = await chain.catch(() => false);
   return landed !== false;
+}
+
+/**
+ * Every row write that has already been started, landed.
+ *
+ * Not a flush: a debounce that has not fired yet is left where it is, so a caller cannot
+ * use this to make a write happen earlier than the store would have. It is for a caller
+ * that has just let the debounce fire and now needs the rows before it reads them back,
+ * and does not know which chats the store decided to write.
+ *
+ * The chain a write runs on ends in `await import("../utils/chat-history-storage")`. How
+ * many event-loop turns that costs is a property of the machine -- the specifier has no
+ * extension, so it resolves through a hook, which means filesystem work under a test
+ * runner and a chunk fetch in a browser. A caller that instead spins a fixed number of
+ * turns, or races the loader with an import of its own, is asserting something about the
+ * machine rather than about the store. Awaiting the chains asserts the thing itself.
+ */
+export async function awaitStartedThreadScopedSettingsWrites(): Promise<void> {
+  // A chain that settles can leave a newer one behind it for the same chat, so this
+  // repeats until the map is empty rather than awaiting one snapshot of it. Bounded, so a
+  // write that keeps rescheduling itself surfaces as a failed assertion, not as a hang.
+  for (let pass = 0; pass < 20 && threadSettingsWriteChains.size > 0; pass += 1) {
+    await Promise.allSettled([...threadSettingsWriteChains.values()]);
+  }
 }
 
 function flushThreadScopedSettingsWrite(keepalive = false): void {
@@ -1885,6 +1977,32 @@ function saveBool(key: string, value: boolean): void {
   persistSetting(key, value ? "true" : "false");
 }
 
+// The installation's own answer to the preserve-thinking switch, or null while it has
+// never given one. Hydration records the stored preference and the composer toggle
+// records the click; nothing else writes it.
+let storedPreserveThinking: boolean | null = null;
+
+/** Record the preference a stored value or a toggle just expressed. */
+function notePreserveThinkingPreference(value: boolean): void {
+  storedPreserveThinking = value;
+}
+
+/**
+ * The preserve-thinking value a model load or a status adoption should publish. The
+ * family default the backend resolves (on for Qwen3.8, off everywhere else) is a
+ * DEFAULT: it seeds the switch where the installation has never answered, and never
+ * replaces an answer it gave, the same rule resolveToolsEnabledOnLoad applies to the
+ * tool pills. That is also what makes a cold boot deterministic -- the settings GET and
+ * the inference status race each other, and a load write that cannot overwrite a stored
+ * preference leaves the same result whichever lands first.
+ */
+export function resolvePreserveThinkingOnLoad(resp: {
+  supports_preserve_thinking?: boolean | null;
+  preserve_thinking_default?: boolean | null;
+}): boolean {
+  return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
+}
+
 // The visibility flag shipped after the menu pins, so when it is absent,
 // profiles that had explicitly pinned Canvas keep it visible.
 function loadShowCanvasMenuItem(): boolean {
@@ -2262,43 +2380,14 @@ export function loadedGpuMemoryFields(resp: {
   };
 }
 
-/** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
-export function hasGgufSource(x: {
-  ggufVariant?: string;
-  nativePathToken?: string;
-  isGguf?: boolean;
-}): boolean {
-  return (
-    x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
-  );
-}
-
-/** A local-disk model id: Unix absolute (/), relative (./ ../), tilde (~/),
- *  Windows drive (C:\) or UNC (\\server). Shared so the loader and the
- *  hub-repo predicate classify ids identically. */
-export function isLocalModelPath(id: string): boolean {
-  return /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(id);
-}
-
-/** An uncached HF hub repo we can download as a full snapshot (non-GGUF
- *  safetensors / MLX). Excludes GGUF sources, local paths, native files, LoRA,
- *  and external provider models so none are mis-routed into a snapshot. */
-export function isDownloadableHubRepo(x: {
-  id: string;
-  source?: string;
-  isLora?: boolean;
-  ggufVariant?: string;
-  nativePathToken?: string;
-  isGguf?: boolean;
-}): boolean {
-  return (
-    x.source === "hub" &&
-    !hasGgufSource(x) &&
-    x.isLora !== true &&
-    x.nativePathToken == null &&
-    !isLocalModelPath(x.id)
-  );
-}
+// re-exported here so every existing importer keeps its path; defined in a leaf module
+// that a test can load without pulling the whole store in.
+export {
+  hasGgufSource,
+  isDownloadableHubRepo,
+  isLocalModelPath,
+  wantsDownloadManagerStaging,
+} from "../utils/model-download-staging";
 
 type ContextUsageSnapshot = {
   promptTokens: number;
@@ -2339,7 +2428,7 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
-  models: ChatModelSummary[];
+  models: ChatModelRow[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
   /**
@@ -2436,6 +2525,8 @@ type ChatRuntimeStore = {
   showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
+  // web_search also returns images the model can place inline; read by the backend per call.
+  searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
@@ -2569,10 +2660,37 @@ type ChatRuntimeStore = {
   nUbatch: number | null;
   /** micro-batch size the last successful load sent (null = default) */
   loadedNUbatch: number | null;
+  /** user --spec-draft-type-k/-v override, the DRAFT context's KV cache dtype
+   *  (null = llama.cpp default f16). Separate from kvCacheDtype, which is the
+   *  target model's. */
+  specDraftCacheDtype: string | null;
+  /** draft cache dtype the last successful load sent (null = default) */
+  loadedSpecDraftCacheDtype: string | null;
+  /** user --load-mode override (null = llama.cpp's own `auto`) */
+  loadMode: string | null;
+  /** load mode the last successful load sent (null = default) */
+  loadedLoadMode: string | null;
+  /** user --ctx-checkpoints override (null = llama.cpp default 32) */
+  ctxCheckpoints: number | null;
+  /** checkpoint count the last successful load sent (null = default) */
+  loadedCtxCheckpoints: number | null;
+  /** user --cache-ram override in MiB (null = llama.cpp default 8192) */
+  cacheRam: number | null;
+  /** host prompt cache size the last successful load sent (null = default) */
+  loadedCacheRam: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
+  /** What the RUNNING server was loaded with, as opposed to what the control now
+   * shows: a pending per-model config is applied to disableVision before a switch
+   * captures its rollback baseline, so only this survives to restore. */
+  loadedDisableVision: boolean | null;
+  /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
+  disableVision: boolean;
+  /** Backend-reported: image input is off by request, not by absence of a
+   *  projector. Null until first hydrated. */
+  loadedVisionDisabledByUser: boolean | null;
   /** GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and context
    *  to fit; "manual" = you own the offload (gpuLayers < 0 = Auto/--fit, >= 0
    *  pins layers + nCpuMoe). */
@@ -2686,7 +2804,7 @@ type ChatRuntimeStore = {
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
-  setModels: (models: ChatModelSummary[]) => void;
+  setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /**
      * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
@@ -2765,6 +2883,7 @@ type ChatRuntimeStore = {
   setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
+  setSearchImages: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
@@ -2866,6 +2985,7 @@ type ScalarSettingKey =
   | "preserveThinking"
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
+  | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
@@ -2915,6 +3035,7 @@ const SCALAR_SETTING_KEYS = [
   "preserveThinking",
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
+  "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
@@ -3417,6 +3538,17 @@ function getHydratedSettingsState(
       nextState.paramsByModel = { ...byModel, [left]: inherited };
     }
   }
+  // Under the same fence as the scalar loop below, and for the same reason: a click
+  // made while this response was out is the newer answer. Recording the stored value
+  // over it would leave the switch visibly on -- the fence keeps the store field --
+  // while the next model load quietly resolved to the value the user just replaced.
+  if (
+    settings.preserveThinking !== undefined &&
+    scalarSettingMutationVersions.preserveThinking ===
+      versions.scalarSettings.preserveThinking
+  ) {
+    notePreserveThinkingPreference(settings.preserveThinking);
+  }
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
     // Full access is session-only, so a stored level must not silently drop the
@@ -3598,6 +3730,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     false,
   ),
+  searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   // Mirrors permissionMode (gate requested for ask/auto) so both controls
   // agree on load.
@@ -3657,8 +3790,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedLlamaExtraArgs: null,
   nUbatch: null,
   loadedNUbatch: null,
+  specDraftCacheDtype: null,
+  loadedSpecDraftCacheDtype: null,
+  loadMode: null,
+  loadedLoadMode: null,
+  ctxCheckpoints: null,
+  loadedCtxCheckpoints: null,
+  cacheRam: null,
+  loadedCacheRam: null,
   tensorParallel: false,
   loadedTensorParallel: null,
+  loadedDisableVision: null,
+  disableVision: false,
+  loadedVisionDisabledByUser: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
   loadedCpuFallback: false,
@@ -4152,7 +4296,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to a connection whose provider cannot run Studio's tool
+        // Switching to a connection whose provider cannot run Unsloth's tool
         // loop disables Deep Research; a capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
@@ -4273,7 +4417,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           continue;
         }
         // a key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
-        const value = stored?.[key] ?? globalThreadScopedDefaults?.[key];
+        const value = firstSetThreadScopedValue(
+          stored?.[key],
+          globalThreadScopedDefaults?.[key],
+        );
         if (value === undefined) continue;
         applied[key] = value;
         if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
@@ -4414,8 +4561,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedLlamaExtraArgs: null,
       nUbatch: null,
       loadedNUbatch: null,
+      specDraftCacheDtype: null,
+      loadedSpecDraftCacheDtype: null,
+      loadMode: null,
+      loadedLoadMode: null,
+      ctxCheckpoints: null,
+      loadedCtxCheckpoints: null,
+      cacheRam: null,
+      loadedCacheRam: null,
       tensorParallel: false,
       loadedTensorParallel: null,
+  loadedDisableVision: null,
+      disableVision: false,
+      loadedVisionDisabledByUser: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
@@ -4480,6 +4638,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         state.preserveThinking,
       );
+      notePreserveThinkingPreference(preserveThinking);
       return {
         preserveThinking,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -4607,6 +4766,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         allowArtifactNetworkAccess,
       );
       return { allowArtifactNetworkAccess };
+    }),
+  setSearchImages: (searchImages) =>
+    set(() => {
+      saveBool(CHAT_SEARCH_IMAGES_KEY, searchImages);
+      return { searchImages };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
     set((state) => {

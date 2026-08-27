@@ -43,6 +43,7 @@ export {
   applyActiveModelStatusToStore,
   resolveInferenceCheckpointId,
 } from "./lib/apply-inference-status-to-store";
+export { isSpeechOnlyStatus } from "./lib/speech-only-status";
 export {
   ChatSettingsPanel,
   ParamSlider,
@@ -51,6 +52,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { useChatActive, useInComparePane } from "./runtime-provider";
 export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
@@ -64,7 +66,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
@@ -75,6 +76,16 @@ export {
 export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
+export type { ChatNavigationState } from "./stores/chat-navigation-store";
+export {
+  adjacentChatItem,
+  countUnreadRows,
+  nextAttentionChatItem,
+  openChatItemById,
+  recentChatItemAtSlot,
+  useChatNavigationStore,
+  visibleChatItems,
+} from "./stores/chat-navigation-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
@@ -121,6 +132,8 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
+export { useChatProjectScope } from "./chat-project-scope";
 // Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,
@@ -172,6 +185,17 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export {
+  type AttachmentText,
+  assertDocumentAttachmentSize,
+  attachmentAudioSrc,
+  attachmentTextLanguage,
+  countAttachmentTextLines,
+  isAudioAttachment,
+  parseAttachmentText,
+  readAttachmentText,
+  truncateAttachmentPreviewText,
+} from "./attachment-content";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
@@ -183,6 +207,12 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  isSearchImagesToolResult,
+  searchImagePath,
+  stripSearchImageTokens,
+  type SearchImageEntry,
+} from "./search-images/search-images";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
   formatMcpToolName,
@@ -195,7 +225,9 @@ export {
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,
+  isPlainPasteChord,
   pasteLongTextAsFile,
+  plainPasteStillCounts,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextOf,
@@ -211,7 +243,7 @@ export {
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
-export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
+export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
@@ -256,6 +288,7 @@ export {
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
 export {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
@@ -322,5 +355,7 @@ export {
   StudioSpeechSynthesisAdapter,
   createConfiguredUtterance,
   curateSystemVoices,
+  generateCustomTtsAudio,
   generateStudioTtsAudio,
+  releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";

@@ -681,6 +681,36 @@ _start_studio_venv_replacement() {
     substep "previous environment preserved for rollback"
 }
 
+# uv creates only into a path that is absent or an empty directory. Everything
+# else is occupied, hidden entries and non-resolving symlinks included.
+_dir_has_entries() {  # dir
+    if [ ! -d "$1" ]; then
+        # Still an existing path to mkdir(2), which answers EEXIST for a file or
+        # for a symlink "dangling or not", so uv refuses it too. -d follows the
+        # link and -e misses a dangling one, hence the -L.
+        { [ -e "$1" ] || [ -L "$1" ]; } && return 0
+        return 1
+    fi
+    # Not enumerable: the globs cannot expand without read, and the tests below
+    # fail on every name without search, so it would read as empty. Fail closed
+    # like install.ps1's catch; the rename only needs write on the parent.
+    { [ -r "$1" ] && [ -x "$1" ]; } || return 0
+    # The globs are the whole check, so a caller's set -f would make every
+    # directory look empty. Mirrors _path_has_dir, which saves the flag too.
+    _dhe_glob=on
+    case $- in *f*) _dhe_glob=off ;; esac
+    set +f
+    _dhe_found=1
+    for _dhe_entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        if [ -e "$_dhe_entry" ] || [ -L "$_dhe_entry" ]; then
+            _dhe_found=0
+            break
+        fi
+    done
+    [ "$_dhe_glob" = off ] && set -f
+    return "$_dhe_found"
+}
+
 # Clear $VENV_DIR for a recreate without ever destroying the only copy. The
 # legacy-layout migration below moves $STUDIO_HOME/.venv straight into $VENV_DIR
 # without going through _start_studio_venv_replacement, so a plain `rm -rf` there
@@ -700,7 +730,10 @@ _discard_venv_for_recreate() {  # venv dir
 
 _restore_studio_venv_replacement() {
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
-    [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ] || {
+    # -e/-L, not -d: a rollback holds whatever _dir_has_entries called occupied,
+    # and -d would drop a file or a dangling link and strand the original.
+    [ -n "$_VENV_ROLLBACK_DIR" ] \
+        && { [ -e "$_VENV_ROLLBACK_DIR" ] || [ -L "$_VENV_ROLLBACK_DIR" ]; } || {
         _VENV_ROLLBACK_ACTIVE=false
         return 0
     }
@@ -763,7 +796,9 @@ _commit_studio_venv_replacement() {
         # before deletion so an interrupt cannot replace it with a half-deleted backup.
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
-        if [ -n "$_rollback_to_remove" ] && [ -d "$_rollback_to_remove" ]; then
+        # Same shapes as the restore, or such a backup is never cleaned up.
+        if [ -n "$_rollback_to_remove" ] \
+           && { [ -e "$_rollback_to_remove" ] || [ -L "$_rollback_to_remove" ]; }; then
             if ! rm -rf "$_rollback_to_remove"; then
                 echo "⚠️  Could not remove environment rollback $_rollback_to_remove" >&2
             fi
@@ -777,6 +812,7 @@ _commit_studio_venv_replacement() {
 _cleanup_install_temporaries() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     [ -n "${_UV_INSTALL_NAME_TOOL_SHIM_DIR:-}" ] && rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
+    [ -n "${_UV_VENV_CAPTURE_DIR:-}" ] && rm -rf "$_UV_VENV_CAPTURE_DIR" 2>/dev/null || true
     [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
     # The pinned uv path's own cleanup only runs when that function returns, so a Ctrl-C left
     # the unpacked archive behind plus a staging file inside a directory that is on PATH.
@@ -804,11 +840,10 @@ _on_install_signal() {
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
-# Empty so an inherited value never reaches the trap's rm; only temp paths this
-# script creates below (spaced-path dir, uv install_name_tool guard, torch-trio
-# overrides) are removed.
+# Clear inherited cleanup targets before installing traps.
 _UV_OVERRIDE_TMPDIR=""
 _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
+_UV_VENV_CAPTURE_DIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
 _UIP_WORK=""
 _UIP_STAGE=""
@@ -996,6 +1031,56 @@ _smart_apt_install() {
     fi
 }
 
+# ── Helper: the studio_install_id contract ──
+# 64 lowercase hex, as in the backend (_STUDIO_INSTALL_ID_RE) and the desktop
+# app (is_valid_studio_root_id). Nothing else is an id: no backend reports it,
+# and the launcher holds it in a single-quoted assignment, so a planted value
+# with a quote in it would be launcher code.
+# Subshell bodies scope LC_ALL=C to the check: the classes below must mean the
+# same bytes in any inherited locale, and the contract is pure ASCII.
+_css_install_id_is_valid() (
+    LC_ALL=C
+    export LC_ALL
+    case "${1:-}" in
+        "" | *[!0123456789abcdef]*) return 1 ;;
+    esac
+    [ "${#1}" -eq 64 ]
+)
+
+# Echoes the id at $1 when it satisfies the contract, nothing otherwise.
+# Returns 1 when the path could not be READ, a different answer: a failed read
+# may still be sitting on a valid id.
+_css_read_valid_install_id() (
+    LC_ALL=C
+    export LC_ALL
+    # Regular files only: a FIFO here (or a symlink to one, or to a device)
+    # would park the installer on the open, waiting for a writer forever.
+    [ -f "$1" ] || return 0
+    # -s answers "no id" from stat, without a read, so an empty file we also
+    # cannot read is replaced as it was pre-validation instead of failing the
+    # install. A real id is 64 bytes and never reaches this.
+    [ -s "$1" ] || return 0
+    # A NUL cannot live in a shell variable, so command substitution drops it
+    # and <32 hex>\0<32 hex> would read back valid while the backend, which
+    # keeps the byte, reports "". Catch it by mapping NULs to a real character.
+    if [ -n "$({ tr -dc '\000' < "$1" | tr '\000' 'N'; } 2>/dev/null)" ]; then
+        return 0
+    fi
+    # Group the redirect, or the shell's own "cannot open" escapes 2>/dev/null.
+    # A failed read is reported, never flattened into "no id": permissions or a
+    # transient NFS/FUSE fault must not license a rewrite.
+    _cvi_id=$({ cat "$1"; } 2>/dev/null) || return 1
+    # Trim what the backend's .strip() trims, SURROUNDING whitespace only.
+    # Deleting interior whitespace would mint a 64-hex token out of bytes the
+    # backend reads otherwise, leaving the launcher holding an id it never
+    # reports.
+    _cvi_id=${_cvi_id#"${_cvi_id%%[![:space:]]*}"}
+    _cvi_id=${_cvi_id%"${_cvi_id##*[![:space:]]}"}
+    if _css_install_id_is_valid "$_cvi_id"; then
+        printf '%s' "$_cvi_id"
+    fi
+)
+
 # ── Helper: create desktop shortcuts and launcher script ──
 # Usage: create_studio_shortcuts <unsloth_exe> <os>
 # Creates ~/.local/share/unsloth/launch-studio.sh (shared launcher),
@@ -1036,14 +1121,24 @@ create_studio_shortcuts() {
     _css_id_dir="$STUDIO_HOME/share"
     mkdir -p "$_css_id_dir"
     _css_id_file="$_css_id_dir/studio_install_id"
-    if [ ! -s "$_css_id_file" ]; then
+    # Reuse an existing id only when it matches the contract above: a re-run
+    # over a normal install is then a no-op, and a pre-populated custom root
+    # cannot reach the launcher.
+    # Unreadable is not malformed: in a shared root the id can be a good one
+    # owned by someone else and already reported by a running backend, so
+    # regenerating would break that install. Refuse, as this did pre-validation.
+    if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then
+        echo "[WARN] Cannot create launcher: cannot read $_css_id_file" >&2
+        return 1
+    fi
+    if [ -z "$_css_studio_root_id" ]; then
         if [ -r /dev/urandom ]; then
             _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
         fi
-        if [ -z "${_css_new_id:-}" ] && command -v python3 >/dev/null 2>&1; then
+        if ! _css_install_id_is_valid "${_css_new_id:-}" && command -v python3 >/dev/null 2>&1; then
             _css_new_id=$(python3 -c 'import secrets; print(secrets.token_hex(32))' 2>/dev/null)
         fi
-        if [ -z "${_css_new_id:-}" ]; then
+        if ! _css_install_id_is_valid "${_css_new_id:-}"; then
             echo "[WARN] Cannot create launcher: no entropy source for studio_install_id" >&2
             return 1
         fi
@@ -1055,18 +1150,28 @@ create_studio_shortcuts() {
         _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
         if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
             if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
-                # A usable incumbent always wins. A zero-length file is an
-                # interrupted write, not an id, so replace it with one rename
-                # (no unlink, so the path never vanishes). This branch also
-                # covers filesystems without hard links (exFAT/FAT32).
-                [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+                # A usable incumbent wins, but only a valid one: zero-length
+                # or malformed is an interrupted write or a planted value, so
+                # replace it with one rename (no unlink, the path never
+                # vanishes). Also covers filesystems without hard links
+                # (exFAT/FAT32). -d because renaming onto a directory moves
+                # the temp inside it instead of replacing it.
+                if _css_incumbent=$(_css_read_valid_install_id "$_css_id_file") \
+                    && [ -z "$_css_incumbent" ] && [ ! -d "$_css_id_file" ]; then
+                    mv "$_css_id_tmp" "$_css_id_file" 2>/dev/null || true
+                fi
             fi
         fi
         rm -f "$_css_id_tmp"
-        chmod 600 "$_css_id_file" 2>/dev/null || true
-        unset _css_new_id _css_id_tmp
+        if [ -f "$_css_id_file" ]; then
+            chmod 600 "$_css_id_file" 2>/dev/null || true
+        fi
+        # Bake what is on disk, not what we meant to write: that is what the
+        # backend reports from /api/health, whoever won the race. An unwritable
+        # or non-regular path leaves this empty and no launcher is generated.
+        _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file") || true
+        unset _css_new_id _css_id_tmp _css_incumbent
     fi
-    _css_studio_root_id=$(cat "$_css_id_file" 2>/dev/null)
     if [ -z "$_css_studio_root_id" ]; then
         echo "[WARN] Cannot create launcher: failed to read $_css_id_file" >&2
         return 1
@@ -2747,7 +2852,9 @@ _MIGRATED=false
 # Empty so an inherited value can never masquerade as a probed torch version.
 _PREV_TORCH_VER=""
 
-if [ -x "$VENV_DIR/bin/python" ]; then
+# Replace occupied venvs even when bin/python is missing or dangling, as in
+# the repair loop reported in #9479.
+if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # why: matching guard to the .venv branch below -- in env-mode
     # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
     # existing $STUDIO_HOME/unsloth_studio that lacks Unsloth sentinels.
@@ -2780,7 +2887,13 @@ if [ -x "$VENV_DIR/bin/python" ]; then
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
     substep "preserving existing environment for rollback..."
-    _start_studio_venv_replacement "$VENV_DIR"
+    # A bare call still aborts under `set -e`, but shows only mv's own stderr.
+    # install.ps1 reports this step; say the same here and name the directory.
+    if ! _start_studio_venv_replacement "$VENV_DIR"; then
+        echo "ERROR: could not move $VENV_DIR aside to reinstall." >&2
+        echo "       Check that $STUDIO_HOME is writable, or move $VENV_DIR yourself and re-run." >&2
+        exit 1
+    fi
 elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
     # Old layout exists — validate before migrating.
     # Skip in env-mode so we don't rm -rf an unrelated .venv at the
@@ -2806,6 +2919,18 @@ torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device,
     fi
     if [ "$_legacy_ok" = true ]; then
         echo "✅ Legacy environment is healthy — migrating..."
+        # `mv` into an existing directory nests the environment inside it
+        # ($VENV_DIR/.venv) rather than renaming it, and uv then refuses that
+        # target as in #9479. This branch already means $VENV_DIR is absent or
+        # empty, so clear it: rmdir cannot take one that gained an entry since
+        # the check, and unlinking a symlink never touches its target.
+        if [ -L "$VENV_DIR" ]; then
+            rm -f "$VENV_DIR"
+        elif [ -d "$VENV_DIR" ] && ! rmdir "$VENV_DIR" 2>/dev/null; then
+            echo "ERROR: $VENV_DIR is in the way of the legacy migration." >&2
+            echo "       Move it aside and re-run." >&2
+            exit 1
+        fi
         mv "$STUDIO_HOME/.venv" "$VENV_DIR"
         echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
         _MIGRATED=true
@@ -2914,14 +3039,64 @@ _uv_venv_arm64() {  # label
         --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
 }
 
+# Fedora sets python-downloads = "manual", so uv venv cannot fetch a matching
+# interpreter. Install it only after that hint, then retry. An explicit install
+# still honors "never"; UV_PYTHON_DOWNLOADS=automatic would not.
+_uv_venv_requested() {  # label
+    _uvvr_label="$1"
+    _uvvr_req="$(_python_request "$PYTHON_VERSION")"
+    # Capture the hint while streaming Unsloth output live. If capture setup fails,
+    # use the original venv path. The global directory is owned by trap cleanup.
+    _UV_VENV_CAPTURE_DIR=""
+    if ! command -v tee >/dev/null 2>&1 \
+       || ! _UV_VENV_CAPTURE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-uv-venv.XXXXXX") \
+       || ! mkfifo "$_UV_VENV_CAPTURE_DIR/out_pipe" "$_UV_VENV_CAPTURE_DIR/err_pipe"; then
+        [ -n "$_UV_VENV_CAPTURE_DIR" ] && rm -rf "$_UV_VENV_CAPTURE_DIR" || true
+        _UV_VENV_CAPTURE_DIR=""
+        _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req"
+        return $?
+    fi
+    _uvvr_out="$_UV_VENV_CAPTURE_DIR/out"
+    _uvvr_err="$_UV_VENV_CAPTURE_DIR/err"
+    # BSD tee supports -u; GNU tee is already unbuffered.
+    tee -u /dev/null </dev/null >/dev/null 2>&1 && _uvvr_tee_u=-u || _uvvr_tee_u=
+    tee $_uvvr_tee_u "$_uvvr_out" < "$_UV_VENV_CAPTURE_DIR/out_pipe" &
+    _uvvr_tee_out=$!
+    tee $_uvvr_tee_u "$_uvvr_err" < "$_UV_VENV_CAPTURE_DIR/err_pipe" >&2 &
+    _uvvr_tee_err=$!
+    if _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" \
+            >"$_UV_VENV_CAPTURE_DIR/out_pipe" 2>"$_UV_VENV_CAPTURE_DIR/err_pipe"; then
+        _uvvr_status=0
+    else
+        _uvvr_status=$?
+    fi
+    wait "$_uvvr_tee_out" "$_uvvr_tee_err" 2>/dev/null || true
+    if [ "$_uvvr_status" -eq 0 ]; then
+        rm -rf "$_UV_VENV_CAPTURE_DIR"
+        _UV_VENV_CAPTURE_DIR=""
+        return 0
+    fi
+    if grep -q "Python downloads are set to 'manual'" "$_uvvr_out" "$_uvvr_err" 2>/dev/null \
+       || grep -q "python-downloads" "$_uvvr_out" "$_uvvr_err" 2>/dev/null; then
+        rm -rf "$_UV_VENV_CAPTURE_DIR"
+        _UV_VENV_CAPTURE_DIR=""
+        run_install_cmd "$_uvvr_label (managed Python)" \
+            uv python install "$_uvvr_req" || return $?
+        _run_uv_venv "$_uvvr_label" "$VENV_DIR" --python "$_uvvr_req" || return $?
+        return 0
+    fi
+    rm -rf "$_UV_VENV_CAPTURE_DIR"
+    _UV_VENV_CAPTURE_DIR=""
+    return "$_uvvr_status"
+}
+
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
         _uv_venv_arm64 "create venv"
     else
-        _run_uv_venv "create venv" "$VENV_DIR" \
-            --python "$(_python_request "$PYTHON_VERSION")"
+        _uv_venv_requested "create venv"
     fi
 fi
 
@@ -3014,8 +3189,7 @@ if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
         echo "  WARNING: Python $_PY_VER cannot import torch."
         echo "  Recreating venv..."
         _discard_venv_for_recreate "$VENV_DIR"
-        _run_uv_venv "recreate venv" "$VENV_DIR" \
-            --python "$(_python_request "$PYTHON_VERSION")"
+        _uv_venv_requested "recreate venv"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -4586,7 +4760,7 @@ case "$_torch_index_leaf" in
             _amd_gpu_radeon=false
             # Routing the wheels is only half of unslothai#7331: ROCr rebuilds the agent
             # from HSA_OVERRIDE_GFX_VERSION in every LATER process (and this shell execs
-            # Studio further down), so leaving it set hands the freshly installed per-gfx
+            # Unsloth further down), so leaving it set hands the freshly installed per-gfx
             # wheels a device whose reported ISA matches none of their code. Only on this
             # branch, where the spoof was corroborated and native $_strix_gfx wheels are
             # going in; paths that keep generic wheels need the override as their only
@@ -4680,6 +4854,116 @@ fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
+# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first
+# global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback.
+# Keep in sync with studio/setup.sh.
+_rocminfo_gpu_records() {
+    awk '
+        # Split at the first colon so embedded colons survive.
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        /^[[:space:]]*Name:/ {
+            # Keep a slot for a nameless GPU.
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            gfx = ""; named = 0
+            name = value($0)
+            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
+            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                rest = substr(name, RLENGTH + 1)
+                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
+            }
+            next
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = value($0)
+            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
+            else if (first == "") first = mkt
+            next
+        }
+        END {
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            if (gpus == 0 && first != "") print "|" first
+        }
+    '
+}
+
+# amd-smi enumerates in discovery order over its KFD view; HIP_VISIBLE_DEVICES and
+# ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node
+# id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes
+# --rocm-gfx, so an untranslated ordinal can fetch a prebuilt for another card's arch.
+# `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); the Python
+# side reads the same field in utils/hardware/amd.py get_hip_id_by_gpu_index.
+# Keep in sync with studio/setup.sh.
+_amd_smi_hip_order() {
+    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
+    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
+    # output line reports which index space the records came back in; the caller needs to
+    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
+    { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function keep(   i) { print "discovery"; for (i = 1; i <= r; i++) print rec[i] }
+        !split_seen && $0 == "@@hip-map@@" { split_seen = 1; next }
+        !split_seen { if ($0 != "") rec[++r] = $0; next }
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { n++; hip[n] = -1; next }
+        n && tolower($0) ~ /hip.?id/ {
+            if (hip[n] < 0) { v = value($0); if (v ~ /^[0-9]+$/) hip[n] = v + 0 }
+            next
+        }
+        END {
+            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
+            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
+            # colliding map is not a 1:1 device mapping, so keep discovery order.
+            if (r == 0 || n != r) { keep(); exit }
+            for (i = 1; i <= n; i++) {
+                if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
+                used[hip[i]] = 1
+                out[hip[i]] = rec[i]
+            }
+            print "hip"
+            for (i = 0; i < r; i++) print out[i]
+        }
+    '
+}
+
+# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves
+# of one device. Was: arch indexed, name always adapter 0's -- and on amd-smi 6.1.1, which
+# has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from.
+# Keep in sync with studio/setup.sh.
+_amd_smi_gpu_records() {
+    awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function flush() {
+            if (started) print gfx "|" mkt
+            gfx = ""; mkt = ""
+        }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
+        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        !started { next }
+        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
+        tolower($0) ~ /target.?graphics.?version/ {
+            v = value($0)
+            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
+            next
+        }
+        END { flush() }
+    '
+}
+
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 if _has_usable_nvidia_gpu; then
     step "gpu" "NVIDIA GPU detected"
@@ -4687,20 +4971,41 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
     _ensure_rocm_probe_env
     _gpu_disp_gfx_all=""
+    _gpu_disp_gfx=""
+    _gpu_disp_hip_map_missing=0
     _gpu_disp_mkt=""
+    _gpu_disp_records=""
     if command -v rocminfo >/dev/null 2>&1; then
-        _gpu_disp_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _gpu_disp_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
-            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+        _gpu_disp_records=$(rocminfo 2>/dev/null | _rocminfo_gpu_records || true)
+        _gpu_disp_gfx_all=$(printf '%s\n' "$_gpu_disp_records" | awk -F'|' '$1 != "" { print $1 }')
     fi
     if [ -z "$_gpu_disp_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+        _gpu_disp_smi_records=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records || true)
+        if [ -n "$_gpu_disp_smi_records" ]; then
+            _gpu_disp_smi_out=$(amd-smi list -e 2>/dev/null \
+                | _amd_smi_hip_order "$_gpu_disp_smi_records" || true)
+            _gpu_disp_smi_space=$(printf '%s\n' "$_gpu_disp_smi_out" | head -n 1)
+            _gpu_disp_smi_records=$(printf '%s\n' "$_gpu_disp_smi_out" | tail -n +2)
+            # No map, and the adapters are not interchangeable: the mask indexes HIP order
+            # while these records are in discovery order, so any ordinal is a guess. Report
+            # nothing rather than name one card while the mask selects another. amd-smi
+            # 6.1.1 reports no TARGET_GRAPHICS_VERSION at all and the arch is then inferred
+            # from the name, so an archless record is compared on its name instead.
+            # Interchangeable adapters are unaffected: every ordinal gives the same answer.
+            if [ "$_gpu_disp_smi_space" != hip ] && \
+               [ "$(printf '%s\n' "$_gpu_disp_smi_records" | awk -F'|' \
+                    'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } }
+                     END { print n + 0 }')" -gt 1 ]; then
+                _gpu_disp_smi_records=""
+                _gpu_disp_gfx_all=""
+                _gpu_disp_hip_map_missing=1
+            fi
+        fi
         _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_gpu_disp_gfx_all" ] && \
-            _gpu_disp_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    fi
-    if [ -z "$_gpu_disp_mkt" ] && command -v amd-smi >/dev/null 2>&1; then
-        _gpu_disp_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+            _gpu_disp_gfx_all=$(printf '%s\n' "$_gpu_disp_smi_records" | awk -F'|' '$1 != "" { print $1 }')
+        # A silent amd-smi does not own the device list: keep rocminfo's APU fallback.
+        [ -n "$_gpu_disp_smi_records" ] && _gpu_disp_records="$_gpu_disp_smi_records"
     fi
     _gpu_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _gpu_vis_idx=0
@@ -4708,8 +5013,18 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         _gpu_first="${_gpu_vis%%,*}"
         case "$_gpu_first" in ''|*[!0-9]*) ;; *) _gpu_vis_idx=$_gpu_first ;; esac
     fi
-    _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | awk -v idx="$_gpu_vis_idx" \
-        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    if [ -n "$_gpu_disp_records" ]; then
+        # Records already preserve device ordinals, including duplicate arches.
+        _gpu_disp_record=$(printf '%s\n' "$_gpu_disp_records" | awk -v idx="$_gpu_vis_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+        _gpu_disp_gfx=${_gpu_disp_record%%|*}
+        _gpu_disp_mkt=${_gpu_disp_record#*|}
+    fi
+    # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
+    if [ -z "$_gpu_disp_gfx" ]; then
+        _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | awk -v idx="$_gpu_vis_idx" \
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _gpu_disp_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
@@ -4940,6 +5255,12 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
     esac
 }
 
+_unsloth_desktop_install_spec=""
+if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
+    _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
+fi
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.8.21}"
+
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
     # existing torch/CUDA unless the ROCm repair below fires.
@@ -4952,7 +5273,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -4967,7 +5288,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -5201,7 +5522,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -5220,7 +5541,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.8.18" "unsloth-zoo>=2026.8.12"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -5228,9 +5549,13 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
+        _unsloth_install_pkg="$PACKAGE_NAME"
+        if [ "$PACKAGE_NAME" = "unsloth" ] && [ -n "$_unsloth_desktop_install_spec" ]; then
+            _unsloth_install_pkg="$_unsloth_desktop_install_spec"
+        fi
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth -- "$PACKAGE_NAME"
+            --upgrade-package unsloth -- "$_unsloth_install_pkg"
     fi
     [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
     _UNSLOTH_TORCH_OVERRIDES=""
@@ -5249,7 +5574,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.12" "unsloth>=2026.8.18" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.15" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -5257,14 +5582,48 @@ else
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
+        case "$PACKAGE_NAME" in
+            unsloth)
+                if [ -n "$_unsloth_desktop_install_spec" ]; then
+                    _unsloth_install_pkg="$_unsloth_desktop_install_spec"
+                else
+                    _unsloth_install_pkg="$PACKAGE_NAME"
+                fi
+                ;;
+            *) _unsloth_install_pkg="$PACKAGE_NAME" ;;
+        esac
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$_unsloth_install_pkg"
     fi
 fi
 
-_installed_package_version=$("$_VENV_PY" -c \
-    'from importlib.metadata import version; import sys; print(version(sys.argv[1]))' \
-    "$PACKAGE_NAME" 2>/dev/null || true)
-if [ -n "$_installed_package_version" ]; then
+# Same probe as install.ps1: version() answers from whichever record the finder
+# yields first, so a duplicate would be reported here as an ordinary version.
+_installed_package_version_exit=0
+if _installed_package_version=$("$_VENV_PY" -c '
+import sys
+try:
+    from studio.install_manifest import installed_version_probe
+except Exception:
+    # --package installs something that does not ship studio/. Report what the
+    # old probe would have, rather than claiming the version is unknown.
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        print(version(sys.argv[1]))
+    except PackageNotFoundError:
+        sys.exit(1)
+    sys.exit(0)
+installed, conflict = installed_version_probe(sys.argv[1])
+print(installed)
+sys.exit(2 if conflict else (0 if installed else 1))
+' "$PACKAGE_NAME" 2>/dev/null); then
+    :
+else
+    _installed_package_version_exit=$?
+    _installed_package_version=""
+fi
+if [ "$_installed_package_version_exit" -eq 2 ]; then
+    substep "duplicate metadata found for $PACKAGE_NAME; the dependency pass will repair it"
+elif [ -n "$_installed_package_version" ]; then
     step "$PACKAGE_NAME" "$_installed_package_version installed"
 else
     substep "[WARN] installed $PACKAGE_NAME version could not be determined" "$C_WARN"
@@ -5435,6 +5794,9 @@ else
 fi
 
 if [ "$_SETUP_EXIT" -eq 0 ]; then
+    # First: until this runs, anything that fails below reaches the exit trap, which would
+    # restore the previous environment over the one just installed.
+    _commit_studio_venv_replacement
     tauri_clear_install_error "studio setup completed"
 fi
 
@@ -5452,7 +5814,17 @@ if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
 fi
 # why: -sfn is atomic and -n prevents descent into a symlink-to-directory at
 # the shim path (the directory guard above already rejects a real directory).
-ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
+if ! ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path" 2>/dev/null; then
+    # A reinstall rebuilds the environment at the same path, so an entry already resolving to
+    # this executable is the shim we were about to write: not a failed install.
+    if [ "$_shim_path" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+        substep "kept the existing shim at $_shim_path ($_LOCAL_BIN is not writable)"
+    else
+        echo "ERROR: could not create the shim at $_shim_path." >&2
+        echo "       Make $_LOCAL_BIN writable, or run '$VENV_DIR/bin/unsloth' directly." >&2
+        exit 1
+    fi
+fi
 
 # Is $2 one of the colon-separated entries of $1? Field splitting also globs, so pathname
 # expansion is off for the walk and restored afterwards: a directory holding *, ? or [ would
@@ -5488,9 +5860,14 @@ _persist_fish_path_dir() {
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not
     # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
-        echo "# Added by Unsloth installer" >> "$_pfp_file"
-        echo "fish_add_path '$_pfp_quoted'" >> "$_pfp_file"
-        step "path" "added $_pfp_label to PATH in $_pfp_file"
+        if {
+            echo "# Added by Unsloth installer"
+            echo "fish_add_path '$_pfp_quoted'"
+        } 2>/dev/null >> "$_pfp_file"; then
+            step "path" "added $_pfp_label to PATH in $_pfp_file"
+        else
+            step "path" "could not write $_pfp_file; add $_pfp_label to PATH yourself" "$C_WARN"
+        fi
     fi
 }
 
@@ -5534,10 +5911,17 @@ _persist_login_path_dir() {
     # shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
-        echo '' >> "$_SHELL_PROFILE"
-        echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
-        echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
-        step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
+        # One redirect, so an unwritable profile leaves no half-written entry; a warning rather
+        # than a failure, because under set -e an unguarded append would end the install.
+        if {
+            echo ''
+            echo '# Added by Unsloth installer'
+            echo "export PATH=\"$_plp_literal:\$PATH\""
+        } 2>/dev/null >> "$_SHELL_PROFILE"; then
+            step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
+        else
+            step "path" "could not write $_SHELL_PROFILE; add $_plp_label to PATH yourself" "$C_WARN"
+        fi
     fi
 }
 
@@ -5612,8 +5996,6 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     exit "$_SETUP_EXIT"
 fi
-
-_commit_studio_venv_replacement
 
 # ── Tauri mode: done, skip shortcuts and auto-launch ──
 if [ "$TAURI_MODE" = true ]; then

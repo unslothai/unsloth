@@ -204,6 +204,57 @@ def exercise_permission_mode_controls(page, shoot):
             pass  # best-effort -- proceed even if network never idles
         expect(pill).to_be_visible(timeout = 30_000)
 
+    # choose() only drives THIS tab. The mirror to /api/chat/settings is a 400ms
+    # trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts) whose
+    # only early flush is the beforeunload keepalive, so the pill turning over
+    # proves the click landed locally, not that the installation stored it.
+    #
+    # Measured on webkit, timed from the choose() below: choose returns at
+    # t+238ms, set_legacy_confirm at t+248ms, and the reload starts there. The
+    # debounce would not have fired until ~t+630ms, so the only PUT that goes out
+    # at all is the beforeunload keepalive at t+252ms, and the reloaded page's
+    # hydrating GET arrives at t+697ms. The assertion after the reload was
+    # therefore never testing the level this step chose. It was betting that an
+    # unload-time keepalive beats a hydrating GET by 445ms of loopback, on every
+    # engine, every run.
+    #
+    # When that bet loses, hydration returns the level the migration loop above
+    # left on the install ("off"), the pill reads "Run automatically", and the
+    # step fails as though migration were broken. That is what took webkit red at
+    # 20a98fd54 while chromium and firefox passed the same assertion in the same
+    # job.
+    #
+    # So: wait for the level to actually be ON the installation before reloading
+    # and asserting on it. Assert what was achieved, not what was commanded. This
+    # deliberately stops depending on the unload-time flush; that flush is worth a
+    # test of its own, but it was never what this step meant to assert.
+    def expect_server_mode(expected, timeout_ms = 15_000):
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        seen = "<never read>"
+        while True:
+            seen = page.evaluate(
+                """async () => {
+                    const token = localStorage.getItem("unsloth_auth_token");
+                    const res = await fetch("/api/chat/settings", {
+                        headers: token ? { Authorization: "Bearer " + token } : {},
+                        cache: "no-store",
+                    });
+                    if (!res.ok) return "<http " + res.status + ">";
+                    const body = await res.json();
+                    return (body && body.settings && body.settings.permissionMode) ?? null;
+                }"""
+            )
+            if seen == expected:
+                return
+            if time.monotonic() >= deadline:
+                break
+            page.wait_for_timeout(100)
+        fail(
+            f"permission level never reached the installation: /api/chat/settings "
+            f"reports permissionMode={seen!r} after {timeout_ms}ms, expected "
+            f"{expected!r} -- the debounced mirror never landed"
+        )
+
     page.route("**/api/chat/settings", refuse_settings_hydration)
     set_legacy_confirm(None)
     reload_and_wait_for_pill()
@@ -260,6 +311,7 @@ def exercise_permission_mode_controls(page, shoot):
     # rather than its own derivation.
     choose("Ask for approval")
     expect_mode("Ask for approval")
+    expect_server_mode("ask")
     set_legacy_confirm("false")
     reload_and_wait_for_pill()
     expect_mode("Ask for approval")
@@ -1148,7 +1200,7 @@ with sync_playwright() as p:
         """(args) => {
             const [secondPrompt, holdMs] = args;
             window.__unslothRapid = {
-                intercepted: false, submitted: false, queueSeen: false,
+                intercepted: false, preparing: false, submitted: false, queueSeen: false,
                 observed: false, error: null, seen: [], holdUntil: 0,
             };
             const state = window.__unslothRapid;
@@ -1156,7 +1208,11 @@ with sync_playwright() as p:
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             const sendFollowUp = (deadline) => {
-                if (state.submitted || state.error) return;
+                if (state.preparing || state.submitted || state.error) return;
+                if (deadline === undefined) deadline = Date.now() + 5000;
+                if (state.holdUntil) {
+                    deadline = Math.min(deadline, state.holdUntil - 250);
+                }
                 // Re-query, and retry: this is the chat's first message, so
                 // sending it swaps the welcome composer for the dock composer.
                 // A node captured earlier is detached, and for a short window
@@ -1165,14 +1221,10 @@ with sync_playwright() as p:
                     'textarea[aria-label="Message input"]'
                 );
                 if (!composer || !composer.isConnected || !composer.form) {
-                    if (deadline === undefined) deadline = Date.now() + 5000;
                     // Never retry past the hold. The response is released when
                     // it expires, so a submit after that races a buffered reply
                     // finishing first and would report a queue failure for an
                     // application that behaved correctly.
-                    if (state.holdUntil) {
-                        deadline = Math.min(deadline, state.holdUntil - 250);
-                    }
                     if (Date.now() > deadline) {
                         state.error = "no connected composer for the follow-up";
                         return;
@@ -1187,8 +1239,32 @@ with sync_playwright() as p:
                 ).set;
                 setValue.call(composer, secondPrompt);
                 composer.dispatchEvent(new Event("input", { bubbles: true }));
-                composer.form.requestSubmit();
-                state.submitted = true;
+                // Synthetic input and requestSubmit in the same JS turn can make
+                // the form callback read the previous controlled value. That is
+                // not how a user types, and it leaves the new text visible while
+                // the test incorrectly records a submit. Let React publish the
+                // input, then re-check the composer because the welcome bar can
+                // be replaced by the dock bar during this frame.
+                state.preparing = true;
+                requestAnimationFrame(() => {
+                    state.preparing = false;
+                    const current = document.querySelector(
+                        'textarea[aria-label="Message input"]'
+                    );
+                    if (
+                        !current || !current.isConnected || !current.form ||
+                        current.value !== secondPrompt
+                    ) {
+                        if (Date.now() > deadline) {
+                            state.error = "follow-up composer did not settle";
+                            return;
+                        }
+                        setTimeout(() => sendFollowUp(deadline), 25);
+                        return;
+                    }
+                    current.form.requestSubmit();
+                    state.submitted = true;
+                });
             };
 
             window.fetch = async (...a) => {
@@ -1304,7 +1380,7 @@ with sync_playwright() as p:
     # completion often enough to appear in 3 of 8 sampled runs, and the clause
     # held anyway every time, so it never had the coverage its wording implies.
     # A content-based replacement would be flakier than what it replaces, because
-    # an empty completion is the model's behaviour, not a defect in Studio.
+    # an empty completion is the model's behaviour, not a defect in Unsloth.
     #
     # It matters now because the assistant action bar autohides on every reply but
     # the newest, so for the older of the two this reads, the labels are no longer in

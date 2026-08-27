@@ -56,6 +56,7 @@ export interface CachedGgufRepo {
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
 }
@@ -77,6 +78,7 @@ export interface CachedModelRepo {
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -107,6 +109,7 @@ export interface LocalModelInfo {
   partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -165,6 +168,8 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  /** Bytes a resume still has to fetch. Set only on a partial variant. */
+  download_remaining_bytes?: number | null;
   downloaded?: boolean;
   update_available?: boolean;
   partial?: boolean;

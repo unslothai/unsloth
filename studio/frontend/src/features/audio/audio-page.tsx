@@ -53,6 +53,11 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
+  PcmRecorder,
+  type SegmentRecorder,
+  createAudioRecorder,
+} from "@/features/chat/adapters/pcm-recorder";
+import {
   SttModelNotDownloadedError,
   StudioModelDictationAdapter,
   fetchSttStatus,
@@ -267,7 +272,14 @@ function formatClipDuration(seconds: number): string {
   return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
-export function AudioPage({ active = true }: { active?: boolean }) {
+export function AudioPage({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
+  const initialReadySent = useRef(false);
   const [mode, setMode] = useState<CreateMode>("speak");
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [busy, setBusy] = useState<AudioBusy>(null);
@@ -342,7 +354,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderRef = useRef<SegmentRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const discardRecordingRef = useRef(false);
   const selectedSttRepoRef = useRef<string | null>(selectedSttRepo);
@@ -660,10 +672,38 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // Resync on activation: another tab may have loaded/unloaded models meanwhile.
   useEffect(() => {
     if (!active) return;
-    void refreshStatus();
-    void refreshSttStatus();
-    void refreshGallery();
-  }, [active, refreshStatus, refreshSttStatus, refreshGallery]);
+    if (initialReadySent.current) {
+      void refreshStatus();
+      void refreshSttStatus();
+      void refreshGallery();
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const [initialClips] = await Promise.all([
+        refreshGallery(),
+        refreshStatus(),
+        refreshSttStatus(),
+      ]);
+      const initialSelection =
+        initialClips.find((clip) => clip.id === galleryCache.selectedId) ??
+        initialClips[0];
+      if (initialSelection) await ensureClipSrc(initialSelection);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    active,
+    ensureClipSrc,
+    onInitialReady,
+    refreshGallery,
+    refreshStatus,
+    refreshSttStatus,
+  ]);
 
   // Activation alone is not enough: the loaded-models indicator can eject the TTS model
   // out from under a page that stays active, leaving Generate enabled against an empty
@@ -780,6 +820,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           },
           {
             signal: controller.signal,
+            runtime: "tts",
             onRequestStart: () => {
               pending.requestStarted = true;
               // Queued prompts would otherwise start on the model this load replaces.
@@ -1012,7 +1053,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           await startSttDownload(sidecarKey, hfApiToken(getHfToken()), engine);
           // STT owns its specialized transfer, but the existing mirror gives
           // it the same global Downloads row, progress and Cancel action as
-          // every other Studio model download. Do not reset an adopted row.
+          // every other Unsloth model download. Do not reset an adopted row.
           if (!isTrackingSttDownload(sidecarKey, engine)) {
             trackSttDownload(sidecarKey, {
               // Audio owns the final load through its active/selection
@@ -1630,7 +1671,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         return;
       }
       recordStreamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const recorder = createAudioRecorder(stream);
+      // WAV is uncompressed, so on the PCM path the byte cap is reached long
+      // before the 30 minute one. Express it as a duration the timer below
+      // already enforces, rather than letting the upload be refused.
+      const maxSeconds =
+        recorder instanceof PcmRecorder
+          ? Math.min(
+              RECORDING_MAX_SECONDS,
+              recorder.secondsWithin(RECORDING_MAX_BYTES),
+            )
+          : RECORDING_MAX_SECONDS;
       const chunks: Blob[] = [];
       let recordedBytes = 0;
       let limitHit: "duration" | "size" | null = null;
@@ -1642,7 +1693,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         limitHit = reason;
         toast.warning(
           reason === "duration"
-            ? `Recording stopped at the ${RECORDING_MAX_SECONDS / 60} minute limit.`
+            ? `Recording stopped at the ${Math.floor(maxSeconds / 60)} minute limit.`
             : "Recording stopped: it reached the maximum upload size.",
         );
         try {
@@ -1653,7 +1704,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       };
       const durationTimer = window.setTimeout(
         () => stopAtLimit("duration"),
-        RECORDING_MAX_SECONDS * 1000,
+        maxSeconds * 1000,
       );
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) {
@@ -1870,7 +1921,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             // The catalog rows are already filtered to families with a GGUF sibling; these
             // have none, so offering them only produces that error.
             .filter((lora) => !isMac || lora.export_type === "gguf")
-            .filter((lora) => isTtsAudioType(lora.audio_type))
+            // The GGUF flag matters: GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has
+            // no CSM decoder, so a csm LoRA exported to GGUF fails at load. Without it the
+            // wider Transformers list answered and the row was offered anyway.
+            .filter((lora) =>
+              isTtsAudioType(lora.audio_type, lora.export_type === "gguf"),
+            )
             .map((lora) => ({
               id: lora.adapter_path,
               name: audioModelLabel(lora.adapter_path),
@@ -2101,7 +2157,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                   hint={
                     recordingSupported
                       ? "Record a clip and it is transcribed when you stop."
-                      : "This browser cannot record. Open Studio over https or on localhost, or upload a file below."
+                      : "This browser cannot record. Open Unsloth over https or on localhost, or upload a file below."
                   }
                 >
                   <Button
@@ -2183,7 +2239,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
         <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           {mode === "transcribe" ? (
-            <div className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
+            <div
+              data-reload-snapshot-sensitive={
+                transcript || transcribedName ? "" : undefined
+              }
+              className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 px-10 @[50rem]:pt-[60px]"
+            >
               {busy === "transcribing" ? (
                 <div className="flex items-center gap-2 text-ui-13 text-muted-foreground">
                   <Spinner className="size-4" />

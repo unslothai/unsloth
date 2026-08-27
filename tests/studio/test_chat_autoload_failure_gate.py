@@ -94,6 +94,56 @@ export function sanitizeStoredExtraArgs(
   return [...tokens];
 }
 
+// The llama-server tuning group, mirroring
+// studio/frontend/src/features/chat/lib/server-tuning-fields.ts. Real logic rather
+// than a neutral stub: serverTuningLoadPayload spreads into the /load payload these
+// scenarios assert on, so a stub that always returned {} would keep passing if the
+// real one started sending a field. These are pure and import nothing, so copying
+// them costs only the drift this file already guards against by name.
+export function serverTuningLoadPayload(values: any): any {
+  return {
+    ...(values?.loadMode != null ? { load_mode: values.loadMode } : {}),
+    ...(values?.specDraftCacheDtype != null
+      ? { spec_draft_cache_type: values.specDraftCacheDtype }
+      : {}),
+    ...(values?.ctxCheckpoints != null
+      ? { ctx_checkpoints: values.ctxCheckpoints }
+      : {}),
+    ...(values?.cacheRam != null ? { cache_ram: values.cacheRam } : {}),
+  };
+}
+export function clearedServerTuningState(): any {
+  return {
+    loadMode: null,
+    loadedLoadMode: null,
+    specDraftCacheDtype: null,
+    loadedSpecDraftCacheDtype: null,
+    ctxCheckpoints: null,
+    loadedCtxCheckpoints: null,
+    cacheRam: null,
+    loadedCacheRam: null,
+  };
+}
+export function committedServerTuningState(values: any, isDiffusion = false): any {
+  if (isDiffusion) {
+    return clearedServerTuningState();
+  }
+  const loadMode = values?.loadMode ?? null;
+  const specDraftCacheDtype = values?.specDraftCacheDtype ?? null;
+  const ctxCheckpoints = values?.ctxCheckpoints ?? null;
+  const cacheRam = values?.cacheRam ?? null;
+  return {
+    loadMode,
+    loadedLoadMode: loadMode,
+    specDraftCacheDtype,
+    loadedSpecDraftCacheDtype: specDraftCacheDtype,
+    ctxCheckpoints,
+    loadedCtxCheckpoints: ctxCheckpoints,
+    cacheRam,
+    loadedCacheRam: cacheRam,
+  };
+}
+
 export const EVENTS: any[] = [];
 let SCENARIO: Scenario;
 export function setScenario(scenario: Scenario) {
@@ -118,6 +168,17 @@ async function getInferenceStatus() {
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
 }
+// chat-runtime-store.ts:
+//   return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
+// No scenario here sets a stored preference, so the stub is the model-family
+// default the backend resolves, verbatim from resolve-preserve-thinking-default.ts:
+//   Boolean(resp.supports_preserve_thinking && resp.preserve_thinking_default)
+// Present because the sliced region calls it; without it every scenario in this
+// file fails on the harness guard rather than on anything it means to test.
+function resolvePreserveThinkingOnLoad(resp: any) {
+  return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
+}
+
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model
     ? (status.model_identifier ?? status.active_model)
@@ -463,6 +524,18 @@ async function loadModel(payload: any) {
   });
   if (result instanceof Error) throw result;
   return result;
+}
+
+// The speech-only verdict, mirroring
+// studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
+// neutral stub: a stub that always answered false would keep every scenario green if the
+// queued path's guard were removed.
+export function isSpeechOnlyStatus(status: any): boolean {
+  return (
+    Boolean(status?.is_audio) &&
+    status?.audio_type !== "whisper" &&
+    status?.audio_type !== "audio_vlm"
+  );
 }
 """
 
@@ -1310,7 +1383,7 @@ def test_a_cached_text_generation_repo_still_auto_loads():
 
 def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
     """Before the probe lands chatOnly is a browser guess: a Mac browser on a
-    remote Linux Studio would hide every local safetensors model."""
+    remote Linux Unsloth would hide every local safetensors model."""
     safetensors = (
         "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
         " model_format: 'safetensors' }"
