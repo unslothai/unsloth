@@ -5320,18 +5320,71 @@ export function createOpenAIStreamAdapter(
       // and the backend runs both, so the second card would otherwise be
       // painted with no signature while the first wore the wrong one.
       const announcedExtraByName = new Map<string, unknown[]>();
-      const endProviderTurn = () => {
+      // Cards forked off a slot whose last object had not closed yet. The
+      // backend holds the same ones back in open_tail_keys: a stream that stops
+      // after `{"a":1}{` is not marked truncated, so the lone brace would
+      // otherwise persist as a card no execution event can ever complete and
+      // replay would send as `{}`. The card still has to exist while the turn
+      // runs, because later id-less fragments are written to it.
+      const openTailIds = new Set<string>();
+      const endProviderTurn = (): boolean => {
+        let changed = false;
         for (const [pendingIdx, pendingName] of pendingNameByIndex) {
           const extra = pendingExtraByIndex.get(pendingIdx);
-          if (pendingName && extra !== undefined) {
-            const queued = announcedExtraByName.get(pendingName) ?? [];
-            queued.push(extra);
-            announcedExtraByName.set(pendingName, queued);
+          if (!pendingName || extra === undefined) continue;
+          // A parked name that repeats or extends the name of the call this
+          // slot already holds is that call's name resent, not a second call:
+          // _announced_but_unopened invents nothing for it and hangs the
+          // metadata on the held call instead. Queued under the fragment it
+          // would never be read, because the tool_start that follows carries
+          // the held call's name, and the card would persist without the
+          // thought signature its replay needs.
+          const heldIndex = findStreamedToolCallPartIndex(
+            toolCallParts,
+            undefined,
+            pendingIdx,
+          );
+          const held = heldIndex === -1 ? undefined : toolCallParts[heldIndex];
+          const heldName = held?.toolName ?? "";
+          if (
+            held &&
+            heldName &&
+            (heldName.startsWith(pendingName) ||
+              pendingName.startsWith(heldName))
+          ) {
+            const heldExtra = held.extra_content;
+            toolCallParts[heldIndex] = {
+              ...held,
+              extra_content:
+                isPlainRecord(heldExtra) && isPlainRecord(extra)
+                  ? { ...heldExtra, ...extra }
+                  : extra,
+            };
+            changed = true;
+            continue;
           }
+          const queued = announcedExtraByName.get(pendingName) ?? [];
+          queued.push(extra);
+          announcedExtraByName.set(pendingName, queued);
         }
         pendingNameByIndex.clear();
         pendingExtraByIndex.clear();
         pendingSlotByIndex.clear();
+        // Same test as _call_is_finished: a run of whole objects and nothing
+        // half-written. A card that was later claimed by a real id is the
+        // provider's own call, addressed by it, and is not this fork's to drop.
+        for (const tailId of openTailIds) {
+          const at = toolCallParts.findIndex((p) => p.toolCallId === tailId);
+          if (at === -1) continue;
+          const part = toolCallParts[at];
+          if (part._has_stable_id) continue;
+          const scanned = splitTopLevelJsonObjects(part.argsText ?? "");
+          if (scanned.complete.length > 0 && !scanned.tail) continue;
+          toolCallParts.splice(at, 1);
+          changed = true;
+        }
+        openTailIds.clear();
+        return changed;
       };
       const scanArgsText = (partId: string, text: string) => {
         let scan = boundaryScans.get(partId);
@@ -6402,14 +6455,25 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // A tool event means the provider turn that asked for it has
-                // ended. finish_reason alone is not enough: an OpenAI-compatible
-                // upstream can end a turn with [DONE] or EOF and never send one,
-                // and the loop starts the next request anyway with the delta
-                // indices restarted, so a name waiting for arguments would be
-                // prepended to whatever opens there. Before the queue below is
-                // read, so this turn's announcements reach it.
-                endProviderTurn();
+                // One of Unsloth's own tool events means the provider turn that
+                // asked for it has ended. finish_reason alone is not enough: an
+                // OpenAI-compatible upstream can end a turn with [DONE] or EOF
+                // and never send one, and the loop starts the next request
+                // anyway with the delta indices restarted, so a name waiting
+                // for arguments would be prepended to whatever opens there.
+                // Before the queue below is read, so this turn's announcements
+                // reach it.
+                //
+                // A provider-hosted tool runs INSIDE the turn, though: the
+                // backend records those with note_hosted_tool_event and leaves
+                // its _Turn open, so an argument-only delta after one still
+                // opens the name parked here. Hosted events arrive as whole
+                // chat.completion.chunks carrying _toolEvent beside `choices`,
+                // while Unsloth's are bare {"type": "tool_start"} SSE frames
+                // that chat-api wraps with nothing else on them.
+                if (!chunk.choices) {
+                  endProviderTurn();
+                }
                 // Deep Research is an ordinary tool to every loop that runs it, so the handoff
                 // is read off the events they all publish rather than a bespoke frame. An
                 // ungated pair is not rendered: the research card is the reply, a tool pill
@@ -7267,14 +7331,19 @@ export function createOpenAIStreamAdapter(
                       // Appended, not inserted beside the slot, so a call the
                       // stream opened third reads third whichever index it
                       // reused. Where the branch below puts one, too.
-                      toolCallParts.push(
-                        ...bornSplitToolCalls(
-                          segments.slice(1),
-                          nextName,
-                          idx,
-                          incomingExtra,
-                        ),
+                      const born = bornSplitToolCalls(
+                        segments.slice(1),
+                        nextName,
+                        idx,
+                        incomingExtra,
                       );
+                      // The last one is the object still being written, if one
+                      // is: kept so later fragments have somewhere to go, and
+                      // dropped at the end of the turn if it never closed.
+                      if (splitTailIsOpen && born.length > 0) {
+                        openTailIds.add(born[born.length - 1].toolCallId);
+                      }
+                      toolCallParts.push(...born);
                       // New calls are state, so they never wait on the gate.
                       addedToolCall = true;
                     }
@@ -7424,6 +7493,11 @@ export function createOpenAIStreamAdapter(
                           freshExtra,
                         )
                       : [];
+                    // As above: the fork whose object is still open is held
+                    // only for the rest of the turn.
+                    if (freshTailIsOpen && born.length > 0) {
+                      openTailIds.add(born[born.length - 1].toolCallId);
+                    }
                     // A call announced by name goes where it was announced, not
                     // where its arguments turned up, so the transcript reads in
                     // the order the backend runs them.
@@ -7453,7 +7527,10 @@ export function createOpenAIStreamAdapter(
                 // name-only delta, and clearing first would let that name be
                 // parked again and cross into the next turn.
                 if (chunk.choices?.[0]?.finish_reason) {
-                  endProviderTurn();
+                  // Ending the turn can move metadata onto a card and drop a
+                  // fork whose object never closed, so the publish below has to
+                  // see it rather than wait for the pacing gate.
+                  replayStateChanged ||= endProviderTurn();
                 }
                 if (
                   addedToolCall ||
@@ -7475,7 +7552,7 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
               if (chunk.choices?.[0]?.finish_reason) {
-                endProviderTurn();
+                replayStateChanged ||= endProviderTurn();
               }
               // extra_content can arrive with no content at all: a Gemini
               // thoughtSignature fragment, or the codex reasoning ledger on a

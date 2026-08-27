@@ -964,3 +964,57 @@ test("a stable id naming a longer tool opens its own call", () => {
     ],
   );
 });
+
+test("a fork whose object never closed is dropped when the turn ends", () => {
+  // A stream that stops after `{"a":1}{` is not marked truncated, so the lone
+  // brace would persist as a card no execution event can complete and replay
+  // would send as `{}`. The backend holds the same fork back in open_tail_keys.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "a", arguments: '{"a":1}{' } }]);
+  assert.deepEqual(shape(stream.parts), [
+    ["a", '{"a":1}'],
+    ["a", "{"],
+  ]);
+  stream.feed([], true);
+  assert.deepEqual(shape(stream.parts), [["a", '{"a":1}']]);
+});
+
+test("a fork that does close its object is kept", () => {
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "a", arguments: '{"a":1}{' } }]);
+  stream.feed([{ index: 0, function: { arguments: '"b":2}' } }]);
+  stream.feed([], true);
+  assert.deepEqual(shape(stream.parts), [
+    ["a", '{"a":1}'],
+    ["a", '{"b":2}'],
+  ]);
+});
+
+test("metadata from a resent name goes to the call that runs", () => {
+  // "alpha_long" at a closed slot reads as "alpha" grown, so no second call is
+  // invented for it and _announced_but_unopened hangs the signature on the held
+  // call. Queued under the fragment it would never be read: the tool_start that
+  // follows is named "alpha", and the card would replay without it.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
+  stream.feed([
+    { index: 0, function: { name: "alpha_long" }, extra_content: { sig: "s" } },
+  ]);
+  stream.feed([], true);
+
+  assert.deepEqual(shape(stream.parts), [["alpha", '{"a":1}']]);
+  assert.deepEqual(stream.parts[0].extra_content, { sig: "s" });
+});
+
+test("a provider-hosted tool event does not end the provider turn", () => {
+  // The backend records those with note_hosted_tool_event and leaves its _Turn
+  // open, so an argument-only delta after one still opens the parked name.
+  // Hosted events ride a whole chunk, `choices` and all; Unsloth's own tool
+  // frames arrive as a bare {"type": "tool_start"} that chat-api wraps alone.
+  const guarded = liftBetween(
+    "the hosted-event guard",
+    "const toolEvent = (",
+    "// Deep Research is an ordinary tool",
+  );
+  assert.match(guarded, /if \(!chunk\.choices\) \{\s*endProviderTurn\(\);/);
+});
