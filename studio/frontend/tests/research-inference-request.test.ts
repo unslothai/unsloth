@@ -21,6 +21,7 @@ test("Codex research keeps provider routing and clamps generation settings", () 
       temperature: 0.2,
       topP: 0.9,
       maxTokens: 20000,
+      supportsReasoning: true,
       reasoningRequested: true,
       reasoningStyle: "reasoning_effort",
       reasoningEffort: "xhigh",
@@ -47,6 +48,7 @@ test("invalid optional settings do not leak into a local research request", () =
       temperature: 3,
       topP: 0,
       maxTokens: 0,
+      supportsReasoning: true,
       reasoningRequested: false,
       reasoningStyle: "enable_thinking",
       reasoningEffort: "none",
@@ -69,6 +71,7 @@ test("Ollama-style research serializes reasoningEffort none when Thinking is off
       temperature: 0.2,
       topP: 0.9,
       maxTokens: 2048,
+      supportsReasoning: true,
       reasoningRequested: false,
       reasoningStyle: "reasoning_effort",
       reasoningEffort: "medium",
@@ -84,6 +87,37 @@ test("Ollama-style research serializes reasoningEffort none when Thinking is off
       topP: 0.9,
       maxTokens: 2048,
       reasoningEffort: "none",
+    },
+  );
+});
+
+test("unsupported reasoning does not leak into a research request", () => {
+  assert.deepEqual(
+    buildResearchInferenceRequest({
+      checkpoint: "external::ollama::llama3.2:3b",
+      external: {
+        providerId: "ollama-local",
+        providerType: "ollama",
+        modelId: "llama3.2:3b",
+      },
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 2048,
+      supportsReasoning: false,
+      reasoningRequested: true,
+      reasoningStyle: "enable_thinking_effort",
+      reasoningEffort: "high",
+      reasoningEffortLevels: ["none", "low", "medium", "high"],
+      clampReasoningEffort: clamp,
+    }),
+    {
+      model: "llama3.2:3b",
+      providerId: "ollama-local",
+      providerType: "ollama",
+      externalModel: "llama3.2:3b",
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 2048,
     },
   );
 });

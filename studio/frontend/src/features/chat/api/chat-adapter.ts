@@ -4184,6 +4184,7 @@ export function createOpenAIStreamAdapter(
           temperature: params.temperature,
           topP: params.topP,
           maxTokens: params.maxTokens,
+          supportsReasoning: runtime.supportsReasoning,
           reasoningRequested,
           reasoningStyle: runtime.reasoningStyle,
           reasoningEffort: runtime.reasoningEffort,

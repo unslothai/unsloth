@@ -29,6 +29,7 @@ export function buildResearchInferenceRequest(input: {
   temperature: number;
   topP: number;
   maxTokens: number;
+  supportsReasoning: boolean;
   reasoningRequested: boolean;
   reasoningStyle: string;
   reasoningEffort: ReasoningEffort;
@@ -59,14 +60,16 @@ export function buildResearchInferenceRequest(input: {
     request.maxTokens = Math.min(8192, Math.floor(input.maxTokens));
   }
   if (
-    input.reasoningStyle === "enable_thinking" ||
-    input.reasoningStyle === "enable_thinking_effort"
+    input.supportsReasoning &&
+    (input.reasoningStyle === "enable_thinking" ||
+      input.reasoningStyle === "enable_thinking_effort")
   ) {
     request.enableThinking = input.reasoningRequested;
   }
   if (
-    input.reasoningStyle === "reasoning_effort" ||
-    input.reasoningStyle === "enable_thinking_effort"
+    input.supportsReasoning &&
+    (input.reasoningStyle === "reasoning_effort" ||
+      input.reasoningStyle === "enable_thinking_effort")
   ) {
     if (input.reasoningRequested) {
       request.reasoningEffort = input.clampReasoningEffort(
