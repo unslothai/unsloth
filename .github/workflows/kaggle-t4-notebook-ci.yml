@@ -840,7 +840,17 @@ jobs:
           # contending: grpo declares 13.8GB and admits no co-tenant, and
           # multi_gpu reserves on every card, so neither ever starts beside the
           # other.
-          LEG_LIST: ${{ inputs.legs || (github.event_name == 'schedule' && 'grpo,multi_gpu' || '') }}
+          #
+          # latest_compile joined them once unsloth-zoo #1103 merged, and NOT
+          # the per-PR kernel its UNWIRED note promised. The note predates the
+          # only number that decides it: the leg's own DONE record is 1323.0s
+          # (unsloth-probe-lcleg-tmpdir-ac53ca) and at 12.73GB peak it admits
+          # no co-tenant, so it needs a card to itself for 22 minutes. The
+          # per-PR kernel's only slack is gpu1's 776.3s idle block while Studio
+          # holds gpu0, which is not half enough, so wiring it there would add
+          # roughly 580s to a 2101.8s makespan. It serialises here for the same
+          # reason it does not fit there.
+          LEG_LIST: ${{ inputs.legs || (github.event_name == 'schedule' && 'grpo,multi_gpu,latest_compile' || '') }}
           SKIP_BAND: ${{ inputs.skip_reference_band }}
           # The VALIDATED, normalised count from the step above, not the raw
           # dispatch string. check_steps.parse_steps accepts "+10", "010" and

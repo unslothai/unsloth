@@ -94,6 +94,27 @@ def test_the_schedule_also_runs_the_multi_gpu_leg():
     )
 
 
+def test_the_schedule_also_runs_the_latest_compile_leg():
+    """Third reason again, and the distinction is the point: grpo is nightly
+    because it crashes 44% of sessions, multi_gpu because it costs makespan at
+    the margin, latest_compile because it does not FIT.
+
+    Its DONE record is 1323.0s (unsloth-probe-lcleg-tmpdir-ac53ca) and at
+    12.73GB peak it admits no co-tenant, so it wants a whole card for 22
+    minutes. The per-PR kernel's only slack is gpu1's 776.3s idle block while
+    Studio holds gpu0. 1323 does not go into 776.
+
+    Without this the leg is wired nowhere and gemma-4-E2B-it on the newest
+    transformers and trl -- the only thing that caught zoo #1103 -- is tested
+    by nothing. That is the state it was built to end, and the reason the leg
+    is nightly rather than deleted."""
+    assert "latest_compile" in _nightly_legs(), (
+        "the nightly no longer runs latest_compile, so nothing anywhere loads "
+        "gemma-4-E2B-it on the newest transformers and trl, which is the "
+        "pairing that found unsloth-zoo #1103"
+    )
+
+
 def test_every_leg_the_nightly_names_exists():
     """A typo here produces a build that selects nothing and a run that proves
     nothing, with no error anywhere."""
