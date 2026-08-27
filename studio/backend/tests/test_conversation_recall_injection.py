@@ -945,7 +945,8 @@ def test_the_sticky_boundary_is_applied_once_per_request():
     text = source.read_text(encoding = "utf-8")
     assert "_sticky_boundary_applied = True" in text
     # Whitespace-insensitive: the gate is one expression however the formatter wraps it.
-    assert "0 if _sticky_boundary_applied" in " ".join(text.split())
+    # Both halves are spent together, so the depth and its provenance cannot disagree.
+    assert "(0, True) if _sticky_boundary_applied" in " ".join(text.split())
 
 
 def test_conversation_search_top_k_is_clamped(archived, monkeypatch):

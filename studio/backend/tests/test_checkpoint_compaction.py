@@ -1535,6 +1535,79 @@ def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypa
     assert llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
 
 
+def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
+    """Replaying an epoch requires an epoch, and only the recorded policy says there is one.
+
+    A request that may not reset still takes the checkpoint REPLAY branch under a
+    checkpoint policy, so a rolling-origin count handed to `fit_checkpoint_context` reads
+    as an epoch already in force: the fit returns `checkpoint_started` false, and
+    `_archive_and_recall` reads that as "already recalled" and injects nothing. Measured at
+    context_length 1800 with a stored boundary of 30, the reply lost the archived turns the
+    rolling fallback would have pulled back.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+
+    messages = [{"role": "system", "content": "standing instruction " * 20}]
+    for index in range(20):
+        messages.append({"role": "user", "content": f"q{index} " * 120})
+        messages.append({"role": "assistant", "content": f"a{index} " * 120})
+    messages.append({"role": "user", "content": "latest question"})
+
+    def _fit(sticky_is_checkpoint):
+        _, truncation = llama_cpp._fit_context(
+            list(messages),
+            context_length = 1800,
+            max_tokens = 100,
+            count_tokens = count,
+            can_reset = False,
+            sticky_dropped = 30,
+            context_policy = "checkpoint",
+            sticky_is_checkpoint = sticky_is_checkpoint,
+        )
+        return truncation or {}
+
+    rolling_origin = _fit(False)
+    assert rolling_origin.get("checkpoint") is None
+    assert bool(rolling_origin.get("checkpoint_started", True)) is True, (
+        "a rolling boundary replayed as an epoch suppresses the inline recall"
+    )
+
+    # A real epoch still replays, block and all, and still reports no NEW reset.
+    checkpoint_origin = _fit(True)
+    assert checkpoint_origin.get("checkpoint") is True
+    assert checkpoint_origin.get("checkpoint_started") is False
+
+
+def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (6, False)
+
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": True,
+        "boundary_messages": 18,
+        "checkpoint": True,
+    }
+    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (18, True)
+    assert llama_cpp._sticky_compaction_state("t1", can_reset = True) == (18, True)
+
+    # No thread, no row, no boundary: never a claim that a checkpoint recorded one.
+    assert llama_cpp._sticky_compaction_state(None) == (0, False)
+
+
 def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
     """Recording a rescue's depth must not make it sticky.
 
