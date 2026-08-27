@@ -3095,12 +3095,14 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
 
     The two are gated differently because they are coupled to different things.
 
-    torchao's cpp extensions are tied to the torch RELEASE, and step 4 above chose its
-    pin from the torch this repair has just replaced: typically 0.17.0 selected for a
-    2.11 that the <2.11.0 repair spec then took down to 2.10, whose matched build is
-    0.16.0. Leaving the wrong one installed silently drops to the slow fallback. A
-    repair that kept the release cannot have invalidated it, and reinstalling around it
-    would add minutes to every update for nothing.
+    torchao's cpp extensions are tied to the torch release AND to its CUDA major, both
+    of which _select_torchao_spec branches on. Step 4 above chose its pin from the torch
+    this repair has just replaced: typically 0.17.0 selected for a 2.11 that the
+    <2.11.0 repair spec then took down to 2.10, whose matched build is 0.16.0, and
+    separately 0.16.0's CUDA-12 cpp cannot load beside a cu130 wheel. Leaving the wrong
+    one installed silently drops to the slow fallback. A repair that moved neither
+    cannot have invalidated it, and reinstalling around it would add minutes to every
+    update for nothing.
 
     --no-deps is not an optimisation here, it is the whole safety of the call. torchao
     depends on torch, so a --force-reinstall that resolves dependencies re-resolves
@@ -3126,7 +3128,14 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
     if not _label_after or _label_after == label_before:
         return True
     _touched_torch = False
-    if _label_after.split("+", 1)[0] != str(label_before).split("+", 1)[0]:
+    # The release OR the CUDA major: _select_torchao_spec branches on cuda>=13 as well,
+    # so a cu124 to cu130 repair at the same release changes the matched build even
+    # though the release comparison alone says nothing happened.
+    _release_moved = _label_after.split("+", 1)[0] != str(label_before).split("+", 1)[0]
+    _cuda_moved = _cuda_major_from_torch_version(_label_after) != (
+        _cuda_major_from_torch_version(str(label_before))
+    )
+    if _release_moved or _cuda_moved:
         try:
             _spec = _select_torchao_spec(_label_after)
             if not _exact_distribution_spec_is_installed(_spec):

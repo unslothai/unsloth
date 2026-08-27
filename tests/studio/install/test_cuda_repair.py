@@ -1682,6 +1682,19 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["removed"] == []
         assert calls["ok"] is True
 
+    def test_a_cuda_major_change_alone_re_pins_torchao(self):
+        # _select_torchao_spec branches on cuda>=13, so cu124 -> cu130 at the same
+        # release changes the matched build even though the release did not move.
+        calls = self._resync("2.10.0+cu124", "2.10.0+cu130")
+        assert calls["torchao"], "the CUDA major moved, so the pin has to be re-selected"
+        assert any("torchao==0.17.0" in " ".join(c) for c in calls["torchao"])
+
+    def test_a_flavor_change_within_one_cuda_major_leaves_torchao_alone(self):
+        # cu124 -> cu128 is the same major and the same release, so nothing about
+        # torchao's matched build changed.
+        calls = self._resync("2.10.0+cu124", "2.10.0+cu128")
+        assert calls["torchao"] == []
+
     def test_a_flavor_change_alone_still_rechecks_xformers(self):
         # 2.10.0+cu124 -> 2.10.0+cu128 keeps the release, so torchao is untouched, but
         # the extension is linked to the exact (torch, CUDA) PAIR and is now unloadable.
