@@ -98,6 +98,11 @@ def _video_family_buildable(family) -> bool:
         return True
 
 
+def _hint_leaf(hint: str) -> str:
+    """The last path segment of *hint*, leaving a bare name or repo id untouched."""
+    return str(hint).strip().rstrip("/\\").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+
 def _name_hint_media_task(
     name_hints: tuple[Optional[str], ...], unmatched: Optional[str]
 ) -> Optional[str]:
@@ -140,7 +145,12 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
     """
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
-    return _name_hint_media_task(name_hints, None)
+    # Leaves only. A filesystem row hands over its whole path, and family detection matches a
+    # keyword in ANY segment of it, so a chat GGUF under .../FLUX.1-dev-GGUF/extra/ read as
+    # text-to-image. With an architecture that mismatch only picks the wrong family; here the
+    # name is the entire case, so an ancestor directory -- the user's shelf, not this model --
+    # must not decide it.
+    return _name_hint_media_task(tuple(_hint_leaf(hint) for hint in name_hints if hint), None)
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:

@@ -402,6 +402,37 @@ def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path,
         assert models_route._local_model_task(model) == expected, name
 
 
+def test_an_ancestor_directory_does_not_name_an_unhydrated_gguf(tmp_path, monkeypatch):
+    """A filesystem row's id is its whole path, and family detection matches a keyword in any
+    segment of it. With an architecture that mismatch only picks the wrong family; for a
+    placeholder the name is the entire case, so a shelf named after a family would file every
+    chat GGUF stored under it as an image or video model."""
+    from hub.services.models import catalog_classification as classification
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("placeholder contents were read to classify it")
+
+    monkeypatch.setattr(
+        classification, "file_contents_available_locally", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(classification, "_gguf_architecture", forbidden)
+
+    for relative in (
+        "FLUX.1-dev-GGUF/extra/qwen3-4b/qwen3-Q4_K_M.gguf",
+        "ltx-2/qwen3-4b/qwen3-Q4_K_M.gguf",
+    ):
+        gguf = _touch(tmp_path / relative)
+        model = _local(gguf, model_format = "gguf", display_name = gguf.name, id = str(gguf))
+        assert models_route._local_model_task(model) is None, relative
+
+    # The control, and the shape a scanned GGUF folder actually takes: the row IS the
+    # directory, so its own leaf names it and the family survives.
+    folder = tmp_path / "FLUX.1-dev-GGUF"
+    _touch(folder / "diffusion_model-Q4_K_M.gguf")
+    row = _local(folder, model_format = "gguf", display_name = folder.name, id = str(folder))
+    assert models_route._local_model_task(row) == "text-to-image"
+
+
 def test_local_task_tags_family_named_pipeline_dir(tmp_path):
     # A local diffusers pipeline whose id resolves to a supported image family loads fine, so tag it and the Images picker keeps it.
     d = tmp_path / "flux-pipeline"
