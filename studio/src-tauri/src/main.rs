@@ -20,6 +20,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod staged_update;
 mod update;
 mod webview_permissions;
 mod windows_job;
@@ -1854,6 +1855,7 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -1873,6 +1875,10 @@ fn main() {
             commands::open_logs_dir,
             commands::open_models_dir,
             commands::start_backend_update,
+            commands::start_staged_update,
+            commands::cancel_staged_update,
+            commands::staged_update_status,
+            commands::discard_staged_update,
             commands::start_managed_repair,
             commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
@@ -1881,6 +1887,9 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
+            desktop_updater::download_desktop_update,
+            desktop_updater::install_desktop_update,
+            desktop_updater::desktop_update_bundle_status,
             desktop_updater::desktop_update_cleanup_armed,
             desktop_updater::resume_desktop_update_cleanup,
             diagnostics::collect_support_diagnostics,
@@ -1926,6 +1935,10 @@ fn main() {
 
             initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
+            staged_update::reconcile_at_launch(
+                &diagnostics::studio_dir(),
+                &app.package_info().version.to_string(),
+            );
             // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");

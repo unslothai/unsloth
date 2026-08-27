@@ -1351,7 +1351,7 @@ export const ptBR = {
         desktopAvailable:
           "A versão {version} do aplicativo de desktop está disponível",
         desktopAvailableDescription:
-          "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
+          "Atualize agora para preparar em segundo plano. Você continua trabalhando e reinicia quando estiver pronto.",
         desktopExternalServer:
           "Execute `unsloth studio update` no terminal usado para iniciar o servidor.",
         desktopManualInstall:
@@ -1362,11 +1362,17 @@ export const ptBR = {
         desktopCurrent: "O aplicativo de desktop está atualizado",
         desktopCurrentDescription:
           "O Unsloth continuará verificando automaticamente.",
+        desktopPreparingDescription:
+          "A atualização está sendo preparada em segundo plano. Você pode continuar trabalhando.",
+        desktopReadyToRestartDescription:
+          "Tudo pronto. Reinicie para concluir a instalação da atualização.",
         checkForUpdates: "Verificar se há atualizações",
         checkAgain: "Verificar novamente",
         retryCheck: "Tentar novamente",
         checking: "Verificando...",
+        preparing: "Preparando...",
         updateNow: "Atualizar agora",
+        restartToUpdate: "Reiniciar para atualizar",
         openReleasePage: "Abrir página de lançamentos",
         unknownInstall:
           "Não foi possível detectar como o Unsloth foi instalado. Para instalações via instalador ou PyPI, use os comandos acima.",

@@ -938,16 +938,18 @@ else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
 
-VENV_DIR="$STUDIO_HOME/unsloth_studio"
-VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
-VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
-VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
+RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
+VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
+VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
+VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
 
 # The override is validated, so a typo can no longer cost the cache. Venv-gated because
 # a writable-but-empty override still aborts at the venv check below, and clearing first
 # would cost the cache for a run that then does nothing; a fresh install has neither venv
 # nor cache. Still before any install work, while the old frontend is the one on disk.
-if [ -x "$VENV_DIR/bin/python" ]; then
+if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ]; then
     _clear_webview_caches
 fi
 
@@ -1436,6 +1438,12 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         substep "curl -fsSL https://unsloth.ai/install.sh | sh"
         setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
+elif [ -n "$STAGE_ROOT" ]; then
+    VIRTUAL_ENV="$VENV_DIR"
+    PATH="$VENV_DIR/bin:$PATH"
+    export VIRTUAL_ENV PATH
+    unset PYTHONHOME
+    hash -r 2>/dev/null || true
 else
     source "$VENV_DIR/bin/activate"
 fi

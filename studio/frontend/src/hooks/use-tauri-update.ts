@@ -2,18 +2,38 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState } from "react";
-import { isTauri } from "@/lib/api-base";
+import { isTrainingStartPending, useTrainingRuntimeStore } from "@/features/training";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
-import { checkDesktopUpdate } from "@/lib/tauri-updater";
+import {
+  cancelStagedUpdate,
+  checkDesktopUpdate,
+  desktopUpdateBundleStatus,
+  downloadDesktopUpdate,
+  installDesktopUpdate,
+  stagedUpdateStatus,
+  startStagedUpdate,
+  type DesktopUpdateMetadata,
+} from "@/lib/tauri-updater";
 import { toast } from "@/lib/toast";
+import {
+  INITIAL_PREPARATION,
+  backendIdle,
+  preparationStatus,
+  restartPlan,
+  stagingDecision,
+  type UpdatePreparation,
+} from "@/lib/update-preparation";
 
 export type UpdateStatus =
   | "idle"
   | "checking"
   | "available"
+  | "preparing"
+  | "ready"
   | "updating-backend"
   | "downloading"
   | "installing"
@@ -71,6 +91,13 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   releaseTagPrefix: "v",
 };
 
+const IDLE_POLL_MS = 20_000;
+const PREPARATION_STATUSES: ReadonlySet<UpdateStatus> = new Set([
+  "available",
+  "preparing",
+  "ready",
+]);
+
 // Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
 function publishShellUpdateActive(active: boolean): void {
   if (!isTauri) return;
@@ -98,8 +125,23 @@ function manualReleasePageUrl(
   return `${policy.releasePageBaseUrl}${policy.releaseTagPrefix}${normalized}`;
 }
 
+async function fetchHealth(): Promise<{ inference_active?: boolean } | null> {
+  try {
+    const res = await fetch(apiUrl("/api/health"));
+    if (!res.ok) return null;
+    return (await res.json()) as { inference_active?: boolean };
+  } catch {
+    return null;
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function useTauriUpdate(isExternalServer = false) {
   const [status, setStatus] = useState<UpdateStatus>("idle");
+  const statusRef = useRef<UpdateStatus>("idle");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const infoRef = useRef<UpdateInfo | null>(null);
   const [hasChecked, setHasChecked] = useState(false);
@@ -114,7 +156,10 @@ export function useTauriUpdate(isExternalServer = false) {
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
-  const updateRef = useRef<Awaited<ReturnType<typeof checkDesktopUpdate>>>(null);
+  const [preparation, setPreparation] = useState<UpdatePreparation>(INITIAL_PREPARATION);
+  const preparationRef = useRef<UpdatePreparation>(INITIAL_PREPARATION);
+  const preparingVersionRef = useRef<string | null>(null);
+  const updateRef = useRef<DesktopUpdateMetadata | null>(null);
   const checkedRef = useRef(false);
   const startupScheduledRef = useRef(false);
   const checkingRef = useRef(false);
@@ -139,6 +184,11 @@ export function useTauriUpdate(isExternalServer = false) {
     return cleanupRearmedRef.current;
   }
 
+  function updateStatus(next: UpdateStatus) {
+    statusRef.current = next;
+    setStatus(next);
+  }
+
   function replaceInfo(nextInfo: UpdateInfo | null) {
     infoRef.current = nextInfo;
     setInfo(nextInfo);
@@ -153,7 +203,7 @@ export function useTauriUpdate(isExternalServer = false) {
       setError(null);
       setDismissed(false);
     }
-    setStatus("available");
+    updateStatus("available");
   }
 
   function replaceLogs(nextLogs: string[]) {
@@ -191,6 +241,24 @@ export function useTauriUpdate(isExternalServer = false) {
     };
     setLastFailure(failure);
     return failure;
+  }
+
+  function patchPreparation(patch: Partial<UpdatePreparation>) {
+    const next = { ...preparationRef.current, ...patch };
+    preparationRef.current = next;
+    setPreparation(next);
+    if (!PREPARATION_STATUSES.has(statusRef.current)) return;
+    const derived = preparationStatus(next);
+    if (derived === "ready" && statusRef.current !== "ready") {
+      setDismissed(false);
+    }
+    updateStatus(derived);
+  }
+
+  function resetPreparation() {
+    preparingVersionRef.current = null;
+    preparationRef.current = INITIAL_PREPARATION;
+    setPreparation(INITIAL_PREPARATION);
   }
 
   /** `resolved` is false when the policy is a fail-safe guess, not the real answer. */
@@ -248,7 +316,7 @@ export function useTauriUpdate(isExternalServer = false) {
     checkedRef.current = true;
     checkingRef.current = true;
     setCheckError(null);
-    setStatus("checking");
+    updateStatus("checking");
 
     try {
       const { policy, resolved } = await resolveUpdatePolicy();
@@ -261,7 +329,7 @@ export function useTauriUpdate(isExternalServer = false) {
           // AppImage this install cannot apply. Stop instead.
           updateRef.current = null;
           replaceInfo(null);
-          setStatus("idle");
+          updateStatus("idle");
           return;
         }
         // Guessed policy, no manual offer: macOS, Windows and AppImage land here
@@ -281,12 +349,13 @@ export function useTauriUpdate(isExternalServer = false) {
       } else {
         updateRef.current = null;
         replaceInfo(null);
-        setStatus("idle");
+        resetPreparation();
+        updateStatus("idle");
       }
     } catch (e) {
       console.error("Update check failed:", e);
       setCheckError(String(e));
-      setStatus(infoRef.current ? "available" : "idle");
+      updateStatus(infoRef.current ? preparationStatus(preparationRef.current) : "idle");
     } finally {
       checkingRef.current = false;
       setHasChecked(true);
@@ -306,6 +375,87 @@ export function useTauriUpdate(isExternalServer = false) {
     }, 5000);
     return () => clearTimeout(timer);
   }, []);
+
+  async function prepareUpdate(version: string, policy: DesktopUpdatePolicy) {
+    if (!isTauri || policy.mode !== "in_app" || isExternalServer) return;
+    if (preparingVersionRef.current === version) {
+      if (preparationRef.current.shell !== "failed") return;
+      patchPreparation({ shell: "pending", shellProgress: 0 });
+      await prepareShell(version);
+      return;
+    }
+    preparingVersionRef.current = version;
+    preparationRef.current = INITIAL_PREPARATION;
+    setPreparation(INITIAL_PREPARATION);
+    patchPreparation({});
+
+    await Promise.allSettled([prepareShell(version), prepareBackend(version)]);
+  }
+
+  async function ensureBundleDownloaded(): Promise<void> {
+    if ((await desktopUpdateBundleStatus()).downloaded) return;
+    setUpdatePhase("shell_download");
+    updateStatus("downloading");
+    setUpdateProgress(0);
+    await downloadDesktopUpdate(setUpdateProgress);
+    patchPreparation({ shell: "done", shellProgress: 100 });
+  }
+
+  async function prepareShell(version: string) {
+    try {
+      const bundle = await desktopUpdateBundleStatus();
+      if (bundle.downloaded && bundle.version === version) {
+        patchPreparation({ shell: "done", shellProgress: 100 });
+        return;
+      }
+      patchPreparation({ shell: "downloading" });
+      await downloadDesktopUpdate((percent) => {
+        if (preparingVersionRef.current !== version) return;
+        patchPreparation({ shellProgress: percent });
+      });
+      if (preparingVersionRef.current !== version) return;
+      patchPreparation({ shell: "done", shellProgress: 100 });
+    } catch (e) {
+      console.warn("Background app download failed:", e);
+      if (preparingVersionRef.current !== version) return;
+      patchPreparation({ shell: "failed" });
+    }
+  }
+
+  async function prepareBackend(version: string) {
+    try {
+      const staged = await stagedUpdateStatus();
+      const decision = stagingDecision({
+        inApp: true,
+        isExternalServer,
+        offeredVersion: version,
+        staged,
+      });
+      if (decision === "already-ready") {
+        patchPreparation({ backend: "ready" });
+        return;
+      }
+      if (decision === "skip") {
+        patchPreparation({ backend: "skipped" });
+        return;
+      }
+      patchPreparation({ backend: "waiting" });
+      while (preparingVersionRef.current === version) {
+        const trainingActive = isTrainingStartPending(useTrainingRuntimeStore.getState());
+        if (backendIdle(await fetchHealth(), trainingActive)) break;
+        await wait(IDLE_POLL_MS);
+      }
+      if (preparingVersionRef.current !== version) return;
+      patchPreparation({ backend: "staging" });
+      await startStagedUpdate(appendLog);
+      if (preparingVersionRef.current !== version) return;
+      patchPreparation({ backend: "ready" });
+    } catch (e) {
+      console.warn("Background backend preparation failed:", e);
+      if (preparingVersionRef.current !== version) return;
+      patchPreparation({ backend: "failed" });
+    }
+  }
 
   async function installUpdate() {
     if (updatingRef.current) return;
@@ -334,76 +484,74 @@ export function useTauriUpdate(isExternalServer = false) {
 
       const update = updateRef.current;
       if (!update) return;
-
-      setUpdatePhase("backend");
-      setStatus("updating-backend");
-      replaceLogs([]);
-      setUpdateProgress(0);
-      setError(null);
-      setCheckError(null);
-      setLastFailure(null);
-      setDismissed(false);
-
-      const { listen } = await import("@tauri-apps/api/event");
-      const { invoke } = await import("@tauri-apps/api/core");
-
-      const unlistenProgress = await listen<string>(
-        "update-progress",
-        (e) => {
-          appendLog(e.payload);
-        },
-      );
-      cleanups.push(unlistenProgress);
-
-      const backendResult = await new Promise<"complete" | string>(
-        (resolve) => {
-          listen<void>("update-complete", () => resolve("complete")).then(
-            (u) => cleanups.push(u),
-          );
-          listen<string>("update-failed", (e) =>
-            resolve(e.payload),
-          ).then((u) => cleanups.push(u));
-
-          invoke("start_backend_update").catch((e) => resolve(String(e)));
-        },
-      );
-
-      if (backendResult !== "complete") {
-        retainFailure(backendResult, "backend");
-        setError(backendResult);
-        setStatus("error");
+      if (statusRef.current === "available") {
+        void prepareUpdate(update.version, policy);
         return;
       }
 
-      setUpdatePhase("shell_download");
-      setStatus("downloading");
-      setUpdateProgress(0);
+      const { invoke } = await import("@tauri-apps/api/core");
+      const bundleReady = (await desktopUpdateBundleStatus()).downloaded;
+      const plan = bundleReady ? restartPlan(preparationRef.current) : "classic";
+      const staging = preparationRef.current.backend === "staging";
+      preparingVersionRef.current = null;
+      if (staging) {
+        await cancelStagedUpdate().catch(() => {});
+      }
 
-      let downloaded = 0;
-      let contentLength = 0;
+      if (plan === "fast") {
+        setUpdatePhase("shell_install");
+        updateStatus("installing");
+        setError(null);
+        await invoke("stop_server").catch(() => {});
+      } else {
+        setUpdatePhase("backend");
+        updateStatus("updating-backend");
+        replaceLogs([]);
+        setUpdateProgress(0);
+        setError(null);
+        setCheckError(null);
+        setLastFailure(null);
+        setDismissed(false);
+
+        const { listen } = await import("@tauri-apps/api/event");
+        const unlistenProgress = await listen<string>(
+          "update-progress",
+          (e) => {
+            appendLog(e.payload);
+          },
+        );
+        cleanups.push(unlistenProgress);
+
+        const backendResult = await new Promise<"complete" | string>(
+          (resolve) => {
+            listen<void>("update-complete", () => resolve("complete")).then(
+              (u) => cleanups.push(u),
+            );
+            listen<string>("update-failed", (e) =>
+              resolve(e.payload),
+            ).then((u) => cleanups.push(u));
+
+            invoke("start_backend_update").catch((e) => resolve(String(e)));
+          },
+        );
+
+        if (backendResult !== "complete") {
+          retainFailure(backendResult, "backend");
+          setError(backendResult);
+          updateStatus("error");
+          return;
+        }
+
+        await ensureBundleDownloaded();
+        setUpdatePhase("shell_install");
+        updateStatus("installing");
+      }
+
       // `update::is_update_running` is already false here, and quitting mid-install
       // leaves a half-updated app.
       publishShellUpdateActive(true);
       try {
-        await update.downloadAndInstall((event) => {
-          switch (event.event) {
-            case "Started":
-              contentLength = event.data.contentLength ?? 0;
-              break;
-            case "Progress":
-              downloaded += event.data.chunkLength;
-              if (contentLength > 0) {
-                setUpdateProgress(
-                  Math.round((downloaded / contentLength) * 100),
-                );
-              }
-              break;
-            case "Finished":
-              setUpdatePhase("shell_install");
-              setStatus("installing");
-              break;
-          }
-        });
+        await installDesktopUpdate();
       } catch (installError) {
         // Failed or cancelled: we keep running, so the cleanup the pre-exit hook
         // stood down has to come back.
@@ -454,18 +602,18 @@ export function useTauriUpdate(isExternalServer = false) {
               "Backend was updated. Copy diagnostics from the update banner if you need support.",
           });
           setError(null);
-          setStatus("idle");
+          updateStatus("idle");
           setDismissed(false);
           setUpdatePhase("recovered_after_shell_failure");
         } catch {
           retainFailure(msg, phaseRef.current ?? "shell_install");
           setError(msg);
-          setStatus("error");
+          updateStatus("error");
         }
       } else {
         retainFailure(msg, phaseRef.current ?? "backend");
         setError(msg);
-        setStatus("error");
+        updateStatus("error");
       }
     } finally {
       updatingRef.current = false;
@@ -496,7 +644,7 @@ export function useTauriUpdate(isExternalServer = false) {
     setError(
       "Crash cleanup could not be re-armed. Restart Unsloth before continuing.",
     );
-    setStatus("error");
+    updateStatus("error");
     return false;
   }
 
@@ -514,14 +662,14 @@ export function useTauriUpdate(isExternalServer = false) {
       } else {
         setDismissed(true);
       }
-      setStatus("idle");
+      updateStatus("idle");
       setError(null);
       replaceLogs([]);
     } catch (e) {
       const msg = String(e);
       retainFailure(msg, phaseRef.current ?? "backend");
       setError(msg);
-      setStatus("error");
+      updateStatus("error");
     }
   }
 
@@ -560,6 +708,7 @@ export function useTauriUpdate(isExternalServer = false) {
     error,
     phase,
     lastFailure,
+    preparation,
     isExternalServer,
     updatePolicyMode: updatePolicy.mode,
     manualReleaseUrl,

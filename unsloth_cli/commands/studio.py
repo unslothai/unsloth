@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
-from unsloth_cli import _studio_deps, _studio_runtime_gate
+from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -3895,7 +3895,8 @@ def _fail_if_install_damaged() -> None:
     is the shape behind "just re-run the installer", and it is only actionable
     if the update says so.
     """
-    if _studio_deps.running_outside_managed_venv((STUDIO_HOME / "unsloth_studio",)):
+    managed_venv = _studio_stage.runtime_root(STUDIO_HOME) / "unsloth_studio"
+    if _studio_deps.running_outside_managed_venv((managed_venv,)):
         # This CLI does not live in the venv the update just wrote, so its own
         # file list describes the wrong tree. Silence beats a wrong answer.
         return
@@ -3994,11 +3995,21 @@ def update(
         "--verify/--no-verify",
         help = "After updating, scan installed files for damage an update cannot repair.",
     ),
+    stage: bool = typer.Option(
+        False,
+        "--stage",
+        hidden = True,
+        help = "Prepare the update in a copy of the environment without touching the live one.",
+    ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
     # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
     # subprocess resolves the same install root the user originally chose.
     _ensure_studio_env_exported()
+    if stage:
+        _stage_update(local = local, package = package, verbose = verbose, verify = verify)
+        return
+    staging = _studio_stage.is_staging()
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
@@ -4057,9 +4068,13 @@ def update(
     # the gate keeps a second Studio process off the venv, the transaction
     # keeps the launcher recoverable across the setup it wraps.
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
-        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        with _WindowsLauncherUpdateTransaction() as launcher_update:
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff or staging):
+        launcher_transaction = _WindowsLauncherUpdateTransaction()
+        if staging:
+            launcher_transaction.enabled = False
+        else:
+            _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
             # This deliberately runs even with --no-verify: the broad package scan
             # is optional, but a successful update must leave its own launcher usable.
@@ -4068,11 +4083,31 @@ def update(
                 _fail_if_install_damaged()
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
-    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+    if staging or os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
         if verbose:
             typer.echo("  refresh-launcher  skipped (Tauri update)")
         return
     _refresh_desktop_shortcuts(verbose = verbose)
+
+
+def _stage_update(*, local: bool, package: str, verbose: bool, verify: bool) -> None:
+    if local:
+        typer.echo("Error: --stage cannot be combined with --local.", err = True)
+        raise typer.Exit(2)
+    if _studio_stage.is_staging():
+        typer.echo("Error: --stage cannot run inside a staged update.", err = True)
+        raise typer.Exit(2)
+    args = ["--package", package]
+    if verbose:
+        args.append("--verbose")
+    if not verify:
+        args.append("--no-verify")
+    try:
+        result = _studio_stage.stage(STUDIO_HOME, update_args = args, echo = typer.echo)
+    except _studio_stage.StageError as exc:
+        typer.echo(f"[TAURI:ERROR] {exc}")
+        raise typer.Exit(1)
+    typer.echo(f"Staged Unsloth Studio {result['backend_version']} at {result['root']}")
 
 
 class _WindowsLauncherUpdateTransaction:

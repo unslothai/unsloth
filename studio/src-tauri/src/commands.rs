@@ -1,6 +1,8 @@
 use crate::diagnostics::{self, DiagnosticsState};
 use crate::install;
 use crate::process::{self, BackendState, ShutdownFlag};
+use crate::desktop_updater;
+use crate::staged_update;
 use crate::update;
 use log::{error, info, warn};
 use std::time::{Duration, Instant};
@@ -825,6 +827,71 @@ pub async fn start_backend_update(
     tokio::task::spawn_blocking(move || update::run_backend_update(app, state, diagnostics_state))
         .await
         .map_err(|e| format!("Update task panicked: {e}"))?
+}
+
+#[tauri::command]
+pub async fn start_staged_update(
+    app: AppHandle,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
+    desktop_update: tauri::State<'_, desktop_updater::DesktopUpdateState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
+) -> Result<(), String> {
+    info!("start_staged_update command called");
+
+    if install_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Cannot prepare an update while installation is in progress.".to_string());
+    }
+    if update::is_update_running(&update_state) {
+        return Err("Update is already running.".to_string());
+    }
+
+    let shell_version = desktop_updater::pending_version(&desktop_update)?;
+    let state = update_state.inner().clone();
+    let diagnostics_state = diagnostics.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        update::run_staged_update(app, state, diagnostics_state, shell_version)
+    })
+    .await
+    .map_err(|e| format!("Staged update task panicked: {e}"))?
+}
+
+#[tauri::command]
+pub fn cancel_staged_update(
+    update_state: tauri::State<'_, update::UpdateState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
+) -> Result<(), String> {
+    let staged = update_state
+        .lock()
+        .map(|s| s.child.is_some() && s.staged)
+        .unwrap_or(false);
+    if !staged {
+        return Ok(());
+    }
+    update::record_update_intentional_stop(&update_state, &diagnostics);
+    update::stop_update(&update_state)?;
+    staged_update::discard(&diagnostics::studio_dir());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn staged_update_status() -> staged_update::StagedUpdateStatus {
+    staged_update::status(&diagnostics::studio_dir())
+}
+
+#[tauri::command]
+pub fn discard_staged_update(
+    update_state: tauri::State<'_, update::UpdateState>,
+) -> Result<(), String> {
+    if update::is_update_running(&update_state) {
+        return Err("Update is already running.".to_string());
+    }
+    staged_update::discard(&diagnostics::studio_dir());
+    Ok(())
 }
 
 /// Repair a stale managed Unsloth install.

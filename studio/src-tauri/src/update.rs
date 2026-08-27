@@ -14,6 +14,7 @@ pub struct UpdateProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
+    pub staged: bool,
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -22,8 +23,47 @@ pub fn new_update_state() -> UpdateState {
     Arc::new(Mutex::new(UpdateProcess::default()))
 }
 
+const UPDATE_ARGS: &[&str] = &["studio", "update"];
+const STAGE_ARGS: &[&str] = &["studio", "update", "--stage"];
+const SHELL_VERSION_ENV: &str = "UNSLOTH_TAURI_SHELL_VERSION";
+
+pub(crate) enum UpdateKind {
+    Backend,
+    Repair(String),
+    Staged { shell_version: Option<String> },
+}
+
+impl UpdateKind {
+    fn args(&self) -> &'static [&'static str] {
+        match self {
+            UpdateKind::Staged { .. } => STAGE_ARGS,
+            _ => UPDATE_ARGS,
+        }
+    }
+
+    fn progress_event(&self) -> &'static str {
+        match self {
+            UpdateKind::Backend => "update-progress",
+            UpdateKind::Repair(_) => "repair-progress",
+            UpdateKind::Staged { .. } => "stage-progress",
+        }
+    }
+
+    fn terminal_events(&self) -> Option<(&'static str, &'static str)> {
+        match self {
+            UpdateKind::Backend => Some(("update-complete", "update-failed")),
+            UpdateKind::Repair(_) => None,
+            UpdateKind::Staged { .. } => Some(("stage-complete", "stage-failed")),
+        }
+    }
+
+    fn mutates_live_environment(&self) -> bool {
+        !matches!(self, UpdateKind::Staged { .. })
+    }
+}
+
 // ── Spawn ──
-fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
+fn build_update_command(bin: &std::path::Path, args: &[&str]) -> Result<Command, String> {
     // Only the Windows arm below mutates it.
     #[cfg_attr(not(windows), allow(unused_mut))]
     // Isolated, as this call site shipped. It is the one managed invocation nobody
@@ -32,7 +72,7 @@ fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
     // here. Everything else inherits, because the console script does.
     let mut cmd = crate::process::build_managed_cli_command_with(
         bin,
-        &["studio", "update"],
+        args,
         crate::process::Isolation::Isolated,
     )?;
     // The only managed invocation that scrubs, and the only one that shipped doing it.
@@ -60,6 +100,7 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
 fn spawn_update(
     bin: &std::path::Path,
     state: &UpdateState,
+    kind: &UpdateKind,
 ) -> Result<
     (
         Option<std::process::ChildStdout>,
@@ -72,9 +113,16 @@ fn spawn_update(
         return Err("Update is already running.".to_string());
     }
     update.intentional_stop = false;
+    update.staged = matches!(kind, UpdateKind::Staged { .. });
 
-    let mut cmd = build_update_command(bin)?;
+    let mut cmd = build_update_command(bin, kind.args())?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let UpdateKind::Staged {
+        shell_version: Some(version),
+    } = kind
+    {
+        cmd.env(SHELL_VERSION_ENV, version);
+    }
 
     // A login-started desktop inherits C:\Windows\system32, which the CLI refuses
     // to run from; the Windows branch above hits the same guard. Pin both.
@@ -248,7 +296,7 @@ pub fn run_backend_update(
     state: UpdateState,
     diagnostics: DiagnosticsState,
 ) -> Result<(), String> {
-    run_backend_update_with_terminal_events(app, state, diagnostics, true, None)
+    run_update(app, state, diagnostics, UpdateKind::Backend)
 }
 
 pub(crate) fn run_backend_update_for_repair(
@@ -257,19 +305,34 @@ pub(crate) fn run_backend_update_for_repair(
     diagnostics: DiagnosticsState,
     repair_group_id: String,
 ) -> Result<(), String> {
-    run_backend_update_with_terminal_events(app, state, diagnostics, false, Some(repair_group_id))
+    run_update(app, state, diagnostics, UpdateKind::Repair(repair_group_id))
 }
 
-fn run_backend_update_with_terminal_events(
+pub(crate) fn run_staged_update(
     app: AppHandle,
     state: UpdateState,
     diagnostics: DiagnosticsState,
-    terminal_events: bool,
-    repair_group_id: Option<String>,
+    shell_version: Option<String>,
 ) -> Result<(), String> {
-    let attempt = match repair_group_id.as_deref() {
-        Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "update"),
-        None => diagnostics::begin_update_attempt(&diagnostics),
+    run_update(
+        app,
+        state,
+        diagnostics,
+        UpdateKind::Staged { shell_version },
+    )
+}
+
+fn run_update(
+    app: AppHandle,
+    state: UpdateState,
+    diagnostics: DiagnosticsState,
+    kind: UpdateKind,
+) -> Result<(), String> {
+    let attempt = match &kind {
+        UpdateKind::Repair(group_id) => {
+            diagnostics::begin_repair_child(&diagnostics, group_id, "update")
+        }
+        _ => diagnostics::begin_update_attempt(&diagnostics),
     };
     if let Ok(mut update) = state.lock() {
         update.current_attempt = Some(attempt.clone());
@@ -291,20 +354,13 @@ fn run_backend_update_with_terminal_events(
         "meta",
         &format!("Starting backend update via {:?}", bin),
     );
-    let progress_event = if terminal_events {
-        "update-progress"
-    } else {
-        "repair-progress"
-    };
+    let progress_event = kind.progress_event();
     let _ = app.emit(progress_event, "Starting backend update...");
 
     let explicit_error = Arc::new(Mutex::new(None));
-    // Update mutates the managed environment for its whole lifetime. This function
-    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
-    let result = crate::process::with_studio_runtime_launch_guard(|| {
-        crate::process::ensure_managed_environment_is_idle(&bin)?;
+    let run_child = || {
         let (stdout, stderr) =
-            spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
+            spawn_update(&bin, &state, &kind).map_err(|msg| format!("spawn_update: {msg}"))?;
         let threads = stream_output(
             &app,
             progress_event,
@@ -320,7 +376,17 @@ fn run_backend_update_with_terminal_events(
             let _ = handle.join();
         }
         result
-    });
+    };
+    // Update mutates the managed environment for its whole lifetime. This function
+    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
+    let result = if kind.mutates_live_environment() {
+        crate::process::with_studio_runtime_launch_guard(|| {
+            crate::process::ensure_managed_environment_is_idle(&bin)?;
+            run_child()
+        })
+    } else {
+        run_child()
+    };
     // Read only after the guard returned, so both reader threads are joined.
     let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
@@ -335,8 +401,8 @@ fn run_backend_update_with_terminal_events(
             );
             clear_current_attempt(&state);
             info!("[update] Backend update complete");
-            if terminal_events {
-                let _ = app.emit("update-complete", ());
+            if let Some((complete, _)) = kind.terminal_events() {
+                let _ = app.emit(complete, ());
             }
             Ok(())
         }
@@ -364,8 +430,8 @@ fn run_backend_update_with_terminal_events(
             );
             clear_current_attempt(&state);
             error!("[update] {}", msg);
-            if terminal_events {
-                let _ = app.emit("update-failed", &msg);
+            if let Some((_, failed)) = kind.terminal_events() {
+                let _ = app.emit(failed, &msg);
             }
             Err(msg)
         }
@@ -373,8 +439,8 @@ fn run_backend_update_with_terminal_events(
             diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
             clear_current_attempt(&state);
             error!("[update] {}", msg);
-            if terminal_events {
-                let _ = app.emit("update-failed", &msg);
+            if let Some((_, failed)) = kind.terminal_events() {
+                let _ = app.emit(failed, &msg);
             }
             Err(msg)
         }
@@ -529,7 +595,7 @@ mod tests {
         let bin = dir.join("unsloth.exe");
         std::fs::write(&python, b"").unwrap();
 
-        let cmd = build_update_command(&bin).unwrap();
+        let cmd = build_update_command(&bin, UPDATE_ARGS).unwrap();
 
         assert_eq!(cmd.get_program(), python.as_os_str());
         assert_ne!(cmd.get_program(), bin.as_os_str());
@@ -562,7 +628,7 @@ mod tests {
         let bin = std::env::temp_dir()
             .join("missing-managed-python")
             .join("unsloth.exe");
-        assert!(build_update_command(&bin)
+        assert!(build_update_command(&bin, UPDATE_ARGS)
             .unwrap_err()
             .contains("python.exe"));
     }
@@ -587,7 +653,7 @@ mod tests {
         std::fs::write(&python, "").unwrap();
         std::fs::write(&bin, "").unwrap();
 
-        let cmd = build_update_command(&bin).unwrap();
+        let cmd = build_update_command(&bin, UPDATE_ARGS).unwrap();
         for name in ["PYTHONHOME", "PYTHONPATH"] {
             assert!(
                 cmd.get_envs()
@@ -605,7 +671,7 @@ mod tests {
         use std::ffi::OsString;
 
         let bin = std::path::Path::new("/opt/unsloth/bin/unsloth");
-        let cmd = build_update_command(bin).unwrap();
+        let cmd = build_update_command(bin, UPDATE_ARGS).unwrap();
 
         assert_eq!(cmd.get_program(), bin.as_os_str());
         assert_eq!(

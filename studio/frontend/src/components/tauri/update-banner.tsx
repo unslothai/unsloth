@@ -10,14 +10,22 @@ import type {
   UpdateStatus,
 } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  INITIAL_PREPARATION,
+  preparationShortLabel,
+  type UpdatePreparation,
+} from "@/lib/update-preparation";
 import { cn } from "@/lib/utils";
-import { CircleAlert, Download } from "lucide-react";
+import { ChevronDown, CircleAlert, Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 
 interface UpdateBannerProps {
   status: UpdateStatus;
   info: UpdateInfo | null;
+  preparation?: UpdatePreparation;
+  logs?: string[];
   dismissed: boolean;
   lastFailure: RetainedUpdateFailure | null;
   isExternalServer?: boolean;
@@ -43,6 +51,8 @@ function formatVersion(version: string | null | undefined): string {
 export function UpdateBanner({
   status,
   info,
+  preparation = INITIAL_PREPARATION,
+  logs = [],
   dismissed,
   lastFailure,
   isExternalServer = false,
@@ -59,7 +69,11 @@ export function UpdateBanner({
   const [manualMessage, setManualMessage] = useState<string | null>(null);
   // Version whose notes are expanded; a new offer collapses the panel.
   const [notesVersion, setNotesVersion] = useState<string | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
   const showFailure = Boolean(lastFailure) && !dismissed;
+  const isPreparing = status === "preparing";
+  const isReady = status === "ready";
+  const showCompact = (isPreparing || isReady) && !dismissed && !showFailure && Boolean(info);
   const showAvailable = status === "available" && !dismissed && !showFailure;
   const show = showFailure || (showAvailable && Boolean(info));
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
@@ -98,8 +112,89 @@ export function UpdateBanner({
 
   return (
     <AnimatePresence>
+      {showCompact && (
+        <motion.div
+          key="compact"
+          initial={{ opacity: 0, y: 12, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 8, scale: 0.97 }}
+          transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
+          className={cn(
+            "flex flex-col items-end gap-2",
+            positioned
+              ? "fixed bottom-4 right-4 z-[9999]"
+              : "pointer-events-auto shrink-0",
+          )}
+          data-overlay-dismissible="true"
+          data-testid="tauri-update-pill"
+        >
+          {logsOpen && logs.length > 0 && (
+            <div
+              className="hover-scrollbar max-h-44 w-[min(calc(100vw-2rem),448px)] overflow-y-auto overscroll-contain rounded-2xl bg-white p-3 font-mono text-ui-10 text-muted-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]"
+              data-testid="tauri-update-pill-logs"
+            >
+              {logs.slice(-60).map((line, index) => (
+                <div key={index} className="whitespace-pre-wrap break-all">
+                  {line || " "}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-3 rounded-full bg-white py-2 pl-4 pr-2 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+            {isReady ? (
+              <Download aria-hidden="true" className="size-4 shrink-0 text-foreground" strokeWidth={1.75} />
+            ) : (
+              <Spinner className="text-foreground" label="Preparing update" />
+            )}
+            <p className="min-w-0 truncate text-ui-13 text-foreground">
+              <span className="font-medium">{isReady ? "Update ready" : "Preparing update"}</span>
+              <span className="text-muted-foreground">
+                {" · "}
+                {isReady ? latestVersion : preparationShortLabel(preparation)}
+              </span>
+            </p>
+            {isReady && (
+              <Button
+                size="sm"
+                className="h-auto whitespace-nowrap rounded-full px-3 py-1.5 text-ui-12"
+                onClick={onInstall}
+                disabled={installDisabled}
+                data-testid="tauri-update-install"
+              >
+                Restart
+              </Button>
+            )}
+            {logs.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setLogsOpen((open) => !open)}
+                className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                aria-label={logsOpen ? "Hide update log" : "Show update log"}
+                aria-expanded={logsOpen}
+                data-testid="tauri-update-pill-logs-toggle"
+              >
+                <ChevronDown
+                  aria-hidden="true"
+                  className={cn("size-4 transition-transform", logsOpen && "rotate-180")}
+                />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="Dismiss app update notification"
+            >
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M11 3L3 11M3 3l8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+        </motion.div>
+      )}
       {show && (
         <motion.div
+          key="card"
           initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
@@ -187,7 +282,7 @@ export function UpdateBanner({
                       ? "Open the GitHub release page to install the Linux package"
                       : isExternalServer
                         ? "Run `unsloth studio update` from your terminal"
-                        : "A new app update is available"}
+                        : "Prepares in the background. You keep working and restart when it is ready"}
                 </p>
               </div>
             </div>
@@ -278,6 +373,7 @@ export function UpdateBanner({
                     className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
+                    data-testid="tauri-update-install"
                   >
                     {isManualLinuxPackage ? "Open release page" : "Update"}
                   </Button>

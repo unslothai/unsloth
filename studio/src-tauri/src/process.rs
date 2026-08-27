@@ -1282,7 +1282,9 @@ fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> boo
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
-fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn find_unsloth_binary_in_studio_dir(
+    studio: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     // New layout (upstream scripts >= March 2026)
     let new_base = studio.join("unsloth_studio");
     // Old layout (bundled scripts, older upstream)
@@ -3590,6 +3592,7 @@ async fn validate_candidate_port(
         diagnostics::record_backend_port(&diagnostics_state, &session_id, port);
         info!("Validated backend port: {}", port);
         let _ = app.emit("server-port", port);
+        crate::staged_update::confirm_activated(&diagnostics::studio_dir());
     }
 }
 

@@ -1930,7 +1930,9 @@ if ($_studioOverride) {
 } else {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 }
-$VenvDir = Join-Path $StudioHome "unsloth_studio"
+$StageRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_STAGE_ROOT)) { $env:UNSLOTH_STUDIO_STAGE_ROOT.Trim() } else { $null }
+$RuntimeRoot = if ($StageRoot) { $StageRoot } else { $StudioHome }
+$VenvDir = Join-Path $RuntimeRoot "unsloth_studio"
 $StudioOwnedMarker = ".unsloth-studio-owned"
 # Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
 $NoTorchMarker = ".unsloth-no-torch"
@@ -3858,7 +3860,7 @@ substep "Python found: $PythonCmd"
 # cache clear stays here. Venv-gated: a writable-but-empty override still fails the
 # venv check below, and clearing first would cost the cache for a run that then does
 # nothing. Still before any install work.
-if (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf) {
+if (-not $StageRoot -and (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf)) {
     Clear-WebViewCaches
 }
 
@@ -4615,7 +4617,16 @@ function Install-UvFromPinnedRelease {
 }
 
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
-. $ActivateScript
+function Enter-StudioVenv {
+    if ($StageRoot) {
+        $env:VIRTUAL_ENV = $VenvDir
+        $env:PATH = (Join-Path $VenvDir "Scripts") + ";" + $env:PATH
+        Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+        return
+    }
+    . $ActivateScript
+}
+Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
@@ -4640,7 +4651,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         Refresh-Environment
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
-        . $ActivateScript
+        Enter-StudioVenv
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
 }
@@ -5453,9 +5464,9 @@ if ($stackExit -ne 0) {
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
 # T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
-$VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
-$VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
-$VenvT5_510Dir = Join-Path $StudioHome ".venv_t5_510"
+$VenvT5_530Dir = Join-Path $RuntimeRoot ".venv_t5_530"
+$VenvT5_550Dir = Join-Path $RuntimeRoot ".venv_t5_550"
+$VenvT5_510Dir = Join-Path $RuntimeRoot ".venv_t5_510"
 $VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
 
 function Test-TargetPackageVersion {

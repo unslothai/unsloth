@@ -1,13 +1,81 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export async function checkDesktopUpdate() {
-  const [{ invoke }, { Update }] = await Promise.all([
+import { downloadPercent, type StagedUpdateStatus } from "@/lib/update-preparation";
+
+export interface DesktopUpdateMetadata {
+  currentVersion: string;
+  version: string;
+  date?: string;
+  body?: string;
+  rawJson: Record<string, unknown>;
+}
+
+interface DesktopUpdateDownloadEvent {
+  version: string;
+  downloaded: number;
+  total: number | null;
+}
+
+interface DesktopUpdateBundleStatus {
+  version: string | null;
+  downloaded: boolean;
+  downloading: boolean;
+}
+
+export async function checkDesktopUpdate(): Promise<DesktopUpdateMetadata | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DesktopUpdateMetadata | null>("check_desktop_update");
+}
+
+export async function desktopUpdateBundleStatus(): Promise<DesktopUpdateBundleStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DesktopUpdateBundleStatus>("desktop_update_bundle_status");
+}
+
+export async function downloadDesktopUpdate(
+  onProgress: (percent: number) => void,
+): Promise<void> {
+  const [{ invoke }, { listen }] = await Promise.all([
     import("@tauri-apps/api/core"),
-    import("@tauri-apps/plugin-updater"),
+    import("@tauri-apps/api/event"),
   ]);
-  const metadata = await invoke<ConstructorParameters<typeof Update>[0] | null>(
-    "check_desktop_update",
+  const unlisten = await listen<DesktopUpdateDownloadEvent>(
+    "desktop-update-download",
+    (event) => onProgress(downloadPercent(event.payload.downloaded, event.payload.total)),
   );
-  return metadata ? new Update(metadata) : null;
+  try {
+    await invoke("download_desktop_update");
+    onProgress(100);
+  } finally {
+    unlisten();
+  }
+}
+
+export async function installDesktopUpdate(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("install_desktop_update");
+}
+
+export async function stagedUpdateStatus(): Promise<StagedUpdateStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<StagedUpdateStatus>("staged_update_status");
+}
+
+export async function startStagedUpdate(onLine: (line: string) => void): Promise<void> {
+  const [{ invoke }, { listen }] = await Promise.all([
+    import("@tauri-apps/api/core"),
+    import("@tauri-apps/api/event"),
+  ]);
+  const unlisten = await listen<string>("stage-progress", (event) => onLine(event.payload));
+  try {
+    await invoke("start_staged_update");
+  } finally {
+    unlisten();
+  }
+}
+
+export async function cancelStagedUpdate(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("cancel_staged_update");
 }
