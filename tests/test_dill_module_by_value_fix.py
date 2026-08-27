@@ -228,9 +228,9 @@ def test_an_off_prefix_install_breaks_dill_without_the_fix(tmp_path):
     dead weight -- re-measure before deleting it.
     """
     got = _run_on_hostile_tree(tmp_path, apply = False)
-    assert got["affected"] is True, (
-        "the gate does not recognise this layout, so the fix would never install itself here"
-    )
+    assert (
+        got["affected"] is True
+    ), "the gate does not recognise this layout, so the fix would never install itself here"
     assert got["dumps"].startswith("PicklingError"), (
         "dill pickled the off-prefix module by reference unaided; the bug this "
         f"guards is gone or moved: {got['dumps']}"
@@ -258,7 +258,9 @@ def test_a_co_located_project_module_keeps_its_by_value_state(tmp_path):
     got = _run_on_hostile_tree(tmp_path, apply = True)
     assert got["applied"] is True
     assert got["by_reference"] == {
-        "pyarrow": True, "ovmod": True, "projcfg": False,
+        "pyarrow": True,
+        "ovmod": True,
+        "projcfg": False,
     }, got["by_reference"]
 
 
@@ -272,8 +274,7 @@ def test_a_root_with_no_installed_metadata_is_left_alone(tmp_path):
     got = _run_on_hostile_tree(tmp_path, apply = True, omit_metadata = True)
     assert got["affected"] is True, "the layout is still the hostile one"
     assert got["applied"] is False, (
-        "the patch installed itself with no way to tell a dependency from the "
-        "user's own module"
+        "the patch installed itself with no way to tell a dependency from the user's own module"
     )
     assert got["dumps"].startswith("PicklingError"), got["dumps"]
 
@@ -365,9 +366,9 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(namespace_like, roots, provided), (
-            "a module with no file backing it is not safely importable by name"
-        )
+        assert not _dill_module_is_importable_by_name(
+            namespace_like, roots, provided
+        ), "a module with no file backing it is not safely importable by name"
     finally:
         del sys.modules["namespace_like"]
 
@@ -380,7 +381,6 @@ def _unconditional(body):
     which is the shape of a guard that guards nothing.
     """
     import ast
-
     for node in body:
         if isinstance(node, ast.Try):
             yield from _unconditional(node.body)
@@ -406,7 +406,8 @@ def test_the_fix_is_called_on_every_import_path():
 
     top = list(_unconditional(tree.body))
     imports = [
-        node for node in top
+        node
+        for node in top
         if isinstance(node, ast.ImportFrom)
         and any(a.name == "fix_dill_module_by_value_pickling" for a in node.names)
     ]
@@ -415,7 +416,8 @@ def test_the_fix_is_called_on_every_import_path():
         "one of the two import paths runs without it"
     )
     called = [
-        node for node in top
+        node
+        for node in top
         if isinstance(node, ast.Expr)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Name)
@@ -440,7 +442,8 @@ def test_that_rule_rejects_a_one_sided_conditional():
 
     top = list(_unconditional(hidden.body))
     assert not [
-        node for node in top
+        node
+        for node in top
         if isinstance(node, ast.ImportFrom)
         and any(a.name == "fix_dill_module_by_value_pickling" for a in node.names)
     ], "an import inside `if _IS_MLX:` is being counted as unconditional"
@@ -534,6 +537,8 @@ def test_only_installed_distributions_claim_a_top_level_name(tmp_path):
     (root / "myproj.py").write_text("VALUE = 1\n", encoding = "utf-8")
 
     assert _dill_distribution_top_levels(str(root)) == {
-        "pkgone", "pkgtwo", "singlemod",
+        "pkgone",
+        "pkgtwo",
+        "singlemod",
     }, "a name no distribution installed is being claimed, or one is missing"
     assert _dill_distribution_top_levels(str(tmp_path / "absent")) == set()

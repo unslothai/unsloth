@@ -5689,7 +5689,11 @@ def _dill_distribution_top_levels(root):
     return names
 
 
-def _dill_module_is_importable_by_name(module, roots = (), provided = ()):
+def _dill_module_is_importable_by_name(
+    module,
+    roots = (),
+    provided = (),
+):
     """Whether pickling `module` BY REFERENCE is valid AND in scope.
 
     Valid exactly when an unpickler can get the same object back with
@@ -5727,10 +5731,7 @@ def _dill_module_is_importable_by_name(module, roots = (), provided = ()):
         real = os.path.realpath(origin)
     except Exception:
         return False
-    return any(
-        real == root or real.startswith(root.rstrip(os.sep) + os.sep)
-        for root in roots
-    )
+    return any(real == root or real.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
 
 
 def fix_dill_module_by_value_pickling():
@@ -5791,7 +5792,10 @@ def fix_dill_module_by_value_pickling():
 
     @functools.wraps(original)
     def _is_builtin_module(
-        module, _original = original, _roots = tuple(roots), _provided = frozenset(provided),
+        module,
+        _original = original,
+        _roots = tuple(roots),
+        _provided = frozenset(provided),
     ):
         try:
             if _original(module):
