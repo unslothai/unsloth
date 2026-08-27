@@ -1450,6 +1450,39 @@ def test_mlx_host_is_never_offered_a_transformers_upgrade(monkeypatch):
     assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
 
 
+def _bnb(model_type):
+    return {
+        "model_type": model_type,
+        "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True},
+    }
+
+
+def test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo(monkeypatch):
+    """mlx-lm cannot read bnb weights, so the MLX loader dequantizes them through
+    ``AutoModelForCausalLM.from_pretrained``. That call is transformers building the
+    architecture, and on a brand-new type it raises the very unrecognized-architecture
+    error this offer fixes -- so a bnb repo keeps the offer even on MLX."""
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+
+    # Control: the same architecture unquantized is MLX's own to load, and is skipped.
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
+
+    # The bnb build of it goes through transformers, so the offer is actionable.
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
+    offered = tl.check_upgrade_for_model("someorg/Muse-Glimmer-30B-bnb-4bit")
+    assert offered is not None and offered["model_type"] == "muse_glimmer"
+
+
 def test_upgrade_offer_survives_a_broken_hardware_import(monkeypatch):
     """Detection is best effort: failing it must not silence a real offer."""
     broken = _types.ModuleType("utils.hardware")

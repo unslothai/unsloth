@@ -358,19 +358,36 @@ def clear_caches() -> None:
     end_sidecar_swap()
 
 
-def _architecture_cannot_come_from_transformers() -> bool:
+def _is_bitsandbytes_config(cfg: dict | None) -> bool:
+    """Whether *cfg* describes a bitsandbytes-quantized checkpoint."""
+    if not isinstance(cfg, dict):
+        return False
+    quant = cfg.get("quantization_config")
+    return isinstance(quant, dict) and quant.get("quant_method") == "bitsandbytes"
+
+
+def _architecture_cannot_come_from_transformers(cfg: dict | None = None) -> bool:
     """Whether this host builds model architectures somewhere other than transformers.
 
     The inference backend is chosen by hardware, and the MLX branch has no
     transformers path to fall back to, so on MLX mlx-lm and mlx-vlm decide what
     loads. Upgrading transformers cannot make an architecture loadable there, so
     offering the install costs minutes and changes nothing.
+
+    Bitsandbytes repos are the exception. mlx-lm cannot read bnb weights, so the
+    MLX loader dequantizes them through ``AutoModelForCausalLM.from_pretrained``
+    -- transformers building the architecture after all -- and only an
+    ``unsloth/*-bnb-4bit`` Hub id is remapped to its base repo before that. A
+    third-party or local bnb repo therefore still fails in transformers with the
+    unrecognized-architecture error this offer exists to fix, so it keeps it.
     """
     try:
         from utils.hardware import DeviceType, get_device
-        return get_device() == DeviceType.MLX
+        if get_device() != DeviceType.MLX:
+            return False
     except Exception:
         return False
+    return not _is_bitsandbytes_config(cfg)
 
 
 def latest_transformers_supports(model_type: str) -> dict | None:
@@ -413,16 +430,19 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
     error. Returns ``{"model_type", "pypi_version", "supported_in_pypi",
     "supported_in_main"}`` when the newest transformers knows the type, else None.
 
+    Also None on a host that does not build architectures through transformers at
+    all -- see ``_architecture_cannot_come_from_transformers``.
+
     Never raises; every network touch is bounded and cached. Offline or with the
     ``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS`` kill switch it returns None immediately.
     """
     try:
         if _disabled() or _env_offline():
             return None
-        if _architecture_cannot_come_from_transformers():
-            return None
         cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
+            return None
+        if _architecture_cannot_come_from_transformers(cfg):
             return None
         candidates = _model_types_from_config(cfg)
         if not candidates:
