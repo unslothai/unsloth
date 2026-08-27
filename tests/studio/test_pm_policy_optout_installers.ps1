@@ -143,7 +143,7 @@ Check "but find-links is scrubbed, being additive again" ($null -eq $Recorded['P
 Write-Host "a config-only no-index still keeps find-links"
 Reset-Env
 $script:PipNoIndexSections = $null
-function python { if ($args -contains 'list') { "global.no-index = true" }; $global:LASTEXITCODE = 0 }
+function Invoke-BoundedPythonProbe { [pscustomobject]@{ Ok = $true; Output = "global.no-index = true"; Error = "" } }
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
@@ -152,13 +152,13 @@ Check "find-links survives a pip.conf no-index" ($Recorded['PIP_FIND_LINKS'] -eq
 Write-Host "and with no no-index anywhere it is still additive"
 Reset-Env
 $script:PipNoIndexSections = $null
-function python { $global:LASTEXITCODE = 0 }
+function Invoke-BoundedPythonProbe { [pscustomobject]@{ Ok = $true; Output = ""; Error = "" } }
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
 Check "find-links is scrubbed when nothing sets no-index" ($null -eq $Recorded['PIP_FIND_LINKS'])
 $script:PipNoIndexSections = $null
-Remove-Item function:python -ErrorAction SilentlyContinue
+Remove-Item function:Invoke-BoundedPythonProbe -ErrorAction SilentlyContinue
 
 Write-Host "a command with no pinned index is untouched either way"
 Reset-Env
@@ -185,7 +185,7 @@ Reset-Env
 Write-Host "no-index is read for the command being run"
 Reset-Env
 $script:PipNoIndexSections = $null
-function python { if ($args -contains 'list') { "download.no-index = true" }; $global:LASTEXITCODE = 0 }
+function Invoke-BoundedPythonProbe { [pscustomobject]@{ Ok = $true; Output = "download.no-index = true"; Error = "" } }
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
@@ -193,7 +193,7 @@ Check "a download-scoped no-index does not hold find-links for install" ($null -
 
 Reset-Env
 $script:PipNoIndexSections = $null
-function python { if ($args -contains 'list') { "global.no-index = true"; "install.no-index = false" }; $global:LASTEXITCODE = 0 }
+function Invoke-BoundedPythonProbe { [pscustomobject]@{ Ok = $true; Output = "global.no-index = true`ninstall.no-index = false"; Error = "" } }
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
@@ -201,13 +201,26 @@ Check "an install-scoped false beats a global true" ($null -eq $Recorded['PIP_FI
 
 Reset-Env
 $script:PipNoIndexSections = $null
-function python { if ($args -contains 'list') { "install.no-index = true" }; $global:LASTEXITCODE = 0 }
+function Invoke-BoundedPythonProbe { [pscustomobject]@{ Ok = $true; Output = "install.no-index = true"; Error = "" } }
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
 Check "an install-scoped true holds find-links" ($Recorded['PIP_FIND_LINKS'] -eq "C:\op\wheels")
 $script:PipNoIndexSections = $null
-Remove-Item function:python -ErrorAction SilentlyContinue
+Remove-Item function:Invoke-BoundedPythonProbe -ErrorAction SilentlyContinue
+
+Write-Host ""
+
+# A policy notice must never be able to hang an install. The Python side caps the same
+# probe at 30s; a bare `& python -m pip config list` waits forever on a wedged
+# interpreter, which is only reachable under the opt-out but is a hang all the same.
+Write-Host "the pip probe is bounded"
+$probeText = Get-FunctionText $setup 'Test-PipNoIndexOn'
+Check "it goes through the bounded runner" ($probeText -match 'Invoke-BoundedPythonProbe')
+Check "with an explicit timeout"           ($probeText -match '-TimeoutSec\s+30')
+# Code only: the comment above the call names the shape it replaced.
+$probeCode = ($probeText -split "`n" | Where-Object { $_.TrimStart() -notmatch '^#' }) -join "`n"
+Check "and never calls pip unbounded"      ($probeCode -notmatch '&\s*python\s+-m\s+pip')
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }

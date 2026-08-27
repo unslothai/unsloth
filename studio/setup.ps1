@@ -4683,8 +4683,15 @@ function Test-PipNoIndexOn {
     if ($null -eq $script:PipNoIndexSections) {
         $found = @{}
         try {
-            $listed = & python -m pip config list 2>$null
-            if ($LASTEXITCODE -eq 0) {
+            # BOUNDED, like the 30s cap _pip_config_settings() puts on the same probe.
+            # A bare `& python -m pip config list` waits forever on a wedged interpreter,
+            # and a policy notice must never be able to hang an install. runpy rather
+            # than a nested `-m` so the timeout kills the process that does the work.
+            $probe = Invoke-BoundedPythonProbe -PythonExe "python" -TimeoutSec 30 -Code (
+                "import runpy,sys; sys.argv=['pip','config','list']; " +
+                "runpy.run_module('pip',run_name='__main__')")
+            $listed = if ($probe.Ok) { $probe.Output -split "`r?`n" } else { @() }
+            if ($probe.Ok) {
                 foreach ($line in @($listed)) {
                     # Section verbatim, option normalised: the split pip itself makes.
                     # `:env:` entries restate the environment, read by the branch above.
