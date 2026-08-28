@@ -9,6 +9,7 @@ Run from studio/backend:  python -m pytest tests/test_mcp_stdio_node_path.py -q
 import os
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -16,7 +17,7 @@ from core.inference import mcp_client
 from utils import node_runtime
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_managed_node_memo():
     node_runtime._reset_managed_node_check()
     yield
@@ -29,14 +30,14 @@ def managed_node(tmp_path, monkeypatch):
     tests cover PATH assembly, not `node -v`)."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     bin_dir = tmp_path / "studio" / "node" / ("" if os.name == "nt" else "bin")
-    bin_dir.mkdir(parents = True, exist_ok = True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(node_runtime, "managed_node_bin_dir", lambda: bin_dir)
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
 
     def _no_usable_node(
         path,
-        require_npm = True,
-        require_npx = True,
+        require_npm=True,
+        require_npx=True,
     ):
         return False
 
@@ -61,7 +62,7 @@ def managed_node_install(tmp_path, monkeypatch):
     """The real locator + a stub node binary, so managed_node_usable() is exercised."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     bin_dir = tmp_path / "studio" / "node" / ("" if os.name == "nt" else "bin")
-    bin_dir.mkdir(parents = True, exist_ok = True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
     binary = node_runtime.managed_node_binary()
     binary.write_text("")
     return bin_dir
@@ -100,16 +101,16 @@ def test_stdio_env_keeps_server_env_and_extends_its_path(managed_node):
 
 def test_stdio_env_is_none_without_managed_node_or_vars(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    monkeypatch.delenv("PATH", raising = False)
+    monkeypatch.delenv("PATH", raising=False)
     assert mcp_client._stdio_env(None) is None
 
 
 @pytest.mark.parametrize(
     "environment",
     [
-        pytest.param({"BAD\x00NAME": "value"}, id = "nul-name"),
-        pytest.param({"NAME": "bad\x00value"}, id = "nul-value"),
-        pytest.param({"BAD=NAME": "value"}, id = "equals-name"),
+        pytest.param({"BAD\x00NAME": "value"}, id="nul-name"),
+        pytest.param({"NAME": "bad\x00value"}, id="nul-value"),
+        pytest.param({"BAD=NAME": "value"}, id="equals-name"),
     ],
 )
 def test_stdio_env_rejects_invalid_legacy_values(environment):
@@ -163,7 +164,7 @@ def test_stdio_argv_prefers_child_path_over_parent(managed_node, monkeypatch, tm
 def test_windows_stdio_argv_bypasses_batch_launcher(launcher, monkeypatch, tmp_path):
     bin_dir = tmp_path / "node"
     cli = bin_dir / "node_modules" / "npm" / "bin" / f"{launcher}-cli.js"
-    cli.parent.mkdir(parents = True)
+    cli.parent.mkdir(parents=True)
     cli.write_text("")
     node = bin_dir / "node.exe"
     node.write_text("")
@@ -173,7 +174,7 @@ def test_windows_stdio_argv_bypasses_batch_launcher(launcher, monkeypatch, tmp_p
     monkeypatch.setattr(
         mcp_client.shutil,
         "which",
-        lambda command, path = None: str(batch) if command == launcher else str(node),
+        lambda command, path=None: str(batch) if command == launcher else str(node),
     )
     arguments = ["%TOKEN%", "a&b", "x|y", 'say "hello"', "a b", ""]
 
@@ -187,10 +188,27 @@ def test_windows_stdio_argv_rejects_batch_when_cli_is_unknown(monkeypatch, tmp_p
     batch.parent.mkdir()
     batch.write_text("")
     monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
-    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path=None: str(batch))
 
-    with pytest.raises(ValueError, match = "npm CLI script"):
+    with pytest.raises(ValueError, match="npm CLI script"):
         mcp_client._stdio_argv(["npx", "package"], {"PATH": str(tmp_path)})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires an installed Windows Node runtime")
+@pytest.mark.parametrize("launcher", ["npm", "npx"])
+def test_windows_installed_node_launcher_avoids_cmd_shell(launcher):
+    resolved = shutil.which(launcher)
+    if resolved is None:
+        pytest.skip(f"{launcher} is not installed")
+    assert Path(resolved).suffix.lower() in (".cmd", ".bat")
+    arguments = ["%TOKEN%", "a&b", "x|y", 'say "hello"', "a b", ""]
+
+    argv = mcp_client._stdio_argv([launcher, *arguments], {"PATH": os.environ.get("PATH", "")})
+
+    assert Path(argv[0]).name.lower() == "node.exe"
+    assert Path(argv[1]).name.lower() == f"{launcher}-cli.js"
+    assert Path(argv[1]).is_file()
+    assert argv[2:] == arguments
 
 
 def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_path):
@@ -209,19 +227,19 @@ def test_runtime_free_dir_resolves_nothing(runtime_free_dir):
     Node the base PATH already resolves a runtime, so path_with_managed_node correctly
     returns it unchanged and the prepend assertions flip."""
     assert node_runtime._path_has_usable_node(str(runtime_free_dir)) is False
-    assert node_runtime._path_has_usable_node(str(runtime_free_dir), require_npm = False) is False
+    assert node_runtime._path_has_usable_node(str(runtime_free_dir), require_npm=False) is False
 
 
 def test_stale_managed_node_is_not_prepended(managed_node_install, monkeypatch, runtime_free_dir):
     """A dir left behind after the host moved to a system Node must not win the lookup."""
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: False)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: False)
     assert node_runtime.managed_node_usable() is False
     base = str(runtime_free_dir)
     assert node_runtime.path_with_managed_node(base) == base
 
 
 def test_usable_managed_node_is_prepended(managed_node_install, monkeypatch, runtime_free_dir):
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: True)
     assert node_runtime.managed_node_usable() is True
     base = str(runtime_free_dir)
     expected = f"{managed_node_install}{os.pathsep}{base}"
@@ -231,7 +249,7 @@ def test_usable_managed_node_is_prepended(managed_node_install, monkeypatch, run
 def test_stale_managed_node_leaves_stdio_env_alone(
     managed_node_install, monkeypatch, runtime_free_dir
 ):
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: False)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: False)
     monkeypatch.setenv("PATH", str(runtime_free_dir))
     assert mcp_client._stdio_env(None)["PATH"] == str(runtime_free_dir)
 
@@ -240,7 +258,7 @@ def test_managed_node_check_is_memoized_on_success(managed_node_install, monkeyp
     """One probe per process once usable: _stdio_env runs on every client build."""
     calls = []
 
-    def _record(executable, path = None):
+    def _record(executable, path=None):
         calls.append(executable)
         return True
 
@@ -298,7 +316,7 @@ def test_stdio_env_preserves_empty_component_from_config(managed_node):
     assert env["PATH"] == f"{managed_node}{os.pathsep}{configured}"
 
 
-def _system_node_dir(tmp_path, with_npx = True):
+def _system_node_dir(tmp_path, with_npx=True):
     """A system runtime dir; without npx/npm it mirrors a host where setup picked bundled."""
     sysbin = tmp_path / "sysbin"
     sysbin.mkdir()
@@ -312,7 +330,7 @@ def _system_node_dir(tmp_path, with_npx = True):
 def _patch_floors(monkeypatch, predicate):
     """Both floors move together: the installers require node AND npm to pass."""
 
-    def _check(executable, path = None):
+    def _check(executable, path=None):
         return predicate(executable)
 
     monkeypatch.setattr(node_runtime, "_node_version_ok", _check)
@@ -322,7 +340,7 @@ def _patch_floors(monkeypatch, predicate):
 def test_adequate_system_node_is_not_shadowed(managed_node_install, monkeypatch, tmp_path):
     """A leftover managed install must not override a Node the PATH already provides."""
     sysbin = _system_node_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
 
 
@@ -330,7 +348,7 @@ def test_managed_node_used_when_system_node_is_below_floor(
     managed_node_install, monkeypatch, tmp_path
 ):
     sysbin = _system_node_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: "sysbin" not in str(executable))
+    _patch_floors(monkeypatch, lambda executable, path=None: "sysbin" not in str(executable))
     expected = f"{managed_node_install}{os.pathsep}{sysbin}"
     assert node_runtime.path_with_managed_node(str(sysbin)) == expected
 
@@ -338,7 +356,7 @@ def test_managed_node_used_when_system_node_is_below_floor(
 def test_managed_node_used_when_path_has_no_node(managed_node_install, monkeypatch, tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: True)
     expected = f"{managed_node_install}{os.pathsep}{empty}"
     assert node_runtime.path_with_managed_node(str(empty)) == expected
 
@@ -346,7 +364,7 @@ def test_managed_node_used_when_path_has_no_node(managed_node_install, monkeypat
 def test_system_node_probe_is_memoized(managed_node_install, monkeypatch, tmp_path):
     sysbin = _system_node_dir(tmp_path)
     calls = []
-    _patch_floors(monkeypatch, lambda executable, path = None: calls.append(executable) or True)
+    _patch_floors(monkeypatch, lambda executable, path=None: calls.append(executable) or True)
     assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
     after_first = len(calls)
     assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
@@ -370,11 +388,11 @@ def test_probe_memo_does_not_answer_across_paths(managed_node_install, monkeypat
 
     # Patched directly rather than through _patch_floors: that helper drops the path
     # argument, which is the whole dimension under test here.
-    def _npm_floor(executable, path = None):
+    def _npm_floor(executable, path=None):
         # The shim runs whichever node its PATH reaches, so only the good PATH clears.
         return path is not None and str(good) in path
 
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: True)
     monkeypatch.setattr(node_runtime, "_npm_version_ok", _npm_floor)
     good_path = f"{shim}{os.pathsep}{good}"
     old_path = f"{shim}{os.pathsep}{old}"
@@ -386,22 +404,22 @@ def test_probe_memo_does_not_answer_across_paths(managed_node_install, monkeypat
 
 def test_managed_node_used_when_system_lacks_npx(managed_node_install, monkeypatch, tmp_path):
     """decide_node_source installs bundled when npm is missing, so node alone is not enough."""
-    sysbin = _system_node_dir(tmp_path, with_npx = False)
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    sysbin = _system_node_dir(tmp_path, with_npx=False)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: True)
     expected = f"{managed_node_install}{os.pathsep}{sysbin}"
     assert node_runtime.path_with_managed_node(str(sysbin)) == expected
 
 
 def test_complete_system_runtime_is_not_shadowed(managed_node_install, monkeypatch, tmp_path):
     sysbin = _system_node_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     assert node_runtime.path_with_managed_node(str(sysbin)) == str(sysbin)
 
 
 def test_shadowed_managed_dir_moves_to_front(managed_node_install, monkeypatch, tmp_path):
     """Already on PATH but behind a stale runtime: it has to move up, not stay put."""
     stale = _system_node_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: "sysbin" not in str(executable))
+    _patch_floors(monkeypatch, lambda executable, path=None: "sysbin" not in str(executable))
     configured = f"{stale}{os.pathsep}{managed_node_install}"
     expected = f"{managed_node_install}{os.pathsep}{stale}"
     assert node_runtime.path_with_managed_node(configured) == expected
@@ -409,7 +427,7 @@ def test_shadowed_managed_dir_moves_to_front(managed_node_install, monkeypatch, 
 
 def test_managed_dir_already_first_is_unchanged(managed_node_install, monkeypatch, tmp_path):
     stale = _system_node_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: "sysbin" not in str(executable))
+    _patch_floors(monkeypatch, lambda executable, path=None: "sysbin" not in str(executable))
     configured = f"{managed_node_install}{os.pathsep}{stale}"
     assert node_runtime.path_with_managed_node(configured) == configured
 
@@ -461,8 +479,9 @@ def test_windows_npx_sibling_runtime_is_the_one_validated(
     checked = []
     _patch_floors(
         monkeypatch,
-        lambda executable, path = None: checked.append(str(executable))
-        or not str(executable).startswith(str(old)),
+        lambda executable, path=None: (
+            checked.append(str(executable)) or not str(executable).startswith(str(old))
+        ),
     )
     configured = f"{good}{os.pathsep}{old}"
     result = node_runtime.path_with_managed_node(configured)
@@ -479,7 +498,7 @@ def test_posix_split_layout_still_trusts_the_path_node(managed_node_install, mon
     other.mkdir()
     _make_executable(other, "npm")
     _make_executable(other, "npx")
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     configured = f"{good}{os.pathsep}{other}"
     assert node_runtime.path_with_managed_node(configured) == configured
 
@@ -524,11 +543,11 @@ def test_npm_below_installer_floor_falls_back_to_managed(
 ):
     """Node clears its floor but npm is 10, which is why setup installed the managed one."""
     sysbin = _system_node_dir(tmp_path)
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: True)
     monkeypatch.setattr(
         node_runtime,
         "_npm_version_ok",
-        lambda executable, path = None: not str(executable).startswith(str(sysbin)),
+        lambda executable, path=None: not str(executable).startswith(str(sysbin)),
     )
     expected = f"{managed_node_install}{os.pathsep}{sysbin}"
     assert node_runtime.path_with_managed_node(str(sysbin)) == expected
@@ -551,9 +570,9 @@ def _node_only_dir(tmp_path):
 
 def test_direct_node_server_keeps_a_node_only_path(managed_node_install, monkeypatch, tmp_path):
     nodeonly = _node_only_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     unchanged = node_runtime.path_with_managed_node(
-        str(nodeonly), require_npm = False, require_npx = False
+        str(nodeonly), require_npm=False, require_npx=False
     )
     assert unchanged == str(nodeonly)
 
@@ -563,10 +582,10 @@ def test_npx_server_still_needs_npx_on_a_node_only_path(
 ):
     """node alone cannot launch an ``npx`` server, so the managed dir still goes on."""
     nodeonly = _node_only_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     expected = f"{managed_node_install}{os.pathsep}{nodeonly}"
     assert (
-        node_runtime.path_with_managed_node(str(nodeonly), require_npm = False, require_npx = True)
+        node_runtime.path_with_managed_node(str(nodeonly), require_npm=False, require_npx=True)
         == expected
     )
 
@@ -580,7 +599,7 @@ def test_npx_server_keeps_a_path_with_npx_but_no_npm(managed_node_install, monke
     curated.mkdir()
     _make_executable(curated, "node")
     _make_executable(curated, "npx")
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     monkeypatch.setenv("PATH", str(curated))
     assert mcp_client._stdio_env(None, "npx")["PATH"] == str(curated)
     assert mcp_client._stdio_argv(["npx", "-y", "server"], {"PATH": str(curated)})[0].startswith(
@@ -595,17 +614,17 @@ def test_npx_only_path_is_still_held_to_the_npm_floor(managed_node_install, monk
     curated.mkdir()
     _make_executable(curated, "node")
     _make_executable(curated, "npx")
-    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path = None: True)
+    monkeypatch.setattr(node_runtime, "_node_version_ok", lambda executable, path=None: True)
     probed = []
 
-    def _npm_floor(executable, path = None):
+    def _npm_floor(executable, path=None):
         probed.append(str(executable))
         return False  # the bundled npm is below the installers' floor
 
     monkeypatch.setattr(node_runtime, "_npm_version_ok", _npm_floor)
     expected = f"{managed_node_install}{os.pathsep}{curated}"
     assert (
-        node_runtime.path_with_managed_node(str(curated), require_npm = False, require_npx = True)
+        node_runtime.path_with_managed_node(str(curated), require_npm=False, require_npx=True)
         == expected
     )
     assert any(os.path.basename(p).startswith("npx") for p in probed), probed
@@ -615,7 +634,7 @@ def test_stdio_env_does_not_shadow_node_for_a_direct_node_server(
     managed_node_install, monkeypatch, tmp_path
 ):
     nodeonly = _node_only_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     monkeypatch.setenv("PATH", str(nodeonly))
     assert mcp_client._stdio_env(None, "node")["PATH"] == str(nodeonly)
 
@@ -624,7 +643,7 @@ def test_stdio_env_still_augments_for_npx_on_a_node_only_path(
     managed_node_install, monkeypatch, tmp_path
 ):
     nodeonly = _node_only_dir(tmp_path)
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     monkeypatch.setenv("PATH", str(nodeonly))
     env = mcp_client._stdio_env(None, "npx")
     assert env["PATH"] == f"{managed_node_install}{os.pathsep}{nodeonly}"
@@ -674,7 +693,7 @@ def test_direct_npm_server_does_not_need_npx(managed_node_install, monkeypatch, 
     nonpx.mkdir()
     _make_executable(nonpx, "node")
     _make_executable(nonpx, "npm")
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     monkeypatch.setenv("PATH", str(nonpx))
     assert mcp_client._stdio_env(None, "npm")["PATH"] == str(nonpx)
 
@@ -686,13 +705,13 @@ def test_npx_server_on_the_same_path_still_gets_managed(
     nonpx.mkdir()
     _make_executable(nonpx, "node")
     _make_executable(nonpx, "npm")
-    _patch_floors(monkeypatch, lambda executable, path = None: True)
+    _patch_floors(monkeypatch, lambda executable, path=None: True)
     monkeypatch.setenv("PATH", str(nonpx))
     env = mcp_client._stdio_env(None, "npx")
     assert env["PATH"] == f"{managed_node_install}{os.pathsep}{nonpx}"
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX shebang launcher")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang launcher")
 def test_npm_probe_runs_with_the_candidate_path(managed_node_install, monkeypatch, tmp_path):
     """npm is a `#!/usr/bin/env node` script, so the probe needs the candidate's node."""
     toolchain = tmp_path / "toolchain"
@@ -724,18 +743,18 @@ def test_windows_npm_sibling_runtime_is_validated(managed_node_install, monkeypa
     monkeypatch.setattr(node_runtime, "_IS_WINDOWS", True)
     checked = []
 
-    def _record(executable, path = None):
+    def _record(executable, path=None):
         checked.append(str(executable))
         return not str(executable).startswith(str(old))
 
     _patch_floors(monkeypatch, lambda executable: _record(executable))
     configured = f"{good}{os.pathsep}{old}"
-    result = node_runtime.path_with_managed_node(configured, require_npm = True, require_npx = False)
+    result = node_runtime.path_with_managed_node(configured, require_npm=True, require_npx=False)
     assert any(c.endswith("node.exe") for c in checked), checked
     assert result == f"{managed_node_install}{os.pathsep}{configured}"
 
 
-def _good_node_only(tmp_path, name = "toolchain"):
+def _good_node_only(tmp_path, name="toolchain"):
     d = tmp_path / name
     d.mkdir()
     _make_executable(d, "node")
