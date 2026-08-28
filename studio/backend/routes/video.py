@@ -963,6 +963,7 @@ def _job_to_openai(job: _VideoJob) -> VideoJob:
 
 def _remember_job(job: _VideoJob) -> None:
     from core.inference import video_gallery
+
     with _jobs_lock:
         pending = [existing for existing in _jobs.values() if not existing.terminal]
     for existing in pending:
