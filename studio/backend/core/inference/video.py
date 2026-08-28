@@ -4942,7 +4942,6 @@ class VideoBackend:
     def generation_snapshot(self) -> tuple[dict[str, Any], Optional[object]]:
         """Return the route-facing generation fields and their exact resident-state token."""
         from hub.utils.gguf import extract_quant_token
-
         with self._lock:
             state = self._state
             if state is None:

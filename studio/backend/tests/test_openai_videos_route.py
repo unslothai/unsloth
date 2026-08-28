@@ -1226,9 +1226,7 @@ def test_requested_model_cannot_change_before_the_generation_reservation(
             _swap_model()
         return real_begin(**kwargs)
 
-    monkeypatch.setattr(
-        media_auto_switch, "maybe_auto_switch_media_model", _resident_fast_path
-    )
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _resident_fast_path)
     monkeypatch.setattr(openai_auto_switch_settings, "get_media_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(backend, "begin_generate", _racing_begin)
 
