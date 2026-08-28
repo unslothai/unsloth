@@ -4898,6 +4898,60 @@ def _monitor_tool_calls_text(tool_calls: Any) -> str:
     return "\n".join(parts)
 
 
+def _monitor_stream_tool_call_deltas(
+    monitor_id: Optional[str],
+    choice_index: int,
+    tool_calls: Any,
+) -> bool:
+    if not isinstance(tool_calls, list):
+        return False
+    accumulated = False
+    for position, tool_call in enumerate(tool_calls):
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function") or {}
+        if not isinstance(function, dict):
+            function = {}
+        tool_index = tool_call.get("index")
+        if not isinstance(tool_index, int):
+            tool_index = position
+        name = function.get("name")
+        if name is None:
+            name = tool_call.get("name")
+        arguments = function.get("arguments")
+        if arguments is None:
+            arguments = tool_call.get("arguments")
+        api_monitor.accumulate_openai_tool_call(
+            monitor_id,
+            choice_index = choice_index,
+            tool_index = tool_index,
+            call_id = tool_call.get("id"),
+            name_fragment = name,
+            arguments_fragment = arguments,
+        )
+        accumulated = True
+    return accumulated
+
+
+def _flush_monitor_stream_tool_calls(
+    monitor_id: Optional[str],
+    choice_index: Optional[int] = None,
+) -> None:
+    calls, separate = api_monitor.take_openai_tool_calls(
+        monitor_id,
+        choice_index = choice_index,
+    )
+    if not calls:
+        return
+    parts = []
+    for name, arguments in calls:
+        if len(name) > 500:
+            name = name[:497] + "..."
+        parts.append(_monitor_call_text(name or "<unknown>", arguments))
+    prefix = "\n" if separate else ""
+    api_monitor.append_reply(monitor_id, prefix + "\n".join(parts), stamp_first_token = False)
+
+
 def _monitor_openai_chunk(
     monitor_id: Optional[str],
     data: dict,
@@ -4934,16 +4988,36 @@ def _monitor_openai_chunk(
     for idx, choice in enumerate(choices):
         if not isinstance(choice, dict):
             continue
+        choice_index = choice.get("index")
+        if not isinstance(choice_index, int):
+            choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
         if isinstance(delta, dict) and delta.get("reasoning_content"):
             api_monitor.mark_first_token(monitor_id)
 
+        streamed_tool_delta = False
+        if streaming and isinstance(delta, dict):
+            streamed_tool_delta = _monitor_stream_tool_call_deltas(
+                monitor_id,
+                choice_index,
+                delta.get("tool_calls"),
+            )
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
-            api_monitor.append_reply(monitor_id, content)
+            api_monitor.append_reply(
+                monitor_id,
+                content,
+                separate_from_openai_tool = True,
+            )
+            if streaming and choice.get("finish_reason"):
+                _flush_monitor_stream_tool_calls(monitor_id, choice_index)
             continue
-        if isinstance(delta, dict):
+        if streamed_tool_delta:
+            if choice.get("finish_reason"):
+                _flush_monitor_stream_tool_calls(monitor_id, choice_index)
+            continue
+        if not streaming and isinstance(delta, dict):
             tool_text = _monitor_tool_calls_text(delta.get("tool_calls"))
             if tool_text:
                 api_monitor.append_reply(monitor_id, tool_text)
@@ -4958,6 +5032,8 @@ def _monitor_openai_chunk(
                 tool_text = _monitor_tool_calls_text(message.get("tool_calls"))
                 if tool_text:
                     reply_parts.append((idx, tool_text))
+        if streaming and choice.get("finish_reason"):
+            _flush_monitor_stream_tool_calls(monitor_id, choice_index)
     if not reply_parts:
         return
     if len(choices) == 1:
@@ -5005,6 +5081,7 @@ def _monitor_openai_sse_line(
         return None
     data_str = raw_line[5:].lstrip()
     if data_str == "[DONE]":
+        _flush_monitor_stream_tool_calls(monitor_id)
         api_monitor.finish(monitor_id)
         return "done"
     try:
@@ -15593,7 +15670,7 @@ async def _proxy_to_external_provider(
                     sent_done = True
             if not sent_done:
                 if not stream_failed:
-                    api_monitor.finish(monitor_id)
+                    _monitor_openai_sse_line(monitor_id, "data: [DONE]")
                 yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")

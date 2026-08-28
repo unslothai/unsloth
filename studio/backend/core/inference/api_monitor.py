@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import logging
 import os
@@ -32,6 +33,8 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+_MAX_STREAM_TOOL_CALLS = 64
+_MAX_STREAM_TOOL_FIELD_CHARS = 501
 _MAX_DECODE_MS = 24 * 60 * 60 * 1000
 # Far above any real context window; larger means a broken upstream payload.
 _MAX_TOKEN_COUNT = 1 << 40
@@ -74,6 +77,32 @@ def _trim(text: Optional[str], limit: int) -> str:
     if limit <= 3:
         return "..."[:limit]
     return text[: limit - 3] + "..."
+
+
+@dataclass
+class _OpenAIStreamToolCall:
+    choice_index: int
+    tool_index: int
+    call_id: Optional[str] = None
+    name: str = ""
+    arguments: str = ""
+
+
+def _append_stream_tool_field(current: str, fragment: Any, budget: int) -> str:
+    if fragment is None or budget <= 0 or len(current) >= _MAX_STREAM_TOOL_FIELD_CHARS:
+        return current
+    if not isinstance(fragment, str):
+        fragment = str(fragment)
+    remaining = min(_MAX_STREAM_TOOL_FIELD_CHARS - len(current), budget)
+    return current + fragment[:remaining]
+
+
+def _stream_tool_call_id(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) <= _MAX_STREAM_TOOL_FIELD_CHARS:
+        return value
+    return "sha256:" + hashlib.sha256(value.encode("utf-8", errors = "replace")).hexdigest()
 
 
 @dataclass
@@ -123,6 +152,10 @@ class ApiMonitorEntry:
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own
     # chunk, so agreement can only be judged across the whole request. Not serialized.
     stop_reasons_seen: set[str] = field(default_factory = set)
+    # Request-local OpenAI streaming preview state. Kept out of snapshots and cleared
+    # on every terminal path so fragmented calls cannot bleed into retries or later rows.
+    openai_stream_tool_calls: list[_OpenAIStreamToolCall] = field(default_factory = list)
+    openai_stream_last_segment_was_tool: bool = False
 
     def snapshot(
         self,
@@ -382,6 +415,7 @@ class ApiMonitor:
         text: str,
         *,
         stamp_first_token: bool = True,
+        separate_from_openai_tool: bool = False,
     ) -> None:
         if not entry_id or not text:
             return
@@ -389,6 +423,10 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
+            if separate_from_openai_tool and entry.openai_stream_last_segment_was_tool:
+                if entry.reply and not entry.reply.endswith("\n"):
+                    text = "\n" + text
+                entry.openai_stream_last_segment_was_tool = False
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 now = time.monotonic()
@@ -407,6 +445,121 @@ class ApiMonitor:
                 return
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
+
+    def accumulate_openai_tool_call(
+        self,
+        entry_id: Optional[str],
+        *,
+        choice_index: int,
+        tool_index: int,
+        call_id: Optional[str],
+        name_fragment: Any,
+        arguments_fragment: Any,
+    ) -> None:
+        """Merge one streamed OpenAI tool-call delta into its monitor row."""
+        if not entry_id:
+            return
+        call_id = _stream_tool_call_id(call_id)
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.finished_at is not None:
+                return
+            same_choice = [
+                state
+                for state in entry.openai_stream_tool_calls
+                if state.choice_index == choice_index
+            ]
+            state = None
+            if call_id is not None:
+                state = next(
+                    (candidate for candidate in reversed(same_choice) if candidate.call_id == call_id),
+                    None,
+                )
+            if state is None:
+                same_index = [
+                    candidate
+                    for candidate in same_choice
+                    if candidate.tool_index == tool_index
+                ]
+                if call_id is None:
+                    state = same_index[-1] if same_index else None
+                else:
+                    state = next(
+                        (
+                            candidate
+                            for candidate in reversed(same_index)
+                            if candidate.call_id is None
+                        ),
+                        None,
+                    )
+            if state is None:
+                pending_chars = sum(
+                    len(candidate.name) + len(candidate.arguments)
+                    for candidate in entry.openai_stream_tool_calls
+                )
+                if (
+                    len(entry.openai_stream_tool_calls) >= _MAX_STREAM_TOOL_CALLS
+                    or pending_chars >= _MAX_REPLY_CHARS
+                ):
+                    return
+                state = _OpenAIStreamToolCall(
+                    choice_index = choice_index,
+                    tool_index = tool_index,
+                    call_id = call_id,
+                )
+                entry.openai_stream_tool_calls.append(state)
+            elif call_id is not None and state.call_id is None:
+                state.call_id = call_id
+            pending_chars = sum(
+                len(candidate.name) + len(candidate.arguments)
+                for candidate in entry.openai_stream_tool_calls
+            )
+            budget = _MAX_REPLY_CHARS - pending_chars
+            previous_name_length = len(state.name)
+            state.name = _append_stream_tool_field(state.name, name_fragment, budget)
+            budget -= len(state.name) - previous_name_length
+            state.arguments = _append_stream_tool_field(
+                state.arguments,
+                arguments_fragment,
+                budget,
+            )
+            now = time.monotonic()
+            if entry.first_token_monotonic is None:
+                entry.first_token_monotonic = now
+            if entry.first_decode_monotonic is None:
+                entry.first_decode_monotonic = now
+            entry.updated_at = time.time()
+
+    def take_openai_tool_calls(
+        self,
+        entry_id: Optional[str],
+        *,
+        choice_index: Optional[int] = None,
+    ) -> tuple[list[tuple[str, str]], bool]:
+        """Remove and return completed preview calls in first-seen order."""
+        if not entry_id:
+            return [], False
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.finished_at is not None:
+                return [], False
+            selected = [
+                state
+                for state in entry.openai_stream_tool_calls
+                if choice_index is None or state.choice_index == choice_index
+            ]
+            if not selected:
+                return [], False
+            separate = bool(entry.reply) and not entry.reply.endswith("\n")
+            entry.openai_stream_last_segment_was_tool = True
+            selected_ids = {id(state) for state in selected}
+            entry.openai_stream_tool_calls = [
+                state
+                for state in entry.openai_stream_tool_calls
+                if id(state) not in selected_ids
+            ]
+            entry.updated_at = time.time()
+            return [(state.name, state.arguments) for state in selected], separate
 
     def mark_first_token(
         self,
@@ -562,6 +715,8 @@ class ApiMonitor:
             # already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
+            entry.openai_stream_tool_calls.clear()
+            entry.openai_stream_last_segment_was_tool = False
             self._settle_stop_reason_locked(entry, status == "completed")
             now = time.time()
             entry.status = status
@@ -607,6 +762,8 @@ class ApiMonitor:
         self._notify_terminal(notification)
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
+        entry.openai_stream_tool_calls.clear()
+        entry.openai_stream_last_segment_was_tool = False
         self._settle_stop_reason_locked(entry, False)
         now = time.time()
         entry.status = "error"

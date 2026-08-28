@@ -5417,6 +5417,71 @@ class TestApiMonitorProviderAndCompletionStreams:
             upstream_bodies = upstream_bodies,
         )
 
+    @staticmethod
+    def _captured_tool_call_frames():
+        def _frame(delta, finish_reason = None):
+            return "data: " + json.dumps(
+                {
+                    "id": "chatcmpl-captured",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": delta,
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                },
+                separators = (",", ":"),
+            )
+
+        argument_fragments = [
+            "{",
+            '\"command\":\"',
+            "echo",
+            " HER",
+            "MES",
+            "_UNS",
+            "LO",
+            "TH",
+            "_OK",
+            '\"',
+            "}",
+        ]
+        frames = [_frame({"role": "assistant", "content": None})]
+        frames.append(
+            _frame(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-captured",
+                            "type": "function",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": argument_fragments[0],
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+        frames.extend(
+            _frame(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "function": {"arguments": fragment},
+                        }
+                    ]
+                }
+            )
+            for fragment in argument_fragments[1:]
+        )
+        frames.extend([_frame({}, "tool_calls"), "data: [DONE]"])
+        assert len(frames) == 14
+        return frames
+
     def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6248,6 +6313,51 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_external_stream_clean_eof_flushes_pending_tool_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            lines = [
+                'data: {"choices":[{"index":0,"delta":{"tool_calls":['
+                '{"index":0,"id":"call-eof","function":{"name":"lookup",'
+                '"arguments":"{\\"query\\":"}}]}}]}',
+                'data: {"choices":[{"index":0,"delta":{"tool_calls":['
+                '{"index":0,"function":{"arguments":"\\"weather\\"}"}}]}}]}',
+            ]
+
+            class DummyExternalClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def stream_chat_completion(self, **_kwargs):
+                    for line in lines:
+                        yield line
+
+                async def close(self):
+                    pass
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
+            payload = ChatCompletionRequest(
+                model = "default",
+                external_model = "gpt-test",
+                provider_type = "openai",
+                provider_base_url = "https://api.openai.com/v1",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+
+            response = await _proxy_to_external_provider(payload, self._Request())
+            chunks = [chunk async for chunk in response.body_iterator]
+
+            assert chunks == [*(f"{line}\n\n" for line in lines), "data: [DONE]\n\n"]
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+
+        asyncio.run(_run())
+
     def test_external_stream_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6736,6 +6846,373 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         entry = monitor.get(monitor_id)
         assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+
+    def test_streamed_tool_monitor_reassembles_captured_frames_without_changing_sse(
+        self, monkeypatch
+    ):
+        async def _run():
+            frames = self._captured_tool_call_frames()
+            result = await self._run_passthrough_stream(monkeypatch, frames)
+
+            assert result.body == "".join(f"{frame}\n\n" for frame in frames)
+            [entry] = result.monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["stop_reason"] == "tool_calls"
+            assert entry["reply"] == (
+                'Tool call: terminal({"command":"echo HERMES_UNSLOTH_OK"})'
+            )
+            assert entry["ttft_ms"] is not None
+
+        asyncio.run(_run())
+
+    def test_streamed_tool_monitor_joins_fragmented_name_and_arguments(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for tool_call in [
+            {
+                "index": 0,
+                "id": "call-fragmented",
+                "function": {"name": "ter", "arguments": '{"com'},
+            },
+            {"index": 0, "function": {"name": "min", "arguments": "mand\":"}},
+            {"index": 0, "function": {"name": "al", "arguments": '"echo"}'}},
+        ]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == 'Tool call: terminal({"command":"echo"})'
+
+    def test_streamed_tool_monitor_keeps_interleaved_indexes_separate(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        deltas = [
+            {"index": 0, "id": "call-a", "function": {"name": "alpha", "arguments": '{"a":'}},
+            {"index": 1, "id": "call-b", "function": {"name": "beta", "arguments": '{"b":'}},
+            {"index": 0, "function": {"arguments": "1}"}},
+            {"index": 1, "function": {"arguments": "2}"}},
+        ]
+        for tool_call in deltas:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    def test_streamed_tool_monitor_keeps_choice_indexes_separate(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        chunks = [
+            (0, {"index": 0, "id": "shared-id", "function": {"name": "alpha", "arguments": "{"}}),
+            (1, {"index": 0, "id": "shared-id", "function": {"name": "beta", "arguments": "{"}}),
+            (0, {"index": 0, "function": {"arguments": '"a":1}'}}),
+            (1, {"index": 0, "function": {"arguments": '"b":2}'}}),
+        ]
+        for choice_index, tool_call in chunks:
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": choice_index,
+                            "delta": {"tool_calls": [tool_call]},
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+        for choice_index in (0, 1):
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": choice_index,
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    def test_streamed_tool_monitor_uses_ids_when_indexes_are_reused_or_omitted(
+        self, monkeypatch
+    ):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        deltas = [
+            {"index": 0, "id": "call-a", "function": {"name": "alpha", "arguments": '{"a":'}},
+            {"index": 0, "id": "call-b", "function": {"name": "beta", "arguments": '{"b":'}},
+            {"index": 0, "function": {"arguments": "2}"}},
+            {"id": "call-a", "function": {"arguments": "1}"}},
+        ]
+        for tool_call in deltas:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    @pytest.mark.parametrize("terminal", ["cancelled", "error", "eof"])
+    def test_streamed_tool_monitor_terminal_cleanup_is_request_local(
+        self, monkeypatch, terminal
+    ):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        first_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "first",
+        )
+        _monitor_openai_chunk(
+            first_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-first",
+                                    "function": {"name": "terminal", "arguments": "{"},
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        if terminal == "error":
+            monitor.fail(first_id, "upstream failed")
+        else:
+            monitor.finish(first_id, "cancelled" if terminal == "cancelled" else "completed")
+
+        second_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "second",
+        )
+        _monitor_openai_chunk(
+            second_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '{"b":2}'}}
+                            ]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            second_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(first_id)["reply"] == ""
+        assert monitor.get(second_id)["reply"] == 'Tool call: <unknown>({"b":2})'
+
+    def test_streamed_non_tool_monitor_content_is_unchanged(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for content in ["hel", "lo"]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"content": content}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == "hello"
+
+    @pytest.mark.parametrize(
+        ("tool_first", "expected"),
+        [
+            (False, "Checking:\nTool call: lookup({})"),
+            (True, "Tool call: lookup({})\nDone."),
+        ],
+    )
+    def test_streamed_tool_monitor_separates_mixed_text_segments(
+        self, monkeypatch, tool_first, expected
+    ):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        text = "Done." if tool_first else "Checking:"
+        text_chunk = {"choices": [{"index": 0, "delta": {"content": text}}]}
+        tool_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-mixed",
+                                "function": {"name": "lookup", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+        finish_chunk = {
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+        }
+        if tool_first:
+            for chunk in (tool_chunk, finish_chunk, text_chunk):
+                _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+        else:
+            for chunk in (text_chunk, tool_chunk, finish_chunk):
+                _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+
+        assert monitor.get(monitor_id)["reply"] == expected
+
+    def test_streamed_tool_monitor_bounds_pending_preview_state(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for index in range(70):
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": index,
+                                        "id": ("i" * 5000) + str(index),
+                                        "function": {
+                                            "name": "n" * 1000,
+                                            "arguments": "a" * 5000,
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+
+        [entry] = monitor._entries
+        assert len(entry.openai_stream_tool_calls) <= 64
+        assert all(
+            call.call_id is None or len(call.call_id) <= 501
+            for call in entry.openai_stream_tool_calls
+        )
+        assert all(len(call.name) <= 501 for call in entry.openai_stream_tool_calls)
+        assert all(len(call.arguments) <= 501 for call in entry.openai_stream_tool_calls)
+        assert (
+            sum(
+                len(call.name) + len(call.arguments)
+                for call in entry.openai_stream_tool_calls
+            )
+            <= 12000
+        )
+        monitor.finish(monitor_id, "cancelled")
+        assert entry.openai_stream_tool_calls == []
 
     def test_embeddings_request_is_counted_active_and_completed(self, monkeypatch):
         async def _run():
