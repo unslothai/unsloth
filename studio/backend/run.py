@@ -156,6 +156,7 @@ from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
     resolved_bind_address_count,
+    wildcard_ip_versions,
     wildcard_loopback_host,
 )
 
@@ -523,15 +524,20 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
 
 def _display_host_for_bind(host: str) -> str:
-    loopback_host = wildcard_loopback_host(host)
-    if loopback_host is None:
+    wildcard_versions = wildcard_ip_versions(host)
+    if not wildcard_versions:
         return host
-    if loopback_host == "127.0.0.1":
-        return _resolve_external_ip()
-    from lan_access import detect_lan_addresses
-
-    addresses = detect_lan_addresses(6)
-    return addresses[0] if addresses else "::"
+    ipv4_display_host = None
+    if 4 in wildcard_versions:
+        ipv4_display_host = _resolve_external_ip()
+        if not is_wildcard_host(ipv4_display_host):
+            return ipv4_display_host
+    if 6 in wildcard_versions:
+        from lan_access import detect_lan_addresses
+        addresses = detect_lan_addresses(6)
+        if addresses:
+            return addresses[0]
+    return ipv4_display_host or "::"
 
 
 def _loopback_bind_host_for(host: str) -> str:

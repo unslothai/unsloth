@@ -100,6 +100,24 @@ def test_display_host_resolves_every_wildcard_alias(monkeypatch):
     assert run._display_host_for_bind("::") == "::"
 
 
+def test_display_host_falls_back_to_ipv6_for_dual_stack_wildcard(monkeypatch):
+    original_getaddrinfo = socket.getaddrinfo
+
+    def dual_stack_wildcard(host, *args, **kwargs):
+        if host == "dual-wildcard.test":
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0)),
+            ]
+        return original_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", dual_stack_wildcard)
+    monkeypatch.setattr(run, "_resolve_external_ip", lambda: "0.0.0.0")
+    monkeypatch.setattr("lan_access.detect_lan_addresses", lambda _ip_version = 4: ["fd00::50"])
+
+    assert run._display_host_for_bind("dual-wildcard.test") == "fd00::50"
+
+
 def test_reachability_probe_runs_by_default(calls):
     _verify_global_reachability("95.216.11.2", 8888)
     assert any(CHECK_HOST in url for url in calls)
