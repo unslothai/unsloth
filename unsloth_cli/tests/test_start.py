@@ -804,9 +804,10 @@ def _parse_toml(text: str) -> dict:
     return tomllib.loads(text)
 
 
-def test_project_declares_direct_click_dependency():
+def test_project_declares_direct_cli_dependencies():
     project = _parse_toml((_REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
     assert "click>=8.0" in project["project"]["dependencies"]
+    assert "huggingface-hub>=0.34.0" in project["project"]["dependencies"]
 
 
 def test_agent_paths_use_cli_studio_home_without_backend_imports(monkeypatch, tmp_path):
@@ -2861,12 +2862,12 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
     monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
 
-    # Default start: tools off (passthrough), healing + nudging on.
+    # Default start: tools off (passthrough), model-template reasoning, healing + nudging on.
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
     assert "--reasoning" not in cmd
-    assert env["LLAMA_ARG_REASONING"] == "off"
+    assert env["LLAMA_ARG_REASONING"] == "auto"
     assert "--gpu-memory-mode" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
@@ -3046,7 +3047,9 @@ def test_start_studio_server_forwards_reasoning_effort(monkeypatch):
         start.LoadOptions(),
         start.ServerOptions(reasoning_effort = "medium"),
     )
-    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING_EFFORT"] == "medium"
+    env = captured["kwargs"]["env"]
+    assert env["LLAMA_ARG_REASONING"] == "auto"
+    assert env["LLAMA_ARG_REASONING_EFFORT"] == "medium"
 
 
 def test_start_studio_server_overrides_inherited_reasoning_effort(monkeypatch):
@@ -3659,7 +3662,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[1] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
-    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "off"
+    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"
     assert cmd[cmd.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
@@ -6188,7 +6191,7 @@ def test_augment_path_leaves_path_alone_when_nothing_to_add(monkeypatch):
 
 
 def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path):
-    # A shim resolved via Studio's managed Node needs that node on PATH when it runs.
+    # A shim resolved via Unsloth's managed Node needs that node on PATH when it runs.
     managed_bin = tmp_path / "node" / "bin"
     managed_bin.mkdir(parents = True)
     monkeypatch.setattr(
@@ -6206,7 +6209,7 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
 
 
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
-    # Attaching to a remote Studio needs no local auth tree, so a read-only one must not stop it.
+    # Attaching to a remote Unsloth needs no local auth tree, so a read-only one must not stop it.
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
     monkeypatch.setattr(start, "_agents_config_root", lambda: readonly / "agents")
@@ -6218,7 +6221,7 @@ def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypat
 
 
 def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
-    # Nothing else prunes Studio's auth tree, so a killed wrapper's home must be reclaimed.
+    # Nothing else prunes Unsloth's auth tree, so a killed wrapper's home must be reclaimed.
     agents_root = tmp_path / "agents"
     temp_root = agents_root / ".tmp"
     temp_root.mkdir(parents = True)

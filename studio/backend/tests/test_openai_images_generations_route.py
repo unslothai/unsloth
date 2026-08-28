@@ -251,6 +251,23 @@ def test_b64_response_shape(client):
     assert item["b64_json"] == "QUJD"
 
 
+def test_keyless_caller_must_use_b64_response_format(client, monkeypatch):
+    import auth.authentication as authentication
+
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    refused = _post(client, {"prompt": "a sloth", "size": "256x256"})
+    assert refused.status_code == 403
+    assert refused.json()["error"]["param"] == "response_format"
+    assert client.backend.calls == []
+
+    allowed = _post(
+        client,
+        {"prompt": "a sloth", "size": "256x256", "response_format": "b64_json"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["data"][0]["b64_json"] == "QUJD"
+
+
 def test_local_load_uses_base_repo_for_defaults(monkeypatch):
     # repo_id is a local path naming no model; base_repo identifies FLUX.1-dev, so the route picks 28 steps / 3.5 guidance, not the 9/0 fallback.
     backend = _FakeBackend(repo_id = "/models/my-flux", base_repo = "black-forest-labs/FLUX.1-dev")
@@ -471,7 +488,7 @@ def test_signed_image_link_rejects_tampering_and_expiry(monkeypatch, tmp_path):
 
 def test_activation_shortfall_is_an_actionable_400(monkeypatch):
     """The one exception here whose text is written FOR the caller. Sanitising it into a bare 500
-    left an OpenAI client with a server error for a request only they can fix, while the Studio
+    left an OpenAI client with a server error for a request only they can fix, while the Unsloth
     route showed them the resolution, the budget and the remedies."""
     from core.inference.diffusion_memory import ImageActivationShortfallError
 

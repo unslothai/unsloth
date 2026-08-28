@@ -1,5 +1,5 @@
 use crate::diagnostics::{self, BackendLog, DiagnosticsState};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use process_wrap::std::*;
 use regex::Regex;
 use std::collections::VecDeque;
@@ -373,7 +373,7 @@ fn acquire_named_studio_runtime_launch_guard(
     };
     if handle.is_null() {
         return Err(format!(
-            "Could not create the Studio runtime lock: {}",
+            "Could not create the Unsloth runtime lock: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -396,7 +396,7 @@ fn acquire_named_studio_runtime_launch_guard(
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
             Err(format!(
-                "Could not acquire the Studio runtime lock: {error}"
+                "Could not acquire the Unsloth runtime lock: {error}"
             ))
         }
     }
@@ -418,7 +418,7 @@ fn current_windows_user_sid() -> Result<String, String> {
     let mut token = std::ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(format!(
-            "Could not open the Windows user token for the Studio runtime lock: {}",
+            "Could not open the Windows user token for the Unsloth runtime lock: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -430,7 +430,7 @@ fn current_windows_user_sid() -> Result<String, String> {
         }
         if required == 0 {
             return Err(format!(
-                "Could not size the Windows user SID for the Studio runtime lock: {}",
+                "Could not size the Windows user SID for the Unsloth runtime lock: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -448,7 +448,7 @@ fn current_windows_user_sid() -> Result<String, String> {
         } == 0
         {
             return Err(format!(
-                "Could not read the Windows user SID for the Studio runtime lock: {}",
+                "Could not read the Windows user SID for the Unsloth runtime lock: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -456,14 +456,14 @@ fn current_windows_user_sid() -> Result<String, String> {
         let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
         let sid = token_user.User.Sid;
         if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
-            return Err("Windows returned an invalid user SID for the Studio runtime lock".into());
+            return Err("Windows returned an invalid user SID for the Unsloth runtime lock".into());
         }
 
         let authority_ptr = unsafe { GetSidIdentifierAuthority(sid) };
         let count_ptr = unsafe { GetSidSubAuthorityCount(sid) };
         if authority_ptr.is_null() || count_ptr.is_null() {
             return Err(
-                "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                "Could not inspect the Windows user SID for the Unsloth runtime lock".into(),
             );
         }
         let authority = unsafe { (*authority_ptr).Value }
@@ -476,7 +476,7 @@ fn current_windows_user_sid() -> Result<String, String> {
             let sub_authority = unsafe { GetSidSubAuthority(sid, index) };
             if sub_authority.is_null() {
                 return Err(
-                    "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                    "Could not inspect the Windows user SID for the Unsloth runtime lock".into(),
                 );
             }
             sid_text.push_str(&format!("-{}", unsafe { *sub_authority }));
@@ -525,7 +525,7 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
 #[cfg(windows)]
 fn normalized_existing_windows_path(path: &std::path::Path) -> Result<String, String> {
     let resolved = std::fs::canonicalize(path)
-        .map_err(|error| format!("Could not resolve managed Studio path {:?}: {error}", path))?;
+        .map_err(|error| format!("Could not resolve managed Unsloth path {:?}: {error}", path))?;
     Ok(resolved
         .to_string_lossy()
         .trim_end_matches(['\\', '/'])
@@ -537,15 +537,15 @@ fn windows_ordinal_ignore_case_equal(left: &[u16], right: &[u16]) -> Result<bool
     use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
 
     let left_length = i32::try_from(left.len())
-        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+        .map_err(|_| "Normalized Unsloth path exceeds Win32 comparison limits".to_string())?;
     let right_length = i32::try_from(right.len())
-        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+        .map_err(|_| "Normalized Unsloth path exceeds Win32 comparison limits".to_string())?;
     let comparison = unsafe {
         CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
     };
     if comparison == 0 {
         return Err(format!(
-            "Could not compare normalized Studio paths: {}",
+            "Could not compare normalized Unsloth paths: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -608,7 +608,7 @@ fn process_image_path(process_id: u32) -> Option<std::path::PathBuf> {
 }
 
 /// Reject an update when a process image runs from the target venv or the exact
-/// supported Studio shim.
+/// supported Unsloth shim.
 ///
 /// Callers must hold the runtime launch mutex across the whole mutation: this
 /// scan finds older consumers, and the gate blocks new launches after it.
@@ -636,13 +636,13 @@ pub(crate) fn ensure_managed_environment_is_idle(
             .and_then(std::path::Path::parent)
             .ok_or_else(|| {
                 format!(
-                    "Could not determine the managed Studio environment for {:?}",
+                    "Could not determine the managed Unsloth environment for {:?}",
                     managed_binary
                 )
             })?;
         let studio_home = venv.parent().ok_or_else(|| {
             format!(
-                "Could not determine the managed Studio root for {:?}",
+                "Could not determine the managed Unsloth root for {:?}",
                 managed_binary
             )
         })?;
@@ -656,7 +656,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(format!(
-                "Could not inspect running processes before Studio update: {}",
+                "Could not inspect running processes before Unsloth update: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -673,7 +673,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                     return Ok(());
                 }
                 return Err(format!(
-                    "Could not enumerate running processes before Studio update: {}",
+                    "Could not enumerate running processes before Unsloth update: {}",
                     std::io::Error::from_raw_os_error(error as i32)
                 ));
             }
@@ -694,7 +694,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                                 .unwrap_or(entry.szExeFile.len());
                             let name = String::from_utf16_lossy(&entry.szExeFile[..name_length]);
                             return Err(format!(
-                                "The managed Studio environment is in use by {} (PID {}). Stop that process, then retry the update.",
+                                "The managed Unsloth environment is in use by {} (PID {}). Stop that process, then retry the update.",
                                 name, entry.th32ProcessID
                             ));
                         }
@@ -708,7 +708,7 @@ pub(crate) fn ensure_managed_environment_is_idle(
                         break;
                     }
                     return Err(format!(
-                        "Could not finish enumerating running processes before Studio update: {}",
+                        "Could not finish enumerating running processes before Unsloth update: {}",
                         std::io::Error::from_raw_os_error(error as i32)
                     ));
                 }
@@ -804,7 +804,7 @@ mod studio_runtime_launch_guard_tests {
         with_named_studio_runtime_launch_guard(&name, || Ok(())).unwrap();
     }
 
-    // Since issue #8490 the long-lived Studio image is Scripts\python.exe, not
+    // Since issue #8490 the long-lived Unsloth image is Scripts\python.exe, not
     // Scripts\unsloth.exe. ensure_managed_environment_is_idle matches by venv
     // root, so both must still register as "the environment is in use" -- a
     // miss here would let an update mutate a venv somebody is running.
@@ -854,7 +854,7 @@ mod studio_runtime_launch_guard_tests {
         let managed_binary = target_root.join("Scripts").join("unsloth.exe");
 
         let error = ensure_managed_environment_is_idle(&managed_binary).unwrap_err();
-        assert!(error.contains("managed Studio environment is in use"));
+        assert!(error.contains("managed Unsloth environment is in use"));
     }
 
     #[test]
@@ -1213,6 +1213,64 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
         end -= 1;
     }
     &bytes[..end]
+}
+
+/// Longest single line we will hand to `tauri.log`. Matches the phase log's own cap, which
+/// already trimmed these; without it the same line was capped on one sink and not the other.
+pub(crate) const MAX_BACKEND_LOG_LINE_BYTES: usize = 16 * 1024;
+
+/// Keep only the last frame of a carriage-return progress redraw.
+///
+/// We read to `\n`, so a tqdm or pip bar arrives as every frame it ever drew concatenated
+/// into one line, across three sinks: one "Loading weights" bar measured 5086 bytes. Only
+/// the final frame carries information. Text with no interior `\r` is returned untouched,
+/// and a bar whose last frame is empty keeps the last non-empty one rather than a blank line.
+///
+/// `_TeeStream._last_frame` in studio/backend/run.py applies this same rule to this same
+/// input for the session log, so the two sinks stay interchangeable for a reader.
+pub(crate) fn collapse_progress_frames(text: &str) -> &str {
+    if !text.contains('\r') {
+        return text;
+    }
+    text.rsplit('\r')
+        .find(|frame| !frame.trim().is_empty())
+        // All frames blank, so the line is blank. Return a frame, not the whole text, which
+        // still holds the `\r` we were asked to collapse away.
+        .unwrap_or_else(|| text.rsplit('\r').next().unwrap_or(""))
+}
+
+/// True when the line is one of the backend's own structured access-log records **and it
+/// reports success**.
+///
+/// These already reach the phase log (stream-tagged and stamped) and the backend's own
+/// session log, so a third copy in `tauri.log` was pure duplication: 4056 of 5308 lines on
+/// an idle 4h session, pushing real failures out of the 5 MiB window inside a day.
+///
+/// The 2xx check is the point. The backend's heartbeat suppressor exempts non-2xx so a
+/// failing poll logs every time, and `tauri.log` is where a watchdog going red gets read.
+/// A record with no `status_code` we cannot vouch for, so it keeps INFO too.
+///
+/// For the records this *does* match, "debug" means dropped, not demoted: `setup_logging`
+/// in main.rs builds every logger at `LevelFilter::Info` with no `RUST_LOG` to raise it,
+/// so `log::max_level()` is `Info` -- including under backend `--verbose`, which emits
+/// *more* of them. Deliberate: `append_phase_line` below runs before this decision, and
+/// both that log and the session log are already offered by the support report and by
+/// Settings > Logs. Nothing is lost; it moves one source over in the picker.
+fn is_backend_access_log_line(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return false;
+    };
+    if value.get("event").and_then(|event| event.as_str()) != Some("request_completed") {
+        return false;
+    }
+    matches!(
+        value.get("status_code").and_then(|code| code.as_u64()),
+        Some(200..=299)
+    )
 }
 
 /// Windows `CREATE_NO_WINDOW` flag — suppresses console windows for child processes.
@@ -1762,7 +1820,7 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     // huggingface_hub resolves the credential file from here; a relative value
     // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
-    // uv reads this as written and Studio treats a non-blank value as
+    // uv reads this as written and Unsloth treats a non-blank value as
     // authoritative, so an update would install from a different cache.
     "UV_CACHE_DIR",
     "TRANSFORMERS_CACHE",
@@ -1904,7 +1962,7 @@ const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE", "MLX_IBV_DEVICES"];
 
 /// Names whose readers disagree about %VAR%: huggingface_hub expands HF_HOME
 /// (and the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE,
-/// and Studio expands SENTENCE_TRANSFORMERS_HOME, but Studio's own
+/// and Unsloth expands SENTENCE_TRANSFORMERS_HOME, but Unsloth's own
 /// hf_cache_settings does not, so it reads %LOCALAPPDATA%\hf as a relative
 /// folder. Expanding before deciding settles it: both readers then see one
 /// absolute path. Scoped to these names because a directory really called
@@ -2067,7 +2125,7 @@ fn names_a_path(name: &str, value: &str) -> bool {
 }
 
 /// Names every managed spawn removes before starting the child: Tauri uses the
-/// legacy Studio root whatever the environment says. Resolving one can only
+/// legacy Unsloth root whatever the environment says. Resolving one can only
 /// invent a failure for a value the child is never going to see.
 const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
 
@@ -2597,7 +2655,7 @@ mod tests {
 
     // Quarantine takes the unsigned stub and leaves the environment intact. The
     // finder gates the backend, the updater and the install-status probe, so a None
-    // here reports "not installed" for a Studio that still runs.
+    // here reports "not installed" for an Unsloth that still runs.
     #[cfg(windows)]
     #[test]
     fn a_quarantined_stub_is_still_a_managed_install() {
@@ -3724,7 +3782,8 @@ fn read_output_stream<R: std::io::Read>(
                 break;
             }
             Ok(_) => {
-                let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
+                let raw = String::from_utf8_lossy(trim_line_endings(&buf));
+                let text = collapse_progress_frames(&raw).to_owned();
                 let log_line = if is_stderr {
                     format!("[stderr] {}", text)
                 } else {
@@ -3788,7 +3847,19 @@ fn read_output_stream<R: std::io::Read>(
                     });
                 }
 
-                info!("[backend] {}", log_line);
+                // Keeping the successful access records out leaves tauri.log for the startup
+                // banner, hardware lines, stderr, tracebacks and failed requests.
+                if is_backend_access_log_line(&text) {
+                    debug!("[backend] {}", log_line);
+                } else if log_line.len() > MAX_BACKEND_LOG_LINE_BYTES {
+                    let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+                    while end > 0 && !log_line.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    info!("[backend] {} [line truncated]", &log_line[..end]);
+                } else {
+                    info!("[backend] {}", log_line);
+                }
 
                 let _ = app.emit("server-log", &log_line);
             }
@@ -3904,7 +3975,7 @@ fn read_output_stream<R: std::io::Read>(
 /// was emitted, so the window sat on the startup screen with nothing reported. Seen on
 /// Windows CI, which logged "process is still running" for a PID that was already gone.
 ///
-/// Returning None still means "genuinely alive", which matters because Studio may close
+/// Returning None still means "genuinely alive", which matters because Unsloth may close
 /// its own stdout once logging moves to the session log, so stdout EOF alone must not
 /// be read as death. Same poll shape as `wait_for_child_exit` below.
 fn exit_status_after_stdout_closed(child: &mut Box<dyn ChildWrapper + Send>) -> Option<String> {
@@ -4238,6 +4309,179 @@ fn stop_backend_inner(
     result
 }
 
+#[cfg(test)]
+mod backend_log_line_tests {
+    use super::*;
+
+    #[test]
+    fn plain_line_is_untouched() {
+        assert_eq!(collapse_progress_frames("Hardware detected: ROCm"), "Hardware detected: ROCm");
+        assert_eq!(collapse_progress_frames(""), "");
+    }
+
+    #[test]
+    fn progress_bar_keeps_only_the_final_frame() {
+        let bar = "Loading weights:   0%| | 0/617\rLoading weights:  47%| | 288/617\rLoading weights: 100%|#| 617/617";
+        assert_eq!(collapse_progress_frames(bar), "Loading weights: 100%|#| 617/617");
+    }
+
+    #[test]
+    fn trailing_blank_frame_falls_back_to_the_last_real_one() {
+        assert_eq!(collapse_progress_frames("Map:  50%\rMap: 100%\r   "), "Map: 100%");
+    }
+
+    #[test]
+    fn an_all_blank_line_never_keeps_its_carriage_returns() {
+        // The log handle appends the platform terminator itself, so a `\r` that survives
+        // here lands as "\r\r\n" in the file on Windows.
+        for line in ["\r", "\r\r\r", "   \r   "] {
+            assert!(
+                !collapse_progress_frames(line).contains('\r'),
+                "collapse left a carriage return in {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crlf_line_keeps_its_payload() {
+        // read_output_stream trims the terminator before collapsing, so a CRLF's `\r` is
+        // never read as a redraw ending in an empty frame. Every line a Windows child
+        // relays arrives in this shape.
+        let raw = b"Hardware detected: NVIDIA GeForce RTX 4090\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(
+            collapse_progress_frames(&trimmed),
+            "Hardware detected: NVIDIA GeForce RTX 4090"
+        );
+    }
+
+    #[test]
+    fn a_crlf_terminated_bar_still_collapses() {
+        let raw = b"Map:  50%\rMap: 100%\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        assert_eq!(collapse_progress_frames(&trimmed), "Map: 100%");
+    }
+
+    #[test]
+    fn a_crlf_json_record_stays_parseable() {
+        let raw = b"{\"event\": \"request_completed\", \"status_code\": 200}\r\n";
+        let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+        let line = collapse_progress_frames(&trimmed);
+        assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "{line:?}");
+        assert!(is_backend_access_log_line(line));
+    }
+
+    #[test]
+    fn a_marker_line_survives_the_collapse() {
+        // read_output_stream runs the TAURI_PORT regex against the collapsed text, so a
+        // marker that shares its line with a redraw must still be the frame we keep.
+        for raw in [
+            &b"TAURI_PORT=8888\n"[..],
+            &b"TAURI_PORT=8888\r\n"[..],
+            &b"Loading weights:  47%\rTAURI_PORT=8888\r\n"[..],
+        ] {
+            let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
+            assert_eq!(collapse_progress_frames(&trimmed), "TAURI_PORT=8888", "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn truncation_lands_on_a_character_boundary() {
+        let line = "\u{1f680}".repeat(MAX_BACKEND_LOG_LINE_BYTES);
+        let mut end = MAX_BACKEND_LOG_LINE_BYTES;
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        // Slicing at `end` must not panic and must stay under the cap.
+        assert!(end <= MAX_BACKEND_LOG_LINE_BYTES);
+        assert_eq!(line[..end].len(), end);
+    }
+
+    #[test]
+    fn access_log_records_are_recognised() {
+        assert!(is_backend_access_log_line(
+            r#"{"timestamp": "2026-08-13T14:22:11Z", "level": "info", "event": "request_completed", "path": "/api/liveness", "status_code": 200}"#
+        ));
+        assert!(is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/models/local", "status_code": 204}"#
+        ));
+    }
+
+    #[test]
+    fn failed_access_records_keep_their_info_line() {
+        // A watchdog probe going red is the case tauri.log exists for; the backend logs
+        // every one of these (the heartbeat suppressor is 2xx-only) and so must we.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness", "status_code": 503}"#
+        ));
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/train/start", "status_code": 401}"#
+        ));
+        // No status at all: not a record we can vouch for.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "path": "/api/liveness"}"#
+        ));
+    }
+
+    #[test]
+    fn other_structured_events_and_plain_text_are_not() {
+        assert!(!is_backend_access_log_line(
+            r#"{"level": "info", "event": "engine_stats", "gen_tok_s": 64.9}"#
+        ));
+        assert!(!is_backend_access_log_line("TAURI_PORT=8888"));
+        // Mentioning the event name in free text must not silence the line.
+        assert!(!is_backend_access_log_line("saw request_completed in the trace"));
+        // Truncated JSON is not a record we can vouch for, so it keeps its INFO line.
+        assert!(!is_backend_access_log_line(
+            r#"{"event": "request_completed", "status_code": 200"#
+        ));
+    }
+}
+
+/// The same corpus the backend checks itself against.
+///
+/// Two implementations of "a successful access record", in two languages and two
+/// processes: the backend decides whether to emit the line at all, and the shell decides
+/// whether to mirror it into `tauri.log`. They can drift, and the CRLF handling in the
+/// progress-frame collapsers already did drift once. Reading one file from both sides
+/// turns a change to the rule on either side red on the other.
+#[cfg(test)]
+mod shared_access_log_fixture_tests {
+    use super::*;
+
+    #[test]
+    fn every_shared_case_agrees_with_the_desktop_filter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../backend/tests/fixtures/access_log_records.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read the shared fixture at {path:?}: {e}"));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&raw).expect("the shared fixture is not valid JSON");
+        let cases = fixture["cases"]
+            .as_array()
+            .expect("the shared fixture has no `cases` array");
+        assert!(!cases.is_empty(), "the shared fixture is empty, so this test proves nothing");
+
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("<unnamed>");
+            let line = case["line"].as_str().unwrap_or_else(|| {
+                panic!("case {name:?} has no `line`");
+            });
+            let keep = case["keep"]
+                .as_bool()
+                .unwrap_or_else(|| panic!("case {name:?} has no boolean `keep`"));
+            // keep=false means the line IS a successful access record, which is exactly
+            // when the filter returns true and the line drops to debug.
+            assert_eq!(
+                is_backend_access_log_line(line),
+                !keep,
+                "case {name:?}: {}",
+                case["why"].as_str().unwrap_or("no rationale recorded")
+            );
+        }
+    }
+}
+
 // A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
 // and so did every CLI child, where the Python CLI refuses to run. These pin the
 // replacement directory and that each command carries it.
@@ -4316,7 +4560,7 @@ mod managed_cli_working_dir_tests {
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
             "HF_HOME" => Some("cache".to_string()),
-            // A name the child keeps: the two Studio roots are removed for
+            // A name the child keeps: the two Unsloth roots are removed for
             // every managed spawn, so they are never pinned.
             "UNSLOTH_COMPILE_LOCATION" => Some("  studio  ".to_string()),
             "OLLAMA_MODELS" => Some("D:\\models".to_string()),

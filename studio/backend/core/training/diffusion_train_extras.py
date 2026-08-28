@@ -227,12 +227,12 @@ def _sanitize(token: str) -> str:
 def _hub_cache_roots() -> list[str]:
     """Hub cache roots to look a repo up in, ACTIVE one first.
 
-    Studio can move its cache during a session (Settings), and loading follows the live setting,
+    Unsloth can move its cache during a session (Settings), and loading follows the live setting,
     but ``huggingface_hub.constants.HF_HUB_CACHE`` is a snapshot of the environment at import
     time. Reading only that constant left the revision "unresolved" (or pinned to a snapshot in
     the previous root) once the cache moved, so pulling a new revision of the same checkpoint no
     longer changed this key and a warm run silently reused the old embeddings and latents. The
-    constant stays as a fallback, since the trainer subprocess may run without Studio's settings
+    constant stays as a fallback, since the trainer subprocess may run without Unsloth's settings
     module importable."""
     import os  # noqa: PLC0415 — keep the module import list light for the subprocess
 

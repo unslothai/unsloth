@@ -4,19 +4,22 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ggufVariantsMatch } from "@/features/hub";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  type ChatHistoryUpdatedDetail,
+} from "../api/chat-api";
 import { compareModelDisplayName } from "../lib/external-model-label";
 import { getStoredChatThread } from "../utils/chat-history-storage";
+import {
+  type ChatModelSwitchTarget,
+  createChatModelHistoryReader,
+} from "./chat-model-notice-switch";
 
-/**
- * The model a saved chat was started on, read once per chat.
- *
- * Every thread row has carried `modelId` since long before this notice, so an
- * existing chat knows its model without any migration. A chat with no row yet
- * (a New Chat that has not been sent) answers null and shows nothing.
- */
+/** reads the saved chat's starting model and waits for queued initialization. */
 export function useChatCreatedModel(
   threadId: string | undefined,
-): string | null {
+): ChatModelSwitchTarget | null {
   // Keyed by the chat it was read for, not a bare value. Clearing it in the
   // effect is a frame late: the effect is passive, so the first render for the
   // incoming chat has already committed with the outgoing chat's model, which
@@ -24,24 +27,28 @@ export function useChatCreatedModel(
   // only for a matching key makes that render impossible rather than brief.
   const [read, setRead] = useState<{
     threadId: string;
-    modelId: string | null;
+    model: ChatModelSwitchTarget | null;
   } | null>(null);
   useEffect(() => {
     if (!threadId) return;
-    let cancelled = false;
+    const reader = createChatModelHistoryReader(threadId, (model) =>
+      setRead({ threadId, model }),
+    );
+    const onHistoryUpdated = (event: Event): void => {
+      const updatedThread = (event as CustomEvent<ChatHistoryUpdatedDetail>)
+        .detail?.thread;
+      if (updatedThread) reader.applyUpdate(updatedThread);
+    };
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
     void getStoredChatThread(threadId)
-      .then((thread) => {
-        if (!cancelled) setRead({ threadId, modelId: thread?.modelId || null });
-      })
-      .catch(() => {
-        // A failed read is not worth a message: the notice is an offer, not a
-        // gate, and the chat runs on whatever is loaded either way.
-      });
+      .then((thread) => reader.applyInitial(thread))
+      .catch(() => undefined);
     return () => {
-      cancelled = true;
+      reader.dispose();
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
     };
   }, [threadId]);
-  return read && read.threadId === threadId ? read.modelId : null;
+  return read && read.threadId === threadId ? read.model : null;
 }
 
 type ChatModelNoticeProps = {
@@ -49,9 +56,10 @@ type ChatModelNoticeProps = {
   threadId: string | undefined;
   /** The model the composer will actually send to. */
   checkpoint: string;
+  activeGgufVariant: string | null;
   /** Every model that can be selected right now, by id. */
   selectableModelIds: ReadonlySet<string>;
-  onSwitch: (modelId: string) => void;
+  onSwitch: (target: ChatModelSwitchTarget) => void;
 };
 
 /**
@@ -64,15 +72,23 @@ type ChatModelNoticeProps = {
 export function ChatModelNotice({
   threadId,
   checkpoint,
+  activeGgufVariant,
   selectableModelIds,
   onSwitch,
 }: ChatModelNoticeProps) {
-  const createdModelId = useChatCreatedModel(threadId);
-  if (!createdModelId || createdModelId === checkpoint) return null;
+  const createdModel = useChatCreatedModel(threadId);
+  if (!createdModel) return null;
+  if (
+    createdModel.modelId === checkpoint &&
+    (createdModel.ggufVariant == null ||
+      ggufVariantsMatch(createdModel.ggufVariant, activeGgufVariant))
+  ) {
+    return null;
+  }
   // A model that has since been deleted, or a connection that is gone: the
   // switch could not be honoured, and saying so on every open is just noise.
-  if (!selectableModelIds.has(createdModelId)) return null;
-  const label = compareModelDisplayName(createdModelId);
+  if (!selectableModelIds.has(createdModel.modelId)) return null;
+  const label = compareModelDisplayName(createdModel.modelId);
   return (
     // Positioned, not in flow. The chat header is `absolute ... z-40` with an
     // opaque `bg-background`, so an in-flow sibling starts at y=0 UNDER it and
@@ -90,7 +106,7 @@ export function ChatModelNotice({
         variant="ghost"
         size="sm"
         className="ml-auto h-6 shrink-0 px-2 text-ui-12"
-        onClick={() => onSwitch(createdModelId)}
+        onClick={() => onSwitch(createdModel)}
       >
         Switch back
       </Button>

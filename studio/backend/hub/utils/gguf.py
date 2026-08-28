@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 from loggers import get_logger
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
+    file_contents_available_locally,
     has_appledouble_magic,
     is_appledouble_metadata,
 )
@@ -1082,10 +1083,15 @@ def list_local_gguf_variants(
         if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
-            # An empty projector is an interrupted download; an audio-only one is not vision.
+            # Header metadata distinguishes vision projectors from audio-only ones. Read it
+            # only when Windows reports the file fully present; opening a cloud placeholder
+            # would recall the projector during discovery.
             try:
+                info = file.stat()
                 has_vision = has_vision or (
-                    file.stat().st_size > 0 and mmproj_accepts_image(str(file))
+                    info.st_size > 0
+                    and file_contents_available_locally(file, info)
+                    and mmproj_accepts_image(str(file))
                 )
             except OSError:
                 pass

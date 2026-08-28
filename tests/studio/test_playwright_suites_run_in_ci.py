@@ -176,6 +176,25 @@ def test_the_exemptions_are_still_exempt_and_still_exist():
     )
 
 
+def test_tool_activity_install_enforces_the_script_allowlist():
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+    )
+    steps = document["jobs"]["ui-smoke"]["steps"]
+    run = next(
+        str(step["run"])
+        for step in steps
+        if step.get("name") == "Tool activity collapse regression (Playwright)"
+    )
+    upgrade = "npm install -g npm@^11"
+    version_gate = "11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*"
+    install = "npm --prefix studio/frontend ci --strict-allow-scripts"
+    assert upgrade in run
+    assert version_gate in run
+    assert install in run
+    assert run.index(upgrade) < run.index(version_gate) < run.index(install)
+
+
 def test_the_linux_job_still_drives_all_three_browser_engines():
     """The repo-wide check cannot see this job disappear.
 
