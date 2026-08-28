@@ -1083,6 +1083,7 @@ def test_gguf_load_cancellation_includes_the_backend_unload_event():
     import asyncio
 
     import routes.inference as inference_route
+    from core.inference.llama_cpp import GgufDownloadCancelled
 
     class _Llama:
         def load_cancelled(self):
@@ -1098,7 +1099,7 @@ def test_gguf_load_cancellation_includes_the_backend_unload_event():
 
         def load_model(self, *, intent, load_cancel_event):
             load_cancel_event.set()
-            raise RuntimeError("Cancelled")
+            raise GgufDownloadCancelled("Cancelled")
 
     assert (
         asyncio.run(
@@ -1112,6 +1113,18 @@ def test_gguf_load_cancellation_includes_the_backend_unload_event():
     )
 
 
+def test_cancelled_gguf_download_uses_the_typed_signal():
+    from core.inference.llama_cpp import GgufDownloadCancelled, LlamaCppBackend
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(GgufDownloadCancelled):
+        LlamaCppBackend()._download_gguf(
+            hf_repo = "owner/model-GGUF",
+            cancel_event = cancelled,
+        )
+
+
 def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
     import asyncio
 
@@ -1119,7 +1132,7 @@ def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
 
     class _Llama:
         def load_cancelled(self):
-            return False
+            return True
 
         def load_model(self, *, intent, load_cancel_event):
             raise RuntimeError("resolver failed")
@@ -1129,6 +1142,26 @@ def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
             inference_route._run_gguf_load_attempt(
                 _Llama(),
                 object(),
+                threading.Event(),
+            )
+        )
+
+
+def test_stale_unload_does_not_hide_an_update_refusal():
+    import asyncio
+
+    import routes.inference as inference_route
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+
+    llama = LlamaCppBackend()
+    llama._cancel_event.set()
+    llama._llama_update_in_progress = True
+
+    with pytest.raises(RuntimeError, match = "llama.cpp is updating"):
+        asyncio.run(
+            inference_route._run_gguf_load_attempt(
+                llama,
+                GgufLoadIntent(model_identifier = "owner/model"),
                 threading.Event(),
             )
         )

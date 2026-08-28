@@ -1425,6 +1425,7 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -1481,6 +1482,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -12420,10 +12422,8 @@ async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bo
             intent = intent,
             load_cancel_event = load_cancel_event,
         )
-    except Exception:
-        if _gguf_load_cancelled(llama_backend, load_cancel_event):
-            return False
-        raise
+    except GgufDownloadCancelled:
+        return False
 
 
 async def _load_model_impl(
