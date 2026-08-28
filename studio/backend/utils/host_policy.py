@@ -48,56 +48,83 @@ def _normalized_ip(address: str):
     return parsed
 
 
-def _unspecified_address(host: str):
+def _literal_ip_address(host: str):
     if not isinstance(host, str) or not host:
         return None
     literal = _normalized_ip(host)
     if literal is not None:
-        return literal if literal.is_unspecified else None
+        return literal
     try:
-        legacy_ipv4 = ipaddress.IPv4Address(socket.inet_aton(host))
+        return ipaddress.IPv4Address(socket.inet_aton(host))
     except OSError:
-        pass
-    else:
-        return legacy_ipv4 if legacy_ipv4.is_unspecified else None
+        return None
+
+
+def _resolved_ip_addresses(host: str):
+    literal = _literal_ip_address(host)
+    if literal is not None:
+        return (literal,)
+    if not isinstance(host, str) or not host:
+        return ()
     try:
         addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except OSError:
-        return None
-    ipv6_unspecified = None
+        return ()
+    resolved = []
     for _family, _kind, _protocol, _name, sockaddr in addresses:
         try:
             parsed = _normalized_ip(sockaddr[0])
         except IndexError:
             continue
-        if parsed is not None and not parsed.is_unspecified:
-            continue
-        if isinstance(parsed, ipaddress.IPv4Address):
-            return parsed
-        if parsed is not None:
-            ipv6_unspecified = parsed
-    return ipv6_unspecified
+        if parsed is not None and parsed not in resolved:
+            resolved.append(parsed)
+    return tuple(resolved)
+
+
+def wildcard_ip_versions(host: str) -> tuple[int, ...]:
+    """IP versions for every unspecified address this host resolves to."""
+    versions = {
+        address.version for address in _resolved_ip_addresses(host) if address.is_unspecified
+    }
+    return tuple(version for version in (4, 6) if version in versions)
 
 
 def is_wildcard_host(host: str) -> bool:
     """True when the host resolves to an unspecified bind address."""
-    return _unspecified_address(host) is not None
+    return bool(wildcard_ip_versions(host))
 
 
 def normalize_wildcard_bind_host(host: str) -> str:
-    """Return the canonical literal for an effective wildcard bind."""
-    address = _unspecified_address(host)
-    if isinstance(address, ipaddress.IPv6Address):
-        return "::"
-    return "0.0.0.0" if address is not None else host
+    """Return a safe canonical bind for an effective wildcard host."""
+    literal = _literal_ip_address(host)
+    if literal is not None:
+        if not literal.is_unspecified:
+            return host
+        return "::" if literal.version == 6 else "0.0.0.0"
+
+    addresses = _resolved_ip_addresses(host)
+    wildcard_versions = {address.version for address in addresses if address.is_unspecified}
+    if not wildcard_versions:
+        return host
+    specific_versions = {address.version for address in addresses if not address.is_unspecified}
+    if len(wildcard_versions) == 2 and not specific_versions:
+        return host
+    if specific_versions - wildcard_versions or (
+        len(wildcard_versions) == 2 and specific_versions
+    ):
+        raise ValueError(
+            f"--host {host!r} mixes wildcard and specific address families; "
+            "use an explicit bind address."
+        )
+    return "::" if 6 in wildcard_versions else "0.0.0.0"
 
 
 def wildcard_loopback_host(host: str) -> "str | None":
     """The loopback address reachable through a wildcard bind."""
-    address = _unspecified_address(host)
-    if isinstance(address, ipaddress.IPv6Address):
-        return "::1"
-    return "127.0.0.1" if address is not None else None
+    versions = wildcard_ip_versions(host)
+    if 4 in versions:
+        return "127.0.0.1"
+    return "::1" if 6 in versions else None
 
 
 # Tauri desktop webview origins. api-only serving (the desktop app calling a

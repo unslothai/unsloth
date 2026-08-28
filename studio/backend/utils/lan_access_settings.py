@@ -205,15 +205,11 @@ def configure_lan_access(
     app_state, *, port: int, bind_host: str, secure: bool, is_colab: bool, frontend_served: bool
 ) -> None:
     """Publish immutable launch policy used by every settings request."""
-    from utils.host_policy import wildcard_loopback_host
+    from utils.host_policy import wildcard_ip_versions
 
     app_state.lan_access_port = port
-    wildcard_loopback = wildcard_loopback_host(bind_host)
-    app_state.lan_access_wildcard_bind = wildcard_loopback is not None
-    if wildcard_loopback is None:
-        app_state.lan_access_wildcard_ip_version = None
-    else:
-        app_state.lan_access_wildcard_ip_version = 6 if wildcard_loopback == "::1" else 4
+    app_state.lan_access_wildcard_ip_versions = wildcard_ip_versions(bind_host)
+    app_state.lan_access_wildcard_bind = bool(app_state.lan_access_wildcard_ip_versions)
     app_state.lan_access_bind_host = bind_host
     app_state.lan_access_launch_addresses = tuple(
         str(address) for address in _resolve_host_addresses(bind_host, port)
@@ -242,8 +238,13 @@ def _launch_urls(app_state) -> list[str]:
     """
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
+        addresses = []
+        for ip_version in getattr(app_state, "lan_access_wildcard_ip_versions", ()) or (4,):
+            for address in detect_lan_addresses(ip_version):
+                if address not in addresses:
+                    addresses.append(address)
         return _listener_urls(
-            detect_lan_addresses(getattr(app_state, "lan_access_wildcard_ip_version", 4)),
+            addresses,
             getattr(app_state, "lan_access_port", None),
         )
     url = getattr(app_state, "server_url", None)

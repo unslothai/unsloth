@@ -352,6 +352,16 @@ def _require_bind_host(host: str) -> None:
     raise typer.Exit(2)
 
 
+def _normalize_wildcard_bind_host(host: str) -> str:
+    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
+
+    try:
+        return normalize_wildcard_bind_host(host)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(2) from None
+
+
 def _url_host(host: str) -> str:
     return (
         f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
@@ -1906,9 +1916,7 @@ def studio_default(
             )
         host = "127.0.0.1"
 
-    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
-
-    host = normalize_wildcard_bind_host(host)
+    host = _normalize_wildcard_bind_host(host)
 
     # --verbose restores the per-request access logs that are suppressed by
     # default (plain-server path; the `run` subcommand has its own --verbose).
@@ -2590,9 +2598,7 @@ def run(
             )
         host = "127.0.0.1"
 
-    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
-
-    host = normalize_wildcard_bind_host(host)
+    host = _normalize_wildcard_bind_host(host)
 
     # Tool policy does not depend on the bind: tools default on everywhere
     # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag

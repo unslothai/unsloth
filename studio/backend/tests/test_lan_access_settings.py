@@ -38,7 +38,7 @@ def _app(**over):
         lan_access_is_colab = False,
         lan_access_launch_managed = False,
         lan_access_wildcard_bind = False,
-        lan_access_wildcard_ip_version = None,
+        lan_access_wildcard_ip_versions = (),
         lan_access_secure_launch = False,
         lan_access_frontend_served = True,
         lan_access_loop = None,
@@ -90,22 +90,22 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
 
 
 @pytest.mark.parametrize(
-    "bind_host,launch_managed,wildcard,ip_version",
+    "bind_host,launch_managed,wildcard,ip_versions",
     [
-        ("127.0.0.1", False, False, None),
-        ("localhost", False, False, None),
-        ("::1", False, False, None),
-        ("0.0.0.0", True, True, 4),
-        ("::", True, True, 6),
-        ("::0", True, True, 6),
-        ("0:0:0:0:0:0:0:0", True, True, 6),
-        ("0", True, True, 4),
-        ("::ffff:0.0.0.0", True, True, 4),
-        ("192.168.1.24", True, False, None),
+        ("127.0.0.1", False, False, ()),
+        ("localhost", False, False, ()),
+        ("::1", False, False, ()),
+        ("0.0.0.0", True, True, (4,)),
+        ("::", True, True, (6,)),
+        ("::0", True, True, (6,)),
+        ("0:0:0:0:0:0:0:0", True, True, (6,)),
+        ("0", True, True, (4,)),
+        ("::ffff:0.0.0.0", True, True, (4,)),
+        ("192.168.1.24", True, False, ()),
     ],
 )
 def test_configure_reads_launch_ownership_from_the_bind_host(
-    bind_host, launch_managed, wildcard, ip_version
+    bind_host, launch_managed, wildcard, ip_versions
 ):
     state = SimpleNamespace()
     lan_settings.configure_lan_access(
@@ -118,7 +118,7 @@ def test_configure_reads_launch_ownership_from_the_bind_host(
     )
     assert state.lan_access_launch_managed is launch_managed
     assert state.lan_access_wildcard_bind is wildcard
-    assert state.lan_access_wildcard_ip_version == ip_version
+    assert state.lan_access_wildcard_ip_versions == ip_versions
     assert state.lan_access_bind_host == bind_host
     assert state.lan_access_ready is False
 
@@ -331,6 +331,39 @@ def test_status_carries_the_bind_host_so_a_block_can_name_it(
     assert status["wildcard_bind"] is wildcard
     assert status["urls"] == expected_urls
     assert status["block_reason"] == "launch_managed"
+
+
+def test_a_dual_stack_wildcard_launch_reports_both_address_families(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8888)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8888, 0, 0)),
+        ],
+    )
+    detected_versions = []
+
+    def _detect(ip_version = 4):
+        detected_versions.append(ip_version)
+        return ["10.1.1.144"] if ip_version == 4 else ["fd00::144"]
+
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", _detect)
+    state = SimpleNamespace(server_url = "http://203.0.113.9:8888")
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = "dual-wildcard.test",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+    state.lan_access_ready = True
+
+    status = lan_settings.lan_access_status(SimpleNamespace(state = state))
+    assert state.lan_access_wildcard_ip_versions == (4, 6)
+    assert status["urls"] == ["http://10.1.1.144:8888", "http://[fd00::144]:8888"]
+    assert detected_versions == [4, 6]
 
 
 def test_the_response_model_carries_the_bind_host_to_the_client():

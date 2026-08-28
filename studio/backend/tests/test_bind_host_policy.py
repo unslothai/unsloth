@@ -10,6 +10,7 @@ from utils import host_policy
 from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
+    wildcard_ip_versions,
     wildcard_loopback_host,
 )
 
@@ -88,10 +89,56 @@ def test_a_resolved_ipv6_wildcard_uses_ipv6_loopback(monkeypatch):
 
     assert is_wildcard_host("wildcard.test") is True
     assert normalize_wildcard_bind_host("wildcard.test") == "::"
+    assert wildcard_ip_versions("wildcard.test") == (6,)
     assert wildcard_loopback_host("wildcard.test") == "::1"
+
+
+def test_a_dual_stack_wildcard_hostname_keeps_both_address_families(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0)),
+        ],
+    )
+
+    assert is_wildcard_host("dual-wildcard.test") is True
+    assert normalize_wildcard_bind_host("dual-wildcard.test") == "dual-wildcard.test"
+    assert wildcard_ip_versions("dual-wildcard.test") == (4, 6)
+    assert wildcard_loopback_host("dual-wildcard.test") == "127.0.0.1"
+
+
+def test_a_mixed_family_wildcard_hostname_is_rejected(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd00::24", 0, 0, 0)),
+        ],
+    )
+
+    with pytest.raises(ValueError, match = "mixes wildcard and specific address families"):
+        normalize_wildcard_bind_host("mixed-wildcard.test")
 
 
 def test_run_server_rejects_an_empty_bind_before_startup():
     from run import run_server
     with pytest.raises(SystemExit, match = "--host cannot be empty"):
         run_server(host = "")
+
+
+def test_run_server_rejects_a_mixed_family_wildcard_before_startup(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd00::24", 0, 0, 0)),
+        ],
+    )
+    from run import run_server
+
+    with pytest.raises(SystemExit, match = "mixes wildcard and specific address families"):
+        run_server(host = "mixed-wildcard.test")

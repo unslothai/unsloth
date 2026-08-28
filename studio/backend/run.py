@@ -2331,7 +2331,10 @@ def run_server(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
         )
     if not secure:
-        host = normalize_wildcard_bind_host(host)
+        try:
+            host = normalize_wildcard_bind_host(host)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
     # it reaches the console stream rather than the wrapper.

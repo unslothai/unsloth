@@ -253,6 +253,45 @@ def test_an_empty_bind_is_rejected_before_password_or_launch(monkeypatch, comman
 
 
 @pytest.mark.parametrize("command", ["default", "run"])
+def test_a_mixed_family_wildcard_is_rejected_before_password_or_launch(monkeypatch, command):
+    import socket
+
+    from unsloth_cli import _tool_policy
+
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(
+        studio_mod,
+        "_enforce_password_change_before_exposure",
+        lambda **_kwargs: events.append(("password", None)),
+    )
+    monkeypatch.setattr(
+        _tool_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd00::24", 0, 0, 0)),
+        ],
+    )
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "mixed-wildcard.test", "--cloudflare"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "mixed-wildcard.test", "--cloudflare"],
+        )
+
+    assert result.exit_code == 2, result.output
+    assert "mixes wildcard and specific address families" in result.output
+    assert events == []
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
 def test_a_mapped_wildcard_is_canonicalized_before_reexec(monkeypatch, command):
     studio_mod = _studio()
     events = []
@@ -273,6 +312,41 @@ def test_a_mapped_wildcard_is_canonicalized_before_reexec(monkeypatch, command):
     assert result.exit_code == 0, result.output
     argv = next(payload for kind, payload in events if kind == "exec")
     assert argv[argv.index("--host") + 1] == "0.0.0.0"
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_a_dual_stack_wildcard_hostname_is_preserved_for_reexec(monkeypatch, command):
+    import socket
+
+    from unsloth_cli import _tool_policy
+
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+    monkeypatch.setattr(
+        _tool_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0)),
+        ],
+    )
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "dual-wildcard.test", "--api-only"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "dual-wildcard.test", "--api-only"],
+        )
+
+    assert result.exit_code == 0, result.output
+    argv = next(payload for kind, payload in events if kind == "exec")
+    assert argv[argv.index("--host") + 1] == "dual-wildcard.test"
 
 
 # ── plain `unsloth studio` ───────────────────────────────────────────
