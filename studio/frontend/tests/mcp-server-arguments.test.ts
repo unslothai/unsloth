@@ -203,7 +203,7 @@ test("every mutable MCP form editor is locked for the full pending interval", ()
   );
   assert.match(
     dialog,
-    /const formPending = codecPending \|\| testing \|\| saving/,
+    /const formPending = importing \|\| codecPending \|\| testing \|\| saving/,
   );
   assert.match(
     dialog,
@@ -247,6 +247,30 @@ test("a decode error is announced and executable edits unlock manual recovery", 
   assert.match(
     dialog,
     /disabled=\{\s*formPending \|\|\s*codecError !== null \|\|\s*!form\.url\.trim\(\)/,
+  );
+});
+
+test("dialog actions and reconciliation stop when the dialog closes", () => {
+  const dialog = readFileSync(
+    new URL(
+      "../src/features/chat/chat-mcp-servers-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    dialog,
+    /useEffect\(\(\) => \{\s*if \(!open\) \{[\s\S]*subscribeToMcpServerMutationSettlements/,
+  );
+  assert.match(
+    dialog,
+    /actionGenerationRef\.current !== generation \|\| !openRef\.current/,
+  );
+  assert.match(dialog, /open=\{open && confirmingDelete !== null\}/);
+  assert.match(
+    dialog,
+    /<Button size="sm" onClick=\{startCreate\} disabled=\{importing\}>/,
   );
 });
 
@@ -301,7 +325,7 @@ test("full unmount invalidates cancellable stdio encode continuations", async ()
   );
   const openLifecycle = sourceBetween(
     dialog,
-    "formGenerationRef.current += 1;\n    activeEditIdRef.current = null;",
+    "useEffect(() => {\n    formGenerationRef.current += 1;",
     "function startCreate",
   );
   const encode = sourceBetween(
@@ -322,12 +346,12 @@ test("full unmount invalidates cancellable stdio encode continuations", async ()
 
   assert.match(
     refsAndCleanup,
-    /useEffect\(\(\) => \{\s*return \(\) => \{\s*formGenerationRef\.current \+= 1;\s*activeEditIdRef\.current = null;\s*\};\s*\}, \[\]\)/,
+    /useEffect\(\(\) => \{\s*return \(\) => \{\s*formGenerationRef\.current \+= 1;\s*actionGenerationRef\.current \+= 1;\s*activeEditIdRef\.current = null;[\s\S]*\};\s*\}, \[\]\)/,
     "the component mount lifetime must invalidate the form identity on teardown",
   );
   assert.match(
     openLifecycle,
-    /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;\s*setSaving\(false\);\s*setTesting\(false\);\s*setCodecPending\(false\);\s*setCodecError\(null\);\s*if \(!open\) return;/,
+    /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setImporting\(false\);\s*setConfirmingDelete\(null\);\s*if \(!open\) return;/,
     "route teardown must clear transient form state before a later reopen",
   );
   assert.match(

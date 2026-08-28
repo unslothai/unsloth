@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  Delete02Icon,
+  Edit03Icon,
+  PlusSignIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { RefreshCwIcon, UploadIcon } from "lucide-react";
+import {
   type ChangeEvent,
   useCallback,
   useEffect,
@@ -9,13 +16,6 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import {
-  Delete02Icon,
-  Edit03Icon,
-  PlusSignIcon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCwIcon, UploadIcon } from "lucide-react";
 
 import {
   AlertDialog,
@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
   type McpServerConfig,
   createMcpServer,
@@ -51,7 +52,6 @@ import {
   testMcpServer,
   updateMcpServer,
 } from "./api/mcp-servers-api";
-import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
   type McpStdioSnapshot,
   createMcpStdioSnapshot,
@@ -181,7 +181,7 @@ function ArgumentsEditor({
           {rows.map((row, index) => (
             <div key={row.id} className="flex items-center gap-2">
               <Input
-                data-reload-snapshot-sensitive
+                data-reload-snapshot-sensitive={true}
                 value={row.value}
                 disabled={disabled}
                 aria-label={`Argument ${index + 1}`}
@@ -276,7 +276,7 @@ function HeadersEditor({
                 onChange={(e) => update(row.id, { key: e.target.value })}
               />
               <Input
-                data-reload-snapshot-sensitive
+                data-reload-snapshot-sensitive={true}
                 value={row.value}
                 disabled={disabled}
                 placeholder={copy.valuePlaceholder}
@@ -306,7 +306,9 @@ export interface ChatMcpServersDialogProps {
 }
 
 type View =
-  { kind: "list" } | { kind: "create" } | { kind: "edit"; id: string };
+  | { kind: "list" }
+  | { kind: "create" }
+  | { kind: "edit"; id: string };
 
 export function ChatMcpServersDialog({
   open,
@@ -326,13 +328,18 @@ export function ChatMcpServersDialog({
     useState<McpServerConfig | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formGenerationRef = useRef(0);
+  const actionGenerationRef = useRef(0);
   const activeEditIdRef = useRef<string | null>(null);
   const listRefreshGenerationRef = useRef(0);
+  const openRef = useRef(open);
+  openRef.current = open;
 
   useEffect(() => {
     return () => {
       formGenerationRef.current += 1;
+      actionGenerationRef.current += 1;
       activeEditIdRef.current = null;
+      openRef.current = false;
     };
   }, []);
 
@@ -346,21 +353,28 @@ export function ChatMcpServersDialog({
           waitForPendingMutations,
           minimumMutationEpoch,
         });
-        if (listRefreshGenerationRef.current !== generation) return;
+        if (listRefreshGenerationRef.current !== generation || !openRef.current)
+          return;
         setServers(rows);
       } catch (err) {
-        if (listRefreshGenerationRef.current !== generation) return;
+        if (listRefreshGenerationRef.current !== generation || !openRef.current)
+          return;
         toast.error("Failed to load MCP servers", {
           description: err instanceof Error ? err.message : String(err),
         });
       } finally {
-        if (listRefreshGenerationRef.current === generation) setLoading(false);
+        if (listRefreshGenerationRef.current === generation && openRef.current)
+          setLoading(false);
       }
     },
     [],
   );
 
   useEffect(() => {
+    if (!open) {
+      listRefreshGenerationRef.current += 1;
+      return;
+    }
     const unsubscribe = subscribeToMcpServerMutationSettlements((epoch) => {
       void refresh(false, epoch);
     });
@@ -368,10 +382,11 @@ export function ChatMcpServersDialog({
       unsubscribe();
       listRefreshGenerationRef.current += 1;
     };
-  }, [refresh]);
+  }, [open, refresh]);
 
   useEffect(() => {
     formGenerationRef.current += 1;
+    actionGenerationRef.current += 1;
     activeEditIdRef.current = null;
     let cancelled = false;
     queueMicrotask(() => {
@@ -380,6 +395,8 @@ export function ChatMcpServersDialog({
       setTesting(false);
       setCodecPending(false);
       setCodecError(null);
+      setImporting(false);
+      setConfirmingDelete(null);
       if (!open) return;
       void refresh();
       // Reset to the list on each open, else a stale create/edit view persists.
@@ -485,11 +502,14 @@ export function ChatMcpServersDialog({
     if (!next && saving && !codecPending) return;
     if (!next) {
       formGenerationRef.current += 1;
+      actionGenerationRef.current += 1;
       activeEditIdRef.current = null;
       setSaving(false);
       setTesting(false);
       setCodecPending(false);
       setCodecError(null);
+      setImporting(false);
+      setConfirmingDelete(null);
     }
     onOpenChange(next);
   }
@@ -635,16 +655,22 @@ export function ChatMcpServersDialog({
     const file = e.target.files?.[0];
     e.target.value = ""; // let the user re-pick the same file later
     if (!file) return;
+    const generation = actionGenerationRef.current;
+    setImporting(true);
     let config: unknown;
     try {
       config = JSON.parse(await file.text());
     } catch {
-      toast.error("Invalid JSON file");
+      if (actionGenerationRef.current === generation && openRef.current)
+        toast.error("Invalid JSON file");
+      if (actionGenerationRef.current === generation) setImporting(false);
       return;
     }
-    setImporting(true);
+    if (actionGenerationRef.current !== generation || !openRef.current) return;
     try {
       const result = await importMcpServers(config);
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
       const parts = [`${result.created.length} added`];
       if (result.skipped.length) parts.push(`${result.skipped.length} skipped`);
       if (result.errors.length) {
@@ -665,18 +691,23 @@ export function ChatMcpServersDialog({
         toast.success(summary);
       }
     } catch (err) {
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
       toast.error("Import failed", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setImporting(false);
+      if (actionGenerationRef.current === generation) setImporting(false);
     }
   }
 
   async function removeServer(server: McpServerConfig) {
+    const generation = actionGenerationRef.current;
     try {
       await deleteMcpServer(server.id);
     } catch (err) {
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
       toast.error("Delete failed", {
         description: err instanceof Error ? err.message : String(err),
       });
@@ -684,6 +715,7 @@ export function ChatMcpServersDialog({
   }
 
   async function toggleEnabled(server: McpServerConfig, next: boolean) {
+    const generation = actionGenerationRef.current;
     // Optimistic update so the switch doesn't snap back during the round-trip.
     setServers((rows) =>
       rows.map((row) =>
@@ -693,6 +725,8 @@ export function ChatMcpServersDialog({
     try {
       await updateMcpServer(server.id, { isEnabled: next });
     } catch (err) {
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
       setServers((rows) =>
         rows.map((row) =>
           row.id === server.id ? { ...row, is_enabled: !next } : row,
@@ -705,9 +739,12 @@ export function ChatMcpServersDialog({
   }
 
   async function refreshTools(server: McpServerConfig) {
+    const generation = actionGenerationRef.current;
     setRefreshingId(server.id);
     try {
       const result = await refreshMcpServerTools(server.id);
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
       if (result.ok) {
         toast.success(
           `Refreshed "${server.display_name}" (${result.tool_count} tool${result.tool_count === 1 ? "" : "s"})`,
@@ -718,16 +755,18 @@ export function ChatMcpServersDialog({
         });
       }
     } catch (err) {
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
       toast.error("Refresh failed", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setRefreshingId(null);
+      if (actionGenerationRef.current === generation) setRefreshingId(null);
     }
   }
 
   const showForm = view.kind !== "list";
-  const formPending = codecPending || testing || saving;
+  const formPending = importing || codecPending || testing || saving;
   // A local stdio command uses env vars, not headers or OAuth.
   const addressIsCommand = form.transport === "stdio";
 
@@ -935,7 +974,7 @@ export function ChatMcpServersDialog({
                 {importing ? <Spinner /> : <UploadIcon size={14} />}
                 Import config
               </Button>
-              <Button size="sm" onClick={startCreate}>
+              <Button size="sm" onClick={startCreate} disabled={importing}>
                 <HugeiconsIcon icon={PlusSignIcon} size={14} />
                 Add server
               </Button>
@@ -968,6 +1007,7 @@ export function ChatMcpServersDialog({
                         checked={server.is_enabled}
                         onCheckedChange={(next) => toggleEnabled(server, next)}
                         aria-label="Enable server"
+                        disabled={importing}
                       />
                       <Button
                         type="button"
@@ -976,7 +1016,7 @@ export function ChatMcpServersDialog({
                         onClick={() => refreshTools(server)}
                         aria-label="Refresh tools"
                         title="Refresh tools from this server"
-                        disabled={refreshingId === server.id}
+                        disabled={importing || refreshingId === server.id}
                       >
                         {refreshingId === server.id ? (
                           <Spinner />
@@ -990,6 +1030,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => void startEdit(server)}
                         aria-label="Edit server"
+                        disabled={importing}
                       >
                         <HugeiconsIcon icon={Edit03Icon} size={14} />
                       </Button>
@@ -999,6 +1040,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => setConfirmingDelete(server)}
                         aria-label="Delete server"
+                        disabled={importing}
                       >
                         <HugeiconsIcon icon={Delete02Icon} size={14} />
                       </Button>
@@ -1011,7 +1053,7 @@ export function ChatMcpServersDialog({
         )}
       </DialogContent>
       <AlertDialog
-        open={confirmingDelete !== null}
+        open={open && confirmingDelete !== null}
         onOpenChange={(next) => {
           if (!next) setConfirmingDelete(null);
         }}
