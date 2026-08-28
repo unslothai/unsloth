@@ -197,6 +197,42 @@ def test_a_resident_sibling_quant_is_not_reported_as_the_indexed_build(monkeypat
     assert ids["unsloth/Z-Image-Turbo-GGUF"]["quant"] == "Q8_0"
 
 
+def test_ambiguous_same_token_media_builds_are_not_both_loaded(monkeypatch):
+    picks = {
+        "text-to-image": [
+            MediaModelPick(
+                "image-a",
+                "/srv/models",
+                "image-a-IQ4_XS-3.53bpw.gguf",
+                "gguf",
+                ambiguous = True,
+            ),
+            MediaModelPick(
+                "image-b",
+                "/srv/models",
+                "image-b-IQ4_XS-3.97bpw.gguf",
+                "gguf",
+                ambiguous = True,
+            ),
+        ]
+    }
+    resident = {
+        "text-to-image": {
+            "loaded": True,
+            "repo_id": "/srv/models",
+            "gguf_variant": "IQ4_XS",
+            "model_kind": "gguf",
+        }
+    }
+    _catalog(monkeypatch, [], resident, picks = picks)
+
+    models = asyncio.run(inf._openai_catalog_objects())
+    assert {model["id"]: model["loaded"] for model in models} == {
+        "image-a": False,
+        "image-b": False,
+    }
+
+
 def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch):
     """A standalone GGUF loads with its PARENT directory as the model path.
 
