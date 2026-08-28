@@ -1271,6 +1271,68 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
+    # ── Shared version probe ──
+    # Used both for the pre-install "current version" banner line below and for
+    # the post-install report further down, so there is exactly one place that
+    # knows how to ask a venv what it has installed. A probe failure must never
+    # block the install, only blank whichever display is asking.
+    function Get-StudioVersionProbe {
+        param(
+            [Parameter(Mandatory = $true)][string]$PythonExe,
+            [Parameter(Mandatory = $true)][string]$Package
+        )
+        $probe = [pscustomobject]@{ Version = ""; ExitCode = $null }
+        try {
+            $probe.Version = (& $PythonExe -c "
+import sys
+try:
+    from studio.install_manifest import installed_version_probe
+except Exception:
+    # --package installs something that does not ship studio/. Report what the
+    # old probe would have, rather than claiming the version is unknown.
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        print(version(sys.argv[1]))
+    except PackageNotFoundError:
+        sys.exit(1)
+    sys.exit(0)
+installed, conflict = installed_version_probe(sys.argv[1])
+print(installed)
+sys.exit(2 if conflict else (0 if installed else 1))
+" $Package 2>$null | Out-String).Trim()
+            $probe.ExitCode = $LASTEXITCODE
+        } catch {
+            $probe.ExitCode = $null
+        }
+        return $probe
+    }
+
+    # New version: the same floor this run will install, computed once here and
+    # reused (not recomputed) by the actual install command further down so the
+    # banner can never drift from what really gets requested from PyPI.
+    $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
+    $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.22" }
+    $NewVersionDisplay = if ($_unslothReleaseInstallSpec -match '>=\s*([0-9][^\s"'']*)') { $Matches[1] } else { "unknown" }
+
+    # Current version: query whatever install already sits at $VenvDir, if anything.
+    $CurrentVersionDisplay = "not installed"
+    try {
+        $_preflightPythonExe = Join-Path $VenvDir "Scripts\python.exe"
+        if (Test-Path -LiteralPath $_preflightPythonExe -PathType Leaf) {
+            $_preflightProbe = Get-StudioVersionProbe -PythonExe $_preflightPythonExe -Package $PackageName
+            if ($_preflightProbe.Version) {
+                $CurrentVersionDisplay = $_preflightProbe.Version
+            } elseif ($_preflightProbe.ExitCode -notin 0, 1, 2) {
+                # Anything other than the probe's three defined outcomes (found,
+                # not found, found-with-conflict) means it could not run cleanly.
+                $CurrentVersionDisplay = "unknown"
+            }
+        }
+    } catch {
+        $CurrentVersionDisplay = "unknown"
+    }
+
     Write-StudioLine ""
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         Write-StudioLine ("  " + (Get-StudioAnsi Title) + $Sloth + " Unsloth Studio Installer (Windows)" + (Get-StudioAnsi Reset))
@@ -1278,6 +1340,15 @@ public static class UnslothStudioFinalPathV2
     } else {
         Write-StudioLine ("  {0} Unsloth Studio Installer (Windows)" -f $Sloth) -ForegroundColor DarkGreen
         Write-StudioLine "  $Rule" -ForegroundColor DarkGray
+    }
+    if ($script:StudioVtOk -and -not $env:NO_COLOR) {
+        $dim = Get-StudioAnsi Dim
+        $rst = Get-StudioAnsi Reset
+        Write-StudioLine ("  {0}current version:{1} {2}" -f $dim, $rst, $CurrentVersionDisplay)
+        Write-StudioLine ("  {0}new version:{1} {2}" -f $dim, $rst, $NewVersionDisplay)
+    } else {
+        Write-StudioLine ("  current version: {0}" -f $CurrentVersionDisplay) -ForegroundColor DarkGray
+        Write-StudioLine ("  new version: {0}" -f $NewVersionDisplay) -ForegroundColor DarkGray
     }
     Write-StudioLine ""
 
@@ -5654,9 +5725,9 @@ exit 0
         return $installed
     }
 
-    $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
-    $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.22" }
+    # $_desktopMinVer / $_unslothDesktopInstallSpec / $_unslothReleaseInstallSpec are
+    # computed once, up near the banner, so the "new version" line printed there can
+    # never drift from the spec actually installed below.
 
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
@@ -5895,24 +5966,9 @@ exit 0
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "
-import sys
-try:
-    from studio.install_manifest import installed_version_probe
-except Exception:
-    # --package installs something that does not ship studio/. Report what the
-    # old probe would have, rather than claiming the version is unknown.
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        print(version(sys.argv[1]))
-    except PackageNotFoundError:
-        sys.exit(1)
-    sys.exit(0)
-installed, conflict = installed_version_probe(sys.argv[1])
-print(installed)
-sys.exit(2 if conflict else (0 if installed else 1))
-" $PackageName 2>$null | Out-String).Trim()
-    $_installedPackageVersionExit = $LASTEXITCODE
+    $_postInstallProbe = Get-StudioVersionProbe -PythonExe $VenvPython -Package $PackageName
+    $installedPackageVersion = $_postInstallProbe.Version
+    $_installedPackageVersionExit = $_postInstallProbe.ExitCode
     if ($_installedPackageVersionExit -eq 2) {
         substep "duplicate metadata found for $PackageName; the dependency pass will repair it" "Cyan"
     } elseif ($_installedPackageVersionExit -eq 0 -and $installedPackageVersion) {
