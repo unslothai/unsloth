@@ -3,10 +3,10 @@
 
 """Did the GGUF actually run on the GPU, or did it quietly fall back to CPU?
 
-This module is the whole reason the Studio Kaggle leg is worth its quota. A
-CPU fallback in Studio is invisible from the outside: llama.cpp loads the same
+This module is the whole reason the Unsloth Kaggle leg is worth its quota. A
+CPU fallback in Unsloth is invisible from the outside: llama.cpp loads the same
 file, answers the same prompt, and returns the same text, only slower. Every
-Studio inference check in this repo today would pass against a CPU-only
+Unsloth inference check in this repo today would pass against a CPU-only
 build, because every one of them runs on a machine that has no GPU to fall
 back from.
 
@@ -15,7 +15,7 @@ built from three independent observations, and the rules are stated up front
 because the interesting cases are the ambiguous ones:
 
 **Negative evidence is conclusive.** llama.cpp saying it offloaded 0 layers,
-Studio reporting ``cpu_fallback_reason``, or Studio reporting an effective
+Unsloth reporting ``cpu_fallback_reason``, or Unsloth reporting an effective
 ``gpu_layers`` of 0 each fail on their own. No amount of positive evidence
 overrides them: they are the fallback announcing itself.
 
@@ -116,7 +116,7 @@ def parse_compute_apps(csv_text: str) -> dict[int, int]:
 def offloaded_layers(log_text: str) -> tuple[int, int] | None:
     """The last ``offloaded N/M layers to GPU`` in a llama.cpp log.
 
-    The last one, not the first: Studio loads a model more than once in a
+    The last one, not the first: Unsloth loads a model more than once in a
     session (an export is verified by loading the file it just wrote), and the
     question is always about the most recent load.
     """
@@ -244,11 +244,11 @@ def offload_verdict(
 ) -> dict:
     """Was the model on the GPU? Returns a verdict dict with its evidence.
 
-    ``status`` is Studio's ``GET /api/inference/status`` body. Only two of its
+    ``status`` is Unsloth's ``GET /api/inference/status`` body. Only two of its
     fields are load-bearing here and both are negative signals:
-    ``cpu_fallback_reason`` (Studio replayed the launch on CPU) and an
+    ``cpu_fallback_reason`` (Unsloth replayed the launch on CPU) and an
     effective ``gpu_layers`` of exactly 0 (nothing was placed on the card).
-    A ``gpu_layers`` of -1 is Studio's Auto mode, which says nothing either
+    A ``gpu_layers`` of -1 is Unsloth's Auto mode, which says nothing either
     way and is left to the other probes.
     """
     evidence: list[str] = []
@@ -258,14 +258,14 @@ def offload_verdict(
     status = status or {}
     fallback = status.get("cpu_fallback_reason")
     if fallback:
-        failures.append(f"Studio reported a CPU fallback: cpu_fallback_reason={fallback!r}")
+        failures.append(f"Unsloth reported a CPU fallback: cpu_fallback_reason={fallback!r}")
 
     effective_layers = status.get("gpu_layers")
     if isinstance(effective_layers, int):
         evidence.append(f"status.gpu_layers={effective_layers}")
         if effective_layers == 0:
             failures.append(
-                "Studio reports gpu_layers=0, so nothing was placed on the GPU "
+                "Unsloth reports gpu_layers=0, so nothing was placed on the GPU "
                 "even though the load asked for it"
             )
 
@@ -286,7 +286,7 @@ def offload_verdict(
     if buffer_mib is not None:
         evidence.append(f"llama.cpp device model buffer: {buffer_mib:.0f} MiB")
 
-    # Studio's status body carries no pid, so the caller also discovers the
+    # Unsloth's status body carries no pid, so the caller also discovers the
     # llama-server processes itself; either source is accepted here.
     candidates: list[int] = []
     for pid in [server_pid, *(server_pids or [])]:

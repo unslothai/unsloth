@@ -437,8 +437,8 @@ def test_the_conditioner_repo_is_not_claimed_by_a_load_that_does_not_want_it(mon
 
 
 def test_the_encoder_config_is_read_from_the_pinned_cache_not_the_default_one(monkeypatch):
-    """Studio runs on a configured cache root. An AutoConfig call that ignores it resolves against
-    huggingface_hub's import-time default, which re-downloads into a root Studio does not read and
+    """Unsloth runs on a configured cache root. An AutoConfig call that ignores it resolves against
+    huggingface_hub's import-time default, which re-downloads into a root Unsloth does not read and
     simply fails on an offline host that has already staged the model."""
     import sys
 

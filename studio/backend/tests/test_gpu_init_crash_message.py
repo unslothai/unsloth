@@ -206,7 +206,7 @@ def _run_cpu_fallback_load(
         )
         if not available:
             return None
-        return ["/staged/llama-server", "--device", "none"], None
+        return ["/staged/llama-server", "--device", "none"], None, None
 
     backend._wait_for_health = _wait_for_health
     backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
@@ -272,7 +272,7 @@ class TestGpuInitCrashMessage:
 
 
 class TestPlatformMatrix:
-    """Every OS and runtime flavour Studio ships, so the recovery cannot leak
+    """Every OS and runtime flavour Unsloth ships, so the recovery cannot leak
     into a path that already worked."""
 
     # (platform, library prefix, library suffix, binary name)
@@ -614,7 +614,7 @@ class TestCpuIsolatedReplay:
 
         prepared = backend._prepare_cpu_fallback_launch("/original/server", ["original"], env, {})
 
-        assert prepared == (["/staged/server", "--device", "none"], None)
+        assert prepared == (["/staged/server", "--device", "none"], None, None)
         assert env[loader_path] == "/staged/libs"
         assert env["KEEP"] == "1"
 
@@ -800,7 +800,7 @@ class TestCpuIsolatedReplay:
 
         assert staged is not None
         assert not dead.exists()
-        # No owner stamp means an older Studio wrote it; leave it alone.
+        # No owner stamp means an older Unsloth wrote it; leave it alone.
         assert legacy.exists()
 
     def test_a_live_owner_keeps_its_runtime(self, monkeypatch, tmp_path):

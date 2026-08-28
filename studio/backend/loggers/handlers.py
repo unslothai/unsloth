@@ -42,6 +42,12 @@ _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
 # Liveness/UI polls whose line means only "still polling"; collapse to a longer
 # heartbeat. First hit and errors still log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
+# The desktop watchdog probe is slower than every other poll here: 15s between rounds
+# (HEALTH_WATCHDOG_INTERVAL, src-tauri/src/commands.rs) plus up to a 10s probe budget,
+# ~19s in the sample below. A 10s window that stamps only on emit can never close over two
+# of those, so it would collapse nothing. Its own window, wide enough to span a round.
+# 0 = off.
+_WATCHDOG_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
 # Both windows off is what --verbose sets; the drop-the-2xx suppressor below has no
 # window of its own, so it must read the same signal to honour --verbose.
 _VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
@@ -56,6 +62,9 @@ _QUIET_POLL_PATHS = {
     "/api/inference/images/status",
     "/api/inference/video/status",
     "/api/inference/audio/stt/status",
+    # Re-read whenever the settings dialog or the remote-access section is open, and it is
+    # a plain read of a toggle: 116 lines in the 4h sample.
+    "/api/settings/remote-access",
     # List polls the tabs refetch on a timer and on every tab switch.
     "/api/train/runs",
     "/api/models/checkpoints",
@@ -80,7 +89,7 @@ _QUIET_POLL_PATHS = {
 # question ("the server is up and answering"), and the SPA fires them together in one
 # burst, so heartbeating them independently emits one line per path per window instead
 # of one line per window. They share a single bucket: the first of the burst logs with
-# its real path, the rest of that window is dropped. Measured over four Studio sessions
+# its real path, the rest of that window is dropped. Measured over four Unsloth sessions
 # these were 39-69% of the access log and the shared bucket removed 25-47% of it.
 #
 # Only this group is shared. The other _QUIET_POLL_PATHS entries (/api/train/runs,
@@ -100,6 +109,12 @@ _LIVENESS_POLL_PATHS = frozenset(
         "/api/inference/audio/stt/status",
     }
 )
+# The desktop shell's own watchdog probe. /api/health was already quiet but its sibling was
+# in no suppressor at all: 760 lines on an idle 4h session, 14% of tauri.log, to say the
+# process is still up. Out of _QUIET_POLL_PATHS because that window is narrower than the
+# poll interval; see _WATCHDOG_POLL_DEDUP_MS. Start/stop transitions reach the phase log
+# either way.
+_WATCHDOG_POLL_PATHS = {"/api/liveness"}
 # Bucket key for the group above. Not a real (method, path, query, status), so it can
 # never collide with one.
 _LIVENESS_DEDUP_KEY = ("GET", "\x00liveness", b"", 200)
@@ -269,11 +284,13 @@ class LoggingMiddleware:
         # /api/inference/audio/stt/status?model=... extends the downloaded check to a
         # custom repo, so it keeps its own identity rather than joining the bucket.
         is_liveness = path in _LIVENESS_POLL_PATHS and not query
-        window_ms = (
-            _QUIET_POLL_DEDUP_MS
-            if is_liveness or path in _QUIET_POLL_PATHS
-            else _ACCESS_LOG_DEDUP_MS
-        )
+        if path in _WATCHDOG_POLL_PATHS:
+            # Zeroed along with the quiet window, so --verbose still logs every probe.
+            window_ms = _WATCHDOG_POLL_DEDUP_MS if _QUIET_POLL_DEDUP_MS > 0 else 0
+        elif is_liveness or path in _QUIET_POLL_PATHS:
+            window_ms = _QUIET_POLL_DEDUP_MS
+        else:
+            window_ms = _ACCESS_LOG_DEDUP_MS
         if window_ms <= 0:
             return False
         # The liveness group shares one bucket, so a burst of them logs once, not once
@@ -285,7 +302,8 @@ class LoggingMiddleware:
             return True
         self._last_log[key] = now
         if len(self._last_log) > _DEDUP_MAP_MAX:
-            cutoff = now - (max(_ACCESS_LOG_DEDUP_MS, _QUIET_POLL_DEDUP_MS) / 1000.0)
+            widest = max(_ACCESS_LOG_DEDUP_MS, _QUIET_POLL_DEDUP_MS, _WATCHDOG_POLL_DEDUP_MS)
+            cutoff = now - (widest / 1000.0)
             self._last_log = {k: v for k, v in self._last_log.items() if v >= cutoff}
         return False
 

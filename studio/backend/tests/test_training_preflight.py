@@ -619,7 +619,7 @@ def test_max_steps_dataset_rows_survives_unusable_numbers():
 
 
 def _single_process_launch(monkeypatch):
-    """Clear every launcher variable, so a bound reads as Studio's own launch."""
+    """Clear every launcher variable, so a bound reads as Unsloth's own launch."""
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
         monkeypatch.delenv(name, raising = False)

@@ -17,8 +17,11 @@ import {
 import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
-import { fileItems, useRagDocuments } from "./use-rag-documents";
-import type { RagUploadItem } from "./use-rag-documents";
+import {
+  type RagUploadItem,
+  fileItems,
+  useRagDocuments,
+} from "./use-rag-documents";
 
 /** Project "Sources" tab: documents indexed for retrieval in every chat that
  * belongs to the project. */
@@ -95,7 +98,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
 
   // Tauri suppresses webview drop events, so the plain `onDrop` this panel
   // carried never fired on desktop: no border, file ignored (#9036).
-  const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
+  const {
+    ref: dropRef,
+    dragging,
+    dragHandlers,
+  } = useNativeFileDrop({
     onFiles: handleFiles,
     onNativeIntents: handleNativeIntents,
     accept: RAG_UPLOAD_ACCEPT,
@@ -114,7 +121,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          void handleFiles(files);
+          void handleItems(fileItems(files));
         }}
       />
       <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">

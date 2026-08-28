@@ -147,7 +147,7 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # rotation, 137% without).
 #
 # This mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``
-# exactly, in a few lines of torch, rather than taking a dependency on a wheel Studio does not ship.
+# exactly, in a few lines of torch, rather than taking a dependency on a wheel Unsloth does not ship.
 #
 # ``build_convrot_hadamard`` and ``rotate_convrot_activation`` are imported at the top of this
 # module from ``diffusion_convrot``, where they now live. The DENOISER runs the same ConvRot on its
@@ -306,7 +306,7 @@ def load_h3_quantized_text_encoder(
     ``cache_dir`` pins the config resolution to the live cache root for the hub-id case, exactly as
     the artifact download above and every other loader call in this backend do -- unset, it
     resolves through huggingface_hub's import-time constant instead and can re-download into a root
-    Studio no longer reads (or fail outright on an offline host that has already staged it).
+    Unsloth no longer reads (or fail outright on an offline host that has already staged it).
 
     ``local_files_only`` is a load nobody asked for, which may not fetch anything. The artifact is
     ~27 GB, and the caller's staging phase (``_fetch_h3_te_quant``) has already accepted it -- so

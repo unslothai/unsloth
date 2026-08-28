@@ -106,7 +106,7 @@ def _clip_bytes(audio_id: str) -> int:
 def _prune_to_cap() -> int:
     """Drop the oldest owned pairs beyond the count or byte cap; return the count removed.
 
-    Best-effort: a save must not fail because housekeeping did. Only Studio-owned pairs are
+    Best-effort: a save must not fail because housekeeping did. Only Unsloth-owned pairs are
     considered, so a foreign or orphan wav is never destroyed.
     """
     cap = _max_clips()
@@ -201,7 +201,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
 
 
 def owned_audio_path(audio_id: str) -> Optional[Path]:
-    """Resolve an id to its WAV only for a Studio-owned clip (readable sidecar).
+    """Resolve an id to its WAV only for an Unsloth-owned clip (readable sidecar).
 
     The serve route uses this rather than audio_path() so a guessed stem for a
     hand-dropped or orphan WAV cannot be streamed out."""
@@ -302,7 +302,7 @@ def delete(audio_id: str) -> bool:
 
 
 def clear() -> int:
-    """Delete every Studio-owned pair (readable sidecar); return the count removed.
+    """Delete every Unsloth-owned pair (readable sidecar); return the count removed.
     Foreign and orphan WAVs are preserved, since list_audio already hides them."""
     removed = 0
     try:

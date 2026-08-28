@@ -441,7 +441,7 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
-# Dedicated AES-256 key used to encrypt Studio credentials in studio.db.
+# Dedicated AES-256 key used to encrypt Unsloth credentials in studio.db.
 # It intentionally lives in auth.db so copying studio.db alone does not expose
 # provider or Hugging Face tokens, and survives password changes/resets.
 _CREDENTIAL_ENCRYPTION_KEY_DB_KEY = "credential_encryption_key_v1"
@@ -1037,7 +1037,7 @@ def clear_desktop_secret() -> None:
 
 API_KEY_PREFIX = "sk-unsloth-"
 
-# The ``name`` a workflow mints its internal key under. Studio mints internal
+# The ``name`` a workflow mints its internal key under. Unsloth mints internal
 # keys for more than one workflow and they do not carry the same authority, so
 # the name is the only thing that tells them apart after the fact. Deep Research
 # is durable: its hops outlive the session that started them, so they carry a key
@@ -1169,7 +1169,7 @@ def revoke_internal_api_key(key_id: int) -> bool:
 def is_internal_api_key(raw_key: str) -> bool:
     """Whether *raw_key* is a workflow-minted internal key rather than a user's own.
 
-    Lets request-scoped code (the API monitor) tell Studio's own background work from a
+    Lets request-scoped code (the API monitor) tell Unsloth's own background work from a
     third party using Unsloth as an API server. The answer is memoized because this runs on
     the event loop for every API-key request and a key's origin is fixed when it is minted.
     """
@@ -1203,7 +1203,7 @@ def is_internal_api_key(raw_key: str) -> bool:
 def internal_api_key_name(raw_key: str) -> Optional[str]:
     """The workflow name *raw_key* was minted under, or ``None`` if it is not internal.
 
-    ``is_internal_api_key`` answers "is this Studio's own key", which is the right
+    ``is_internal_api_key`` answers "is this Unsloth's own key", which is the right
     question for a monitor label but far too coarse for authorization: a
     data-recipe key runs inside a recipe the user authored, so treating it as
     equal to the Deep Research hop would let that recipe spend any saved cloud
@@ -1240,20 +1240,28 @@ def validate_api_key(raw_key: str) -> Optional[str]:
     return verified[0] if verified else None
 
 
-def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
+def validate_api_key_with_credential(
+    raw_key: str, *, touch: bool = True
+) -> Optional[Tuple[str, str]]:
     """Validate *raw_key* and return ``(username, jwt_secret)``, or ``None``.
 
     Also updates ``last_used_at`` on success. The key check and the credential
     read share one write transaction, so the returned version is the one the key
     was actually valid under: a reset committing right after cannot have its new
     generation handed to a request the key it revoked authenticated.
+
+    ``touch=False`` drops that stamp, and with it the write transaction, for a caller
+    that only asks whether the key authenticates and never binds a write to the
+    generation. One request must not count as two uses, and on sqlite the write lock
+    is global, so an advisory check has no business taking it.
     """
     cache_id = _api_key_cache_id(raw_key)
     cached_hash = _api_key_hash_cache.get(cache_id)
     key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
     conn = get_connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        if touch:
+            conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
             "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
             (key_hash,),
@@ -1280,11 +1288,12 @@ def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
         secret = _current_secret(conn, row["username"])
         if secret is None:
             return None
-        conn.execute(
-            "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), row["id"]),
-        )
-        conn.commit()
+        if touch:
+            conn.execute(
+                "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), row["id"]),
+            )
+            conn.commit()
         return row["username"], secret
     finally:
         conn.rollback()
