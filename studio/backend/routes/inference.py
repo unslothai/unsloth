@@ -5270,7 +5270,7 @@ def _monitor_openai_chunk(
                 )
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
-            if streaming and choice.get("finish_reason"):
+            if streaming:
                 _flush_monitor_stream_tool_calls(monitor_id, choice_index)
             api_monitor.append_reply(
                 monitor_id,

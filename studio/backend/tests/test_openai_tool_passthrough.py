@@ -7216,10 +7216,14 @@ class TestApiMonitorProviderAndCompletionStreams:
                     {
                         "index": 0,
                         "delta": {"content": "Done."},
-                        "finish_reason": "tool_calls",
                     }
                 ]
             },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
             streaming = True,
         )
 
