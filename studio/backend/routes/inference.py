@@ -23115,7 +23115,11 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
     snapshot directory, so comparing the public id or the catalog's own path reports the
     resident model as unloaded. Residency is read per request; only the scan is cached.
     """
-    from core.inference.media_model_index import satisfied_by
+    from core.inference.media_model_index import (
+        partition_matches,
+        resident_is_gguf,
+        satisfied_by,
+    )
     from hub.utils.gguf import extract_quant_token
 
     display_by_id: dict[str, str] = {}
@@ -23148,6 +23152,25 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
             if display:
                 obj["display_name"] = display
             objects.append(obj)
+        resident_id = str((status or {}).get("repo_id") or "").strip()
+        if (
+            status
+            and resident_id
+            and not resident_is_gguf(status)
+            and partition_matches(status)
+            and public_model_id(resident_id) == resident_id
+            and not any(obj["id"].lower() == resident_id.lower() for obj in objects)
+        ):
+            objects.append(
+                {
+                    "id": resident_id,
+                    "object": "model",
+                    "created": created,
+                    "owned_by": _OWNED_BY,
+                    "task": task,
+                    "loaded": True,
+                }
+            )
     return objects
 
 

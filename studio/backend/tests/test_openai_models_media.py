@@ -325,6 +325,26 @@ def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
     assert "half-pulled" not in json.dumps(data)
 
 
+def test_loaded_non_gguf_media_stays_listed_when_discovery_misses_it(monkeypatch):
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_auto_switch import resident_answers_media_request
+
+    resident = {
+        "text-to-image": {
+            "loaded": True,
+            "repo_id": "black-forest-labs/FLUX.1-dev",
+            "model_kind": "pipeline",
+        }
+    }
+    _catalog(monkeypatch, [], resident, picks = {})
+    (model,) = asyncio.run(inf._openai_catalog_objects())
+    assert model["id"] == "black-forest-labs/FLUX.1-dev"
+    assert model["task"] == "text-to-image" and model["loaded"] is True
+    assert resident_answers_media_request(
+        resident["text-to-image"], model["id"], owner = DIFFUSION
+    )
+
+
 def _stt(
     monkeypatch,
     *,
