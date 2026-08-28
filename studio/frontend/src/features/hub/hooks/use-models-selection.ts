@@ -173,8 +173,7 @@ export function useModelsSelection({
   const selectionHiddenByFilters = isDiscoverTab
     ? discoverResolution.hiddenByFilters
     : downloadedResolution.hiddenByFilters;
-  const deferredSelectedId = useDeferredValue(selectedId);
-  const detailSelectedId = isDiscoverTab ? deferredSelectedId : selectedId;
+  const detailSelectedId = useDeferredValue(selectedId);
   const setSelected = useCallback(
     (id: string | null) => {
       if (isDiscoverTab) {

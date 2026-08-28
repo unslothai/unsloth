@@ -34,7 +34,6 @@ import {
 import {
   buildCachedInventoryRow,
   buildLocalInventoryRows,
-  cachedInventoryId,
   defaultCapabilities,
   normalizeTimestamp,
 } from "./view-models";
@@ -206,7 +205,7 @@ function liveDownloadInventoryRows(
       ...buildCachedInventoryRow(
         {
           repo_id: job.repoId,
-          inventory_id: cachedInventoryId(modelFormat, job.repoId),
+          inventory_id: `cache:${modelFormat}:${job.repoId}`,
           load_id: job.repoId,
           model_format: modelFormat,
           size_bytes: job.displayBytes,
