@@ -260,6 +260,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
     assert child_env["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-test"
     assert child_env["ANTHROPIC_MODEL"] == "unsloth/model-GGUF:Q4_K_M"
+    assert child_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "32768"
     assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "32768"
     assert child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "90"
     assert "ANTHROPIC_API_KEY" not in child_env
