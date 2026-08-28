@@ -250,13 +250,22 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
-def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
-    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
-    externally-reachable address, use our Mac-aware stop hint, and rename the
-    prefix to "Unsloth Studio running on"."""
+def _install_uvicorn_startup_log_rewrite(bind_host: str) -> None:
+    """Rewrite Uvicorn's startup log line: swap a wildcard bind for the address
+    this machine answers on, use our Mac-aware stop hint, and rename the prefix
+    to "Unsloth Studio running on".
+
+    The line reads as a claim about where the server is reachable, so it takes
+    the LAN address and never _display_host_for_bind's internet-facing one: on a
+    home network that is the router's WAN IP, which this machine does not hold
+    and no LAN peer can open (#8868). Resolved here rather than passed in so the
+    caller cannot hand it the wrong one; with no LAN address to name, the guard
+    below leaves uvicorn's raw wildcard, which is the honest answer.
+    """
     import logging
     import re
 
+    display_host = _network_share_host_for_bind(bind_host)
     rewrite_host = is_wildcard_host(bind_host) and bool(display_host) and display_host != bind_host
     new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
     old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
@@ -2694,9 +2703,10 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # Resolve once; shared by the log rewrite and banner.
+    # The internet-facing address, for the banner and the reachability probe. The
+    # startup log line resolves its own, LAN-only, answer.
     display_host = _display_host_for_bind(host)
-    _install_uvicorn_startup_log_rewrite(host, display_host)
+    _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs every unhandled request exception with its full
     # traceback as a structured event; without this uvicorn prints the same traceback
     # again on stderr and the desktop shell copies it into tauri.log line by line.

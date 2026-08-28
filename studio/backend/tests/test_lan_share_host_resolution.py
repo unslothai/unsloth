@@ -11,6 +11,7 @@ no third-party network call -- and is what the "another device on your
 network" banner line and ``app.state.server_url`` must use instead.
 """
 
+import logging
 import socket
 import urllib.request
 
@@ -139,6 +140,54 @@ def test_direct_server_url_is_unset_when_no_lan_address_is_detectable(monkeypatc
     assert _direct_server_url("0.0.0.0", 8888) is None
     monkeypatch.setattr(run, "_resolve_lan_ip", lambda ip_version = 6: "::")
     assert _direct_server_url("::", 8888) is None
+
+
+# ── the uvicorn startup log line ─────────────────────────────────────
+
+
+@pytest.fixture
+def uvicorn_log_filters():
+    """The rewrite installs a filter on the uvicorn loggers and never removes it."""
+    loggers = [logging.getLogger(name) for name in ("uvicorn", "uvicorn.error")]
+    saved = [list(log.filters) for log in loggers]
+    yield loggers[1]
+    for log, filters in zip(loggers, saved):
+        log.filters[:] = filters
+
+
+def _rewritten_startup_line(logger, bind_host: str) -> str:
+    record = logger.makeRecord(
+        logger.name,
+        logging.INFO,
+        __file__,
+        0,
+        "Uvicorn running on %s://%s:%d (Press CTRL+C to quit)",
+        ("http", bind_host, 8888),
+        None,
+    )
+    for log_filter in logger.filters:
+        log_filter.filter(record)
+    return record.getMessage()
+
+
+def test_startup_log_line_names_the_lan_address(uvicorn_log_filters, monkeypatch):
+    """#8868 as reported: the line reads as a claim about where this machine
+    answers, so a wildcard bind must not be rewritten to the public WAN IP."""
+    monkeypatch.setattr(run, "_resolve_lan_ip", lambda ip_version = 4: LAN_IP)
+    run._install_uvicorn_startup_log_rewrite("0.0.0.0")
+    line = _rewritten_startup_line(uvicorn_log_filters, "0.0.0.0")
+    assert f"http://{LAN_IP}:8888" in line
+    assert PUBLIC_IP not in line
+
+
+def test_startup_log_line_keeps_the_wildcard_when_no_lan_address_resolves(
+    uvicorn_log_filters,
+    monkeypatch,
+):
+    # The issue's own "expected behavior": say 0.0.0.0 rather than invent an address.
+    monkeypatch.setattr(run, "_resolve_lan_ip", lambda ip_version = 4: "0.0.0.0")
+    run._install_uvicorn_startup_log_rewrite("0.0.0.0")
+    assert "http://0.0.0.0:8888" in _rewritten_startup_line(uvicorn_log_filters, "0.0.0.0")
 
 
 # ── the banner line itself ──────────────────────────────────────────
