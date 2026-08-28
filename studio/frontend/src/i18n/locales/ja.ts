@@ -683,7 +683,7 @@ export const ja = {
         sectionTitle: "モデル自動切り替え (OpenAI API)",
         enable: "リクエストごとにモデルを切り替え",
         enableDescription:
-          "API リクエストで指定されたダウンロード済みの GGUF を、応答前に読み込みます。デフォルトではオフです。",
+          "API リクエストで指定されたダウンロード済みのモデルを、応答前に読み込みます。デフォルトではオフです。",
         idleUnload: "アイドル時の自動アンロード",
         idleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
@@ -1366,6 +1366,13 @@ export const ja = {
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
       },
+      currentDate: {
+        label: "今日の日付をモデルに伝える",
+        description:
+          "現在の日付をプロンプトに追加し、ウェブ検索や Deep Research がモデルの学習データの締め切りを前提とせず、最新の情報源を探すようにします。",
+        loadError: "現在の日付の設定を読み込めませんでした",
+        saveError: "現在の日付の設定を更新できませんでした",
+      },
       tools: {
         collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
         collapseByDefaultDescription:
@@ -1387,6 +1394,11 @@ export const ja = {
         blockedBanner: "{hosts} からの外部リソース {count} 件をブロックしました。",
         blockedBannerPlural: "{hosts} からの外部リソース {count} 件をブロックしました。",
         blockedBannerAction: "この Canvas で許可",
+        blockedTitle: "Canvas のネットワークアクセスはオフです",
+        blockedHint:
+          "設定 → チャットで「{setting}」をオンにすると Canvas が外部リソースを読み込めます。この Canvas だけ許可することもできます。",
+        blockedSettingsAction: "設定を開く",
+        blockedDismiss: "閉じる",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",
