@@ -581,9 +581,7 @@ async def one_case(
     }
     if trigger_focused_before_space is not None:
         result["triggerFocusedBeforeSpace"] = trigger_focused_before_space
-        result["menuReopenedFromTrigger"] = (
-            trigger_focused_before_space and after["menuOpen"]
-        )
+        result["menuReopenedFromTrigger"] = trigger_focused_before_space and after["menuOpen"]
     return result
 
 
@@ -654,9 +652,7 @@ def main() -> int:
     stuck = [
         c["case"]
         for c in result["cases"]
-        if "menuClosed" in c
-        and not c["menuClosed"]
-        and not c.get("menuReopenedFromTrigger")
+        if "menuClosed" in c and not c["menuClosed"] and not c.get("menuReopenedFromTrigger")
     ]
     wrong_focus = [
         c["case"]
