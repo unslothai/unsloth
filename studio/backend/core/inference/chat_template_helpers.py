@@ -1635,6 +1635,17 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
+# A raw block is prompt text that happens to contain braces, so its "{{" never opens an
+# expression. _jinja_expression_spans reads it as code; a rewrite there would edit the
+# literal an example is meant to show.
+_JINJA_RAW = re.compile(r"\{%-?\s*raw\s*-?%\}.*?\{%-?\s*endraw\s*-?%\}", re.S)
+
+
+def _raw_spans(body: str) -> tuple:
+    """The character ranges a ``{% raw %}`` block emits verbatim."""
+    return tuple((match.start(), match.end()) for match in _JINJA_RAW.finditer(body))
+
+
 _NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\.\d+)+)")
 
 
@@ -1646,16 +1657,18 @@ def repair_numeric_member_access(template) -> Optional[str]:
     replayed tool call's arguments are never decoded back into an object -- the template's
     own ``arguments.items()`` then dies on the JSON string (GLM-5.3).
 
-    Only the ranges Jinja evaluates are rewritten, never prompt text or a quoted literal.
+    Only the ranges Jinja evaluates are rewritten, never prompt text, a quoted literal, or
+    a raw block.
     A chain rewrites whole ("x.0.1" -> "x[0][1]"): leaving the tail behind still throws.
     """
     if not isinstance(template, str) or not template:
         return None
     spans = _jinja_expression_spans(template)
+    verbatim = _raw_spans(template)
     out: list = []
     cursor = 0
     for match in _NUMERIC_MEMBER.finditer(template):
-        if not _within(spans, match.start()):
+        if not _within(spans, match.start()) or _within(verbatim, match.start()):
             continue
         out.append(template[cursor : match.start()])
         indices = "".join(f"[{n}]" for n in match.group(2).split(".")[1:])

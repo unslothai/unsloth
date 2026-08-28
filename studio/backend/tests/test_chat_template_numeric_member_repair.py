@@ -53,6 +53,18 @@ def test_every_site_in_one_template_is_rewritten():
     assert ".0" not in repair_numeric_member_access(template)
 
 
+def test_a_raw_block_keeps_the_braces_it_prints():
+    # {% raw %} emits its body verbatim, so rewriting there edits the prompt, not code.
+    assert repair_numeric_member_access("{% raw %}{{ example.0 }}{% endraw %}") is None
+    assert repair_numeric_member_access("{%- raw -%}{{ example.0 }}{%- endraw -%}") is None
+
+
+def test_a_real_site_outside_a_raw_block_is_still_repaired():
+    assert repair_numeric_member_access(
+        "{% raw %}{{ example.0 }}{% endraw %}{{ m.content.0.output }}"
+    ) == "{% raw %}{{ example.0 }}{% endraw %}{{ m.content[0].output }}"
+
+
 def test_a_renderable_template_is_left_alone():
     clean = "{% for m in messages %}{{ m.content }}{% endfor %}"
     assert repair_numeric_member_access(clean) is None
