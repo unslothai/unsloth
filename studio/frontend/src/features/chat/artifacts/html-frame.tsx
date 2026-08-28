@@ -252,7 +252,10 @@ export function ArtifactHtmlFrame({
                 size="icon-sm"
                 variant="ghost"
                 aria-label={t("settings.chat.artifacts.blockedDismiss")}
-                onClick={() => setDismissedCode(code)}
+                onClick={() => {
+                  iframeRef.current?.focus({ preventScroll: true });
+                  setDismissedCode(code);
+                }}
               >
                 <XIcon />
               </Button>

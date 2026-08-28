@@ -431,6 +431,34 @@ function readTagWithRef(name: string): string {
   return text;
 }
 
+/** The JSX handler that contains a call to `needle`. */
+function readHandlerCalling(needle: string): string {
+  const source = sourceFile(FRAME);
+  let text: string | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.expression.getText() === needle) {
+      for (let at: ts.Node = node; at.parent; at = at.parent) {
+        if (ts.isJsxAttribute(at.parent)) {
+          text = at.parent.getText();
+          break;
+        }
+      }
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(text, `no JSX handler calls ${needle}`);
+  return text;
+}
+
+test("dismissing the banner leaves focus on the canvas", () => {
+  const handler = readHandlerCalling("setDismissedCode");
+  const focusAt = handler.indexOf("iframeRef.current?.focus");
+  const dismissAt = handler.indexOf("setDismissedCode");
+  assert.ok(focusAt >= 0, "the dismissal must hand focus to the canvas");
+  assert.ok(focusAt < dismissAt, "focus must move before the button unmounts");
+});
+
 // Turning the setting on unmounts the button that opened the dialog, and the
 // settings dialog only restores an opener that is still connected. Without a
 // target that outlives the banner, closing the dialog drops focus on <body>.
