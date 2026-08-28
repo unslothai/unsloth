@@ -6656,7 +6656,7 @@ def _validate_image_base64(encoded: str) -> None:
 
     image_data = base64.b64decode(encoded)
     with Image.open(BytesIO(image_data)) as image:
-        image.verify()
+        image.load()
 
 
 async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: bool) -> None:

@@ -9388,11 +9388,23 @@ def test_a_prior_turn_image_does_not_block_a_non_gguf_audio_switch(monkeypatch):
     "image_preflight",
     [
         {"b64": "bm90IGFuIGltYWdl", "multiple": False},
+        "truncated image",
         {"b64": None, "multiple": True},
     ],
-    ids = ["malformed bytes", "multiple images"],
+    ids = ["malformed bytes", "truncated image", "multiple images"],
 )
 def test_invalid_non_gguf_images_are_rejected_before_switch(monkeypatch, image_preflight):
+    if image_preflight == "truncated image":
+        import base64 as _b64
+        import io
+        from PIL import Image
+
+        encoded = io.BytesIO()
+        Image.new("RGB", (8, 8), "red").save(encoded, format = "JPEG")
+        image_preflight = {
+            "b64": _b64.b64encode(encoded.getvalue()[:-1]).decode(),
+            "multiple": False,
+        }
     llama = _FakeBackend("org/A-GGUF")
 
     class _FakeOrchestrator:
