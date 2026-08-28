@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 //
-// The selector adapter for Studio's surfaces OUTSIDE the chat thread: the other routes, the
+// The selector adapter for Unsloth's surfaces OUTSIDE the chat thread: the other routes, the
 // settings dialog's twelve tabs, the sidebar and its menus, the hub, the media pages.
 //
 // Separate from dom.js on purpose. dom.js is the chat thread's adapter and the eighteen film

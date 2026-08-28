@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Focused regression tests for the Windows Studio updater launcher transaction."""
+"""Focused regression tests for the Windows Unsloth updater launcher transaction."""
 
 from __future__ import annotations
 
@@ -904,7 +904,7 @@ def test_orphaned_install_metadata_is_not_a_runnable_cli(monkeypatch, studio, re
     moved, leaves an ``unsloth-*.dist-info`` behind with nothing to import. This
     check stands in front of the headless-public strip of .bootstrap_password,
     so answering yes here lands exactly the lockout the gate's placement exists
-    to prevent: a public Studio with no login page and no recovery credential.
+    to prevent: a public Unsloth with no login page and no recovery credential.
     """
     python, site_packages = real_venv
     windows_layout = python.parent.parent / "Lib" / "site-packages"
@@ -979,7 +979,7 @@ def test_a_package_the_trampoline_cannot_import_is_not_a_runnable_cli(
     """The gate has to fail on everything the launch would fail on.
 
     It stands in front of the headless-public strip of .bootstrap_password, so a
-    yes here that the trampoline then contradicts is a public Studio with no
+    yes here that the trampoline then contradicts is a public Unsloth with no
     login page and no plaintext recovery credential. Locating the package is not
     the question; importing it and getting `app` back is, which is why the probe
     runs that exact import rather than a cheaper find_spec.
@@ -1008,7 +1008,7 @@ def test_a_probe_that_cannot_start_the_interpreter_fails_closed(monkeypatch, stu
     interpreter that will not start means the re-exec will not either, and the
     on-disk layout cannot say otherwise. The caller strips .bootstrap_password
     before that re-exec on a headless public launch, so passing here would leave
-    a public Studio with no login page and no plaintext recovery credential.
+    a public Unsloth with no login page and no plaintext recovery credential.
     """
     scripts = tmp_path / "Scripts"
     site_packages = tmp_path / "Lib" / "site-packages"

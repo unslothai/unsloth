@@ -959,13 +959,14 @@ export async function saveStoredChatMessage(
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
   await ensureStoredChatThread(message.threadId);
-  return saveChatMessage(message);
+  // The per-chunk autosave behind a streaming response.
+  return saveChatMessage(message, { coalesce: true });
 }
 
 export async function syncStoredChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<MessageRecord[]> {
   if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
@@ -993,7 +994,7 @@ export async function saveStoredChatThread(
 export async function updateStoredChatThread(
   threadId: string,
   patch: ChatThreadWritePatch,
-  options: { signal?: AbortSignal } = {},
+  options: { notify?: boolean; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
   // Same bound and same signal as the write it precedes: a stall here left the settings

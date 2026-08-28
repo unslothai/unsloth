@@ -594,7 +594,7 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
     )
 
     assert resp.status_code == 200
-    # Not the OpenAI envelope: this route is a Studio surface and its errors are plain details.
+    # Not the OpenAI envelope: this route is an Unsloth surface and its errors are plain details.
     assert calls == [("unsloth/Wan2.2", arb.VIDEO, False, "hf_abc")]
 
 
@@ -751,20 +751,22 @@ def test_a_replacement_load_is_not_reported_as_the_requested_model(
 
 
 def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, monkeypatch):
-    # The resident engine can be native sd.cpp while the target loads through diffusers; its
-    # planner refuses the pick, and that refusal would read as nothing missing.
     pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
     asked: list = []
 
     class _Planner:
         def download_plan(self, model_path, **kwargs):
-            asked.append(model_path)
+            asked.append((model_path, kwargs))
             return {"total_bytes": 7}
 
     monkeypatch.setattr(locality, "planners_for", lambda owner, p: [_Planner()])
 
     assert mas.missing_download_bytes(arb.DIFFUSION, pick) == 7
-    assert asked == [pick.model_path]
+    assert [model_path for model_path, _kwargs in asked] == [pick.model_path]
+    # Only the oversized-memory verdict is suppressed. The probe stays on, because the
+    # byte count has to be taken over the same file list the load will fetch.
+    assert asked[0][1]["memory_verdict"] is False
+    assert "allow_device_probe" not in asked[0][1]
 
 
 def test_two_bpw_builds_of_one_quant_are_not_confused(two_bpw, enabled, backend, loads):

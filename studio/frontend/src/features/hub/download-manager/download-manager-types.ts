@@ -63,6 +63,24 @@ export interface DownloadRequest {
   files?: string[];
   /** See `ManagedDownload.checkpoint`. Carried on the request so the job records the role its stager already knew, rather than a surface re-deriving it from filenames. */
   checkpoint?: boolean;
+  /** What this surface wants said about the start, for the download manager to raise.
+   * Chat used to toast this itself while startJob raised the Xet notice, stacking two.
+   * Suppressing one loses information, so the manager folds this into the notice, or
+   * shows it alone when the notice does not fire. One start, one toast. */
+  callerToast?: CallerToast;
+}
+
+export interface CallerToast {
+  title: string;
+  description: string;
+  /** Fold into a granted Xet notice, never raise alone. #9663 removed chat's
+   * auto-load toast as a duplicate of the download panel: the sentence is still worth
+   * carrying inside the notice, but alone it would put that toast back. */
+  noticeOnly?: boolean;
+  /** Asked again just before the raise, several round trips after the request. False
+   * drops this line and keeps the notice: chat moved to another thread so nothing
+   * auto-loads, but the transfer is still running. Absent means always valid. */
+  stillValid?: () => boolean;
 }
 
 /** The variant slot a scoped job occupies. Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@", so a scope collides with neither a real variant nor the repo's full snapshot. */

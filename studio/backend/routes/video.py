@@ -22,12 +22,12 @@ import hashlib as _hashlib
 import hmac as _hmac
 import secrets as _secrets
 import time as _time
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import ValidationError
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, request_admitted_without_credential
 from hub.dependencies import get_hf_token
 from loggers import get_logger
 from models.inference import (
@@ -151,7 +151,7 @@ async def video_download_plan(
         # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
         #
         # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
-        # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
+        # quantise-and-matmul smoke probe that initialises CUDA in the Unsloth process, and the
         # plan runs before the load's training guard can refuse. Staging needs no GPU.
         # Ranking opens a CUDA context per candidate, which the training guard exists to prevent,
         # so the RANKING waits until training is known idle. Validating and translating the ids
@@ -563,7 +563,7 @@ async def get_gallery_video_file(
 ):
     from core.inference import video_gallery
 
-    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned MP4, so a guessed stem cannot stream out a foreign clip.
+    # Ownership-gate the serve like delete/clear: resolve only an Unsloth-owned MP4, so a guessed stem cannot stream out a foreign clip.
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
@@ -612,11 +612,19 @@ def _verify_video_link_token(token: str) -> Optional[str]:
 
 @router.get("/video/gallery/{video_id}/signed-url")
 async def get_gallery_video_signed_url(
-    video_id: str, current_subject: str = Depends(get_current_subject)
+    video_id: str,
+    current_subject: str = Depends(get_current_subject),
+    no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
 ):
     """A directly playable, range-capable link for one clip (bearer-gated to mint, HMAC to use).
 
     Returned as a relative URL so it works behind any proxy the page itself is served through."""
+    if no_credential:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Video links can only be created from the Unsloth UI or with an API key.",
+        )
+
     from core.inference import video_gallery
 
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)

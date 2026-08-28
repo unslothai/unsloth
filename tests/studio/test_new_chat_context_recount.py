@@ -97,7 +97,9 @@ def _store_reducers() -> str:
         "setCheckpoint: (modelId, ggufVariant, options) =>",
         "  // Re-apply the incoming thread's own usage",
     )
-    active = slice_between(text, "setActiveThreadId: (activeThreadId) =>", "setActiveProjectId:")
+    active = slice_between(
+        text, "setActiveThreadId: (activeThreadId) =>", "applyThreadScopedSettings:"
+    )
     usage = slice_between(text, "setContextUsage: (contextUsage) =>", "setThreadContextUsage:")
     thread_usage = slice_between(text, "setThreadContextUsage: (threadId, usage) =>", "}));")
     return (
@@ -318,9 +320,10 @@ function messagesContainImage(messages: any): boolean {
 }
 
 // The adapter's own prompt build is exercised by the request tests; here it only has
-// to turn the reconstructed branch into something countable.
-async function buildOutboundMessagesForTokenCount(messages: any): Promise<any[]> {
-  return messages.map((m: any) => ({ role: m.role, content: "x" }));
+// to turn the reconstructed branch into something countable. Same shape
+// refreshContextUsage spreads into countChatInputTokens.
+async function buildLocalTokenCountHistory(messages: any): Promise<{ messages: any[] }> {
+  return { messages: messages.map((m: any) => ({ role: m.role, content: "x" })) };
 }
 
 async function buildLocalTokenCountExtras(): Promise<Record<string, unknown>> {
@@ -1393,10 +1396,13 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     ), "the completion half of an exact total must survive hydration"
 
 
-def test_deep_research_declines_the_recount():
-    """With Deep Research on, the next send creates a server-side research run instead of posting
-    this history, and the research reply carries no usage to correct a guess with. Counting would
-    put a total on the bar describing a request that is never made, and leave it there."""
+def test_deep_research_recounts_before_the_model_decides():
+    """Arming Deep Research no longer guarantees a server-side research run.
+
+    The model first receives the ordinary chat turn and may answer directly, so the bar must price
+    that request just like any other send. A later tool handoff replaces the reply with research
+    state, but cannot justify hiding the context estimate before the model decides.
+    """
     out = _run(
         textwrap.dedent(
             f"""
@@ -1412,8 +1418,8 @@ def test_deep_research_declines_the_recount():
             """
         )
     )
-    assert out["counts"] == 0, "a research turn must not be priced as a chat completion"
-    assert out["contextUsage"] is None
+    assert out["counts"] == 1, "the model-decision turn must be priced before it can hand off"
+    assert out["contextUsage"] is not None
 
 
 def test_an_image_branch_is_declined_before_it_is_sent():

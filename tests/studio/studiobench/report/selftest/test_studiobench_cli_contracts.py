@@ -105,7 +105,7 @@ def test_one_attached_studio_driven_twice_is_a_null_control():
 # accumulator. The one flag whose job is to separate "the change did nothing" from "the metric is
 # not watching" would answer the second when the truth is neither.
 #
-# One attached Studio driven twice is not a mistake in general: it is a null control this tool
+# One attached Unsloth driven twice is not a mistake in general: it is a null control this tool
 # detects on purpose, pinned by the test directly above. It is only fatal with the injection on.
 
 
@@ -114,7 +114,7 @@ def _inject_args(attach, attach_b, *extra):
 
 
 def test_injecting_stream_cost_into_two_arms_on_one_origin_is_refused():
-    """REGRESSION. `--attach U --attach-b U` is the cheapest null control there is -- one Studio,
+    """REGRESSION. `--attach U --attach-b U` is the cheapest null control there is -- one Unsloth,
     no installs -- and it is the obvious place to check that the metric can see a known cost."""
 
     args = _inject_args(
@@ -249,7 +249,7 @@ def test_a_self_installed_pair_may_inject():
 
 
 def test_one_origin_without_the_injection_is_still_allowed():
-    """THE CONTROL THAT MATTERS MOST. One attached Studio driven twice is a null control, and
+    """THE CONTROL THAT MATTERS MOST. One attached Unsloth driven twice is a null control, and
     refusing it outright would remove the calibration run this tool exists to support."""
 
     args = _inject_args("http://127.0.0.1:5401", "http://127.0.0.1:5401")
@@ -265,7 +265,7 @@ def test_one_attached_studio_driven_twice_under_two_labels_is_still_a_null_contr
     """`--attach U --attach-b U --branch main --ab fix`: one server, two names it cannot check.
 
     The URL rule was stated and then not applied -- the ref comparison ran first, so the unequal
-    labels returned False before the equal URL was reached. One Studio measured against itself was
+    labels returned False before the equal URL was reached. One Unsloth measured against itself was
     rendered as an ordinary A/B, free to publish temporal noise as an improvement, with
     `noise_floor_from_null_control` skipped so nothing downstream had a floor to refuse it with.
     With `--attach` the refs are free-form strings; only the URL names the deployed build.
@@ -279,7 +279,7 @@ def test_one_attached_studio_driven_twice_under_two_labels_is_still_a_null_contr
 
 
 def test_an_attached_treatment_pointed_at_the_installed_base_is_a_null_control():
-    """The mixed form of the same thing: `--attach-b` naming the Studio this run just launched."""
+    """The mixed form of the same thing: `--attach-b` naming the Unsloth this run just launched."""
 
     sides = [
         _side("base", "main", "http://127.0.0.1:5399", True, commit = "a" * 40),

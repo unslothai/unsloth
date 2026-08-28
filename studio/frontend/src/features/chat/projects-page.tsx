@@ -64,6 +64,7 @@ import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   exportProjectConversations,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
@@ -509,7 +510,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -535,7 +536,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -764,7 +765,7 @@ export function ProjectsPage() {
                         <span>Export</span>
                       </DropdownMenuSubTrigger>
                       <DropdownMenuSubContent className="w-52">
-                        {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                        {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                           <DropdownMenuItem
                             key={fmt}
                             onSelect={(e) => {

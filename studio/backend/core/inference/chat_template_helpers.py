@@ -918,7 +918,7 @@ def _neutralize_replayed_tool_call(
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
     argument echoing pasted text can close the call block and open a "<|tool_response>" or
     "<|turn>model" of its own (#7066). The rewrite is the identity on every dispatchable
-    name (Studio composes ^[a-zA-Z0-9_-]{1,64}$), and a tool result's "name" takes the same
+    name (Unsloth composes ^[a-zA-Z0-9_-]{1,64}$), and a tool result's "name" takes the same
     rewrite, so the two still agree when Gemma-4 pairs them by name.
 
     Both replay shapes are swept, the OpenAI nested one and the flat {"id", "name",
@@ -1139,7 +1139,7 @@ def neutralize_control_markup_in_messages(
                 new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
                 # A media part is only opaque where something RESOLVES it, and nothing does
-                # inside a tool result: Studio's vision and audio paths build from the last
+                # inside a tool result: Unsloth's vision and audio paths build from the last
                 # user message, while Llama-3.1's tool branch serializes the whole content
                 # iterable with tojson, so an exempt URL there lands in the prompt as live
                 # structure. That branch keys on "tool" OR "ipython" (chat_templates.py:517),
@@ -2416,12 +2416,19 @@ def append_assistant_turn(
     model just added are one turn, so they are merged: appending would instead give two
     consecutive assistant messages and break role alternation. Self-limiting, since
     after a tool result the conversation no longer ends with a plain assistant turn.
+
+    Merge over the resumed turn rather than replacing it, or every key the partial
+    carried but the continuation does not repeat is lost. ``extra_content`` is such a
+    key, and Gemini reads the text part's thought signature back from it alone, so a
+    resumed turn replayed without it is rejected.
     """
     # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
     if prev_text is not None and isinstance(assistant_msg.get("content"), str):
-        assistant_msg["content"] = f"{prev_text}{assistant_msg['content']}"
-        conversation[-1] = assistant_msg
+        # Copy rather than mutate: the caller owns assistant_msg and may still read it.
+        merged_msg = {**conversation[-1], **assistant_msg}
+        merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
 
