@@ -73,6 +73,17 @@ test("ordinary code spans and fences are unchanged", () => {
     ["- ```\n  \\$x\\$\n  ```", "- ```\n  \\$x\\$\n  ```"],
     ["> ```\n> \\$x\\$\n> ```", "> ```\n> \\$x\\$\n> ```"],
     ["```\n- ```\n\\$x\\$\n```", "```\n- ```\n\\$x\\$\n```"],
+    [
+      "- item\n    ~~~tex\n    \\$x\\$\n    ~~~",
+      "- item\n    ~~~tex\n    \\$x\\$\n    ~~~",
+    ],
+    [
+      "- item\n    ```tex\n    \\$x\\$\n    ````",
+      "- item\n    ```tex\n    \\$x\\$\n    ````",
+    ],
+    ["- item\n    ~~~tex\n    \\$x\\$", "- item\n    ~~~tex\n    \\$x\\$"],
+    ["# heading\n    \\$x\\$", "# heading\n    \\$x\\$"],
+    ["# heading\n \t\\$x\\$", "# heading\n \t\\$x\\$"],
     ["`\\(x\\)` and \\(y\\)", "`\\(x\\)` and $y$"],
     ["```\n\\(x\\)\n```\n\nthen \\(y\\)", "```\n\\(x\\)\n```\n\nthen $y$"],
   ];
@@ -82,6 +93,21 @@ test("ordinary code spans and fences are unchanged", () => {
       expected,
       `changed for ${JSON.stringify(input)}`,
     );
+  }
+});
+
+test("fences stop at their Markdown container boundary", () => {
+  const cases: [string, string][] = [
+    ["- ```txt\n  code\noutside \\$x\\$", "- ```txt\n  code\noutside $x$"],
+    ["> ```txt\n> code\noutside \\$x\\$", "> ```txt\n> code\noutside $x$"],
+    [
+      "paragraph\n2. ``` literal\n\\$x\\$ after",
+      "paragraph\n2. ``` literal\n$x$ after",
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    assert.equal(preprocessLaTeX(input), expected, input);
   }
 });
 

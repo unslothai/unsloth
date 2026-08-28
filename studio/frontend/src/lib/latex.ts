@@ -11,11 +11,13 @@
 
 import {
   EMPTY_LIST_STATE,
+  NO_QUOTE,
   containerContent,
   indentWidth,
   itemContent,
   openLists,
   quoteDepth,
+  quoteState,
 } from "./markdown-list-columns.ts";
 import { codeSpans } from "./markdown-code-spans.ts";
 
@@ -62,7 +64,10 @@ const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/;
 const FENCE_CANDIDATE_RE =
   /(^|\r\n|\n|\r)((?:(?: {0,3}>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*)(`{3,}|~{3,})([^\r\n]*)/g;
 const INDENTED_CODE_CANDIDATE_RE =
-  /(^|\r\n|\n|\r)(?: {0,3}>[ \t]?)*(?:(?: {4}|\t)| {0,3}(?:[-+*]|\d{1,9}[.)])(?: {5,}|[ \t]*\t[ \t]*))/g;
+  /(^|\r\n|\n|\r)(?: {0,3}>[ \t]?)*(?:(?: {4}| {0,3}\t)| {0,3}(?:[-+*]|\d{1,9}[.)])(?: {5,}|[ \t]*\t[ \t]*))/g;
+const BLOCK_LINE_RE =
+  /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
+const LINK_DEFINITION_RE = /^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:/;
 
 /** `line` with up to `columns` columns of leading whitespace removed. */
 function stripIndent(line: string, columns: number): string {
@@ -91,104 +96,128 @@ function columnWidth(prefix: string): number {
  * Returns a sorted, non-overlapping array of [start, end] index pairs.
  */
 export function findCodeBlockRegions(content: string): Array<[number, number]> {
-  // Fenced blocks, including the open tail present on a streaming frame.
   const fenced: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
-  let openFence: {
-    start: number;
-    marker: string;
-    column: number;
-    quotes: number;
-  } | null = null;
-  FENCE_CANDIDATE_RE.lastIndex = 0;
-  while ((match = FENCE_CANDIDATE_RE.exec(content)) !== null) {
-    const lineStart = match.index + (match[1]?.length ?? 0);
-    const line = `${match[2] ?? ""}${match[3] ?? ""}${match[4] ?? ""}`;
-    if (openFence !== null) {
-      if (quoteDepth(line) !== openFence.quotes) continue;
-      const quoted = containerContent(line, EMPTY_LIST_STATE, openFence.quotes);
-      const fence = FENCE_LINE_RE.exec(stripIndent(quoted, openFence.column));
-      if (!fence) continue;
-      const marker = fence[1] ?? "";
-      const tail = fence[2] ?? "";
-      if (
-        marker[0] === openFence.marker[0] &&
-        marker.length >= openFence.marker.length &&
-        !tail.trim()
-      ) {
-        fenced.push([openFence.start, lineStart + line.length]);
-        openFence = null;
-      }
-      continue;
-    }
-
-    const quotes = quoteDepth(line);
-    const quoted = containerContent(line, EMPTY_LIST_STATE, quotes);
-    let source = quoted;
-    let item = itemContent(source, false);
-    while (item !== source) {
-      source = item;
-      item = itemContent(source, false);
-    }
-    const fence = FENCE_LINE_RE.exec(source);
-    if (!fence) continue;
-    const marker = fence[1] ?? "";
-    const tail = fence[2] ?? "";
-    if (marker[0] === "`" && tail.includes("`")) continue;
-    openFence = {
-      start: lineStart + line.length - source.length + (fence.index ?? 0),
-      marker,
-      column: columnWidth(quoted.slice(0, quoted.length - source.length)),
-      quotes,
-    };
-  }
-  if (openFence !== null) fenced.push([openFence.start, content.length]);
-
   const indented: Array<[number, number]> = [];
-  // Avoid allocating every line on the per-frame path unless an indentation
-  // candidate exists outside a fenced block.
-  let hasIndentedCandidate = false;
+
+  FENCE_CANDIDATE_RE.lastIndex = 0;
   INDENTED_CODE_CANDIDATE_RE.lastIndex = 0;
-  while ((match = INDENTED_CODE_CANDIDATE_RE.exec(content)) !== null) {
-    if (!isInRegion(match.index + match[0].length - 1, fenced)) {
-      hasIndentedCandidate = true;
-      break;
-    }
-  }
-  if (hasIndentedCandidate) {
+  const needsBlockScan =
+    FENCE_CANDIDATE_RE.test(content) ||
+    INDENTED_CODE_CANDIDATE_RE.test(content);
+  if (needsBlockScan) {
     const lines = content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g);
-    let blockStart = -1;
-    let blockEnd = -1;
-    let previousBlank = true;
+    let openFence: {
+      start: number;
+      marker: string;
+      column: number;
+      quotes: number;
+    } | null = null;
+    let indentedStart = -1;
+    let indentedEnd = -1;
+    let afterParagraph = false;
     let lists = EMPTY_LIST_STATE;
+    let quote = NO_QUOTE;
+
     for (const lineMatch of lines) {
       const line = lineMatch[0];
       if (!line) break;
       const start = lineMatch.index;
       const text = line.replace(/(?:\r\n|\n|\r)$/, "");
-      lists = openLists(text, lists, !previousBlank);
+      const above = quote;
+      quote = NO_QUOTE;
+      const quotes = quoteDepth(text);
+
+      if (openFence !== null) {
+        const quoted = containerContent(
+          text,
+          EMPTY_LIST_STATE,
+          openFence.quotes,
+        );
+        const leftContainer =
+          quotes < openFence.quotes ||
+          (quoted.trim() !== "" &&
+            openFence.column > 0 &&
+            indentWidth(quoted) < openFence.column);
+        if (leftContainer) {
+          fenced.push([openFence.start, start]);
+          openFence = null;
+        }
+      }
+
+      const activeFence = openFence;
+      const container = containerContent(
+        text,
+        lists,
+        activeFence?.quotes ?? quotes,
+      );
+      const fenceSource: string = activeFence
+        ? stripIndent(container, activeFence.column)
+        : itemContent(container, afterParagraph);
+      const fence = FENCE_LINE_RE.exec(fenceSource);
+      if (fence !== null) {
+        lists = openLists(text, lists, afterParagraph, above.quoted);
+        const marker = fence[1] ?? "";
+        const tail = fence[2] ?? "";
+        if (openFence === null) {
+          if (marker[0] !== "`" || !tail.includes("`")) {
+            const quoted = containerContent(text, EMPTY_LIST_STATE, quotes);
+            openFence = {
+              start,
+              marker,
+              column: columnWidth(
+                quoted.slice(0, quoted.length - fenceSource.length),
+              ),
+              quotes,
+            };
+          }
+        } else if (
+          marker[0] === openFence.marker[0] &&
+          marker.length >= openFence.marker.length &&
+          !tail.trim()
+        ) {
+          fenced.push([openFence.start, start + line.length]);
+          openFence = null;
+        }
+        afterParagraph = false;
+        continue;
+      }
+
+      if (openFence !== null) {
+        lists = openLists("", lists, afterParagraph, above.quoted);
+        afterParagraph = false;
+        continue;
+      }
+
+      lists = openLists(text, lists, afterParagraph, above.quoted);
       const inner = itemContent(
         containerContent(text, lists, quoteDepth(text)),
-        !previousBlank,
+        afterParagraph,
       );
       const blank = /^\s*$/.test(inner);
       const code = indentWidth(inner) >= 4;
-      if (blockStart >= 0) {
+      if (indentedStart >= 0) {
         if (code || blank) {
-          blockEnd = start + line.length;
-          previousBlank = blank;
+          indentedEnd = start + line.length;
           continue;
         }
-        indented.push([blockStart, blockEnd]);
-        blockStart = -1;
+        indented.push([indentedStart, indentedEnd]);
+        indentedStart = -1;
       }
-      if (code && previousBlank) {
-        blockStart = start;
-        blockEnd = start + line.length;
+      if (code && !afterParagraph && !blank) {
+        indentedStart = start;
+        indentedEnd = start + line.length;
+        afterParagraph = false;
+        continue;
       }
-      previousBlank = blank;
+      afterParagraph =
+        !blank &&
+        !BLOCK_LINE_RE.test(text) &&
+        (afterParagraph || !LINK_DEFINITION_RE.test(text));
+      quote = quoteState(text, above.inQuote);
     }
-    if (blockStart >= 0) indented.push([blockStart, blockEnd]);
+    if (openFence !== null) fenced.push([openFence.start, content.length]);
+    if (indentedStart >= 0) indented.push([indentedStart, indentedEnd]);
   }
 
   const blocks = mergeRegions(fenced, indented);
