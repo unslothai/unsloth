@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from core.inference.native_audio import (
+    HIGGS_TTS2_CODEC_REPO,
     HIGGS_TTS3_CODEC_REPO,
     MOSS_LOCAL_CODEC_REPO,
     MOSS_NANO_CODEC_REPO,
@@ -44,7 +45,7 @@ def _backend(audio_type: str, **entry):
 @pytest.mark.parametrize(
     ("repo", "companion"),
     (
-        ("bosonai/higgs-tts-2-3b-base", None),
+        ("bosonai/higgs-tts-2-3b-base", HIGGS_TTS2_CODEC_REPO),
         ("multimodalart/higgs-audio-v3-tts-4b-transformers", HIGGS_TTS3_CODEC_REPO),
         ("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", MOSS_LOCAL_CODEC_REPO),
         ("OpenMOSS-Team/MOSS-TTS-Nano-100M", MOSS_NANO_CODEC_REPO),
@@ -106,6 +107,28 @@ def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch)
         "transformer/model.safetensors",
     ]
     assert plan["required_bytes"] == 110
+
+
+def test_higgs_tts2_download_plan_includes_audio_tokenizer(monkeypatch):
+    calls = []
+    siblings = [SimpleNamespace(rfilename = "model.safetensors", size = 100)]
+
+    def model_info(repo_id, **_kwargs):
+        calls.append(repo_id)
+        return SimpleNamespace(sha = "current", siblings = siblings)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(HfApi = lambda **_kwargs: SimpleNamespace(model_info = model_info)),
+    )
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached", lambda *_args: False
+    )
+
+    plan = native_audio_download_plan("bosonai/higgs-tts-2-3b-base")
+    assert calls == ["bosonai/higgs-tts-2-3b-base", HIGGS_TTS2_CODEC_REPO]
+    assert [entry["repo_id"] for entry in plan["entries"]] == calls
 
 
 def test_moss_kv_memory_uses_full_published_context(tmp_path):

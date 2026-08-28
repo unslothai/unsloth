@@ -61,8 +61,10 @@ MOSS_NANO_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 MOSS_NANO_TEXT_TEMPERATURE = 1.5
 MOSS_NANO_TEXT_TOP_P = 1.0
 MOSS_NANO_TEXT_TOP_K = 50
+HIGGS_TTS2_CODEC_REPO = "bosonai/higgs-audio-v2-tokenizer"
 HIGGS_TTS3_CODEC_REPO = "bosonai/higgs-audio-v2-tokenizer"
 NATIVE_AUDIO_COMPANION_REPOS = {
+    "higgs_tts2": (HIGGS_TTS2_CODEC_REPO,),
     "moss_tts_local": (MOSS_LOCAL_CODEC_REPO,),
     "moss_tts_nano": (MOSS_NANO_CODEC_REPO,),
     "higgs_tts3": (HIGGS_TTS3_CODEC_REPO,),
