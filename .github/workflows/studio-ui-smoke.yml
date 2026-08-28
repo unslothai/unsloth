@@ -636,7 +636,11 @@ jobs:
 
       - name: Tool activity collapse regression (Playwright)
         if: matrix.shard == 'extra'
-        run: python tests/studio/playwright_tool_activity.py --json
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm --prefix studio/frontend ci --strict-allow-scripts --no-fund --no-audit
+          fi
+          python tests/studio/playwright_tool_activity.py --json
 
       # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
       # each other: the suppression sets in loggers/handlers.py and the poll cadences in
