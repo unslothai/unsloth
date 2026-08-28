@@ -1415,9 +1415,6 @@ async def _create_openai_video(
         status = await asyncio.to_thread(backend.status)
     if not status.get("loaded"):
         raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
-    from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
-
-    ref2va = status.get("h3_task") == H3_TASK_REFERENCES
     defaults = status.get("defaults") or {}
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
@@ -1427,8 +1424,7 @@ async def _create_openai_video(
             width = width,
             height = height,
             duration_s = seconds,
-            first_frame = None if ref2va else reference,
-            reference_images = [reference] if ref2va and reference is not None else None,
+            input_reference = reference,
             video_id = video_id,
         )
         if expected_state is not None:

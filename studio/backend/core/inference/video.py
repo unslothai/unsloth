@@ -5004,6 +5004,7 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        input_reference: Optional[str] = None,
         first_frame: Optional[str] = None,
         last_frame: Optional[str] = None,
         reference_images: Optional[list[str]] = None,
@@ -5026,6 +5027,8 @@ class VideoBackend:
         Raises RuntimeError with VIDEO_NOT_LOADED_MSG / VIDEO_GENERATION_BUSY_MSG
         sentinels the route maps to 409.
         """
+        if input_reference is not None and (first_frame is not None or reference_images):
+            raise ValueError("input_reference cannot be combined with explicit conditioning inputs.")
         cancel = threading.Event()
         job_token = object()  # this reservation's identity; only its own worker may finalise it
         while True:
@@ -5038,14 +5041,21 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
                 if self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            resolved_first_frame = first_frame
+            resolved_reference_images = reference_images
+            if input_reference is not None:
+                if state.h3_task == H3_TASK_REFERENCES:
+                    resolved_reference_images = [input_reference]
+                else:
+                    resolved_first_frame = input_reference
             first_pil, last_pil, canvas_w, canvas_h, conditioning = self._resolve_keyframes(
-                state.family, state.h3_task, first_frame, last_frame, width, height
+                state.family, state.h3_task, resolved_first_frame, last_frame, width, height
             )
             references = self._resolve_references(
                 state.family,
                 state.h3_task,
                 state.engine,
-                reference_images,
+                resolved_reference_images,
                 reference_videos,
                 reference_audios,
                 reference_image_size,

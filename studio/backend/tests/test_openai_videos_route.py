@@ -627,7 +627,7 @@ def test_only_the_video_variant_exists(client, backend):
     assert resp.status_code == 400 and resp.json()["error"]["param"] == "variant"
 
 
-def test_input_reference_upload_becomes_the_first_frame(client, backend, monkeypatch):
+def test_input_reference_upload_reaches_the_backend_unclassified(client, backend, monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(backend, "begin_generate", lambda **kwargs: captured.update(kwargs))
     png = _reference_image_bytes("PNG")
@@ -635,17 +635,17 @@ def test_input_reference_upload_becomes_the_first_frame(client, backend, monkeyp
         client, {"prompt": "animate this"}, {"input_reference": ("frame.png", png, "image/png")}
     )
     assert resp.status_code == 200, resp.json()
-    assert captured["first_frame"].startswith("data:image/png;base64,")
+    assert captured["input_reference"].startswith("data:image/png;base64,")
     assert captured["video_id"] == resp.json()["id"]
     jpeg_url = _reference_data_url("JPEG", "image/jpeg")
     resp = _create(client, {"prompt": "x", "input_reference[image_url]": jpeg_url})
-    assert resp.status_code == 200 and captured["first_frame"] == jpeg_url
+    assert resp.status_code == 200 and captured["input_reference"] == jpeg_url
     png_url = _reference_data_url("PNG", "image/png")
     resp = client.post(
         "/v1/videos",
         json = {"prompt": "x", "input_reference": {"image_url": png_url}},
     )
-    assert resp.status_code == 200 and captured["first_frame"] == png_url
+    assert resp.status_code == 200 and captured["input_reference"] == png_url
 
 
 def test_input_reference_refusals(client, backend):
@@ -679,12 +679,14 @@ def test_octet_stream_uploads_are_sniffed(client, backend, monkeypatch):
         {"input_reference": ("frame.bin", jpeg, "application/octet-stream")},
     )
     assert resp.status_code == 200, resp.json()
-    assert captured["first_frame"].startswith("data:image/jpeg;base64,")
+    assert captured["input_reference"].startswith("data:image/jpeg;base64,")
     webp = _reference_image_bytes("WEBP")
     resp = _create(
         client, {"prompt": "x"}, {"input_reference": ("frame", webp, "application/octet-stream")}
     )
-    assert resp.status_code == 200 and captured["first_frame"].startswith("data:image/webp;base64,")
+    assert resp.status_code == 200 and captured["input_reference"].startswith(
+        "data:image/webp;base64,"
+    )
     resp = _create(
         client,
         {"prompt": "x"},
@@ -865,9 +867,47 @@ def test_ref2va_routes_the_input_image_as_a_reference(client, backend, monkeypat
     )
     assert resp.status_code == 200, resp.json()
     assert switched["completed"] is True
-    assert captured["first_frame"] is None
-    assert len(captured["reference_images"]) == 1
-    assert captured["reference_images"][0].startswith("data:image/png;base64,")
+    assert captured["input_reference"].startswith("data:image/png;base64,")
+    assert "first_frame" not in captured
+    assert "reference_images" not in captured
+
+
+def test_reference_conditioning_follows_the_state_reserved_by_begin_generate(
+    client, backend, monkeypatch
+):
+    import types
+
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
+
+    real_begin = backend.begin_generate
+
+    def _racing_begin(**kwargs):
+        with backend._lock:
+            backend._state = types.SimpleNamespace(
+                **{
+                    **vars(backend._state),
+                    "family": detect_video_family("MiniMaxAI/MiniMax-H3", None),
+                    "h3_task": H3_TASK_REFERENCES,
+                    "repo_id": "MiniMaxAI/MiniMax-H3",
+                }
+            )
+        return real_begin(**kwargs)
+
+    monkeypatch.setattr(backend, "begin_generate", _racing_begin)
+    response = _create(
+        client,
+        {"prompt": "follow the newly reserved partition"},
+        {"input_reference": ("subject.png", _reference_image_bytes("PNG"), "image/png")},
+    )
+
+    assert response.status_code == 200, response.json()
+    deadline = time.monotonic() + 5.0
+    while "_resolved_inputs" not in backend.last_generate_kwargs and time.monotonic() < deadline:
+        time.sleep(0.01)
+    resolved = backend.last_generate_kwargs["_resolved_inputs"]
+    assert resolved.first_frame is None
+    assert len(resolved.references.images) == 1
 
 
 def test_the_created_job_reports_the_canvas_the_backend_resolved(client, backend, monkeypatch):
