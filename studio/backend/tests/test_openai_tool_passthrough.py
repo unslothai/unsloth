@@ -5436,7 +5436,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         argument_fragments = [
             "{",
-            '\"command\":\"',
+            '"command":"',
             "echo",
             " HER",
             "MES",
@@ -5444,7 +5444,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             "LO",
             "TH",
             "_OK",
-            '\"',
+            '"',
             "}",
         ]
         frames = [_frame({"role": "assistant", "content": None})]
@@ -6858,9 +6858,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             [entry] = result.monitor.snapshot()
             assert entry["status"] == "completed"
             assert entry["stop_reason"] == "tool_calls"
-            assert entry["reply"] == (
-                'Tool call: terminal({"command":"echo HERMES_UNSLOTH_OK"})'
-            )
+            assert entry["reply"] == ('Tool call: terminal({"command":"echo HERMES_UNSLOTH_OK"})')
             assert entry["ttft_ms"] is not None
 
         asyncio.run(_run())
@@ -6882,7 +6880,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "id": "call-fragmented",
                 "function": {"name": "ter", "arguments": '{"com'},
             },
-            {"index": 0, "function": {"name": "min", "arguments": "mand\":"}},
+            {"index": 0, "function": {"name": "min", "arguments": 'mand":'}},
             {"index": 0, "function": {"name": "al", "arguments": '"echo"}'}},
         ]:
             _monitor_openai_chunk(
@@ -6980,9 +6978,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
         )
 
-    def test_streamed_tool_monitor_uses_ids_when_indexes_are_reused_or_omitted(
-        self, monkeypatch
-    ):
+    def test_streamed_tool_monitor_uses_ids_when_indexes_are_reused_or_omitted(self, monkeypatch):
         import routes.inference as inf_mod
 
         monitor = ApiMonitor(max_entries = 3)
@@ -7016,9 +7012,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         )
 
     @pytest.mark.parametrize("terminal", ["cancelled", "error", "eof"])
-    def test_streamed_tool_monitor_terminal_cleanup_is_request_local(
-        self, monkeypatch, terminal
-    ):
+    def test_streamed_tool_monitor_terminal_cleanup_is_request_local(self, monkeypatch, terminal):
         import routes.inference as inf_mod
 
         monitor = ApiMonitor(max_entries = 3)
@@ -7067,9 +7061,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     {
                         "index": 0,
                         "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": '{"b":2}'}}
-                            ]
+                            "tool_calls": [{"index": 0, "function": {"arguments": '{"b":2}'}}]
                         },
                     }
                 ]
@@ -7148,9 +7140,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 }
             ]
         }
-        finish_chunk = {
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
-        }
+        finish_chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}
         if tool_first:
             for chunk in (tool_chunk, finish_chunk, text_chunk):
                 _monitor_openai_chunk(monitor_id, chunk, streaming = True)
@@ -7205,10 +7195,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert all(len(call.name) <= 501 for call in entry.openai_stream_tool_calls)
         assert all(len(call.arguments) <= 501 for call in entry.openai_stream_tool_calls)
         assert (
-            sum(
-                len(call.name) + len(call.arguments)
-                for call in entry.openai_stream_tool_calls
-            )
+            sum(len(call.name) + len(call.arguments) for call in entry.openai_stream_tool_calls)
             <= 12000
         )
         monitor.finish(monitor_id, "cancelled")

@@ -5145,9 +5145,7 @@ def _monitor_tool_calls_text(tool_calls: Any) -> str:
 
 
 def _monitor_stream_tool_call_deltas(
-    monitor_id: Optional[str],
-    choice_index: int,
-    tool_calls: Any,
+    monitor_id: Optional[str], choice_index: int, tool_calls: Any
 ) -> bool:
     if not isinstance(tool_calls, list):
         return False
@@ -5180,8 +5178,7 @@ def _monitor_stream_tool_call_deltas(
 
 
 def _flush_monitor_stream_tool_calls(
-    monitor_id: Optional[str],
-    choice_index: Optional[int] = None,
+    monitor_id: Optional[str], choice_index: Optional[int] = None
 ) -> None:
     calls, separate = api_monitor.take_openai_tool_calls(
         monitor_id,

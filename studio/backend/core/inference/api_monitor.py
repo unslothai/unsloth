@@ -472,14 +472,16 @@ class ApiMonitor:
             state = None
             if call_id is not None:
                 state = next(
-                    (candidate for candidate in reversed(same_choice) if candidate.call_id == call_id),
+                    (
+                        candidate
+                        for candidate in reversed(same_choice)
+                        if candidate.call_id == call_id
+                    ),
                     None,
                 )
             if state is None:
                 same_index = [
-                    candidate
-                    for candidate in same_choice
-                    if candidate.tool_index == tool_index
+                    candidate for candidate in same_choice if candidate.tool_index == tool_index
                 ]
                 if call_id is None:
                     state = same_index[-1] if same_index else None
@@ -554,9 +556,7 @@ class ApiMonitor:
             entry.openai_stream_last_segment_was_tool = True
             selected_ids = {id(state) for state in selected}
             entry.openai_stream_tool_calls = [
-                state
-                for state in entry.openai_stream_tool_calls
-                if id(state) not in selected_ids
+                state for state in entry.openai_stream_tool_calls if id(state) not in selected_ids
             ]
             entry.updated_at = time.time()
             return [(state.name, state.arguments) for state in selected], separate
