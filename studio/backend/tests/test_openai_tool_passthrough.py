@@ -7381,9 +7381,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     {
                         "index": 0,
                         "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": '"weather"}'}}
-                            ]
+                            "tool_calls": [{"index": 0, "function": {"arguments": '"weather"}'}}]
                         },
                     }
                 ]

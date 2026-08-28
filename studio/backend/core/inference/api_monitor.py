@@ -601,8 +601,7 @@ class ApiMonitor:
                 state for state in entry.openai_stream_tool_calls if id(state) not in selected_ids
             ]
             remaining_indexes = {
-                state.choice_index: state.tool_index
-                for state in entry.openai_stream_tool_calls
+                state.choice_index: state.tool_index for state in entry.openai_stream_tool_calls
             }
             if choice_index is None:
                 entry.openai_stream_last_tool_indexes = remaining_indexes
