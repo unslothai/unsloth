@@ -153,6 +153,11 @@ test("escaped math recovery preserves literal and non-math dollars", () => {
     ],
     [String.raw`\$5 to 10\$ is prose`, String.raw`\$5 to 10\$ is prose`],
     [
+      String.raw`\$read-only\$ is a label`,
+      String.raw`\$read-only\$ is a label`,
+    ],
+    [String.raw`\$USD/EUR\$ is a pair`, String.raw`\$USD/EUR\$ is a pair`],
+    [
       String.raw`\$5\$ + \$10\$ and \$v_s\$`,
       String.raw`\$5\$ + \$10\$ and $v_s$`,
     ],
@@ -210,6 +215,19 @@ $$`,
     [String.raw`\$${longBody}\$ + \$x\$`, String.raw`\$${longBody}\$ + $x$`],
     [String.raw`\$v_s is incomplete`, String.raw`\$v_s is incomplete`],
     [String.raw`literal \$ then \$v_s\$`, String.raw`literal \$ then $v_s$`],
+    [
+      String.raw`Price is \$5; formula is \$v_s\$`,
+      String.raw`Price is \$5; formula is $v_s$`,
+    ],
+    [String.raw`literal \$ + \$v_s\$`, String.raw`literal \$ + $v_s$`],
+    [
+      String.raw`Before \$x + ` + "`y`" + String.raw`\$ then \$z\$`,
+      String.raw`Before \$x + ` + "`y`" + String.raw`\$ then $z$`,
+    ],
+    [
+      String.raw`Before \$x + [y](https://e.test)\$ then \$z\$`,
+      String.raw`Before \$x + [y](https://e.test)\$ then $z$`,
+    ],
     ["\\$a\nb\\$ crosses a line", "\\$a\nb\\$ crosses a line"],
   ];
 

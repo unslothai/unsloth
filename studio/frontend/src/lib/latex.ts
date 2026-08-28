@@ -352,6 +352,24 @@ export function isInRegion(
   return false;
 }
 
+function intersectsRegion(
+  start: number,
+  end: number,
+  regions: Array<[number, number]>,
+): boolean {
+  let low = 0;
+  let high = regions.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (regions[middle][1] <= start) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low < regions.length && regions[low][0] < end;
+}
+
 /** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
 const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 
@@ -408,6 +426,21 @@ function looksLikeMathBody(body: string): boolean {
   if (!/\s/.test(trimmed)) return true;
   if (!MATH_OP_RE.test(trimmed)) return false;
   return LONE_LETTER_RE.test(trimmed);
+}
+
+const OPERATOR_ONLY_RE = /^[=+\-<>/*]+$/;
+const PLAIN_WORD_EXPRESSION_RE = /^[a-zA-Z]{2,}(?:[-/][a-zA-Z]{2,})+$/;
+
+function looksLikeEscapedMathBody(body: string): boolean {
+  const trimmed = body.trim();
+  if (
+    OPERATOR_ONLY_RE.test(trimmed) ||
+    PLAIN_WORD_EXPRESSION_RE.test(trimmed) ||
+    (/^[a-zA-Z]+$/.test(trimmed) && trimmed.length > 1)
+  ) {
+    return false;
+  }
+  return looksLikeMathBody(trimmed);
 }
 
 /**
@@ -598,28 +631,30 @@ function normalizeEscapedInlineMath(content: string): string {
       if (content[closing] !== "$" || !isEscapedDollar(content, closing)) {
         continue;
       }
-      opening = closing;
-      if (content[closing + 1] === "$" || isInRegion(closing, skipRegions)) {
+      if (
+        content[closing + 1] === "$" ||
+        isInRegion(closing, skipRegions) ||
+        intersectsRegion(opener, closing + 1, skipRegions)
+      ) {
+        opening = closing - 1;
         break;
       }
 
       const body = content.slice(opener + 1, closing - 1);
       const trimmed = body.trim();
-      if (
-        body.length <= 200 &&
-        /^[a-zA-Z]+$/.test(trimmed) &&
-        trimmed.length > 1
-      ) {
-        opening = closing - 1;
+      if (body.length > 200) {
+        opening = closing;
         break;
       }
-      if (body.length > 200 || !looksLikeMathBody(trimmed)) {
+      if (!looksLikeEscapedMathBody(trimmed)) {
+        opening = closing - 1;
         break;
       }
 
       append(content.slice(last, opener - 1));
       append(`$${trimmed}$`);
       last = closing + 1;
+      opening = closing;
       break;
     }
   }
