@@ -68,6 +68,7 @@ type FormState = {
   arguments: ArgumentRow[];
   stdioSnapshot: McpStdioSnapshot | null;
   headers: HeaderRow[];
+  credentialTransport: Exclude<FormTransport, "unknown"> | null;
   useOauth: boolean;
 };
 
@@ -78,6 +79,7 @@ const EMPTY_FORM: FormState = {
   arguments: [],
   stdioSnapshot: null,
   headers: [],
+  credentialTransport: null,
   useOauth: false,
 };
 
@@ -415,6 +417,7 @@ export function ChatMcpServersDialog({
       arguments: [],
       stdioSnapshot: null,
       headers: headersFromObject(server.headers ?? {}),
+      credentialTransport: isHttpAddress(server.url) ? "http" : "stdio",
       useOauth: server.use_oauth ?? false,
     };
 
@@ -606,6 +609,7 @@ export function ChatMcpServersDialog({
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");
       } else {
+        if (url === undefined) return;
         await createMcpServer({
           displayName: trimmedName,
           url,
@@ -795,12 +799,26 @@ export function ChatMcpServersDialog({
                 disabled={formPending}
                 onChange={(e) => {
                   const url = e.target.value;
+                  const transport = transportFromAddress(url);
                   setCodecError(null);
-                  setForm((prev) => ({
-                    ...prev,
-                    url,
-                    transport: transportFromAddress(url),
-                  }));
+                  setForm((prev) => {
+                    const nextCredentialTransport =
+                      transport === "unknown"
+                        ? prev.credentialTransport
+                        : transport;
+                    const transportChanged =
+                      transport !== "unknown" &&
+                      prev.credentialTransport !== null &&
+                      prev.credentialTransport !== transport;
+                    return {
+                      ...prev,
+                      url,
+                      transport,
+                      headers: transportChanged ? [] : prev.headers,
+                      credentialTransport: nextCredentialTransport,
+                      useOauth: transport === "stdio" ? false : prev.useOauth,
+                    };
+                  });
                 }}
                 placeholder={
                   addressIsCommand
@@ -839,7 +857,7 @@ export function ChatMcpServersDialog({
               </div>
             )}
 
-            {!addressIsCommand && (
+            {form.transport === "http" && (
               <div className="flex items-start justify-between gap-3">
                 <div className="flex flex-col gap-0.5">
                   <Label className="text-sm" htmlFor="mcp-oauth">
@@ -862,12 +880,16 @@ export function ChatMcpServersDialog({
               </div>
             )}
 
-            <HeadersEditor
-              rows={form.headers}
-              onChange={(headers) => setForm((prev) => ({ ...prev, headers }))}
-              stdio={addressIsCommand}
-              disabled={formPending}
-            />
+            {form.transport !== "unknown" && (
+              <HeadersEditor
+                rows={form.headers}
+                onChange={(headers) =>
+                  setForm((prev) => ({ ...prev, headers }))
+                }
+                stdio={addressIsCommand}
+                disabled={formPending}
+              />
+            )}
 
             <div className="flex items-center justify-between gap-2 pt-2">
               <Button

@@ -129,7 +129,7 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
   );
   assert.match(dialog, /addressIsCommand && \(\s*<ArgumentsEditor/);
   assert.match(dialog, /const addressIsCommand = form\.transport === "stdio"/);
-  assert.match(dialog, /transport: transportFromAddress\(url\)/);
+  assert.match(dialog, /const transport = transportFromAddress\(url\)/);
   assert.match(
     dialog,
     /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setView\(\{ kind: "list" \}\)/,
@@ -138,7 +138,10 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
     dialog,
     /function ArgumentsEditor[\s\S]*\{ id: newRowId\(\), value: "" \}/,
   );
-  assert.match(dialog, /!addressIsCommand && \([\s\S]*Use OAuth sign-in/);
+  assert.match(
+    dialog,
+    /form\.transport === "http" && \([\s\S]*Use OAuth sign-in/,
+  );
   assert.match(dialog, /const decision = resolveMcpStdioUrl\(/);
   assert.match(
     dialog,
@@ -161,6 +164,10 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
   assert.match(dialog, /URL or executable/);
   assert.match(dialog, /https:\/\/example\.com\/mcp or npx/);
   assert.match(dialog, /Add local arguments in the Arguments rows/);
+  assert.match(
+    dialog,
+    /const transportChanged =[\s\S]*prev\.credentialTransport !== transport;[\s\S]*headers: transportChanged \? \[\] : prev\.headers/,
+  );
   assert.doesNotMatch(dialog, /form\.url\.(?:split|join)\s*\(/);
   assert.doesNotMatch(dialog, /form\.arguments[^;\n]*\.join\s*\(/);
 });
@@ -231,7 +238,7 @@ test("a decode error is announced and executable edits unlock manual recovery", 
 
   assert.match(
     dialog,
-    /id="mcp-url"[\s\S]*?onChange=\{\(e\) => \{[\s\S]*?setCodecError\(null\)[\s\S]*?transport: transportFromAddress\(url\)/,
+    /id="mcp-url"[\s\S]*?onChange=\{\(e\) => \{[\s\S]*?setCodecError\(null\)[\s\S]*?transport,/,
   );
   assert.match(
     dialog,
