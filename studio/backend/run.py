@@ -538,10 +538,6 @@ def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
 
-def _tunnel_origin_host_for(host: str) -> str:
-    return wildcard_loopback_host(host) or host
-
-
 def _url_host(host: str) -> str:
     url_host = host.replace("%", "%25")
     return (
@@ -2701,11 +2697,9 @@ def run_server(
         api_only = api_only,
         is_colab = _IS_COLAB,
     )
-    _tunnel_origin_host = _tunnel_origin_host_for(host)
     configure_remote_access(
         app.state,
         port = port,
-        origin_host = _tunnel_origin_host,
         intent = cloudflare_intent,
         is_colab = _IS_COLAB,
         launch_managed = _launch_tunnel_managed,
@@ -2878,7 +2872,7 @@ def run_server(
             start_studio_tunnel(
                 port,
                 managed_by = "launch",
-                origin_host = _tunnel_origin_host,
+                origin_host = app.state.server_request_host,
             )
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
