@@ -1055,6 +1055,37 @@ def test_the_arm64_demotion_reaches_only_the_report():
     ), "the ARM64 demotion is read somewhere other than the GPU visibility gate."
 
 
+def test_the_arm64_excuse_is_decided_on_the_wheel_not_the_host():
+    """Excusing an ARM64 AMD host outright contradicts the fact that made the demotion necessary.
+
+    The ROCm override carries no host-arch gate, so the emulated x64 Python this installer prefers
+    can hold a real win_amd64 +rocm wheel here, and an explicit ROCm pin routes the same way. A
+    blanket exclusion silences precisely the report #8473 exists to make. torch.version.hip is a
+    BUILD constant, so it names the installed wheel even when the runtime cannot initialise, which
+    is the state under test.
+    """
+    text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    code = "\n".join(
+        ln for ln in text.splitlines() if not ln.strip().startswith("#")
+    )
+    assert "-not $_gpuCheckArm64Amd -and" not in code, (
+        "the gate excuses an ARM64 AMD host before the probe runs, so a +rocm wheel that cannot "
+        "see its GPU is never reported there."
+    )
+    assert (
+        "$_gpuCheckArm64Excused = $_gpuCheckArm64Amd -and -not $_gpuVisibility.Hip" in code
+    ), "the ARM64 excuse no longer reads the wheel the probe found."
+    assert "-not $_gpuCheckArm64Excused" in code
+
+    # It has to be decided after the probe, or it reads a Hip that does not exist yet.
+    probe = code.index("$_gpuVisibility = Get-TorchGpuVisibility")
+    excuse = code.index("$_gpuCheckArm64Excused = ")
+    assert probe < excuse, (
+        "the excuse is computed before the probe, so $_gpuVisibility.Hip is always empty and "
+        "every ARM64 AMD host is excused regardless of its wheel."
+    )
+
+
 def test_a_local_cpu_fallback_is_not_a_mismatch():
     """$ROCmCpuFallback / $XpuCpuFallback mean this run failed to install the GPU wheel and
     force-installed CPU torch on purpose. $InstallerTorchTag carries neither, so without them the

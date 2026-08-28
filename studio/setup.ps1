@@ -5673,7 +5673,13 @@ $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
     (Test-OneApiSelectorExcludesGpu $env:ONEAPI_DEVICE_SELECTOR) -or
         (Test-ZeAffinityMaskHidesAll $env:ZE_AFFINITY_MASK)
 } else { $false }
-# An ARM64 host gets CPU torch by design, so a CPU verdict there is the routing working.
+# An ARM64 AMD host usually gets CPU torch by design, and a CPU verdict there is the routing
+# working. "Usually" is the whole difficulty: the stale-venv fix on this same branch established
+# that the ROCm override carries no host-arch gate of its own, so the emulated x64 Python this
+# installer prefers really can end up holding a win_amd64 +rocm wheel here, and an explicit ROCm
+# pin routes the same way. Excusing the host outright would then silence the one report #8473
+# exists to make. So this only marks the host as a CANDIDATE; whether it is excused is decided
+# below against the wheel the probe actually found.
 $_gpuCheckArm64Amd = ($_gpuCheckAnnounced -like "AMD*") -and -not $AmdWheelsReachThisHost
 # This run already told the user the GPU wheel would not install and fell back to CPU on purpose
 # ($ROCmCpuFallback / $XpuCpuFallback, set at the two force-reinstall arms below the index
@@ -5685,7 +5691,6 @@ $_gpuCheckLocalCpuFallback = $ROCmCpuFallback -or $XpuCpuFallback
 if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and
     ($InstallerTorchTag -ne "cpu") -and
     -not $_gpuCheckMasked -and
-    -not $_gpuCheckArm64Amd -and
     -not $_gpuCheckLocalCpuFallback -and
     -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
     (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
@@ -5693,8 +5698,14 @@ if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu"
     # A hybrid Intel/NVIDIA host on the XPU wheel answers False for CUDA and still runs on the GPU
     # (_detect_hardware_locked falls through CUDA -> XPU), so reporting it would be a false alarm.
     # Gated on what the probe SAW, not the wheel label: a +xpu wheel with a dead runtime is reported.
+    # The ARM64 AMD excuse, decided here rather than at the gate because it needs the wheel and
+    # only the probe knows it. torch.version.hip is a BUILD constant: a ROCm wheel reports it even
+    # when the runtime cannot initialise, which is exactly the state being reported. So a hip-less
+    # wheel on an ARM64 AMD host is the documented CPU routing and is excused, while a +rocm wheel
+    # that cannot see its GPU is reported like anywhere else.
+    $_gpuCheckArm64Excused = $_gpuCheckArm64Amd -and -not $_gpuVisibility.Hip
     if ($_gpuVisibility.Answered -and -not $_gpuVisibility.SeesGpu -and
-        -not $_gpuVisibility.SeesXpu) {
+        -not $_gpuVisibility.SeesXpu -and -not $_gpuCheckArm64Excused) {
         $_gpuCheckHip = if ($_gpuVisibility.Hip) { $_gpuVisibility.Hip } else { "none" }
         # An Intel announcement is held to BOTH answers, so only there may the report name torch.xpu.
         $_gpuCheckApi = if ($_gpuCheckAnnounced -like "Intel*") {

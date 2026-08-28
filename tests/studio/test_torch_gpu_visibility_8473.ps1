@@ -495,8 +495,20 @@ $reachPat = '(?m)^\$AmdWheelsReachThisHost = .*$'
 $reachExpr = if ($setupText -match $reachPat) { $Matches[0] } else { "" }
 Check "the host-arch flag exists"       ($reachExpr -ne "")
 Check "and it is the one reading arch"  ($reachExpr -match 'Get-HostMachineArch.*arm64')
-Check "the report excludes ARM64 AMD"   ($report -match '-not \$_gpuCheckArm64Amd')
 Check "scoped to the AMD arm"           ($reportCode -match '\$_gpuCheckArm64Amd = \(\$_gpuCheckAnnounced -like "AMD\*"\)')
+
+# ...and the ARM64 excuse is decided on the WHEEL, not on the host. Excusing ARM64 outright
+# contradicted the very fact that made the demotion necessary: the ROCm override has no host-arch
+# gate, so this host can hold a real +rocm wheel, and silencing a broken one is the bug #8473
+# exists to report. torch.version.hip is a build constant, so it names the wheel even when the
+# runtime is dead.
+Check "the gate no longer excuses on host alone" (-not ($reportCode -match '-not \$_gpuCheckArm64Amd -and'))
+Check "the excuse reads the wheel"      ($reportCode -match '\$_gpuCheckArm64Excused = \$_gpuCheckArm64Amd -and -not \$_gpuVisibility\.Hip')
+Check "and the report honours it"       ($reportCode -match '-not \$_gpuCheckArm64Excused')
+# The excuse must be decided after the probe, or it reads a Hip that does not exist yet.
+$_excuseLine = ($setupText -split "`n" | Select-String -Pattern '\$_gpuCheckArm64Excused = ' | Select-Object -First 1).LineNumber
+$_probeLine  = ($setupText -split "`n" | Select-String -Pattern '\$_gpuVisibility = Get-TorchGpuVisibility' | Select-Object -First 1).LineNumber
+Check "it is decided after the probe"   ($_probeLine -and $_excuseLine -and $_probeLine -lt $_excuseLine)
 
 # The venv-wipe chain itself, driven rather than asserted about. An ARM64 host with a wheeled
 # arch and an installed +rocm wheel must expect "rocm" and stand pat.
