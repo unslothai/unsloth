@@ -202,17 +202,20 @@ async function isAudioOnly3gpFile(file: File): Promise<boolean> {
   return found.audio && !found.video;
 }
 
-/** Whether a file's own tracks have to be read before it can be classified.
- *  Cheap and synchronous, so a surface can keep its existing path for
- *  everything else. */
+/**
+ * Whether a file's own tracks have to be read before it can be classified.
+ * Cheap and synchronous, so a surface can keep its existing path for everything
+ * else.
+ *
+ * No size condition. One was here, at the composer's video cap, and the video
+ * reference surface accepts a larger file than that, so a recording in between
+ * skipped inspection and was staged as a video reference on its extension
+ * alone. A ceiling that has to track every surface's limit is a ceiling that
+ * will fall behind one of them, and the walk below is bounded by box count and
+ * by the size of the track table rather than by the size of the file.
+ */
 export function needsAttachmentTrackInspection(file: File): boolean {
-  return (
-    /\.3gp$/i.test(file.name) &&
-    !/^audio\//i.test(file.type) &&
-    // Past this every surface here refuses the file whichever it turns out to
-    // be, so reading its tracks would only change which refusal it gets.
-    file.size <= MAX_VIDEO_SIZE
-  );
+  return /\.3gp$/i.test(file.name) && !/^audio\//i.test(file.type);
 }
 
 /**

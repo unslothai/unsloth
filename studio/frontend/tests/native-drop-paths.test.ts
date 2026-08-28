@@ -2073,3 +2073,101 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
   );
   assert.match(picker, /await classifiedAttachmentFile\(picked\)/);
 });
+
+test("only a real charset parameter is a charset declaration", async () => {
+  // "name=" can carry a filename that reads like one. Taking the first match
+  // anywhere in the header stopped at the filename and never saw the parameter.
+  const enc = new TextEncoder();
+  const named = new Uint8Array([
+    ...enc.encode(
+      'Content-Type: text/plain; name="charset=windows-1251.txt";' +
+        " charset=windows-1252\r\n\r\nCaf",
+    ),
+    0xe9,
+  ]);
+  assert.match(
+    await readTextAttachment(new File([named], "message.eml")),
+    /Café/,
+  );
+  // A filename naming a supported label would otherwise pick the wrong decoder
+  // silently, which is the worse half of the same bug.
+  const plausible = new Uint8Array([
+    ...enc.encode(
+      'Content-Type: text/plain; name="charset=windows-1251";' +
+        " charset=windows-1252\r\n\r\nCaf",
+    ),
+    0xe9,
+  ]);
+  assert.match(
+    await readTextAttachment(new File([plausible], "message.eml")),
+    /Café/,
+  );
+  // An ordinary header is unaffected, quoted or not.
+  for (const header of [
+    "Content-Type: text/plain; charset=windows-1252",
+    'Content-Type: text/plain; charset="windows-1252"',
+    "Content-Type: text/plain;charset=windows-1252",
+    "Content-Type: text/plain; CHARSET = windows-1252",
+  ]) {
+    const eml = new Uint8Array([
+      ...enc.encode(`${header}\r\n\r\nCaf`),
+      0xe9,
+    ]);
+    assert.match(
+      await readTextAttachment(new File([eml], "message.eml")),
+      /Café/,
+      header,
+    );
+  }
+});
+
+test("a truncated vCard preview reads per property too", async () => {
+  // The preview pane decodes a prefix. Applying the sole declaration to all of
+  // it showed CafÃ© for text the sent attachment renders as Café.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nEND:VCARD\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nFN:Stra"),
+    0xc3,
+    0x9f,
+    ...enc.encode("e\r\nEND:VCARD\r\n"),
+  ]);
+  const preview = decodeTextAttachmentBytes(vcf, "export.vcf", true);
+  assert.match(preview, /FN;CHARSET=windows-1252:Café/);
+  assert.match(preview, /FN:Straße/);
+  assert.equal(preview, await readTextAttachment(new File([vcf], "export.vcf")));
+
+  // A prefix cut through a character drops it rather than failing the read.
+  const cut = vcf.subarray(0, vcf.length - 12);
+  const cutPreview = decodeTextAttachmentBytes(cut, "export.vcf", true);
+  assert.match(cutPreview, /FN;CHARSET=windows-1252:Café/);
+});
+
+test("a 3GP is inspected however large the surface taking it allows", async () => {
+  // The ceiling here was the composer's video cap, and the video reference
+  // surface accepts a larger file, so a recording in between was staged as a
+  // video reference on its extension alone.
+  const { MAX_REFERENCE_BYTES: limits } = await import(
+    "../src/features/video/reference-budget.ts"
+  );
+  const recording = threeGpWithTracks(["soun"]);
+  const oversize = new File([recording], "voice.3gp", { type: "" });
+  Object.defineProperty(oversize, "size", {
+    value: Math.max(limits.video, limits.audio, MAX_TEXT_ATTACHMENT_BYTES) + 1,
+  });
+  const classified = await classifiedAttachmentFile(oversize);
+  assert.equal(classified.type, "audio/3gpp");
+  assert.equal(isVideoFile(classified), false);
+
+  // Nothing in the predicate turns on size any more, so no surface's limit can
+  // drift past it again.
+  const source = readFileSync(
+    new URL("../src/lib/video-utils.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /export function needsAttachmentTrackInspection[\s\S]*?\{\s*return \/\\\.3gp\$\/i\.test\(file\.name\) && !\/\^audio\\\/\/i\.test\(file\.type\);\s*\}/,
+  );
+});

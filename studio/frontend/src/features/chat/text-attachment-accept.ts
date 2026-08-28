@@ -632,7 +632,49 @@ function gettextHeaderCharset(text: string): string | null {
 // anywhere in the archive. Folded continuation lines start with space or tab.
 const EMAIL_CONTENT_TYPE_RE =
   /(?:^|\r?\n)Content-Type:((?:[^\r\n]*)(?:\r?\n[ \t][^\r\n]*)*)/gi;
-const EMAIL_CHARSET_RE = /charset[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/i;
+const CHARSET_LABEL_RE = /^[A-Za-z0-9._-]+/;
+
+/** A header value's parameters, media type excluded, split outside quotes. */
+function headerParameters(value: string): string[] {
+  const parameters: string[] = [];
+  let start = 0;
+  let quoted = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "\\" && quoted) {
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === ";" && !quoted) {
+      parameters.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parameters.push(value.slice(start));
+  return parameters.slice(1);
+}
+
+/**
+ * The `charset` parameter of a header value, and nothing that merely looks like
+ * one.
+ *
+ * An unanchored search took the first `charset=` anywhere in the value, so
+ * `text/plain; name="charset=windows-1251.txt"; charset=windows-1252` read the
+ * filename and stopped: either an unsupported label that refused a valid
+ * message, or a supported one that quietly chose the wrong decoder.
+ */
+function headerCharsetParameter(value: string): string | undefined {
+  for (const parameter of headerParameters(value)) {
+    const equals = parameter.indexOf("=");
+    if (equals === -1) continue;
+    if (parameter.slice(0, equals).trim().toLowerCase() !== "charset") continue;
+    const raw = parameter.slice(equals + 1).trim();
+    const unquoted = raw.startsWith('"') ? raw.slice(1) : raw;
+    return unquoted.match(CHARSET_LABEL_RE)?.[0];
+  }
+  return undefined;
+}
+
 // vCard 2.1 puts the encoding on the property: `FN;CHARSET=windows-1252:...`.
 const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
 // The delimiter a multipart header names for its own parts.
@@ -876,7 +918,7 @@ function declaredEmailCharsets(bytes: Uint8Array, fileName: string): string[] {
   const { found, add } = charsetCollector();
   for (const block of emailHeaderBlocks(text, isMbox)) {
     for (const header of block.matchAll(EMAIL_CONTENT_TYPE_RE)) {
-      add(header[1]?.match(EMAIL_CHARSET_RE)?.[1]);
+      add(headerCharsetParameter(header[1] ?? ""));
     }
   }
   return found;
@@ -944,8 +986,14 @@ const ASCII_DECODER_LABEL = "windows-1252";
  *
  * Returns null on anything it cannot account for, so the caller falls back to
  * the whole-file reading rather than emitting a partly guessed one.
+ *
+ * @param truncated Whether `bytes` is a prefix. Only its last line can end
+ * mid-character, so only that one is read leniently.
  */
-function decodeVCardPerProperty(bytes: Uint8Array): string | null {
+function decodeVCardPerProperty(
+  bytes: Uint8Array,
+  truncated: boolean,
+): string | null {
   const ascii = new TextDecoder(ASCII_DECODER_LABEL);
   const utf8 = new TextDecoder("utf-8", { fatal: true });
   const decoders = new Map<string, TextDecoder | null>();
@@ -969,16 +1017,25 @@ function decodeVCardPerProperty(bytes: Uint8Array): string | null {
         ? lineBreak - 1
         : lineBreak;
     const folded = bytes[position] === 0x20 || bytes[position] === 0x09;
+    // Only a prefix read can end mid-character, and only on its final line, so
+    // that one line is decoded leniently and every other stays strict.
+    const cut = truncated && lineBreak === bytes.length;
     try {
       if (folded) {
         // A continuation of the value above, so it keeps that charset.
         if (!valueDecoder) return null;
-        out.push(valueDecoder.decode(bytes.subarray(position, contentEnd)));
+        out.push(
+          valueDecoder.decode(bytes.subarray(position, contentEnd), {
+            stream: cut,
+          }),
+        );
       } else {
         const delimiter = vCardValueDelimiter(bytes, position, contentEnd);
         if (delimiter === -1) {
           // Not a property line. Only ASCII can be read without a declaration.
-          out.push(utf8.decode(bytes.subarray(position, contentEnd)));
+          out.push(
+            utf8.decode(bytes.subarray(position, contentEnd), { stream: cut }),
+          );
           valueDecoder = utf8;
         } else {
           const parameters = ascii.decode(bytes.subarray(position, delimiter));
@@ -991,7 +1048,11 @@ function decodeVCardPerProperty(bytes: Uint8Array): string | null {
           valueDecoder = decoderFor(charsets[0] ?? null);
           if (!valueDecoder) return null;
           out.push(parameters, ":");
-          out.push(valueDecoder.decode(bytes.subarray(delimiter + 1, contentEnd)));
+          out.push(
+            valueDecoder.decode(bytes.subarray(delimiter + 1, contentEnd), {
+              stream: cut,
+            }),
+          );
         }
       }
     } catch {
@@ -1055,14 +1116,13 @@ export function decodeTextAttachmentBytes(
     return decodeWithCharset(bytes, gettextCharset, fileName, truncated);
   }
   const vCardCharsets = declaredVCardCharsets(bytes, fileName);
-  if (vCardCharsets.length > 0 && !truncated) {
+  if (vCardCharsets.length > 0) {
     // CHARSET is a property parameter whatever the count, so one declaration
     // speaks for its own property and not for the file: an export holding a 2.1
     // card beside a 3.0 one, which cannot declare anything, read the whole
     // bundle in the 2.1 card's charset and turned the other into mojibake.
-    // A prefix is excluded, since the property a read cut in half has no
-    // charset that would make it whole.
-    const perProperty = decodeVCardPerProperty(bytes);
+    // A preview reads the same way, so what it shows is what gets sent.
+    const perProperty = decodeVCardPerProperty(bytes, truncated);
     if (perProperty !== null) {
       return perProperty;
     }
