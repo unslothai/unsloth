@@ -162,9 +162,7 @@ class _PassthroughCommand(TyperCommand):
         return remaining
 
 
-# Gateway/provider routing overrides ANTHROPIC_BASE_URL, so an inherited
-# Foundry/Bedrock/Vertex setup would silently send local-agent traffic to the
-# remote gateway instead of the local Unsloth server (#9864).
+# provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
 _CLAUDE_ENV_UNSET = (
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
