@@ -98,6 +98,7 @@ def _reset_scope_cache() -> None:
 def _read_settings() -> tuple[str, bool]:
     try:
         from storage.studio_db import get_app_settings
+
         # One connection, one snapshot -- get_app_settings() exists precisely so a
         # concurrent multi-key write cannot pair one save's scope with another
         # save's tools value, the way two separate get_app_setting() calls could.
