@@ -210,6 +210,46 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert backend.model_identifier == "unsloth/B-GGUF"
 
 
+def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
+    backend = _FakeBackend("unsloth/A-GGUF")
+    cancel_event = threading.Event()
+    calls = []
+
+    async def _load(request, *_args, load_cancel_event = None, **_kwargs):
+        assert load_cancel_event is cancel_event
+        calls.append(request)
+        backend.model_identifier = request.model_path
+        backend.is_loaded = True
+        cancel_event.set()
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/B.gguf", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = _load,
+    )
+    request = types.SimpleNamespace(
+        state = types.SimpleNamespace(generation_cancel_event = cancel_event)
+    )
+    inference_route._set_preview_resident(None)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inference_route._maybe_auto_switch_model(
+                    "unsloth/B-GGUF", request, "tester", claim_resident = False
+                )
+            )
+
+        assert exc.value.status_code == 409
+        assert len(calls) == 1
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+        assert backend._loaded_by_user_action is False
+        assert inference_route._is_preview_resident("/models/B.gguf")
+    finally:
+        inference_route._set_preview_resident(None)
+
+
 def test_resident_model_skips_the_filesystem_resolver(monkeypatch):
     backend = _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL")
     rec = _LoadRecorder(backend)

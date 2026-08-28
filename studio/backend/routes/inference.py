@@ -7764,20 +7764,17 @@ async def _maybe_auto_switch_model(
                                     current_request_counted = True,
                                     **durable_cancel_kw,
                                 )
-                            _raise_if_generation_cancelled()
                             _switch_loaded_ok = True
+                            # publish the completed load before a late cancellation is observed.
+                            target_backend._openai_advertised_id = override_id
+                            target_backend._loaded_by_user_action = False
+                            _raise_if_generation_cancelled()
                         finally:
                             if not claim_resident:
                                 if _switch_loaded_ok or _loaded_slot_ident() == target_id:
                                     _set_preview_resident(_loaded_slot_ident())
                                 else:
                                     _set_preview_resident(_switch_prior_marker)
-                        # Advertise the repo id (not the concrete load path) as the loaded
-                        # model's public id and override key for /v1/models and idle stash.
-                        target_backend._openai_advertised_id = override_id
-                        # API provenance on whichever backend took the load: idle
-                        # auto-unload may free this one even when scoped to API loads.
-                        target_backend._loaded_by_user_action = False
                 finally:
                     # Deregister before releasing the gate: otherwise a swap on another
                     # loop counts this finished request as queued and unloads its model.
