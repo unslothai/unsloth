@@ -3318,7 +3318,13 @@ def _rocm_torch_family_needs_repair(
     if _family is not None:
         _leaf = (_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx or "") or "").lower()
         if _family != _leaf:
-            return True
+            # Only when some index can serve the target. A gfx1010 has no leaf and no generic
+            # kernels either, so the mismatch is real but unfixable: _ensure_rocm_torch
+            # declines the reinstall on the same question, and promising a repair it refuses
+            # buys a full dependency pass on EVERY update and never a working torch. An empty
+            # leaf is not the test -- gfx942 and the other datacentre parts have none, and are
+            # served by the generic index.
+            return _gfx_has_a_wheel_route(runtime_gfx)
         # The family is the right SHAPE, not necessarily a working build. _already_on_leaf
         # keeps a matching family only above the 2.11 floor, since below it these leaves
         # carry the _grouped_mm bug; answering False on a 2.10 build would keep the fast path

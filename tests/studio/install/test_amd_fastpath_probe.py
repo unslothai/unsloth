@@ -651,3 +651,17 @@ def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
     # The same stale family without a pin is exactly what the repair is for.
     _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1151",))
     assert _needs_pass() is True
+
+
+def test_a_stale_family_no_index_can_repair_keeps_the_fast_path(monkeypatch):
+    """The preflight must not promise a repair the repair declines. gfx1010 has no AMD leaf
+    and no generic kernels, so _ensure_rocm_torch refuses the reinstall on the same
+    routability question; answering True here buys a full dependency pass on every update and
+    never a working torch."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1010",))
+    assert _needs_pass() is False
+    # An empty leaf is not the test: the datacentre parts have none and the generic index
+    # serves them, so their stale family is still worth the pass.
+    for _gfx in ("gfx942", "gfx950"):
+        _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = (_gfx,))
+        assert _needs_pass() is True, _gfx
