@@ -7423,6 +7423,15 @@ class LlamaCppBackend:
             logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
     @staticmethod
+    def _unmasked_child_gpu_physical_ids() -> Optional[tuple[int, ...]]:
+        from utils.hardware import get_parent_visible_gpu_ids
+
+        parent_gpu_ids = get_parent_visible_gpu_ids()
+        if len(parent_gpu_ids) == 1:
+            return (int(parent_gpu_ids[0]),)
+        return None
+
+    @staticmethod
     def _pin_visible_gpu_order_for_split(env: dict) -> Optional[tuple[int, ...]]:
         """Pin the child's GPU enumeration to the picker's order for a manual
         ``--tensor-split`` across the whole visible set. CUDA's default
@@ -21576,10 +21585,7 @@ class LlamaCppBackend:
                 )
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
                 if not is_vulkan_backend and _gpu_mem:
-                    from utils.hardware import get_parent_visible_gpu_ids
-                    _parent_gpu_ids = get_parent_visible_gpu_ids()
-                    if _parent_gpu_ids:
-                        _child_gpu_physical_ids = tuple(int(i) for i in _parent_gpu_ids)
+                    _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
 
                 # The CUDA SM gate goes here, where the child's GPU visibility is
                 # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
