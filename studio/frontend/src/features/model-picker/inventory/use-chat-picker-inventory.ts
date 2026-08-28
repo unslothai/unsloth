@@ -10,6 +10,7 @@ import {
   type CachedInventoryRow,
   type LocalInventoryRow,
   type LocalSource,
+  epochMillisecondsToSeconds,
   isHiddenModelId,
   studioPageForTask,
   useHubInventory,
@@ -29,18 +30,13 @@ function isCompleteCachedRow(row: CachedInventoryRow): boolean {
 }
 
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
-  // The unit seam. This DTO's `last_modified` is epoch SECONDS off the raw
-  // endpoints, but the row here is already normalized, so what leaves is epoch
-  // MILLISECONDS. Safe only because every consumer subtracts like for like or
-  // stringifies and no list mixes the two origins. Formatting it, or comparing
-  // it to a Date.now() clock, requires normalizing first.
   return {
     repo_id: row.repoId,
     // Listed by repo id, loaded by the pinned id: dropping it sends the picker back down the ref.
     load_id: row.loadId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",
-    last_modified: row.lastModified ?? undefined,
+    last_modified: epochMillisecondsToSeconds(row.lastModified),
     has_vision: row.capabilities.supportsVision,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
@@ -55,7 +51,7 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     // Delete targets the copy the row describes; without it the request hits the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
-    last_modified: row.lastModified ?? undefined,
+    last_modified: epochMillisecondsToSeconds(row.lastModified),
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
     tags: row.tags,
@@ -73,7 +69,7 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
     source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
-    updated_at: row.updatedAt,
+    updated_at: epochMillisecondsToSeconds(row.updatedAt),
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
   };

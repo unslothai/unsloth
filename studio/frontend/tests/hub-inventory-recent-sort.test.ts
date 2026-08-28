@@ -11,9 +11,11 @@ registerBundlerResolver();
 const { compareInventoryItemsByRecent } = await import(
   "../src/features/hub/catalog/inventory-sort.ts"
 );
-const { buildCachedInventoryRow, buildLocalInventoryRows } = await import(
-  "../src/features/hub/inventory/view-models.ts"
-);
+const {
+  buildCachedInventoryRow,
+  buildLocalInventoryRows,
+  epochMillisecondsToSeconds,
+} = await import("../src/features/hub/inventory/view-models.ts");
 
 function cached(repoId: string, lastModified?: number) {
   return {
@@ -71,4 +73,9 @@ test("Recent puts unknown timestamps last and leaves ties stable", () => {
     sorted.map((item) => item.row.id),
     [firstTie.row.id, secondTie.row.id, unknownCached.row.id],
   );
+});
+
+test("picker dto timestamps stay in epoch seconds", () => {
+  assert.equal(epochMillisecondsToSeconds(1_900_000_000_500), 1_900_000_000.5);
+  assert.equal(epochMillisecondsToSeconds(null), undefined);
 });

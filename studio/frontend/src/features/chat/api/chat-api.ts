@@ -492,9 +492,8 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Newest downloaded quant; sorts Downloaded newest-first. Epoch seconds from
-   * `listCachedGguf`, milliseconds via the picker inventory. Compare only against
-   * each other, never a `Date.now()` clock. Optional for older backends. */
+  /** epoch seconds of the newest downloaded quant; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
@@ -636,9 +635,8 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Newest downloaded weight file; sorts Downloaded newest-first. Epoch seconds
-   * from `listCachedModels`, milliseconds via the picker inventory. Compare only
-   * against each other, never a `Date.now()` clock. Optional for older backends. */
+  /** epoch seconds of the newest downloaded weight file; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;

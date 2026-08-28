@@ -44,6 +44,7 @@ export {
   buildLocalInventoryRows,
   buildCachedInventoryRow,
   defaultCapabilities,
+  epochMillisecondsToSeconds,
   formatLocalUpdated,
   localSourceLabel,
   normalizeCapabilities,

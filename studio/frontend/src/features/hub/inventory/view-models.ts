@@ -52,6 +52,13 @@ export function normalizeTimestamp(value?: number | null): number | null {
   return value < 10_000_000_000 ? value * 1000 : value;
 }
 
+/** convert a normalized inventory timestamp back to the backend dto unit. */
+export function epochMillisecondsToSeconds(
+  value?: number | null,
+): number | undefined {
+  return value == null ? undefined : value / 1000;
+}
+
 export function formatLocalUpdated(value?: number | null): string {
   const normalized = normalizeTimestamp(value);
   if (!normalized) return "Unknown update";
