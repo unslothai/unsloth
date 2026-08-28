@@ -99,7 +99,6 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
         ("::0", True, True),
         ("0:0:0:0:0:0:0:0", True, True),
         ("0", True, True),
-        ("", True, True),
         ("192.168.1.24", True, False),
     ],
 )
@@ -196,7 +195,6 @@ def test_private_lan_ignores_forwarding_headers(monkeypatch):
         ("::", None, "fd00::24", False, False, True),
         ("::0", None, "fd00::24", False, False, True),
         ("0", None, "192.168.1.24", False, False, True),
-        ("", None, "192.168.1.24", False, False, True),
         ("studio.lan", "192.168.1.24", "192.168.1.24", False, False, True),
         ("studio.lan", "127.0.0.1", "127.0.0.1", False, False, False),
         ("studio.lan", "64.227.100.5", "64.227.100.5", False, False, False),
@@ -298,7 +296,6 @@ def test_a_pending_admin_password_blocks_exposing_the_server(monkeypatch):
         ("::0", True, ["http://10.1.1.144:8888"]),
         ("0:0:0:0:0:0:0:0", True, ["http://10.1.1.144:8888"]),
         ("0", True, ["http://10.1.1.144:8888"]),
-        ("", True, ["http://10.1.1.144:8888"]),
         ("10.1.1.144", False, ["http://203.0.113.9:8888"]),
     ],
 )

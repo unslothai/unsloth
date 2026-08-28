@@ -342,6 +342,16 @@ def _loopback_bind_host_for(host: str) -> str:
     return "::1" if is_wildcard_host(host) and ":" in host else "127.0.0.1"
 
 
+def _require_bind_host(host: str) -> None:
+    if isinstance(host, str) and host.strip():
+        return
+    typer.echo(
+        "Error: --host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.",
+        err = True,
+    )
+    raise typer.Exit(2)
+
+
 def _url_host(host: str) -> str:
     return (
         f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
@@ -1874,6 +1884,7 @@ def studio_default(
             raise typer.Exit(2)
         return
 
+    _require_bind_host(host)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     _preserve_cloudflare_intent(cloudflare, secure)
 
@@ -2554,6 +2565,8 @@ def run(
             raise typer.Exit(1)
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
+
+    _require_bind_host(host)
 
     # --secure requires the tunnel; force a loopback bind so the raw port is never public.
     if secure:

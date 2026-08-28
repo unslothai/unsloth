@@ -26,7 +26,7 @@ def is_wildcard_host(host: str) -> bool:
     if not isinstance(host, str):
         return False
     if host == "":
-        return True
+        return False
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:

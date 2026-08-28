@@ -273,7 +273,7 @@ def test_run_display_host_delegates_wildcard_aliases_to_the_backend():
     import types
 
     studio_mod = _studio()
-    aliases = {"0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0", ""}
+    aliases = {"0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0"}
     run_mod = types.SimpleNamespace(
         _display_host_for_bind = lambda host: "198.51.100.7" if host in aliases else host
     )

@@ -50,7 +50,7 @@ _NEW_PW = "brand-new-password"
         (True, "::0", False, False, True),
         (True, "0:0:0:0:0:0:0:0", False, False, True),
         (True, "0", False, False, True),
-        (True, "", False, False, True),
+        (True, "", False, False, False),
         (True, "127.0.0.1", False, False, False),
         (True, "0.0.0.0", False, True, False),
         # Off/unset never prompts without --secure.
@@ -226,6 +226,29 @@ def _invoke_run(monkeypatch, events, args):
         context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     return CliRunner().invoke(app, args, catch_exceptions = True)
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_an_empty_bind_is_rejected_before_password_or_launch(monkeypatch, command):
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(
+        studio_mod,
+        "_enforce_password_change_before_exposure",
+        lambda **_kwargs: events.append(("password", None)),
+    )
+    if command == "default":
+        result = _invoke_studio_default(monkeypatch, events, ["--host", "", "--cloudflare"])
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "", "--cloudflare"],
+        )
+
+    assert result.exit_code == 2, result.output
+    assert "--host cannot be empty" in result.output
+    assert events == []
 
 
 # ── plain `unsloth studio` ───────────────────────────────────────────

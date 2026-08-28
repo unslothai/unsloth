@@ -2306,6 +2306,9 @@ def run_server(
     """
     global _server, _server_thread, _shutdown_event
 
+    if not isinstance(host, str) or not host.strip():
+        raise SystemExit("--host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.")
+
     boot_started = time.perf_counter()
 
     # --secure exposes ONLY the Cloudflare link, so --secure --no-cloudflare contradicts
