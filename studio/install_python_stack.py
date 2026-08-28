@@ -1950,9 +1950,9 @@ def _runtime_gfx_target(
             )
             return None, [], None, []
         gfx_devices = [inferred_linux_gfx]
-    # The machine as the probes saw it, before the ROCr layer below can reduce it to a lone
-    # survivor. _gfx_route_on_host needs this shape: a mask can hide a card from us but not
-    # from the legacy-tag decision, which re-probes the whole host.
+    # The machine as the probes saw it, before the ROCr layer can reduce it to a lone
+    # survivor. _gfx_route_on_host needs this shape: a mask hides a card from us but not from
+    # the legacy-tag decision, which re-probes the whole host.
     host_codes = list(dict.fromkeys(gfx_devices))
     # The two mask layers COMPOSE: ROCr filters first and HIP indexes the survivors (AMD's
     # GPU isolation guide: "the ROCR env var is processed first, which then reduces the

@@ -1337,10 +1337,10 @@ def test_a_named_arch_outranks_an_ordinal_the_inference_cannot_place():
     ],
 )
 def test_a_masked_gfx906_is_judged_by_the_host_the_legacy_route_probes(env):
-    """ROCr filters the list this function sees, so a physically mixed host can arrive here
-    as a lone gfx906 while _runtime_target_is_gfx906 re-probes the unfiltered machine and
-    declines the rocm6.3 tag. Deriving "is it alone" twice lets the two disagree, and the
-    demotion then installs a newer generic wheel whose BLAS has no gfx906 kernels."""
+    """ROCr filters the list this function sees, so a physically mixed host arrives as a lone
+    gfx906 while _runtime_target_is_gfx906 re-probes the whole machine and declines the
+    rocm6.3 tag. Deriving "is it alone" twice lets the two disagree, and the demotion then
+    installs a newer generic wheel whose BLAS has no gfx906 kernels."""
     calls = _run_install(
         gfx_devices = ("gfx1100", "gfx906"),
         env = env,
