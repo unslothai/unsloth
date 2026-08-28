@@ -2344,7 +2344,7 @@ class TestGfx1102Rocm64Floor:
         )
         return (
             "amd-smi() {\n"
-            "    case \"$*\" in\n"
+            '    case "$*" in\n'
             f"        *'list -e'*) printf '{hip_map}\\n' ;;\n"
             f"        *) printf '{asic}\\n' ;;\n"
             "    esac\n"
