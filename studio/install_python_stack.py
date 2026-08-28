@@ -1820,16 +1820,18 @@ _GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
 _MIXED_HOST_UNROUTABLE: "frozenset[str]" = frozenset({"gfx906"})
 
 
-def _gfx_route_on_host(gfx: "str | None", gfx_codes: "list[str] | None" = None) -> bool:
+def _gfx_route_on_host(gfx: "str | None", host_codes: "list[str] | None" = None) -> bool:
     """Whether an index can serve ``gfx`` ON THIS HOST, not on some host.
 
     _gfx_has_a_wheel_route asks it in the abstract, and gfx906 answers yes on the generic
     union while its only usable route -- the rocm6.3 legacy tag -- opens solely when gfx906 is
-    the one detected arch. Preflight and repair must ask the same question or one promises
-    work the other declines, so both come through here.
+    the one arch on the machine. ``host_codes`` is that machine BEFORE the ROCr layer, because
+    _runtime_target_is_gfx906 decides the tag from an unfiltered probe: judging by the
+    survivors instead would call a masked gfx906 alone, demote the install, and then be
+    refused the legacy tag by a function looking at the whole host.
     """
     return _gfx_has_a_wheel_route(gfx) and not (
-        gfx in _MIXED_HOST_UNROUTABLE and len(set(gfx_codes or ())) > 1
+        gfx in _MIXED_HOST_UNROUTABLE and len(set(host_codes or ())) > 1
     )
 
 
@@ -1887,8 +1889,9 @@ def _generic_rocm_wheel_lacks_kernels(
 
 def _runtime_gfx_target(
     inferred_linux_gfx: "str | None",
-) -> "tuple[str | None, list[str], str | None]":
-    """Return the selected gfx target, detected arches, and corrected physical arch.
+) -> "tuple[str | None, list[str], str | None, list[str]]":
+    """Return the selected gfx target, detected arches, corrected physical arch, and the
+    machine as the probes saw it before any ROCr filtering.
 
     Sources, strongest first: the ROCm userland probes, then KFD topology sysfs, then the
     explicit UNSLOTH_ROCM_GFX_ARCH / inferred product arch. Only the first can be renumbered
@@ -1905,7 +1908,7 @@ def _runtime_gfx_target(
     # multi-GB per-arch stack for the very GPU the user hid. Returning no target keeps the
     # generic index; a mask naming a device is unaffected and still gets ROCm torch.
     if _visible_masks_select_no_gpu():
-        return None, [], None
+        return None, [], None, []
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     # Keyed to the userland probe: ROCr spoofs that reading and no other.
     physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
@@ -1945,8 +1948,12 @@ def _runtime_gfx_target(
                 f"   cannot be read here, so the AMD per-gfx index is left alone.\n"
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
-            return None, [], None
+            return None, [], None, []
         gfx_devices = [inferred_linux_gfx]
+    # The machine as the probes saw it, before the ROCr layer below can reduce it to a lone
+    # survivor. _gfx_route_on_host needs this shape: a mask can hide a card from us but not
+    # from the legacy-tag decision, which re-probes the whole host.
+    host_codes = list(dict.fromkeys(gfx_devices))
     # The two mask layers COMPOSE: ROCr filters first and HIP indexes the survivors (AMD's
     # GPU isolation guide: "the ROCR env var is processed first, which then reduces the
     # number of GPUs that HIP can select from"). Only rocminfo is renumbered by ROCr, and
@@ -2002,6 +2009,7 @@ def _runtime_gfx_target(
                     _named_gfx,
                     list(dict.fromkeys([_named_gfx, *gfx_devices])),
                     physical_gfx,
+                    host_codes,
                 )
             _why = (
                 "ROCR_VISIBLE_DEVICES names a GPU by UUID"
@@ -2015,7 +2023,7 @@ def _runtime_gfx_target(
                 f"   selected cannot be read here, so the AMD per-gfx index is left alone.\n"
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
-            return None, [], None
+            return None, [], None, host_codes
     runtime_gfx = (
         gfx_devices[_pick_visible_index(len(gfx_devices), masks = _HIP_LAYER_MASKS)]
         if gfx_devices
@@ -2052,7 +2060,7 @@ def _runtime_gfx_target(
                 f"   GPU index you want (then rerun) to install for a different device.\n"
             )
             runtime_gfx = _discrete
-    return runtime_gfx, list(dict.fromkeys(gfx_devices)), physical_gfx
+    return runtime_gfx, list(dict.fromkeys(gfx_devices)), physical_gfx, host_codes
 
 
 def _hsa_override_gfx_arch(value: "str | None") -> "str | None":
@@ -3283,7 +3291,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
         # ask it and gate on the answer rather than on the shape of the host -- a mixed box
         # with HIP_VISIBLE_DEVICES naming a card is not ambiguous, and its generic wheel can
         # still be the one with no kernels for it.
-        _selected_gfx, _selected_codes, _ = _runtime_gfx_target(_inferred_gfx)
+        _selected_gfx, _, _, _selected_host = _runtime_gfx_target(_inferred_gfx)
         if _selected_gfx is None:
             return False
         # The inferred per-arch repair can run without a readable ROCm version.
@@ -3296,7 +3304,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
         # version is the one they exist for: a bundled-runtime install has no system ROCm
         # to read. Requiring a version here refuses them at the door.
         _family_repair_arm = _rocm_torch_family_needs_repair(
-            _selected_gfx, _detect_rocm_version(), _selected_codes
+            _selected_gfx, _detect_rocm_version(), _selected_host
         )
         if not _inferred_arm and not _family_repair_arm:
             # Other repair arms need a readable version with a published wheel family.
@@ -3321,8 +3329,8 @@ def _amd_torch_needs_dependency_pass() -> bool:
     # an index regardless of the visible GPU. This is a hardware question.
     if _explicit_rocm_torch_index_url() is not None:
         return False
-    _tail_gfx, _tail_codes, _ = _runtime_gfx_target(_infer_linux_amd_gfx_arch())
-    return _rocm_torch_family_needs_repair(_tail_gfx, _detect_rocm_version(), _tail_codes)
+    _tail_gfx, _, _, _tail_host = _runtime_gfx_target(_infer_linux_amd_gfx_arch())
+    return _rocm_torch_family_needs_repair(_tail_gfx, _detect_rocm_version(), _tail_host)
 
 
 def _installed_generic_rocm_tag() -> "tuple[int, int] | None":
@@ -3341,7 +3349,7 @@ def _installed_generic_rocm_tag() -> "tuple[int, int] | None":
 def _rocm_torch_family_needs_repair(
     runtime_gfx: "str | None",
     ver: "tuple[int, int] | None" = None,
-    gfx_codes: "list[str] | None" = None,
+    host_codes: "list[str] | None" = None,
 ) -> bool:
     """Whether the installed ROCm torch carries no kernels for ``runtime_gfx``.
 
@@ -3362,7 +3370,7 @@ def _rocm_torch_family_needs_repair(
             # mask-selected gfx906 beside another card, has a real mismatch and nowhere to go,
             # and _ensure_rocm_torch declines on the same question -- promising a repair it
             # refuses buys a dependency pass on EVERY update and never a working torch.
-            return _gfx_route_on_host(runtime_gfx, gfx_codes)
+            return _gfx_route_on_host(runtime_gfx, host_codes)
         # The family is the right SHAPE, not necessarily a working build. _already_on_leaf
         # keeps a matching family only above the 2.11 floor, since below it these leaves
         # carry the _grouped_mm bug; answering False on a 2.10 build would keep the fast path
@@ -3518,7 +3526,7 @@ def _ensure_rocm_torch() -> None:
         # route has no version floor by design, so returning here on an arch the generic wheel
         # cannot serve refuses the repair at the door. Resolving the target twice is confined
         # to this branch, which only a host with no readable ROCm version reaches at all.
-        _unknown_ver_gfx, _unknown_ver_codes, _ = _runtime_gfx_target(None)
+        _unknown_ver_gfx, _, _, _unknown_ver_host = _runtime_gfx_target(None)
         # A per-arch install can also outlive the GPU it was made for: swap a gfx1200 card
         # into a box running gfx110X-all wheels and the generic index would serve it, so the
         # clause above lets the exit stand and the family repair below never runs. Those
@@ -3530,7 +3538,7 @@ def _ensure_rocm_torch() -> None:
             _rocm_pin is None
             and not _inferred_linux_gfx
             and not _generic_rocm_wheel_lacks_kernels(_unknown_ver_gfx)
-            and not _rocm_torch_family_needs_repair(_unknown_ver_gfx, None, _unknown_ver_codes)
+            and not _rocm_torch_family_needs_repair(_unknown_ver_gfx, None, _unknown_ver_host)
         ):
             _safe_print("   ROCm detected but version unreadable -- skipping torch reinstall")
             return
@@ -3626,7 +3634,9 @@ def _ensure_rocm_torch() -> None:
         and not _gfx906_arch_override
         and not _inferred_arch_installed
     ):
-        _runtime_gfx, gfx_codes, _physical_gfx = _runtime_gfx_target(_inferred_linux_gfx)
+        _runtime_gfx, gfx_codes, _physical_gfx, _host_codes = _runtime_gfx_target(
+            _inferred_linux_gfx
+        )
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         # Only the Strix reroute has a ROCm-version floor.
         _detected_strix = (
@@ -3785,7 +3795,11 @@ def _ensure_rocm_torch() -> None:
             # gfx906 is the one detected arch. A mixed host can still mask-select the MI50,
             # and every tag above rocm6.3 dropped its BLAS kernels, so demoting here downloads
             # a second unusable torch. _MIXED_HOST_UNROUTABLE already names these arches.
-            if _have is not None and _have != _want and _gfx_route_on_host(_runtime_gfx, gfx_codes):
+            if (
+                _have is not None
+                and _have != _want
+                and _gfx_route_on_host(_runtime_gfx, _host_codes)
+            ):
                 _safe_print(
                     f"   installed ROCm torch is the {_have} build, which carries no\n"
                     f"   {_runtime_gfx} kernels -- reinstalling for this GPU.\n"

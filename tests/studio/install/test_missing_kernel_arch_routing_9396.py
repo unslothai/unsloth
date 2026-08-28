@@ -1327,3 +1327,25 @@ def test_a_named_arch_outranks_an_ordinal_the_inference_cannot_place():
         env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
     )
     assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"ROCR_VISIBLE_DEVICES": "1"},
+        {"HIP_VISIBLE_DEVICES": "1"},
+    ],
+)
+def test_a_masked_gfx906_is_judged_by_the_host_the_legacy_route_probes(env):
+    """ROCr filters the list this function sees, so a physically mixed host can arrive here
+    as a lone gfx906 while _runtime_target_is_gfx906 re-probes the unfiltered machine and
+    declines the rocm6.3 tag. Deriving "is it alone" twice lets the two disagree, and the
+    demotion then installs a newer generic wheel whose BLAS has no gfx906 kernels."""
+    calls = _run_install(
+        gfx_devices = ("gfx1100", "gfx906"),
+        env = env,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert "reinstalling for this GPU" not in _run_install.printed, _run_install.printed
+    assert _GENERIC not in calls, calls
