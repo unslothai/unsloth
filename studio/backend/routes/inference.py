@@ -5281,7 +5281,7 @@ def _monitor_openai_chunk(
                 _flush_monitor_stream_tool_calls(
                     monitor_id,
                     choice_index,
-                    completed_only = True,
+                    completed_only = not bool(choice.get("finish_reason")),
                 )
             api_monitor.append_reply(
                 monitor_id,
