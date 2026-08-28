@@ -15304,6 +15304,15 @@ async def openai_audio_speech(
     ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
     a 400 rather than a silent container mismatch."""
     if body.provider_id:
+        fmt = (body.response_format or "wav").strip().lower()
+        if fmt != "wav":
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Unsupported response_format '{body.response_format}' for an external "
+                    "TTS connection. Only 'wav' is supported."
+                ),
+            )
         # This branch never touches the local GGUF. Drop it before any monitor or
         # upstream await so slow external speech cannot block a local swap/training
         # start or reset the local model's idle timer.
