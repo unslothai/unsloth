@@ -6649,6 +6649,37 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
         ) from None
 
 
+def _validate_image_base64(encoded: str) -> None:
+    """Decode one image far enough to reject malformed bytes before a switch."""
+    from io import BytesIO
+    from PIL import Image
+
+    image_data = base64.b64decode(encoded)
+    with Image.open(BytesIO(image_data)) as image:
+        image.verify()
+
+
+async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: bool) -> None:
+    """Apply non-GGUF image checks before loading the resolved target."""
+    if target_is_gguf:
+        return
+    if image_preflight.get("multiple"):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This model takes one image per message. Attach one, or load a"
+                " GGUF build of it, which accepts several."
+            ),
+        )
+    encoded = image_preflight.get("b64")
+    if not encoded:
+        return
+    try:
+        await asyncio.to_thread(_validate_image_base64, encoded)
+    except Exception:
+        raise HTTPException(status_code = 400, detail = "Failed to decode image") from None
+
+
 def _messages_have_image(messages) -> bool:
     return any(
         isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
@@ -7338,6 +7369,7 @@ async def _maybe_auto_switch_model(
     require_video: bool = False,
     gguf_only: bool = False,
     audio_preflight: Optional[dict] = None,
+    image_preflight: Optional[dict] = None,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -7363,7 +7395,8 @@ async def _maybe_auto_switch_model(
     would unload the resident one and leave the handler with nothing to serve.
     ``audio_preflight`` carries an audio upload whose format-dependent
     checks only the resolved target can decide; see
-    :func:`_preflight_audio_for_switch`.
+    :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
+    non-GGUF image count and byte validation.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -7637,6 +7670,9 @@ async def _maybe_auto_switch_model(
         # swap. Only the resolver branch (an explicit new target); the reload-stash
         # path just restores the model the request was already using. The probe hits
         # the filesystem, so run it off the loop like the resolver above.
+        target_requires_image = require_image
+        if require_audio_input and not target_is_gguf and audio_preflight is not None:
+            target_requires_image = bool(audio_preflight.get("has_image"))
         if (
             (require_vision or require_audio_input)
             and resolved is not None
@@ -7647,7 +7683,7 @@ async def _maybe_auto_switch_model(
                 require_vision,
                 require_audio_input,
                 variant,
-                require_image,
+                target_requires_image,
                 require_video,
             )
         ):
@@ -7663,6 +7699,8 @@ async def _maybe_auto_switch_model(
         # resolver branch only, like the probe above: a reload-stash restore changes no format.
         if audio_preflight is not None and resolved is not None:
             await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
+        if image_preflight is not None and resolved is not None:
+            await _preflight_image_for_switch(image_preflight, target_is_gguf)
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
@@ -18454,6 +18492,7 @@ async def produce_openai_chat_completions(
     _needs_video = False
     _predecoded_audio = None
     _preprepared_audio = None
+    _image_preflight = None
     if _should_validate_before_switch():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -18593,6 +18632,16 @@ async def produce_openai_chat_completions(
         if _needs_audio_input
         else None
     )
+    if _needs_image and not _needs_audio_input and _pre_parsed is not None:
+        _images_on_turn = _images_in_last_user_message(payload.messages)
+        _legacy_image_distinct = _legacy_image_is_distinct(payload)
+        _image_preflight = {
+            "b64": _pre_parsed[2] or payload.image_base64,
+            "multiple": (
+                _images_on_turn + int(_legacy_image_distinct) > 1
+                or bool(_pre_parsed[2] and _legacy_image_distinct)
+            ),
+        }
 
     # Defer the resident claim: chat has several post-switch capability checks that can still
     # reject (Whisper without audio, n>1 on a non-GGUF backend, tool or response_format
@@ -18610,6 +18659,7 @@ async def produce_openai_chat_completions(
         require_audio_input = _needs_audio_input,
         require_video = _needs_video,
         audio_preflight = _audio_preflight,
+        image_preflight = _image_preflight,
     )
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")

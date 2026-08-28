@@ -3397,6 +3397,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         require_video = False,
         gguf_only = False,
         audio_preflight = None,
+        image_preflight = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -8411,6 +8412,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_audio_input = False,
         require_video = False,
         audio_preflight = None,
+        image_preflight = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -9293,7 +9295,11 @@ def test_a_stale_alias_after_unload_is_not_a_resident_identity(monkeypatch):
 
 
 def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
-    # _prepare_audio_for_llama takes a data: URI, containers torchaudio cannot open, and a continuation.
+    import base64 as _b64
+    import io
+    import wave
+
+    # _prepare_audio_for_llama takes a data: URI and a continuation.
     from fastapi import HTTPException
 
     monkeypatch.setattr(
@@ -9302,8 +9308,18 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
         lambda _b64: pytest.fail("the non-GGUF decoder ran for a GGUF target"),
     )
     monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: False)
-    preflight = {"b64": "data:audio/mp4;base64,AAAA", "continue_final": True}
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\x00\x00" * 16)
+    preflight = {
+        "b64": f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}",
+        "continue_final": True,
+    }
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
+    assert preflight["prepared"][1] == "wav"
     assert "decoded" not in preflight
 
     # the non-GGUF branch runs _decode_audio_base64, so it refuses the same input, before the load.
@@ -9313,6 +9329,109 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
     assert exc.value.status_code == 400
     assert "continue_final_message" in exc.value.detail
     assert "audio input" in exc.value.detail
+
+
+def test_a_prior_turn_image_does_not_block_a_non_gguf_audio_switch(monkeypatch):
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *_args, **_kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Whisper", None, "org/Whisper"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_audio_input", lambda _path: True)
+    monkeypatch.setattr(
+        inference_route,
+        "_target_is_vision",
+        lambda *_a, **_kw: pytest.fail("a prior-turn image demanded vision"),
+    )
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+    monkeypatch.setattr(inference_route, "_decode_audio_base64", lambda _b64: "pcm")
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/Whisper",
+            object(),
+            "tester",
+            require_vision = True,
+            require_image = True,
+            require_audio_input = True,
+            audio_preflight = {
+                "b64": "valid",
+                "continue_final": False,
+                "has_image": False,
+            },
+        )
+    )
+
+    assert [request.model_path for request in calls] == ["/srv/models/Whisper"]
+    assert orchestrator._openai_advertised_id == "org/Whisper"
+
+
+@pytest.mark.parametrize(
+    "image_preflight",
+    [
+        {"b64": "bm90IGFuIGltYWdl", "multiple": False},
+        {"b64": None, "multiple": True},
+    ],
+    ids = ["malformed bytes", "multiple images"],
+)
+def test_invalid_non_gguf_images_are_rejected_before_switch(monkeypatch, image_preflight):
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *_args, **_kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Vision", None, "org/Vision"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Vision",
+                object(),
+                "tester",
+                require_vision = True,
+                image_preflight = image_preflight,
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert calls == []
+    assert llama.model_identifier == "org/A-GGUF"
 
 
 def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch):
