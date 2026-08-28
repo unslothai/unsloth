@@ -78,7 +78,7 @@ def _make_venv(
     exit_code: int = 0,
     sleep_seconds: float = 0.0,
     torch_on_disk: bool = True,
-    torch_local_label: str = '+rocm6.4',
+    torch_local_label: str = "+rocm6.4",
 ) -> Path:
     """A venv whose `python` prints exactly what the test wants, when it wants."""
     venv = tmp_path / "venv"
@@ -1079,7 +1079,7 @@ def test_the_arm64_demotion_asks_the_machine_not_a_proxy():
         "the gate infers ARM64 from wheel reachability again, so an x64 unmapped-arch host with "
         "a GPU pin is treated as ARM64 and can be excused into silence."
     )
-    assert "(Get-HostMachineArch) -eq \"arm64\"" in gate
+    assert '(Get-HostMachineArch) -eq "arm64"' in gate
 
     # And the proxy is gone entirely rather than left sitting unread.
     users = [ln for ln in code.splitlines() if "$AmdWheelsReachThisHost" in ln]
@@ -1132,14 +1132,14 @@ def test_the_posix_cpu_route_excuse_reads_the_wheel_not_only_the_arch_table():
         "generic ROCm index is dismissed as a CPU route and never probed."
     )
 
-    entry = text[text.index('if { [ "$_setup_nvidia_usable" = true ]'):]
+    entry = text[text.index('if { [ "$_setup_nvidia_usable" = true ]') :]
     entry = entry[: entry.index("then")]
     assert '[ "$_setup_torch_is_rocm" = true ]' in entry, (
         "the entry gate decides on the arch table alone again, so gfx1010 or gfx803 on a real "
         "ROCm wheel stays silent when that wheel cannot see the device."
     )
     # Read off disk, not by importing torch: a genuinely CPU-routed host must not pay for it.
-    assert "$VENV_DIR" in text[text.index("_setup_torch_is_rocm=false"): text.index(entry[:60])]
+    assert "$VENV_DIR" in text[text.index("_setup_torch_is_rocm=false") : text.index(entry[:60])]
 
     # The read has to happen before the gate, or the flag is always false.
     assert text.index("_setup_torch_is_rocm=false") < text.index(
