@@ -414,6 +414,34 @@ def test_stt_models_join_the_catalog(monkeypatch):
     assert ids["Qwen3-Q4"]["loaded"] is False
 
 
+def test_stt_gguf_repository_is_not_advertised_as_chat(monkeypatch):
+    repo = _Info(
+        "models--unslothai--Qwen3-ASR-0.6B-GGUF",
+        "Qwen3-ASR-0.6B-GGUF",
+        model_id = "unslothai/Qwen3-ASR-0.6B-GGUF",
+        task = "automatic-speech-recognition",
+    )
+    _catalog(monkeypatch, [repo], picks = {})
+    monkeypatch.setattr(
+        inf,
+        "_stt_model_objects",
+        lambda created: [
+            {
+                "id": "qwen3-asr-0.6b",
+                "object": "model",
+                "created": created,
+                "owned_by": inf._OWNED_BY,
+                "task": "automatic-speech-recognition",
+                "loaded": False,
+            }
+        ],
+    )
+
+    ids = {model["id"]: model for model in asyncio.run(inf._openai_catalog_objects())}
+    assert "unslothai/Qwen3-ASR-0.6B-GGUF" not in ids
+    assert ids["qwen3-asr-0.6b"]["task"] == "automatic-speech-recognition"
+
+
 def test_loaded_tts_model_is_tagged(monkeypatch):
     class _Tts(_FakeLlama):
         is_loaded = True

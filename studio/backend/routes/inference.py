@@ -23244,7 +23244,11 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
 
     rows = []
     for info in catalog:
-        if getattr(info, "task", None) in (*_MEDIA_MODEL_TASKS, _UNSUPPORTED_DIFFUSION_TASK):
+        if getattr(info, "task", None) in (
+            *_MEDIA_MODEL_TASKS,
+            _STT_MODEL_TASK,
+            _UNSUPPORTED_DIFFUSION_TASK,
+        ):
             continue
         servable = local_servable_model(info)
         if servable is None:
