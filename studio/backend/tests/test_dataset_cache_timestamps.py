@@ -226,10 +226,7 @@ def test_hf_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(monkeypatch):
     assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
 
 
-def test_fallback_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
-    monkeypatch,
-    tmp_path,
-):
+def test_fallback_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(monkeypatch, tmp_path):
     larger_root = tmp_path / "larger"
     newer_root = tmp_path / "newer"
     for root, modified in (
@@ -305,10 +302,7 @@ def test_fallback_scan_uses_the_newest_payload_mtime(monkeypatch, tmp_path):
     assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
 
 
-def test_processed_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
-    monkeypatch,
-    tmp_path,
-):
+def test_processed_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(monkeypatch, tmp_path):
     larger_root = tmp_path / "larger-processed"
     newer_root = tmp_path / "newer-processed"
     for root, size, modified in (
@@ -337,10 +331,7 @@ def test_processed_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
     assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
 
 
-def test_processed_scan_uses_the_newest_nested_artifact_mtime(
-    monkeypatch,
-    tmp_path,
-):
+def test_processed_scan_uses_the_newest_nested_artifact_mtime(monkeypatch, tmp_path):
     root = tmp_path / "processed"
     cache_dir = root / "Org___Data"
     build_dir = cache_dir / "default" / "1.0.0" / "build"
