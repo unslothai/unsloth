@@ -105,7 +105,10 @@ test("desktop scale sets native webview zoom", async () => {
   await mod.applyInterfaceScale(55);
   assert.deepEqual(control.zooms, [0.55]);
   assert.equal(mod.getAppliedInterfaceZoom(), 0.55);
-  assert.equal(styles.get("--studio-native-titlebar-height"), `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 0.55}px`);
+  assert.equal(
+    styles.get("--studio-native-titlebar-height"),
+    `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 0.55}px`,
+  );
   assert.equal(
     styles.get("--studio-native-traffic-light-inset"),
     `${NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX / 0.55}px`,
@@ -138,7 +141,10 @@ test("the latest scale wins while an older native update is pending", async () =
 
   assert.deepEqual(control.zooms, [0.55, 0.75]);
   assert.equal(mod.getAppliedInterfaceZoom(), 0.75);
-  assert.equal(styles.get("--studio-native-titlebar-height"), `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 0.75}px`);
+  assert.equal(
+    styles.get("--studio-native-titlebar-height"),
+    `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 0.75}px`,
+  );
 });
 
 test("first paint is not held hostage by a wedged native bridge", async () => {
@@ -147,6 +153,62 @@ test("first paint is not held hostage by a wedged native bridge", async () => {
   control.setZoom = () => new Promise<void>(() => undefined);
   await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
 });
+
+// Timed, because the regression these two cover is a queue that never drains: without the
+// release the awaits below hang rather than fail, and an unbounded hang wedges the runner
+// instead of reporting.
+test(
+  "a scale change after a wedged first paint still applies",
+  { timeout: 5_000 },
+  async () => {
+    const { mod, control, styles } = await load(true);
+    let wedged = true;
+    control.setZoom = (zoom) => {
+      if (wedged) {
+        return new Promise<void>(() => undefined);
+      }
+      control.zooms.push(zoom);
+      return Promise.resolve();
+    };
+
+    await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
+    // The bridge comes back. Nothing about the abandoned call may keep the queue closed.
+    wedged = false;
+    await mod.applyInterfaceScale(125);
+
+    assert.deepEqual(control.zooms, [1.25]);
+    assert.equal(mod.getAppliedInterfaceZoom(), 1.25);
+    assert.equal(
+      styles.get("--studio-native-titlebar-height"),
+      `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 1.25}px`,
+    );
+  },
+);
+
+test(
+  "a late wedged call cannot report its stale zoom as the live one",
+  { timeout: 5_000 },
+  async () => {
+    const { mod, control } = await load(true);
+    let releaseWedged: () => void = () => undefined;
+    control.setZoom = (zoom) => {
+      control.zooms.push(zoom);
+      if (zoom === 0.75) {
+        return new Promise<void>((resolve) => {
+          releaseWedged = resolve;
+        });
+      }
+      return Promise.resolve();
+    };
+
+    await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
+    await mod.applyInterfaceScale(125);
+    releaseWedged();
+    await Promise.resolve();
+
+    assert.equal(mod.getAppliedInterfaceZoom(), 1.25);
+  },
+);
 
 test("first paint waits for the scale when the bridge answers", async () => {
   const { mod, control, styles } = await load(true);

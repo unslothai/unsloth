@@ -107,6 +107,12 @@ export function applyInterfaceScale(scale: number): Promise<void> {
     const { getCurrentWebview } = await import("@tauri-apps/api/webview");
     const zoom = interfaceScaleToZoom(nextScale);
     await getCurrentWebview().setZoom(zoom);
+    // A call abandoned at the first-paint deadline can still settle later, after a newer
+    // scale has been asked for and applied. Committing then would report the stale zoom
+    // as the live one.
+    if (nextScale !== requestedInterfaceScale) {
+      return;
+    }
     appliedInterfaceScale = nextScale;
     setAppliedInterfaceZoom(zoom);
   });
@@ -131,7 +137,13 @@ export function applyInterfaceScaleBeforeFirstPaint(
 ): Promise<void> {
   const applied = applyInterfaceScale(scale).catch(() => undefined);
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, timeoutMs);
+    const timer = setTimeout(() => {
+      // Rendering is unblocked, but the queue is still chained to a call that may never
+      // settle, and everything after it waits behind that. Cut it loose or the retry in
+      // `provider.tsx` and every later scale change are dead until restart.
+      interfaceScaleApplicationQueue = Promise.resolve();
+      resolve();
+    }, timeoutMs);
     void applied.finally(() => {
       clearTimeout(timer);
       resolve();
