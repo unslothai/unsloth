@@ -9,6 +9,7 @@ import {
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
 import {
+  adoptStagedUpdate,
   cancelStagedUpdate,
   checkDesktopUpdate,
   desktopUpdateBundleStatus,
@@ -436,6 +437,16 @@ export function useTauriUpdate(isExternalServer = false) {
       }
       if (decision === "skip") {
         patchPreparation({ backend: "skipped" });
+        return;
+      }
+      if (decision === "adopt") {
+        patchPreparation({ backend: "staging" });
+        const settled = await adoptStagedUpdate(
+          appendLog,
+          () => preparingVersionRef.current !== version,
+        );
+        if (preparingVersionRef.current !== version) return;
+        patchPreparation({ backend: settled.state === "ready" ? "ready" : "failed" });
         return;
       }
       patchPreparation({ backend: "waiting" });

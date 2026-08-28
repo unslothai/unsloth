@@ -25,9 +25,11 @@ export interface StagedUpdateStatus {
   state: "none" | "partial" | "ready" | "failed";
   backendVersion: string | null;
   shellVersion: string | null;
+  /** A staged child is running now, so this stage is being written, not stale. */
+  staging?: boolean;
 }
 
-export type StagingDecision = "stage" | "already-ready" | "skip";
+export type StagingDecision = "stage" | "already-ready" | "adopt" | "skip";
 
 export const INITIAL_PREPARATION: UpdatePreparation = {
   shell: "pending",
@@ -71,6 +73,9 @@ export function stagingDecision(args: {
   const matches = sameVersion(args.staged.shellVersion, args.offeredVersion);
   if (args.staged.state === "ready" && matches) return "already-ready";
   if (args.staged.state === "failed" && matches) return "skip";
+  // A webview reload loses the hook's own record of a run it started, and the
+  // native side rejects a second one, so join the running one instead.
+  if (args.staged.staging) return "adopt";
   return "stage";
 }
 

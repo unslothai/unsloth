@@ -75,6 +75,27 @@ export async function startStagedUpdate(onLine: (line: string) => void): Promise
   }
 }
 
+/// Follow a staged run this webview did not start. Polls rather than waiting on
+/// stage-complete, because the run can finish between the status read that chose
+/// this path and any listener registered after it.
+export async function adoptStagedUpdate(
+  onLine: (line: string) => void,
+  isCancelled: () => boolean,
+  pollMs = 2_000,
+): Promise<StagedUpdateStatus> {
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<string>("stage-progress", (event) => onLine(event.payload));
+  try {
+    for (;;) {
+      const status = await stagedUpdateStatus();
+      if (!status.staging || isCancelled()) return status;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  } finally {
+    unlisten();
+  }
+}
+
 export async function cancelStagedUpdate(): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("cancel_staged_update");

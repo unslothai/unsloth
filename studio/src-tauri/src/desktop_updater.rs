@@ -55,6 +55,21 @@ pub(crate) fn pending_version(state: &DesktopUpdateState) -> Result<Option<Strin
     Ok(guard.update.as_ref().map(|update| update.version.clone()))
 }
 
+/// `pypi_version` from latest.json: the backend this shell is built against.
+pub(crate) fn pending_backend_version(
+    state: &DesktopUpdateState,
+) -> Result<Option<String>, String> {
+    let guard = state.lock().map_err(|error| error.to_string())?;
+    Ok(guard.update.as_ref().and_then(|update| {
+        update
+            .raw_json
+            .get("pypi_version")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DesktopUpdateMetadata {

@@ -19,6 +19,15 @@ pub struct UpdateProcess {
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
 
+/// Whether a staged run owns the child right now. A webview reload loses the
+/// hook's own record of that, and the native side rejects a second one.
+pub(crate) fn is_staged_update_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|s| s.child.is_some() && s.staged)
+        .unwrap_or(false)
+}
+
 pub fn new_update_state() -> UpdateState {
     Arc::new(Mutex::new(UpdateProcess::default()))
 }
@@ -30,7 +39,10 @@ const SHELL_VERSION_ENV: &str = "UNSLOTH_TAURI_SHELL_VERSION";
 pub(crate) enum UpdateKind {
     Backend,
     Repair(String),
-    Staged { shell_version: Option<String> },
+    Staged {
+        shell_version: Option<String>,
+        backend_version: Option<String>,
+    },
 }
 
 impl UpdateKind {
@@ -119,6 +131,7 @@ fn spawn_update(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     if let UpdateKind::Staged {
         shell_version: Some(version),
+        ..
     } = kind
     {
         cmd.env(SHELL_VERSION_ENV, version);
@@ -313,12 +326,16 @@ pub(crate) fn run_staged_update(
     state: UpdateState,
     diagnostics: DiagnosticsState,
     shell_version: Option<String>,
+    backend_version: Option<String>,
 ) -> Result<(), String> {
     run_update(
         app,
         state,
         diagnostics,
-        UpdateKind::Staged { shell_version },
+        UpdateKind::Staged {
+            shell_version,
+            backend_version,
+        },
     )
 }
 
@@ -406,6 +423,21 @@ fn run_update(
                 None,
             );
             clear_current_attempt(&state);
+            if let UpdateKind::Staged {
+                backend_version: Some(required),
+                ..
+            } = &kind
+            {
+                let home = crate::diagnostics::studio_dir();
+                if let Err(msg) = crate::staged_update::staged_backend_meets(&home, required) {
+                    crate::staged_update::discard(&home);
+                    error!("[update] {msg}");
+                    if let Some((_, failed)) = kind.terminal_events() {
+                        let _ = app.emit(failed, &msg);
+                    }
+                    return Err(msg);
+                }
+            }
             info!("[update] Backend update complete");
             if let Some((complete, _)) = kind.terminal_events() {
                 let _ = app.emit(complete, ());

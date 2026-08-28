@@ -31,6 +31,9 @@ pub(crate) struct StagedUpdateStatus {
     pub state: &'static str,
     pub backend_version: Option<String>,
     pub shell_version: Option<String>,
+    /// A staged child is running now, so a partial stage is being written rather
+    /// than left over.
+    pub staging: bool,
 }
 
 impl StagedUpdateStatus {
@@ -39,6 +42,7 @@ impl StagedUpdateStatus {
             state,
             backend_version: versions.as_ref().map(|v| v.backend_version.clone()),
             shell_version: versions.and_then(|v| v.shell_version),
+            staging: false,
         }
     }
 }
@@ -73,7 +77,11 @@ pub(crate) fn discard(home: &Path) {
 pub(crate) fn reconcile_at_launch(home: &Path, shell_version: &str) {
     remove_stale_trash(home);
     if let Err(error) = roll_back_unconfirmed(home) {
-        warn!("[staged-update] rollback failed: {error}");
+        // Activating now would delete .update-prev, and a rollback that failed part
+        // way may have left the unconfirmed runtime live: the next candidate would
+        // then be recorded against it with the last known-good copy already gone.
+        warn!("[staged-update] rollback failed, not activating: {error}");
+        return;
     }
     if let Err(error) = activate_ready(home, shell_version) {
         warn!("[staged-update] activation failed: {error}");
@@ -200,6 +208,26 @@ fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A stage is only useful if it actually advanced to what this shell expects.
+///
+/// `unsloth studio update` upgrades best effort: against a stale mirror or an
+/// unreachable index it can succeed from cache without moving the cloned package,
+/// and the marker would then advertise a backend older than the shell needs. The
+/// restart would activate it and drop straight into preflight repair, or fail to
+/// start and roll back, instead of the fast update the pill promised.
+pub(crate) fn staged_backend_meets(home: &Path, required: &str) -> Result<(), String> {
+    let Some(actual) = status(home).backend_version else {
+        return Err("the staged update recorded no backend version".to_string());
+    };
+    if crate::desktop_update_policy::compare_versions(&actual, required) < 0 {
+        return Err(format!(
+            "staged backend {actual} is older than the {required} this app needs; \
+             the package index may be stale or unreachable"
+        ));
+    }
+    Ok(())
+}
+
 fn shell_order(current: &str, required: &str) -> Ordering {
     match crate::desktop_update_policy::compare_versions(current, required) {
         1 => Ordering::Greater,
@@ -257,36 +285,56 @@ fn rename_tracked(
     Ok(())
 }
 
+/// Pids that claim to be a backend of this install.
+///
+/// Mirrors `live_sibling_backend` in studio/backend/run.py, which reads all three
+/// record kinds because a backend can be in a state where only one exists: a
+/// startup marker while it is still binding, a per-port record once it has bound,
+/// and a bare `studio.pid` for a pre-upgrade server or one whose per-port write
+/// failed. Markers matter most here: the backend keeps its marker after dropping
+/// its pid records until shutdown really finishes, and renaming the tree during
+/// either window would move it under a process still importing out of it.
 fn recorded_pids(home: &Path) -> Vec<u32> {
     let mut pids = Vec::new();
+    let mut timed = Vec::new();
     if let Ok(entries) = fs::read_dir(home) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
                 continue;
             };
+            // Markers use the same body layout as a per-port record, so both carry
+            // the start time that settles a reused pid.
             let pid = name
-                .strip_prefix("studio-")
-                .and_then(|rest| rest.strip_suffix(".pid"))
-                .and_then(|rest| rest.rsplit('-').next())
+                .strip_suffix(".marker")
+                .and_then(|rest| rest.strip_prefix("studio-starting-"))
+                .or_else(|| {
+                    name.strip_suffix(".pid")
+                        .and_then(|rest| rest.strip_prefix("studio-"))
+                        .and_then(|rest| rest.rsplit('-').next())
+                })
                 .and_then(|pid| pid.parse::<u32>().ok());
-            if let Some(pid) = pid {
-                // These records outlive crashes and the OS reuses pids. Without the
-                // start time a stranger wearing the pid reads as a live backend, and
-                // both activation and rollback would defer on it forever.
-                if !crate::process_identity::pid_start_time_matches(
-                    pid,
-                    crate::process_identity::recorded_pid_start_time(&entry.path()),
-                ) {
-                    continue;
-                }
+            let Some(pid) = pid else {
+                continue;
+            };
+            // Judged either way, so the untimed legacy record below must not
+            // resurrect a pid this evidence already rejected.
+            timed.push(pid);
+            if crate::process_identity::pid_start_time_matches(
+                pid,
+                crate::process_identity::recorded_pid_start_time(&entry.path()),
+            ) {
                 pids.push(pid);
             }
         }
     }
     if let Ok(body) = fs::read_to_string(home.join("studio.pid")) {
         if let Some(pid) = body.lines().next().and_then(|l| l.trim().parse::<u32>().ok()) {
-            pids.push(pid);
+            // It carries no start time, so on its own it would re-add a pid the
+            // timed records just proved was reused.
+            if !timed.contains(&pid) {
+                pids.push(pid);
+            }
         }
     }
     pids.retain(|pid| *pid > 1);
@@ -598,6 +646,86 @@ mod tests {
         cleanup(home);
     }
 
+    /// This process, whose real start time the guard can be measured against.
+    fn live_pid_or_skip(home: &Path) -> Option<u32> {
+        let me = std::process::id();
+        if crate::process_identity::process_start_time_secs(me).is_none() {
+            // The OS will not say, so the reuse guard cannot fire and neither can
+            // the assertion built on it.
+            fs::remove_dir_all(home).ok();
+            return None;
+        }
+        Some(me)
+    }
+
+    #[test]
+    fn a_startup_marker_counts_as_a_live_tree_record() {
+        let home = temp_home("markers");
+        let me = std::process::id();
+        // What a backend has while it is still binding, and what it keeps after
+        // dropping its pid records until shutdown finishes.
+        fs::write(
+            home.join(format!("studio-starting-{me}.marker")),
+            format!("{me}\n"),
+        )
+        .unwrap();
+
+        assert!(recorded_pids(&home).contains(&me));
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_bare_record_cannot_resurrect_a_pid_the_timed_one_rejected() {
+        let home = temp_home("reused");
+        let Some(me) = live_pid_or_skip(&home) else {
+            return;
+        };
+        // A start time nowhere near this process's: the record describes something
+        // that is gone, and the pid has since been handed out again.
+        fs::write(
+            home.join(format!("studio-8888-{me}.pid")),
+            format!("{me}\n1.0\n"),
+        )
+        .unwrap();
+        fs::write(home.join("studio.pid"), format!("{me}\n")).unwrap();
+
+        assert!(!recorded_pids(&home).contains(&me));
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_bare_record_with_no_timed_evidence_still_counts() {
+        let home = temp_home("bare");
+        let me = std::process::id();
+        // A pre-upgrade backend, or one whose per-port write failed.
+        fs::write(home.join("studio.pid"), format!("{me}\n")).unwrap();
+
+        assert!(recorded_pids(&home).contains(&me));
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_stage_that_never_reached_the_pinned_backend_is_rejected() {
+        let home = temp_home("version-gate");
+        stage_ready(
+            &home,
+            &StagedVersions {
+                // What a stale mirror leaves behind: setup succeeded from cache and
+                // the cloned package never moved.
+                backend_version: "2026.9.1".into(),
+                shell_version: None,
+            },
+        );
+
+        let err = staged_backend_meets(&home, "2026.9.2").unwrap_err();
+        assert!(err.contains("2026.9.1"), "{err}");
+        assert!(err.contains("2026.9.2"), "{err}");
+        // Equal and newer both pass: the pin is a floor, not an exact match.
+        assert!(staged_backend_meets(&home, "2026.9.1").is_ok());
+        assert!(staged_backend_meets(&home, "2026.9.0").is_ok());
+        cleanup(home);
+    }
+
     #[test]
     fn status_reports_a_ready_stage() {
         let home = temp_home("status");
@@ -608,6 +736,7 @@ mod tests {
                 state: "ready",
                 backend_version: Some("2026.9.1".into()),
                 shell_version: Some("0.1.900-beta".into()),
+                staging: false,
             }
         );
         discard(&home);

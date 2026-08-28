@@ -851,10 +851,11 @@ pub async fn start_staged_update(
     }
 
     let shell_version = desktop_updater::pending_version(&desktop_update)?;
+    let backend_version = desktop_updater::pending_backend_version(&desktop_update)?;
     let state = update_state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
     tokio::task::spawn_blocking(move || {
-        update::run_staged_update(app, state, diagnostics_state, shell_version)
+        update::run_staged_update(app, state, diagnostics_state, shell_version, backend_version)
     })
     .await
     .map_err(|e| format!("Staged update task panicked: {e}"))?
@@ -879,8 +880,12 @@ pub fn cancel_staged_update(
 }
 
 #[tauri::command]
-pub fn staged_update_status() -> staged_update::StagedUpdateStatus {
-    staged_update::status(&diagnostics::studio_dir())
+pub fn staged_update_status(
+    update_state: tauri::State<'_, update::UpdateState>,
+) -> staged_update::StagedUpdateStatus {
+    let mut status = staged_update::status(&diagnostics::studio_dir());
+    status.staging = update::is_staged_update_running(&update_state);
+    status
 }
 
 #[tauri::command]
