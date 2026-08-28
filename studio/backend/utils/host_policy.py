@@ -14,7 +14,9 @@ have `unsloth_cli` on sys.path. Keep the two in sync.
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 
 # Loopback aliases; any other bind address is treated as network-reachable. Only
 # the exact aliases the rest of the stack assumes for loopback (health checks,
@@ -34,6 +36,31 @@ _lan_connector_active = False
 def is_external_host(host: str) -> bool:
     """True when `host` is reachable from beyond loopback."""
     return host.lower() not in _LOOPBACK_HOSTS
+
+
+def is_wildcard_host(host: str) -> bool:
+    """True when the host resolves to an unspecified bind address."""
+    if not isinstance(host, str):
+        return False
+    if host == "":
+        return True
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        return literal.is_unspecified
+    try:
+        addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for _family, _kind, _protocol, _name, sockaddr in addresses:
+        try:
+            if ipaddress.ip_address(sockaddr[0]).is_unspecified:
+                return True
+        except (IndexError, ValueError):
+            continue
+    return False
 
 
 # Tauri desktop webview origins. api-only serving (the desktop app calling a
