@@ -146,8 +146,7 @@ def _stream_tool_call_preview(state: _OpenAIStreamToolCall) -> str:
 
 
 def _append_stream_tool_previews(
-    entry: ApiMonitorEntry,
-    states: list[_OpenAIStreamToolCall],
+    entry: ApiMonitorEntry, states: list[_OpenAIStreamToolCall]
 ) -> None:
     if not states:
         return

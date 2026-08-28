@@ -7437,9 +7437,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         "arguments",
         ["1", json.dumps({"query": "x" * 600})],
     )
-    def test_streamed_tool_monitor_flushes_on_tool_event_boundary(
-        self, monkeypatch, arguments
-    ):
+    def test_streamed_tool_monitor_flushes_on_tool_event_boundary(self, monkeypatch, arguments):
         import routes.inference as inf_mod
 
         monitor = ApiMonitor(max_entries = 3)
