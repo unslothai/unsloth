@@ -52,7 +52,9 @@ export function classifyGgufVariantFit(
     gpuBudgetGb: number;
     totalBudgetGb: number;
     budgetKnown: boolean;
-    /** Free space on the cache volume, 0 when unread. */
+    /** Free space on the cache volume, 0 when unread. DECIMAL GB, because that
+     *  is what the backend reports (`main.py` divides by 1e9 for disk, unlike
+     *  memory); the comparison converts the file to the same base. */
     diskFreeGb?: number;
   },
   /** True when the file is already on the machine. The floor is about landing
@@ -69,7 +71,7 @@ export function classifyGgufVariantFit(
   // and nothing to page. Checked against the raw figure with no share taken out of
   // it: this is a hard floor, not a budget, and shaving it would refuse downloads
   // that fit. 0 means the probe said nothing, so the check abstains.
-  if (!onDisk && diskFreeGb > 0 && gb > diskFreeGb) return "nospace";
+  if (!onDisk && diskFreeGb > 0 && sizeBytes / 1e9 > diskFreeGb) return "nospace";
   if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
   // No-GPU / unified-memory hosts (Mac) have only the RAM budget, and past it they
   // page from the file like anything else. mmap does not care about pool topology.

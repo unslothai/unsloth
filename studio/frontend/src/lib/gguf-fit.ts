@@ -21,7 +21,9 @@ export interface GgufFitInput {
   gpuGb?: number;
   systemRamGb?: number;
   /** Free space on the cache volume. Absent or 0 means unread, and the floor
-   *  abstains rather than refusing every row. */
+   *  abstains rather than refusing every row. DECIMAL GB, matching the backend
+   *  (`main.py` divides disk by 1e9, unlike memory); the comparison converts
+   *  the file to the same base. */
   diskFreeGb?: number;
   /** True when this file is already on the machine. The floor is about landing
    *  the download, and a landed file needs no space it does not already hold. */
@@ -82,7 +84,7 @@ export function classifyGgufFit(
   // (disk holds the file, not the runtime) and no share taken out (a floor,
   // not a budget).
   if (!onDisk && typeof diskFreeGb === "number" && diskFreeGb > 0) {
-    if (sizeBytes / 1024 ** 3 > diskFreeGb) return "nospace";
+    if (sizeBytes / 1e9 > diskFreeGb) return "nospace";
   }
   const required = requiredGgufMemoryGb(sizeBytes);
   if (!gpuGb || gpuGb <= 0) {

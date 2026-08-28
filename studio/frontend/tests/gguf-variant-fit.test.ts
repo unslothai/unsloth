@@ -92,6 +92,14 @@ test("the disk check outranks memory, since placement assumes a local file", () 
   assert.equal(classifyGgufVariantFit(10 * GB, tinyDisk), "nospace");
 });
 
+test("the floor compares in the backend's decimal GB, not GiB", () => {
+  // main.py reports disk free divided by 1e9 where memory uses 1024^3. A 130 GB
+  // file is 121.1 GiB: compared in GiB it slips under 124.4 free and cannot land.
+  const box = { ...budget(80, 134.5), diskFreeGb: 124.4 };
+  assert.equal(classifyGgufVariantFit(130e9, box), "nospace");
+  assert.equal(hubFit(130e9, { gpuGb: 80, systemRamGb: 167.1, diskFreeGb: 124.4 }), "nospace");
+});
+
 test("an unread disk figure abstains rather than refusing everything", () => {
   // 0 is what the probe reports before it has answered, and a machine with
   // genuinely zero bytes free has worse problems than a badge.
@@ -149,8 +157,8 @@ test("the Hub card carries the same disk floor, with the same escape hatches", (
   const budget = { gpuGb: 80, systemRamGb: 167.1, diskFreeGb: 124.7 };
   // Past free disk: undownloadable, whatever memory says.
   assert.equal(hubFit(330 * GB, budget), "nospace");
-  // Under the floor the memory ladder is untouched.
-  assert.equal(hubFit(120 * GB, budget), "partial");
+  // Under the floor (110 GiB is 118.1 decimal GB) the memory ladder is untouched.
+  assert.equal(hubFit(110 * GB, budget), "partial");
   // Already on the machine: the floor does not apply.
   assert.equal(hubFit(330 * GB, { ...budget, onDisk: true }), "disk");
   // Unread disk abstains, matching the quant list.
