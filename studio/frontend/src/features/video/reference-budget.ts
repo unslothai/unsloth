@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { AUDIO_ATTACHMENT_ACCEPT, isAudioAttachmentFile } from "../../lib/audio-utils.ts";
+import { AUDIO_PICKER_ACCEPT, isAudioAttachmentFile } from "../../lib/audio-utils.ts";
 import { VIDEO_ACCEPT, isVideoFile } from "../../lib/video-utils.ts";
 
 /** MiniMax-H3's combined budget across picture, video and standalone-audio references. */
@@ -47,10 +47,12 @@ export const MAX_REFERENCE_BYTES: Record<ReferenceKind, number> = {
 
 /** What a reference file dialog should offer, per kind. Extensions ride along
  *  with the MIME types: a browser answers "" for wma, amr, caf and several
- *  others, and `${kind}/*` alone greys those out of the dialog. */
+ *  others, and `${kind}/*` alone greys those out of the dialog. The audio list
+ *  is the picker one, .3gp included, because the picker reads a recording's
+ *  tracks once it has the file and a clip is refused then. */
 export const REFERENCE_PICKER_ACCEPT: Record<ReferenceKind, string> = {
   video: VIDEO_ACCEPT,
-  audio: AUDIO_ATTACHMENT_ACCEPT,
+  audio: AUDIO_PICKER_ACCEPT,
 };
 
 /** Why this file cannot be staged as a reference, or null when it can. */

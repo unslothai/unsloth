@@ -638,6 +638,8 @@ const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
 // The delimiter a multipart header names for its own parts.
 const MIME_BOUNDARY_RE =
   /;[ \t]*boundary[ \t]*=[ \t]*(?:"([^"\r\n]*)"|([^\s;"]+))/gi;
+// A header continues on the next line when that line begins with whitespace.
+const HEADER_FOLD_RE = /\r?\n[ \t]+/g;
 
 // A header block runs from the start of the file, an mbox "From " separator, or
 // a MIME boundary, to the first blank line. Body text can hold a line that reads
@@ -665,8 +667,13 @@ function emailHeaderBlocks(text: string, mbox: boolean): string[] {
   const blocks: string[] = [];
   const boundaries = new Set<string>();
   const closeBlock = (block: string) => {
-    blocks.push(block);
-    for (const declared of block.matchAll(MIME_BOUNDARY_RE)) {
+    // Unfolded first: a header may wrap anywhere folding whitespace is allowed,
+    // and `multipart/mixed;\r\n boundary="part"` is a common wrap. Reading the
+    // raw block missed that boundary, so the part headers below it were never
+    // scanned and the charset they declare went with them.
+    const unfolded = block.replace(HEADER_FOLD_RE, " ");
+    blocks.push(unfolded);
+    for (const declared of unfolded.matchAll(MIME_BOUNDARY_RE)) {
       const boundary = declared[1] ?? declared[2];
       if (boundary) boundaries.add(boundary);
     }
@@ -703,6 +710,12 @@ function emailHeaderBlocks(text: string, mbox: boolean): string[] {
           .slice(position + 2, contentEnd)
           .replace(/[ \t]+$/, "");
         resumes = boundaries.has(token);
+        if (!resumes && token.endsWith("--")) {
+          // `--part--` ends that multipart for good, so the delimiter stops
+          // being one. A nested boundary kept past its close let a later
+          // sibling part repeating the line reopen the headers.
+          boundaries.delete(token.slice(0, -2));
+        }
       }
       if (resumes) {
         inHeader = true;
@@ -776,21 +789,59 @@ function vCardParameterSections(text: string): string[] {
 const XML_PROLOG_ENCODING_RE =
   /^<\?xml[^>]*?\sencoding[ \t]*=[ \t]*["\']([A-Za-z0-9._-]+)["\']/i;
 
+/**
+ * The encoding an XML declaration names, if the document opens with one.
+ *
+ * The declaration has to be the first thing in the document, so five bytes
+ * settle whether there is one to read; everything else costs nothing. It then
+ * runs to its own ">", and its grammar puts no bound on the whitespace between
+ * the parts, so a fixed prefix could cut `encoding` off and leave a document
+ * that states its encoding refused for holding it.
+ */
 function declaredXmlEncoding(bytes: Uint8Array): string | null {
-  const prolog = new TextDecoder("windows-1252").decode(bytes.subarray(0, 256));
-  return prolog.match(XML_PROLOG_ENCODING_RE)?.[1] ?? null;
+  const decoder = new TextDecoder("windows-1252");
+  if (decoder.decode(bytes.subarray(0, 5)).toLowerCase() !== "<?xml") {
+    return null;
+  }
+  const close = bytes.indexOf(0x3e);
+  if (close === -1) {
+    return null;
+  }
+  const declaration = decoder.decode(bytes.subarray(0, close + 1));
+  return declaration.match(XML_PROLOG_ENCODING_RE)?.[1] ?? null;
 }
 
-/** Collects distinct charsets in encounter order, case-insensitively. */
+/**
+ * The encoding a declared label names, or the label itself when nothing decodes
+ * it.
+ *
+ * `windows-1252`, `CP1252` and `latin1` are three spellings of one encoding, so
+ * comparing the spellings called an archive multi-charset when a single decoder
+ * reads every message in it. TextDecoder already knows the equivalences, and
+ * reports the canonical name it settled on.
+ */
+function canonicalCharset(charset: string): string {
+  const label = GETTEXT_CHARSET_ALIASES[charset.toUpperCase()] ?? charset;
+  try {
+    return new TextDecoder(label).encoding;
+  } catch {
+    return charset.toLowerCase();
+  }
+}
+
+/** Collects distinct charsets in encounter order, one entry per encoding. */
 function charsetCollector(): { found: string[]; add: (c?: string) => void } {
   const found: string[] = [];
+  const seen = new Set<string>();
   return {
     found,
     add(charset?: string) {
       if (!charset) return;
-      if (!found.some((seen) => seen.toUpperCase() === charset.toUpperCase())) {
-        found.push(charset);
-      }
+      const canonical = canonicalCharset(charset);
+      if (seen.has(canonical)) return;
+      seen.add(canonical);
+      // The spelling the file used, since that is what an error should name.
+      found.push(charset);
     },
   };
 }
@@ -1004,18 +1055,22 @@ export function decodeTextAttachmentBytes(
     return decodeWithCharset(bytes, gettextCharset, fileName, truncated);
   }
   const vCardCharsets = declaredVCardCharsets(bytes, fileName);
-  if (vCardCharsets.length === 1) {
-    return decodeWithCharset(bytes, vCardCharsets[0]!, fileName, truncated);
-  }
-  if (vCardCharsets.length > 1 && !truncated) {
-    // CHARSET is a property parameter, so several of them is a card that says
-    // plainly what each of its values holds, not an ambiguous one. Read every
-    // property under its own. A prefix is excluded: the property the read cut
-    // in half has no charset that would make it whole.
+  if (vCardCharsets.length > 0 && !truncated) {
+    // CHARSET is a property parameter whatever the count, so one declaration
+    // speaks for its own property and not for the file: an export holding a 2.1
+    // card beside a 3.0 one, which cannot declare anything, read the whole
+    // bundle in the 2.1 card's charset and turned the other into mojibake.
+    // A prefix is excluded, since the property a read cut in half has no
+    // charset that would make it whole.
     const perProperty = decodeVCardPerProperty(bytes);
     if (perProperty !== null) {
       return perProperty;
     }
+  }
+  if (vCardCharsets.length === 1) {
+    // Only reached when a property broke its own declaration or named a charset
+    // with no decoder here, so the card is read as one unit as it used to be.
+    return decodeWithCharset(bytes, vCardCharsets[0]!, fileName, truncated);
   }
   try {
     // A truncated read decodes with stream:true so the character the slice cut

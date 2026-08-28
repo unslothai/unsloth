@@ -1902,3 +1902,174 @@ test("the reference picker takes the formats its drop path does", async () => {
   );
   assert.match(picker, /accept=\{REFERENCE_PICKER_ACCEPT\[kind\]\}/);
 });
+
+test("one vCard declaration speaks for its property, not for the file", async () => {
+  // A 2.1 card beside a 3.0 one, which declares nothing because it cannot. The
+  // whole-file reading turned the 3.0 record's UTF-8 into windows-1252 mojibake.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nEND:VCARD\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nFN:Stra"),
+    0xc3,
+    0x9f,
+    ...enc.encode("e\r\nEND:VCARD\r\n"),
+  ]);
+  const text = await readTextAttachment(new File([vcf], "export.vcf"));
+  assert.match(text, /FN;CHARSET=windows-1252:Café/);
+  assert.match(text, /FN:Straße/);
+});
+
+test("a card whose value breaks its declaration still reads as one unit", async () => {
+  // Falling back has to keep working: the per-property read is all-or-nothing.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nNOTE:plain "),
+    0xe9,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  // NOTE declares nothing and is not UTF-8, so the per-property read gives up
+  // and the single declaration is applied to the file as it was before.
+  assert.match(
+    await readTextAttachment(new File([vcf], "contact.vcf")),
+    /NOTE:plain é/,
+  );
+});
+
+test("a folded boundary parameter is still a boundary", async () => {
+  // "multipart/mixed;\r\n boundary=..." is an ordinary wrap. Missing it meant
+  // no part header was ever scanned, so the charset they declare went too.
+  const enc = new TextEncoder();
+  const eml = new Uint8Array([
+    ...enc.encode(
+      'Content-Type: multipart/mixed;\r\n boundary="part"\r\n\r\n--part\r\n' +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+    ...enc.encode("\r\n--part--\r\n"),
+  ]);
+  assert.match(await readTextAttachment(new File([eml], "message.eml")), /Café/);
+});
+
+test("a nested boundary stops being one after its multipart closes", async () => {
+  // The inner delimiter is finished at "--inner--", so a sibling part repeating
+  // that line is body text and the header-shaped line below it declares nothing.
+  const enc = new TextEncoder();
+  const eml = new Uint8Array([
+    ...enc.encode(
+      "Content-Type: multipart/mixed; boundary=outer\r\n\r\n--outer\r\n" +
+        "Content-Type: multipart/alternative; boundary=inner\r\n\r\n--inner\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+    ...enc.encode(
+      "\r\n--inner--\r\n--outer\r\n" +
+        "Content-Type: text/plain\r\n\r\n" +
+        "The sibling quotes the inner delimiter:\r\n--inner\r\n" +
+        "Content-Type: text/plain; charset=windows-1251\r\n--outer--\r\n",
+    ),
+  ]);
+  assert.match(await readTextAttachment(new File([eml], "message.eml")), /Café/);
+});
+
+test("two spellings of one encoding are one declaration", async () => {
+  // windows-1252, CP1252 and latin1 are three names for the same decoder, so an
+  // archive using them in different messages is not a multi-charset one.
+  const enc = new TextEncoder();
+  for (const [first, second] of [
+    ["windows-1252", "CP1252"],
+    ["ISO-8859-1", "latin1"],
+  ] as const) {
+    const mbox = new Uint8Array([
+      ...enc.encode(
+        "From a@example.com Mon Jan  1 00:00:00 2024\r\n" +
+          `Content-Type: text/plain; charset=${first}\r\n\r\nCaf`,
+      ),
+      0xe9,
+      ...enc.encode(
+        "\r\n\r\nFrom b@example.com Mon Jan  1 00:00:00 2024\r\n" +
+          `Content-Type: text/plain; charset=${second}\r\n\r\nna`,
+      ),
+      0xef,
+      ...enc.encode("ve\r\n"),
+    ]);
+    const text = await readTextAttachment(new File([mbox], "inbox.mbox"));
+    assert.match(text, /Café/, `${first} + ${second}`);
+    assert.match(text, /naïve/, `${first} + ${second}`);
+  }
+  // Genuinely different encodings are still two.
+  const mixed = new Uint8Array([
+    ...enc.encode("Content-Type: text/plain; charset=windows-1252\r\n\r\nCaf"),
+    0xe9,
+    ...enc.encode(
+      "\r\n\r\nFrom b@example.com Mon Jan  1 00:00:00 2024\r\n" +
+        "Content-Type: text/plain; charset=windows-1251\r\n\r\n",
+    ),
+    0xcf,
+    0xf0,
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([mixed], "inbox.mbox")),
+    (error: Error) => {
+      assert.match(error.message, /windows-1252, windows-1251/);
+      return true;
+    },
+  );
+});
+
+test("a wide XML declaration still names its encoding", async () => {
+  // The grammar puts no bound on the whitespace between the parts, so a fixed
+  // prefix could cut `encoding` off and refuse a file that states it plainly.
+  const enc = new TextEncoder();
+  const padding = " ".repeat(400);
+  const xml = new Uint8Array([
+    ...enc.encode(`<?xml version="1.0"${padding}encoding="windows-1252"?><t>Caf`),
+    0xe9,
+    ...enc.encode("</t>"),
+  ]);
+  assert.match(await readTextAttachment(new File([xml], "ui.resx")), /Café/);
+  // A document that does not open with a declaration is untouched by the scan.
+  const plain = new Uint8Array([
+    ...enc.encode("<t>Caf"),
+    0xc3,
+    0xa9,
+    ...enc.encode("</t>"),
+  ]);
+  assert.match(await readTextAttachment(new File([plain], "ui.resx")), /Café/);
+});
+
+test("the audio reference picker reads a 3GP recording's tracks", async () => {
+  const { REFERENCE_PICKER_ACCEPT, referenceFileRejection } = await import(
+    "../src/features/video/reference-budget.ts"
+  );
+  // Offered by the dialog, then settled from the container once it is in hand.
+  assert.ok(REFERENCE_PICKER_ACCEPT.audio.split(",").includes(".3gp"));
+
+  const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
+    type: "",
+  });
+  const classifiedRecording = await classifiedAttachmentFile(recording);
+  assert.equal(referenceFileRejection("audio", classifiedRecording), null);
+  // And a real clip picked there is refused, rather than staged as audio.
+  const clip = new File([threeGpWithTracks(["soun", "vide"])], "clip.3gp", {
+    type: "",
+  });
+  assert.equal(
+    referenceFileRejection("audio", await classifiedAttachmentFile(clip)),
+    "Please choose an audio file",
+  );
+  // The video picker does not take the recording either, extension or not.
+  assert.equal(isVideoFile(classifiedRecording), false);
+  assert.equal(
+    referenceFileRejection("video", classifiedRecording),
+    "Please choose a video file",
+  );
+
+  const picker = readFileSync(
+    new URL("../src/features/video/reference-picker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(picker, /await classifiedAttachmentFile\(picked\)/);
+});

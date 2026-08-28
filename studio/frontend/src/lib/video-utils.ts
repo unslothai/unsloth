@@ -65,6 +65,11 @@ export function isVideoFile(file: { name: string; type: string }): boolean {
   if (VIDEO_MIME_RE.test(file.type)) {
     return true;
   }
+  // The extension fallback below claims .3gp, which a recording shares with a
+  // clip. Something that read the tracks has already said which this is.
+  if (/^audio\//i.test(file.type)) {
+    return false;
+  }
   const name = file.name.toLowerCase();
   return VIDEO_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
