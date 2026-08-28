@@ -67,3 +67,49 @@ export function findStreamedToolCallPartIndex(
   const byId = parts.findIndex((part) => part.toolCallId === partId);
   return byId === -1 ? findDeltaIndexSlot(parts, deltaIndex, true) : byId;
 }
+
+/**
+ * True when an id-less fragment cannot be a continuation of the arguments a
+ * slot has already accumulated: the accumulated text forms a complete JSON
+ * document and the fragment opens another one.
+ *
+ * Some proxies strip tool-call ids AND renumber every parallel call's index
+ * to 0 (LiteLLM), so slot matching alone lands each call's opening fragment
+ * on the previous call's part and the argument JSONs concatenate into one
+ * malformed string, which then poisons the thread on replay (#9807). A
+ * complete JSON document never continues into another `{`/`[`, so this
+ * boundary is safe for genuinely chunked arguments.
+ */
+export function fragmentStartsNewToolCall(
+  existingArgsText: string | undefined,
+  fragmentArguments: string,
+): boolean {
+  const settled = (existingArgsText ?? "").trim();
+  if (!settled) {
+    return false;
+  }
+  const opening = fragmentArguments.trimStart();
+  if (!(opening.startsWith("{") || opening.startsWith("["))) {
+    return false;
+  }
+  try {
+    JSON.parse(settled);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/** A `tool_call_<n>` id no existing part already carries. */
+export function mintStreamedToolCallId(
+  parts: readonly StreamedToolCallPart[],
+  deltaIndex: number | undefined,
+): string {
+  let candidate = `tool_call_${deltaIndex ?? parts.length}`;
+  let next = parts.length;
+  while (parts.some((part) => part.toolCallId === candidate)) {
+    candidate = `tool_call_${next}`;
+    next += 1;
+  }
+  return candidate;
+}

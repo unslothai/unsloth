@@ -109,6 +109,8 @@ import {
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import {
   findStreamedToolCallPartIndex,
+  fragmentStartsNewToolCall,
+  mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../tool-call-id";
 
@@ -6932,15 +6934,28 @@ export function createOpenAIStreamAdapter(
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
+                  const argsFragment = call.function?.arguments ?? "";
                   const existingIndex = findStreamedToolCallPartIndex(
                     toolCallParts,
                     stablePartId,
                     idx,
                   );
-                  const existing =
+                  const matchedPart =
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
+                  // An id-less opening landing on a slot whose arguments are
+                  // already a complete JSON document is the next parallel
+                  // call, not a continuation: some proxies strip ids and
+                  // renumber every call's index to 0, and merging would glue
+                  // the argument JSONs into one malformed string that poisons
+                  // the thread on replay (#9807).
+                  const existing =
+                    matchedPart !== undefined &&
+                    !stablePartId &&
+                    fragmentStartsNewToolCall(matchedPart.argsText, argsFragment)
+                      ? undefined
+                      : matchedPart;
 
                   if (
                     stablePartId &&
@@ -6948,7 +6963,6 @@ export function createOpenAIStreamAdapter(
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
                   }
-                  const argsFragment = call.function?.arguments ?? "";
                   streamedChars +=
                     argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
@@ -6998,9 +7012,12 @@ export function createOpenAIStreamAdapter(
                     };
                     toolCallParts[existingIndex] = updated;
                   } else {
+                    // Minted collision-free: a boundary-split parallel call
+                    // shares its delta index with the part it split from, so
+                    // the plain tool_call_<idx> spelling is already taken.
                     const callId =
                       stablePartId ||
-                      `tool_call_${idx ?? toolCallParts.length}`;
+                      mintStreamedToolCallId(toolCallParts, idx);
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
