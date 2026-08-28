@@ -44,9 +44,7 @@ class _OlderRunModule:
 def _function(name: str) -> ast.FunctionDef:
     tree = ast.parse(_STUDIO_CLI.read_text(encoding = "utf-8"))
     matches = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == name
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == name
     ]
     assert len(matches) == 1, f"expected exactly one {name}() in studio.py, found {len(matches)}"
     return matches[0]
