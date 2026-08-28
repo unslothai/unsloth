@@ -215,7 +215,12 @@ def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
     cancel_event = threading.Event()
     calls = []
 
-    async def _load(request, *_args, load_cancel_event = None, **_kwargs):
+    async def _load(
+        request,
+        *_args,
+        load_cancel_event = None,
+        **_kwargs,
+    ):
         assert load_cancel_event is cancel_event
         calls.append(request)
         backend.model_identifier = request.model_path
