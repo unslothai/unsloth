@@ -2387,7 +2387,6 @@ class TestBuildPassthroughPayloadToolChoice:
         # posting each schema to a live server. maxItems costs N+2 rules, not N+1, so 1998 is
         # already over budget even though the other three keywords reach 2000.
         from routes.inference import _JSON_SCHEMA_REPETITION_LIMITS
-
         first_rejected = {"maxItems": 1998, "maxLength": 2000, "minItems": 2001, "minLength": 2000}
         assert _JSON_SCHEMA_REPETITION_LIMITS == {
             keyword: value - 1 for keyword, value in first_rejected.items()
