@@ -23,6 +23,7 @@ import {
   parseCompactionStyle,
 } from "@/features/chat/utils/auto-compaction";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
+import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
@@ -311,7 +312,9 @@ export function ChatTab() {
     setIsSavingCurrentDatePrompt(true);
     setCurrentDatePromptError(null);
     try {
-      setCurrentDatePrompt(await updateCurrentDatePrompt(enabled));
+      const settings = await updateCurrentDatePrompt(enabled);
+      setCurrentDatePrompt(settings);
+      void refreshContextUsage({ invalidate: true });
     } catch (error) {
       setCurrentDatePromptError(
         error instanceof Error
