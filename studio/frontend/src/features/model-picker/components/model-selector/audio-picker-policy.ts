@@ -29,6 +29,7 @@ export function communityAudioRowIsRunnable({
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   isStt: boolean;
   isTts: boolean;
@@ -37,6 +38,7 @@ export function communityAudioRowIsRunnable({
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
   if (!isStt && !isTts) {
     return true;
@@ -57,6 +59,9 @@ export function communityAudioRowIsRunnable({
   // Llasa is NOT here despite being a well-known TTS family: it speaks XCodec2, which
   // AudioCodecManager cannot decode, so admitting it produced a row that loaded and then
   // failed at generation. The list and the comment above must stay in step.
+  const normalizedAudioType = (audioType ?? "").toLowerCase();
+  if (["snac", "bicodec", "dac"].includes(normalizedAudioType)) return true;
+  if (normalizedAudioType === "csm") return !isGguf;
   const family = evidence.find((value) =>
     /(?:^|[-_./])(orpheus|csm|spark-?tts|outetts|oute-?tts)(?:$|[-_./])/.test(value),
   );
@@ -121,6 +126,7 @@ export function audioPickIsRoutable({
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   id: string;
   task: string | null | undefined;
@@ -133,12 +139,16 @@ export function audioPickIsRoutable({
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
-  // The backend tags text-to-speech ONLY for llama-csm (_SPEECH_GGUF_ARCHS), the one arch
-  // llama.cpp has no decoder for, so that read outranks both the curated match and the
-  // PATH-based heuristic below -- which clears a CSM file at /models/orpheus/custom.gguf
-  // and routes it to Audio after the handoff already evicted the chat model.
-  if (taskFromGgufArch && isGguf && task === "text-to-speech") return false;
+  // GGUF speech tasks have two provenances: Orpheus retains the ordinary llama
+  // architecture and is runnable by Audio's SNAC path; the dedicated CSM speech
+  // architectures remain unsupported. Unknown old-backend rows fail closed.
+  if (taskFromGgufArch && isGguf && task === "text-to-speech") {
+    const codec = (audioType ?? "").toLowerCase();
+    if (codec === "csm" || !codec) return false;
+    return ["snac", "bicodec", "dac"].includes(codec);
+  }
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
   // judge, and the family-name heuristic it applies would reject it on its directory
@@ -164,6 +174,7 @@ export function audioPickIsRoutable({
     baseModel,
     tags,
     libraryName,
+    audioType,
   });
 }
 

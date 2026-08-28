@@ -698,7 +698,7 @@ export const es = {
         sectionTitle: "Cambio automático de modelo (API de OpenAI)",
         enable: "Cambiar de modelo según la solicitud",
         enableDescription:
-          "Si una solicitud de la API especifica un GGUF que ya está descargado, carga ese modelo antes de responder. Desactivado por defecto.",
+          "Si una solicitud de la API especifica un modelo que ya está descargado, carga ese modelo antes de responder. Desactivado por defecto.",
         idleUnload: "Liberar automáticamente por inactividad",
         idleUnloadDescription:
           "Libera la VRAM después de este número de segundos de inactividad. El valor 0 mantiene el modelo cargado; el mínimo es 60.",
@@ -810,7 +810,7 @@ export const es = {
         embeddingModel: "Modelo de embeddings",
         embeddingModelDescription:
           "Modelo de Hugging Face o ruta local usada para indexar y buscar tus documentos. El valor predeterminado es {defaultModel}.",
-        searchPlaceholder: "Buscar modelos de embedding",
+        searchPlaceholder: "Buscar cualquier modelo en HF",
         reindexWarning:
           "Solo afecta a los documentos recién indexados. Vuelve a subir los existentes tras cambiar el modelo.",
         emptyError:
@@ -820,7 +820,24 @@ export const es = {
         saveError: "No se pudo guardar el modelo de embeddings.",
         saved: "Modelo de embeddings guardado.",
         saveAnyway: "Guardar de todos modos",
-        resetAction: "Restablecer al valor predeterminado",
+        recommended: "Recomendado",
+        onDevice: "En el dispositivo",
+        searching: "Buscando en Hugging Face…",
+        checking: "Comprobando…",
+        noResults: "No se encontraron modelos de embedding",
+        download: "Descargar",
+        unload: "Descargar de memoria",
+        unloadFailed: "No se pudo descargar el modelo de embedding",
+        downloadingStatus: "Descargando…",
+        notDownloaded: "No descargado",
+        notDownloadedSized: "No descargado · {size}",
+        loaded: "Cargado",
+        downloading: "Descargando {model}",
+        downloadingDescription:
+          "El progreso está en el panel de descargas. La indexación lo usará cuando termine.",
+        downloadFailed: "No se pudo iniciar la descarga",
+        downloadConflict: "Reanuda esta descarga desde el Hub",
+        downloadBusy: "La descarga ya está en curso",
       },
       storage: {
         sectionTitle: "Almacenamiento",
@@ -1212,6 +1229,7 @@ export const es = {
         processMemory: "Memoria del proceso",
         notInstalled: "No instalado",
         unknown: "Desconocido",
+        vramWithShared: "{vram} de VRAM + {shared} de memoria compartida",
       },
     },
     agents: {
@@ -1340,6 +1358,9 @@ export const es = {
         showAllQuantizations: "Mostrar todas las cuantizaciones",
         showAllQuantizationsDescription:
           "Activado: muestra todas las cuantizaciones de «On Device», incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
+        showMemoryBar: "Mostrar barra de uso de VRAM",
+        showMemoryBarDescription:
+          "Muestra debajo de la fila de cada modelo descargado su uso estimado de VRAM: pesos, caché KV con la longitud de contexto con la que se cargará y cualquier reserva de borrador especulativo.",
       },
       menu: {
         title: "Menú del chat",
@@ -1366,10 +1387,33 @@ export const es = {
       rememberParamsPerModel: "Recordar los ajustes por modelo",
       rememberParamsPerModelDescription:
         "Al cambiar de modelo se restauran la temperatura, el prompt y los demás ajustes que usaste por última vez con ese modelo. Desactivado, se mantiene un único conjunto de ajustes para todos los modelos.",
+      autoCompact: "Compactar automáticamente chats largos",
+      autoCompactDescription:
+        "Cuando un chat GGUF local alcance la longitud de contexto configurada, descarta los turnos antiguos en vez de devolver un error. Esto no depende de la VRAM libre.",
+      compactionStyle: "Cuando se llena el contexto",
+      compactionStyleDescription:
+        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
+      compactionStyleInherit: "Usar valor del servidor",
+      compactionStyleCheckpoint: "Restablecer conversación",
+      compactionStyleRollingDefault:
+        "Descartar turnos antiguos (~25% de espacio extra)",
+      compactionStyleRolling10:
+        "Descartar turnos antiguos (~10% de espacio extra)",
+      compactionStyleRolling5:
+        "Descartar turnos antiguos (~5% de espacio extra)",
+      compactionStyleRollingNone:
+        "Descartar turnos antiguos (sin recorte adicional)",
+      autoCompactKeywords:
+        "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen compaction rolling headroom",
       thinking: {
         collapseByDefault: "Contraer el razonamiento de forma predeterminada",
         collapseByDefaultDescription:
           "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
+      },
+      tools: {
+        collapseByDefault: "Contraer la actividad de herramientas por defecto",
+        collapseByDefaultDescription:
+          "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
       },
       webSearch: {
         title: "Búsqueda web",
@@ -1388,6 +1432,11 @@ export const es = {
         blockedBanner: "Se bloqueó {count} recurso externo de {hosts}.",
         blockedBannerPlural: "Se bloquearon {count} recursos externos de {hosts}.",
         blockedBannerAction: "Permitir en este Canvas",
+        blockedTitle: "El acceso a la red del Canvas está desactivado",
+        blockedHint:
+          "Activa “{setting}” en Ajustes → Chat para que los Canvas carguen recursos externos, o permítelo solo en este Canvas.",
+        blockedSettingsAction: "Abrir ajustes",
+        blockedDismiss: "Descartar",
       },
       data: "Datos",
       exportHistory: "Exportar historial de chat",
@@ -2398,5 +2447,14 @@ export const es = {
         "Conjunto de datos: streaming (sin descarga completa)",
       modelWeights: "Pesos del modelo",
     },
+  },
+  modelMemory: {
+    readout:
+      "Pesos {model} + contexto {context} = {total} de {budget} de VRAM utilizable",
+    readoutWithSpec:
+      "Pesos {model} + KV {kv} + borrador MTP {spec} = {total} de {budget} de VRAM utilizable",
+    kvRate: "KV reservado, ~{rate}/token",
+    oomLikely: "Con la configuración actual es probable un error de memoria",
+    tooLarge: "Más grande que la VRAM, se descargará a la CPU. Una cuantización más pequeña es más rápida",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -688,7 +688,7 @@ export const ar = {
         sectionTitle: "التبديل التلقائي للنموذج (OpenAI API)",
         enable: "تبديل النموذج حسب الطلب",
         enableDescription:
-          "تحميل ملف GGUF منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
+          "تحميل نموذج منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
         idleUnload: "التفريغ التلقائي عند الخمول",
         idleUnloadDescription:
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
@@ -794,7 +794,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
-        searchPlaceholder: "ابحث عن نماذج التضمين",
+        searchPlaceholder: "ابحث عن أي نموذج على HF",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -802,7 +802,24 @@ export const ar = {
         saveError: "فشل حفظ نموذج التضمين.",
         saved: "تم حفظ نموذج التضمين.",
         saveAnyway: "الحفظ على أي حال",
-        resetAction: "إعادة التعيين إلى الافتراضي",
+        recommended: "موصى به",
+        onDevice: "على الجهاز",
+        searching: "جارٍ البحث في Hugging Face…",
+        checking: "جارٍ التحقق…",
+        noResults: "لم يتم العثور على نماذج تضمين",
+        download: "تنزيل",
+        unload: "إلغاء التحميل",
+        unloadFailed: "تعذّر إلغاء تحميل نموذج التضمين",
+        downloadingStatus: "جارٍ التنزيل…",
+        notDownloaded: "غير مُنزّل",
+        notDownloadedSized: "غير مُنزّل · {size}",
+        loaded: "مُحمّل",
+        downloading: "جارٍ تنزيل {model}",
+        downloadingDescription:
+          "يظهر التقدم في لوحة التنزيلات. ستستخدمه الفهرسة بمجرد اكتماله.",
+        downloadFailed: "تعذّر بدء التنزيل",
+        downloadConflict: "استأنف هذا التنزيل من Hub",
+        downloadBusy: "التنزيل قيد التقدم بالفعل",
       },
       storage: {
         sectionTitle: "التخزين",
@@ -1189,6 +1206,7 @@ export const ar = {
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
         unknown: "غير معروف",
+        vramWithShared: "{vram} VRAM + {shared} ذاكرة مشتركة",
       },
     },
     agents: {
@@ -1313,6 +1331,9 @@ export const ar = {
         showAllQuantizations: "إظهار جميع خيارات التكميم",
         showAllQuantizationsDescription:
           "عند التفعيل: تُدرج جميع خيارات التكميم ضمن «On Device»، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
+        showMemoryBar: "إظهار شريط استخدام VRAM",
+        showMemoryBarDescription:
+          "يعرض أسفل صف كل نموذج تم تنزيله الاستخدام التقديري لذاكرة VRAM: الأوزان، وذاكرة KV المؤقتة عند طول السياق الذي سيُحمَّل به، وأي حجز لمسودة فك التشفير التخميني.",
       },
       menu: {
         title: "قائمة المحادثة",
@@ -1339,10 +1360,29 @@ export const ar = {
       rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
       rememberParamsPerModelDescription:
         "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
+      autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
+      autoCompactDescription:
+        "عندما تصل محادثة GGUF محلية إلى طول السياق المحدد، احذف الأدوار الأقدم بدلًا من إرجاع خطأ. لا يعتمد ذلك على ذاكرة VRAM المتاحة.",
+      compactionStyle: "عند امتلاء السياق",
+      compactionStyleDescription:
+        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
+      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
+      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
+      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
+      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
+      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
+      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+      autoCompactKeywords:
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
+      tools: {
+        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
       },
       webSearch: {
         title: "البحث على الويب",
@@ -1361,6 +1401,11 @@ export const ar = {
         blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
         blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
         blockedBannerAction: "السماح لهذا الـ Canvas",
+        blockedTitle: "الوصول إلى الشبكة لـ Canvas معطّل",
+        blockedHint:
+          "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
+        blockedSettingsAction: "فتح الإعدادات",
+        blockedDismiss: "تجاهل",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -2334,5 +2379,14 @@ export const ar = {
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
     },
+  },
+  modelMemory: {
+    readout:
+      "الأوزان {model} + السياق {context} = {total} من {budget} من VRAM القابلة للاستخدام",
+    readoutWithSpec:
+      "الأوزان {model} + KV {kv} + مسودة MTP {spec} = {total} من {budget} من VRAM القابلة للاستخدام",
+    kvRate: "KV محجوزة مسبقًا، ~{rate}/توكن",
+    oomLikely: "مع الإعدادات الحالية يُرجَّح نفاد الذاكرة",
+    tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
