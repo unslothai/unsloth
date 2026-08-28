@@ -1,21 +1,45 @@
+use log::warn;
 use serde::Serialize;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const DOWNLOAD_EVENT: &str = "desktop-update-download";
 const DOWNLOAD_EVENT_STEP: u64 = 512 * 1024;
+const BUNDLE_FILE: &str = ".desktop-update-bundle";
 
+/// The prepared bundle lives on disk, not in this struct.
+///
+/// Preparation finishes long before the user restarts, and the whole point of the
+/// flow is that they keep training or generating in the meantime. A platform
+/// installer held in memory for that entire window is resident memory taken from
+/// exactly the workloads the background update exists to avoid interrupting.
 #[derive(Default)]
 pub(crate) struct DesktopUpdate {
     update: Option<Update>,
-    bundle: Option<Vec<u8>>,
+    bundle: Option<PathBuf>,
     downloading: bool,
+}
+
+fn bundle_path() -> PathBuf {
+    crate::diagnostics::studio_dir().join(BUNDLE_FILE)
+}
+
+fn discard_bundle(path: Option<&PathBuf>) {
+    if let Some(path) = path {
+        let _ = fs::remove_file(path);
+    }
 }
 
 pub(crate) type DesktopUpdateState = Arc<Mutex<DesktopUpdate>>;
 
 pub(crate) fn new_desktop_update_state() -> DesktopUpdateState {
+    // Which bundle is prepared is in-memory state, so a bundle that outlived the
+    // process it was prepared in is claimed by nothing and would sit there at full
+    // installer size forever. Single-instance keeps a second app off this file.
+    let _ = fs::remove_file(bundle_path());
     Arc::new(Mutex::new(DesktopUpdate::default()))
 }
 
@@ -105,7 +129,7 @@ pub(crate) async fn check_desktop_update(
     let mut guard = state.lock().map_err(|error| error.to_string())?;
     let Some(update) = update else {
         guard.update = None;
-        guard.bundle = None;
+        discard_bundle(guard.bundle.take().as_ref());
         return Ok(None);
     };
 
@@ -122,7 +146,7 @@ pub(crate) async fn check_desktop_update(
         raw_json: update.raw_json.clone(),
     };
     if guard.update.as_ref().map(|u| u.version.as_str()) != Some(update.version.as_str()) {
-        guard.bundle = None;
+        discard_bundle(guard.bundle.take().as_ref());
     }
     guard.update = Some(update);
     Ok(Some(metadata))
@@ -176,9 +200,16 @@ pub(crate) async fn download_desktop_update(
     guard.downloading = false;
     match result {
         Ok(bytes) => {
-            if guard.update.as_ref().map(|u| u.version.as_str()) == Some(update.version.as_str()) {
-                guard.bundle = Some(bytes);
+            if guard.update.as_ref().map(|u| u.version.as_str()) != Some(update.version.as_str()) {
+                // A newer check landed mid-download; these bytes are already stale.
+                return Ok(());
             }
+            let path = bundle_path();
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            fs::write(&path, &bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+            guard.bundle = Some(path);
             Ok(())
         }
         Err(error) => Err(error.to_string()),
@@ -189,22 +220,35 @@ pub(crate) async fn download_desktop_update(
 pub(crate) async fn install_desktop_update(
     state: tauri::State<'_, DesktopUpdateState>,
 ) -> Result<(), String> {
-    let (update, bundle) = {
+    let (update, path) = {
         let mut guard = state.lock().map_err(|error| error.to_string())?;
         let Some(update) = guard.update.clone() else {
             return Err("No desktop update has been checked.".to_string());
         };
-        let Some(bundle) = guard.bundle.take() else {
+        let Some(path) = guard.bundle.take() else {
             return Err("Desktop update has not been downloaded.".to_string());
         };
-        (update, bundle)
+        (update, path)
+    };
+    // Read back only for the install itself, so the bytes are resident for the
+    // seconds it takes rather than for the whole session.
+    let bundle = match fs::read(&path) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let _ = fs::remove_file(&path);
+            return Err(format!("Prepared update is unreadable: {error}"));
+        }
     };
     if let Err(error) = update.install(&bundle) {
+        // Keep the file: the retry path installs it again without downloading.
         if let Ok(mut guard) = state.lock() {
-            guard.bundle = Some(bundle);
+            guard.bundle = Some(path);
+        } else {
+            warn!("[desktop-update] state poisoned; dropping the prepared bundle");
         }
         return Err(error.to_string());
     }
+    let _ = fs::remove_file(&path);
     Ok(())
 }
 
@@ -215,7 +259,7 @@ pub(crate) fn desktop_update_bundle_status(
     let guard = state.lock().map_err(|error| error.to_string())?;
     Ok(DesktopUpdateBundleStatus {
         version: guard.update.as_ref().map(|u| u.version.clone()),
-        downloaded: guard.bundle.is_some(),
+        downloaded: guard.bundle.as_ref().is_some_and(|path| path.is_file()),
         downloading: guard.downloading,
     })
 }

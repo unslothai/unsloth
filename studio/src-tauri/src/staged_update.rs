@@ -268,6 +268,15 @@ fn recorded_pids(home: &Path) -> Vec<u32> {
                 .and_then(|rest| rest.rsplit('-').next())
                 .and_then(|pid| pid.parse::<u32>().ok());
             if let Some(pid) = pid {
+                // These records outlive crashes and the OS reuses pids. Without the
+                // start time a stranger wearing the pid reads as a live backend, and
+                // both activation and rollback would defer on it forever.
+                if !crate::process_identity::pid_start_time_matches(
+                    pid,
+                    crate::process_identity::recorded_pid_start_time(&entry.path()),
+                ) {
+                    continue;
+                }
                 pids.push(pid);
             }
         }

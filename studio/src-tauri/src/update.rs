@@ -379,14 +379,20 @@ fn run_update(
     };
     // Update mutates the managed environment for its whole lifetime. This function
     // is synchronous, so the thread-owned Win32 mutex never crosses an await.
-    let result = if kind.mutates_live_environment() {
-        crate::process::with_studio_runtime_launch_guard(|| {
+    //
+    // A staged run holds the same guard: it never writes to the live environment,
+    // but it reads all of it while cloning, and a terminal update or repair running
+    // at the same time would leave the stage a mixed snapshot of two versions that
+    // the CLI probes afterwards cannot see. Only the idle check is skipped, because
+    // a backend serving out of the tree does not stop it being copied. spawn_update
+    // hands the child the gate either way, so without this the child would inherit
+    // a gate nobody holds.
+    let result = crate::process::with_studio_runtime_launch_guard(|| {
+        if kind.mutates_live_environment() {
             crate::process::ensure_managed_environment_is_idle(&bin)?;
-            run_child()
-        })
-    } else {
+        }
         run_child()
-    };
+    });
     // Read only after the guard returned, so both reader threads are joined.
     let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 

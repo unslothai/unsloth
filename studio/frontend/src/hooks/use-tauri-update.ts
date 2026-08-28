@@ -512,7 +512,14 @@ export function useTauriUpdate(isExternalServer = false) {
         setUpdatePhase("shell_install");
         updateStatus("installing");
         setError(null);
-        await invoke("stop_server").catch(() => {});
+        // Swallowing this leaves the old backend alive: its pid record then defers
+        // the staged activation at the next launch, so the new shell would come up
+        // against the old backend while reporting a finished update.
+        try {
+          await invoke("stop_server");
+        } catch (stopError) {
+          throw new Error(`Could not stop the backend before restarting: ${stopError}`);
+        }
       } else {
         setUpdatePhase("backend");
         updateStatus("updating-backend");

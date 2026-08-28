@@ -843,26 +843,33 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     update_child_fn = update_source.index("let run_child = || {")
     update_spawn = update_source.index("spawn_update(&bin, &state", update_child_fn)
     update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
-    # One kind, and only one, runs outside the gate: a staged update prepares a copy
-    # and never touches the live environment. Pinned on the predicate, so widening it
-    # to another kind has to come through here.
+    # Every kind runs under the guard, a staged update included: it never writes to
+    # the live environment but it reads all of it while cloning, and spawn_update
+    # hands the child the gate handoff either way.
+    update_call = update_source.index(
+        "let result = crate::process::with_studio_runtime_launch_guard(",
+        update_wait,
+    )
+    # Only the idle check is conditional, and only a staged update skips it: a
+    # backend serving out of the tree does not stop the tree being copied.
     exemption = update_source.index("fn mutates_live_environment(&self) -> bool {")
     assert (
-        "!matches!(self, UpdateKind::Staged { .. })" in update_source[exemption : exemption + 200]
+        "!matches!(self, UpdateKind::Staged { .. })"
+        in update_source[exemption : exemption + 200]
     )
-    update_call = update_source.index("if kind.mutates_live_environment() {", update_wait)
-    update_guard = update_source.index(
-        "crate::process::with_studio_runtime_launch_guard(",
+    update_scan_gate = update_source.index(
+        "if kind.mutates_live_environment() {",
         update_call,
     )
     update_scan = update_source.index(
         "ensure_managed_environment_is_idle(&bin)",
-        update_guard,
+        update_scan_gate,
     )
     update_gated_child = update_source.index("run_child()", update_scan)
-    update_guard_release = update_source.index("\n        })", update_gated_child)
+    update_guard_release = update_source.index("\n    });", update_gated_child)
     assert update_child_fn < update_spawn < update_wait < update_call
-    assert update_call < update_guard < update_scan < update_gated_child < update_guard_release
+    assert update_call < update_scan_gate < update_scan
+    assert update_scan < update_gated_child < update_guard_release
 
 
 def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
