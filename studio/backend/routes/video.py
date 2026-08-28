@@ -757,6 +757,10 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     _forget_terminal_video(video_id)
+    if not video_gallery.forget_job(video_id):
+        raise HTTPException(status_code = 500, detail = "Could not delete the video job.")
+    with _jobs_lock:
+        _jobs.pop(video_id, None)
     return {"deleted": True}
 
 
@@ -766,7 +770,7 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
     from core.inference.gallery_flags import FlagsUnavailable
 
     try:
-        removed = await asyncio.to_thread(video_gallery.clear)
+        cleared = await asyncio.to_thread(video_gallery.clear, return_ids = True)
     except FlagsUnavailable as exc:
         # Refuse rather than delete the archive we cannot prove is archived.
         logger.warning("video_gallery.clear_blocked: %s", exc)
@@ -777,7 +781,14 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
         )
     # Clear-all takes the terminal record's clip with it whatever its id.
     _forget_terminal_video(None)
-    return {"removed": removed}
+    failed = [video_id for video_id in cleared if not video_gallery.forget_job(video_id)]
+    with _jobs_lock:
+        for video_id in cleared:
+            if video_id not in failed:
+                _jobs.pop(video_id, None)
+    if failed:
+        raise HTTPException(status_code = 500, detail = "Could not delete every video job.")
+    return {"removed": len(cleared)}
 
 
 # ── OpenAI-compatible videos API (/v1/videos) ──
@@ -969,9 +980,25 @@ def _remember_job(job: _VideoJob) -> None:
 
 
 def _job_from_record(record: dict) -> Optional[_VideoJob]:
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
     try:
-        job = _VideoJob(**record)
-        if job.status not in ("queued", "in_progress", "failed"):
+        stored = dict(record)
+        outcome = stored.pop("_worker_outcome", None)
+        job = _VideoJob(**stored)
+        if isinstance(outcome, dict):
+            message = outcome.get("error")
+            job.completed_at = int(outcome.get("completed_at") or job.completed_at or 0) or None
+            if message is None:
+                job.status, job.progress, job.error = "completed", 100, None
+            else:
+                message = str(message)
+                job.status, job.progress = "failed", 0
+                job.error = {
+                    "code": "cancelled" if message == VIDEO_CANCELLED_MSG else _VIDEO_FAILED_CODE,
+                    "message": message,
+                }
+        if job.status not in ("queued", "in_progress", "completed", "failed"):
             return None
         _job_to_openai(job)
     except (TypeError, ValueError, ValidationError):
@@ -1013,6 +1040,11 @@ def _sync_jobs() -> None:
     gen = get_video_backend().generate_progress()
     now = int(_time.time())
     for job in open_jobs:
+        persisted_job = _job_from_record(video_gallery.get_job(job.id) or {})
+        if persisted_job is not None and persisted_job.terminal:
+            with _jobs_lock:
+                _jobs[job.id] = persisted_job
+            continue
         status: Optional[str] = None
         progress = 0
         completed_at: Optional[int] = None
@@ -1052,10 +1084,7 @@ def _sync_jobs() -> None:
                 job.error = error
             persisted = asdict(job)
         try:
-            if status == "completed":
-                video_gallery.forget_job(job.id)
-            else:
-                video_gallery.save_job(job.id, persisted)
+            video_gallery.save_job(job.id, persisted)
         except OSError as exc:
             logger.warning("openai_videos.persist_job_failed: %s", exc)
 

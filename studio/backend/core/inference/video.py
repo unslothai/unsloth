@@ -5155,9 +5155,20 @@ class VideoBackend:
         internals (CUDA state, paths) never reach the client."""
         from . import video_gallery
 
+        def _record_outcome(error: Optional[str] = None) -> None:
+            if video_id is None:
+                return
+            try:
+                video_gallery.record_job_outcome(
+                    video_id, completed_at = int(time.time()), error = error
+                )
+            except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the backend busy
+                logger.warning("video.persist_job_outcome_failed: %s", exc)
+
         try:
             result = self.generate(cancel_event = cancel_event, **gen_kwargs)
         except ValueError as exc:
+            _record_outcome(str(exc))
             self._finish_generate_job(
                 job_token = job_token, cancel_event = cancel_event, error = str(exc)
             )
@@ -5167,10 +5178,12 @@ class VideoBackend:
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
                 msg = "Video generation failed."
+            _record_outcome(msg)
             self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
+            _record_outcome("Video generation failed.")
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel_event,
@@ -5219,12 +5232,14 @@ class VideoBackend:
             )
         except Exception as exc:  # noqa: BLE001 -- disk failure must reach the poller
             logger.error("video.persist_failed: %s", exc)
+            _record_outcome("Failed to save the generated video.")
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel_event,
                 error = "Failed to save the generated video.",
             )
             return
+        _record_outcome()
         self._finish_generate_job(
             job_token = job_token,
             cancel_event = cancel_event,

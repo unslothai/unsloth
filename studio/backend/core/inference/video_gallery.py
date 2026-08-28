@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -26,6 +27,8 @@ logger = get_logger(__name__)
 
 # Video ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_JOB_OUTCOME_KEY = "_worker_outcome"
+_job_lock = threading.Lock()
 
 
 def gallery_dir() -> Path:
@@ -42,11 +45,15 @@ def _job_path(video_id: str) -> Optional[Path]:
     return _job_dir() / f"{video_id}.json"
 
 
-def save_job(video_id: str, job: dict[str, Any]) -> None:
-    """Atomically persist an OpenAI job that does not yet have a committed MP4."""
-    path = _job_path(video_id)
-    if path is None:
-        raise ValueError("Invalid video id.")
+def _read_job(path: Path, video_id: str) -> Optional[dict[str, Any]]:
+    try:
+        raw = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    return raw if isinstance(raw, dict) and raw.get("id") == video_id else None
+
+
+def _write_job(path: Path, job: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(json.dumps(job), encoding = "utf-8")
@@ -55,15 +62,41 @@ def save_job(video_id: str, job: dict[str, Any]) -> None:
         tmp.unlink(missing_ok = True)
 
 
+def save_job(video_id: str, job: dict[str, Any]) -> None:
+    """Atomically persist an OpenAI job, preserving any worker outcome that raced it."""
+    path = _job_path(video_id)
+    if path is None:
+        raise ValueError("Invalid video id.")
+    with _job_lock:
+        existing = _read_job(path, video_id) or {}
+        stored = dict(job)
+        if isinstance(existing.get(_JOB_OUTCOME_KEY), dict):
+            stored[_JOB_OUTCOME_KEY] = existing[_JOB_OUTCOME_KEY]
+        _write_job(path, stored)
+
+
+def record_job_outcome(
+    video_id: str,
+    *,
+    completed_at: int,
+    error: Optional[str] = None,
+) -> None:
+    """Persist a worker result by id before the backend can accept another generation."""
+    path = _job_path(video_id)
+    if path is None:
+        raise ValueError("Invalid video id.")
+    with _job_lock:
+        stored = _read_job(path, video_id) or {"id": video_id}
+        stored[_JOB_OUTCOME_KEY] = {"completed_at": completed_at, "error": error}
+        _write_job(path, stored)
+
+
 def get_job(video_id: str) -> Optional[dict[str, Any]]:
     path = _job_path(video_id)
     if path is None:
         return None
-    try:
-        raw = json.loads(path.read_text(encoding = "utf-8"))
-    except (OSError, UnicodeError, ValueError, TypeError):
-        return None
-    return raw if isinstance(raw, dict) and raw.get("id") == video_id else None
+    with _job_lock:
+        return _read_job(path, video_id)
 
 
 def list_jobs() -> list[dict[str, Any]]:
@@ -84,11 +117,12 @@ def forget_job(video_id: str) -> bool:
     path = _job_path(video_id)
     if path is None:
         return False
-    try:
-        path.unlink(missing_ok = True)
-    except OSError as exc:
-        logger.warning("video_gallery.forget_job_failed: %s", exc)
-        return False
+    with _job_lock:
+        try:
+            path.unlink(missing_ok = True)
+        except OSError as exc:
+            logger.warning("video_gallery.forget_job_failed: %s", exc)
+            return False
     return True
 
 
@@ -485,8 +519,8 @@ def delete(video_id: str) -> bool:
     return True
 
 
-def clear(include_archived: bool = False) -> int:
-    """Delete Unsloth-owned gallery pairs (readable sidecar); return how many were removed.
+def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | list[str]:
+    """Delete owned gallery pairs and return their count, or their ids when requested.
 
     Archived clips are SPARED by default: archiving is how a user sets something aside, so a
     "clear the gallery" action that destroyed the archive would defeat it. Pass
@@ -508,7 +542,7 @@ def clear(include_archived: bool = False) -> int:
         try:
             paths = list(directory.glob("*.mp4"))
         except OSError:
-            return 0
+            return [] if return_ids else 0
         cleared: list[str] = []
         for path in paths:
             if _read_meta(_sidecar_path(path.stem)) is None:  # orphan / not ours
@@ -532,4 +566,4 @@ def clear(include_archived: bool = False) -> int:
             gallery_flags.reset_locked(directory)
         else:
             gallery_flags.forget_locked(directory, cleared)
-    return removed
+    return cleared if return_ids else removed

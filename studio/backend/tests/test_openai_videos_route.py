@@ -354,6 +354,80 @@ def test_a_failed_job_reports_its_error_and_keeps_it_after_the_next_job(client, 
     assert client.get(f"/v1/videos/{job['id']}").status_code == 404
 
 
+def test_an_unpolled_failure_keeps_its_error_after_the_next_job(client, backend):
+    backend.fail_with = "Prompt rejected before polling."
+    failed_job = _create(client, {"prompt": "bad"}).json()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if backend.generate_progress().get("phase") == "failed":
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("the first generation never failed")
+
+    backend.fail_with = None
+    later = _create(client, {"prompt": "good"})
+    assert later.status_code == 200, later.json()
+    failed = client.get(f"/v1/videos/{failed_job['id']}").json()
+    assert failed["status"] == "failed"
+    assert failed["error"]["message"] == "Prompt rejected before polling."
+
+
+def test_a_worker_outcome_that_arrives_before_the_job_record_is_not_overwritten(client, backend):
+    video_id = "video_worker_won_the_race"
+    gallery_module.record_job_outcome(
+        video_id, completed_at = 123, error = "Failed before the create response."
+    )
+    video_routes._remember_job(
+        video_routes._VideoJob(
+            id = video_id,
+            created_at = 100,
+            prompt = "fast failure",
+            model = "model",
+            size = "768x512",
+            seconds = "5",
+        )
+    )
+    video_routes._jobs = {}
+    failed = client.get(f"/v1/videos/{video_id}").json()
+    assert failed["status"] == "failed"
+    assert failed["completed_at"] == 123
+    assert failed["error"]["message"] == "Failed before the create response."
+
+
+def test_completed_job_keeps_its_submission_time_after_restart(client, backend, monkeypatch):
+    monkeypatch.setattr(video_routes._time, "time", lambda: 100)
+    job = _create(client, {"prompt": "slow timestamp"}).json()
+    assert _wait_terminal(client, job["id"])["created_at"] == 100
+    video_routes._jobs = {}
+    restarted = client.get(f"/v1/videos/{job['id']}").json()
+    assert restarted["status"] == "completed"
+    assert restarted["created_at"] == job["created_at"] == 100
+
+
+def test_studio_delete_and_clear_remove_unpolled_openai_jobs(client, backend):
+    first = _create(client, {"prompt": "delete in Studio"}).json()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if backend.generate_progress().get("phase") == "completed":
+            break
+        time.sleep(0.01)
+    assert client.delete(f"/api/inference/video/gallery/{first['id']}").status_code == 200
+    assert gallery_module.get_job(first["id"]) is None
+    assert client.get(f"/v1/videos/{first['id']}").status_code == 404
+
+    second = _create(client, {"prompt": "clear in Studio"}).json()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if backend.generate_progress().get("phase") == "completed":
+            break
+        time.sleep(0.01)
+    cleared = client.delete("/api/inference/video/gallery")
+    assert cleared.status_code == 200 and cleared.json()["removed"] == 1
+    assert gallery_module.get_job(second["id"]) is None
+    assert client.get(f"/v1/videos/{second['id']}").status_code == 404
+
+
 def test_deleting_a_running_job_cancels_it(client, backend):
     backend.gate.clear()
     job = _create(client, {"prompt": "slow"}).json()
