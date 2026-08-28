@@ -270,6 +270,38 @@ def test_fallback_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
     assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
 
 
+def test_processed_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
+    monkeypatch,
+    tmp_path,
+):
+    larger_root = tmp_path / "larger-processed"
+    newer_root = tmp_path / "newer-processed"
+    for root, size, modified in (
+        (larger_root, 200, 1_700_000_000),
+        (newer_root, 100, 1_900_000_000),
+    ):
+        cache_dir = root / "Org___Data"
+        cache_dir.mkdir(parents = True)
+        (cache_dir / "data.arrow").write_bytes(b"x" * size)
+        os.utime(cache_dir, (modified, modified))
+
+    monkeypatch.setattr(
+        cache_inventory,
+        "_hf_datasets_cache_roots",
+        lambda: [larger_root, newer_root],
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "processed_dataset_cache_has_artifacts",
+        lambda _path: True,
+    )
+
+    rows = cache_inventory._scan_processed_dataset_caches()
+
+    assert rows[0]["size_bytes"] == 200
+    assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
+
+
 def test_recent_order_is_now_derivable_from_the_payload(monkeypatch):
     # The whole point: two cached datasets, and the newer one sorts first.
     _stub_hf_scan(

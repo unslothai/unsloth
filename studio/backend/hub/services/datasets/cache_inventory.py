@@ -461,6 +461,7 @@ def _scan_processed_dataset_caches() -> list[dict]:
                 continue
             key = repo_id.lower()
             existing = seen_lower.get(key)
+            processed_mtime = _dataset_last_modified(None, entry)
             if existing is None or size_bytes > existing["size_bytes"]:
                 processed_row = {
                     "repo_id": repo_id,
@@ -469,10 +470,12 @@ def _scan_processed_dataset_caches() -> list[dict]:
                     "processed_cache": True,
                     "partial": False,
                 }
-                processed_mtime = _dataset_last_modified(None, entry)
                 if processed_mtime > 0:
                     processed_row["last_modified"] = processed_mtime
+                _adopt_newer_last_modified(processed_row, existing)
                 seen_lower[key] = processed_row
+            elif processed_mtime > 0:
+                _merge_last_modified(existing, {"last_modified": processed_mtime})
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
