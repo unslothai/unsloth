@@ -365,9 +365,7 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 ):
     """server_url resolves the public IP for sharing, which behind NAT reaches
     nothing on the LAN and would trip the public-address warning as well."""
-    monkeypatch.setattr(
-        lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"]
-    )
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
         lan_access_launch_managed = True,
         lan_access_wildcard_bind = True,
@@ -377,9 +375,7 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
     assert status["urls"] == ["http://192.168.1.24:8888"]
     assert status["public_urls"] == []
 
-    monkeypatch.setattr(
-        lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"]
-    )
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"])
     assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
 
 
@@ -496,9 +492,7 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
 @pytest.mark.allow_network
 def test_the_default_route_address_leads_so_it_becomes_the_shown_url(monkeypatch):
     routed = _require_lan_address()
-    monkeypatch.setattr(
-        lan_access, "_interface_addresses", lambda _ip_version = 4: ["203.0.113.9"]
-    )
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["203.0.113.9"])
     assert lan_access.detect_lan_addresses() == [routed, "203.0.113.9"]
 
 
@@ -610,25 +604,19 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
 
 def test_wsl_nat_address_is_not_advertised(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "nat")
-    monkeypatch.setattr(
-        lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"]
-    )
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"])
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_unknown_networking_mode_fails_closed(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
-    monkeypatch.setattr(
-        lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"]
-    )
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"])
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_mirrored_networking_keeps_reachable_addresses(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "mirrored")
-    monkeypatch.setattr(
-        lan_access, "_interface_addresses", lambda _ip_version = 4: ["192.168.1.20"]
-    )
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["192.168.1.20"])
     assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
 
 
