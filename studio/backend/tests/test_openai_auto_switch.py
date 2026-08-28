@@ -2508,6 +2508,49 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
 
 
+def test_non_gguf_entries_skip_gguf_sibling_revision_scans(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import routes.models as models_route
+    from storage import studio_db
+    from utils import hf_cache_settings
+    import utils.paths as paths
+
+    snapshot = tmp_path / "models--org--Repo" / "snapshots" / "rev-new"
+    info = SimpleNamespace(
+        id = str(snapshot),
+        path = str(snapshot),
+        model_id = "org/Repo",
+        display_name = "Repo",
+    )
+    monkeypatch.setattr(models_route, "_scan_models_dir", lambda *a, **k: [info])
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        resolver,
+        "_local_servable_entry",
+        lambda loader_id, _info: resolver._LocalGgufEntry(
+            loader_id, str(snapshot), (), is_gguf = False
+        ),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_sibling_revision_entries",
+        lambda *_a: pytest.fail("non-GGUF discovery walked GGUF sibling revisions"),
+    )
+
+    index = resolver._build_index()
+
+    assert any(not entry.is_gguf for entry in index.values())
+
+
 def test_local_servable_model_reads_files_not_model_format(tmp_path):
     # Codex: HF-cache GGUF snapshots leave model_format unset, so /v1/models must
     # decide the format from the on-disk files. A checkpoint dir needs a root

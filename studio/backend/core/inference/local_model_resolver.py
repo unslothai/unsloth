@@ -500,8 +500,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                 index.setdefault(key.strip().lower(), entry)
         # Other revisions of the same repo resolve to their own weights, so a pin on
         # one keeps working after Hugging Face writes a newer snapshot.
-        for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):
-            index.setdefault(name.strip().lower(), sibling_entry)
+        if entry.is_gguf:
+            for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):
+                index.setdefault(name.strip().lower(), sibling_entry)
     return index
 
 
