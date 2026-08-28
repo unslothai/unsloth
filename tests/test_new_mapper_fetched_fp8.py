@@ -1,26 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression tests for what ``_get_new_mapper`` hands back to the upgrade probe.
+"""What ``_get_new_mapper`` hands back to the upgrade probe.
 
-``test_new_mapper_no_global_leak.py`` serves the repo's own ``mapper.py`` as both installed
-and fetched source, so it cannot tell a fetched table from a fresh copy of the installed one.
-Two gaps it misses:
+``test_new_mapper_no_global_leak.py`` serves the repo's own ``mapper.py`` as both the
+installed and the fetched source, so it cannot tell the two apart. Two gaps: an fp8
+repo only the FETCHED mapper knows, and a fetched file with no fp8 tables at all, where
+reading them with ``[]`` raises ``KeyError`` and takes the 4bit half down with it.
 
-1. The probe must answer for an fp8 repo only the FETCHED mapper knows, so an extra ``"8"``
-   entry is spliced into the fetched source only. Isolating the exec without returning the
-   fetched fp8 tables would silently drop the fp8 half of the upgrade check.
-2. The probe must survive a fetched ``mapper.py`` with no fp8 tables (anything older, or a
-   future rename): reading them with ``[]`` raises ``KeyError`` into the bare ``except``,
-   taking the 4bit half, the probe's whole purpose, down with it.
-
-Both of the above only reach the block table. The last two tests take the row branch, which
-``load_in_fp8 = True`` plus ``UNSLOTH_HAS_FBGEMM`` selects ahead of block: deleting that branch,
-or dropping ``_resolve_with_mappers``' ``fp8_row`` argument so it falls back to the installed
-table, both leave every other test here green.
-
-``loader_utils`` imports torch, so ast-extract the resolvers and run them against a stubbed
-``requests``, as in ``tests/test_bad_mappings_redirect.py``.
+The last two tests take the ROW branch, which nothing else here covers.
 """
 
 import ast
@@ -87,14 +75,8 @@ class _FakeRaw:
 
 
 class _FakeResponse:
-    """The streaming half of `requests.Response`, which is all the probe uses.
-
-    `_get_new_mapper` reads the body in chunks and stops at its byte cap while
-    reading, because `requests.get` would otherwise buffer and decode the whole
-    response before any length check could run. It also follows redirects by hand,
-    since `requests` drains each intermediate body inside `get`, so the fake has to
-    carry a status and headers as well as `iter_content`.
-    """
+    """The streaming half of `requests.Response`: the probe caps while READING and
+    follows redirects by hand, so a fake without status and headers hides both."""
 
     def __init__(
         self,
@@ -114,13 +96,8 @@ class _FakeResponse:
 
     @property
     def raw(self):
-        """The urllib3 response the probe reads through.
-
-        It calls `read1`, which returns whatever ONE socket read produced, so that a
-        deadline check sits between every read rather than only between whole chunks.
-        `iter_content` is kept because it is what `requests` exposes and the fake would
-        otherwise drift from the real object.
-        """
+        """`read1` returns what ONE socket read produced, so the deadline is checked
+        between reads. `iter_content` is kept so the fake matches the real object."""
         if self._raw is None:
             self._raw = _FakeRaw(self._chunks)
         return self._raw
@@ -276,13 +253,8 @@ def test_probe_answers_for_a_row_only_repo_the_fetched_mapper_knows(monkeypatch)
 
 
 def test_a_fetched_mapper_that_uses_update_still_installs_its_entries(monkeypatch):
-    """`.update({...})` adds entries exactly as the subscript spelling does.
-
-    Only the subscript spelling was read, so a newer mapper.py written the ordinary
-    way left the row table empty and the models it had just added got no upgrade
-    notice. The subscript case is asserted alongside it, so the test cannot pass by
-    the probe having stopped reading either spelling.
-    """
+    """`.update({...})` adds entries exactly as the subscript spelling does; both are
+    asserted, so this cannot pass by the probe reading neither."""
     installed = _mapper_source()
     namespace = _load_resolver(installed)
 

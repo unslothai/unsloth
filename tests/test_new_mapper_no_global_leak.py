@@ -1,21 +1,8 @@
-"""Regression test for ``_get_new_mapper`` leaking into ``loader_utils`` globals.
+"""``_get_new_mapper`` must not leak into ``loader_utils`` globals.
 
-``get_model_name`` calls ``_get_new_mapper()`` whenever a name misses the local
-tables, purely to answer "would a newer Unsloth support this?". It fetches
-``mapper.py`` from GitHub main, prefixes the three mappers it wants with
-``NEW_``, and ``exec``s the result into ``globals()``.
-
-The slice starts at ``__INT_TO_FLOAT_MAPPER``, so it also carries
-``FLOAT_TO_FP8_BLOCK_MAPPER``/``FLOAT_TO_FP8_ROW_MAPPER`` and the two
-``_add_*`` helpers, and those names are NOT renamed. Exec'ing into
-``globals()`` therefore rebinds the FP8 tables that ``loader_utils`` imported
-from the installed ``mapper``, so every later ``get_model_name(...,
-load_in_fp8 = ...)`` in the process resolves through GitHub main's table
-instead of the installed one. The probe is supposed to read, not to swap the
-installed mappings out from under the caller.
-
-``loader_utils`` imports torch, so ast-extract ``_get_new_mapper`` and run it
-against a stubbed ``requests`` rather than importing unsloth (which needs a GPU).
+It used to ``exec`` the fetched ``mapper.py`` into ``globals()`` with only three names
+prefixed ``NEW_``, so the unrenamed FP8 tables REBOUND the installed ones for the rest
+of the process. The probe is supposed to read, not to swap the mappings out.
 """
 
 import ast
@@ -68,14 +55,8 @@ class _FakeRaw:
 
 
 class _FakeResponse:
-    """The streaming half of `requests.Response`, which is all the probe uses.
-
-    `_get_new_mapper` reads the body in chunks and stops at its byte cap while
-    reading, because `requests.get` would otherwise buffer and decode the whole
-    response before any length check could run. It also follows redirects by hand,
-    since `requests` drains each intermediate body inside `get`, so the fake has to
-    carry a status and headers as well as `iter_content`.
-    """
+    """The streaming half of `requests.Response`: the probe caps while READING and
+    follows redirects by hand, so a fake without status and headers hides both."""
 
     def __init__(
         self,
@@ -96,13 +77,8 @@ class _FakeResponse:
 
     @property
     def raw(self):
-        """The urllib3 response the probe reads through.
-
-        It calls `read1`, which returns whatever ONE socket read produced, so that a
-        deadline check sits between every read rather than only between whole chunks.
-        `iter_content` is kept because it is what `requests` exposes and the fake would
-        otherwise drift from the real object.
-        """
+        """`read1` returns what ONE socket read produced, so the deadline is checked
+        between reads. `iter_content` is kept so the fake matches the real object."""
         if self._raw is None:
             self._raw = _FakeRaw(self._chunks)
         return self._raw
@@ -169,14 +145,8 @@ def test_get_new_mapper_leaves_no_helpers_behind(monkeypatch):
 
 
 def test_the_byte_cap_stops_the_read_instead_of_measuring_it_afterwards(monkeypatch):
-    """A cap applied after `requests.get` returns cannot prevent what it exists for.
-
-    `requests.get` buffers and decodes the whole body before handing it over, so
-    `len(text) > cap` only ever measures something already in memory. An endpoint - or
-    anything that can answer for it - serving an endless body would be read to the end
-    first. This pins the cap to the READ: the probe must stop pulling chunks, and must
-    return the empty tables it returns for every other failure.
-    """
+    """A cap applied after `requests.get` returns measures what is already in memory;
+    this pins it to the READ, where the probe stops pulling chunks."""
     served = []
 
     def endless():
@@ -254,16 +224,8 @@ def test_a_redirect_loop_ends(monkeypatch):
 def test_a_trickled_body_ends_at_the_deadline_not_at_the_chunk_size(monkeypatch):
     """The per-read check, which is what makes the deadline reachable at all.
 
-    `iter_content(chunk_size = n)` yields only once n bytes have ARRIVED, and the
-    socket timeout is per read, not per chunk. An endpoint sending one byte at a time
-    resets that timeout on every read while the underlying call blocks for the whole
-    chunk, so a deadline checked between chunks is not reached until 65_536 reads have
-    gone by. The probe reads through `read1`, which returns what one read produced.
-
-    The fake models exactly that difference: two seconds per byte either way, but
-    `iter_content` only returns after a whole chunk of them. Time is faked rather than
-    slept, so this is deterministic and instant. Against the previous chunked loop the
-    clock reaches 131_072 seconds before the first check.
+    `iter_content` yields only once a whole chunk has ARRIVED and the socket timeout is
+    per read, so the old loop's clock reaches 131_072 seconds before the first check.
     """
     clock = {"now": 0.0}
 

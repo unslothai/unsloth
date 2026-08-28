@@ -3,22 +3,10 @@
 
 """`UNSLOTH_FORCE_CUSTOM_DTYPE` is a five field string, two of whose fields are code.
 
-`vision.py` used to `eval` the two dtype fields and `exec` the two code fields
-straight out of the environment. Every value unsloth ships is a literal in
-`models/loader.py`, and the only readers run in the process that sets it, so the
-variable is a process-local global that happens to travel through `os.environ`.
-
-Two changes are pinned here:
-  - the dtype fields go through a fixed table, so a field names a dtype instead of
-    being an arbitrary expression;
-  - the code fields run only when this process is the one that set the variable, so an
-    inherited or externally planted environment selects dtypes but injects nothing.
-
-Whoever can set environment variables for a process usually has better options
-(PYTHONSTARTUP, sitecustomize), so this is defence in depth rather than a fix for a
-privilege boundary - but the code path is gone either way.
-
-CPU-only and network-free: nothing here loads a model.
+`vision.py` used to `eval` the dtype fields and `exec` the code fields straight out of
+the environment. Two changes are pinned: the dtype fields go through a fixed table, and
+the code fields run only when this process set the variable. Defence in depth rather
+than a privilege boundary, but the code path is gone either way.
 """
 
 import ast
@@ -42,11 +30,7 @@ LOADER = pathlib.Path(__import__("unsloth.models.loader", fromlist = ["x"]).__fi
 
 
 def _shipped_values():
-    """Every `UNSLOTH_FORCE_CUSTOM_DTYPE` literal loader.py actually sets.
-
-    Read out of the source rather than copied, so the test cannot drift away from the
-    thing it is protecting.
-    """
+    """Read out of loader.py rather than copied, so the test cannot drift."""
     tree = ast.parse(LOADER)
     values = []
     for node in ast.walk(tree):

@@ -3625,14 +3625,10 @@ def unsloth_compile_transformers(
     return_logits = False,
     unsloth_force_compile = False,
 ):
-    # Again, here, not only at import. `UNSLOTH_FORCE_CUSTOM_DTYPE` can be populated
-    # AFTER this package was imported - a dotenv or config loader is the ordinary way -
-    # and the import-time pass has already run by then. `trusted_custom_dtype()` still
-    # labels such a value untrusted, so this package will not run its code fields, but
-    # the compiler below reaches `unsloth_zoo`, and the older reader this package's
-    # floor resolves to still calls `eval` on the dtype field. So the value is made
-    # harmless again at the last point before it can be read. Idempotent: a value this
-    # process registered is untouched, and an already sanitized one rewrites to itself.
+    # Again here, not only at import: a dotenv or config loader can populate
+    # `UNSLOTH_FORCE_CUSTOM_DTYPE` after this package was imported, and the compiler
+    # below reaches the older `unsloth_zoo` reader that still `eval`s the dtype field.
+    # Idempotent, so a registered or already sanitized value is unchanged.
     from ._custom_dtype import neutralize_inherited_custom_dtype
 
     neutralize_inherited_custom_dtype()

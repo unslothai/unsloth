@@ -3,20 +3,10 @@
 
 """An inherited `UNSLOTH_FORCE_CUSTOM_DTYPE` must be harmless to EVERY reader.
 
-`models/vision.py` drops the two code fields of a value this process did not set. That
-is not enough on its own: `unsloth_zoo` ships on its own schedule and reads the same
-variable in `fix_rotary_embedding_dtype`, and the release this package's floor resolves
-to - `unsloth_zoo==2026.8.15`, uploaded 2026-08-25 - still calls `eval` on the dtype
-field. A version floor cannot fix an installation that is already resolved, so the
-value itself is rewritten at import instead.
-
-The old reader is reproduced here as the one line that matters, `eval(field)`, rather
-than vendored: the point is that after neutralization there is nothing left for any
-`eval` to do. CPU-only and network-free.
-
-The module is imported inside each test rather than at module scope: `tests/security` runs on a
-four-package light runner, and `test_security_suite_stays_import_light.py` fails the
-build for any file here that pulls a runtime dependency in during collection.
+`unsloth_zoo==2026.8.15`, which this package's floor resolves to, still `eval`s the
+dtype field, and a version floor cannot fix an already resolved install, so the VALUE
+is rewritten at import. The old reader is reproduced as the one line that matters,
+`eval(field)`. Imported inside each test, for the four-package runner.
 """
 
 from __future__ import annotations
@@ -146,15 +136,8 @@ def test_the_module_neutralizes_on_import():
 
 
 def test_the_compiler_entry_point_neutralizes_again():
-    """A value set AFTER import must not reach the older `unsloth_zoo` reader.
-
-    The import-time pass has already run by then, and `trusted_custom_dtype()` only
-    labels the new value untrusted, which stops THIS package running its code fields.
-    `unsloth_compile_transformers` runs before that check and reaches `unsloth_zoo`,
-    whose supported older release still calls `eval` on the dtype field, so the value
-    is sanitized again at that entry point. Read off the source, so the call cannot be
-    removed without this failing.
-    """
+    """A value set AFTER import must not reach the older `unsloth_zoo` reader, so it
+    is sanitized again at `unsloth_compile_transformers`."""
 
     import ast
     import pathlib
@@ -205,14 +188,8 @@ def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
 
 
 def test_a_shorthand_alias_is_written_back_canonically(monkeypatch):
-    """`fp16` is a name this package accepts and the old zoo reader cannot evaluate.
-
-    `unsloth_zoo==2026.8.15`, the release this package's floor resolves to, still
-    `eval`s the dtype field, and `eval("fp16")` is a `NameError` that stops a load
-    having nothing to do with the inherited value. Preserving the field verbatim was
-    therefore only safe for the spellings that happen to be evaluable; every accepted
-    alias is now written back as the one spelling both readers read.
-    """
+    """`eval("fp16")` is a NameError in the older zoo reader, so preserving the field
+    verbatim was only safe for the spellings that happen to be evaluable."""
     import torch
     from unsloth.models._custom_dtype import (
         neutralize_inherited_custom_dtype,

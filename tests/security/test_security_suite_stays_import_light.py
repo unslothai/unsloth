@@ -3,12 +3,9 @@
 
 """`workflow-trigger-lint.yml` runs `tests/security` on a four-package runner.
 
-That job has no paths filter, which is the point: it is the one job that still runs
-when a PR touches nothing but workflow files, and keeping it cheap is what lets it
-stay unfiltered. So a file there may not import anything in HEAVY at module scope
-unless the workflow `--ignore`s it.
-
-The failure is quiet: under `-n 4` xdist does not abort the session on a collection
+That job has no paths filter, and keeping it cheap is what lets it stay unfiltered, so
+a file there may not import anything in HEAVY at module scope unless the workflow
+`--ignore`s it. The failure is quiet: under `-n 4` xdist does not abort on a collection
 error, so the job stays green while that file's tests stop running entirely.
 """
 
@@ -38,12 +35,7 @@ def _constant_truth(test):
 
 def _own_expressions(node):
     """Every expression node belonging to `node` itself, not to a body it holds.
-
-    `ast.walk` descends into the suites too, which `_module_level_statements` already
-    visits separately. Lambdas are pruned by EXPANSION rather than by refusing to push
-    one, because a lambda seeded from the statement itself would then go unpruned, and
-    because a lambda DEFAULT is evaluated where it is written and really does load.
-    """
+    Lambdas are pruned by EXPANSION, since a lambda DEFAULT really does load."""
 
     def _expansion(current):
         if isinstance(current, ast.Lambda):
@@ -62,16 +54,11 @@ def _own_expressions(node):
 
 def _module_level_statements(body):
     """Statements that run at import time, including inside module-level control flow.
-
-    `try: import torch / except ImportError:` executes during collection exactly like a
-    bare import. Function bodies are excluded, since an import there is paid lazily; a
-    CLASS body is not, since it runs while the class is built.
-    """
+    Function bodies are excluded; a CLASS body is not, since it runs at import."""
     for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            # The BODY is deferred; the header is not. Decorators, defaults, runtime
-            # annotations and bases are all evaluated at import. Wrapped in an `Expr`
-            # so the walker below sees ordinary expressions.
+            # The BODY is deferred; decorators, defaults, annotations and bases are
+            # evaluated at import. Wrapped in an `Expr` for the walker below.
             for part in _definition_time_expressions(node):
                 yield ast.Expr(value = part)
             if isinstance(node, ast.ClassDef):
@@ -119,8 +106,8 @@ def _definition_time_expressions(node):
         yield node.returns
 
 
-# Helpers that load a dependency with no `ast.Import` node, and the module each is
-# imported FROM: a rename means the spelling at the call site is not enough.
+# Helpers that load with no `ast.Import` node, and the module each is imported FROM,
+# since a rename makes the spelling at the call site insufficient.
 _LOADER_ORIGINS = {
     "import_module": "importlib",
     "__import__": "builtins",
@@ -128,11 +115,9 @@ _LOADER_ORIGINS = {
 }
 
 
-# A binding chain longer than this is not something written by hand.
 _ALIAS_ROUNDS = 8
 
 
-# A `Lambda` binds no name this reads, so it is not a scope here.
 _ALIAS_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
@@ -152,16 +137,11 @@ def _scope_bindings(scope):
 
 
 def _settled_aliases(bindings, inherited):
-    """Names bound to one of those helpers, by an import or by an assignment.
-
-    Only the two spellings that state outright what the name holds:
-    `from <origin> import <helper> as <alias>` and `alias = <helper>`. Nothing else is
-    guessed at.
-    """
-    # alias -> the helper it NAMES, so a renamed `import_module` is not mistaken for a
-    # renamed `importorskip`. In source order, last binding wins, and a binding to a
-    # non-loader takes the name out. Repeated until settled, since `load = other` may
-    # sit above the statement that gives `other` its meaning.
+    """Names bound to one of those helpers, by `from <origin> import <helper> as
+    <alias>` or `alias = <helper>`. Nothing else is guessed at."""
+    # alias -> the helper it NAMES, so a renamed `import_module` is not read as a
+    # renamed `importorskip`. Last binding wins, and a binding to a non-loader takes
+    # the name out. Repeated until settled, for a chain written out of order.
     aliases: dict = dict(inherited)
     for _round in range(_ALIAS_ROUNDS):
         previous = aliases
@@ -203,21 +183,14 @@ def _settled_aliases(bindings, inherited):
 
 
 def _alias_scopes(tree):
-    """One alias table per lexical scope, each built on its enclosing one.
-
-    A single file-wide table let a binding in one function decide how a call in an
-    unrelated one was read: a module-level `from importlib import import_module as
-    load` plus a helper's own `from pytest import importorskip as load` left the
-    module-level call labelled a skip guard, and the file stayed on the light runner
-    where it fails. Names are resolved where they are written instead.
-    """
+    """One alias table per lexical scope, each built on its enclosing one: a file-wide
+    table let a binding in one function decide how an unrelated call was read."""
     scopes: dict = {}
 
     def visit(scope, inherited):
         table = _settled_aliases(_scope_bindings(scope), inherited)
         scopes[id(scope)] = table
-        # A name bound in a CLASS body is not visible inside its methods, so a nested
-        # `def` inherits what the class itself inherited rather than the class table.
+        # A class body's names are invisible to its methods.
         handed_down = inherited if isinstance(scope, ast.ClassDef) else table
         pending = list(ast.iter_child_nodes(scope))
         while pending:
@@ -238,9 +211,7 @@ def _loader_aliases(tree):
 
 def _loader_call_names(call, loaders):
     """The module names a dynamic loader call names outright, else an empty list.
-
-    Only literal arguments, taken positionally or by the keyword each helper documents.
-    """
+    Literal arguments only, positionally or by the keyword each helper documents."""
     if not isinstance(call, ast.Call):
         return []
     function = call.func
@@ -290,12 +261,9 @@ def _module_level_heavy_imports(path):
         if isinstance(node, ast.Import):
             names = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
-            # A relative import has no module of its own to blame.
             names = [node.module or ""] if node.level == 0 else []
         else:
-            # These load with no `Import` node at all. `importorskip` is the dangerous
-            # one at module scope: it SKIPS the file during collection, so its tests
-            # disappear while this guard still calls the file import-light.
+            # `importorskip` SKIPS the whole file during collection at module scope.
             for call in _own_expressions(node):
                 names.extend(_loader_call_names(call, loaders))
         for name in names:
@@ -306,11 +274,8 @@ def _module_level_heavy_imports(path):
 
 
 def _body_level_heavy_imports(path):
-    """Heavy dependencies a test BODY imports unconditionally.
-
-    An import in a body errors when that test RUNS, which is just as red. A body-level
-    `importorskip` skips only that test, so unlike at module scope it does not count.
-    """
+    """Heavy dependencies a test BODY imports unconditionally. A body-level
+    `importorskip` skips only that test, so unlike at module scope it does not count."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     scopes = _alias_scopes(tree)
     module_loaders = scopes[id(tree)]
@@ -318,8 +283,7 @@ def _body_level_heavy_imports(path):
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        # This body's OWN table: what `load` means inside another function says
-        # nothing about what it means here.
+        # This body's OWN table; another function's `load` says nothing about it.
         loaders = scopes.get(id(node), module_loaders)
         skipped = _guarded_roots(node, loaders)
         for child in ast.walk(node):
@@ -329,8 +293,6 @@ def _body_level_heavy_imports(path):
             elif isinstance(child, ast.ImportFrom) and not child.level:
                 names = [child.module or ""]
             elif isinstance(child, ast.Call):
-                # A dynamic load inside a body fails on the light runner just the
-                # same. `importorskip` stays exempt, per the docstring above.
                 if not _is_importorskip(child, loaders):
                     names = _loader_call_names(child, loaders)
             for name in names:
@@ -356,15 +318,10 @@ def _reaches_a_heavy_dependency(statement, loaders):
 
 
 def _guarded_roots(node, loaders):
-    """Roots this body skips on before it does anything else with them.
-
-    The skip fires first, so redirecting the whole file would hide the unrelated light
-    tests beside it. Only an UNCONDITIONAL call at the top level of the body counts:
-    one inside an `if` or a `try` may not run, and then the import is reached.
-    """
+    """Roots this body skips on before it does anything else with them. Only an
+    UNCONDITIONAL top-level call counts, since one inside an `if` may not run."""
     roots = set()
     for statement in node.body:
-        # `torch = pytest.importorskip("torch")` skips exactly as the bare call does.
         held = None
         if isinstance(statement, ast.Expr):
             held = statement.value
@@ -373,8 +330,7 @@ def _guarded_roots(node, loaders):
         elif isinstance(statement, ast.AnnAssign):
             held = statement.value
         if not isinstance(held, ast.Call):
-            # An import ABOVE the guard is reached first, so the scan stops at the
-            # first statement that loads anything heavy.
+            # An import ABOVE the guard is reached first, so the scan stops here.
             if _reaches_a_heavy_dependency(statement, loaders):
                 break
             continue
@@ -385,8 +341,7 @@ def _guarded_roots(node, loaders):
             if isinstance(function, ast.Attribute)
             else (function.id if isinstance(function, ast.Name) else "")
         )
-        # The alias's ORIGIN decides, not its presence in `loaders`: an importlib
-        # alias lives there too.
+        # The alias's ORIGIN decides: an importlib alias lives in `loaders` too.
         if not _is_pytest_skip(attribute, loaders):
             # The same stop, for calls: a non-guard call may be the load itself.
             if _reaches_a_heavy_dependency(statement, loaders):
@@ -496,10 +451,8 @@ def test_an_assignment_alias_of_a_loader_is_still_recognised(tmp_path):
 
 
 def test_a_body_that_skips_first_does_not_redirect_the_file(tmp_path):
-    """`importorskip` then `import` never reaches the import on the light runner.
-
-    A guard that may not run does not count, which is what the third case pins.
-    """
+    """`importorskip` then `import` never reaches the import on the light runner; the
+    third case pins that a guard which may not run does not count."""
     cases = {
         'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n    import torch\n': set(),
         'from pytest import importorskip as need\n\n\ndef t():\n    need("torch")\n    import torch\n': set(),
@@ -521,7 +474,6 @@ def test_a_guard_after_the_import_does_not_count(tmp_path):
             "torch"
         },
         'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n    import torch\n': set(),
-        # A statement that reaches nothing heavy does not end the guard run.
         'import pytest\n\n\ndef t():\n    x = 1\n    pytest.importorskip("torch")\n    import torch\n': set(),
     }
     for source, expected in cases.items():
@@ -565,16 +517,12 @@ def test_a_renamed_importlib_alias_is_not_a_skip_guard(tmp_path):
 
 
 def test_every_ignored_suite_runs_somewhere_else():
-    """An --ignore on the light runner must be a redirect, not a deletion.
-
-    Each ignored file has to be named by some workflow that is not the ignoring one,
-    or a regression in the hardening it covers merges behind a green tick.
-    """
+    """An --ignore must be a redirect, not a deletion: each ignored file has to be
+    named by some workflow that is not the ignoring one."""
     ignored = _ignored_by_the_workflow()
     assert ignored, "no suite is ignored any more, so this guard has nothing to check"
 
-    # By STEP, not by file: the redirect job sits in this same workflow, so a
-    # whole-file search would call the ignoring step its own redirect.
+    # By STEP: the redirect job sits in this same workflow.
     elsewhere = {}
     for path in sorted(_WORKFLOW.parent.glob("*.yml")):
         document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
@@ -610,12 +558,8 @@ def _redirect_workflow() -> pathlib.Path:
 
 
 def test_the_redirect_job_is_triggered_by_what_it_protects():
-    """A job that only runs after the merge is not a gate.
-
-    If the redirect workflow is path-filtered and the filter does not name the code the
-    suites cover, a PR touching only that code skips the job and the tests run for the
-    first time on the push event. An unfiltered `pull_request` answers this outright.
-    """
+    """A job that only runs after the merge is not a gate: if the redirect workflow's
+    path filter omits the code the suites cover, a PR touching it skips the job."""
     host = _redirect_workflow()
     document = yaml.safe_load(host.read_text(encoding = "utf-8")) or {}
     triggers = document.get(True, document.get("on")) or {}
@@ -624,7 +568,6 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
         isinstance(on_pull_request, dict)
         and (on_pull_request.get("paths") or on_pull_request.get("paths-ignore"))
     ):
-        # Unfiltered, which is strictly wider than any list of paths.
         return
     text = host.read_text(encoding = "utf-8")
 
@@ -637,7 +580,6 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
         for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
             if isinstance(node, ast.ImportFrom) and node.module:
                 if node.module == "unsloth.models":
-                    # This spelling names the module in the alias, not `node.module`.
                     protected.update(f"{alias.name}.py" for alias in node.names)
                 elif node.module.startswith("unsloth.models."):
                     protected.add(node.module.split(".")[-1] + ".py")
@@ -676,8 +618,6 @@ def test_a_lambda_body_is_not_a_module_level_import(tmp_path):
         "lambda returning a lambda": (
             'import pytest\nunused = lambda: (lambda: pytest.importorskip("torch"))\n'
         ),
-        # The inner lambda is only CREATED when the outer one is called, so even its
-        # default is deferred with it.
         "default of a lambda inside a lambda body": (
             "import pytest\n" 'unused = lambda: (lambda x = pytest.importorskip("torch"): x)\n'
         ),
@@ -689,19 +629,13 @@ def test_a_lambda_body_is_not_a_module_level_import(tmp_path):
 
 
 def test_a_lambda_default_is_still_a_module_level_import(tmp_path):
-    """The half of a lambda that is NOT deferred.
-
-    Defaults are evaluated where the lambda is written, so
-    `lambda x = pytest.importorskip("torch"): x` loads torch during collection exactly
-    as a bare import does. Skipping the lambda wholesale would have missed it.
-    """
+    """The half of a lambda that is NOT deferred: a default is evaluated where the
+    lambda is written, so it loads torch during collection."""
     spellings = {
         "positional default": 'import pytest\nunused = lambda x = pytest.importorskip("torch"): x\n',
         "keyword-only default": (
             'import pytest\nunused = lambda *, x = pytest.importorskip("torch"): x\n'
         ),
-        # A lambda that is itself the DEFAULT of another lambda is created where the
-        # outer one is written, so its own default is evaluated there too.
         "lambda as another lambda's default": (
             "import pytest\n"
             'unused = lambda x = (lambda y = pytest.importorskip("torch"): y): x\n'
@@ -714,12 +648,7 @@ def test_a_lambda_default_is_still_a_module_level_import(tmp_path):
 
 
 def test_a_later_assignment_replaces_an_imported_alias(tmp_path):
-    """`load` stops being a skip guard once it is assigned the real importer.
-
-    An alias recorded from an import could never be replaced, so a call through the
-    reassigned name was still read as a pytest skip and the file stayed on the runner
-    where that call fails.
-    """
+    """`load` stops being a skip guard once it is assigned the real importer. An alias recorded from an import could never be replaced, so a call through the reassigned name was still read as a pytest skip and the file stayed on the runner where that call fails."""
     sample = tmp_path / "sample.py"
     sample.write_text(
         "from pytest import importorskip as load\n"

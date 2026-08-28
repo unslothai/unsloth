@@ -3,17 +3,10 @@
 
 """`UNSLOTH_FORCE_CUSTOM_DTYPE` is parsed by two separately released packages.
 
-`unsloth/models/vision.py` and `unsloth_zoo/compiler.py` both do
-`value.split(";", 4)` and both assert at least four separators. They ship on their own
-schedules, so a user can run any new/old combination, and changing the layout on one
-side would break the other on skew. The hardening deliberately kept the five fields
-exactly as they were - it changed how the fields are *interpreted*, not what they are.
-
-This pins that: the field count, the position of each field, and the fact that the
-readers still agree. It also pins the direction of the trust decision, which is what
-actually changed.
-
-CPU-only and network-free.
+Both do `value.split(";", 4)` and assert at least four separators, and they ship on
+their own schedules, so changing the layout on one side breaks the other on skew. The
+hardening changed how the fields are INTERPRETED, not what they are; this pins the
+count, the positions, and the direction of the trust decision.
 """
 
 from __future__ import annotations
@@ -60,10 +53,7 @@ def test_field_positions_are_unchanged(value):
 
 
 def test_zoo_reader_still_parses_what_unsloth_writes():
-    """The other package's parse of our values, reproduced exactly.
-
-    unsloth_zoo is imported rather than copied so a layout change there fails here.
-    """
+    """unsloth_zoo is imported rather than copied, so a layout change there fails."""
     import unsloth_zoo.compiler as zoo_compiler
 
     source = pathlib.Path(zoo_compiler.__file__).read_text(encoding = "utf-8")
@@ -98,14 +88,8 @@ def test_zoo_reader_still_parses_what_unsloth_writes():
 
 
 def test_trust_decision_is_on_the_value_we_set(monkeypatch):
-    """The behaviour change, stated once: identical layout, different provenance.
-
-    The two halves use different strings on purpose. `register_custom_dtype` records
-    into a module-level set that is never cleared - a model can be loaded more than
-    once - so registering a value here would make it trusted for the rest of the
-    session, and reusing a value another test registered would make this one pass for
-    the wrong reason.
-    """
+    """Identical layout, different provenance. The two halves use different strings on
+    purpose, since the registry is never cleared."""
     template = _shipped_values()[0]
     checker, dtype, bnb, custom, execute = template.split(";", 4)
 
@@ -123,14 +107,8 @@ def test_trust_decision_is_on_the_value_we_set(monkeypatch):
 
 
 def test_unset_variable_leaves_custom_datatype_as_none():
-    """`trusted_custom_dtype()` returns "" when unset, and "" is not None.
-
-    Further down, `vision.py` gates the per-module dtype pass on
-    `if custom_datatype is not None`. Binding the raw return value to that name makes
-    the unset case - which is nearly every model - walk every module of the model to
-    `exec("")` under `no_grad`. The old code kept the raw value in a separate name and
-    left `custom_datatype` as None, so this pins the two apart.
-    """
+    """`trusted_custom_dtype()` returns "" when unset, and "" is not None: `vision.py`
+    gates on `is not None`, so nearly every model would walk itself to `exec("")`."""
     import unsloth.models.vision as vision
 
     source = pathlib.Path(vision.__file__).read_text(encoding = "utf-8")

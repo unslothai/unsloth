@@ -1143,9 +1143,8 @@ class FastBaseModel:
         # Check for custom data-types
         custom_datatype = None
         correct_dtype = None
-        # The raw value is kept in its own name. `custom_datatype` has to stay None when
-        # the variable is unset, because the consumer further down tests `is not None`
-        # and would otherwise walk every module of every model to exec an empty string.
+        # `custom_datatype` has to stay None when unset: the consumer below tests
+        # `is not None` and would walk every module of every model to `exec("")`.
         _raw_custom_dtype, _code_is_trusted = trusted_custom_dtype()
         if _raw_custom_dtype != "":
             assert _raw_custom_dtype.count(";") >= 4
@@ -1159,8 +1158,7 @@ class FastBaseModel:
                 dtype == torch.float16 or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
             )
             if allow_all_runs or allow_float16_runs:
-                # A table lookup, not eval: these fields name a dtype, they are not
-                # expressions, and every value loader.py ships is in the table.
+                # A table lookup, not eval: these fields NAME a dtype.
                 _resolved_dtype = resolve_dtype(_dtype)
                 if _resolved_dtype is not None:
                     dtype = _resolved_dtype
@@ -1168,9 +1166,8 @@ class FastBaseModel:
                 if _resolved_bnb_compute_dtype is not None:
                     bnb_compute_dtype = _resolved_bnb_compute_dtype
                 correct_dtype = bnb_compute_dtype
-                # The last two fields are code. They are only run when this process is
-                # the one that set the variable (see models/_custom_dtype.py); an
-                # inherited environment still picks dtypes but cannot inject statements.
+                # The last two fields are code, run only when this process set the
+                # variable; an inherited environment picks dtypes but injects nothing.
                 if _code_is_trusted:
                     custom_datatype = _custom_datatype
                     # Execute code as well
