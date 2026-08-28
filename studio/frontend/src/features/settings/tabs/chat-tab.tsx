@@ -38,10 +38,11 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -195,6 +196,22 @@ export function ChatTab() {
   const setSearchImages = useChatRuntimeStore(
     (state) => state.setSearchImages,
   );
+  const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  useEffect(() => {
+    if (scrollTarget !== "chat-canvas-network") return;
+    const frame = window.requestAnimationFrame(() => {
+      networkAccessRowRef.current?.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("chat-canvas-network");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -503,17 +520,19 @@ export function ChatTab() {
             onCheckedChange={setCollapseHtmlArtifacts}
           />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.artifacts.allowNetworkAccess")}
-          description={t(
-            "settings.chat.artifacts.allowNetworkAccessDescription",
-          )}
-        >
-          <Switch
-            checked={allowArtifactNetworkAccess}
-            onCheckedChange={setAllowArtifactNetworkAccess}
-          />
-        </SettingsRow>
+        <div ref={networkAccessRowRef}>
+          <SettingsRow
+            label={t("settings.chat.artifacts.allowNetworkAccess")}
+            description={t(
+              "settings.chat.artifacts.allowNetworkAccessDescription",
+            )}
+          >
+            <Switch
+              checked={allowArtifactNetworkAccess}
+              onCheckedChange={setAllowArtifactNetworkAccess}
+            />
+          </SettingsRow>
+        </div>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.webSearch.title")}>
