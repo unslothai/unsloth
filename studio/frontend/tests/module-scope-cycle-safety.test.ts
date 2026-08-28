@@ -120,17 +120,17 @@ test("the key is still read at module scope, so the guard above is load-bearing"
 /**
  * The same white screen, reached a second way.
  *
- * `use-model-memory.ts` imported `CHAT_GPU_MEMORY_MODE_KEY` and friends from the
- * `@/features/chat` barrel, and the barrel reaches this file back:
+ * `use-model-memory.ts` read `CHAT_GPU_MEMORY_MODE_KEY` and friends from the
+ * chat runtime store, which reaches this file back:
  *
  *   chat -> apply-inference-status-to-store -> model-picker -> model-selector
  *        -> pickers -> use-model-memory -> chat
  *
  * Under dev's unbundled ESM that ring evaluated `use-model-memory` before the chat
- * barrel had finished, and the module-scope const read threw "Cannot access
+ * store had finished, and the module-scope const read threw "Cannot access
  * 'CHAT_GPU_MEMORY_MODE_KEY' before initialization". Measured on main: the page threw,
- * `#root` had 0 children and the body was empty. With the deep imports below there is
- * no page error and the app renders.
+ * `#root` had 0 children and the body was empty. Reading the keys from an import-free
+ * leaf module lets the app render regardless of entry-module order.
  *
  * Production builds never showed it. The bundler hoists these declarations into one
  * module, so the ordering the dev server exposes stops existing, which is exactly the
@@ -138,6 +138,27 @@ test("the key is still read at module scope, so the guard above is load-bearing"
  * server next.
  */
 const MODEL_MEMORY = path.join(SRC, "hooks/use-model-memory.ts");
+const CHAT_RUNTIME_KEYS = path.join(
+  SRC,
+  "features/chat/stores/chat-runtime-keys.ts",
+);
+
+test("the chat runtime keys module imports nothing", async () => {
+  const text = await readFile(CHAT_RUNTIME_KEYS, "utf8");
+  assert.deepEqual(
+    staticSpecifiers(CHAT_RUNTIME_KEYS, text),
+    [],
+    "chat-runtime-keys.ts must not import anything",
+  );
+});
+
+test("the model memory hook reads runtime keys from the leaf module", async () => {
+  const text = await readFile(MODEL_MEMORY, "utf8");
+  assert.match(
+    text,
+    /CHAT_GPU_MEMORY_MODE_KEY,[\s\S]*CHAT_SPECULATIVE_TYPE_KEY,[\s\S]*from "@\/features\/chat\/stores\/chat-runtime-keys"/,
+  );
+});
 
 test("the model memory hook imports no feature barrel", async () => {
   const text = await readFile(MODEL_MEMORY, "utf8");
