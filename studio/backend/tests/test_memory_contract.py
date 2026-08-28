@@ -175,7 +175,9 @@ class TestTheRouteOverrides:
         """
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text()
+        source = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text(
+            encoding = "utf-8"
+        )
         for field in ("gpu_bytes", "compute_bytes", "total_bytes", "n_ctx"):
             assert f"_estimate.{field} =" not in source, (
                 f"routes/models.py assigns {field} onto a built MemoryEstimate. "
