@@ -25730,15 +25730,17 @@ class LlamaCppBackend:
                 # load_model) so a newer load isn't clobbered by this stale replay.
                 requested_mode = snapshot.speculative_type
                 with self._serial_load_lock:
-                    if self._cancel_event.is_set():
-                        logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
-                        return
-                    if self._process is not proc:
-                        logger.info("MTP-crash reload skipped: a newer load is already active.")
-                        return
-                    if self._last_load_intent != snapshot:
-                        logger.info("MTP-crash reload skipped: load settings changed.")
-                        return
+                    with self._lock:
+                        if self._cancel_event.is_set():
+                            logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
+                            return
+                        if self._process is not proc:
+                            logger.info("MTP-crash reload skipped: a newer load is already active.")
+                            return
+                        if self._last_load_intent != snapshot:
+                            logger.info("MTP-crash reload skipped: load settings changed.")
+                            return
+                        unload_epoch = self._unload_epoch
                     # Appending --spec-default cannot drop MTP: llama.cpp appends spec
                     # types rather than replacing, so the extras have to lose theirs.
                     # Once they do, Unsloth owns the block and the launch scrubs the
@@ -25761,7 +25763,14 @@ class LlamaCppBackend:
                         speculative_type = "off",
                         extra_args = fallback_extra_args,
                     )
-                    self.load_model(fallback)
+                    started = bool(self.load_model(fallback))
+                    if not started:
+                        logger.info("MTP-crash reload stopped before the replacement was ready.")
+                        return
+                    if self._unload_epoch != unload_epoch:
+                        logger.info("MTP-crash reload undone: the model was unloaded during reload.")
+                        self.unload_model()
+                        return
                     # Same reason the mode is restored below: the replay launched a
                     # stripped list but the caller keeps sending the original, so a
                     # comparator seeing only the stripped one would reload the very MTP

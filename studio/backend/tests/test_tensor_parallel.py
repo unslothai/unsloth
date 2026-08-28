@@ -512,6 +512,50 @@ def test_runtime_recovery_restores_requested_mode(monkeypatch):
     assert b._spec_fallback_reason == "runtime_error"
 
 
+def test_runtime_recovery_does_not_publish_state_when_reload_is_cancelled(monkeypatch):
+    b = _recovery_backend()
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    done = threading.Event()
+
+    def _cancelled_load(intent):
+        done.set()
+        return False
+
+    monkeypatch.setattr(b, "load_model", _cancelled_load)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._requested_spec_mode == "auto"
+    assert b._spec_fallback_reason == "existing"
+
+
+def test_runtime_recovery_undoes_an_unload_during_reload(monkeypatch):
+    b = _recovery_backend()
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    done = threading.Event()
+    unloads = []
+
+    def _racing_load(intent):
+        b._unload_epoch += 1
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _racing_load)
+    monkeypatch.setattr(b, "unload_model", lambda: unloads.append(1) or True)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert unloads == [1]
+    assert b._requested_spec_mode == "auto"
+    assert b._spec_fallback_reason == "existing"
+
+
 def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
     # A newer user load that replaces the process during the death-confirm poll
     # must not be clobbered by the stale recovery replay.
