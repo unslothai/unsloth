@@ -1901,12 +1901,18 @@ function GgufVariantExpander({
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
               {oom && (
-                <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
+                <span
+                  className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded"
+                  title="No memory budget was detected for this machine."
+                >
                   OOM
                 </span>
               )}
               {tight && (
-                <span className="text-ui-9 font-medium !text-amber-400">
+                <span
+                  className="text-ui-9 font-medium !text-amber-400"
+                  title="Bigger than the GPU's share of memory, small enough for GPU plus system RAM. It loads, with the overflow held in RAM, which is slower than running entirely on the GPU."
+                >
                   TIGHT
                 </span>
               )}
