@@ -350,6 +350,14 @@ class ChatProjectCreate(BaseModel):
     createdAt: int
     updatedAt: int
 
+    @field_validator("name")
+    @classmethod
+    def _non_empty_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("Project name cannot be empty")
+        return name
+
 
 class ChatProjectDeleted(ChatProject):
     """The deleted project, plus the member sandboxes that still hold files."""
@@ -372,11 +380,21 @@ class ChatProjectExport(BaseModel):
 class ChatProjectPatch(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
-    name: Optional[str] = None
+    name: Optional[str] = Field(default = None, min_length = 1, max_length = 120)
     instructions: Optional[str] = None
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
     updatedAt: Optional[int] = None
+
+    @field_validator("name")
+    @classmethod
+    def _non_empty_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        name = value.strip()
+        if not name:
+            raise ValueError("Project name cannot be empty")
+        return name
 
 
 class ProjectFolderMutation(BaseModel):
@@ -391,6 +409,14 @@ class OpenProjectFolderRequest(BaseModel):
 
     nativePathLease: str = Field(min_length = 1, max_length = 65_536)
     name: str = Field(min_length = 1, max_length = 120)
+
+    @field_validator("name")
+    @classmethod
+    def _non_empty_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("Project name cannot be empty")
+        return name
 
 
 class DisconnectProjectFolderRequest(BaseModel):

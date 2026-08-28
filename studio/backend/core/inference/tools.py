@@ -7480,6 +7480,9 @@ def record_orphaned_project(
     """
     if not project_id or not workspace:
         return
+    from storage.studio_db import capture_recorded_orphan_evidence
+
+    root_identity, _runtime_token = capture_recorded_orphan_evidence(project_id, root_path)
     _write_orphan_record(
         _ORPHAN_PROJECT,
         project_id,
@@ -7489,6 +7492,7 @@ def record_orphaned_project(
             # is one directory inside it.
             "rootPath": os.path.realpath(root_path) if root_path else None,
             "pendingDelete": bool(pending_delete),
+            "rootIdentity": root_identity,
         },
     )
 
@@ -7610,10 +7614,29 @@ def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | Non
     default layout puts the sandbox in; anything else it refuses, and the
     record stays pending rather than being deleted on our own authority.
     """
-    from storage.studio_db import delete_project_workspace
+    from storage.studio_db import (
+        _RECORDED_ORPHAN_TOKEN,
+        delete_project_workspace,
+        recorded_orphan_evidence_for,
+    )
 
     target = root or os.path.dirname(os.path.realpath(workspace))
-    delete_project_workspace({"id": project_id, "rootPath": target})
+    evidence = recorded_orphan_evidence_for(project_id, target)
+    persisted = None
+    if evidence is None:
+        record = _read_orphan_record(_ORPHAN_PROJECT, project_id)
+        if isinstance(record, dict):
+            persisted = record.get("rootIdentity")
+    delete_project_workspace(
+        {
+            "id": project_id,
+            "rootPath": target,
+            "_recordedOrphan": _RECORDED_ORPHAN_TOKEN,
+            "_recordedOrphanEvidence": (
+                evidence.runtime_token if evidence is not None else persisted
+            ),
+        }
+    )
 
 
 def collect_orphaned_project_workspaces() -> None:

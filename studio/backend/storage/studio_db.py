@@ -107,6 +107,9 @@ _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _PROJECT_WORKSPACE_IDENTITY_FILE = ".unsloth-project-workspace"
 _PROJECT_WORKSPACE_KINDS = frozenset({"managed", "folder"})
+_RECORDED_ORPHAN_TOKEN = object()
+_RECORDED_ORPHAN_EVIDENCE: dict[tuple[str, str], "_RecordedOrphanEvidence"] = {}
+_RECORDED_ORPHAN_EVIDENCE_LOCK = threading.Lock()
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
 
 
@@ -159,6 +162,16 @@ class _PreparedProjectWorkspace:
     device_id: str
     file_id: str
     marker_token: str
+
+
+@dataclass(frozen = True)
+class _RecordedOrphanEvidence:
+    project_id: str
+    root_path: str
+    device_id: str
+    file_id: str
+    marker_token: str | None
+    runtime_token: object
 
 
 def _project_workspace_kind(project: dict) -> str:
@@ -269,13 +282,73 @@ def _prepared_workspace_identity_matches(
         return False
 
 
+def _normalized_orphan_root(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.expanduser(path)))
+
+
+def capture_recorded_orphan_evidence(
+    project_id: str, root_path: str | None
+) -> tuple[dict[str, str | None] | None, object | None]:
+    """Capture identity proof before a managed root is detached from its row.
+
+    The persisted marker and filesystem identity survive a process restart. The opaque
+    runtime token additionally keeps synthetic or legacy roots fail-closed against a
+    same-process record edit when no marker exists.
+    """
+    if not project_id or not root_path:
+        return None, None
+    root = Path(root_path).expanduser()
+    try:
+        if root.is_symlink():
+            return None, None
+        is_junction = getattr(root, "is_junction", None)
+        if is_junction is not None and is_junction():
+            return None, None
+        device_id, file_id = _workspace_identity(root)
+        try:
+            marker_token = _read_project_workspace_marker(root)
+        except (OSError, UnicodeError):
+            marker_token = None
+    except (OSError, RuntimeError, ValueError):
+        return None, None
+    evidence = _RecordedOrphanEvidence(
+        project_id = str(project_id),
+        root_path = _normalized_orphan_root(str(root)),
+        device_id = device_id,
+        file_id = file_id,
+        marker_token = marker_token,
+        runtime_token = object(),
+    )
+    with _RECORDED_ORPHAN_EVIDENCE_LOCK:
+        _RECORDED_ORPHAN_EVIDENCE[(evidence.project_id, evidence.root_path)] = evidence
+    return (
+        {
+            "deviceId": device_id,
+            "fileId": file_id,
+            "markerToken": marker_token,
+        },
+        evidence.runtime_token,
+    )
+
+
+def recorded_orphan_evidence_for(project_id: str, root_path: str | None):
+    if not project_id or not root_path:
+        return None
+    with _RECORDED_ORPHAN_EVIDENCE_LOCK:
+        evidence = _RECORDED_ORPHAN_EVIDENCE.get(
+            (str(project_id), _normalized_orphan_root(str(root_path)))
+        )
+    return evidence
+
+
 def _ensure_folder_workspace(
     root_path: str, expected_device_id: str | None, expected_file_id: str | None
 ) -> str:
     root = Path(root_path).expanduser()
     try:
-        if root.is_symlink():
-            raise OSError("Selected project folder is a symbolic link")
+        is_junction = getattr(root, "is_junction", None)
+        if root.is_symlink() or (is_junction is not None and is_junction()):
+            raise OSError("Selected project folder is a link")
         resolved = root.resolve(strict = True)
         if not resolved.is_dir():
             raise NotADirectoryError(str(root))
@@ -534,6 +607,13 @@ def delete_project_workspace(project: dict) -> None:
 def _delete_project_workspace(project: dict) -> None:
     # Existing folders are user-owned. Only the separately persisted managed
     # root is ever eligible for recursive removal.
+    # Orphan records are written by the workspace owner after the project row is
+    # removed. An explicitly configured deployment may place that managed root
+    # under a platform temp directory, so the system-path denylist is not
+    # applied to this internal path. The record still goes through the
+    # project-id name, root, symlink, and directory checks below.
+    recorded_orphan = project.get("_recordedOrphan") is _RECORDED_ORPHAN_TOKEN
+    recorded_evidence = project.get("_recordedOrphanEvidence")
     root_path = project.get("managedRootPath")
     if not root_path and _project_workspace_kind(project) == "managed":
         root_path = project.get("rootPath")
@@ -564,21 +644,66 @@ def _delete_project_workspace(project: dict) -> None:
             root_resolved,
         )
         return
+    if recorded_orphan:
+        runtime_evidence = recorded_orphan_evidence_for(project_id, str(root_resolved))
+        persisted = recorded_evidence if isinstance(recorded_evidence, dict) else None
+        if runtime_evidence is not None:
+            if runtime_evidence.runtime_token is not recorded_evidence:
+                logger.warning(
+                    "Skipping project workspace delete without the recorded identity %s",
+                    root_resolved,
+                )
+                return
+            expected_device = runtime_evidence.device_id
+            expected_file = runtime_evidence.file_id
+            expected_marker = runtime_evidence.marker_token
+        elif persisted is not None:
+            expected_device = persisted.get("deviceId")
+            expected_file = persisted.get("fileId")
+            expected_marker = persisted.get("markerToken")
+            if not expected_device or not expected_file or not expected_marker:
+                logger.warning(
+                    "Skipping project workspace delete without durable identity %s",
+                    root_resolved,
+                )
+                return
+        else:
+            logger.warning(
+                "Skipping project workspace delete without recorded identity %s",
+                root_resolved,
+            )
+            return
+        if not _workspace_identity_matches(root_resolved, expected_device, expected_file):
+            logger.warning("Skipping project workspace delete after identity change %s", root_resolved)
+            return
+        try:
+            if expected_marker is not None and _read_project_workspace_marker(root_resolved) != expected_marker:
+                logger.warning("Skipping project workspace delete after marker change %s", root_resolved)
+                return
+        except (OSError, UnicodeError):
+            if expected_marker is not None or runtime_evidence is None:
+                return
     check = (
         os.path.normcase(str(root_resolved))
         if platform.system() == "Windows"
         else str(root_resolved)
     )
-    for prefix in _denied_path_prefixes():
-        if check == prefix or check.startswith(prefix + os.sep):
-            logger.warning(
-                "Skipping project workspace delete under denied path %s",
-                root_resolved,
-            )
-            return
+    if not recorded_orphan:
+        for prefix in _denied_path_prefixes():
+            if check == prefix or check.startswith(prefix + os.sep):
+                logger.warning(
+                    "Skipping project workspace delete under denied path %s",
+                    root_resolved,
+                )
+                return
     if not os.path.lexists(root_resolved):
         return
-    if root_resolved.is_symlink() or not root_resolved.is_dir():
+    is_junction = getattr(root_resolved, "is_junction", None)
+    if (
+        root_resolved.is_symlink()
+        or (is_junction is not None and is_junction())
+        or not root_resolved.is_dir()
+    ):
         logger.warning(
             "Skipping project workspace delete for non-directory path %s",
             root_resolved,
@@ -2937,6 +3062,35 @@ def count_chat_threads() -> int:
 
 def upsert_chat_project(project: dict) -> dict:
     existing = get_chat_project(project["id"])
+    # Folder-backed projects deliberately use the selected external directory as
+    # their tool cwd. The legacy upsert path is still exercised by imports and
+    # storage callers, so never pass that external root through the managed
+    # workspace materializer, which would create a sandbox inside the user's
+    # repository. Preserve the folder ownership and identity while updating only
+    # portable project metadata.
+    if existing is not None and _project_workspace_kind(existing) == "folder":
+        conn = get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE chat_projects
+                SET name = ?, instructions = ?, archived = ?,
+                    created_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    project["name"],
+                    project.get("instructions", existing.get("instructions") or "") or "",
+                    1 if project.get("archived") else 0,
+                    int(project["createdAt"]),
+                    int(project["updatedAt"]),
+                    project["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return get_chat_project(project["id"]) or existing
     root_path = existing.get("rootPath") if existing else None
     if not root_path:
         root_path = _default_project_root(project)

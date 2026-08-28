@@ -4425,6 +4425,90 @@ def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
     assert tools.list_orphaned_projects() == []
 
 
+def test_an_edited_orphan_record_cannot_delete_a_same_name_directory(tmp_path, monkeypatch):
+    """A persisted cleanup record is not authority to retarget recursive deletion."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    project_id = "projedit1"
+    original = tmp_path / "Notes-projedit"
+    replacement = tmp_path / "Other-projedit"
+    (original / "sandbox").mkdir(parents = True)
+    (replacement / "sandbox").mkdir(parents = True)
+    tools.record_orphaned_project(
+        project_id,
+        str(original / "sandbox"),
+        True,
+        str(original),
+    )
+
+    record_path = Path(tools._orphan_records_dir()) / tools._orphan_record_name(
+        tools._ORPHAN_PROJECT, project_id
+    )
+    record = json.loads(record_path.read_text(encoding = "utf-8"))
+    record["path"] = str(replacement / "sandbox")
+    record["rootPath"] = str(replacement)
+    record_path.write_text(json.dumps(record), encoding = "utf-8")
+
+    tools.collect_orphaned_project_workspaces()
+
+    assert original.is_dir()
+    assert replacement.is_dir()
+
+
+def test_recorded_orphan_marker_evidence_survives_runtime_registry_loss(tmp_path, monkeypatch):
+    """A restart can replay cleanup only when the managed marker still matches."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "projpersist"
+    root = tmp_path / "Notes-projpers"
+    studio_db._prepare_project_workspace(str(root))
+    tools.record_orphaned_project(project_id, str(root / "sandbox"), True, str(root))
+
+    record = tools._read_orphan_record(tools._ORPHAN_PROJECT, project_id)
+    assert isinstance(record, dict)
+    evidence = record.get("rootIdentity")
+    assert isinstance(evidence, dict) and evidence.get("markerToken")
+    with studio_db._RECORDED_ORPHAN_EVIDENCE_LOCK:
+        studio_db._RECORDED_ORPHAN_EVIDENCE.clear()
+
+    studio_db.delete_project_workspace(
+        {
+            "id": project_id,
+            "rootPath": str(root),
+            "_recordedOrphan": studio_db._RECORDED_ORPHAN_TOKEN,
+            "_recordedOrphanEvidence": evidence,
+        }
+    )
+
+    assert not root.exists()
+
+
+def test_recorded_orphan_does_not_delete_after_marker_loss(tmp_path, monkeypatch):
+    """A captured runtime token cannot override a changed managed marker."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "projmarker"
+    root = tmp_path / "Notes-projmark"
+    studio_db._prepare_project_workspace(str(root))
+    tools.record_orphaned_project(project_id, str(root / "sandbox"), True, str(root))
+    (root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).unlink()
+
+    tools.collect_orphaned_project_workspaces()
+
+    assert root.is_dir()
+
+
 def test_a_tool_renaming_the_marker_does_not_move_the_chat(tmp_path, monkeypatch):
     """A valid-looking id in that file is still something a tool wrote, and the
     chat abandoning its own directory strands what the same call just made."""

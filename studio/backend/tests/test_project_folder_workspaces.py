@@ -132,6 +132,48 @@ def test_project_folder_lease_requires_exact_purpose(tmp_path, overrides):
     assert caught.value.status_code == 400
 
 
+def test_folder_workspace_rejects_a_windows_junction_boundary(tmp_path, monkeypatch):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    monkeypatch.setattr(
+        Path,
+        "is_junction",
+        lambda self: self == folder,
+        raising = False,
+    )
+
+    with pytest.raises(studio_db.ProjectWorkspaceError, match = "link"):
+        studio_db._ensure_folder_workspace(
+            str(folder),
+            str(folder.stat().st_dev),
+            str(folder.stat().st_ino),
+        )
+
+
+@pytest.mark.parametrize(
+    "request_type,fields",
+    [
+        (
+            chat_history.ChatProjectCreate,
+            {
+                "id": "project-whitespace",
+                "name": "   ",
+                "createdAt": 1_700_000_000_000,
+                "updatedAt": 1_700_000_000_000,
+            },
+        ),
+        (
+            chat_history.OpenProjectFolderRequest,
+            {"nativePathLease": "lease", "name": "   "},
+        ),
+        (chat_history.ChatProjectPatch, {"name": "   "}),
+    ],
+)
+def test_project_names_cannot_be_only_whitespace(request_type, fields):
+    with pytest.raises(ValueError, match = "Project name cannot be empty"):
+        request_type(**fields)
+
+
 def test_project_folder_lease_is_single_use(tmp_path):
     folder = tmp_path / "repository"
     folder.mkdir()
@@ -220,6 +262,54 @@ def test_managed_create_collision_cannot_mutate_a_folder_project(tmp_path):
         studio_db._default_project_root(_managed_project("project-collision", name = "Replacement"))
     )
     assert not attempted_root.exists()
+
+
+def test_legacy_upsert_never_materializes_inside_an_existing_folder_project(tmp_path):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    original = studio_db.claim_chat_project_folder(_folder_claim("project-upsert-folder", folder))
+    assert original is not None
+
+    updated = studio_db.upsert_chat_project(
+        {
+            "id": original["id"],
+            "name": "Imported metadata",
+            "instructions": "Keep the selected repository.",
+            "archived": False,
+            "createdAt": original["createdAt"],
+            "updatedAt": original["updatedAt"] + 1,
+        }
+    )
+
+    assert updated["workspaceKind"] == "folder"
+    assert updated["workspacePath"] == str(folder.resolve())
+    assert updated["managedRootPath"] is None
+    assert not (folder / "sandbox").exists()
+
+
+def test_legacy_upsert_preserves_folder_instructions_when_import_omits_them(tmp_path):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    original = studio_db.claim_chat_project_folder(
+        _folder_claim(
+            "project-upsert-instructions",
+            folder,
+            instructions = "Keep this repository's conventions.",
+        )
+    )
+    assert original is not None
+
+    updated = studio_db.upsert_chat_project(
+        {
+            "id": original["id"],
+            "name": "Imported metadata",
+            "archived": False,
+            "createdAt": original["createdAt"],
+            "updatedAt": original["updatedAt"] + 1,
+        }
+    )
+
+    assert updated["instructions"] == "Keep this repository's conventions."
 
 
 def test_distinct_project_ids_with_the_same_prefix_get_distinct_managed_roots():
@@ -313,6 +403,52 @@ def test_managed_workspace_delete_never_follows_a_replacement_symlink(tmp_path):
     assert root.is_symlink()
     assert victim.is_dir()
     assert (victim / "keep.txt").read_text(encoding = "utf-8") == "keep"
+
+
+def test_direct_managed_workspace_delete_rejects_a_forged_orphan_bypass(
+    tmp_path, monkeypatch
+):
+    project = _managed_project("deniedid")
+    root = tmp_path / "Managed-deniedid"
+    (root / "sandbox").mkdir(parents = True)
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [str(tmp_path.resolve())])
+
+    studio_db.delete_project_workspace(
+        {
+            **project,
+            "workspaceKind": "managed",
+            "rootPath": str(root),
+            "managedRootPath": str(root),
+            "_recordedOrphan": True,
+        }
+    )
+
+    assert root.is_dir()
+    assert (root / "sandbox").is_dir()
+
+
+def test_managed_workspace_delete_rejects_a_junction_boundary(tmp_path, monkeypatch):
+    project = _managed_project("junctionid")
+    root = tmp_path / "Managed-junctionid"
+    (root / "sandbox").mkdir(parents = True)
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
+    monkeypatch.setattr(
+        Path,
+        "is_junction",
+        lambda self: self == root,
+        raising = False,
+    )
+
+    studio_db.delete_project_workspace(
+        {
+            **project,
+            "workspaceKind": "managed",
+            "rootPath": str(root),
+            "managedRootPath": str(root),
+        }
+    )
+
+    assert root.is_dir()
 
 
 def test_managed_create_retries_when_prepared_identity_disappears(tmp_path, monkeypatch):
