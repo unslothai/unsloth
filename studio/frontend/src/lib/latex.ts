@@ -9,16 +9,6 @@
 //   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
 //      math delimiters when singleDollarTextMath is enabled.
 
-import {
-  EMPTY_LIST_STATE,
-  containerContent,
-  indentWidth,
-  itemContent,
-  openLists,
-  quoteDepth,
-} from "./markdown-list-columns.ts";
-import { codeSpans } from "./markdown-code-spans.ts";
-
 /**
  * Matches a single $ followed by a number pattern (currency), e.g.:
  *   $5, $1,000, $5.99, $100K, $3.5M
@@ -58,148 +48,40 @@ function mergeRegions(
   return merged;
 }
 
-const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/;
-const FENCE_CANDIDATE_RE =
-  /(^|\r\n|\n|\r)((?:(?: {0,3}>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*)(`{3,}|~{3,})([^\r\n]*)/g;
-const INDENTED_CODE_CANDIDATE_RE =
-  /(^|\r\n|\n|\r)(?: {0,3}>[ \t]?)*(?:(?: {4}|\t)| {0,3}(?:[-+*]|\d{1,9}[.)])(?: {5,}|[ \t]*\t[ \t]*))/g;
-
-/** `line` with up to `columns` columns of leading whitespace removed. */
-function stripIndent(line: string, columns: number): string {
-  let width = 0;
-  let index = 0;
-  while (index < line.length && width < columns) {
-    const char = line[index];
-    if (char !== " " && char !== "\t") break;
-    width += char === " " ? 1 : 4 - (width % 4);
-    index += 1;
-  }
-  return line.slice(index);
-}
-
-/** Display columns occupied by a Markdown container prefix. */
-function columnWidth(prefix: string): number {
-  let width = 0;
-  for (const char of prefix) {
-    width += char === "\t" ? 4 - (width % 4) : 1;
-  }
-  return width;
-}
-
 /**
- * Find code regions (fenced, indented, and inline) to skip.
+ * Find code-block regions (``` ... ```, ~~~ ... ~~~, and ` ... `) to skip.
  * Returns a sorted, non-overlapping array of [start, end] index pairs.
  */
 export function findCodeBlockRegions(content: string): Array<[number, number]> {
-  // Fenced blocks, including the open tail present on a streaming frame.
+  // Fenced code blocks: ```...``` and ~~~...~~~ (both are code in GFM)
   const fenced: Array<[number, number]> = [];
+  const fencedRe = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
   let match: RegExpExecArray | null;
-  let openFence: {
-    start: number;
-    marker: string;
-    column: number;
-    quotes: number;
-  } | null = null;
-  FENCE_CANDIDATE_RE.lastIndex = 0;
-  while ((match = FENCE_CANDIDATE_RE.exec(content)) !== null) {
-    const lineStart = match.index + (match[1]?.length ?? 0);
-    const line = `${match[2] ?? ""}${match[3] ?? ""}${match[4] ?? ""}`;
-    if (openFence !== null) {
-      if (quoteDepth(line) !== openFence.quotes) continue;
-      const quoted = containerContent(line, EMPTY_LIST_STATE, openFence.quotes);
-      const fence = FENCE_LINE_RE.exec(stripIndent(quoted, openFence.column));
-      if (!fence) continue;
-      const marker = fence[1] ?? "";
-      const tail = fence[2] ?? "";
-      if (
-        marker[0] === openFence.marker[0] &&
-        marker.length >= openFence.marker.length &&
-        !tail.trim()
-      ) {
-        fenced.push([openFence.start, lineStart + line.length]);
-        openFence = null;
-      }
-      continue;
-    }
-
-    const quotes = quoteDepth(line);
-    const quoted = containerContent(line, EMPTY_LIST_STATE, quotes);
-    let source = quoted;
-    let item = itemContent(source, false);
-    while (item !== source) {
-      source = item;
-      item = itemContent(source, false);
-    }
-    const fence = FENCE_LINE_RE.exec(source);
-    if (!fence) continue;
-    const marker = fence[1] ?? "";
-    const tail = fence[2] ?? "";
-    if (marker[0] === "`" && tail.includes("`")) continue;
-    openFence = {
-      start: lineStart + line.length - source.length + (fence.index ?? 0),
-      marker,
-      column: columnWidth(quoted.slice(0, quoted.length - source.length)),
-      quotes,
-    };
-  }
-  if (openFence !== null) fenced.push([openFence.start, content.length]);
-
-  const indented: Array<[number, number]> = [];
-  // Avoid allocating every line on the per-frame path unless an indentation
-  // candidate exists outside a fenced block.
-  let hasIndentedCandidate = false;
-  INDENTED_CODE_CANDIDATE_RE.lastIndex = 0;
-  while ((match = INDENTED_CODE_CANDIDATE_RE.exec(content)) !== null) {
-    if (!isInRegion(match.index + match[0].length - 1, fenced)) {
-      hasIndentedCandidate = true;
-      break;
-    }
-  }
-  if (hasIndentedCandidate) {
-    const lines = content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g);
-    let blockStart = -1;
-    let blockEnd = -1;
-    let previousBlank = true;
-    let lists = EMPTY_LIST_STATE;
-    for (const lineMatch of lines) {
-      const line = lineMatch[0];
-      if (!line) break;
-      const start = lineMatch.index;
-      const text = line.replace(/(?:\r\n|\n|\r)$/, "");
-      lists = openLists(text, lists, !previousBlank);
-      const inner = itemContent(
-        containerContent(text, lists, quoteDepth(text)),
-        !previousBlank,
-      );
-      const blank = /^\s*$/.test(inner);
-      const code = indentWidth(inner) >= 4;
-      if (blockStart >= 0) {
-        if (code || blank) {
-          blockEnd = start + line.length;
-          previousBlank = blank;
-          continue;
-        }
-        indented.push([blockStart, blockEnd]);
-        blockStart = -1;
-      }
-      if (code && previousBlank) {
-        blockStart = start;
-        blockEnd = start + line.length;
-      }
-      previousBlank = blank;
-    }
-    if (blockStart >= 0) indented.push([blockStart, blockEnd]);
+  while ((match = fencedRe.exec(content)) !== null) {
+    fenced.push([match.index, match.index + match[0].length]);
   }
 
-  const blocks = mergeRegions(fenced, indented);
-  const inline = codeSpans(content).map(({ start, end }): [number, number] => [
-    start,
-    end,
-  ]);
+  // Inline code: `...`, skipped when inside a fenced block. Both loops yield
+  // ascending matches, so walk the fenced list with a cursor rather than
+  // rescanning it per match (was quadratic on code-heavy text).
+  const inline: Array<[number, number]> = [];
+  const inlineRe = /`[^`\n]+`/g;
+  let fencedIndex = 0;
+  while ((match = inlineRe.exec(content)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    while (fencedIndex < fenced.length && fenced[fencedIndex][1] <= start) {
+      fencedIndex += 1;
+    }
+    const block = fencedIndex < fenced.length ? fenced[fencedIndex] : null;
+    if (!(block && start >= block[0] && end <= block[1])) {
+      inline.push([start, end]);
+    }
+  }
 
   // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
   // the binary search land on the inner span and miss the outer one.
-  return mergeRegions(blocks, inline);
+  return mergeRegions(fenced, inline);
 }
 
 /**
@@ -210,7 +92,7 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
  * of balanced parens.
  */
 const LINK_DEST_RE =
-  /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
+  /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/gd;
 
 /**
  * Find the destination spans of inline links/images, so a `\(...\)` written with
@@ -361,15 +243,6 @@ function hasInlineMathCloser(
   return false;
 }
 
-function isEscapedDollar(content: string, offset: number): boolean {
-  if (content[offset] !== "$") return false;
-  let slashes = 0;
-  for (let i = offset - 1; i >= 0 && content[i] === "\\"; i -= 1) {
-    slashes += 1;
-  }
-  return slashes % 2 === 1;
-}
-
 /**
  * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. Non-greedy so
  * the first closer wins; dotall so display spans can wrap lines. `(?<!\\)` on
@@ -381,155 +254,6 @@ function isEscapedDollar(content: string, offset: number): boolean {
  */
 const LATEX_DELIM_RE =
   /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
-
-/** Find existing bracket-delimited math outside code and link destinations. */
-function findBracketMathRegions(
-  content: string,
-  skipRegions: Array<[number, number]>,
-): Array<[number, number]> {
-  const regions: Array<[number, number]> = [];
-  let match: RegExpExecArray | null;
-  LATEX_DELIM_RE.lastIndex = 0;
-  while ((match = LATEX_DELIM_RE.exec(content)) !== null) {
-    const end = match.index + match[0].length;
-    if (
-      isInRegion(match.index, skipRegions) ||
-      isInRegion(end - 1, skipRegions)
-    ) {
-      LATEX_DELIM_RE.lastIndex = match.index + 1;
-      continue;
-    }
-    regions.push([match.index, end]);
-  }
-  return regions;
-}
-
-/** Find existing `$...$` and `$$...$$` regions outside code and links. */
-function findDollarMathRegions(
-  content: string,
-  skipRegions: Array<[number, number]>,
-): Array<[number, number]> {
-  const regions: Array<[number, number]> = [];
-  for (let opening = 0; opening < content.length; opening += 1) {
-    if (
-      content[opening] !== "$" ||
-      isEscapedDollar(content, opening) ||
-      isInRegion(opening, skipRegions)
-    ) {
-      continue;
-    }
-    const display = content[opening + 1] === "$";
-    const bodyStart = opening + (display ? 2 : 1);
-    const limit = Math.min(
-      content.length,
-      bodyStart + (display ? 4096 : 200) + 1,
-    );
-    for (let closing = bodyStart; closing < limit; closing += 1) {
-      if (!display && /[\r\n]/.test(content[closing])) break;
-      if (
-        content[closing] !== "$" ||
-        isEscapedDollar(content, closing) ||
-        isInRegion(closing, skipRegions)
-      ) {
-        continue;
-      }
-      if (display !== (content[closing + 1] === "$")) continue;
-      if (
-        !display &&
-        (content[closing - 1] === "$" || content[closing + 1] === "$")
-      ) {
-        break;
-      }
-      if (!display && /\d/.test(content[closing + 1] ?? "")) continue;
-      if (!display && !looksLikeMathBody(content.slice(bodyStart, closing))) {
-        break;
-      }
-      const end = closing + (display ? 2 : 1);
-      regions.push([opening, end]);
-      opening = end - 1;
-      break;
-    }
-  }
-  return regions;
-}
-
-/**
- * Recover math-looking `\$...\$` spans emitted by local models. Existing
- * math, currency, code, links, even-backslash runs, and incomplete spans stay
- * literal. Same-line pairs are consumed once and bodies are capped.
- */
-function normalizeEscapedInlineMath(content: string): string {
-  if (!content.includes("\\$")) return content;
-
-  let skipRegions = mergeRegions(
-    findCodeBlockRegions(content),
-    findLinkDestinationRegions(content),
-  );
-  skipRegions = mergeRegions(
-    skipRegions,
-    findBracketMathRegions(content, skipRegions),
-  );
-  skipRegions = mergeRegions(
-    skipRegions,
-    findDollarMathRegions(content, skipRegions),
-  );
-  const parts: string[] = [];
-  let last = 0;
-  let lastChar = "";
-  const append = (chunk: string): void => {
-    if (!chunk) return;
-    if (lastChar === "$" && chunk.startsWith("$")) parts.push(" ");
-    parts.push(chunk);
-    lastChar = chunk[chunk.length - 1];
-  };
-
-  for (let opening = 0; opening < content.length; opening += 1) {
-    if (
-      content[opening] !== "$" ||
-      !isEscapedDollar(content, opening) ||
-      content[opening - 1] === "$" ||
-      content[opening + 1] === "$" ||
-      isInRegion(opening, skipRegions)
-    ) {
-      continue;
-    }
-
-    const opener = opening;
-    for (let closing = opening + 1; closing < content.length; closing += 1) {
-      if (content[closing] === "\n" || content[closing] === "\r") break;
-      if (content[closing] !== "$" || !isEscapedDollar(content, closing)) {
-        continue;
-      }
-      opening = closing;
-      if (content[closing + 1] === "$" || isInRegion(closing, skipRegions)) {
-        break;
-      }
-
-      const body = content.slice(opener + 1, closing - 1);
-      const trimmed = body.trim();
-      if (
-        body.length <= 200 &&
-        /^[a-zA-Z]+$/.test(trimmed) &&
-        trimmed.length > 1
-      ) {
-        opening = closing - 1;
-        break;
-      }
-      if (body.length > 200 || !looksLikeMathBody(trimmed)) {
-        break;
-      }
-
-      append(content.slice(last, opener - 1));
-      append(`$${trimmed}$`);
-      last = closing + 1;
-      break;
-    }
-  }
-
-  if (parts.length === 0) return content;
-  append(content.slice(last));
-  return parts.join("");
-}
 
 /**
  * Rewrite `\[...\]` -> block `$$...$$` and `\(...\)` -> inline `$...$` so
@@ -646,8 +370,7 @@ function convertLatexDelimiters(content: string): {
  * - Currency inside code blocks/spans is untouched
  */
 export function preprocessLaTeX(content: string): string {
-  const normalized = normalizeEscapedInlineMath(content);
-  const { text, mathRegions } = convertLatexDelimiters(normalized);
+  const { text, mathRegions } = convertLatexDelimiters(content);
 
   if (!text.includes("$")) return text;
 

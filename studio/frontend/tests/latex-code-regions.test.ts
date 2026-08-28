@@ -60,7 +60,6 @@ test("ordinary code spans and fences are unchanged", () => {
   // Nothing that was already non-overlapping may move.
   const cases: [string, string][] = [
     ["`costs $5`", "`costs $5`"],
-    ["``a ` \\$x\\$ b``", "``a ` \\$x\\$ b``"],
     ["`costs $5`\n\n`x`", "`costs $5`\n\n`x`"],
     ["```\ncosts $5\n```", "```\ncosts $5\n```"],
     ["```\ncosts $5\n```\n\n`x`", "```\ncosts $5\n```\n\n`x`"],
@@ -68,11 +67,6 @@ test("ordinary code spans and fences are unchanged", () => {
     ["costs $5 outside", "costs \\$5 outside"],
     ["costs $5 outside\n\n`x`", "costs \\$5 outside\n\n`x`"],
     ["```\n`inner`\n```", "```\n`inner`\n```"],
-    ["```tex\n\\$x\\$\n", "```tex\n\\$x\\$\n"],
-    ["```\n    ```\n\\$x\\$\n```", "```\n    ```\n\\$x\\$\n```"],
-    ["- ```\n  \\$x\\$\n  ```", "- ```\n  \\$x\\$\n  ```"],
-    ["> ```\n> \\$x\\$\n> ```", "> ```\n> \\$x\\$\n> ```"],
-    ["```\n- ```\n\\$x\\$\n```", "```\n- ```\n\\$x\\$\n```"],
     ["`\\(x\\)` and \\(y\\)", "`\\(x\\)` and $y$"],
     ["```\n\\(x\\)\n```\n\nthen \\(y\\)", "```\n\\(x\\)\n```\n\nthen $y$"],
   ];
@@ -82,98 +76,5 @@ test("ordinary code spans and fences are unchanged", () => {
       expected,
       `changed for ${JSON.stringify(input)}`,
     );
-  }
-});
-
-test("escaped inline math from local models is recovered inside lists", () => {
-  const input = [
-    String.raw`- \$v_s\$ is the velocity of the bubble,`,
-    String.raw`- \$f(r_s)\$ is a shape function, with \$f \to 0\$ far away and \$f \to 1\$ inside,`,
-    String.raw`- \$r_s\$ is the radial coordinate.`,
-  ].join("\n");
-  const expected = [
-    "- $v_s$ is the velocity of the bubble,",
-    "- $f(r_s)$ is a shape function, with $f \\to 0$ far away and $f \\to 1$ inside,",
-    "- $r_s$ is the radial coordinate.",
-  ].join("\n");
-
-  assert.equal(preprocessLaTeX(input), expected);
-});
-
-test("escaped math recovery preserves literal and non-math dollars", () => {
-  const longBody = "a".repeat(201);
-  const existingInlineBody = String.raw`\text{Revenue: \$USD\$}`.padEnd(
-    200,
-    "x",
-  );
-  const cases: [string, string][] = [
-    [
-      String.raw`\$5\$ is intentionally literal currency`,
-      String.raw`\$5\$ is intentionally literal currency`,
-    ],
-    [String.raw`\$5 to 10\$ is prose`, String.raw`\$5 to 10\$ is prose`],
-    [
-      String.raw`\$5\$ + \$10\$ and \$v_s\$`,
-      String.raw`\$5\$ + \$10\$ and $v_s$`,
-    ],
-    [String.raw`$5 + \$v_s\$ costs $10`, String.raw`\$5 + $v_s$ costs \$10`],
-    ["$ v_s $ already works", "$ v_s $ already works"],
-    ["$5 to $10 is a price range", "\\$5 to \\$10 is a price range"],
-    ["`\\$v_s\\$` is code", "`\\$v_s\\$` is code"],
-    [String.raw`    \$v_s\$`, String.raw`    \$v_s\$`],
-    [String.raw`>     \$v_s\$`, String.raw`>     \$v_s\$`],
-    [String.raw`-     \$v_s\$`, String.raw`-     \$v_s\$`],
-    [
-      String.raw`- item
-    \$v_s\$`,
-      "- item\n    $v_s$",
-    ],
-    [
-      String.raw`- item
-
-    \$v_s\$`,
-      "- item\n\n    $v_s$",
-    ],
-    [
-      String.raw`10. item
-
-    \$v_s\$`,
-      "10. item\n\n    $v_s$",
-    ],
-    [
-      String.raw`- item
-
-      \$v_s\$`,
-      String.raw`- item
-
-      \$v_s\$`,
-    ],
-    [
-      String.raw`[\$v_s\$](https://example.com/\$literal\$)`,
-      String.raw`[$v_s$](https://example.com/\$literal\$)`,
-    ],
-    ["$$\n v_s \n$$", "$$\n v_s \n$$"],
-    [
-      String.raw`$$
-\text{Revenue: \$USD\$}
-$$`,
-      String.raw`$$
-\text{Revenue: \$USD\$}
-$$`,
-    ],
-    [String.raw`\$a\$\$b\$`, "$a$ $b$"],
-    [`$${existingInlineBody}$`, `$${existingInlineBody}$`],
-    [
-      String.raw`\(\text{Revenue: \$USD\$}\)`,
-      String.raw`$\text{Revenue: \$USD\$}$`,
-    ],
-    [String.raw`\$${longBody}\$ + \$x\$`, String.raw`\$${longBody}\$ + $x$`],
-    [String.raw`\$v_s is incomplete`, String.raw`\$v_s is incomplete`],
-    [String.raw`literal \$ then \$v_s\$`, String.raw`literal \$ then $v_s$`],
-    ["\\$a\nb\\$ crosses a line", "\\$a\nb\\$ crosses a line"],
-  ];
-
-  for (const [input, expected] of cases) {
-    assert.equal(preprocessLaTeX(input), expected, input);
   }
 });

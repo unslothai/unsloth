@@ -7,7 +7,7 @@ import { createMathPlugin } from "@streamdown/math";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
-import { preprocessLaTeX } from "../src/lib/latex.ts";
+import { remarkEscapedInlineMath } from "../src/lib/escaped-inline-math.ts";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 
@@ -27,8 +27,12 @@ test("escaped inline math in a generated list reaches KaTeX", () => {
   const html = renderToStaticMarkup(
     React.createElement(
       Streamdown,
-      { mode: "static", plugins: { math } },
-      preprocessLaTeX(markdown),
+      {
+        mode: "static",
+        plugins: { math },
+        remarkPlugins: [remarkEscapedInlineMath],
+      },
+      markdown,
     ),
   );
 
@@ -47,8 +51,12 @@ test("escaped math in a loose-list continuation reaches KaTeX", () => {
   const html = renderToStaticMarkup(
     React.createElement(
       Streamdown,
-      { mode: "static", plugins: { math } },
-      preprocessLaTeX("- item\n\n    \\$x\\$"),
+      {
+        mode: "static",
+        plugins: { math },
+        remarkPlugins: [remarkEscapedInlineMath],
+      },
+      "- item\n\n    \\$x\\$",
     ),
   );
 
