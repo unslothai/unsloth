@@ -125,13 +125,16 @@ test("Recent keeps a completed download first until the cache rescan", () => {
 });
 
 test("a newer completion refreshes the same repo timestamp and expiry", () => {
+  const firstStartedAt = 1_899_999_940_000;
   const firstCompletedAt = 1_900_000_000_000;
+  const secondStartedAt = firstCompletedAt + 30_000;
   const secondCompletedAt = firstCompletedAt + 60_000;
   let pending = pendingWithInventoryHints(createPendingInventoryHints(), [
     {
       kind: "gguf",
       repoId: "Org/Repeated",
       bytes: 20,
+      startedAt: firstStartedAt,
       createdAt: firstCompletedAt,
     },
   ]);
@@ -140,6 +143,7 @@ test("a newer completion refreshes the same repo timestamp and expiry", () => {
       kind: "gguf",
       repoId: "Org/Repeated",
       bytes: 10,
+      startedAt: secondStartedAt,
       createdAt: secondCompletedAt,
     },
   ]);
@@ -148,6 +152,7 @@ test("a newer completion refreshes the same repo timestamp and expiry", () => {
     kind: "gguf",
     repoId: "Org/Repeated",
     bytes: 20,
+    startedAt: secondStartedAt,
     createdAt: secondCompletedAt,
   });
   assert.equal(
@@ -168,11 +173,13 @@ test("a newer completion refreshes the same repo timestamp and expiry", () => {
 
 test("a stale aggregate row cannot consume a newer variant hint", () => {
   const completedAt = 1_900_000_000_000;
+  const startedAt = completedAt - 60_000;
   const pending = pendingWithInventoryHints(createPendingInventoryHints(), [
     {
       kind: "gguf",
       repoId: "Org/Existing",
       bytes: 200,
+      startedAt,
       createdAt: completedAt,
     },
   ]);
@@ -199,7 +206,7 @@ test("a stale aggregate row cannot consume a newer variant hint", () => {
       {
         repo_id: "Org/Existing",
         size_bytes: 700,
-        last_modified: completedAt / 1000,
+        last_modified: startedAt / 1000,
       },
     ],
     previouslyObserved: new Set(["org/existing"]),
@@ -244,6 +251,7 @@ test("a new download clears historical observation and records completion time",
   );
   assert.ok(hint?.createdAt && hint.createdAt >= beforeCompletion);
   assert.ok(hint?.createdAt && hint.createdAt <= afterCompletion);
+  assert.equal(hint?.startedAt, 1_900_000_000_000);
 
   removeJob(key);
   useInventoryHintStore.setState({

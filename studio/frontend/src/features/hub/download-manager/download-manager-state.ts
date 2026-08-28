@@ -234,6 +234,7 @@ function collectCompletedInventoryHints(
         kind,
         repoId: job.repoId,
         ...(bytes > 0 ? { bytes } : {}),
+        startedAt: job.startedAt,
         ...(job.completedAt ? { createdAt: job.completedAt } : {}),
       },
     ];
@@ -244,7 +245,7 @@ function buildCompletedHintSignature(hints: readonly InventoryHint[]): string {
   return hints
     .map(
       (hint) =>
-        `${hint.kind}:${hint.repoId}:${hint.bytes ?? ""}:${hint.createdAt ?? ""}`,
+        `${hint.kind}:${hint.repoId}:${hint.bytes ?? ""}:${hint.startedAt ?? ""}:${hint.createdAt ?? ""}`,
     )
     .sort()
     .join("|");

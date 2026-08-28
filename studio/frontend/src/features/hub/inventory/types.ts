@@ -30,6 +30,7 @@ export interface InventoryHint {
   kind: InventoryHintKind;
   repoId: string;
   bytes?: number;
+  startedAt?: number;
   createdAt?: number;
 }
 

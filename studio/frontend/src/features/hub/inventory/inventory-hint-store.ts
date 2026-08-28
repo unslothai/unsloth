@@ -44,6 +44,7 @@ const INVENTORY_HINT_EQUALITY_FIELDS = {
   kind: true,
   repoId: true,
   bytes: true,
+  startedAt: true,
   createdAt: true,
 } satisfies Record<keyof InventoryHint, true>;
 
@@ -80,9 +81,13 @@ function inventoryHintEqual(
   }
   return INVENTORY_HINT_EQUALITY_KEYS.every((key) => {
     const left =
-      key === "bytes" || key === "createdAt" ? (a[key] ?? 0) : a[key];
+      key === "bytes" || key === "startedAt" || key === "createdAt"
+        ? (a[key] ?? 0)
+        : a[key];
     const right =
-      key === "bytes" || key === "createdAt" ? (b[key] ?? 0) : b[key];
+      key === "bytes" || key === "startedAt" || key === "createdAt"
+        ? (b[key] ?? 0)
+        : b[key];
     return left === right;
   });
 }

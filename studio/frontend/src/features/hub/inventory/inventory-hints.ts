@@ -136,14 +136,20 @@ export function rememberInventoryHint(
   const key = repoKey(hint.repoId);
   const existing = next[hint.kind].get(key);
   const bytes = Math.max(existing?.bytes ?? 0, hint.bytes ?? 0);
-  const createdAt = Math.max(
-    existing?.createdAt ?? 0,
-    hint.createdAt ?? (existing ? 0 : Date.now()),
-  );
+  const existingCreatedAt = existing?.createdAt ?? 0;
+  const hintCreatedAt = hint.createdAt ?? (existing ? 0 : Date.now());
+  const createdAt = Math.max(existingCreatedAt, hintCreatedAt);
+  const startedAt =
+    hintCreatedAt > existingCreatedAt
+      ? hint.startedAt
+      : hintCreatedAt < existingCreatedAt
+        ? existing?.startedAt
+        : (hint.startedAt ?? existing?.startedAt);
   next[hint.kind].set(key, {
     kind: hint.kind,
     repoId: hint.repoId,
     ...(bytes > 0 ? { bytes } : {}),
+    ...(startedAt && startedAt > 0 ? { startedAt } : {}),
     createdAt,
   });
   return next;
@@ -198,7 +204,7 @@ function serverRowSatisfiesHint(
   if (hint.bytes && rowSizeBytes(row) < hint.bytes) {
     return false;
   }
-  const hintTimestamp = normalizeTimestamp(hint.createdAt);
+  const hintTimestamp = normalizeTimestamp(hint.startedAt ?? hint.createdAt);
   if (hintTimestamp == null) {
     return true;
   }
