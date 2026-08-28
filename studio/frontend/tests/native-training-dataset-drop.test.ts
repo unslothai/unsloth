@@ -111,7 +111,9 @@ test("classifies native drops before truncating long display filenames", () => {
   });
 });
 
-// only webview2 reports device pixels; macos and gtk match css pixels at 100% zoom.
+// Only WebView2 reports a device-pixel drop position; macOS and GTK already
+// report CSS pixels at 100% zoom, so scaling those by the monitor factor halved
+// every hit test on a HiDPI display and the zone never matched.
 test("hit testing scales a Windows drop position to CSS pixels", () => {
   Object.defineProperty(globalThis, "navigator", {
     value: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64)" },

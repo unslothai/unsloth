@@ -4,12 +4,8 @@ import test from "node:test";
 
 const source = (path: string) =>
   readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
-const NATIVE_TITLEBAR_HEIGHT_PATTERN =
-  /const NATIVE_MAC_TITLEBAR_HEIGHT =\s*"var\(--studio-native-titlebar-height, 34px\)"/;
-const NATIVE_TRAFFIC_LIGHT_INSET_PATTERN =
-  /const NATIVE_MAC_TRAFFIC_LIGHT_INSET =\s*"var\(--studio-native-traffic-light-inset, 78px\)"/;
 const PORTALLED_NATIVE_TITLEBAR_PATTERN =
-  /"--studio-window-chrome-top",[\s\S]*?NATIVE_MAC_TITLEBAR_HEIGHT/;
+  /"--studio-window-chrome-top",[\s\S]*?NATIVE_MAC_TITLEBAR_HEIGHT_VAR/;
 
 test("mac titlebar navigation shifts buttons with centered glyphs", async () => {
   const [titlebar, provider] = await Promise.all([
@@ -45,9 +41,32 @@ test("mac chat and media headers share the lowered control row", async () => {
   }
 });
 
+// The runtime divides these by the zoom and provider.tsx uses them as CSS fallbacks. Two
+// copies of 34 would agree at 100% and silently disagree everywhere else, so assert the
+// fallback string is built from the same constant rather than retyped.
 test("mac native chrome clearance stays fixed across interface scales", async () => {
-  const provider = await source("app/provider.tsx");
-  assert.match(provider, NATIVE_TITLEBAR_HEIGHT_PATTERN);
-  assert.match(provider, NATIVE_TRAFFIC_LIGHT_INSET_PATTERN);
+  const [provider, runtime] = await Promise.all([
+    source("app/provider.tsx"),
+    source("features/settings/lib/interface-scale-runtime.ts"),
+  ]);
+  assert.match(
+    runtime,
+    /NATIVE_MAC_TITLEBAR_HEIGHT_VAR = `var\(--studio-native-titlebar-height, \$\{NATIVE_MAC_TITLEBAR_HEIGHT_PX\}px\)`/,
+  );
+  assert.match(
+    runtime,
+    /NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR = `var\(--studio-native-traffic-light-inset, \$\{NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX\}px\)`/,
+  );
+  assert.match(
+    runtime,
+    /NATIVE_MAC_TITLEBAR_HEIGHT_PX \/ zoom/,
+  );
+  assert.match(
+    runtime,
+    /NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX \/ zoom/,
+  );
+  // No literal 34px or 78px left in provider.tsx to drift out from under the runtime.
+  assert.doesNotMatch(provider, /--studio-native-titlebar-height, 34px/);
+  assert.doesNotMatch(provider, /--studio-native-traffic-light-inset, 78px/);
   assert.match(provider, PORTALLED_NATIVE_TITLEBAR_PATTERN);
 });

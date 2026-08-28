@@ -20,7 +20,11 @@ Object.assign(globalThis, {
   // devicePixelRatio 2: a physical drop position is twice the CSS position the
   // DOM is hit-tested in, which is the conversion this module owns.
   window: { devicePixelRatio: 2, location: { protocol: "http:" } },
-  document: { elementFromPoint: () => hit },
+  document: {
+    elementFromPoint: () => hit,
+    // setAppliedInterfaceZoom writes the mac chrome vars here on its way through.
+    documentElement: { style: { setProperty: () => undefined } },
+  },
 });
 
 const { nativeDropTargetAt, registerNativeDropTarget } = await import(
@@ -28,6 +32,9 @@ const { nativeDropTargetAt, registerNativeDropTarget } = await import(
 );
 const { nativeDropPointToCss } = await import(
   "../src/features/native-intents/native-drop-position.ts"
+);
+const { setAppliedInterfaceZoom } = await import(
+  "../src/features/settings/lib/interface-scale-runtime.ts"
 );
 
 const asElement = (value: FakeElement) => value as unknown as HTMLElement;
@@ -135,6 +142,29 @@ for (const userAgent of [
     });
   });
 }
+
+// Every other case passes the zoom explicitly, which leaves the default argument
+// unexercised. That default is the seam between the scale store and the drop path, and
+// wiring it to the wrong getter would keep every one of those cases green.
+test("the default zoom comes from the applied interface scale", () => {
+  Object.defineProperty(globalThis, "navigator", {
+    value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)" },
+    configurable: true,
+  });
+  assert.deepEqual(nativeDropPointToCss({ x: 120, y: 80 }, 2), {
+    x: 120,
+    y: 80,
+  });
+  setAppliedInterfaceZoom(0.5);
+  try {
+    assert.deepEqual(nativeDropPointToCss({ x: 120, y: 80 }, 2), {
+      x: 240,
+      y: 160,
+    });
+  } finally {
+    setAppliedInterfaceZoom(1);
+  }
+});
 
 test("a Windows drop position is divided by the scale factor", () => {
   assert.deepEqual(pointSeenFor("Mozilla/5.0 (Windows NT 10.0; Win64)"), {

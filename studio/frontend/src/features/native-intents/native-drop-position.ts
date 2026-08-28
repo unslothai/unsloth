@@ -3,8 +3,10 @@
 
 import { getAppliedInterfaceZoom } from "../settings/lib/interface-scale-runtime.ts";
 
-// tauri types every drop position as physical, but wry only produces one on
-// webview2. macos and gtk coordinates match css pixels only at 100% page zoom.
+// Tauri types every drop position as physical, but wry only produces one on
+// WebView2 (ScreenToClient device pixels). macOS reports NSView points and GTK
+// reports widget coordinates, and neither of those moves with page zoom, so they
+// are CSS pixels only at 100%.
 function isPhysicalDropPosition(): boolean {
   return (
     typeof navigator !== "undefined" && navigator.userAgent.includes("Windows")
@@ -22,7 +24,15 @@ function physicalPerCssPx(windowScaleFactor: number): number {
     : 1;
 }
 
-/** A drop position in the CSS pixels the DOM is measured in. */
+/**
+ * A drop position in the CSS pixels the DOM is measured in.
+ *
+ * The two branches read zoom from different places and that asymmetry is forced, not an
+ * oversight. **Do not collapse them onto `devicePixelRatio`.** Page zoom is not readable
+ * from JS, so macOS and GTK have only the value we last handed the webview; and on macOS
+ * `devicePixelRatio` carries a backing-scale factor that NSView points do not have, so
+ * using it there would divide by the Retina factor twice.
+ */
 export function nativeDropPointToCss(
   position: { x: number; y: number },
   windowScaleFactor: number,

@@ -16,8 +16,12 @@ import {
 export { getAppliedInterfaceZoom };
 
 export const INTERFACE_SCALE_STORAGE_KEY = "unsloth_interface_scale";
+// The floor is 50, not the 25 Chrome and VS Code allow, because both of those ship
+// Cmd/Ctrl+0 and this does not yet. At 25% the Settings row you would use to undo it
+// renders around 3.5px, and the value is device-local in localStorage, so recovery means
+// clearing app data. Drop it back to 25 once a reset accelerator exists.
 export const INTERFACE_SCALE_RANGE = {
-  min: 25,
+  min: 50,
   max: 200,
   default: 100,
 } as const;
@@ -108,4 +112,29 @@ export function applyInterfaceScale(scale: number): Promise<void> {
   });
   interfaceScaleApplicationQueue = application.catch(() => undefined);
   return application;
+}
+
+/**
+ * Applying the scale before the first render is what stops a 100% frame painting and
+ * then relaying out. Worth waiting for, not worth waiting forever: this is the only
+ * thing gating first paint on the Tauri IPC bridge, and a rejection is caught while a
+ * hang is not, so without a deadline a wedged bridge is a permanently blank window.
+ *
+ * Past the deadline the app renders at 100% and the effect in `provider.tsx` applies the
+ * real scale whenever the bridge does answer.
+ */
+export const INTERFACE_SCALE_FIRST_PAINT_TIMEOUT_MS = 1000;
+
+export function applyInterfaceScaleBeforeFirstPaint(
+  scale: number,
+  timeoutMs: number = INTERFACE_SCALE_FIRST_PAINT_TIMEOUT_MS,
+): Promise<void> {
+  const applied = applyInterfaceScale(scale).catch(() => undefined);
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    void applied.finally(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }

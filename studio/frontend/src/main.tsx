@@ -8,7 +8,7 @@ import "./index.css";
 import { App } from "./app/app";
 import { fetchDeviceType } from "./config/env";
 import {
-  applyInterfaceScale,
+  applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
 } from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
@@ -44,9 +44,9 @@ function renderApp(): void {
 }
 
 const localeInitialization = initializeLocale();
-const interfaceScaleInitialization = applyInterfaceScale(
+const interfaceScaleInitialization = applyInterfaceScaleBeforeFirstPaint(
   useInterfaceScaleStore.getState().scale,
-).catch(() => undefined);
+);
 if (typeof localeInitialization !== "string" || isTauri) {
   Promise.all([localeInitialization, interfaceScaleInitialization]).then(
     renderApp,

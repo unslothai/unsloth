@@ -31,11 +31,18 @@ const GENERAL_TAB = new URL(
   import.meta.url,
 );
 
+const { NATIVE_MAC_TITLEBAR_HEIGHT_PX, NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX } =
+  await import("../src/features/settings/lib/interface-scale-runtime.ts");
+
 type InterfaceScaleModule = {
   sanitizeInterfaceScale: (value: unknown) => number;
   interfaceScaleToZoom: (scale: number) => number;
   getAppliedInterfaceZoom: () => number;
   applyInterfaceScale: (scale: number) => Promise<void>;
+  applyInterfaceScaleBeforeFirstPaint: (
+    scale: number,
+    timeoutMs?: number,
+  ) => Promise<void>;
 };
 
 let generation = 0;
@@ -84,22 +91,24 @@ async function load(tauri: boolean) {
 test("interface scale is rounded and clamped to a usable range", async () => {
   const { mod } = await load(false);
   assert.equal(mod.sanitizeInterfaceScale(undefined), 100);
-  assert.equal(mod.sanitizeInterfaceScale(10), 25);
+  assert.equal(mod.sanitizeInterfaceScale(10), 50);
   assert.equal(mod.sanitizeInterfaceScale(66.6), 67);
   assert.equal(mod.sanitizeInterfaceScale(500), 200);
-  assert.equal(mod.interfaceScaleToZoom(35), 0.35);
+  assert.equal(mod.interfaceScaleToZoom(55), 0.55);
+  // Below the floor the zoom clamps too, rather than reaching the webview raw.
+  assert.equal(mod.interfaceScaleToZoom(25), 0.5);
 });
 
 test("desktop scale sets native webview zoom", async () => {
   const { mod, control, styles } = await load(true);
-  await mod.applyInterfaceScale(35);
-  await mod.applyInterfaceScale(35);
-  assert.deepEqual(control.zooms, [0.35]);
-  assert.equal(mod.getAppliedInterfaceZoom(), 0.35);
-  assert.equal(styles.get("--studio-native-titlebar-height"), `${34 / 0.35}px`);
+  await mod.applyInterfaceScale(55);
+  await mod.applyInterfaceScale(55);
+  assert.deepEqual(control.zooms, [0.55]);
+  assert.equal(mod.getAppliedInterfaceZoom(), 0.55);
+  assert.equal(styles.get("--studio-native-titlebar-height"), `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 0.55}px`);
   assert.equal(
     styles.get("--studio-native-traffic-light-inset"),
-    `${78 / 0.35}px`,
+    `${NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX / 0.55}px`,
   );
 });
 
@@ -112,7 +121,7 @@ test("the latest scale wins while an older native update is pending", async () =
   });
   control.setZoom = (zoom) => {
     control.zooms.push(zoom);
-    if (zoom !== 0.35) {
+    if (zoom !== 0.55) {
       return Promise.resolve();
     }
     markFirstStarted();
@@ -121,15 +130,32 @@ test("the latest scale wins while an older native update is pending", async () =
     });
   };
 
-  const first = mod.applyInterfaceScale(35);
+  const first = mod.applyInterfaceScale(55);
   await firstStarted;
   const latest = mod.applyInterfaceScale(75);
   releaseFirst();
   await Promise.all([first, latest]);
 
-  assert.deepEqual(control.zooms, [0.35, 0.75]);
+  assert.deepEqual(control.zooms, [0.55, 0.75]);
   assert.equal(mod.getAppliedInterfaceZoom(), 0.75);
-  assert.equal(styles.get("--studio-native-titlebar-height"), `${34 / 0.75}px`);
+  assert.equal(styles.get("--studio-native-titlebar-height"), `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 0.75}px`);
+});
+
+test("first paint is not held hostage by a wedged native bridge", async () => {
+  const { mod, control } = await load(true);
+  // Never resolves: the failure a plain catch() does not cover.
+  control.setZoom = () => new Promise<void>(() => undefined);
+  await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
+});
+
+test("first paint waits for the scale when the bridge answers", async () => {
+  const { mod, control, styles } = await load(true);
+  await mod.applyInterfaceScaleBeforeFirstPaint(75, 5_000);
+  assert.deepEqual(control.zooms, [0.75]);
+  assert.equal(
+    styles.get("--studio-native-titlebar-height"),
+    `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 0.75}px`,
+  );
 });
 
 test("browser scale never calls the native webview", async () => {
@@ -155,7 +181,7 @@ test("startup, live changes, and both resets use the local scale", async () => {
   );
   assert.match(
     main,
-    /applyInterfaceScale\(\s*useInterfaceScaleStore\.getState\(\)\.scale/,
+    /applyInterfaceScaleBeforeFirstPaint\(\s*useInterfaceScaleStore\.getState\(\)\.scale/,
   );
   assert.match(
     provider,
