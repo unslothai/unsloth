@@ -570,6 +570,8 @@ def _scan_hf_dataset_caches() -> list[dict]:
                 if _prefer_dataset_cache_row(row, existing):
                     _adopt_newer_last_modified(row, existing)
                     seen_lower[key] = row
+                elif existing is not None:
+                    _merge_last_modified(existing, row)
             except Exception as exc:
                 label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning("Skipping cached dataset repo %s: %s", label, exc)

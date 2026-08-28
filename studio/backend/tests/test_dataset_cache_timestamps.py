@@ -200,6 +200,28 @@ def test_a_merge_does_not_lose_a_timestamp_the_other_row_lacks(monkeypatch):
     assert rows[0]["last_modified"] == pytest.approx(1_700_000_000.0)
 
 
+def test_hf_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(monkeypatch):
+    def repo(size, last_modified):
+        return SimpleNamespace(
+            repo_id = "Org/Data",
+            repo_type = "dataset",
+            repo_path = f"/cache-{size}/datasets--Org--Data",
+            size_on_disk = size,
+            last_modified = last_modified,
+            revisions = [SimpleNamespace(files = [], commit_hash = str(size))],
+        )
+
+    _stub_hf_scan(
+        monkeypatch,
+        [repo(200, 1_700_000_000.0), repo(100, 1_900_000_000.0)],
+    )
+
+    rows = cache_inventory._scan_hf_dataset_caches()
+
+    assert rows[0]["size_bytes"] == 200
+    assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
+
+
 def test_recent_order_is_now_derivable_from_the_payload(monkeypatch):
     # The whole point: two cached datasets, and the newer one sorts first.
     _stub_hf_scan(
