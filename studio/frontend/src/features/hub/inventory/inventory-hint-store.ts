@@ -23,6 +23,7 @@ type ObservedInventoryKeys = Record<InventoryHint["kind"], Set<string>>;
 
 export type PendingHintReconciliationCommit = {
   kind: InventoryHint["kind"];
+  protectedObservedKeys?: ReadonlySet<string>;
   reconciliation: Pick<
     InventoryHintReconciliation,
     "pending" | "staleCompletedHints" | "observedKeys"
@@ -165,9 +166,13 @@ function rememberObservedInventoryKeys(
   kind: InventoryHint["kind"],
   keys: ReadonlySet<string>,
   pending: PendingInventoryHints,
+  protectedKeys: ReadonlySet<string>,
 ): ObservedInventoryKeys {
   const observed = new Set(current[kind]);
   for (const key of keys) {
+    if (pending[kind].has(key) || protectedKeys.has(key)) {
+      continue;
+    }
     observed.delete(key);
     observed.add(key);
   }
@@ -214,7 +219,11 @@ export const useInventoryHintStore = create<InventoryHintState>()(
       let next = pendingWithInventoryHints(state.pending, completedHints);
       let observedKeys = state.observedKeys;
       const completedHintsToSuppress: InventoryHint[] = [];
-      for (const { kind, reconciliation } of reconciliations) {
+      for (const {
+        kind,
+        protectedObservedKeys = new Set<string>(),
+        reconciliation,
+      } of reconciliations) {
         const committed = commitInventoryHintReconciliation({
           current: next,
           kind,
@@ -228,6 +237,7 @@ export const useInventoryHintStore = create<InventoryHintState>()(
           kind,
           reconciliation.observedKeys,
           next,
+          protectedObservedKeys,
         );
         completedHintsToSuppress.push(...committed.completedHintsToSuppress);
       }

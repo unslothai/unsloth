@@ -24,9 +24,14 @@ import {
 import {
   type PendingInventoryHints,
   nextInventoryHintExpiryDelay,
+  repoKey,
 } from "./inventory-hints";
 import { resolveInventorySettlement } from "./inventory-settlement";
-import type { CachedInventoryRow, LocalInventoryRow } from "./types";
+import type {
+  CachedInventoryRow,
+  InventoryHint,
+  LocalInventoryRow,
+} from "./types";
 import {
   type DeviceInventorySource,
   useDeviceInventorySources,
@@ -128,6 +133,30 @@ function liveInventoryRank(job: ManagedDownload): number {
   if (job.state === "running" || job.state === "cancelling") return 2;
   if (job.state === "cancelled" || job.state === "error") return 1;
   return 0;
+}
+
+function inventoryHintKindForJob(job: ManagedDownload): InventoryHint["kind"] {
+  return job.kind === "dataset" ? "dataset" : job.variant ? "gguf" : "model";
+}
+
+function activeObservedKeyProtections(
+  jobs: Record<string, ManagedDownload>,
+): Record<InventoryHint["kind"], Set<string>> {
+  const keys: Record<InventoryHint["kind"], Set<string>> = {
+    model: new Set(),
+    gguf: new Set(),
+    dataset: new Set(),
+  };
+  for (const job of Object.values(jobs)) {
+    if (
+      job.external ||
+      (job.state !== "running" && job.state !== "cancelling")
+    ) {
+      continue;
+    }
+    keys[inventoryHintKindForJob(job)].add(repoKey(job.repoId));
+  }
+  return keys;
 }
 
 function shouldSurfaceLiveJob(
@@ -364,15 +393,20 @@ export function useHubInventory(
   );
 
   useEffect(() => {
+    const protectedObservedKeys = activeObservedKeyProtections(
+      useDownloadManagerStore.getState().jobs,
+    );
     const reconciliations: PendingHintReconciliationCommit[] = [];
     if (!isDatasetMode) {
       reconciliations.push(
         {
           kind: "gguf",
+          protectedObservedKeys: protectedObservedKeys.gguf,
           reconciliation: cachedGgufReconciliation,
         },
         {
           kind: "model",
+          protectedObservedKeys: protectedObservedKeys.model,
           reconciliation: cachedModelsReconciliation,
         },
       );
@@ -380,6 +414,7 @@ export function useHubInventory(
     if (isDatasetMode) {
       reconciliations.push({
         kind: "dataset",
+        protectedObservedKeys: protectedObservedKeys.dataset,
         reconciliation: cachedDatasetsReconciliation,
       });
     }
@@ -639,11 +674,7 @@ export function useHubInventory(
       void refreshDeviceInventory();
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [
-    emptyRevalidationRequired,
-    enabled,
-    refreshDeviceInventory,
-  ]);
+  }, [emptyRevalidationRequired, enabled, refreshDeviceInventory]);
 
   return {
     cachedRows,
