@@ -513,14 +513,10 @@ def _prompt_token_estimate(prompt: str) -> int:
                     return count
     except Exception:  # noqa: BLE001 - an estimate must never fail the request
         pass
-    # llama-server holds its own tokenizer, so estimate by character class instead of a
-    # flat ratio. Everything outside ASCII counts as a token: the earlier cut at U+2E7F
-    # only caught CJK and emoji, so Arabic, Cyrillic, Hebrew and the Indic scripts were
-    # billed at the Latin third-of-a-token rate and a long prompt in any of them passed
-    # the guard, then overflowed the context during generation. Over-counting accented
-    # Latin is the safe direction for a budget: it shortens the clip rather than failing.
-    dense = sum(1 for ch in prompt if ord(ch) > 0x7F)
-    return max(1, dense + (len(prompt) - dense) // 3)
+    # subprocess and llama-server tokenizers are not reachable here. UTF-8 bytes are a
+    # conservative upper bound for their byte-level fallbacks; under-counting can overflow
+    # the loaded context, while over-counting only shortens the requested clip.
+    return max(1, len(prompt.encode("utf-8")))
 
 
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"

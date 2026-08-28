@@ -291,27 +291,18 @@ def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(mon
     assert [clip["id"] for clip in gallery.list_audio()] == [saved["id"]]
 
 
-def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
-    """Without a Python tokenizer (GGUF TTS), the estimate is by character class. Cutting
-    at U+2E7F caught CJK and emoji but billed Arabic, Cyrillic, Hebrew and the Indic
-    scripts at a third of a token each, so a long prompt in any of them passed the guard
-    and then overflowed the loaded context during generation."""
+def test_unreachable_subprocess_tokenizers_use_a_conservative_byte_budget():
     estimate = routes_module._prompt_token_estimate
 
-    for label, text in (
-        ("arabic", "مرحبا بالعالم " * 40),
-        ("cyrillic", "Привет мир " * 40),
-        ("hebrew", "שלום עולם " * 40),
-        ("devanagari", "नमस्ते दुनिया " * 40),
+    for text in (
+        "a " * 100,
+        "مرحبا بالعالم " * 40,
+        "Привет мир " * 40,
+        "שלום עולם " * 40,
+        "नमस्ते दुनिया " * 40,
+        "你好世界" * 50,
     ):
-        assert estimate(text) >= len(text.replace(" ", "")), label
-
-    # Latin is still counted at the cheaper rate, so ordinary English is not rejected.
-    english = "the quick brown fox jumps over the lazy dog " * 40
-    assert estimate(english) < len(english) // 2
-
-    # And CJK, which already worked, is unchanged.
-    assert estimate("你好世界" * 50) >= 200
+        assert estimate(text) == len(text.encode("utf-8"))
 
 
 # ── External connection proxying (provider_id) ───────────────────
