@@ -969,7 +969,7 @@ def test_the_upgrade_notice_fires_for_a_model_only_the_newer_mapper_knows(monkey
     """End to end: an unmapped name plus a newer mapper that maps it must raise."""
     staged = REAL_MAPPER.replace(
         "__INT_TO_FLOAT_MAPPER = \\\n{\n",
-        '__INT_TO_FLOAT_MAPPER = \\\n{\n'
+        "__INT_TO_FLOAT_MAPPER = \\\n{\n"
         '    "vendor/brand-new-bnb-4bit": ("vendor/brand-new",),\n',
         1,
     )
