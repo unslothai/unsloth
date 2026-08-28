@@ -44,6 +44,13 @@ def test_a_chain_of_numeric_lookups_is_rewritten_whole():
     assert repair_numeric_member_access("{{ a.0.b.10 }}") == "{{ a[0].b[10] }}"
 
 
+def test_whitespace_around_the_dot_is_still_numeric_member_access():
+    # llama.cpp's lexer skips the spaces and throws on "x . 0" exactly as on "x.0".
+    assert repair_numeric_member_access("{{ messages[i] . 0.role }}") == "{{ messages[i][0].role }}"
+    assert repair_numeric_member_access("{{ m.content .0.type }}") == "{{ m.content[0].type }}"
+    assert repair_numeric_member_access("{{ rows . 0 . 1 }}") == "{{ rows[0][1] }}"
+
+
 def test_every_site_in_one_template_is_rewritten():
     template = (
         "{{ m.content.0.type }}{{ tr.output.0.type }}"

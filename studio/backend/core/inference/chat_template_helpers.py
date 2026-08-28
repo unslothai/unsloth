@@ -1646,7 +1646,7 @@ def _raw_spans(body: str) -> tuple:
     return tuple((match.start(), match.end()) for match in _JINJA_RAW.finditer(body))
 
 
-_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\.\d+)+)")
+_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\s*\.\s*\d+)+)")
 
 
 def repair_numeric_member_access(template) -> Optional[str]:
@@ -1660,6 +1660,7 @@ def repair_numeric_member_access(template) -> Optional[str]:
     Only the ranges Jinja evaluates are rewritten, never prompt text, a quoted literal, or
     a raw block.
     A chain rewrites whole ("x.0.1" -> "x[0][1]"): leaving the tail behind still throws.
+    Jinja lets whitespace sit around each dot, and llama.cpp throws on that spelling too.
     """
     if not isinstance(template, str) or not template:
         return None
@@ -1671,7 +1672,7 @@ def repair_numeric_member_access(template) -> Optional[str]:
         if not _within(spans, match.start()) or _within(verbatim, match.start()):
             continue
         out.append(template[cursor : match.start()])
-        indices = "".join(f"[{n}]" for n in match.group(2).split(".")[1:])
+        indices = "".join(f"[{n}]" for n in re.findall(r"\d+", match.group(2)))
         out.append(f"{match.group(1)}{indices}")
         cursor = match.end()
     if not out:
