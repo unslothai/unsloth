@@ -294,6 +294,7 @@ _MCP_TOOL = {
             "query": {"type": "string"},
             "limit": {"type": "integer"},
             "fuzzy": {"type": "boolean"},
+            "tags": {"type": "array", "items": {"type": "string"}},
             "depth": {"type": ["integer", "null"]},
         },
     },
@@ -316,6 +317,7 @@ def _coerce_one(key, value, props):
         ("fuzzy", " False ", False),
         ("limit", "25", 25),
         ("limit", "9007199254740993", 9007199254740993),  # float() would round this
+        ("tags", "('a', 'b')", ["a", "b"]),
         ("depth", "null", None),
         ("fuzzy", "null", _UNCHANGED),  # null is not a boolean; None would mean False
     ],
@@ -350,3 +352,50 @@ def test_a_schema_this_walk_cannot_read_is_left_alone(spec):
     annotated = {"type": "boolean", "title": "F", "enum": [False]}
     assert _coerce_one("f", "false", {"f": annotated}) is False
     assert _coerce_one("f", "null", {"f": {"type": "boolean", "nullable": True}}) is None
+
+
+@pytest.mark.parametrize(
+    "text, repaired",
+    [
+        ('["a","b"}', ["a", "b"]),  # a closer not matching the innermost opener
+        ('["a","b\\"', ["a", 'b"']),  # an open string ending on an ESCAPED quote
+    ],
+)
+def test_a_malformed_container_is_repaired_only_when_healing(text, repaired):
+    """Rewriting brackets invents structure, which is what the auto-heal opt-out is for."""
+
+    def at_seam(heal):
+        return coerce_tool_arguments(
+            json.dumps({"tags": text}),
+            heal = heal,
+            tool_name = "mcp__notes__search",
+            tool_schemas = _mcp_tool_schemas(),
+        ).arguments["tags"]
+
+    assert at_seam(True) == repaired
+    assert at_seam(False) == text
+
+
+def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
+    content = (
+        "<function=mcp__notes__search>"
+        "<parameter=query>ship dates</parameter>"
+        "<parameter=limit>25</parameter>"
+        "<parameter=fuzzy>false</parameter>"
+        '<parameter=tags>["a","b"]</parameter>'
+        "<parameter=depth>null</parameter>"
+        "</function>"
+    )
+    calls = parse_tool_calls_from_text(content)
+    decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+    assert decision.arguments == {
+        "query": "ship dates",
+        "limit": 25,
+        "fuzzy": False,
+        "tags": ["a", "b"],
+        "depth": None,
+    }
+    # The turn replayed to the model carries the typed values too, not the strings.
+    assert decision.as_assistant_tool_call()["function"]["arguments"] == (
+        '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
+    )

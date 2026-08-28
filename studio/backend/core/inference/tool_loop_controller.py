@@ -11,9 +11,11 @@ backend-specific modules.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
@@ -346,16 +348,54 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     return f"{tool_name}:{canonical_args}"
 
 
-# `_edit_file_replace_all`'s words, minus the empty string, which is an absent value rather
-# than a boolean one. That tool still reads its own "" as false.
-# "0" and "1" are deliberately absent: they are the only spellings with a JSON scalar
-# counterpart, and a native `0` for the same parameter arrives already typed and is left
-# alone, so reading them would make one argument mean different things in the two call
-# syntaxes. `edit_file` still reads them, for its own parameter, where no such pair exists.
+# "0"/"1" are left out: a native `0` arrives already typed, so they would mean two things.
 _SCHEMA_TRUE_WORDS = frozenset({"true", "yes"})
 _SCHEMA_FALSE_WORDS = frozenset({"false", "no"})
-# What this walk follows to find a declaration. `nullable` is OpenAPI 3.0's spelling of a
-# type union, which several MCP servers still generate.
+# Not ValueErrors, so a decode-shaped except would let deep model output escape as a 500.
+_DECODE_ERRORS = (ValueError, RecursionError)
+_LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
+
+
+# A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand
+# in for because an open string can end on an escaped one. The `\?$` tail stops a started
+# match from ever failing, which would send `finditer` back over every later quote.
+_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
+_JSON_CLOSER = {"[": "]", "{": "}"}
+
+
+def _balanced(segment: str, opened: "list[str]") -> str:
+    kept: list[str] = []
+    for ch in segment:
+        if ch in _JSON_CLOSER:
+            opened.append(_JSON_CLOSER[ch])
+            kept.append(ch)
+        elif ch in "]}":
+            # The commonest slip: a closer of the wrong kind becomes the right one.
+            if opened:
+                kept.append(opened.pop())
+        else:
+            kept.append(ch)
+    return "".join(kept)
+
+
+def _repair_json_value(text: str) -> Any:
+    """Parse near-valid JSON whose brackets do not balance, or None if it still will not."""
+    parts: list[str] = []
+    opened: list[str] = []
+    cursor = 0
+    open_string = ""
+    for match in _JSON_STRING_RE.finditer(text):
+        parts += [_balanced(text[cursor : match.start()], opened), match.group()]
+        open_string = "" if match.group(1) else '"'
+        cursor = match.end()
+    parts += [_balanced(text[cursor:], opened), open_string, *reversed(opened)]
+    try:
+        return json.loads("".join(parts), strict = False)
+    except _DECODE_ERRORS:
+        return None
+
+
+# Followed to find a declaration; `nullable` is OpenAPI 3.0's spelling of a type union.
 _READ_KEYWORDS = frozenset(
     {
         "type",
@@ -470,7 +510,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     return chosen, rest[0] if rest else None, "null" in named
 
 
-def _coerce_declared_value(text: str, declared: str) -> Any:
+def _coerce_declared_value(text: str, declared: str, repair: bool) -> Any:
     stripped = text.strip()
     if declared == "boolean":
         lowered = stripped.lower()
@@ -492,10 +532,48 @@ def _coerce_declared_value(text: str, declared: str) -> Any:
         # Exactness is unguarded: float64 IS JSON's number type, so a JSON call agrees.
         if math.isfinite(number) and (declared == "number" or number.is_integer()):
             return number
+    elif declared == "array":
+        return _coerce_container(text, list, repair)
+    elif declared == "object":
+        return _coerce_container(text, dict, repair)
     return text
 
 
-def _coerce_one_property(value: Any, spec: Any) -> Any:
+def _usable_container(value: Any, want: type) -> bool:
+    """A ``want`` that survives the JSON re-encoding of ``arguments``: both decoders admit
+    what ``json.dumps`` will not write back, such as an integer key returning as a STRING."""
+    if not isinstance(value, want):
+        return False
+    try:
+        dumped = json.dumps(value, allow_nan = False, sort_keys = True, ensure_ascii = False)
+        dumped.encode("utf-8")  # a lone surrogate survives dumps and dies encoding the reply
+        return json.loads(dumped) == value
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
+def _coerce_container(text: str, want: type, repair: bool) -> Any:
+    """``text`` read as the DECLARED container, tolerating a Python literal and, when
+    ``repair``, unbalanced brackets. Rewriting brackets is what auto-heal opts out of."""
+    try:
+        parsed = json.loads(text, strict = False)
+    except _DECODE_ERRORS:
+        parsed = None
+    if _usable_container(parsed, want):
+        return parsed
+    try:
+        literal = ast.literal_eval(text)
+    except _LITERAL_ERRORS:
+        literal = None
+    if isinstance(literal, tuple):
+        literal = list(literal)
+    if _usable_container(literal, want):
+        return literal
+    repaired = _repair_json_value(text) if repair else None
+    return repaired if _usable_container(repaired, want) else text
+
+
+def _coerce_one_property(value: Any, spec: Any, repair: bool) -> Any:
     """One value read against its property schema."""
     spec, declared, nullable = _read_schema(spec)
     if spec is None or not isinstance(value, str):
@@ -506,10 +584,15 @@ def _coerce_one_property(value: Any, spec: Any) -> Any:
         return None
     if declared is None:
         return value
-    return _coerce_declared_value(value, declared)
+    return _coerce_declared_value(value, declared, repair)
 
 
-def coerce_arguments_by_schema(arguments: Mapping[str, Any], properties: Any) -> dict:
+def coerce_arguments_by_schema(
+    arguments: Mapping[str, Any],
+    properties: Any,
+    *,
+    repair: bool = False,
+) -> dict:
     """Arguments with each string value that declares a non-string type read as that type.
 
     A tool-call parser is given tool NAMES, never schemas, so an XML-form parameter is stored
@@ -525,7 +608,7 @@ def coerce_arguments_by_schema(arguments: Mapping[str, Any], properties: Any) ->
     """
     if not isinstance(properties, Mapping) or not properties:
         return dict(arguments)
-    return {k: _coerce_one_property(v, properties.get(k)) for k, v in arguments.items()}
+    return {k: _coerce_one_property(v, properties.get(k), repair) for k, v in arguments.items()}
 
 
 def _declared_properties(tool_name: str, tool_schemas) -> Any:
@@ -548,17 +631,20 @@ def coerce_tool_arguments(
     """Normalize model-emitted ``function.arguments`` to a dictionary.
 
     Typing against ``tool_schemas`` is not gated on ``heal``: healing invents structure the
-    model never sent, while reading a value as its own schema declares it is the tool's
-    contract, and gating it would return `bool("false")` to auto-heal-off users.
+    model never sent, while reading a value as its schema declares it is the tool's contract.
     """
     properties = _declared_properties(tool_name, tool_schemas) if tool_name else None
     if isinstance(raw_args, Mapping):
-        return CoercedArguments(coerce_arguments_by_schema(raw_args, properties), False)
+        return CoercedArguments(
+            coerce_arguments_by_schema(raw_args, properties, repair = heal), False
+        )
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
             if isinstance(parsed, Mapping):
-                return CoercedArguments(coerce_arguments_by_schema(parsed, properties), False)
+                return CoercedArguments(
+                    coerce_arguments_by_schema(parsed, properties, repair = heal), False
+                )
         except (json.JSONDecodeError, ValueError):
             pass
         if heal:
