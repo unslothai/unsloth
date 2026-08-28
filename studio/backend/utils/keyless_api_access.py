@@ -117,7 +117,7 @@ def _read_settings() -> tuple[str, bool]:
         return KEYLESS_SCOPE_OFF, False
 
 
-def _settings_once() -> tuple[str, bool, bool]:
+def _settings_once() -> tuple[str, bool, bool, int]:
     """Read the persisted scope and tool grant; anything unreadable counts as off.
 
     Unlike a normal setting these remove an authentication requirement, so a damaged
@@ -136,23 +136,26 @@ def _settings_once() -> tuple[str, bool, bool]:
         now = time.monotonic()
         with _cache_lock:
             if _settings_write_inflight is not None:
-                return KEYLESS_SCOPE_OFF, False, False
+                return KEYLESS_SCOPE_OFF, False, False, _settings_generation
             cached = _cached_settings
             if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
-                return cached[1], cached[2], False
+                return cached[1], cached[2], False, _settings_generation
             if _settings_refresh_inflight is not None:
-                return KEYLESS_SCOPE_OFF, False, True
+                return KEYLESS_SCOPE_OFF, False, True, _settings_generation
             owner_marker = _settings_refresh_inflight = object()
             generation = _settings_generation
 
         scope, tools = _read_settings()
         with _cache_lock:
+            if _settings_write_inflight is not None:
+                return KEYLESS_SCOPE_OFF, False, False, _settings_generation
             if generation == _settings_generation:
                 _cached_settings = (time.monotonic(), scope, tools)
             published = _cached_settings
+            published_generation = _settings_generation
         if published is not None:
-            return published[1], published[2], False
-        return scope, tools, False
+            return published[1], published[2], False, published_generation
+        return scope, tools, False, published_generation
     finally:
         if owner_marker is not None:
             with _cache_lock:
@@ -161,28 +164,35 @@ def _settings_once() -> tuple[str, bool, bool]:
 
 
 def _settings() -> tuple[str, bool]:
-    scope, tools, _pending = _settings_once()
+    scope, tools, _pending, _generation = _settings_once()
     return scope, tools
 
 
-async def _settings_async() -> tuple[str, bool]:
+async def _settings_async() -> tuple[str, bool, int]:
     from starlette.concurrency import run_in_threadpool
 
-    scope, tools, pending = await run_in_threadpool(_settings_once)
+    scope, tools, pending, generation = await run_in_threadpool(_settings_once)
     if not pending:
-        return scope, tools
+        return scope, tools, generation
 
-    loop = asyncio.get_running_loop()
-    with _cache_lock:
-        retry_lock = _async_settings_locks.get(loop)
-        if retry_lock is None:
-            retry_lock = _async_settings_locks[loop] = asyncio.Lock()
+    retry_lock = _async_settings_retry_lock()
     async with retry_lock:
         while True:
-            scope, tools, pending = await run_in_threadpool(_settings_once)
+            scope, tools, pending, generation = await run_in_threadpool(_settings_once)
             if not pending:
-                return scope, tools
+                return scope, tools, generation
             await asyncio.sleep(0.01)
+
+
+def _async_settings_retry_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _cache_lock:
+        lock_ref = _async_settings_locks.get(loop)
+        retry_lock = lock_ref() if lock_ref is not None else None
+        if retry_lock is None:
+            retry_lock = asyncio.Lock()
+            _async_settings_locks[loop] = weakref.ref(retry_lock)
+    return retry_lock
 
 
 def get_keyless_api_access_scope() -> str:
@@ -600,8 +610,15 @@ class KeylessToolPolicyMiddleware:
         if asgi_scope.get("type") != "http":
             await self.app(asgi_scope, receive, send)
             return
-        settings = await _settings_async()
-        admitted = asgi_request_is_keyless(asgi_scope, settings)
+        from starlette.concurrency import run_in_threadpool
+
+        scope, tools, generation = await _settings_async()
+        settings = (scope, tools)
+        admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope, settings)
+        with _cache_lock:
+            if _settings_write_inflight is not None or generation != _settings_generation:
+                settings = (KEYLESS_SCOPE_OFF, False)
+                admitted = False
         asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
         if not admitted:
             await self.app(asgi_scope, receive, send)

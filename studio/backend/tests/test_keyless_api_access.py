@@ -384,6 +384,24 @@ def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
     asyncio.run(exercise())
 
 
+def test_async_retry_locks_do_not_retain_closed_event_loops():
+    import gc
+    import weakref
+    import utils.keyless_api_access as keyless
+
+    loop_refs = []
+
+    async def register_lock():
+        loop_refs.append(weakref.ref(asyncio.get_running_loop()))
+        assert isinstance(keyless._async_settings_retry_lock(), asyncio.Lock)
+
+    for _ in range(3):
+        asyncio.run(register_lock())
+    gc.collect()
+
+    assert all(ref() is None for ref in loop_refs)
+
+
 def test_scope_write_preserves_tools_during_an_inflight_refresh(monkeypatch):
     import utils.keyless_api_access as keyless
 
@@ -467,7 +485,8 @@ def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
 
     monkeypatch.setattr(keyless, "_read_settings", delayed_read)
     monkeypatch.setattr(studio_db, "upsert_app_settings", delayed_upsert)
-    refresh = threading.Thread(target = keyless._settings)
+    refresh_result = []
+    refresh = threading.Thread(target = lambda: refresh_result.append(keyless._settings()))
     writer = threading.Thread(target = set_keyless_api_access, args = ("off",),
                               kwargs = {"tools": False})
     refresh.start()
@@ -475,16 +494,59 @@ def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
     writer.start()
     try:
         assert write_committed.wait(timeout = 10)
+        release_refresh.set()
+        refresh.join(timeout = 10)
+        assert refresh_result == [("off", False)]
         assert asgi_request_is_keyless(asgi_scope(path = "/v1/models")) is False
         assert get_keyless_api_tools_enabled() is False
     finally:
         release_writer.set()
         writer.join(timeout = 10)
-        release_refresh.set()
-        refresh.join(timeout = 10)
+        if refresh.is_alive():
+            release_refresh.set()
+            refresh.join(timeout = 10)
 
     assert not writer.is_alive() and not refresh.is_alive()
     assert get_keyless_api_access_settings() == ("off", False)
+
+
+def test_middleware_rechecks_a_setting_changed_during_classification(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("inference", tools = True)
+    classification_started = threading.Event()
+    release_classification = threading.Event()
+    real_classifier = keyless.asgi_request_is_keyless
+
+    def delayed_classifier(scope, settings):
+        admitted = real_classifier(scope, settings)
+        classification_started.set()
+        assert release_classification.wait(timeout = 10)
+        return admitted
+
+    monkeypatch.setattr(keyless, "asgi_request_is_keyless", delayed_classifier)
+
+    async def exercise():
+        observed = []
+
+        async def downstream(scope, *_args):
+            observed.append(scope["state"][KEYLESS_ADMISSION_STATE_KEY])
+
+        request = asyncio.create_task(KeylessToolPolicyMiddleware(downstream)(
+            asgi_scope(), lambda: None, lambda _message: None))
+        try:
+            for _ in range(100):
+                if classification_started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert classification_started.is_set()
+            await asyncio.to_thread(set_keyless_api_access, "off", tools = False)
+        finally:
+            release_classification.set()
+            await request
+        assert observed == [False]
+
+    asyncio.run(exercise())
 
 
 def test_overlapping_writes_publish_in_commit_order(monkeypatch):
