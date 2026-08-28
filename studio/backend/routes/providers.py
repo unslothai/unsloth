@@ -616,14 +616,11 @@ def _bind_saved_provider_target(payload):
 # ── Test connectivity ─────────────────────────────────────────────
 
 
-async def _test_custom_provider_connectivity(
-    client,
-    model_id: str,
-) -> ProviderTestResult:
+async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderTestResult:
     """Probe a custom OpenAI-compatible endpoint without assuming /chat/completions.
 
-    TTS-only gateways such as Kokoro expose ``/models`` and ``/audio/speech`` but
-  not ``/chat/completions``. Try those first, then fall back to a chat probe."""
+      TTS-only gateways such as Kokoro expose ``/models`` and ``/audio/speech`` but
+    not ``/chat/completions``. Try those first, then fall back to a chat probe."""
     model_id = (model_id or "").strip()
     models_error: Exception | None = None
     try:

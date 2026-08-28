@@ -272,10 +272,14 @@ def test_custom_provider_test_endpoint_probes_models_before_chat(monkeypatch):
             return [{"id": "kokoro"}, {"id": "tts-1"}]
 
         async def chat_completion(self, **kwargs):
-            raise AssertionError("custom provider test must not call /chat/completions when /models works")
+            raise AssertionError(
+                "custom provider test must not call /chat/completions when /models works"
+            )
 
         async def create_speech(self, **_kwargs):
-            raise AssertionError("custom provider test must not call /audio/speech when /models works")
+            raise AssertionError(
+                "custom provider test must not call /audio/speech when /models works"
+            )
 
         async def close(self):
             captured["closed"] = True
@@ -324,7 +328,9 @@ def test_custom_provider_test_falls_back_to_speech_for_tts_only_gateways(monkeyp
             raise httpx.HTTPStatusError(
                 "not found",
                 request = httpx.Request("GET", "http://custom.example/v1/models"),
-                response = httpx.Response(404, request = httpx.Request("GET", "http://custom.example/v1/models")),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
             )
 
         async def create_speech(self, **kwargs):
@@ -332,7 +338,9 @@ def test_custom_provider_test_falls_back_to_speech_for_tts_only_gateways(monkeyp
             return b"audio", "audio/wav"
 
         async def chat_completion(self, **_kwargs):
-            raise AssertionError("custom provider test must not call /chat/completions when /audio/speech works")
+            raise AssertionError(
+                "custom provider test must not call /chat/completions when /audio/speech works"
+            )
 
         async def close(self):
             captured["closed"] = True
@@ -380,14 +388,18 @@ def test_custom_provider_test_falls_back_to_chat_when_only_completions_exist(mon
             raise httpx.HTTPStatusError(
                 "not found",
                 request = httpx.Request("GET", "http://custom.example/v1/models"),
-                response = httpx.Response(404, request = httpx.Request("GET", "http://custom.example/v1/models")),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
             )
 
         async def create_speech(self, **_kwargs):
             raise httpx.HTTPStatusError(
                 "not found",
                 request = httpx.Request("POST", "http://custom.example/v1/audio/speech"),
-                response = httpx.Response(404, request = httpx.Request("POST", "http://custom.example/v1/audio/speech")),
+                response = httpx.Response(
+                    404, request = httpx.Request("POST", "http://custom.example/v1/audio/speech")
+                ),
             )
 
         async def chat_completion(self, **kwargs):
@@ -439,7 +451,9 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
             raise httpx.HTTPStatusError(
                 "not found",
                 request = httpx.Request("GET", "http://custom.example/v1/models"),
-                response = httpx.Response(404, request = httpx.Request("GET", "http://custom.example/v1/models")),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
             )
 
         async def close(self):
