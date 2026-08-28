@@ -197,7 +197,6 @@ def thumbnail(video_id: str) -> Optional[bytes]:
 
 def _thumbnail_webp(path: Path) -> bytes:
     import io
-
     try:
         import av
     except Exception as exc:  # noqa: BLE001 -- no PyAV -> no thumbnail

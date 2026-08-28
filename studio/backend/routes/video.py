@@ -1557,9 +1557,7 @@ async def openai_download_video_content(
         try:
             thumbnail = await asyncio.to_thread(video_gallery.thumbnail, video_id)
         except RuntimeError as exc:
-            raise _openai_video_error(
-                501, str(exc), code = "video_thumbnail_unavailable"
-            ) from exc
+            raise _openai_video_error(501, str(exc), code = "video_thumbnail_unavailable") from exc
         if thumbnail is None:  # The clip was deleted between the ownership check and decode.
             raise _not_found(video_id)
         return Response(
