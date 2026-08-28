@@ -6,19 +6,44 @@ Kept as a standalone module so the truth table can be unit-tested
 without spinning up Typer or the studio venv.
 """
 
+import ipaddress
+import socket
 from typing import Callable, Optional
 
 import typer
 
-# Loopback aliases; any other bind address is treated as network-reachable.
-# Mirrored in studio/backend/utils/host_policy.py (kept separate because the
-# backend is self-contained); keep the two in sync.
+# loopback aliases mirror the self-contained backend bind policy
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def is_external_host(host: str) -> bool:
     """True when `host` is reachable from beyond loopback."""
     return host.lower() not in _LOOPBACK_HOSTS
+
+
+def is_wildcard_host(host: str) -> bool:
+    """True when the host resolves to an unspecified bind address."""
+    if not isinstance(host, str):
+        return False
+    if host == "":
+        return True
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        return literal.is_unspecified
+    try:
+        addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for _family, _kind, _protocol, _name, sockaddr in addresses:
+        try:
+            if ipaddress.ip_address(sockaddr[0]).is_unspecified:
+                return True
+        except (IndexError, ValueError):
+            continue
+    return False
 
 
 def resolve_tool_policy(

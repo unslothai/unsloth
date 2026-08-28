@@ -269,14 +269,17 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     assert captured.get("cloudflare") is expected, captured
 
 
-def test_run_display_host_and_url_helpers_cover_ipv6_wildcard():
+def test_run_display_host_delegates_wildcard_aliases_to_the_backend():
     import types
 
     studio_mod = _studio()
-    run_mod = types.SimpleNamespace(_resolve_external_ip = lambda: "198.51.100.7")
+    aliases = {"0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0", ""}
+    run_mod = types.SimpleNamespace(
+        _display_host_for_bind = lambda host: "198.51.100.7" if host in aliases else host
+    )
 
-    assert studio_mod._display_host_for_bind(run_mod, "0.0.0.0") == "198.51.100.7"
-    assert studio_mod._display_host_for_bind(run_mod, "::") == "198.51.100.7"
+    for host in aliases:
+        assert studio_mod._display_host_for_bind(run_mod, host) == "198.51.100.7"
     assert studio_mod._url_host("2001:db8::7") == "[2001:db8::7]"
     assert studio_mod._url_host("127.0.0.1") == "127.0.0.1"
 

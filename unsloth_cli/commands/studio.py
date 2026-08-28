@@ -334,11 +334,13 @@ def _stream_for_subprocess(stream):
 
 
 def _display_host_for_bind(run_mod, host: str) -> str:
-    return run_mod._resolve_external_ip() if host in ("0.0.0.0", "::") else host
+    return run_mod._display_host_for_bind(host)
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    return "::1" if host == "::" else "127.0.0.1"
+    from unsloth_cli._tool_policy import is_wildcard_host
+
+    return "::1" if is_wildcard_host(host) and ":" in host else "127.0.0.1"
 
 
 def _url_host(host: str) -> str:
@@ -1093,7 +1095,9 @@ def _should_prompt_password_change(
         return True
     if cloudflare is not True:
         return False
-    return host in ("0.0.0.0", "::") and not api_only
+    from unsloth_cli._tool_policy import is_wildcard_host
+
+    return is_wildcard_host(host) and not api_only
 
 
 def _prompt_streams_interactive() -> bool:

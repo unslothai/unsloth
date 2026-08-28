@@ -47,6 +47,10 @@ _NEW_PW = "brand-new-password"
         # --cloudflare tunnels only non-api-only wildcard binds.
         (True, "0.0.0.0", False, False, True),
         (True, "::", False, False, True),
+        (True, "::0", False, False, True),
+        (True, "0:0:0:0:0:0:0:0", False, False, True),
+        (True, "0", False, False, True),
+        (True, "", False, False, True),
         (True, "127.0.0.1", False, False, False),
         (True, "0.0.0.0", False, True, False),
         # Off/unset never prompts without --secure.
