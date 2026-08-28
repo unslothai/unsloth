@@ -2445,18 +2445,19 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 
-def _claude_settings_overlay(model_id: str) -> str:
-    # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, keep every subagent on the served model (a user
-    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
-    # endpoint), and pin availableModels to the served model so a user allowlist can't
-    # reject it. The pin must be non-empty; [] is ignored.
+def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) -> str:
+    # Command-tier pins beat user/project settings, which Claude applies after the process env.
+    settings_env = {name: "" for name in _CLAUDE_ENV_UNSET}
+    settings_env.update(local_env or {})
+    settings_env.update(
+        {
+            "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+        }
+    )
     return json.dumps(
         {
-            "env": {
-                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
-            },
+            "env": settings_env,
             "availableModels": [model_id],
         }
     )
@@ -2957,10 +2958,16 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     command = sys.executable
     args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
     mcp_env = dict(server_env)
+    base = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
+    key = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
     model_id = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
-    if model_id:
+    if base and key and model_id:
+        entry = {
+            "id": model_id,
+            "context_length": int(server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0),
+        }
         settings = plugin / "settings.json"
-        _write_private_text(settings, _claude_settings_overlay(model_id))
+        _write_private_text(settings, _claude_settings_overlay(model_id, _claude_local_env(base, key, entry)))
         mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
@@ -2976,7 +2983,7 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             os.environ.get("WSLENV", ""),
             (
                 *_wsl_bridge_names(server_env, ()),
-                *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if model_id else []),
+                *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if base and key and model_id else []),
             ),
         )
     _write_private_json(
@@ -4531,7 +4538,7 @@ def claude(
     # or `--resume <id>` passed through.
     with _session_config("claude", launch, persist = persist) as config:
         settings = config / "settings.json"
-        _write_private_text(settings, _claude_settings_overlay(model_id))
+        _write_private_text(settings, _claude_settings_overlay(model_id, env))
         command = [
             "claude",
             "--model",

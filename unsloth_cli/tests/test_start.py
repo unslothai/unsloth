@@ -140,6 +140,17 @@ def test_claude_settings_overlay_pins_served_model():
     # applies), so it lists exactly this model, for this session only.
     overlay = json.loads(start._claude_settings_overlay(MODEL["id"]))
     assert overlay["availableModels"] == [MODEL["id"]]
+
+
+def test_claude_settings_overlay_pins_local_routing_and_auth():
+    local_env = start._claude_local_env(BASE, "sk-unsloth-test", MODEL)
+    overlay = json.loads(start._claude_settings_overlay(MODEL["id"], local_env))
+    for name, value in local_env.items():
+        assert overlay["env"][name] == value
+    assert overlay["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert overlay["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-test"
+    for name in start._CLAUDE_ENV_UNSET:
+        assert overlay["env"][name] == ""
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
     # Subagents fall through to the served model instead of a user's opus/sonnet pin.
@@ -1452,6 +1463,12 @@ def test_connect_claude_no_launch(fake_studio):
     settings_path = Path(command[command.index("--settings") + 1])
     settings = json.loads(settings_path.read_text())
     assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
+    assert settings["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
+    for name in start._CLAUDE_ENV_UNSET:
+        assert settings["env"][name] == ""
+    if os.name != "nt":
+        assert settings_path.stat().st_mode & 0o777 == 0o600
     assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
 
@@ -1505,6 +1522,10 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     }
     settings = json.loads((plugin / "settings.json").read_text())
     assert settings["availableModels"] == [MODEL["id"] + ":UD-Q4_K_XL"]
+    assert settings["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
+    for name in start._CLAUDE_ENV_UNSET:
+        assert settings["env"][name] == ""
     skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
     assert "spawn an Unsloth agent or local agent" in skill
     assert "In plan mode" in skill
