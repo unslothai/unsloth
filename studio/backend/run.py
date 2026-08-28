@@ -760,11 +760,10 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
     *recorded* may list several addresses. Unknown or wildcard on either side
     collides: refusing with a clear message beats silently starting a duplicate.
     """
-    wildcards = ("0.0.0.0", "::", "")
-    if not recorded or host in wildcards:
+    if not recorded or is_wildcard_host(host):
         return True
     listed = {a.strip() for a in recorded.split(",") if a.strip()}
-    if not listed or listed & set(wildcards):
+    if not listed or any(is_wildcard_host(address) for address in listed):
         return True
     return bool(listed & _bind_addresses(host, port))
 

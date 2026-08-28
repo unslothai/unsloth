@@ -414,6 +414,15 @@ def test_address_matching(tmp_path):
     assert run._addresses_collide(None, "127.0.0.1", 8889) is True
 
 
+@pytest.mark.parametrize(
+    "wildcard",
+    ["0", "00", "0.0", "0.0.0", "::0", "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0"],
+)
+def test_every_wildcard_alias_collides_with_a_specific_bind(wildcard):
+    assert run._addresses_collide("127.0.0.1", wildcard, 8889) is True
+    assert run._addresses_collide(wildcard, "127.0.0.1", 8889) is True
+
+
 def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
     # `localhost` and the address _is_port_free actually binds must agree, or a
     # recorded server is missed and a duplicate starts.
