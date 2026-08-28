@@ -25,6 +25,15 @@ const CHAT_RUNTIME = path.join(
   SRC,
   "features/chat/stores/chat-runtime-store.ts",
 );
+const PRESET_LOAD_CONFIG = path.join(
+  SRC,
+  "features/chat/presets/preset-load-config.ts",
+);
+const APPLY_PER_MODEL_CONFIG = path.join(
+  SRC,
+  "features/model-picker/model-config/apply-per-model-config.ts",
+);
+const TOOL_GROUP = path.join(SRC, "components/assistant-ui/tool-group.tsx");
 
 const parse = (file: string, text: string) =>
   ts.createSourceFile(
@@ -167,4 +176,22 @@ test("the chat runtime imports the Hub token store directly", async () => {
     !specifiers.includes("@/features/hub"),
     "the Hub barrel closes a module-scope cycle through the model picker",
   );
+});
+
+test("the startup cycle imports no feature barrel", async () => {
+  for (const file of [
+    PRESET_LOAD_CONFIG,
+    APPLY_PER_MODEL_CONFIG,
+    TOOL_GROUP,
+  ]) {
+    const text = await readFile(file, "utf8");
+    const barrels = staticSpecifiers(file, text).filter((specifier) =>
+      /^@\/features\/[^/]+$/.test(specifier),
+    );
+    assert.deepEqual(
+      barrels,
+      [],
+      `${path.relative(SRC, file)} closes the chat-store and model-picker cycle`,
+    );
+  }
 });
