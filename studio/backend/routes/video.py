@@ -1532,9 +1532,10 @@ async def openai_download_video_content(
 ):
     from core.inference import video_gallery
 
-    if (variant or "video").strip().lower() != "video":
+    normalized_variant = (variant or "video").strip().lower()
+    if normalized_variant not in ("video", "thumbnail"):
         raise _openai_video_error(
-            400, "Only the 'video' variant (the MP4) is available.", param = "variant"
+            400, "Unsupported variant. Use 'video' or 'thumbnail'.", param = "variant"
         )
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
@@ -1551,6 +1552,23 @@ async def openai_download_video_content(
             400,
             "Video is still generating; retrieve it until its status is 'completed'.",
             code = "video_not_ready",
+        )
+    if normalized_variant == "thumbnail":
+        try:
+            thumbnail = await asyncio.to_thread(video_gallery.thumbnail, video_id)
+        except RuntimeError as exc:
+            raise _openai_video_error(
+                501, str(exc), code = "video_thumbnail_unavailable"
+            ) from exc
+        if thumbnail is None:  # The clip was deleted between the ownership check and decode.
+            raise _not_found(video_id)
+        return Response(
+            content = thumbnail,
+            media_type = "image/webp",
+            headers = {
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "Content-Disposition": f'attachment; filename="{video_id}.webp"',
+            },
         )
     from fastapi.responses import FileResponse
 

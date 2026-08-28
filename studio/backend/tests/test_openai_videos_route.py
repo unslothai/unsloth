@@ -621,9 +621,20 @@ def test_unknown_ids_are_404s(client, backend):
     assert client.get("/v1/videos/../etc/passwd/content").status_code in (404, 400)
 
 
-def test_only_the_video_variant_exists(client, backend):
+def test_thumbnail_variant_returns_webp(client, backend, monkeypatch):
     clip = _save_clip("x", "2026-01-01T00:00:00Z")
+    thumbnail = b"RIFF\x04\x00\x00\x00WEBP"
+    monkeypatch.setattr(gallery_module, "thumbnail", lambda video_id: thumbnail)
     resp = client.get(f"/v1/videos/{clip['id']}/content", params = {"variant": "thumbnail"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/webp")
+    assert resp.headers["content-disposition"] == f'attachment; filename="{clip["id"]}.webp"'
+    assert resp.content == thumbnail
+
+
+def test_unsupported_content_variant_names_the_param(client, backend):
+    clip = _save_clip("x", "2026-01-01T00:00:00Z")
+    resp = client.get(f"/v1/videos/{clip['id']}/content", params = {"variant": "spritesheet"})
     assert resp.status_code == 400 and resp.json()["error"]["param"] == "variant"
 
 

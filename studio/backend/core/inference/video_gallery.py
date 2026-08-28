@@ -187,6 +187,37 @@ def video_path(video_id: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
+def thumbnail(video_id: str) -> Optional[bytes]:
+    """Encode the first frame of an owned clip as the OpenAI-compatible WebP preview."""
+    path = owned_video_path(video_id)
+    if path is None:
+        return None
+    return _thumbnail_webp(path)
+
+
+def _thumbnail_webp(path: Path) -> bytes:
+    import io
+
+    try:
+        import av
+    except Exception as exc:  # noqa: BLE001 -- no PyAV -> no thumbnail
+        raise RuntimeError("Thumbnail generation needs the 'av' package (PyAV).") from exc
+    try:
+        with av.open(str(path)) as src:
+            if not src.streams.video:
+                raise RuntimeError("Thumbnail generation failed: the clip has no video stream.")
+            frame = next(src.decode(src.streams.video[0]), None)
+            if frame is None:
+                raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
+            buf = io.BytesIO()
+            frame.to_image().save(buf, format = "WEBP", quality = 85, method = 4)
+            return buf.getvalue()
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- surface decoder / WebP encoder failures
+        raise RuntimeError(f"Thumbnail generation failed to decode the clip: {exc}") from exc
+
+
 def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
     """Re-encode a stored MP4 for the Download menu into a TEMP FILE and return its path, or None
     when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). The caller
