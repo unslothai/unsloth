@@ -1452,3 +1452,34 @@ def test_a_stale_host_version_does_not_pick_a_generic_tag_without_the_target():
         torch_probe = _ROCM_ARCH_TORCH,
         installed_family = "gfx110x-all",
     )
+
+
+@pytest.mark.parametrize(
+    "mask", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
+@pytest.mark.parametrize("value", ["", "-1"])
+def test_a_mask_that_selects_no_gpu_takes_no_gfx906_reroute_either(mask, value):
+    """The gfx906 legacy route is the same shape of action the guard above declines, and a
+    harsher one: a force-reinstall of a multi-GB stack onto an OLDER tag, plus the loss of
+    bitsandbytes. Its detection asks whether gfx906 is the sole arch, which no mask filters,
+    so a container or CI job hiding every GPU over a populated host was downgraded to rocm6.3
+    while the same job on any other arch kept its generic wheels."""
+    calls = _run_install(
+        gfx_devices = ("gfx906",), rocm_version = (7, 2), env = {mask: value}
+    )
+    assert "rocm6.3" not in calls, calls
+    assert f"{_GENERIC}7.2" in calls, calls
+    assert "bitsandbytes" in calls, calls
+    # A mask naming a device is untouched: the legacy route and the bnb skip both still fire.
+    _named = _run_install(
+        gfx_devices = ("gfx906",), rocm_version = (7, 2), env = {mask: "0"}
+    )
+    assert f"{_GENERIC}6.3" in _named, _named
+    # The mask sits above UNSLOTH_ROCM_GFX_ARCH here too, as it does in _runtime_gfx_target:
+    # hiding every GPU is a statement about this run, and the arch is read below it.
+    _pinned = _run_install(
+        gfx_devices = (),
+        rocm_version = (7, 2),
+        env = {mask: value, "UNSLOTH_ROCM_GFX_ARCH": "gfx906"},
+    )
+    assert "rocm6.3" not in _pinned, _pinned

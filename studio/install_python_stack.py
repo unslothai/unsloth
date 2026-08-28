@@ -152,6 +152,15 @@ def _runtime_target_is_gfx906() -> bool:
     on a mixed host, so a non-gfx906 selection is never mis-identified as gfx906
     (and downgraded to rocm6.3). Mixed gfx906+dGPU hosts opt in with the env var.
     """
+    # An explicitly empty (or "-1") mask selects NO GPU, and this reroute is the same shape
+    # of action _runtime_gfx_target declines there: a --force-reinstall of a multi-GB stack,
+    # onto an OLDER tag, for the card the user hid. Neither probe below is filtered by a HIP
+    # mask, so without this a container or CI job exporting HIP_VISIBLE_DEVICES="" over a
+    # populated /sys/class/kfd would be downgraded to rocm6.3 and lose bitsandbytes, while
+    # the same job on any other arch keeps its generic wheels. Above the override for the
+    # same reason it sits above it there: hiding every GPU is a statement about this run.
+    if _visible_masks_select_no_gpu():
+        return False
     # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) so the
     # feature-flag suffix does not defeat the exact comparison (mirrors device_type.py).
     override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
@@ -3963,7 +3972,10 @@ def _ensure_rocm_torch() -> None:
     # setting UNSLOTH_ROCM_GFX_ARCH) would otherwise reinstall the prebuilt bnb wheel
     # over the user's source-built gfx906 bnb. So a pin suppresses only the torch
     # reroute (_gfx906_override below), NOT the gfx906 detection for the bnb skip.
-    _runtime_is_gfx906 = _gfx906_arch_override or _runtime_target_is_gfx906()
+    # _runtime_target_is_gfx906 reads UNSLOTH_ROCM_GFX_ARCH itself, with the same
+    # normalization _gfx906_arch_override uses, so asking it alone loses nothing -- and ORing
+    # the override back in would walk the no-GPU mask guard it applies above that read.
+    _runtime_is_gfx906 = _runtime_target_is_gfx906()
     # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
     # host ROCm version would otherwise pick a newer, kernel-less index -- and never
     # over an explicit pin or an active Strix reroute (the pin/Strix path installs
