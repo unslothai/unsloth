@@ -798,9 +798,7 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
         releases[1].set()
         return await asyncio.gather(second, changed)
 
-    assert asyncio.run(run_requests()) == [
-        {"cached": cached, "scan_confirmed": True},
-    ] * 2
+    assert asyncio.run(run_requests()) == [{"cached": cached, "scan_confirmed": True}] * 2
     assert scans == 1 and cache_inventory._cached_inventory_flights == {}
 
 
