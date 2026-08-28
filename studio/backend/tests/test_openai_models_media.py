@@ -514,6 +514,18 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     assert entry["task"] == "text-to-speech"
 
 
+def test_downloaded_tts_model_is_not_advertised_without_switch_support(monkeypatch):
+    tts = _Info(
+        "models--unsloth--csm-1b",
+        "csm-1b",
+        model_id = "unsloth/csm-1b",
+        task = "text-to-speech",
+        is_gguf = False,
+    )
+    _catalog(monkeypatch, [tts], picks = {})
+    assert asyncio.run(inf._openai_catalog_objects()) == []
+
+
 def test_resident_media_status(monkeypatch):
     import core.inference.media_keepwarm as mk
 

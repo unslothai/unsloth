@@ -23248,6 +23248,7 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
         if getattr(info, "task", None) in (
             *_MEDIA_MODEL_TASKS,
             _STT_MODEL_TASK,
+            _TTS_MODEL_TASK,
             _UNSUPPORTED_DIFFUSION_TASK,
         ):
             continue
