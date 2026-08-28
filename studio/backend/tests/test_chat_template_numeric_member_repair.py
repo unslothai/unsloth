@@ -60,9 +60,10 @@ def test_a_raw_block_keeps_the_braces_it_prints():
 
 
 def test_a_real_site_outside_a_raw_block_is_still_repaired():
-    assert repair_numeric_member_access(
-        "{% raw %}{{ example.0 }}{% endraw %}{{ m.content.0.output }}"
-    ) == "{% raw %}{{ example.0 }}{% endraw %}{{ m.content[0].output }}"
+    assert (
+        repair_numeric_member_access("{% raw %}{{ example.0 }}{% endraw %}{{ m.content.0.output }}")
+        == "{% raw %}{{ example.0 }}{% endraw %}{{ m.content[0].output }}"
+    )
 
 
 def test_a_renderable_template_is_left_alone():
