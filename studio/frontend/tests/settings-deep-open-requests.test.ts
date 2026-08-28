@@ -143,3 +143,21 @@ test("a deep link can provide a stable focus fallback", () => {
   });
   assert.equal(store.getState().openerFallback, fallback);
 });
+
+test("repeated opens preserve the external focus targets", () => {
+  reset();
+  const opener = {} as HTMLElement;
+  const fallback = {} as HTMLElement;
+  store.setState({ open: true, opener, openerFallback: fallback });
+
+  const repeatOpens = [
+    () => store.getState().openDialog("keyboard-shortcuts"),
+    () => store.getState().openArchivedChats(),
+    () => store.getState().openArchivedMedia("images"),
+  ];
+  for (const repeatOpen of repeatOpens) {
+    repeatOpen();
+    assert.equal(store.getState().opener, opener);
+    assert.equal(store.getState().openerFallback, fallback);
+  }
+});

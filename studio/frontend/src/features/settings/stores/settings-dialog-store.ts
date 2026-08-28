@@ -70,6 +70,26 @@ function captureOpener(): HTMLElement | null {
     : null;
 }
 
+function focusForOpen(
+  state: SettingsDialogState,
+  requestedFallback: HTMLElement | null = null,
+) {
+  if (state.open) {
+    return {
+      opener: state.opener,
+      openerFallback: state.openerFallback,
+    };
+  }
+  const opener = captureOpener();
+  if (opener?.closest("[data-slot=dialog-content]")) {
+    return {
+      opener: state.opener,
+      openerFallback: state.openerFallback,
+    };
+  }
+  return { opener, openerFallback: requestedFallback };
+}
+
 const ACTIVE_TAB_KEY = "unsloth_settings_active_tab";
 
 function loadInitialTab(): SettingsTab {
@@ -128,28 +148,25 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         // A caller that names a target replaces whatever was still pending.
         scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
-        opener: captureOpener(),
-        openerFallback: options?.focusFallback ?? null,
+        ...focusForOpen(state, options?.focusFallback),
       };
     }),
   openArchivedChats: () =>
-    set({
+    set((state) => ({
       open: true,
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: "chats",
-      opener: captureOpener(),
-      openerFallback: null,
-    }),
+      ...focusForOpen(state),
+    })),
   openArchivedMedia: (shelf) =>
-    set({
+    set((state) => ({
       open: true,
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: shelf,
-      opener: captureOpener(),
-      openerFallback: null,
-    }),
+      ...focusForOpen(state),
+    })),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
