@@ -66,6 +66,18 @@ def test_a_raw_block_keeps_the_braces_it_prints():
     assert repair_numeric_member_access("{%- raw -%}{{ example.0 }}{%- endraw -%}") is None
 
 
+def test_a_raw_body_is_literal_all_the_way_to_its_terminator():
+    # Jinja interprets nothing inside raw, so the "{#" here is text and the {% endraw %}
+    # it appears to wrap really does close the block.
+    assert repair_numeric_member_access("{% raw %}{# {% endraw %} #}{{ m.content.0 }}") == (
+        "{% raw %}{# {% endraw %} #}{{ m.content[0] }}"
+    )
+
+
+def test_a_raw_block_that_never_closes_repairs_nothing_after_it():
+    assert repair_numeric_member_access("{% raw %}{{ e.0 }}") is None
+
+
 def test_raw_tags_that_are_only_comment_text_do_not_open_a_raw_block():
     # Matching the tags in the source would read the middle expression as verbatim and
     # leave llama-server the numeric member it rejects.

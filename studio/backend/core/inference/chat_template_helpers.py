@@ -1635,6 +1635,9 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
+_ENDRAW = re.compile(r"\{%-?\s*endraw\s*-?%\}")
+
+
 def _evaluated_spans(template: str) -> tuple:
     """The ranges Jinja evaluates, walked quote-aware, with string literals taken out.
 
@@ -1645,12 +1648,21 @@ def _evaluated_spans(template: str) -> tuple:
 
     A comment and a ``{% raw %}`` body are both skipped. Raw is tracked through this same
     walk rather than matched in the source, so tag text that only appears inside a comment
-    or a literal cannot make a real expression between two of them look verbatim.
+    or a literal cannot make a real expression between two of them look verbatim. Inside a
+    raw body nothing is interpreted at all, the way Jinja reads it: the walk runs to the
+    terminator, so a comment marker there stays text.
     """
     spans: list = []
     index, end = 0, len(template)
     verbatim = False
     while index < end - 1:
+        if verbatim:
+            terminator = _ENDRAW.search(template, index)
+            if not terminator:
+                break
+            index = terminator.end()
+            verbatim = False
+            continue
         if template[index] != "{" or template[index + 1] not in "{%#":
             index += 1
             continue
@@ -1685,9 +1697,9 @@ def _evaluated_spans(template: str) -> tuple:
             # An unterminated block is text, not code, so nothing in it is rewritten.
             break
         tag = template[index + 2 : cursor].strip().strip("-").strip()
-        if closer == "%}" and tag in ("raw", "endraw"):
-            verbatim = tag == "raw"
-        elif not verbatim:
+        if closer == "%}" and tag == "raw":
+            verbatim = True
+        else:
             spans.extend(block)
         index = cursor + 2
     return tuple(spans)
