@@ -52,6 +52,10 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
     echo
+    sed -n '/^_amd_probe_arches()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_agreed_index_family()/,/^}/p' "$INSTALL_SH"
+    echo
     sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
@@ -211,6 +215,10 @@ run_sole_arch() {
     PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c         ". '$_FUNC_FILE'; _amd_sole_index_arch \"\$1\" || echo REJECTED" _ "$1" 2>/dev/null
 }
 
+run_family() {
+    PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c         ". '$_FUNC_FILE'; _amd_agreed_index_family \"\$1\" || echo REJECTED" _ "$1" 2>/dev/null
+}
+
 run_index() {
     PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c \
         "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY ROCM_PATH
@@ -308,23 +316,46 @@ assert_eq "install.sh wires the no-version reroute state" "yes" \
 # ── 9. A mixed-arch host must not route on whichever agent came first ───────
 # rocminfo/amd-smi enumerate in kernel order, so an APU can be listed ahead of the
 # discrete card the user actually wants wheels for. Taking the first token would put
-# gfx1151 wheels on a 9070 XT. No agreement, no reroute.
-assert_eq "duplicate agents are one device and still route"     "gfx1201" "$(run_sole_arch 'gfx1201
+# gfx1151 wheels on a 9070 XT.
+#
+# The family routes the wheels, and it has to hold for every AMD GPU in the box.
+assert_eq "duplicate agents agree on a family"     "gfx120X-all" "$(run_family 'gfx1201
 gfx1201')"
-# Both map to gfx120X-all, so the index is the same either way and only the exported
-# UNSLOTH_ROCM_GFX_ARCH differs. sort -u makes which one deterministic.
-assert_eq "two arches in the same index family pick one"     "gfx1200" "$(run_sole_arch 'gfx1201
+assert_eq "two cards in one family agree on it"     "gfx120X-all" "$(run_family 'gfx1201
 gfx1200')"
-assert_eq "an APU beside a discrete card is rejected"     "REJECTED" "$(run_sole_arch 'gfx1151
+assert_eq "an APU beside a discrete card agrees on nothing"     "REJECTED" "$(run_family 'gfx1151
 gfx1201')"
-assert_eq "an unmappable agent rejects the whole host"     "REJECTED" "$(run_sole_arch 'gfx1201
+assert_eq "an unmappable agent rejects the whole host"     "REJECTED" "$(run_family 'gfx1201
 gfx906')"
-assert_eq "an empty probe is rejected" "REJECTED" "$(run_sole_arch '')"
+assert_eq "an empty probe is rejected" "REJECTED" "$(run_family '')"
+
+# The concrete arch names ONE card, and setup.sh takes it over its own visibility-aware
+# pick, so it is only answered when there is nothing to choose between. gfx1200 beside
+# gfx1201 share a family and are still two different cards.
+assert_eq "duplicate agents are one device and name it"     "gfx1201" "$(run_sole_arch 'gfx1201
+gfx1201')"
+assert_eq "two cards in one family name neither"     "REJECTED" "$(run_sole_arch 'gfx1201
+gfx1200')"
+assert_eq "an APU beside a discrete card names neither"     "REJECTED" "$(run_sole_arch 'gfx1151
+gfx1201')"
 
 reset_host_mixed gfx1151 gfx1201
 assert_eq "mixed-arch host with no version keeps the cpu index"     "$_BASE/cpu" "$(run_index)"
 _w=$(run_warnings)
 assert_lacks "mixed-arch host does not claim a per-arch route"     "routing to AMD per-arch wheels" "$_w"
+
+# The other half: a same-family pair gets wheels that are right for both cards, so it
+# still routes. It just must not name one of them as though a card had been chosen.
+reset_host_mixed gfx1201 gfx1200
+assert_eq "same-family pair still defers to the reroute" "$_BASE/cpu" "$(run_index)"
+_w=$(run_warnings)
+assert_contains "same-family pair still announces the per-arch route"     "routing to AMD per-arch wheels" "$_w"
+assert_contains "same-family pair names the family, not a card" "gfx120X-all" "$_w"
+
+# install.sh keeps the two apart all the way to the export, which is the half that
+# reaches setup.sh. Top-level installer code, so assert on its text.
+assert_eq "the export is guarded on a single named card" "yes"     "$(grep -q 'export UNSLOTH_ROCM_GFX_ARCH="\$_linux_inferred_gfx"' "$INSTALL_SH" &&        grep -c 'if \[ -n "\$_linux_inferred_gfx" \]; then' "$INSTALL_SH" >/dev/null &&        echo yes || echo no)"
+assert_eq "the torch constraint is chosen off the family" "yes"     "$(grep -q 'gfx120X-all|gfx1151|gfx1150|gfx1152)' "$INSTALL_SH" && echo yes || echo no)"
 
 # ── 10. The version probe runs once per install, not once per caller ────────
 # get_torch_index_url runs in a command substitution, so the reroute below it has to
