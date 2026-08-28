@@ -27,7 +27,14 @@ const {
 const { pendingWithInventoryHints, useInventoryHintStore } = await import(
   "../src/features/hub/inventory/inventory-hint-store.ts"
 );
-const { getState, jobKeyOf, patchJob, putJob, removeJob } = await import(
+const {
+  discardDeletedInventoryHints,
+  getState,
+  jobKeyOf,
+  patchJob,
+  putJob,
+  removeJob,
+} = await import(
   "../src/features/hub/download-manager/download-manager-state.ts"
 );
 
@@ -190,6 +197,7 @@ test("a stale aggregate row cannot consume a newer variant hint", () => {
       },
     ],
     previouslyObserved: new Set<string>(),
+    refreshStartedAt: completedAt - 1,
   });
 
   assert.equal(stale.pending.gguf.size, 1);
@@ -202,10 +210,11 @@ test("a stale aggregate row cannot consume a newer variant hint", () => {
       {
         repo_id: "Org/Existing",
         size_bytes: 100,
-        last_modified: startedAt / 1000,
+        last_modified: (startedAt - 1_000) / 1000,
       },
     ],
     previouslyObserved: new Set(["org/existing"]),
+    refreshStartedAt: completedAt + 1,
   });
   assert.equal(rescanned.pending.gguf.size, 0);
 });
@@ -250,6 +259,9 @@ test("a new download clears historical observation and records completion time",
     ],
     previouslyObserved: afterStart.observedKeys.gguf,
   });
+  const beforeCompletion = Date.now();
+  patchJob(key, { state: "complete" });
+  const afterCompletion = Date.now();
   afterStart.commitReconciliations([], afterStart.pending, [
     {
       kind: "gguf",
@@ -261,10 +273,6 @@ test("a new download clears historical observation and records completion time",
     useInventoryHintStore.getState().observedKeys.gguf.has("org/redownload"),
     false,
   );
-
-  const beforeCompletion = Date.now();
-  patchJob(key, { state: "complete" });
-  const afterCompletion = Date.now();
   const [hint] = getState().completedInventoryHints;
   const completedState = useInventoryHintStore.getState();
   const completedPending = pendingWithInventoryHints(
@@ -297,6 +305,15 @@ test("a new download clears historical observation and records completion time",
   assert.equal(hint?.startedAt, 1_900_000_000_000);
 
   removeJob(key);
+  assert.equal(
+    useInventoryHintStore.getState().pending.gguf.has("org/redownload"),
+    true,
+  );
+  discardDeletedInventoryHints(repoId, ["gguf"]);
+  assert.equal(
+    useInventoryHintStore.getState().pending.gguf.has("org/redownload"),
+    false,
+  );
   useInventoryHintStore.setState({
     pending: createPendingInventoryHints(),
     observedKeys: hintState.observedKeys,

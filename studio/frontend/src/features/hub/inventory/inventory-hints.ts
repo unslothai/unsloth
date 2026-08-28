@@ -197,6 +197,7 @@ export function pruneExpiredInventoryHints(
 function serverRowSatisfiesHint(
   row: InventoryHintRow,
   hint: InventoryHint,
+  refreshStartedAt?: number | null,
 ): boolean {
   if (row.partial) {
     return false;
@@ -204,7 +205,12 @@ function serverRowSatisfiesHint(
   const hintTimestamp = normalizeTimestamp(hint.startedAt ?? hint.createdAt);
   if (hintTimestamp != null) {
     const rowTimestamp = normalizeTimestamp(row.last_modified);
-    return rowTimestamp != null && rowTimestamp >= hintTimestamp;
+    if (rowTimestamp != null && rowTimestamp >= hintTimestamp) {
+      return true;
+    }
+    return Boolean(
+      hint.createdAt && refreshStartedAt && refreshStartedAt >= hint.createdAt,
+    );
   }
   return !hint.bytes || rowSizeBytes(row) >= hint.bytes;
 }
@@ -214,11 +220,13 @@ export function reconcileInventoryHints<T extends InventoryHintRow>({
   kind,
   rows,
   previouslyObserved,
+  refreshStartedAt,
 }: {
   pending: PendingInventoryHints;
   kind: InventoryHint["kind"];
   rows: T[];
   previouslyObserved: ReadonlySet<string>;
+  refreshStartedAt?: number | null;
 }): InventoryHintReconciliation {
   const pruned = pruneExpiredInventoryHints(pending);
   const serverRows = new Map(rows.map((row) => [repoKey(rowRepoId(row)), row]));
@@ -238,7 +246,10 @@ export function reconcileInventoryHints<T extends InventoryHintRow>({
 
   for (const [key, hint] of hints) {
     const serverRow = serverRows.get(key);
-    if (serverRow && serverRowSatisfiesHint(serverRow, hint)) {
+    if (
+      serverRow &&
+      serverRowSatisfiesHint(serverRow, hint, refreshStartedAt)
+    ) {
       hints.delete(key);
     } else if (!serverRow && previouslyObserved.has(key)) {
       hints.delete(key);

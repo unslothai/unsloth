@@ -47,6 +47,7 @@ export type DeviceInventorySourceState<Rows extends readonly unknown[]> = {
   error: string | null;
   key: string | null;
   refreshedAt: number | null;
+  refreshStartedAt: number | null;
   revalidatedAt: number | null;
 };
 
@@ -94,6 +95,7 @@ function emptySource<
     error: null,
     key: null,
     refreshedAt: null,
+    refreshStartedAt: null,
     revalidatedAt: null,
   };
 }
@@ -240,9 +242,11 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     error: null,
     key,
     refreshedAt: current.key === key ? current.refreshedAt : null,
+    refreshStartedAt: current.key === key ? current.refreshStartedAt : null,
     revalidatedAt: current.key === key ? current.revalidatedAt : null,
   });
 
+  const refreshStartedAt = Date.now();
   const request = runSourceFetch(source, options.hfToken)
     .then((rows) => {
       if (useDeviceInventoryStore.getState()[source].key === key) {
@@ -254,6 +258,7 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
           error: null,
           key,
           refreshedAt,
+          refreshStartedAt,
           revalidatedAt: nextRevalidationStamp({
             force: Boolean(options.force),
             requestKey: key,

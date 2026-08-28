@@ -5,7 +5,11 @@ import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
-import { forgetObservedInventoryHint } from "../inventory/inventory-hint-store";
+import {
+  discardPendingInventoryHint,
+  forgetObservedInventoryHint,
+  rememberCompletedInventoryHints,
+} from "../inventory/inventory-hint-store";
 import { inventoryHintKey } from "../inventory/inventory-hints";
 import type { InventoryHint } from "../inventory/types";
 import { createThrottledStorage, noopStorage } from "../stores/persist-storage";
@@ -424,6 +428,7 @@ function refreshCompletedHintSignature(): void {
 }
 
 export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
+  const previousJob = getState().jobs[key];
   setState((state) => {
     const job = state.jobs[key];
     if (!job) return state;
@@ -443,6 +448,16 @@ export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
     }
     return withCompletedHintSignature(nextState);
   });
+  const completedJob = getState().jobs[key];
+  if (
+    previousJob &&
+    previousJob.state !== "complete" &&
+    completedJob?.state === "complete"
+  ) {
+    rememberCompletedInventoryHints(
+      collectCompletedInventoryHints({ [key]: completedJob }),
+    );
+  }
 }
 
 export function putJob(job: ManagedDownload): void {
@@ -548,6 +563,16 @@ export function clearCompletedInventoryHint(hint: InventoryHint): void {
   runtimeRegistry.suppressedCompletedInventoryHints.add(key);
   pruneRuntimeSuppressedHints(liveCompletedInventoryHintKeys());
   refreshCompletedHintSignature();
+}
+
+export function discardDeletedInventoryHints(
+  repoId: string,
+  kinds: readonly InventoryHint["kind"][],
+): void {
+  for (const kind of kinds) {
+    discardPendingInventoryHint(kind, repoId);
+    clearCompletedInventoryHint({ kind, repoId });
+  }
 }
 
 export function subscribeJobListeners(

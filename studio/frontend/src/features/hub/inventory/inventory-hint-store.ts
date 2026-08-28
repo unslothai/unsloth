@@ -161,6 +161,35 @@ export function pendingWithInventoryHints(
   return next;
 }
 
+export function rememberCompletedInventoryHints(
+  hints: readonly InventoryHint[],
+): void {
+  if (hints.length === 0) {
+    return;
+  }
+  const state = useInventoryHintStore.getState();
+  const next = pendingWithInventoryHints(state.pending, hints);
+  if (!pendingInventoryHintsEqual(state.pending, next)) {
+    useInventoryHintStore.setState({
+      pending: clonePendingInventoryHints(next),
+    });
+  }
+}
+
+export function discardPendingInventoryHint(
+  kind: InventoryHint["kind"],
+  repoId: string,
+): void {
+  const state = useInventoryHintStore.getState();
+  const key = repoKey(repoId);
+  if (!state.pending[kind].has(key)) {
+    return;
+  }
+  const pending = clonePendingInventoryHints(state.pending);
+  pending[kind].delete(key);
+  useInventoryHintStore.setState({ pending });
+}
+
 function rememberObservedInventoryKeys(
   current: ObservedInventoryKeys,
   kind: InventoryHint["kind"],

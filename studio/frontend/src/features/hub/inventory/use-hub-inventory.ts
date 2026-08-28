@@ -139,7 +139,7 @@ function inventoryHintKindForJob(job: ManagedDownload): InventoryHint["kind"] {
   return job.kind === "dataset" ? "dataset" : job.variant ? "gguf" : "model";
 }
 
-function activeObservedKeyProtections(
+function observedKeyProtections(
   jobs: Record<string, ManagedDownload>,
 ): Record<InventoryHint["kind"], Set<string>> {
   const keys: Record<InventoryHint["kind"], Set<string>> = {
@@ -150,7 +150,9 @@ function activeObservedKeyProtections(
   for (const job of Object.values(jobs)) {
     if (
       job.external ||
-      (job.state !== "running" && job.state !== "cancelling")
+      (job.state !== "running" &&
+        job.state !== "cancelling" &&
+        job.state !== "complete")
     ) {
       continue;
     }
@@ -364,8 +366,14 @@ export function useHubInventory(
         kind: "gguf",
         rows: cachedGgufSource.rows,
         previouslyObserved: observedInventoryKeys.gguf,
+        refreshStartedAt: cachedGgufSource.refreshStartedAt,
       }),
-    [cachedGgufSource.rows, observedInventoryKeys.gguf, pendingForRender],
+    [
+      cachedGgufSource.rows,
+      cachedGgufSource.refreshStartedAt,
+      observedInventoryKeys.gguf,
+      pendingForRender,
+    ],
   );
   const cachedModelsReconciliation = useMemo(
     () =>
@@ -374,8 +382,14 @@ export function useHubInventory(
         kind: "model",
         rows: cachedModelsSource.rows,
         previouslyObserved: observedInventoryKeys.model,
+        refreshStartedAt: cachedModelsSource.refreshStartedAt,
       }),
-    [cachedModelsSource.rows, observedInventoryKeys.model, pendingForRender],
+    [
+      cachedModelsSource.rows,
+      cachedModelsSource.refreshStartedAt,
+      observedInventoryKeys.model,
+      pendingForRender,
+    ],
   );
   const cachedDatasetsReconciliation = useMemo(
     () =>
@@ -384,16 +398,18 @@ export function useHubInventory(
         kind: "dataset",
         rows: cachedDatasetsSource.rows,
         previouslyObserved: observedInventoryKeys.dataset,
+        refreshStartedAt: cachedDatasetsSource.refreshStartedAt,
       }),
     [
       cachedDatasetsSource.rows,
+      cachedDatasetsSource.refreshStartedAt,
       observedInventoryKeys.dataset,
       pendingForRender,
     ],
   );
 
   useEffect(() => {
-    const protectedObservedKeys = activeObservedKeyProtections(
+    const protectedObservedKeys = observedKeyProtections(
       useDownloadManagerStore.getState().jobs,
     );
     const reconciliations: PendingHintReconciliationCommit[] = [];
