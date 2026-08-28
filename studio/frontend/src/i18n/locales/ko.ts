@@ -686,7 +686,7 @@ export const ko = {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
         enable: "요청에 따라 모델 전환",
         enableDescription:
-          "API 요청에 지정된 GGUF가 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
+          "API 요청에 지정된 모델이 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
@@ -1398,6 +1398,11 @@ export const ko = {
         blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerAction: "이 Canvas에서 허용",
+        blockedTitle: "Canvas 네트워크 액세스가 꺼져 있습니다",
+        blockedHint:
+          "설정 → 채팅에서 “{setting}”을 켜면 Canvas가 외부 리소스를 불러올 수 있습니다. 이 Canvas에서만 허용할 수도 있습니다.",
+        blockedSettingsAction: "설정 열기",
+        blockedDismiss: "닫기",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",
