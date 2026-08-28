@@ -48,6 +48,33 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
   return null;
 }
 
+/**
+ * assistant-ui's reason for each of ours. `length` is a truthful stop, not a failure:
+ * mapping it to `error` paints MessagePrimitive.Error's red box and a Retry button over
+ * a turn that already offers the Continue bar below it, on every reloaded max-tokens
+ * answer including ones written before this feature existed. `interrupted` keeps `error`
+ * on purpose -- a cut stream is the thing the user has to be told about.
+ */
+const STATUS_REASON: Record<
+  IncompleteReason,
+  "cancelled" | "length" | "error"
+> = {
+  cancelled: "cancelled",
+  length: "length",
+  interrupted: "error",
+};
+
+/** Restore assistant-ui's status without losing the product-specific stop reason. */
+export function restoredAssistantStatus(
+  metadata: unknown,
+): import("@assistant-ui/react").MessageStatus {
+  const incomplete = readIncompleteInfo(metadata);
+  if (!incomplete) {
+    return { type: "complete", reason: "unknown" };
+  }
+  return { type: "incomplete", reason: STATUS_REASON[incomplete.reason] };
+}
+
 const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",
@@ -112,6 +139,50 @@ export function joinContinuation(
     return continuation;
   }
   return `${partial}${stripContinuationOverlap(partial, continuation)}`;
+}
+
+/**
+ * The merge a resumed turn applies to its cumulative text, streaming and at the end.
+ *
+ * The bug this fixes is `isRestart` running per arrival. It cannot fire until the continuation
+ * reaches RESTART_PROBE characters, and the moment it does it publishes the continuation ALONE.
+ * Over a 1602-character partial that took the value from 1649 characters to 48 in one arrival,
+ * measured character by character. That is not only a visible collapse: Stop persists the last
+ * STREAMED yield, because assistant-ui drops what a run yields after an abort and the terminal
+ * merge sits behind `!abortSignal.aborted`, so stopping in that window SAVED the 48 characters
+ * and discarded the whole partial the user was reading.
+ *
+ * `streaming` exists for exactly this and production never passed it. It suppresses the restart
+ * check, which needs more text than early chunks carry, and leaves the overlap trim, which only
+ * ever removes text the continuation itself repeated. So a streamed merge keeps the partial and
+ * the new text, always, and a genuine restart is collapsed once at the end where the evidence
+ * for it is complete.
+ *
+ * Two things were tried first and are recorded because both were worse:
+ *
+ *   * repairing ONLY at the end. That saves `partial + repeated tail` on Stop, so a Continue
+ *     built on it replays the duplicate. It swapped a display bug for a stored one.
+ *   * holding the partial until the trim could no longer change (at `min(partial.length,
+ *     MAX_OVERLAP)`). Monotonic, but Stop inside that window persisted the STALE PARTIAL and
+ *     discarded every newly generated character, which is worse than either.
+ *
+ * The overlap trim can still shift the join by up to MAX_OVERLAP characters as a longer overlap
+ * starts matching, so a publish is not strictly monotonic. That is bounded, rare, confined to
+ * external-provider continuations, and never loses text. It is deliberately not worth holding
+ * generated output back to avoid.
+ */
+export function createContinuationMerger(
+  partial: string,
+  repair: boolean,
+): (cumulative: string, options?: { final?: boolean }) => string {
+  return (cumulative, { final = false } = {}) => {
+    if (!partial || !repair) {
+      return cumulative;
+    }
+    return joinContinuation(partial, cumulative.slice(partial.length), {
+      streaming: !final,
+    });
+  };
 }
 
 /**

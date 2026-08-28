@@ -9,6 +9,7 @@ import os
 import struct
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 from unittest.mock import patch
@@ -67,7 +68,7 @@ if "httpx" not in sys.modules:
         )
         sys.modules["httpx"] = module
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _loader_path_var
 
 _REAL_POPEN = subprocess.Popen
 
@@ -136,6 +137,18 @@ def _launch(backend, gguf, **load_kwargs):
                 **load_kwargs,
             )
         )
+    return captured
+
+
+def _launch_warns(backend, gguf, **load_kwargs):
+    """A load whose weights outgrow fast memory: it LAUNCHES, and says so.
+
+    These cases used to raise. The spill is mmap'd, so refusing cost users a load
+    llama.cpp itself supports. The advisory is the whole remaining contract, so assert
+    it rather than only that the launch survived.
+    """
+    captured = _launch(backend, gguf, **load_kwargs)
+    assert "does not fit in GPU memory" in (backend.last_load_warning or "")
     return captured
 
 
@@ -703,7 +716,7 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
     sidecar = tmp_path / "dflash-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
-    backend._get_gguf_size_bytes = lambda path: (0 if str(path) == str(sidecar) else 8 * gb)
+    backend._get_gguf_size_bytes = lambda path: 0 if str(path) == str(sidecar) else 8 * gb
     backend._can_estimate_kv = lambda: True
     backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
     backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
@@ -726,15 +739,18 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
         backend._ssm_conv_kernel = 4
 
     backend._read_gguf_metadata = read_metadata
-    backend.probe_server_capabilities = lambda _binary = None: caps or {
-        "mtp_token": "draft-mtp",
-        "supports_dflash": True,
-        "supports_ngram_mod": True,
-        "spec_draft_n_max_flag": "--spec-draft-n-max",
-        # Or the launch clamps the four slots to one and the per-slot state,
-        # which is what these tests measure, shrinks with them.
-        "supports_kv_unified": True,
-    }
+    backend.probe_server_capabilities = lambda _binary = None: (
+        caps
+        or {
+            "mtp_token": "draft-mtp",
+            "supports_dflash": True,
+            "supports_ngram_mod": True,
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+            # Or the launch clamps the four slots to one and the per-slot state,
+            # which is what these tests measure, shrinks with them.
+            "supports_kv_unified": True,
+        }
+    )
     return backend, gguf, sidecar
 
 
@@ -1541,6 +1557,40 @@ def test_a_cpu_offloaded_sidecar_reserves_no_gpu_despite_an_embedded_head(tmp_pa
     assert not any(reserved), f"mtp_engaged should be False throughout, got {reserved}"
 
 
+def _shrink_to_hold_both_backend(
+    tmp_path, *, model_gb, native_ctx, kv_mib_per_tok, mtp_mib_per_tok
+):
+    """Two 24 GiB cards and a DSpark sidecar, with every VRAM term context-linear.
+
+    ``kv_mib_per_tok`` prices the target's cache and ``mtp_mib_per_tok`` the whole
+    drafter reserve, weights included: the stub replaces
+    ``_estimate_mtp_overhead_bytes`` outright, so the sidecar's file size never
+    reaches the arithmetic and only these rates decide what holds what.
+    """
+    gb = 1024**3
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._get_gguf_size_bytes = lambda path: (
+        8 * gb if str(path) == str(sidecar) else int(model_gb * gb)
+    )
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", native_ctx)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx * kv_mib_per_tok * 1024**2)
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
+    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(ctx * mtp_mib_per_tok * 1024**2)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf, sidecar
+
+
 def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_path):
     """The placement loop does not walk past a subset that fails with the drafter.
 
@@ -1549,27 +1599,25 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     load takes, and the drafter gets paid for in context. Believing a later,
     larger subset would rescue it keeps the drafter and shrinks the context, which
     is the trade this exists to refuse.
+
+    The shrink has to land ABOVE the fit floor to be a measurement rather than the
+    floor itself, which is what makes this scenario 32768-native rather than 8192.
+    On one card, budget 23838 MiB: the target alone is 14336 + 320 = 14656 MiB and
+    holds 32768 (+8192 MiB of cache) with room to spare, the drafter's 8192 MiB on
+    top does not, and 14336 + 544 leaves 8958 MiB, which at 0.5 MiB/token both ways
+    re-caps to 17664. That is the shrink the loop takes and the drafter is refused
+    for. Two cards WOULD have held both at the full 32768 (32288 of 47677 MiB
+    pooled), so the refusal is a choice and not an absence of alternatives; see
+    test_widening_beats_shrinking_below_the_fit_floor for the case where the shrink
+    is not available and widening is what happens instead.
     """
-    gb = 1024**3
-    backend, gguf = _backend(
-        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    backend, gguf, sidecar = _shrink_to_hold_both_backend(
+        tmp_path,
+        model_gb = 14,
+        native_ctx = 32_768,
+        kv_mib_per_tok = 0.25,
+        mtp_mib_per_tok = 0.25,
     )
-    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
-    sidecar.write_bytes(b"draft")
-    backend._get_gguf_size_bytes = lambda path: 8 * gb if str(path) == str(sidecar) else 16 * gb
-    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 8192)
-    backend._can_estimate_kv = lambda: True
-    # Context-linear throughout, so GPU0 alone can shrink its way to holding both.
-    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx * 0.5 * 1024**2)
-    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
-    backend._estimate_compute_buffer_bytes = lambda **k: 1
-    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
-    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(ctx * 0.75 * 1024**2)
-    backend.probe_server_capabilities = lambda _binary = None: {
-        "supports_dspark": True,
-        "supports_ngram_mod": True,
-        "spec_draft_n_max_flag": "--spec-draft-n-max",
-    }
 
     result = _launch(
         backend,
@@ -1582,7 +1630,49 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     cmd = result["cmd"]
     assert "--model-draft" not in cmd
     assert backend.spec_fallback_reason == "drafter_no_vram"
+    assert cmd[cmd.index("-c") + 1] == "32768"
+    # One card: the point is that the loop stopped here rather than widening.
+    assert result["env"].get("CUDA_VISIBLE_DEVICES") == "0"
+
+
+def test_widening_beats_shrinking_below_the_fit_floor(tmp_path):
+    """The other side of the same branch: no shrink is on offer, so the loop widens.
+
+    Same machine, sized so one card can only hold both BELOW the fit floor. The
+    re-cap with the drafter charged is bounded by that floor, so it cannot return
+    the shrink, the caller re-prices its answer and rejects it, and the loop walks
+    on to the two-card subset that holds the target AND the drafter at the full
+    context. Keeping the drafter for free is the whole reason the floor exists, and
+    the placement is a real fit rather than a floored one: 17952 MiB of weights and
+    overhead plus 4096 of cache plus 6144 of drafter is 28192 of a 47677 MiB pool,
+    about 14 GiB on each 24 GiB card.
+
+    Pinning it because the shape that would flip it back is silent: the re-cap
+    helper returns ``min_ctx`` rather than 0 when even ``min_ctx`` does not fit, so
+    the only thing standing between this and a one-card placement that OOMs is the
+    caller's own footprint re-check.
+    """
+    backend, gguf, sidecar = _shrink_to_hold_both_backend(
+        tmp_path,
+        model_gb = 16,
+        native_ctx = 8192,
+        kv_mib_per_tok = 0.5,
+        mtp_mib_per_tok = 0.75,
+    )
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 0,
+    )
+
+    cmd = result["cmd"]
+    assert "--model-draft" in cmd
+    assert backend.spec_fallback_reason is None
     assert cmd[cmd.index("-c") + 1] == "8192"
+    assert result["env"].get("CUDA_VISIBLE_DEVICES") == "0,1"
 
 
 def _restore_host_guard(backend):
@@ -1607,16 +1697,15 @@ def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **k
     return backend, gguf
 
 
-def test_weights_larger_than_vram_plus_ram_are_refused(tmp_path, monkeypatch):
+def test_weights_larger_than_vram_plus_ram_still_load_with_a_warning(tmp_path, monkeypatch):
     """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free needs
-    about 8.5 GB of host RAM, which a 10 GB host cannot hold. Unrefused, the mmap'd
-    remainder thrashes until the OS kills Unsloth and the desktop session."""
+    about 8.5 GB of host RAM, which a 10 GB host cannot hold. It loads anyway, paging
+    the remainder from disk, and says so."""
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf)
+    _launch_warns(backend, gguf)
 
 
 def test_the_same_load_on_a_large_ram_host_still_launches(tmp_path, monkeypatch):
@@ -1662,8 +1751,7 @@ def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, m
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf)
+    _launch_warns(backend, gguf)
 
 
 def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path, monkeypatch):
@@ -1697,8 +1785,8 @@ def test_vulkan_igpu_backing_bound_preserves_placement_and_host_headroom(
     """The raw planner reading never lets host-backed credit lose system headroom."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 15 * 1024, 0)])
     _restore_host_guard(backend)
-    backend._get_gpu_memory = (
-        lambda _binary = None, **_kw: LlamaCppBackend._get_gpu_free_memory_vulkan(_binary)
+    backend._get_gpu_memory = lambda _binary = None, **_kw: (
+        LlamaCppBackend._get_gpu_free_memory_vulkan(_binary)
     )
     backend._get_gguf_size_bytes = lambda _path: gguf_mib * 1024**2
     monkeypatch.setattr(
@@ -1725,8 +1813,7 @@ def test_vulkan_igpu_backing_bound_preserves_placement_and_host_headroom(
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
     if not admitted:
-        with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-            _launch(backend, gguf)
+        _launch_warns(backend, gguf)
         return
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -1760,8 +1847,7 @@ def test_vulkan_igpu_heap_is_not_credited_to_a_host_resident_launch(
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf, **placement)
+    _launch_warns(backend, gguf, **placement)
 
 
 def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, monkeypatch):
@@ -1787,8 +1873,7 @@ def test_a_device_pin_decides_whether_the_shared_heap_is_reachable(tmp_path, mon
     manual = {"gpu_memory_mode": "manual", "gpu_layers": 33}
 
     backend, gguf = _mixed()
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf, extra_args = ["--device", "Vulkan0"], **manual)
+    _launch_warns(backend, gguf, extra_args = ["--device", "Vulkan0"], **manual)
 
     backend, gguf = _mixed()
     assert _launch(backend, gguf, extra_args = ["--device", "Vulkan1"], **manual)["cmd"]
@@ -1810,14 +1895,13 @@ def test_an_unselected_card_does_not_shrink_what_the_shared_heap_must_hold(tmp_p
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(
-            backend,
-            gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 33,
-            extra_args = ["--device", "Vulkan1"],
-        )
+    _launch_warns(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--device", "Vulkan1"],
+    )
 
 
 @pytest.mark.parametrize(
@@ -1839,15 +1923,14 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
     )
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(
-            backend,
-            gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 33,
-            gpu_ids = [0, 1],
-            **split,
-        )
+    _launch_warns(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        gpu_ids = [0, 1],
+        **split,
+    )
 
 
 def _mixed_vulkan(tmp_path, monkeypatch, memory):
@@ -1876,14 +1959,13 @@ def test_split_mode_none_leaves_a_second_device_heap_uncredited(tmp_path, monkey
     backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 6 * 1024, 8 * 1024), (1, 94641, 0)])
 
     # Both devices pinned, so the split mode is the only thing left to decide.
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(
-            backend,
-            gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 33,
-            extra_args = ["--device", "Vulkan0,Vulkan1", *extras],
-        )
+    _launch_warns(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        extra_args = ["--device", "Vulkan0,Vulkan1", *extras],
+    )
 
 
 def test_an_unpinned_launch_beside_a_discrete_card_leaves_the_heap_uncredited(
@@ -1892,8 +1974,7 @@ def test_an_unpinned_launch_beside_a_discrete_card_leaves_the_heap_uncredited(
     """llama.cpp drops integrated GPUs when its own device list finds a discrete one."""
     backend, gguf = _mixed_vulkan(tmp_path, monkeypatch, [(0, 94641, 0), (1, 6 * 1024, 8 * 1024)])
 
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33)
+    _launch_warns(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 33)
 
 
 def test_a_pin_still_reaches_the_heap_beside_a_discrete_card(tmp_path, monkeypatch):
@@ -1939,8 +2020,10 @@ def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
         LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 8 * 1024)
     )
 
-    with pytest.raises(RuntimeError, match = "unified-memory APU"):
-        _launch(backend, gguf)
+    # The cgroup ceiling still governs what the message prices, it just no longer
+    # stops the load.
+    _launch(backend, gguf)
+    assert "unified-memory APU" in (backend.last_load_warning or "")
 
 
 def test_a_card_resident_model_is_not_refused_by_a_container_ceiling(tmp_path, monkeypatch):
@@ -2015,21 +2098,22 @@ def test_the_guard_reads_the_model_the_child_opens(tmp_path, monkeypatch):
         return real_size(path)
 
     backend._get_gguf_size_bytes = _record
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(backend, gguf)
+    _launch_warns(backend, gguf)
 
     assert str(gguf) in seen
 
 
-def test_the_env_escape_loads_a_variant_the_guard_refuses(tmp_path, monkeypatch):
-    """The picker still offers a variant `classifyGgufFit` calls "oom", and no load
-    field carries a force, so an unconditional refusal leaves that selection with no way
-    through. UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains, and the refusal names it."""
-    refused, gguf = _offload_backend(
+def test_the_env_escape_is_now_a_no_op_that_only_silences_the_warning(tmp_path, monkeypatch):
+    """UNSLOTH_ALLOW_HOST_OFFLOAD was the opt-out from a refusal that no longer exists.
+
+    Both arms must load. Unset, the load carries the advisory; set, it loads just the
+    same and says nothing. Kept honoured so existing scripts and docs keep working."""
+    warned, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
-    with pytest.raises(RuntimeError, match = "UNSLOTH_ALLOW_HOST_OFFLOAD=1"):
-        _launch(refused, gguf)
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    assert "--fit" in _launch(warned, gguf)["cmd"]
+    assert "does not fit in GPU memory" in (warned.last_load_warning or "")
 
     allowed_dir = tmp_path / "allowed"
     allowed_dir.mkdir()
@@ -2038,6 +2122,239 @@ def test_the_env_escape_loads_a_variant_the_guard_refuses(tmp_path, monkeypatch)
     )
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
     assert "--fit" in _launch(allowed, gguf2)["cmd"]
+    assert allowed.last_load_warning is None
+
+
+def test_a_wildly_oversized_model_still_loads(tmp_path, monkeypatch):
+    """The regression this change exists for.
+
+    A 67.6 GB quant on a 14.5 GiB card with 51 GB of RAM (the measured Colab T4
+    high-RAM shape) used to come back as HTTP 400 from /api/inference/load, on a model
+    llama.cpp itself will run straight off the mmap. No shortfall may block a load
+    again, however large the gap: the cost is reported, not enforced."""
+    backend, gguf = _offload_backend(
+        tmp_path,
+        gguf_gb = 67.6,
+        free_mib = 14_848,
+        avail_mib = 51_000,
+        monkeypatch = monkeypatch,
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    assert _launch(backend, gguf)["cmd"], "the oversized load never spawned llama-server"
+    assert "does not fit in GPU memory" in (backend.last_load_warning or "")
+
+
+# An unmapped load is the one shape the advisory's premise does not cover. The spill
+# is only survivable because the weights are mmap'd; upstream sets use_mmap for
+# mmap/mmap+mlock/auto alone (llama-model-loader.cpp), so `none` and `mlock` read every
+# byte into a buffer llama.cpp allocates and an oversized model fails outright instead
+# of paging. The guard still never refuses: it overrides the mode and says so.
+_UNMAPPED_ARGV = [
+    ["--no-mmap"],
+    ["--load-mode", "none"],
+    ["--load-mode=none"],
+    ["--no-direct-io"],
+]
+_UNMAPPED_IDS = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"]
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_oversized_unmapped_load_is_remapped_instead_of_refused(
+    tmp_path, monkeypatch, extra_args
+):
+    """It launches, the argv the child gets is pageable, and the warning names the
+    override -- a silent one would leave the user's own setting quietly undone."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the child still loads unmapped: {cmd}"
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypatch, extra_args):
+    """The control. Same request on a host with room: no shortfall, so nothing is
+    overridden and no warning is invented. Loading unmapped is a legitimate choice."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
+    )
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _unmapped_tokens(cmd) == list(
+        extra_args
+    ), f"the fitting load lost the mode it asked for: {cmd}"
+    assert backend.last_load_warning is None
+
+
+def test_the_override_keeps_a_lock_rather_than_dropping_it(tmp_path, monkeypatch):
+    """`mlock` is unmapped too, but it also says "keep this in RAM". The pageable
+    equivalent is `mmap+mlock`, which upstream mmaps, so the request survives the
+    override instead of being silently discarded."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "mlock"])["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    _modes = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--load-mode" and i + 1 < len(cmd)]
+    assert _modes == ["mmap+mlock"], f"the lock was not carried onto a mapping: {cmd}"
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+def test_the_override_reaches_the_env_twin_llama_cpp_reads_first(tmp_path, monkeypatch):
+    """llama.cpp resolves LLAMA_ARG_* before argv, so an inherited selector survives
+    stripping the tokens. Unsloth emits no load-mode flag of its own here, so without
+    the env half the child would still load unmapped with nothing in the argv to show
+    it."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_NO_MMAP", "1")
+
+    launched = _launch(backend, gguf)
+
+    assert launched["cmd"], "the unmapped oversized load never spawned llama-server"
+    assert "LLAMA_ARG_NO_MMAP" not in launched["env"]
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+def _override_log(monkeypatch):
+    """Collect the pageable-override log line. structlog, so caplog cannot see it."""
+    import core.inference.llama_cpp as llama_cpp
+
+    lines = []
+    monkeypatch.setattr(
+        llama_cpp.logger,
+        "warning",
+        lambda msg, *a, **kw: lines.append(msg % a if a else msg),
+    )
+    return lines
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_warning_opt_out_never_disables_the_pageable_override(
+    tmp_path, monkeypatch, extra_args
+):
+    """UNSLOTH_ALLOW_HOST_OFFLOAD silences the warning and nothing else.
+
+    The override is what lets an oversized unmapped load finish at all: "none" and
+    "mlock" allocate the whole model in host RAM, so the same shortfall is an OOM kill
+    rather than slow paging. Gating it on the message meant setting the deprecated
+    escape turned a load that works into one that is killed, which is the opposite of
+    what an opt-out from a REFUSAL was ever meant to do. The message goes; the rewrite
+    stays, and the log still names it so the load is traceable."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    logged = _override_log(monkeypatch)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the opt-out left the child loading unmapped: {cmd}"
+    # The opt-out did its one job, and only that job.
+    assert backend.last_load_warning is None
+    assert [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_opt_out_on_a_fitting_unmapped_load_changes_nothing(tmp_path, monkeypatch, extra_args):
+    """The control for the case above. Silenced or not, a load with room to run is
+    left exactly as asked and nothing is logged about an override."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    logged = _override_log(monkeypatch)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _unmapped_tokens(cmd) == list(extra_args), f"the fitting load lost its mode: {cmd}"
+    assert backend.last_load_warning is None
+    assert not [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+
+def _apu_backend(tmp_path, *, gguf_gb, avail_mib, monkeypatch):
+    """A ROCm unified-memory APU: the weights load into system RAM, and the APU's
+    reported GPU pool IS that RAM.
+
+    The discrete host guard is left stubbed off, as it effectively is on this host:
+    ``_shared_gpu_ids`` is populated for Vulkan alone (the Vulkan probe is what reports
+    an iGPU), so on ROCm the APU's pool is credited against the weights as if it were
+    dedicated VRAM, the spill prices out at zero and the guard abstains. The APU
+    preflight is the only reading that sees the shortfall."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 60_000, 60_000)])
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: True
+    backend._apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message
+    # nothing pinned, so the preflight re-asks the gate; no marker here, so it abstains
+    backend._arch_gate_survivors = lambda _binary = None: []
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    return backend, gguf
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_oversized_unmapped_apu_load_is_paged_before_it_launches(
+    tmp_path, monkeypatch, extra_args
+):
+    """The APU preflight only RECORDED its shortfall, and the discrete guard next door
+    cannot re-find it (the APU's reported pool covers the weights), so an unmapped
+    oversized APU load reached the child unchanged and was OOM-killed. It is the
+    condition that drives the override, not whichever guard happened to word it."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized APU load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the APU child still loads unmapped: {cmd}"
+    assert "unified-memory APU" in (backend.last_load_warning or "")
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_unmapped_apu_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypatch, extra_args):
+    """The control. Same APU, same request, room to run: no shortfall, so the mode the
+    user chose survives untouched and no warning is invented."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 92 * 1024, monkeypatch = monkeypatch
+    )
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _unmapped_tokens(cmd) == list(extra_args), f"the fitting APU load lost it: {cmd}"
+    assert backend.last_load_warning is None
+
+
+def _unmapped_tokens(cmd):
+    """The tokens in ``cmd`` that select a mode llama.cpp does not mmap."""
+    out = []
+    for i, token in enumerate(cmd):
+        if token in ("--no-mmap", "-no-mmap", "--no-direct-io", "-ndio"):
+            out.append(token)
+        elif token in ("--load-mode", "-lm") and i + 1 < len(cmd):
+            if cmd[i + 1].strip().lower() in ("none", "mlock"):
+                out.extend([token, cmd[i + 1]])
+        elif token.split("=", 1)[0] in ("--load-mode", "-lm") and "=" in token:
+            if token.split("=", 1)[1].strip().lower() in ("none", "mlock"):
+                out.append(token)
+    return out
 
 
 def _load_intent(gguf, **kwargs):
@@ -2071,7 +2388,7 @@ def test_the_route_precheck_refuses_before_the_gpu_handoff(tmp_path, monkeypatch
     )
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
 
-    verdict = backend.host_offload_refusal_for_intent(_load_intent(gguf))
+    verdict = backend.host_offload_warning_for_intent(_load_intent(gguf))
     assert verdict is not None and "does not fit in GPU memory" in verdict
 
 
@@ -2092,7 +2409,7 @@ def test_the_route_precheck_credits_capacity_the_handoff_is_about_to_reclaim(tmp
         monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 64_000, vram_free_mib = 900
     )
 
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
 
 
 def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeypatch):
@@ -2104,17 +2421,17 @@ def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeyp
     )
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
 
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf, hf_repo = "org/repo")) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf, hf_repo = "org/repo")) is None
     # an igpu or a MIG/vGPU line reports total 0, so the ceiling is unknown
     backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 0)]
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = None)
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
     _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
-    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
 
 
 def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
@@ -2246,8 +2563,7 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
         monkeypatch = monkeypatch,
     )
     cpu_build._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: True
-    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
-        _launch(cpu_build, gguf2)
+    _launch_warns(cpu_build, gguf2)
 
 
 def test_an_empty_gpu_pool_abstains(tmp_path, monkeypatch):
@@ -2516,3 +2832,729 @@ def test_tensor_mode_keeps_an_inherited_quantized_kv_env(tmp_path, monkeypatch):
     # Budget-only adoption: the env stays the source of truth for the child.
     assert "--cache-type-k" not in cmd
     assert "--cache-type-v" not in cmd
+
+
+# ── UNSLOTH_ALLOW_HOST_OFFLOAD is warning-scoped on the APU path too ────────
+# The variable's whole remaining contract is that it silences a message. The APU
+# preflight priced RAM with a helper that never reads it, so setting the deprecated
+# escape silenced the discrete guard and left the APU advisory in memory_warning.
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_opt_out_silences_the_apu_advisory_and_keeps_the_override(
+    tmp_path, monkeypatch, extra_args
+):
+    """Both halves at once, because they pull in opposite directions: the message goes,
+    and the pageable rewrite that makes the load survivable stays. The verdict is read
+    before the opt-out, so only the recording is suppressed."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    logged = _override_log(monkeypatch)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized APU load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the opt-out left the APU child unmapped: {cmd}"
+    assert backend.last_load_warning is None, (
+        "UNSLOTH_ALLOW_HOST_OFFLOAD is documented as silencing the warning, but the "
+        f"APU advisory came back: {backend.last_load_warning}"
+    )
+    # Silenced, not invisible: the log is what keeps an overridden load traceable.
+    assert [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+
+def test_the_opt_out_leaves_a_fitting_apu_load_alone(tmp_path, monkeypatch):
+    """The control. Nothing to say and nothing to override, so the mode the user asked
+    for survives and no warning is invented either way."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 92 * 1024, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+
+    cmd = _launch(backend, gguf, extra_args = ["--no-mmap"])["cmd"]
+
+    assert _unmapped_tokens(cmd) == ["--no-mmap"], cmd
+    assert backend.last_load_warning is None
+
+
+def _apu_and_discrete_shortfall_backend(tmp_path, monkeypatch, *, avail_mib):
+    """A unified-memory APU whose reported VRAM pool does NOT cover the weights, so the
+    APU preflight and the discrete host guard both find a shortfall on the same load.
+
+    The overlap is the point: two guards, two messages, and _record_load_warning keeps
+    the first."""
+    backend, gguf = _offload_backend(
+        tmp_path,
+        gguf_gb = 13.3,
+        free_mib = 4877,
+        avail_mib = avail_mib,
+        monkeypatch = monkeypatch,
+        _amd_apu_wants_unified_memory = lambda *_a, **_kw: True,
+        _apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message,
+        # nothing pinned, so the preflight re-asks the gate; no marker, so it abstains
+        _arch_gate_survivors = lambda _binary = None: [],
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    return backend, gguf
+
+
+def _host_guard_spy(backend):
+    """Record what the discrete host guard returned, so a test can pin that it really
+    did fire rather than assuming the overlap it is about."""
+    seen = []
+    real = backend._launch_host_shortfall_message
+
+    def _spy(*args, **kwargs):
+        message = real(*args, **kwargs)
+        seen.append(message)
+        return message
+
+    backend._launch_host_shortfall_message = _spy
+    return seen
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_override_note_reaches_the_warning_the_route_returns(tmp_path, monkeypatch, extra_args):
+    """When BOTH guards warn, the APU preflight recorded first and first notice wins,
+    so appending the override note to the launch guard's message alone wrote it onto a
+    string _record_load_warning then discards. The user was told nothing about Unsloth
+    undoing the non-mmap mode they chose, on a load whose argv really did change."""
+    backend, gguf = _apu_and_discrete_shortfall_backend(tmp_path, monkeypatch, avail_mib = 10_000)
+    seen = _host_guard_spy(backend)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the child still loads unmapped: {cmd}"
+    # The precondition this cell exists for: two shortfalls on one load.
+    assert any(msg and "does not fit in GPU memory" in msg for msg in seen), seen
+    warning = backend.last_load_warning or ""
+    assert "unified-memory APU" in warning, warning
+    assert (
+        "memory mapping instead" in warning
+    ), f"the override never reached the warning the route returns: {warning}"
+
+
+def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, monkeypatch):
+    """The control against a double append. With no APU notice recorded there is
+    nothing to amend, so the note arrives exactly once, through the launch guard's own
+    message."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    _launch(backend, gguf, extra_args = ["--no-mmap"])
+
+    warning = backend.last_load_warning or ""
+    assert "does not fit in GPU memory" in warning
+    assert warning.count("memory mapping instead") == 1, warning
+
+
+# ── Repricing after the text-only fallback drops a CPU-pinned projector ────────
+# The APU preflight charges model_size + the projector the launch pinned to CPU,
+# because both land in the same system RAM. When llama-server then fails on the
+# projector and the retry strips --mmproj, the child that serves the session never
+# reads those bytes: the advisory the route hands back described a load that is not
+# running, and could have been the only reason an unmapped launch was remapped.
+_PROJECTOR_ABORT_OUT = (
+    "srv    load_model: loading model 'model.gguf'\nclip.cpp:4391: Unknown projector type\n"
+)
+
+
+def _apu_pinned_projector_backend(tmp_path, monkeypatch, *, gguf_gb, mmproj_gb, avail_mib):
+    """An APU whose weights fit in RAM on their own and only overflow it once the
+    CPU-pinned vision projector is charged alongside them."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = gguf_gb, avail_mib = avail_mib, monkeypatch = monkeypatch
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+    backend._mmproj_vram_bytes = lambda _path: int(mmproj_gb * 1024**3)
+    return backend, gguf
+
+
+def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
+    """Every spawn that still carries --mmproj aborts on the projector; the text-only
+    retry comes up healthy. Mirrors the real recovery: the session ends up serving a
+    child that loaded the weights and nothing else."""
+    captured = {"cmds": []}
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        captured["cmds"].append(list(cmd))
+        captured["cmd"] = list(cmd)
+        captured["env"] = kwargs.get("env") or dict(os.environ)
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None):
+        launched = captured["cmds"][-1] if captured["cmds"] else []
+        if "--mmproj" in launched:
+            backend._stdout_lines = _PROJECTOR_ABORT_OUT.splitlines()
+            return False
+        backend._stdout_lines = []
+        return True
+
+    backend._wait_for_health = fake_health
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                is_vision = True,
+                **load_kwargs,
+            )
+        )
+    return captured
+
+
+@pytest.mark.parametrize("unmapped", [False, True], ids = ["pageable", "unmapped"])
+def test_the_text_only_fallback_reprices_the_projector_it_dropped(tmp_path, monkeypatch, unmapped):
+    """40 GB of weights fit the 44 GB this APU can spare; the 8 GB projector pinned
+    beside them does not, so the preflight warns (and, unmapped, remaps the load).
+    The projector then fails to start and the session serves text-only, holding only
+    the weights -- which fit. The advisory has to describe THAT child.
+
+    The override is not taken back. Its argv and its env reached the child long before
+    this point, so the running server is memory-mapped whatever the message says; an
+    override that turns out to have been unnecessary is reported, not un-reported.
+    """
+    backend, gguf = _apu_pinned_projector_backend(
+        tmp_path, monkeypatch, gguf_gb = 40.0, mmproj_gb = 8.0, avail_mib = 46 * 1024
+    )
+    extra_args = ["--no-mmproj-offload"] + (["--no-mmap"] if unmapped else [])
+
+    captured = _launch_with_text_only_fallback(backend, gguf, extra_args = extra_args)
+
+    assert "--mmproj" in captured["cmds"][0], captured["cmds"][0]
+    assert "--mmproj" not in captured["cmds"][-1], captured["cmds"][-1]
+    warning = backend.last_load_warning or ""
+    assert "unified-memory APU" not in warning, (
+        "the response still warns about a shortfall the resident model does not have: " f"{warning}"
+    )
+    if unmapped:
+        # The one thing that IS still true of the running child.
+        assert "memory mapping instead" in warning, warning
+    else:
+        assert backend.last_load_warning is None, warning
+
+
+def test_the_reprice_reads_the_pool_the_preflight_saw_not_the_one_the_model_is_in(
+    tmp_path, monkeypatch
+):
+    """The reprice asks "would the weights alone have fit?", so it has to weigh them
+    against the RAM that was free BEFORE they were loaded.
+
+    By the time it runs, the text-only child is healthy and holding the weights, so
+    system RAM has fallen by roughly their size. Re-reading it there charges
+    ``model_size`` against ``avail - model_size`` and finds a shortfall for a model
+    that demonstrably just started: the load would keep an advisory saying it does not
+    fit while it is serving. Modelled here by dropping the pool between the preflight
+    and the fallback, which a fixed ``avail_mib`` in the other tests cannot express.
+    """
+    backend, gguf = _apu_pinned_projector_backend(
+        tmp_path, monkeypatch, gguf_gb = 40.0, mmproj_gb = 8.0, avail_mib = 46 * 1024
+    )
+    # 46 GB free at the preflight; the resident 40 GB of weights leave 6 GB by the time
+    # the text-only retry is healthy. Only the first reading is the one being repriced.
+    readings = iter([46 * 1024])
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: next(readings, 6 * 1024)),
+    )
+
+    _launch_with_text_only_fallback(backend, gguf, extra_args = ["--no-mmproj-offload"])
+
+    assert backend.last_load_warning is None, (
+        "the reprice charged the weights against a pool they are already occupying, so "
+        f"a model that started fine still warns it does not fit: {backend.last_load_warning}"
+    )
+
+
+def test_a_projector_the_weights_alone_still_outgrow_keeps_its_warning(tmp_path, monkeypatch):
+    """The control. Same fallback, but the weights on their own are already too big
+    for this APU, so dropping the projector changes nothing the user needs to know and
+    the advisory stays."""
+    backend, gguf = _apu_pinned_projector_backend(
+        tmp_path, monkeypatch, gguf_gb = 64.6, mmproj_gb = 8.0, avail_mib = 46 * 1024
+    )
+
+    _launch_with_text_only_fallback(backend, gguf, extra_args = ["--no-mmproj-offload"])
+
+    assert "unified-memory APU" in (backend.last_load_warning or "")
+
+
+# ── The resident advisory outlives an attempt that never touched the server ───
+def _load_rejected(backend, intent, **load_kwargs):
+    """Run a load that is expected to stand down before the Phase 1 teardown, and
+    report nothing about it: what the caller asserts is the server left behind."""
+    try:
+        return backend.load_model(intent, **load_kwargs)
+    except (RuntimeError, ValueError, FileNotFoundError):
+        return False
+
+
+def test_a_rejected_load_leaves_the_resident_advisory_alone(tmp_path, monkeypatch):
+    """An oversized model is serving, and its advisory is the only thing telling the
+    user why generation crawls. A load that is refused before the teardown leaves that
+    child running, so retiring its notice reported memory_warning: null for a model
+    that is still paging -- including on the very next already_loaded answer."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+
+    resident = _launch(backend, gguf)
+    assert resident["cmd"]
+    warned = backend.last_load_warning
+    assert "unified-memory APU" in (warned or "")
+
+    # 1. The in-app update refusal: the first check in load_model, above everything.
+    backend._llama_update_in_progress = True
+    assert not _load_rejected(
+        backend, GgufLoadIntent(gguf_path = str(gguf), model_identifier = "other")
+    )
+    backend._llama_update_in_progress = False
+    assert backend.last_load_warning == warned, (
+        "the update refusal retired the advisory of a server it never touched: "
+        f"{backend.last_load_warning}"
+    )
+
+    # 2. A cancel that lands before the teardown, on a different model.
+    cancelled = threading.Event()
+    cancelled.set()
+    assert not _load_rejected(
+        backend,
+        GgufLoadIntent(gguf_path = str(gguf), model_identifier = "other"),
+        load_cancel_event = cancelled,
+    )
+    assert (
+        backend.last_load_warning == warned
+    ), f"the cancelled load retired the resident advisory: {backend.last_load_warning}"
+
+    # 3. ...and the already_loaded fast path still carries it, which is what the route
+    # reads for memory_warning on a repeat /load.
+    assert backend.load_model(GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test"))
+    assert (
+        backend.last_load_warning == warned
+    ), f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
+
+
+# ── Repricing after an auto-selected Vulkan backend is replayed on CPU ─────────
+# The replay launches with --gpu-layers 0 --device none, so the child that serves the
+# session is credited no VRAM at all and pages the whole model from system RAM. The
+# preflight priced a GPU placement that is now dead: its spill figure understates what
+# the running child holds, and a model that FIT in VRAM was never priced against host
+# RAM at all, which is the case the user most needs told about.
+def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avail_mib):
+    """A host whose auto-selected Vulkan build hard-crashes at startup, with a discrete
+    card (Vulkan reports total 0 only for an iGPU, so this pool is real VRAM) and a
+    staged CPU runtime for the replay."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, free_mib, free_mib)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
+    backend._select_gpus = lambda *_a, **_kw: (None, True)
+    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    # The real _prepare_cpu_fallback_launch and _cpu_isolated_replay run: what is being
+    # asserted is how the REPLAY argv prices, so it has to be the argv the code builds.
+    backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server"
+    backend._llama_server_env_for_binary = lambda _binary: {_loader_path_var(): ""}
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_prebuilt_was_auto_selected", staticmethod(lambda _binary: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    return backend, gguf
+
+
+def _launch_with_vulkan_cpu_replay(
+    backend,
+    gguf,
+    *,
+    crash = True,
+    **load_kwargs,
+):
+    """Every launch that can still reach a GPU dies of a signal, which is what a broken
+    Vulkan backend does; only the device-less replay comes up healthy. Written against
+    the argv rather than the attempt number so the intermediate rungs (the --flash-attn
+    off retry) crash too instead of masking the fallback under test.
+
+    ``crash=False`` is the control: the same host, the same model, one launch that
+    works, so nothing is repriced.
+    """
+    captured = {"cmds": []}
+
+    def _is_cpu_replay(cmd):
+        return "--device" in cmd and cmd[cmd.index("--device") + 1] == "none"
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        rc = -11 if (crash and not _is_cpu_replay(list(cmd))) else None
+        captured["cmds"].append(list(cmd))
+        captured["env"] = kwargs.get("env") or dict(os.environ)
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "returncode": rc,
+                "poll": lambda self: rc,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: rc,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None):
+        if crash and not _is_cpu_replay(captured["cmds"][-1] if captured["cmds"] else []):
+            backend._stdout_lines = ["ggml_vulkan: Device memory allocation failed"]
+            return False
+        backend._stdout_lines = []
+        return True
+
+    backend._wait_for_health = fake_health
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                **load_kwargs,
+            )
+        )
+    if crash:
+        assert len(captured["cmds"]) > 1, captured["cmds"]
+        assert backend._cpu_fallback_reason == "vulkan_startup_crash"
+        assert _is_cpu_replay(captured["cmds"][-1]), captured["cmds"][-1]
+    return captured
+
+
+def test_a_model_that_fits_vram_but_not_ram_is_warned_once_it_lands_on_cpu(tmp_path, monkeypatch):
+    """20 GB of weights on a 24 GB card: nothing spills, so the preflight has nothing
+    to say. The Vulkan backend then crashes and the replay runs on no GPU at all, so
+    the whole 20 GB has to come out of a 12 GB host and pages from disk for the rest of
+    the session -- and memory_warning was null for exactly that load."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    _launch_with_vulkan_cpu_replay(backend, gguf)
+
+    warning = backend.last_load_warning or ""
+    assert "does not fit in GPU memory" in warning, (
+        "the CPU-only child pages the whole model from disk and says nothing about it: "
+        f"{warning!r}"
+    )
+    assert "About 20 GB" in warning, warning
+
+
+def test_a_gpu_placement_warning_does_not_survive_onto_the_cpu_child(tmp_path, monkeypatch):
+    """20 GB of weights on an 8 GB card spill 12 GB, which a 13 GB host cannot hold, so
+    the preflight warns about 12 GB. That placement then dies. The child that serves the
+    session holds all 20 GB in RAM, so the figure it inherited describes an offload it
+    no longer performs -- and understates the one it does."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 8 * 1024, avail_mib = 13 * 1024
+    )
+
+    _launch_with_vulkan_cpu_replay(backend, gguf)
+
+    warning = backend.last_load_warning or ""
+    assert (
+        "About 20 GB" in warning
+    ), f"the CPU-only child still reports the dead GPU placement's spill: {warning!r}"
+    assert "About 12 GB" not in warning, warning
+
+
+def test_a_vulkan_load_that_never_falls_back_keeps_its_own_advisory(tmp_path, monkeypatch):
+    """The control. Same host and same model as above, but the GPU launch comes up:
+    nothing is replayed, so the advisory is the GPU placement's own spill, untouched."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 8 * 1024, avail_mib = 13 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, crash = False)
+
+    assert len(captured["cmds"]) == 1, captured["cmds"]
+    assert backend._cpu_fallback_reason is None
+    warning = backend.last_load_warning or ""
+    assert "About 12 GB" in warning, warning
+    assert "About 20 GB" not in warning, warning
+
+
+def test_the_cpu_reprice_carries_the_pageable_override_note_it_did_not_revert(
+    tmp_path, monkeypatch
+):
+    """An unmapped oversized load is remapped before the first spawn: force_pageable_load
+    rewrites the argv and the shared child env in place. The replay is built from that
+    argv and that env and strips placement alone, so the CPU child really is
+    memory-mapped -- the note stays true and is carried onto the repriced text verbatim,
+    not rebuilt and not taken back."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 8 * 1024, avail_mib = 13 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--no-mmap"])
+
+    replay = captured["cmds"][-1]
+    assert not _unmapped_tokens(replay), f"the CPU child loads unmapped: {replay}"
+    warning = backend.last_load_warning or ""
+    assert "About 20 GB" in warning, warning
+    assert warning.count("memory mapping instead") == 1, warning
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_a_replay_that_loses_its_vram_is_repaged_before_it_spawns(
+    tmp_path, monkeypatch, extra_args
+):
+    """20 GB of weights on a 24 GB card, loaded unmapped by request, on a 12 GB host.
+
+    The preflight leaves the mode alone and is right to: nothing spills, so there is no
+    shortfall and an unmapped load that fits is exactly what was asked for. Then Vulkan
+    hard-crashes and the replay appends "--gpu-layers 0 --fit off --device none", which
+    credits it no VRAM at all. The same 20 GB now has to come out of a 12 GB host, and
+    unmapped that is one allocation of the whole file rather than a mapping that pages:
+    an OOM kill, not a slow load. So the replay is priced on its own footprint and
+    repaged before it spawns, exactly as the main launch path would have done.
+    """
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = extra_args)
+
+    gpu_attempt, replay = captured["cmds"][0], captured["cmds"][-1]
+    assert _unmapped_tokens(gpu_attempt) == list(
+        extra_args
+    ), f"the fitting GPU launch lost the mode it asked for: {gpu_attempt}"
+    assert not _unmapped_tokens(
+        replay
+    ), f"the CPU replay holds the whole model in host RAM unmapped: {replay}"
+    # The advisory has to describe the child that is running: the whole model against
+    # host RAM, and the override that is why it can page at all.
+    warning = backend.last_load_warning or ""
+    assert "About 20 GB" in warning, warning
+    assert warning.count("memory mapping instead") == 1, warning
+    # And the record the reload comparator reads, or the next Apply judges this child
+    # against a mode it no longer runs.
+    assert backend._memory_state == (False, False), backend._memory_state
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_a_replay_the_host_can_actually_hold_keeps_the_mode_it_was_asked_for(
+    tmp_path, monkeypatch, extra_args
+):
+    """The control. Same crash, same replay with no VRAM credited, but a 64 GB host
+    holds all 20 GB outright. Nothing is oversized, so loading unmapped is the
+    legitimate choice it always was and no override and no warning are invented."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 64 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = extra_args)
+
+    replay = captured["cmds"][-1]
+    assert _unmapped_tokens(replay) == list(
+        extra_args
+    ), f"the CPU replay lost the mode the user asked for: {replay}"
+    assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_the_opt_out_silences_the_replay_warning_without_licensing_the_oom(tmp_path, monkeypatch):
+    """UNSLOTH_ALLOW_HOST_OFFLOAD is warning-scoped, the same contract the main launch
+    path holds it to: it hides the message, it does not hand the child a load it cannot
+    complete. So the replay is still repaged and the override is still logged."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--no-mmap"])
+
+    assert not _unmapped_tokens(captured["cmds"][-1]), captured["cmds"][-1]
+    assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_an_effective_lock_survives_the_replay_override_as_a_mapped_one(tmp_path, monkeypatch):
+    """force_pageable_load's own rule, reached through this rung: "keep this in RAM" is
+    honoured over a mapping the kernel can fall back on, so --load-mode mlock becomes
+    mmap+mlock rather than losing the lock."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--load-mode", "mlock"])
+
+    replay = captured["cmds"][-1]
+    assert not _unmapped_tokens(replay), replay
+    assert "mmap+mlock" in replay, replay
+
+
+def test_a_shadowed_lock_is_not_resurrected_by_the_replay_override(tmp_path, monkeypatch):
+    """The other half of that rule. "--mlock --no-mmap" already runs unlocked, so
+    dropping only the selector would page-lock the whole oversized mapping into the RAM
+    this override exists to keep pageable."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--mlock", "--no-mmap"])
+
+    replay = captured["cmds"][-1]
+    assert not _unmapped_tokens(replay), replay
+    assert "--mlock" not in replay and "mmap+mlock" not in replay, replay
+
+
+def test_the_cpu_reprice_reads_the_pool_the_preflight_saw_not_the_one_the_model_is_in(
+    tmp_path, monkeypatch
+):
+    """The reprice asks "does the whole model fit in host RAM?", so it has to weigh it
+    against the RAM that was free BEFORE the replay loaded it.
+
+    By the time it runs, the CPU child is healthy and holding every byte, so a fresh
+    reading is the pool minus the model being priced: it would charge 20 GB against the
+    4 GB left over and warn that a model which demonstrably just started does not fit.
+    """
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 24 * 1024
+    )
+    # 24 GB free at the preflight, 4 GB once the 20 GB of weights are resident.
+    readings = iter([24 * 1024])
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: next(readings, 4 * 1024)),
+    )
+
+    _launch_with_vulkan_cpu_replay(backend, gguf)
+
+    assert backend.last_load_warning is None, (
+        "the reprice charged the weights against a pool they already occupy, so a model "
+        f"that started fine still warns it does not fit: {backend.last_load_warning!r}"
+    )
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_unmapped_load_is_priced_against_the_cards_the_pin_left_it(
+    tmp_path, monkeypatch, extra_args
+):
+    """VRAM on a card this launch pinned away is not VRAM the child can spend.
+
+    Two 24 GB cards, and Unsloth pins the child to one of them. A 25 GB model is
+    smaller than the pair and larger than the card it actually gets, so the spill
+    is real and the 3 GB host cannot hold it. Summing both cards prices that spill
+    at zero, leaves the unmapped request standing, and the child then allocates the
+    offloaded weights in host RAM and is OOM-killed: the override exists to turn
+    exactly that into a slow load.
+    """
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 20_000, 24_576), (1, 20_000, 24_576)]
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(25 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: ([0], False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    result = _launch(backend, gguf, extra_args = extra_args)
+    cmd = result["cmd"]
+
+    assert cmd, "the pinned unmapped load never spawned llama-server"
+    assert not _unmapped_tokens(
+        cmd
+    ), f"the child still loads unmapped, priced against a card the pin hid: {cmd}"
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+def test_a_pinned_load_that_fits_the_card_it_got_keeps_its_mode(tmp_path, monkeypatch):
+    """The control, and the one that stops the fix double-counting a pin.
+
+    Same pin, same single reachable card, but the model fits it. Nothing is
+    oversized, so the request survives untouched and no warning is invented. This
+    is also what fails if the reachable set is ever derived from an INHERITED
+    CUDA_VISIBLE_DEVICES: the probe has already applied that mask, so subtracting
+    it again would price a card the child really does have as absent.
+    """
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 20_000, 24_576), (1, 20_000, 24_576)]
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(8 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: ([0], False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, extra_args = ["--no-mmap"])["cmd"]
+
+    assert _unmapped_tokens(cmd) == ["--no-mmap"], f"the fitting load lost its mode: {cmd}"
+    assert backend.last_load_warning is None
+
+
+def test_a_restored_cpu_fallback_is_priced_against_host_ram(tmp_path, monkeypatch):
+    """A persisted cpu_fallback load reconstructs the CPU-only replay directly, with
+    no crash to price around, so nothing upstream ever warned about it.
+
+    The Vulkan probe returns an empty pool on this shape, which leaves
+    `_child_has_no_gpu` False and makes the preflight abstain, so there is no notice
+    for the amend on that path to add to. The child then serves the whole model out of
+    system RAM and `memory_warning` came back null for it, which is the session that
+    most needs the advisory.
+    """
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 4_000, avail_mib = 12_000
+    )
+    # The probe comes back EMPTY, which is the shape that makes the preflight abstain:
+    # _child_has_no_gpu credits _cpu_only_zero_offload only when a device was detected,
+    # so with no rows it stays False and the guard cannot tell an unreadable pool from
+    # a host with no GPU. A row reporting zero free is a different, already-warned case.
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+
+    _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
+
+    warning = backend.last_load_warning or ""
+    assert (
+        "20 GB" in warning
+    ), f"a restored CPU-only session reported nothing about paging the model: {warning!r}"
+
+
+def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkeypatch):
+    """The control. Same restored path, a host with room: no shortfall, so no advisory
+    is invented for a session that is running comfortably."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 4_000, avail_mib = 64_000
+    )
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+
+    _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
+
+    assert backend.last_load_warning is None

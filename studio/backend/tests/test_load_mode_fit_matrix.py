@@ -735,7 +735,7 @@ def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
             return_value = {lc._loader_path_var(): "/staged"},
         ),
     ):
-        out, _reason = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
+        out, _reason, _note = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
     assert "--load-mode" not in out
     assert "none" not in out[: out.index("--gpu-layers")]
     # The placement flags the replay itself adds are untouched.
@@ -761,7 +761,7 @@ def test_the_cpu_fallback_keeps_a_load_mode_the_user_asked_for(monkeypatch):
             return_value = {lc._loader_path_var(): "/staged"},
         ),
     ):
-        out, _reason = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
+        out, _reason, _note = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
     assert out[-2:] == ["--load-mode", "none"]
 
 
@@ -2247,7 +2247,9 @@ def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
             return_value = {lc._loader_path_var(): "/staged"},
         ),
     ):
-        replay, _reason = backend._prepare_cpu_fallback_launch("llama-server", launched, {}, {})
+        replay, _reason, _note = backend._prepare_cpu_fallback_launch(
+            "llama-server", launched, {}, {}
+        )
 
     stale = resolve_effective_memory_state(launched, {})
     fresh = resolve_effective_memory_state(replay, {})

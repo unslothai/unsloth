@@ -2,27 +2,24 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The context the memory estimate should PRICE, which is not always the context
- * the Context Length control DISPLAYS.
+ * The context the memory estimate should PRICE, which is not always the one the
+ * Context Length control DISPLAYS.
  *
- * The control has to show a number even before a new GGUF's header has been read,
- * and falls back to 32,768 for that. The Load button does not: an unset length is
- * sent as 0 and llama.cpp fits, or opens at the model's native context. Pricing the
- * displayed fallback therefore quotes an explicit 32k for a load that may well open
- * at 262k, and understates by the KV cache, the term that grows fastest with
- * context.
+ * The control must show a number before a new GGUF's header has been read and falls
+ * back to 32,768. The Load button does not: an unset length is sent as 0 and llama.cpp
+ * fits, or opens at the model's native context. Pricing the displayed fallback quotes
+ * an explicit 32k for a load that may open at 262k, understating the KV cache -- the
+ * term that grows fastest with context. 0 is the request's own "price the native
+ * context", resolved from the header exactly as the launch would.
  *
- * 0 is the estimate request's own "price the native context", so the backend
- * resolves it from the header exactly as the launch would.
+ * The fallbacks are `resolveLoadMaxSeqLength`'s, in its order and no further: an
+ * explicit length is itself, reloading the resident GGUF keeps the context it is
+ * resident AT, every other GGUF case is 0. The native context is deliberately NOT a
+ * fallback -- --fit can land below it, so quoting it claims an outcome the load has
+ * not reached.
  *
- * The fallbacks are `resolveLoadMaxSeqLength`'s, in its order and no further:
- * an explicit length is itself, reloading the GGUF that is already resident keeps
- * the context it is resident AT, and every other GGUF case is 0. The native
- * context deliberately is NOT a fallback -- llama.cpp's --fit can land below it,
- * so quoting it as a figure claims an outcome the load has not reached.
- *
- * Kept in its own module with no imports so `tests/` can load it under
- * `node --experimental-strip-types`, which does not resolve the `@/` alias.
+ * Import-free so `tests/` can load it under `node --experimental-strip-types`, which
+ * does not resolve the `@/` alias.
  */
 export function resolveEstimateContext(
   customContextLength: number | null,
@@ -31,15 +28,10 @@ export function resolveEstimateContext(
 ): number {
   if (skipResidentFallback) {
     // Two shapes reach here, and `resolveLoadMaxSeqLength` answers 0 for both before
-    // it ever considers the resident context:
-    //
-    //   * Manual memory mode with GPU Layers on Auto, where llama.cpp --fit owns the
-    //     sizing (`resolveFitMaxSeqLength`);
-    //   * a builtin-default preset on a GGUF load, which returns 0 outright.
-    //
-    // In both, pricing what is loaded RIGHT NOW quotes the OLD fit, and it does so
-    // precisely when a context-sensitive setting has just changed and the next fit
-    // will land somewhere else.
+    // considering the resident context: Manual mode with GPU Layers on Auto, where
+    // --fit owns the sizing, and a builtin-default preset on a GGUF load. In both,
+    // pricing what is loaded RIGHT NOW quotes the OLD fit -- precisely when a
+    // context-sensitive setting has just changed and the next fit lands elsewhere.
     return customContextLength && customContextLength > 0 ? customContextLength : 0;
   }
   return customContextLength ?? activeLoadedContext ?? 0;

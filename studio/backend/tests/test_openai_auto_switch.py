@@ -460,6 +460,7 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
         ("POST", "/messages/count_tokens"): "anthropic_count_tokens",
         ("POST", "/audio/generate"): "generate_audio",
         ("GET", "/models"): "openai_list_models",
+        ("GET", "/models/"): "openai_list_models",
         ("GET", "/models/{model_id:path}"): "openai_retrieve_model",
     }
     seen = {}
@@ -2216,7 +2217,7 @@ def test_chat_validates_non_system_message_before_auto_switch():
     # A system-only chat must be rejected before the hook so an invalid request
     # never swaps the resident model. Asserted on source order.
     import inspect
-    src = inspect.getsource(inference_route.openai_chat_completions)
+    src = inspect.getsource(inference_route.produce_openai_chat_completions)
     assert src.index("At least one non-system message is required.") < src.index(
         "_maybe_auto_switch_model"
     )
@@ -2226,7 +2227,7 @@ def test_chat_untracks_external_provider_before_proxy():
     # The external-provider branch must untrack the request before proxying so its
     # stream can't block a concurrent local auto-switch.
     import inspect
-    src = inspect.getsource(inference_route.openai_chat_completions)
+    src = inspect.getsource(inference_route.produce_openai_chat_completions)
     assert src.index("untrack_current_request") < src.index("_proxy_to_external_provider")
 
 
@@ -3557,7 +3558,7 @@ def test_chat_validates_confirm_and_modality_before_switch():
     # the hook rejects a non-vision target before the load.
     import inspect
 
-    src = inspect.getsource(inference_route.openai_chat_completions)
+    src = inspect.getsource(inference_route.produce_openai_chat_completions)
     assert src.index("confirm_tool_calls requires stream=true") < src.index(
         "_maybe_auto_switch_model"
     )

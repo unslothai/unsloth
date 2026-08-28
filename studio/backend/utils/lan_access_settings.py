@@ -274,12 +274,39 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
 
 
 def _has_keyless_lan_url(urls: list[str]) -> bool:
+    """Whether any of these URLs is one a keyless caller can actually reach.
+
+    Resolution alone is not enough: `keyless_api_access._host_authority_is_direct` refuses a
+    `Host` that names anything, so a hostname bind yields a URL that resolves to a private
+    address and is still refused. Reporting it eligible is what made the LAN panel advertise
+    `Bearer not-needed` against a URL that answers 401, so the literal is required here too.
+
+    Admission decides, through the shared
+    `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is what
+    let an IPv4-mapped literal like `::ffff:192.168.1.24` be advertised while admission
+    refused it: `_normalized_ip` un-maps, which is exactly what that form is refused for.
+    """
+    import ipaddress
     from urllib.parse import urlparse
+
+    from utils.keyless_api_access import (
+        KEYLESS_SCOPE_INFERENCE,
+        keyless_authority_address_allowed,
+    )
+
     for url in urls:
         parsed = urlparse(url)
-        if parsed.hostname and _all_addresses_are(
-            parsed.hostname, parsed.port or 80, _private_non_loopback
-        ):
+        if not parsed.hostname:
+            continue
+        try:
+            # urlparse already strips the IPv6 brackets and lowercases; parse the
+            # remaining literal without normalising it
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            continue
+        if not keyless_authority_address_allowed(address, KEYLESS_SCOPE_INFERENCE):
+            continue
+        if _all_addresses_are(parsed.hostname, parsed.port or 80, _private_non_loopback):
             return True
     return False
 
