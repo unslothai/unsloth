@@ -177,17 +177,7 @@ def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
 
 
 def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch):
-    """Regression for #9901.
-
-    KeylessToolPolicyMiddleware runs this check on every HTTP request, including
-    GET /v1/models, ahead of routing. Before the fix, every concurrent caller that
-    saw a stale cache independently opened its own sqlite3 connection: a py-spy
-    dump under sustained concurrent inference showed many AnyIO worker threads
-    piled up inside sqlite3 connection open/close for this exact path, starving
-    the shared threadpool every other request -- lightweight ones included --
-    also needed just to get past this gate. A burst of concurrent callers landing
-    in the same stale window must now trigger exactly one real read.
-    """
+    """Concurrent stale-cache misses share one SQLite read (#9901)."""
     import utils.keyless_api_access as keyless
 
     set_keyless_api_access("inference", tools = False)
@@ -206,8 +196,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
         nonlocal call_count
         with count_lock:
             call_count += 1
-        # Held open long enough that, if coalescing were broken, every other
-        # thread would already have raced in and called this too.
+        # Keep the owner blocked while the followers arrive.
         assert release.wait(timeout = 10)
         return real_read()
 
@@ -222,8 +211,8 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
     threads = [threading.Thread(target = worker, args = (i,)) for i in range(n_threads)]
     for t in threads:
         t.start()
-    entered.wait(timeout = 10)  # release every worker into _settings() together
-    time.sleep(0.2)  # let the followers reach the inflight Event before unblocking the owner
+    entered.wait(timeout = 10)  # release all workers together
+    time.sleep(0.2)  # let followers observe the in-flight read
     clock[0] = keyless._SETTINGS_CACHE_TTL_S + 1.0
     release.set()
     for t in threads:
@@ -234,16 +223,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
 
 
 def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
-    """Regression for #9901, through the actual production call chain.
-
-    ``KeylessToolPolicyMiddleware`` dispatches ``asgi_request_is_keyless`` to
-    AnyIO's shared, finite threadpool for every request -- including a plain
-    GET /v1/models -- ahead of routing. This drives that exact function, through
-    a small worker pool standing in for AnyIO's shared limiter, and includes one
-    request submitted only after the burst is already running: a stand-in for a
-    lightweight request that arrives mid-storm and must not be left waiting on
-    a duplicate sqlite3 connection open of its own.
-    """
+    """Exercise #9901 through asgi_request_is_keyless and a finite worker pool."""
     import utils.keyless_api_access as keyless
     from utils.keyless_api_access import asgi_request_is_keyless
 
@@ -266,13 +246,12 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
 
     scope = asgi_scope(path = "/v1/models")
     n_requests = 20
-    pool_workers = 4  # a small stand-in for AnyIO's shared, finite thread limiter
+    pool_workers = 4  # model AnyIO's finite worker pool
 
     with ThreadPoolExecutor(max_workers = pool_workers) as pool:
         futures = [pool.submit(asgi_request_is_keyless, scope) for _ in range(n_requests)]
-        time.sleep(0.2)  # let the pool drain into the inflight Event before releasing
-        # A lightweight request landing mid-burst -- this is what must not be
-        # starved by the others contending on the settings read.
+        time.sleep(0.2)  # let the pool reach the in-flight read
+        # Submit a lightweight request after the burst starts.
         late_future = pool.submit(asgi_request_is_keyless, scope)
         release.set()
         results = [f.result(timeout = 10) for f in futures]

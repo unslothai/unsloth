@@ -82,8 +82,7 @@ _cached_settings: Optional[tuple[float, str, bool]] = None
 _settings_generation = 0
 _cache_lock = threading.Lock()
 _write_lock = threading.Lock()
-# Single-flight marker for a cache-miss refresh in progress; same idiom as
-# utils/hf_token_validation.py's _inflight. See _settings() for why this exists.
+# Coalesces concurrent cache misses; see _settings().
 _settings_refresh_inflight: Optional[threading.Event] = None
 _SETTINGS_INFLIGHT_WAIT_SECONDS = 30.0
 
@@ -99,9 +98,7 @@ def _read_settings() -> tuple[str, bool]:
     try:
         from storage.studio_db import get_app_settings
 
-        # One connection, one snapshot -- get_app_settings() exists precisely so a
-        # concurrent multi-key write cannot pair one save's scope with another
-        # save's tools value, the way two separate get_app_setting() calls could.
+        # Read both values from one SQLite snapshot.
         values = get_app_settings([KEYLESS_API_ACCESS_SETTING_KEY, KEYLESS_API_TOOLS_SETTING_KEY])
         scope = _coerce_scope(values.get(KEYLESS_API_ACCESS_SETTING_KEY))
         tools = _coerce_bool(values.get(KEYLESS_API_TOOLS_SETTING_KEY))
@@ -123,17 +120,8 @@ def _settings() -> tuple[str, bool]:
     keep the server open for the rest of the TTL. The generation counter dates each
     read against the writes, so only a read that still describes the DB is published.
 
-    A cache miss is single-flight: the first caller to see a stale cache becomes the
-    refresh owner and reads; every other concurrent caller waits on an Event and then
-    re-checks the cache, instead of also opening its own sqlite3 connection. This
-    check runs on every HTTP request (KeylessToolPolicyMiddleware applies it ahead of
-    routing, so even GET /v1/models pays it), so without coalescing, a burst of
-    concurrent requests landing in the same stale window used to fan out into that
-    many simultaneous connection opens/closes. sqlite3.connect()/close() on the same
-    file serialize inside the process (its unix VFS holds a mutex over the shared
-    inode/fd table), so that fan-out convoyed on AnyIO worker threads -- the same
-    finite, shared pool every other request also needs just to get past this gate --
-    and could starve the whole API even though the event loop stayed alive (#9901).
+    Only one stale-cache caller reads SQLite. Others wait for its Event, avoiding a
+    burst of connection opens on AnyIO's shared worker pool (#9901).
     """
     global _cached_settings, _settings_refresh_inflight
     owner_event: Optional[threading.Event] = None
@@ -150,9 +138,7 @@ def _settings() -> tuple[str, bool]:
                     generation = _settings_generation
                     break
             if not waiting.wait(_SETTINGS_INFLIGHT_WAIT_SECONDS):
-                # The owner is still working (or, pathologically, never finished);
-                # loop back rather than wait forever -- _read_settings() is itself
-                # bounded by SQLite's busy_timeout, so this should never trigger.
+                # Retry after the owner's SQLite busy timeout should have elapsed.
                 continue
 
         scope, tools = _read_settings()
