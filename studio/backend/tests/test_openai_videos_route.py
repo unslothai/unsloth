@@ -798,6 +798,57 @@ def test_a_reference_only_checkpoint_is_refused_before_the_model_switch(
     assert switched["completed"] is False, "the model was switched before the refusal"
 
 
+def test_ref2va_routes_the_input_image_as_a_reference(client, backend, monkeypatch):
+    import types
+
+    from core.inference import media_auto_switch
+    from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
+
+    switched = {"completed": False}
+    captured = {}
+
+    async def _fake_switch(
+        model,
+        *,
+        before_switch = None,
+        **_kwargs,
+    ):
+        pick = types.SimpleNamespace(
+            model_path = "MiniMaxAI/MiniMax-H3",
+            gguf_filename = "minimax_h3_ref2va-Q4_K_M.gguf",
+            model_kind = "gguf",
+        )
+        if before_switch is not None:
+            before_switch(pick)
+        switched["completed"] = True
+
+    def _status():
+        return {
+            **_FakeBackend.status(backend),
+            "repo_id": "MiniMaxAI/MiniMax-H3",
+            "h3_task": H3_TASK_REFERENCES,
+        }
+
+    def _begin(**kwargs):
+        captured.update(kwargs)
+        return {"width": 768, "height": 512}
+
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _fake_switch)
+    monkeypatch.setattr(backend, "status", _status)
+    monkeypatch.setattr(backend, "begin_generate", _begin)
+
+    resp = _create(
+        client,
+        {"prompt": "follow this subject", "model": "MiniMax-H3-Ref2VA"},
+        {"input_reference": ("subject.png", _reference_image_bytes("PNG"), "image/png")},
+    )
+    assert resp.status_code == 200, resp.json()
+    assert switched["completed"] is True
+    assert captured["first_frame"] is None
+    assert len(captured["reference_images"]) == 1
+    assert captured["reference_images"][0].startswith("data:image/png;base64,")
+
+
 def test_the_created_job_reports_the_canvas_the_backend_resolved(client, backend, monkeypatch):
     """With a reference image and no size the canvas follows the source aspect.
 

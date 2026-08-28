@@ -1327,6 +1327,7 @@ async def _create_openai_video(
             validate_video_reference_conditioning,
             validate_video_request_shape,
         )
+        from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
 
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
@@ -1348,11 +1349,14 @@ async def _create_openai_video(
         )
         validate_video_request_shape(fam, width, height, want_frames)
         h3_task = expected_partition(pick)
-        validate_video_keyframe_conditioning(fam, h3_task, has_keyframes = reference is not None)
+        ref2va = h3_task == H3_TASK_REFERENCES
+        validate_video_keyframe_conditioning(
+            fam, h3_task, has_keyframes = reference is not None and not ref2va
+        )
         validate_video_reference_conditioning(
             fam,
             h3_task,
-            has_references = False,
+            has_references = reference is not None and ref2va,
         )
 
     try:
@@ -1375,6 +1379,9 @@ async def _create_openai_video(
     status = await asyncio.to_thread(backend.status)
     if not status.get("loaded"):
         raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+    from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
+
+    ref2va = status.get("h3_task") == H3_TASK_REFERENCES
     defaults = status.get("defaults") or {}
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
@@ -1385,7 +1392,8 @@ async def _create_openai_video(
             width = width,
             height = height,
             duration_s = seconds,
-            first_frame = reference,
+            first_frame = None if ref2va else reference,
+            reference_images = [reference] if ref2va and reference is not None else None,
             video_id = video_id,
         )
     except VideoShapeError as exc:
