@@ -14,11 +14,18 @@ export type GgufFitClass =
   | "partial"
   | "ram"
   | "disk"
+  | "nospace"
   | "oom";
 
 export interface GgufFitInput {
   gpuGb?: number;
   systemRamGb?: number;
+  /** Free space on the cache volume. Absent or 0 means unread, and the floor
+   *  abstains rather than refusing every row. */
+  diskFreeGb?: number;
+  /** True when this file is already on the machine. The floor is about landing
+   *  the download, and a landed file needs no space it does not already hold. */
+  onDisk?: boolean;
   /** The user's saved VRAM Budget, when it is known.
    *
    *  Absent means "not loaded yet, or a backend too old to serve the route", and
@@ -67,8 +74,16 @@ export function requiredGgufMemoryGb(
 
 export function classifyGgufFit(
   sizeBytes: number,
-  { gpuGb, systemRamGb, budgetFraction }: GgufFitInput,
+  { gpuGb, systemRamGb, budgetFraction, diskFreeGb, onDisk }: GgufFitInput,
 ): GgufFitClass {
+  // Before any memory question: every tier below is a claim about where the
+  // weights sit, and all of them, `disk` loudest, assume the file is on the
+  // machine. Raw file size against the raw free figure, no activations added
+  // (disk holds the file, not the runtime) and no share taken out (a floor,
+  // not a budget).
+  if (!onDisk && typeof diskFreeGb === "number" && diskFreeGb > 0) {
+    if (sizeBytes / 1024 ** 3 > diskFreeGb) return "nospace";
+  }
   const required = requiredGgufMemoryGb(sizeBytes);
   if (!gpuGb || gpuGb <= 0) {
     const ramBudget = (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;

@@ -7,6 +7,7 @@ import { classifyGgufFit } from "@/lib/gguf-fit";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
 
 type GgufVariantResources = {
+  diskFreeGb?: number;
   gpuGb?: number;
   systemRamGb?: number;
   /** The saved VRAM Budget, so the sort ranks against the line the loader will
@@ -53,7 +54,12 @@ export function ggufVariantFitRank(
   variant: GgufVariantDetail,
   resources: GgufVariantResources,
 ): number {
-  switch (classifyGgufFit(variant.size_bytes, resources)) {
+  switch (
+    classifyGgufFit(variant.size_bytes, {
+      ...resources,
+      onDisk: Boolean(variant.downloaded),
+    })
+  ) {
     case "fits":
       return 0;
     case "marginal":
@@ -64,6 +70,7 @@ export function ggufVariantFitRank(
     // Below anything that fits in memory, above a load that cannot happen.
     case "disk":
       return 3;
+    // nospace and oom: both refusals, both last.
     default:
       return 4;
   }

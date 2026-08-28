@@ -110,6 +110,15 @@ test("both refusals share a pill, and neither is auto-selected", () => {
   assert.equal(ggufFitIsAutoSelectable("nospace"), false);
 });
 
+test("a quant already on the machine is never refused for the space it holds", () => {
+  // Free space excludes the file's own bytes, so a downloaded 147 GiB quant on a
+  // nearly-full disk would read as undownloadable while sitting there loadable.
+  const box = { ...budget(80, 134.5), diskFreeGb: 124.7 };
+  assert.equal(classifyGgufVariantFit(147 * GB, box, true), "tight");
+  // Past memory it still pages, from the copy it already has.
+  assert.equal(classifyGgufVariantFit(200 * GB, box, true), "disk");
+});
+
 // ── the Hub download card, same bug in different words ───────────────────────
 
 test("the Hub card agrees with the quant list on the same file", () => {
@@ -134,4 +143,16 @@ test("the Hub card pages from disk on a machine with no GPU", () => {
 test("no budget at all is still a refusal, not a disk load", () => {
   // Nothing was measured, so there is no claim to make about paging either.
   assert.equal(hubFit(30 * GB, { gpuGb: 0, systemRamGb: 0 }), "oom");
+});
+
+test("the Hub card carries the same disk floor, with the same escape hatches", () => {
+  const budget = { gpuGb: 80, systemRamGb: 167.1, diskFreeGb: 124.7 };
+  // Past free disk: undownloadable, whatever memory says.
+  assert.equal(hubFit(330 * GB, budget), "nospace");
+  // Under the floor the memory ladder is untouched.
+  assert.equal(hubFit(120 * GB, budget), "partial");
+  // Already on the machine: the floor does not apply.
+  assert.equal(hubFit(330 * GB, { ...budget, onDisk: true }), "disk");
+  // Unread disk abstains, matching the quant list.
+  assert.equal(hubFit(330 * GB, { gpuGb: 80, systemRamGb: 167.1 }), "disk");
 });

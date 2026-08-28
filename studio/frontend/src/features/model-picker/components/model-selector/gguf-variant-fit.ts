@@ -55,6 +55,9 @@ export function classifyGgufVariantFit(
     /** Free space on the cache volume, 0 when unread. */
     diskFreeGb?: number;
   },
+  /** True when the file is already on the machine. The floor is about landing
+   *  the download, and a landed file needs no space it does not already hold. */
+  onDisk?: boolean,
 ): GgufFit {
   // Preserve permissive behavior only when no budget was measured. A known
   // zero Vulkan budget means every non-empty variant is OOM.
@@ -66,7 +69,7 @@ export function classifyGgufVariantFit(
   // and nothing to page. Checked against the raw figure with no share taken out of
   // it: this is a hard floor, not a budget, and shaving it would refuse downloads
   // that fit. 0 means the probe said nothing, so the check abstains.
-  if (diskFreeGb > 0 && gb > diskFreeGb) return "nospace";
+  if (!onDisk && diskFreeGb > 0 && gb > diskFreeGb) return "nospace";
   if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
   // No-GPU / unified-memory hosts (Mac) have only the RAM budget, and past it they
   // page from the file like anything else. mmap does not care about pool topology.
