@@ -301,7 +301,6 @@ test("a launch bound to one host names that host, not the wildcard", () => {
 });
 
 test("the backend decides what counts as a wildcard, whatever it is spelled", () => {
-  // "::0" is not in the backend's current set; the message must follow the flag
   for (const host of ["0.0.0.0", "::", "::0"]) {
     const msg = lanAccessBlockMessage(
       blocked("launch_managed", { bindHost: host, wildcardBind: true }),
@@ -311,6 +310,18 @@ test("the backend decides what counts as a wildcard, whatever it is spelled", ()
     assert.ok(msg?.includes(`--host ${host}`), host);
     assert.ok(!msg?.includes(`binds ${host} `), host);
   }
+});
+
+test("an empty wildcard bind is distinct from a missing bind field", () => {
+  const msg = lanAccessBlockMessage(
+    blocked("launch_managed", { bindHost: "", wildcardBind: true }),
+    false,
+  );
+  assert.equal(
+    msg,
+    "This launch binds every network interface, so Unsloth is on the network already.",
+  );
+  assert.ok(!msg.includes("--host"));
 });
 
 test("a backend that omits the bind host still explains the block", () => {

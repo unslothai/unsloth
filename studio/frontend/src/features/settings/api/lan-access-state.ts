@@ -133,17 +133,16 @@ export function lanAccessStopDisconnectsOrigin(
   });
 }
 
-// A launch-managed bind is either a wildcard or the host the launch was given.
-// Which one is the backend's call, so the message reads its flag rather than
-// keeping a second copy of the set of wildcard spellings.
+// the backend owns wildcard classification so the message follows its flag
 function launchManagedMessage(status: LanAccessStatus): string {
+  if (status.wildcardBind) {
+    const option = status.bindHost ? ` (--host ${status.bindHost})` : "";
+    return `This launch binds every network interface${option}, so Unsloth is on the network already.`;
+  }
   if (!status.bindHost) {
     return "This launch already puts Unsloth on the network.";
   }
-  const bound = status.wildcardBind
-    ? "every network interface"
-    : status.bindHost;
-  return `This launch binds ${bound} (--host ${status.bindHost}), so Unsloth is on the network already.`;
+  return `This launch binds ${status.bindHost} (--host ${status.bindHost}), so Unsloth is on the network already.`;
 }
 
 export function lanAccessBlockMessage(
