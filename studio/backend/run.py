@@ -169,16 +169,41 @@ def public_check_disabled() -> bool:
     return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+def _resolve_lan_ip() -> str:
+    """This machine's own LAN-facing IPv4 address. No third-party network call.
+
+    The UDP "connect" below only fixes the local end of the socket; nothing is
+    sent to 8.8.8.8. Kept separate from ``_resolve_external_ip`` so a caller
+    that wants "an address another device on THIS network can reach" never
+    gets back the public WAN IP ifconfig.me reports (#8868): the two are
+    different addresses, and a LAN peer usually cannot even reach the public
+    one without router-side port-forwarding.
+    """
+    import socket
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
+
+
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
     2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
-    3. LAN IP via UDP socket trick (fallback)
+    3. LAN IP via UDP socket trick (fallback; see _resolve_lan_ip)
+
+    This is the machine's INTERNET-facing address, used for the reachability
+    probe and the Cloudflare messaging -- not for "another device on your
+    network," which _network_share_host_for_bind answers instead.
     """
     import urllib.request
-    import socket
 
     # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
     try:
@@ -204,14 +229,7 @@ def _resolve_external_ip() -> str:
             pass
 
     # 3. Fallback: LAN IP via UDP socket trick
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "0.0.0.0"
+    return _resolve_lan_ip()
 
 
 def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
@@ -522,6 +540,20 @@ def _display_host_for_bind(host: str) -> str:
     return _resolve_external_ip() if host in ("0.0.0.0", "::") else host
 
 
+def _network_share_host_for_bind(host: str) -> str:
+    """The address to hand another device on this LAN, or to build the API
+    panel's direct base URL from.
+
+    Deliberately NOT _display_host_for_bind: that one answers "what is this
+    machine's internet-facing address" (right for the reachability probe and
+    the Cloudflare line), and for a wildcard bind that can be a public WAN IP
+    a LAN peer cannot even route to (#8868). This answers "what can a device
+    on my own network reach," which is _resolve_lan_ip's job, never a
+    third-party lookup's.
+    """
+    return _resolve_lan_ip() if host in ("0.0.0.0", "::") else host
+
+
 def _loopback_bind_host_for(host: str) -> str:
     return "::1" if host == "::" else "127.0.0.1"
 
@@ -602,6 +634,9 @@ def _emit_startup_output(
         port = port,
         bind_host = host,
         display_host = display_host,
+        # The "from another device on your network" line needs the LAN address,
+        # not display_host's possibly-public one (#8868).
+        network_host = _network_share_host_for_bind(host),
         include_stop_hint = False,
         lan_addresses = lan_addresses,
     )
@@ -2616,7 +2651,7 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
     if port and port > 0:
-        _direct_host = _display_host_for_bind(host)
+        _direct_host = _network_share_host_for_bind(host)
         app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
     else:
         app.state.server_url = None
@@ -2760,7 +2795,7 @@ def run_server(
 
     port = _final_bound_port(_server, port)
     app.state.server_port = port
-    app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
+    app.state.server_url = f"http://{_url_host(_network_share_host_for_bind(host))}:{port}"
     app.state.remote_access_port = port
     app.state.lan_access_port = port
 
