@@ -55,7 +55,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
-  buildAgentCommand,
+  buildAgentShellCommands,
   isLoopbackHost,
   normalizeHost,
   quoteShellArg,
@@ -500,23 +500,6 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
   { flag: "--yolo", descKey: "settings.agents.options.yolo" },
 ];
 
-const REMOTE_CMD_UNIX = `export UNSLOTH_STUDIO_URL=https://studio.example.com
-export UNSLOTH_API_KEY=sk-unsloth-...
-unsloth start claude`;
-
-// PowerShell uses $env: assignments; export is POSIX-only.
-const REMOTE_CMD_WINDOWS = `$env:UNSLOTH_STUDIO_URL = "https://studio.example.com"
-$env:UNSLOTH_API_KEY = "sk-unsloth-..."
-unsloth start claude`;
-
-// Independent alternatives, each with its own copy button (not one script).
-const PASSTHROUGH_EXAMPLES = [
-  { agent: "claude", flags: "--continue" },
-  { agent: "codex", flags: "--persist resume --last" },
-];
-
-const DRY_RUN_FLAGS = "--no-launch";
-
 /** Code box with the copy control inside it, top-right. Presentational: the
  *  copy state stays with the caller so existing resets still apply. */
 function CopyableCode({
@@ -595,16 +578,12 @@ function CommandBlock({ command }: { command: string }) {
 
 function SubagentSection({
   agent,
-  baseCommand,
-  modelArgs,
+  command,
 }: {
   agent: AgentDetails;
-  baseCommand: string;
-  modelArgs: string;
+  command: string;
 }) {
   const t = useT();
-  // modelArgs is empty when attaching to a resident model that has no id to name.
-  const command = `${baseCommand} --as-subagent${modelArgs ? ` ${modelArgs}` : ""}`;
   const prompt =
     agent.id === "opencode"
       ? t("settings.agents.subagent.opencodePrompt")
@@ -870,23 +849,18 @@ export function AgentsTab() {
     : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
   // No key is passed: the CLI caches an explicit one per base, overwriting a working
   // saved key. Omitting it replays the saved key; the remote section covers first setup.
-  const commandBase = buildAgentCommand(
+  const shellCommands = buildAgentShellCommands(
     studioBase,
-    null,
     commandOs,
     selectedAgent,
+    modelArgs,
   );
-  const command = attachOnly ? commandBase : `${commandBase} ${modelArgs}`;
-  // The fixed examples below target the same Unsloth, not a bare 127.0.0.1:8888.
-  const example = (agentId: string, flags: string) =>
-    `${buildAgentCommand(studioBase, null, commandOs, agentId)} ${flags}`;
+  const command = shellCommands.primary;
   const {
     copied,
     copy: handleCopy,
     reset: resetCopied,
   } = useCopyButton(command);
-  const remoteCommand =
-    commandOs === "windows" ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -1691,8 +1665,7 @@ export function AgentsTab() {
 
         <SubagentSection
           key={`${selectedAgent}:${commandModel}`}
-          baseCommand={commandBase}
-          modelArgs={modelArgs}
+          command={shellCommands.subagent}
           agent={selectedAgentDetails}
         />
 
@@ -1727,7 +1700,7 @@ export function AgentsTab() {
         description={t("settings.agents.remote.description")}
       >
         <div className="pt-3">
-          <CommandBlock command={remoteCommand} />
+          <CommandBlock command={shellCommands.remoteSetup} />
         </div>
       </SettingsSection>
 
@@ -1736,8 +1709,11 @@ export function AgentsTab() {
         description={t("settings.agents.passthrough.description")}
       >
         <div className="flex flex-col gap-3 pt-3">
-          {PASSTHROUGH_EXAMPLES.map(({ agent, flags }) => (
-            <CommandBlock key={flags} command={example(agent, flags)} />
+          {shellCommands.passThrough.map((passThroughCommand) => (
+            <CommandBlock
+              key={passThroughCommand}
+              command={passThroughCommand}
+            />
           ))}
         </div>
       </SettingsSection>
@@ -1747,7 +1723,7 @@ export function AgentsTab() {
         description={t("settings.agents.dryRun.description")}
       >
         <div className="pt-3">
-          <CommandBlock command={example("claude", DRY_RUN_FLAGS)} />
+          <CommandBlock command={shellCommands.dryRun} />
         </div>
       </SettingsSection>
     </div>

@@ -85,3 +85,46 @@ export function buildAgentCommand(
     ? `$env:UNSLOTH_STUDIO_URL="${studioUrl}"; ${cmd}`
     : `UNSLOTH_STUDIO_URL=${studioUrl} ${cmd}`;
 }
+
+export interface AgentShellCommands {
+  primary: string;
+  subagent: string;
+  remoteSetup: string;
+  passThrough: string[];
+  dryRun: string;
+}
+
+const REMOTE_SETUP_COMMANDS: Record<AgentCommandOs, string> = {
+  unix: `export UNSLOTH_STUDIO_URL=https://studio.example.com
+export UNSLOTH_API_KEY=sk-unsloth-...
+unsloth start claude`,
+  windows: `$env:UNSLOTH_STUDIO_URL = "https://studio.example.com"
+$env:UNSLOTH_API_KEY = "sk-unsloth-..."
+unsloth start claude`,
+};
+
+function appendCommand(command: string, args: string): string {
+  return args ? `${command} ${args}` : command;
+}
+
+export function buildAgentShellCommands(
+  base: string | null | undefined,
+  os: AgentCommandOs,
+  agent: string,
+  modelArgs: string,
+): AgentShellCommands {
+  const primaryBase = buildAgentCommand(base, null, os, agent);
+  return {
+    primary: appendCommand(primaryBase, modelArgs),
+    subagent: appendCommand(
+      `${primaryBase} --as-subagent`,
+      modelArgs,
+    ),
+    remoteSetup: REMOTE_SETUP_COMMANDS[os],
+    passThrough: [
+      `${buildAgentCommand(base, null, os, "claude")} --continue`,
+      `${buildAgentCommand(base, null, os, "codex")} --persist resume --last`,
+    ],
+    dryRun: `${buildAgentCommand(base, null, os, "claude")} --no-launch`,
+  };
+}
