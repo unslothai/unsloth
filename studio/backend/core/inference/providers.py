@@ -405,6 +405,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
 }
 
+
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     """Return the registry entry for a provider type, or None if unknown."""
     return PROVIDER_REGISTRY.get(provider_type)

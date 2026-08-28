@@ -2768,9 +2768,7 @@ class TestAnthropicMessagesToolRouting:
 
         call_kind, kwargs = backend.calls[0]
         assert call_kind == "tools"
-        assert kwargs["messages"][0]["content"].startswith(
-            "The current date is 2026-08-15.\n\n"
-        )
+        assert kwargs["messages"][0]["content"].startswith("The current date is 2026-08-15.\n\n")
 
     def test_server_tool_choice_alias_uses_the_selected_studio_name(self, monkeypatch):
         backend = _mock_backend(monkeypatch)

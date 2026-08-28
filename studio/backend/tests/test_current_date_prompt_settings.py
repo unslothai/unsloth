@@ -79,7 +79,9 @@ class TestCurrentDatePromptLine:
         import routes.inference as inference
 
         monkeypatch.setattr(
-            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
         )
         already = "The current date is 2026-08-14.\n\nBASE"
         assert (
@@ -91,7 +93,9 @@ class TestCurrentDatePromptLine:
         import routes.inference as inference
 
         monkeypatch.setattr(
-            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
         )
         prompt = "The current date is 2026-08-15.\n\nBASE"
         assert inference._apply_current_date_prompt(prompt) == prompt
@@ -100,7 +104,9 @@ class TestCurrentDatePromptLine:
         import routes.inference as inference
 
         monkeypatch.setattr(
-            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
         )
         prompt = "The current date is a phrase this prompt discusses, not a date stamp."
         assert (
@@ -174,7 +180,9 @@ class TestExternalProviderMessages:
     def _enabled(self, monkeypatch):
         import routes.inference as inference
         monkeypatch.setattr(
-            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+            inference,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
         )
 
     def test_date_prefixes_an_existing_system_turn(self):
@@ -330,6 +338,7 @@ class TestExternalProviderMessages:
         assert len(out) == len(messages)
         assert out[0]["content"][0]["text"].startswith("The current date is 2026-08-15.\n\n")
         assert out[1:] == messages[1:]
+
 
 class TestResearchSystemPrompt:
     """Every Deep Research call (planner, agent, audit, report) goes through this helper."""

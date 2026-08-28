@@ -194,7 +194,11 @@ def _contains_sensitive_key(value: object) -> bool:
     return False
 
 
-def _sanitize_config(payload: CreateResearchRun, thread: dict, http_request: Request = None) -> dict:
+def _sanitize_config(
+    payload: CreateResearchRun,
+    thread: dict,
+    http_request: Request = None,
+) -> dict:
     request = dict(payload.inferenceRequest)
     if _contains_sensitive_key(request):
         raise HTTPException(status_code = 400, detail = "Inference credentials cannot be persisted")

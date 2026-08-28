@@ -3845,7 +3845,9 @@ class TestGgufVisionToolRouting:
             request = ApiRequest(),
         )
 
-        system_messages = [message for message in captured["messages"] if message["role"] == "system"]
+        system_messages = [
+            message for message in captured["messages"] if message["role"] == "system"
+        ]
         assert len(system_messages) == 1
         assert system_messages[0]["content"].startswith("The current date is 2026-08-15.\n\n")
 
