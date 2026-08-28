@@ -44,13 +44,12 @@ const STATE_LABEL: Record<LanAccessStatus["state"], string> = {
   error: "Error",
 };
 
-// Settings is the ordinary owner, so naming it in the status says nothing.
 const OWNER_LABEL: Record<
   Exclude<LanAccessStatus["managedBy"], null>,
-  string | null
+  string
 > = {
   launch: "Launch managed",
-  settings: null,
+  settings: "Settings managed",
 };
 
 function stateDotClass(state?: LanAccessStatus["state"]): string {
