@@ -1447,9 +1447,10 @@ def test_connect_claude_no_launch(fake_studio):
     _assert_env_set(result.output, "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
-    # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
+    # Overlay is session-only and lives outside the user's ~/.claude.
     command = _launch_command(result.output)
-    settings = json.loads(command[command.index("--settings") + 1])
+    settings_path = Path(command[command.index("--settings") + 1])
+    settings = json.loads(settings_path.read_text())
     assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
     assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
@@ -1500,7 +1501,10 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
         "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
         "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
+        start._CLAUDE_SUBAGENT_SETTINGS_ENV: str(plugin / "settings.json"),
     }
+    settings = json.loads((plugin / "settings.json").read_text())
+    assert settings["availableModels"] == [MODEL["id"] + ":UD-Q4_K_XL"]
     skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
     assert "spawn an Unsloth agent or local agent" in skill
     assert "In plan mode" in skill
@@ -1516,7 +1520,11 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
         "which",
         lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
     )
-    server_env = {"UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret"}
+    server_env = {
+        "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": BASE,
+        "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"],
+    }
     plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
     assert mcp["command"] == "wsl.exe"
@@ -1529,7 +1537,14 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
         start._CLAUDE_SUBAGENT_MCP_MODULE,
     ]
     assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
-    assert mcp["env"]["WSLENV"].split(":") == ["EXISTING", "UNSLOTH_CLAUDE_SUBAGENT_API_KEY"]
+    assert mcp["env"][start._CLAUDE_SUBAGENT_SETTINGS_ENV] == str(plugin / "settings.json")
+    assert mcp["env"]["WSLENV"].split(":") == [
+        "EXISTING",
+        "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL",
+        "UNSLOTH_CLAUDE_SUBAGENT_API_KEY",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL",
+        start._CLAUDE_SUBAGENT_SETTINGS_ENV,
+    ]
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):

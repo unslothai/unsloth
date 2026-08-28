@@ -22,7 +22,7 @@ def _stub_env(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
 
 
 def test_protocol_lists_and_calls_local_agent():
@@ -215,7 +215,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cloud-oauth")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
 
     class Process:
         pid = 1234
@@ -276,7 +276,7 @@ def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
 
     class Process:
         pid = 1234
@@ -318,7 +318,7 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: [])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: [])
 
     class Process:
         pid = 1234
@@ -352,7 +352,7 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: [])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: [])
     cancel_event = bridge.threading.Event()
     stopped = []
 

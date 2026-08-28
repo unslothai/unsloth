@@ -117,6 +117,7 @@ _SUBAGENT_PLAN_INSTRUCTIONS = (
     "to the parent agent. Do not modify files."
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_SETTINGS_ENV = "UNSLOTH_CLAUDE_SUBAGENT_SETTINGS"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
@@ -2481,16 +2482,16 @@ def _claude_version() -> Optional[tuple]:
         return (0,)
 
 
-def _claude_flags(model_id: str) -> list:
+def _claude_flags(model_id: str, settings: Optional[str] = None) -> list:
     # KV-cache-preserving flags: move per-session context out of the system prompt and pass
     # the session overlay. claude < 2.1.98 rejects the dynamic-sections flag but already
     # supports --settings; no local binary means a printout for another machine, so assume
     # a current build.
     version = _claude_version()
-    settings = ["--settings", _claude_settings_overlay(model_id)]
+    settings_flags = ["--settings", settings or _claude_settings_overlay(model_id)]
     if version is not None and version < (2, 1, 98):
-        return settings
-    return [_DYNAMIC_SECTIONS_FLAG, *settings]
+        return settings_flags
+    return [_DYNAMIC_SECTIONS_FLAG, *settings_flags]
 
 
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:
@@ -2956,6 +2957,11 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     command = sys.executable
     args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
     mcp_env = dict(server_env)
+    model_id = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
+    if model_id:
+        settings = plugin / "settings.json"
+        _write_private_text(settings, _claude_settings_overlay(model_id))
+        mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
         args = [
@@ -2968,7 +2974,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         ]
         mcp_env["WSLENV"] = _merge_wslenv(
             os.environ.get("WSLENV", ""),
-            _wsl_bridge_names(server_env, ()),
+            (
+                *_wsl_bridge_names(server_env, ()),
+                *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if model_id else []),
+            ),
         )
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
@@ -4520,23 +4529,26 @@ def claude(
     # claude keeps its history in ~/.claude/projects, which --settings/env never
     # relocate, so a session already survives exit; resume it with `claude --continue`
     # or `--resume <id>` passed through.
-    command = [
-        "claude",
-        "--model",
-        model_id,
-        *_claude_flags(model_id),
-        *_yolo_command_flags("claude", yolo),
-        *ctx.args,
-    ]
-    _run(
-        base,
-        entry,
-        env,
-        command,
-        launch = launch,
-        install_hint = install_hint,
-        unset_env = _CLAUDE_ENV_UNSET,
-    )
+    with _session_config("claude", launch, persist = persist) as config:
+        settings = config / "settings.json"
+        _write_private_text(settings, _claude_settings_overlay(model_id))
+        command = [
+            "claude",
+            "--model",
+            model_id,
+            *_claude_flags(model_id, _agent_config_path(settings, ["claude"])),
+            *_yolo_command_flags("claude", yolo),
+            *ctx.args,
+        ]
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            unset_env = _CLAUDE_ENV_UNSET,
+        )
 
 
 @start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
