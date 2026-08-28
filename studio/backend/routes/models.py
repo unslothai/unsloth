@@ -3568,6 +3568,7 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
+        from utils.paths.path_utils import file_contents_available_locally
 
         # Before cache discovery (also filesystem I/O): started after, a slow enumeration would hand the walk a fresh budget.
         deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
@@ -3587,7 +3588,9 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
                 if time.monotonic() >= deadline:
                     logger.debug("native context read for '%s' out of budget", repo_id)
                     return None
-                if _is_mmproj_filename(f.name):
+                if _is_mmproj_filename(f.name) or not file_contents_available_locally(f):
+                    # Opening a cloud placeholder recalls its data. It keeps its variant row,
+                    # but has no context metadata until the file is hydrated.
                     continue
                 n = read_gguf_context_length(str(f))
                 if n:
