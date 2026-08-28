@@ -817,7 +817,7 @@ export function AudioPage({
       // A routed pick that arrives while a previous load is still tearing down would
       // otherwise be dropped here, and the route effect has already cleared ?model=, so
       // nothing retries it. Remembered and replayed from the finally below instead.
-      if (ttsLoadInFlight.current) {
+      if (ttsLoadInFlight.current || busyRef.current === "generating") {
         pendingRoutedTtsPick.current = {
           repoId,
           ggufFilename,
@@ -962,12 +962,12 @@ export function AudioPage({
       } finally {
         if (pendingTtsLoad.current?.generation === generation)
           pendingTtsLoad.current = null;
+        if (activeRef.current) await refreshStatus();
         ttsLoadInFlight.current = false;
         // Before the replay below, which needs the gate for its own attempt.
         releaseLifecycle();
         busyRef.current = null;
         setBusy(null);
-        if (activeRef.current) void refreshStatus();
         // Only while Audio is visible. Replaying unconditionally started a load with
         // activeRef already false, and since the deactivation effect had run it never saw
         // that attempt to cancel it, so a hidden page could replace the model Chat had
@@ -1855,7 +1855,9 @@ export function AudioPage({
       }
     } finally {
       generateAbort.current = null;
+      busyRef.current = null;
       setBusy(null);
+      if (activeRef.current) replayQueuedTtsPick();
     }
   }, [
     prompt,
@@ -1870,6 +1872,7 @@ export function AudioPage({
     maxTokens,
     refreshGallery,
     refreshStatus,
+    replayQueuedTtsPick,
     selectClip,
   ]);
 

@@ -63,7 +63,7 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
   // cleared ?model=, so nothing retried it.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{[\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*loadId,[\s\S]*audioType,[\s\S]*\};\s*return;\s*\}/,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{[\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*loadId,[\s\S]*audioType,[\s\S]*remoteCodeApproval,[\s\S]*\};\s*return;\s*\}/,
   );
   assert.match(
     source,
@@ -71,6 +71,27 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
     // unconditionally started a load with activeRef already false, which the deactivation
     // effect had already stopped watching, so a hidden page could replace Chat's model.
     /if \(activeRef\.current\) replayQueuedTtsPick\(\);/,
+  );
+});
+
+test("a preflight that loses to generation queues its load until generation ends", () => {
+  assert.match(
+    source,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{[\s\S]*pendingRoutedTtsPick\.current/,
+  );
+  assert.match(
+    source,
+    /generateAbort\.current = null;\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current\) replayQueuedTtsPick\(\)/,
+  );
+});
+
+test("a completed load keeps controls disabled until status catches up", () => {
+  const start = source.indexOf("const loadTtsModel = useCallback");
+  const end = source.indexOf("const loadTtsModelRef", start);
+  const loadFlow = source.slice(start, end);
+  assert.match(
+    loadFlow,
+    /if \(activeRef\.current\) await refreshStatus\(\);[\s\S]*busyRef\.current = null;[\s\S]*setBusy\(null\)/,
   );
 });
 
