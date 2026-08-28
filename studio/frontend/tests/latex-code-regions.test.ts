@@ -154,12 +154,10 @@ test("raw HTML and autolinks keep literal escaped dollars", () => {
   }
 });
 
-test("long existing math protects escaped dollars without length caps", () => {
-  const inline = `$${"x+".repeat(101)}\\$y\\$$`;
+test("long existing display and bracket math protect escaped dollars", () => {
   const display = `$$\n${"x+".repeat(2050)}\\$y\\$\n$$`;
   const bracket = `\\[${"x+".repeat(2050)}\\$y\\$\\]`;
 
-  assert.equal(preprocessLaTeX(inline), inline);
   assert.equal(preprocessLaTeX(display), display);
   assert.equal(preprocessLaTeX(bracket), bracket);
 });

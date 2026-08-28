@@ -687,6 +687,10 @@ function findDollarMathRegions(
       inlineOpening = i;
       continue;
     }
+    if (i - inlineOpening - 1 > 200) {
+      inlineOpening = i;
+      continue;
+    }
     if (/\d/.test(content[i + 1] ?? "")) continue;
     if (looksLikeMathBody(content.slice(inlineOpening + 1, i))) {
       inlineRegions.push([inlineOpening, i + 1]);
