@@ -96,24 +96,29 @@ function canUseLocalAgentDetection(base: string): boolean {
   return isTauri && isLoopbackBase(base);
 }
 
-// One timeout, reset on re-click and cleared on unmount, so the tick never leaks.
+// bind feedback to the copied text so command changes cannot retain a stale tick.
 function useCopyButton(text: string) {
-  const [copied, setCopied] = useState(false);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
   const timeoutRef = useRef<number | null>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    setCopiedText(null);
+    return () => {
       if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-    },
-    [],
-  );
+      timeoutRef.current = null;
+    };
+  }, [text]);
 
   const copy = async () => {
-    if (!(await copyToClipboard(text))) return;
-    setCopied(true);
+    const requestedText = text;
+    if (!(await copyToClipboard(requestedText))) return;
+    if (textRef.current !== requestedText) return;
+    setCopiedText(requestedText);
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = window.setTimeout(() => {
-      setCopied(false);
+      setCopiedText(null);
       timeoutRef.current = null;
     }, 1600);
   };
@@ -123,10 +128,10 @@ function useCopyButton(text: string) {
       window.clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    setCopied(false);
+    setCopiedText(null);
   };
 
-  return { copied, copy, reset };
+  return { copied: copiedText === text, copy, reset };
 }
 
 type AgentDetails = {
