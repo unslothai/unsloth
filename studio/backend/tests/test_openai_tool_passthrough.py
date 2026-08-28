@@ -7383,9 +7383,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         assert monitor.get(monitor_id)["reply"] == "Tool call: lookup({})\nDone."
 
-    def test_streamed_tool_monitor_flushes_scalar_call_before_terminal_content(
-        self, monkeypatch
-    ):
+    def test_streamed_tool_monitor_flushes_scalar_call_before_terminal_content(self, monkeypatch):
         import routes.inference as inf_mod
 
         monitor = ApiMonitor(max_entries = 3)
