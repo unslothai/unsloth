@@ -159,6 +159,40 @@ def test_stdio_argv_prefers_child_path_over_parent(managed_node, monkeypatch, tm
     assert os.path.samefile(argv[0], npx)
 
 
+@pytest.mark.parametrize("launcher", ["npm", "npx"])
+def test_windows_stdio_argv_bypasses_batch_launcher(launcher, monkeypatch, tmp_path):
+    bin_dir = tmp_path / "node"
+    cli = bin_dir / "node_modules" / "npm" / "bin" / f"{launcher}-cli.js"
+    cli.parent.mkdir(parents = True)
+    cli.write_text("")
+    node = bin_dir / "node.exe"
+    node.write_text("")
+    batch = bin_dir / f"{launcher}.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        mcp_client.shutil,
+        "which",
+        lambda command, path = None: str(batch) if command == launcher else str(node),
+    )
+    arguments = ["%TOKEN%", "a&b", "x|y", 'say "hello"', "a b", ""]
+
+    argv = mcp_client._stdio_argv([launcher, *arguments], {"PATH": str(bin_dir)})
+
+    assert argv == [str(node), str(cli), *arguments]
+
+
+def test_windows_stdio_argv_rejects_batch_when_cli_is_unknown(monkeypatch, tmp_path):
+    batch = tmp_path / "custom" / "npx.cmd"
+    batch.parent.mkdir()
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+
+    with pytest.raises(ValueError, match = "npm CLI script"):
+        mcp_client._stdio_argv(["npx", "package"], {"PATH": str(tmp_path)})
+
+
 def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_path):
     npx = _make_executable(managed_node, "npx")
     bare = tmp_path / "empty"

@@ -352,7 +352,32 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
         resolved = shutil.which(parts[0], path = path)
     except OSError:
         resolved = None
-    return [resolved or parts[0], *parts[1:]]
+    executable = resolved or parts[0]
+    if _IS_WINDOWS and _launcher_name(executable) in {"npm", "npx"}:
+        suffix = os.path.splitext(executable)[1].lower()
+        if suffix in {".cmd", ".bat"}:
+            launcher_dir = os.path.dirname(executable)
+            cli = os.path.join(
+                launcher_dir,
+                "node_modules",
+                "npm",
+                "bin",
+                f"{_launcher_name(executable)}-cli.js",
+            )
+            sibling_node = os.path.join(launcher_dir, "node.exe")
+            try:
+                node = sibling_node if os.path.isfile(sibling_node) else shutil.which("node", path = path)
+                cli_exists = os.path.isfile(cli)
+            except OSError:
+                node = None
+                cli_exists = False
+            if node and cli_exists:
+                # bypass cmd.exe so shell metacharacters remain literal argv.
+                return [node, cli, *parts[1:]]
+            raise ValueError(
+                f"Cannot launch {executable!r} without its Node executable and npm CLI script"
+            )
+    return [executable, *parts[1:]]
 
 
 def _client(
