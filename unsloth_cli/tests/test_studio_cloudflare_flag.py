@@ -347,6 +347,9 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     backend = types.ModuleType("studio.backend.run")
     backend.run_server = lambda **_kwargs: _App()
     backend._resolve_external_ip = lambda: "198.51.100.7"
+    backend._display_host_for_bind = lambda host: (
+        backend._resolve_external_ip() if host == "0.0.0.0" else host
+    )
     backend._verify_global_reachability = lambda host, port: calls.append(("verify", host, port))
     backend._print_cloudflare_line = lambda **kw: calls.append(("print", kw))
     backend._server = object()
