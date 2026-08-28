@@ -202,12 +202,17 @@ def _resolve_external_ip() -> str:
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
     2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
-    3. LAN IP via UDP socket trick (fallback; see _resolve_lan_ip)
+    3. The default route's own source address (fallback)
 
     This is the machine's INTERNET-facing address, used for the reachability
     probe and the Cloudflare messaging -- not for "another device on your
-    network," which _network_share_host_for_bind answers instead.
+    network," which _network_share_host_for_bind answers instead. Step 3 stays
+    a raw route lookup rather than _resolve_lan_ip: that one filters out every
+    address a LAN peer cannot open (WSL's NAT side, link-local), which is the
+    right policy for an address we advertise and the wrong one for a last-resort
+    answer to "where am I".
     """
+    import socket
     import urllib.request
 
     # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
@@ -233,8 +238,16 @@ def _resolve_external_ip() -> str:
         except Exception:
             pass
 
-    # 3. Fallback: LAN IP via UDP socket trick
-    return _resolve_lan_ip()
+    # 3. Fallback: the source address the default route picks. A UDP connect only
+    # fixes the local end of the socket; nothing is sent to the target.
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
 
 
 def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
@@ -589,6 +602,25 @@ def _url_host(host: str) -> str:
         if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
         else url_host
     )
+
+
+def _direct_server_url(host: str, port: int) -> "Optional[str]":
+    """The API panel's direct (non-tunnel) base, or None when this launch has no
+    address worth publishing.
+
+    A wildcard bind whose LAN address cannot be resolved (WSL behind NAT, a host
+    with only loopback) would otherwise publish ``http://0.0.0.0:<port>``, and
+    the frontend prefers any non-null server_url over the origin the client
+    actually reached -- so the API examples, the desktop agent command and a
+    copied preview link would all name an address that resolves to nothing.
+    None hands those callers back their working origin.
+    """
+    if not port or port <= 0:
+        return None
+    share_host = _network_share_host_for_bind(host)
+    if is_wildcard_host(share_host):
+        return None
+    return f"http://{_url_host(share_host)}:{port}"
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
@@ -2721,11 +2753,7 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     app.state.server_request_host = None
     # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
-    if port and port > 0:
-        _direct_host = _network_share_host_for_bind(host)
-        app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
-    else:
-        app.state.server_url = None
+    app.state.server_url = _direct_server_url(host, port)
     # raw bind address: the keyless exposure warning must tell loopback from a wildcard bind
     app.state.bind_host = host
     app.state.secure = secure
@@ -2867,7 +2895,7 @@ def run_server(
     port = _final_bound_port(_server, port)
     app.state.server_port = port
     app.state.server_request_host = _bound_request_host(_server)
-    app.state.server_url = f"http://{_url_host(_network_share_host_for_bind(host))}:{port}"
+    app.state.server_url = _direct_server_url(host, port)
     app.state.remote_access_port = port
     app.state.lan_access_port = port
 
