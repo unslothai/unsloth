@@ -173,7 +173,6 @@ async def _settings_async() -> tuple[str, bool, int]:
 
 async def _refresh_settings_async() -> tuple[str, bool, int]:
     from starlette.concurrency import run_in_threadpool
-
     while True:
         scope, tools, pending, generation = await run_in_threadpool(_settings_once)
         if not pending:
@@ -191,8 +190,9 @@ def _async_settings_task() -> asyncio.Task:
             _async_settings_tasks[loop] = weakref.ref(task)
             _async_settings_pending_tasks.add(task)
             task.add_done_callback(
-                lambda completed, loop_ref = weakref.ref(loop):
-                    _release_async_settings_task(completed, loop_ref)
+                lambda completed, loop_ref = weakref.ref(loop): _release_async_settings_task(
+                    completed, loop_ref
+                )
             )
     return task
 
