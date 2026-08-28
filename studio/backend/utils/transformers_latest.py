@@ -358,6 +358,60 @@ def clear_caches() -> None:
     end_sidecar_swap()
 
 
+# What unsloth_zoo strips to reach a bnb repo's full-precision base.
+_MLX_BNB_SUFFIXES = ("-unsloth-bnb-4bit", "-bnb-4bit")
+
+
+def _is_bitsandbytes_config(cfg: dict | None) -> bool:
+    """Whether *cfg* describes a bitsandbytes-quantized checkpoint."""
+    if not isinstance(cfg, dict):
+        return False
+    quant = cfg.get("quantization_config")
+    return isinstance(quant, dict) and quant.get("quant_method") == "bitsandbytes"
+
+
+def _mlx_swaps_bnb_repo_for_its_base(model_name: str) -> bool:
+    """Whether the MLX loader replaces this bnb Hub id with its base repo.
+
+    Mirrors unsloth_zoo's ``_remap_unsloth_bnb_hub_id_for_mlx``: only an
+    ``unsloth/`` Hub id is remapped, never a local directory. What it remaps, MLX
+    quantizes itself, so transformers never sees that architecture.
+    """
+    if not isinstance(model_name, str) or not model_name.startswith("unsloth/"):
+        return False
+    if os.path.exists(model_name):
+        return False
+    return model_name.endswith(_MLX_BNB_SUFFIXES)
+
+
+def _architecture_cannot_come_from_transformers(
+    model_name: str = "", cfg: dict | None = None
+) -> bool:
+    """Whether this host builds model architectures somewhere other than transformers.
+
+    The inference backend is chosen by hardware, and the MLX branch has no
+    transformers path to fall back to, so on MLX mlx-lm and mlx-vlm decide what
+    loads. Upgrading transformers cannot make an architecture loadable there, so
+    offering the install costs minutes and changes nothing.
+
+    One bitsandbytes repo is the exception. mlx-lm cannot read bnb weights, so the
+    MLX loader dequantizes them through ``AutoModelForCausalLM.from_pretrained``
+    -- transformers building the architecture after all -- and only an
+    ``unsloth/*-bnb-4bit`` Hub id is swapped for its base repo before that. A
+    third-party or local bnb repo therefore still fails inside transformers with
+    the unrecognized-architecture error this offer exists to fix, so it keeps it.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        if get_device() != DeviceType.MLX:
+            return False
+    except Exception:
+        return False
+    if _is_bitsandbytes_config(cfg) and not _mlx_swaps_bnb_repo_for_its_base(model_name):
+        return False
+    return True
+
+
 def latest_transformers_supports(model_type: str) -> dict | None:
     """Whether the newest transformers (PyPI release and/or GitHub main) ships *model_type*.
 
@@ -398,6 +452,9 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
     error. Returns ``{"model_type", "pypi_version", "supported_in_pypi",
     "supported_in_main"}`` when the newest transformers knows the type, else None.
 
+    Also None on a host that does not build architectures through transformers at
+    all -- see ``_architecture_cannot_come_from_transformers``.
+
     Never raises; every network touch is bounded and cached. Offline or with the
     ``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS`` kill switch it returns None immediately.
     """
@@ -406,6 +463,8 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             return None
         cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
+            return None
+        if _architecture_cannot_come_from_transformers(model_name, cfg):
             return None
         candidates = _model_types_from_config(cfg)
         if not candidates:
