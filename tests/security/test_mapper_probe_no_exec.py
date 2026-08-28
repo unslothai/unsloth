@@ -922,3 +922,59 @@ def test_a_mutation_above_a_class_shadow_still_counts(monkeypatch):
         for table in tables
         if isinstance(table, dict)
     ), "an entry installed before the class bound the name was dropped"
+
+
+# How mapper.py looked before `build_mappers` existed, and still looks on any release
+# older than that change: the five exports are initialised empty and filled by a
+# module-scope loop. The probe reproduces that loop with the INSTALLED builder, so the
+# empty literals must not be read as the module clearing the tables.
+_NO_BUILDER_MAPPER = (
+    '__INT_TO_FLOAT_MAPPER = {"vendor/x-bnb-4bit": ("vendor/x",)}\n'
+    "INT_TO_FLOAT_MAPPER  = {}\n"
+    "FLOAT_TO_INT_MAPPER  = {}\n"
+    "MAP_TO_UNSLOTH_16bit = {}\n"
+    "FLOAT_TO_FP8_BLOCK_MAPPER = {}\n"
+    "FLOAT_TO_FP8_ROW_MAPPER   = {}\n"
+    "for key, values in __INT_TO_FLOAT_MAPPER.items():\n"
+    "    INT_TO_FLOAT_MAPPER[key] = values[0]\n"
+)
+
+
+def test_a_mapper_without_a_builder_still_reports_its_models(monkeypatch):
+    """The empty initialisers above a fill loop are not the module clearing the tables.
+
+    Reading them as clears emptied all five, so `get_model_name` stopped raising the
+    upgrade-only NotImplementedError for every model and the notice silently died.
+    """
+    with _serving(_NO_BUILDER_MAPPER, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(table for table in tables), "the probe reported no models at all"
+    assert any(
+        "vendor/x" in str(key) or "vendor/x" in str(value)
+        for table in tables
+        if isinstance(table, dict)
+        for key, value in table.items()
+    ), "the source table's entry did not reach the exported tables"
+
+
+def test_a_nonempty_rebind_still_replaces_the_table(monkeypatch):
+    """Only the EMPTY literal is an initialiser; a real one still replaces."""
+    staged = _NO_BUILDER_MAPPER + 'INT_TO_FLOAT_MAPPER = {"vendor/only": "unsloth/only"}\n'
+    with _serving(staged, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert tables[0] == {"vendor/only": "unsloth/only"}, tables[0]
+
+
+def test_the_upgrade_notice_fires_for_a_model_only_the_newer_mapper_knows(monkeypatch):
+    """End to end: an unmapped name plus a newer mapper that maps it must raise."""
+    staged = REAL_MAPPER.replace(
+        "__INT_TO_FLOAT_MAPPER = \\\n{\n",
+        '__INT_TO_FLOAT_MAPPER = \\\n{\n'
+        '    "vendor/brand-new-bnb-4bit": ("vendor/brand-new",),\n',
+        1,
+    )
+    assert staged != REAL_MAPPER, "the source table header moved"
+    monkeypatch.setattr(loader_utils, "_env_says_offline", lambda: False)
+    with _serving(staged, monkeypatch):
+        with pytest.raises(NotImplementedError, match = "not supported in your current"):
+            loader_utils.get_model_name("vendor/brand-new", load_in_4bit = True)
