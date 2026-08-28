@@ -123,6 +123,29 @@ def test_configure_reads_launch_ownership_from_the_bind_host(
     assert state.lan_access_ready is False
 
 
+def test_an_ephemeral_hostname_launch_keeps_its_loopback_policy(monkeypatch):
+    monkeypatch.setattr(
+        lan_settings.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+        ],
+    )
+    state = SimpleNamespace()
+
+    lan_settings.configure_lan_access(
+        state,
+        port = 0,
+        bind_host = "loopback.test",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+
+    assert state.lan_access_launch_addresses == ("127.0.0.1",)
+    assert state.lan_access_launch_managed is False
+
+
 def _transport_request(
     *,
     server = ("192.168.1.24", 8888),

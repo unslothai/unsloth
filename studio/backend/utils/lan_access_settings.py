@@ -52,7 +52,7 @@ def _resolve_host_addresses(host: str, port: int) -> tuple:
     literal = _normalized_ip(host)
     if literal is not None:
         return (literal,)
-    if not isinstance(host, str) or not isinstance(port, int) or port <= 0:
+    if not isinstance(host, str) or not isinstance(port, int) or port < 0:
         return ()
     try:
         infos = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
