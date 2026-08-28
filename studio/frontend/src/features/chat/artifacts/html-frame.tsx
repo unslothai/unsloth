@@ -281,7 +281,13 @@ export function ArtifactHtmlFrame({
                   narrow grant leads as the primary action and the one that
                   widens every canvas is the quieter outline beside it. */}
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" onClick={() => setGrantedCode(code)}>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    iframeRef.current?.focus({ preventScroll: true });
+                    setGrantedCode(code);
+                  }}
+                >
                   {t("settings.chat.artifacts.blockedBannerAction")}
                 </Button>
                 <Button

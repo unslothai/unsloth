@@ -459,6 +459,14 @@ test("dismissing the banner leaves focus on the canvas", () => {
   assert.ok(focusAt < dismissAt, "focus must move before the button unmounts");
 });
 
+test("granting network access leaves focus on the canvas", () => {
+  const handler = readHandlerCalling("setGrantedCode");
+  const focusAt = handler.indexOf("iframeRef.current?.focus");
+  const grantAt = handler.indexOf("setGrantedCode");
+  assert.ok(focusAt >= 0, "the grant must hand focus to the canvas");
+  assert.ok(focusAt < grantAt, "focus must move before the button unmounts");
+});
+
 // Turning the setting on unmounts the button that opened the dialog, and the
 // settings dialog only restores an opener that is still connected. Without a
 // target that outlives the banner, closing the dialog drops focus on <body>.
