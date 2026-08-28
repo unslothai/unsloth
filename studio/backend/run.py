@@ -180,7 +180,6 @@ def _resolve_lan_ip() -> str:
     one without router-side port-forwarding.
     """
     import socket
-
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
