@@ -356,19 +356,174 @@ def thread_survives_reopen(base_row: dict, treat_row: dict) -> list[dict]:
     return out
 
 
+def _extent_of(row: dict) -> tuple[Optional[float], bool]:
+    """(the arm's scroll extent as `scroll_extent` measures it, was it reconstructed).
+
+    `expect.bottom` is `scrollHeight - clientHeight`, read by `SCROLL_JS` before the gesture moves
+    anything; `scroll_extent` compares `census.viewport_scroll_height`, which is `scrollHeight`.
+    Same physical quantity offset by a constant, and the constant is not harmless: `_drift` is
+    proportional, so subtracting a shared `clientHeight` AMPLIFIES the drift by `H / (H - C)` --
+    1.087 on the 10,000 px extent and 800 px viewport measured here, so a tolerance applied to
+    `bottom` is 8.7% tighter than the same number applied to the extent, and the two checks print
+    two different percentages for one scrollbar.
+
+    So the extent is reconstructed from `viewport_client_height`, which `scene/dom.js` has recorded
+    in the census all along. `clientHeight` does not change while the viewport scrolls, so reading
+    it from the census and `bottom` from the gesture is not mixing two instants of a moving
+    quantity.
+
+    Falls back to `bottom` when the census does not carry it -- a payload recorded before that
+    field, or a census that failed -- and says which of the two it returned.
+    """
+    bottom = _expect(row, "bottom")
+    if not isinstance(bottom, (int, float)):
+        return None, False
+    client = (row.get("census") or {}).get("viewport_client_height")
+    if not isinstance(client, (int, float)):
+        return float(bottom), False
+    return float(bottom) + float(client), True
+
+
+def _client_height(row: dict) -> Optional[float]:
+    client = (row.get("census") or {}).get("viewport_client_height")
+    return float(client) if isinstance(client, (int, float)) else None
+
+
+def _bottom_of(row: dict) -> Optional[float]:
+    bottom = _expect(row, "bottom")
+    return float(bottom) if isinstance(bottom, (int, float)) else None
+
+
+def _comparable_extents(base_row: dict, treat_row: dict) -> tuple[Any, Any, str]:
+    """The two numbers `scroll_bottom_agrees` compares, and what they are.
+
+    ONE DECISION FOR BOTH ARMS. Reconstructing per arm and comparing whatever each produced puts a
+    `scrollHeight` beside a `bottom`: two arms with an identical 1,200 px `bottom` over an 800 px
+    viewport, one of whose censuses failed, came out 2,000 against 1,200 and BROKEN at 40% drift,
+    with a detail line that said `no client height on both arms` over the mixed pair.
+
+    AND ONLY WHEN THE HEIGHTS AGREE. `clientHeight` is a shared offset only if it is shared. Two
+    arms reporting the same 10,000 px `scrollHeight` at client heights of 800 and 2,000 have
+    bottoms of 9,200 and 8,000 -- 1,200 px less room for the gesture on one of them -- and
+    reconstructing both to 10,000 reports MATCH at 0.0% drift over that. `scroll_extent` already
+    compares the scroll heights; what this check is for is the range the gesture actually had.
+
+    So both arms are reconstructed together or neither is, and a fallback compares the raw bottoms
+    at the same allowance, which is the quantity a differing viewport moves.
+    """
+    b_ext, b_full = _extent_of(base_row)
+    t_ext, t_full = _extent_of(treat_row)
+    b_bottom, t_bottom = _bottom_of(base_row), _bottom_of(treat_row)
+    if not (b_full and t_full):
+        return b_bottom, t_bottom, "bottom (no client height on both arms)"
+    b_client, t_client = _client_height(base_row), _client_height(treat_row)
+    if b_client != t_client:
+        return (
+            b_bottom,
+            t_bottom,
+            f"bottom (client heights differ: {b_client} vs {t_client})",
+        )
+    return b_ext, t_ext, "scroll extent"
+
+
 def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
-    """scroll_after: the gesture still covers the ground it commanded, on both arms."""
+    """scroll_after: the gesture covers the ground it commanded and no more, on both arms."""
     out = []
+    # THE PAIR'S REFERENCE EXTENT, NOT THE ARM'S OWN, and for the same reason `_drift` divides by
+    # the larger of the two: an estimate correction is the arm closing the gap to the REAL extent,
+    # so the gap is what bounds it, and the arm that is wrong is the one whose own extent is the
+    # worse yardstick. Taken per arm the two checks read one tolerance off two denominators, and
+    # disagreed inside it: extents of 10,000 and 9,050 pass `scroll_extent` at 9.5% drift while
+    # the 950 px correction that closes that very gap came out BROKEN against a ceiling granting
+    # 10% of 9,050. A false red is not free here -- it removes the cell from `readings_by_arm`,
+    # takes its healthy partner with it through the arm intersection, and
+    # `unmeasured_planned_cells` can then VOID the plan -- so the two now enforce the same
+    # allowance on the same quantity.
+    #
+    # It only ever loosens: `max` is never below the arm's own extent. An arm carrying NO extent
+    # still gets no ceiling rather than borrowing its partner's, because that would newly bound an
+    # arm this check has always left unbounded above, which is the one direction that could invent
+    # a red rather than retire one.
+    reference = max(
+        (
+            abs(extent)
+            for extent, _ in (_extent_of(base_row), _extent_of(treat_row))
+            if isinstance(extent, (int, float))
+        ),
+        default = None,
+    )
     for label, row in (("base", base_row), ("treatment", treat_row)):
         fraction = _expect(row, "travel_fraction")
-        out.append(
-            _check(
-                f"scroll_travelled:{label}",
-                None if fraction is None else fraction >= 0.9,
-                f"the gesture travelled {fraction} of what it commanded",
+        commanded = _expect(row, "commanded_px")
+        travelled = _expect(row, "travelled_px")
+        # THE ALLOWANCE IS A FRACTION OF THE EXTENT, so it is taken on the extent. `bottom` is
+        # `scrollHeight - clientHeight`, and reading `EXTENT_TOLERANCE` off it is the same defect
+        # `_extent_of` exists to fix one check below: on a 10,000 px extent behind an 800 px
+        # viewport it grants 920 px where the tolerance says 1,000, so a 941 px correction -- 9.4%
+        # of the extent, inside the declared 10% -- came out BROKEN.
+        extent, _reconstructed = _extent_of(row)
+        # BOUNDED ABOVE AS WELL AS BELOW, and the ceiling is DERIVED rather than chosen.
+        #
+        # The lower bound is what this invariant was written for: Unsloth's intent-aware autoscroll
+        # snapping a programmatic move back to the bottom leaves the gesture having covered
+        # nothing. But the predicate was `fraction >= 0.9` and nothing above it, so an arm whose
+        # viewport moved TWICE as far as commanded passed exactly as 1.0 did and the pair returned
+        # MATCH. `travelled` sums `|scrollTop_after - target_before|`, so every pixel above
+        # `commanded` is the viewport being moved by something other than the gesture -- the same
+        # anchor instability this action exists to detect, in the other direction.
+        #
+        # WHY THIS CEILING AND NOT A NUMBER PICKED TO LOOK SYMMETRIC WITH 0.9. Overshoot has one
+        # legitimate source: a windowed list correcting estimated row heights, which moves the
+        # offset by the error in the estimate. Those errors total the error in the arm's extent,
+        # and this file already declares how far the extent may be wrong (`EXTENT_TOLERANCE`). So
+        # the gesture may exceed its command by that fraction of the arm's own extent, both terms
+        # read off the row. No second constant, and it scales with the rung.
+        #
+        # It degrades to no ceiling rather than to a guess: an arm carrying no extent gets the
+        # lower bound alone, said in the detail, because a ceiling of zero fails every correct arm.
+        ceiling: Optional[float] = None
+        if (
+            isinstance(commanded, (int, float))
+            and commanded > 0
+            and isinstance(extent, (int, float))
+        ):
+            ceiling = (commanded + EXTENT_TOLERANCE * reference) / commanded
+        if fraction is None:
+            ok: Optional[bool] = None
+            detail = "the row records no travel fraction"
+        elif ceiling is None:
+            ok = fraction >= 0.9
+            detail = (
+                f"the gesture travelled {fraction} of what it commanded; NO CEILING was applied "
+                f"because the row carries no scrollable extent to derive one from"
             )
+        else:
+            ok = 0.9 <= fraction <= ceiling
+            detail = (
+                f"the gesture travelled {fraction} of what it commanded "
+                f"({travelled} of {commanded} px, allowed 0.9 to {ceiling:.3f}: "
+                f"{EXTENT_TOLERANCE:.0%} of the pair's {reference} px reference extent)"
+            )
+        out.append(_check(f"scroll_travelled:{label}", ok, detail))
+    # THE EXTENT, NOT `bottom`, AND AT THE EXTENT'S OWN ALLOWANCE. This compared `bottom` through
+    # `_same_number` and so through `EXACT_TOLERANCE`, 2%, while `scroll_extent` grants the same
+    # physical quantity 10% a few checks earlier and says why a correct virtualizer needs it. An
+    # arm inside the declared allowance was reported behaviourally BROKEN, and a false red is not
+    # free: it removes the cell from `readings_by_arm`, takes its healthy partner with it through
+    # the arm intersection, and `unmeasured_planned_cells` can then VOID the plan.
+    #
+    # `_same_number` is deliberately NOT widened. Its other three keys -- `selected_chars`,
+    # `visible_chars`, `clipboard_chars` -- are not extents and are correctly strict at 2%.
+    b_ext, t_ext, what = _comparable_extents(base_row, treat_row)
+    drift = _drift(b_ext, t_ext)
+    out.append(
+        _check(
+            "scroll_bottom_agrees",
+            None if drift is None else drift <= EXTENT_TOLERANCE,
+            f"{what} {b_ext} vs {t_ext}"
+            + ("" if drift is None else f" ({drift:.1%} drift, {EXTENT_TOLERANCE:.0%} allowed)"),
         )
-    out.append(_same_number(base_row, treat_row, "bottom", "scroll_bottom_agrees"))
+    )
     return out
 
 

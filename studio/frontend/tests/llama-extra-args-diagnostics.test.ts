@@ -61,14 +61,26 @@ test("a well-formed argument the binary knows says nothing", () => {
   assert.deepEqual(diagnoseExtraArgs("", CATALOG), []);
 });
 
-test("a managed flag is an error that names the control that owns it", () => {
-  const text = messages("--parallel 8");
-  assert.match(text, /--parallel/);
-  assert.equal(levels("--parallel 8")[0], "error");
-  assert.equal(
-    extraArgsAreLoadable(diagnoseExtraArgs("--parallel 8", CATALOG)),
-    false,
-  );
+test("parallel aliases point at the supported control", () => {
+  for (const catalog of [CATALOG, null]) {
+    for (const input of [
+      "--parallel 8",
+      "--parallel=8",
+      "--n-parallel 8",
+      "--n_parallel 8",
+      "-np 8",
+      "-np8",
+    ]) {
+      const diagnostics = diagnoseExtraArgs(input, catalog);
+      assert.equal(diagnostics.length, 1);
+      assert.match(
+        diagnostics[0]?.message ?? "",
+        /is set by Parallel Slots above and cannot be passed here\.$/,
+      );
+      assert.equal(diagnostics[0]?.level, "error");
+      assert.equal(extraArgsAreLoadable(diagnostics), false);
+    }
+  }
 });
 
 test("a managed flag with no control says who owns it instead", () => {
@@ -88,13 +100,15 @@ test("an attached or equals form is caught the same way", () => {
 test("a flag a control also sets is a note, not a refusal", () => {
   // Deliberate: the backend appends extras last and reconciles the ones that move
   // its own sizing, and the CLI has always allowed this. Say who wins, do not block.
-  const diagnostics = diagnoseExtraArgs("--batch-size 512", CATALOG);
-  assert.deepEqual(
-    diagnostics.map((d) => d.level),
-    ["note"],
-  );
-  assert.match(diagnostics[0].message, /Batch Size/);
-  assert.equal(extraArgsAreLoadable(diagnostics), true);
+  for (const catalog of [CATALOG, null]) {
+    const diagnostics = diagnoseExtraArgs("--batch-size 512", catalog);
+    assert.deepEqual(
+      diagnostics.map((d) => d.level),
+      ["note"],
+    );
+    assert.match(diagnostics[0].message, /Batch Size/);
+    assert.equal(extraArgsAreLoadable(diagnostics), true);
+  }
 });
 
 test("a flag missing from this build warns but still loads", () => {
@@ -915,7 +929,7 @@ test("a catalogued flag left without its value is refused", () => {
 });
 
 test("an unverified flag keeps the benefit of the doubt at the end", () => {
-  // A build this Studio could not probe, or a flag newer than the help it read:
+  // A build this Unsloth could not probe, or a flag newer than the help it read:
   // calling either a missing value would disable Load over a launch that works.
   const unverified: LlamaFlagCatalog = {
     flags: {},

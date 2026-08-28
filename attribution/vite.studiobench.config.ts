@@ -13,7 +13,7 @@
 //   3. Minifier name preservation, so our own functions and classes keep
 //      their source names instead of being mangled to single letters.
 //
-// The resulting dist is injected into a REAL Studio install through the
+// The resulting dist is injected into a REAL Unsloth install through the
 // existing `unsloth studio --frontend <dir>` flag (see `studio/backend/run.py`
 // around line 2820), so the backend, auth and storage stay real and only the
 // frontend bundle is swapped. That matters: the failure this whole tool exists
@@ -55,7 +55,7 @@ export default defineConfig({
   root: FRONTEND_ROOT,
   plugins: [react(), tailwindcss()],
   // Keep an unrelated PostCSS config in an ancestor directory from leaking
-  // into Studio installs. Tailwind is provided by its dedicated Vite plugin.
+  // into Unsloth installs. Tailwind is provided by its dedicated Vite plugin.
   css: {
     postcss: {
       plugins: [],
@@ -188,7 +188,7 @@ export default defineConfig({
         // This is a BANNER and not a `define`, and the difference is not
         // cosmetic. `define` performs identifier SUBSTITUTION in source: it
         // rewrites occurrences of a token that already appear in the code. No
-        // Studio source file mentions `__STUDIOBENCH_ATTRIBUTION_BUILD__`, so
+        // Unsloth source file mentions `__STUDIOBENCH_ATTRIBUTION_BUILD__`, so
         // a `define` entry substitutes nothing, emits nothing, and the marker
         // is simply absent at runtime. Built that way first; the assertion
         // could never pass and the bundle was byte-identical with and without

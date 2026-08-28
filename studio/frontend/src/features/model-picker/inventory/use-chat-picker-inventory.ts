@@ -43,6 +43,7 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     last_modified: row.lastModified ?? undefined,
     has_vision: row.capabilities.supportsVision,
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
     has_variant_state: row.hasVariantState ?? false,
   };
 }
@@ -56,6 +57,7 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
     tags: row.tags,
     library_name: row.libraryName,
     // Carried through: the diffusion picker drops single-file checkpoint repos (loading one as a pipeline fails after the handoff), and undefined reads as "full pipeline".
@@ -73,6 +75,7 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
     model_format: row.modelFormat,
     updated_at: row.updatedAt,
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
   };
 }
 

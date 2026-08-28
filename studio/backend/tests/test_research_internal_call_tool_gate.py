@@ -136,7 +136,7 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
 def test_json_mode_research_calls_send_llama_server_an_unchanged_body():
     # The JSON-mode phases take the llama-server passthrough, not the loop above, so pin
     # that wire body too: no tools means no tool_choice is forwarded, and Unsloth-only
-    # extensions never leave Studio.
+    # extensions never leave Unsloth.
     from models.inference import ChatCompletionRequest
 
     class _PassthroughBackend:

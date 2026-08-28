@@ -51,6 +51,10 @@ def __getattr__(name: str):
 logger = get_logger(__name__)
 
 
+class _LoadCancelled(Exception):
+    """Internal control flow for a caller-cancelled model load."""
+
+
 _CTX = mp.get_context("spawn")
 
 
@@ -221,6 +225,7 @@ class InferenceOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
+        self._subprocess_shutdown_lock = threading.Lock()
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
         # Set for the whole unload; the worker never clears it (unlike _cancel_event),
         # so a generate queued behind the cancelled one is skipped, not run.
@@ -379,12 +384,16 @@ class InferenceOrchestrator:
                 hub_ids = [
                     m["id"] for m in models if not m.get("id", "").upper().endswith("-GGUF")
                 ][:40]
+                # Counts at info, ids at debug: two lists of 40 repo names, one line each,
+                # cost ~1.5 KB of every boot to say the catalog fetch worked.
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
-                    logger.info("Top GGUF models: %s", gguf_ids)
+                    logger.info("Fetched %d top GGUF models", len(gguf_ids))
+                    logger.debug("Top GGUF models: %s", gguf_ids)
                 if hub_ids:
                     self._top_hub_cache = hub_ids
-                    logger.info("Top hub models: %s", hub_ids)
+                    logger.info("Fetched %d top hub models", len(hub_ids))
+                    logger.debug("Top hub models: %s", hub_ids)
         except Exception as e:
             logger.warning("Failed to fetch top models: %s", e)
         finally:
@@ -458,6 +467,10 @@ class InferenceOrchestrator:
         return proc is not None and proc.is_alive()
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        with self._subprocess_shutdown_lock:
+            return self._shutdown_subprocess_locked(timeout)
+
+    def _shutdown_subprocess_locked(self, timeout: float) -> bool:
         """Gracefully shut down the inference subprocess.
 
         Returns True only once the worker is confirmed dead. If it survives
@@ -493,17 +506,25 @@ class InferenceOrchestrator:
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
             try:
-                self._proc.terminate()
+                from utils.process_lifetime import terminate_pid
+                terminate_pid(self._proc.pid, timeout = 5)
                 self._proc.join(timeout = 5)
             except Exception:
                 pass
             if self._proc is not None and self._proc.is_alive():
-                logger.warning("Subprocess still alive after terminate, killing")
+                logger.warning("Process-tree shutdown failed, terminating the worker directly")
                 try:
-                    self._proc.kill()
-                    self._proc.join(timeout = 3)
+                    self._proc.terminate()
+                    self._proc.join(timeout = 5)
                 except Exception:
                     pass
+                if self._proc is not None and self._proc.is_alive():
+                    logger.warning("Subprocess still alive after terminate, killing")
+                    try:
+                        self._proc.kill()
+                        self._proc.join(timeout = 3)
+                    except Exception:
+                        pass
 
         if self._proc is not None and self._proc.is_alive():
             # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
@@ -611,6 +632,7 @@ class InferenceOrchestrator:
         self,
         expected_type: str,
         timeout: float = 300.0,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Block until a response of the expected type arrives.
 
@@ -628,8 +650,11 @@ class InferenceOrchestrator:
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _LoadCancelled()
             remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout = min(remaining, 1.0))
+            poll_seconds = 0.1 if cancel_event is not None else 1.0
+            resp = self._read_resp(timeout = min(remaining, poll_seconds))
 
             if resp is None:
                 # Check subprocess health
@@ -1393,6 +1418,11 @@ class InferenceOrchestrator:
             # Parent-detected backend for the worker's apply_gpu_ids().
             sub_config["device_backend"] = get_device().value
 
+            if load_cancel_event is not None and load_cancel_event.is_set():
+                self.loading_models.discard(model_name)
+                logger.info("Load cancelled before worker teardown: %s", model_name)
+                return False
+
             # Recheck the sidecar reservation BEFORE tearing the old worker down,
             # for REPAIRS only: an install holds this same lifecycle gate, so it
             # cannot swap while this load runs, and its queued-load snapshot
@@ -1436,7 +1466,10 @@ class InferenceOrchestrator:
                 # lands before any child exists (GPU placement, or between retries) there is
                 # nothing to kill, and without this check the loop would spawn a worker and
                 # load the model after /unload reported it unloaded. Observe removal and stop.
-                if model_name not in self.loading_models:
+                if model_name not in self.loading_models or (
+                    load_cancel_event is not None and load_cancel_event.is_set()
+                ):
+                    self.loading_models.discard(model_name)
                     logger.info(
                         "Load for '%s' was cancelled before spawn; not starting a worker",
                         model_name,
@@ -1461,7 +1494,10 @@ class InferenceOrchestrator:
                 # orphaning this fresh worker; the load would then wait for "loaded" and
                 # publish a model /unload reported unloaded, over a live subprocess nothing
                 # reaps. Recheck now the child exists and tear it down before publishing.
-                if model_name not in self.loading_models:
+                if model_name not in self.loading_models or (
+                    load_cancel_event is not None and load_cancel_event.is_set()
+                ):
+                    self.loading_models.discard(model_name)
                     logger.info(
                         "Load for '%s' was cancelled during spawn; tearing the worker down",
                         model_name,
@@ -1472,7 +1508,20 @@ class InferenceOrchestrator:
                     return False
 
                 try:
-                    resp = self._wait_response("loaded")
+                    if load_cancel_event is None:
+                        resp = self._wait_response("loaded")
+                    else:
+                        resp = self._wait_response("loaded", cancel_event = load_cancel_event)
+                except _LoadCancelled:
+                    logger.info(
+                        "Load for '%s' was cancelled while waiting for 'loaded'",
+                        model_name,
+                    )
+                    self.loading_models.discard(model_name)
+                    self._shutdown_subprocess(timeout = 5)
+                    self.active_model_name = None
+                    self.models.clear()
+                    return False
                 except DownloadStallError:
                     # First stall with Xet on -> retry with Xet disabled
                     if attempt == 0 and not disable_xet:
@@ -1500,12 +1549,20 @@ class InferenceOrchestrator:
                     # /unload reported cancelled, over a subprocess cancel_load just killed;
                     # its post-teardown re-clear cannot undo a publish that lands after it
                     # returns. Observe the removal and abort; cancel_load owns teardown.
-                    if model_name not in self.loading_models:
+                    if model_name not in self.loading_models or (
+                        load_cancel_event is not None and load_cancel_event.is_set()
+                    ):
+                        cancelled_by_event = (
+                            load_cancel_event is not None and load_cancel_event.is_set()
+                        )
+                        self.loading_models.discard(model_name)
                         logger.info(
                             "Load for '%s' was cancelled while waiting for 'loaded'; "
                             "not publishing the cancelled model",
                             model_name,
                         )
+                        if cancelled_by_event:
+                            self._shutdown_subprocess(timeout = 5)
                         self.active_model_name = None
                         self.models.clear()
                         return False
@@ -1541,7 +1598,6 @@ class InferenceOrchestrator:
                 else:
                     # Worker reports failures (consent gate included) under "message".
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
-                    self.loading_models.discard(model_name)
                     self.active_model_name = None
                     self.models.clear()
                     raise Exception(error)
@@ -1557,6 +1613,12 @@ class InferenceOrchestrator:
                 raise
             self.active_model_name = None
             self.models.clear()
+            # Reap workers after any failed load, including inactivity timeouts
+            # that leave installs and GPU memory alive (#9398).
+            try:
+                self._shutdown_subprocess(timeout = 5)
+            except Exception as teardown_exc:
+                logger.warning("Could not shut the failed load's worker down: %s", teardown_exc)
             raise
 
     def cancel_load(self, model_name: str) -> bool:
