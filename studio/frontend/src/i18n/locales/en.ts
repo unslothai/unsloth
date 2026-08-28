@@ -687,7 +687,7 @@ export const en = {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
         enableDescription:
-          "Load a downloaded GGUF named in an API request before serving. Off by default.",
+          "Load a downloaded model named in an API request before serving. Off by default.",
         autoDownload: "Download missing models",
         autoDownloadDescription:
           "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",
@@ -1353,10 +1353,36 @@ export const en = {
       rememberParamsPerModel: "Remember settings per model",
       rememberParamsPerModelDescription:
         "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
+      autoCompact: "Auto-compact long chats",
+      autoCompactDescription:
+        "When a local GGUF chat fills the context length you set, drop older turns instead of returning an error. This is not based on free VRAM.",
+      compactionStyle: "When context fills",
+      compactionStyleDescription:
+        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
+      compactionStyleInherit: "Use server default",
+      compactionStyleCheckpoint: "Reset conversation",
+      compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
+      compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
+      compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
+      compactionStyleRollingNone: "Drop oldest turns (no extra trim)",
+      autoCompactKeywords:
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+      },
+      currentDate: {
+        label: "Tell the model today's date",
+        description:
+          "Add the current date to the prompt so web search and Deep Research look for recent sources instead of assuming the model's training cutoff.",
+        loadError: "Failed to load current date settings",
+        saveError: "Failed to update current date settings",
+      },
+      tools: {
+        collapseByDefault: "Collapse tool activity by default",
+        collapseByDefaultDescription:
+          "Keep tool inputs and outputs collapsed while tools run. Expand any tool row to inspect it.",
       },
       webSearch: {
         title: "Web search",
@@ -1375,6 +1401,11 @@ export const en = {
         blockedBanner: "Blocked {count} external resource from {hosts}.",
         blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
         blockedBannerAction: "Allow for this canvas",
+        blockedTitle: "Canvas network access is off",
+        blockedHint:
+          "Turn on “{setting}” in Settings → Chat to let canvases load external resources, or allow it just for this canvas.",
+        blockedSettingsAction: "Open Settings",
+        blockedDismiss: "Dismiss",
       },
       data: "Data",
       exportHistory: "Export chat history",

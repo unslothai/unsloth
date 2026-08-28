@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import ts from "typescript";
+
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -181,6 +183,66 @@ test("both composers gate dictation on the foreground", async () => {
       `${path} starts the microphone behind a modal`,
     );
   }
+});
+
+test("route shortcuts stay idle while Settings is open", async () => {
+  const sourceText = await readFile(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  const source = ts.createSourceFile(
+    "__root.tsx",
+    sourceText,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const enabledById = new Map<string, string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText() === "useShortcut" &&
+      ts.isStringLiteral(node.arguments[0]) &&
+      ts.isObjectLiteralExpression(node.arguments[2])
+    ) {
+      const enabled = node.arguments[2].properties.find(
+        (property): property is ts.PropertyAssignment =>
+          ts.isPropertyAssignment(property) && property.name.getText() === "enabled",
+      );
+      if (enabled) {
+        enabledById.set(node.arguments[0].text, enabled.initializer.getText());
+      }
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+
+  for (const id of [
+    "newChat",
+    "newTemporaryChat",
+    "newStandaloneChat",
+    "switchToChat",
+    "switchToProjects",
+    "switchToHub",
+    "switchToRecipes",
+    "switchToImages",
+    "switchToAudio",
+    "switchToExport",
+  ]) {
+    assert.equal(enabledById.get(id), "routeShortcutEnabled", id);
+  }
+  assert.equal(
+    enabledById.get("switchToTrain"),
+    "routeShortcutEnabled && !chatOnlyMeasured",
+  );
+  assert.equal(
+    enabledById.get("switchToVideo"),
+    "routeShortcutEnabled && !videoDisabled",
+  );
+  assert.match(
+    sourceText,
+    /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
+  );
 });
 
 // The sidebar used to hold the unread set in component state, which died with
@@ -523,8 +585,8 @@ test("the workspace chords wait on the same verdict their rows do", async () => 
     new URL("../src/app/routes/__root.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(root, /enabled: !isAuthFlowRoute && !chatOnlyMeasured,/);
-  assert.match(root, /enabled: !isAuthFlowRoute && !videoDisabled,/);
+  assert.match(root, /enabled: routeShortcutEnabled && !chatOnlyMeasured,/);
+  assert.match(root, /enabled: routeShortcutEnabled && !videoDisabled,/);
   const rowState = await readFile(
     new URL("../src/components/nav-row-state.ts", import.meta.url),
     "utf8",

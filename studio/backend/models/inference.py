@@ -1330,6 +1330,12 @@ class LoadResponse(_InferenceRuntimeFields):
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
+    memory_warning: Optional[str] = Field(
+        None,
+        description = "Non-blocking advisory about this load, or null. Set when the "
+        "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
+        "them in from disk and generation will be slow. The model still loaded.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -2064,6 +2070,33 @@ class ChatCompletionRequest(BaseModel):
             "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
+            "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
+            "instructions (Studio default). 'rolling' drops oldest complete turns. "
+            "Unset uses UNSLOTH_CONTEXT_POLICY."
+        ),
+    )
+    compaction_headroom_ratio: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 0.9,
+        description = (
+            "[x-unsloth] Extra share of the prompt budget to drop when a rolling "
+            "compaction fires, so the boundary can stay put for a stretch of turns. "
+            "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
+            "for checkpoint compaction. Unset keeps the process default."
+        ),
+    )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] The replayed tool calls were produced by Studio's local "
+            "tool loop rather than by an OpenAI-compatible client tool contract."
+        ),
+    )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
         ge = 0,
@@ -2475,6 +2508,15 @@ class ChatCountTokensRequest(BaseModel):
     auto_heal_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
+    )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Mirrors ChatCompletionRequest: the replayed tool calls came from "
+            "Studio's local tool loop, so _takes_tool_passthrough routes the count the way "
+            "it routes the completion. Declared rather than left to extra='allow', which "
+            "coerces nothing and would read the string 'false' as a claim of ownership."
+        ),
     )
     permission_mode: Optional[str] = Field(
         None,

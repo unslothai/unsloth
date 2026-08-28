@@ -723,6 +723,20 @@ def _rolling_context_policy(payload) -> Optional[str]:
     return policy if policy == "truncate_oldest" else None
 
 
+def _request_context_policy(payload) -> Optional[str]:
+    requested = getattr(payload, "context_policy", None)
+    if isinstance(requested, str):
+        value = requested.strip().lower()
+        if value in ("checkpoint", "rolling"):
+            return value
+    return None
+
+
+def _request_compaction_headroom_ratio(payload) -> Optional[float]:
+    from core.inference.context_window import clamp_compaction_headroom_ratio
+    return clamp_compaction_headroom_ratio(getattr(payload, "compaction_headroom_ratio", None))
+
+
 def _overflow_truncation_requested(payload) -> bool:
     """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
     for clients that cannot send custom fields) opted into truncation."""
@@ -1411,6 +1425,7 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -1467,6 +1482,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -1624,23 +1640,159 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     return extra
 
 
-def _openai_llama_admission_media_tokens(payload) -> int:
-    """Media the request carries in Unsloth's legacy top-level fields, in tokens.
+# An upper bound per image, not an estimate: under-reserving hands out a slot the cache
+# cannot back, which is the overcommit #9392 exists to stop.
+#
+# 4096 is llama.cpp's default Qwen-VL embedding cap (the projector resizes to its own
+# pixel limits, so transport size never enters into it), but mtmd wraps the embeddings
+# in delimiters. Measured on llama-server b10639: 4098 for a 2048x2048 image on
+# Qwen3-VL-4B, 258 on Gemma 3 4B. The wrapper allowance is far above the two measured
+# so longer delimiters still fit. Only the DEFAULT, though: a load may raise the cap
+# (`_openai_llama_admission_image_tokens`), and a projector whose embeddings exceed it
+# on their own (tiling or multi-crop families) still wants an allowance read off the
+# loaded mmproj rather than a bigger number here.
+_OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP = 4096
+_OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS = 128
+_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
+    _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+)
 
-    Unsloth's own composer sends every attachment as ``image_base64`` /
-    ``audio_base64`` / ``video_base64``, never as ``messages`` content parts, and the
-    generation path splices them into the prompt AFTER this estimate is taken
-    (``_openai_messages_for_gguf_chat``, ``_inject_audio_part``,
-    ``_inject_video_part``). Charging only ``messages`` therefore priced an image at
-    zero while llama.cpp's mtmd embeddings occupy real KV positions, so two
-    media-heavy chats with a line of text each were admitted against a cache that
-    holds one.
 
-    Sized as the same media inlined as a data URL is already sized, so the two
-    spellings of one request cost the same rather than 30x apart.
+def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
+    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
+
+    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``.
+    """
+    args = [str(arg) for arg in (extra_args or ())]
+    found = None
+    for index, raw in enumerate(args):
+        if raw.startswith("--image-max-tokens="):
+            value = raw.partition("=")[2]
+        elif raw == "--image-max-tokens" and index + 1 < len(args):
+            value = args[index + 1]
+        else:
+            continue
+        parsed = _positive_int_or_none(value)
+        if parsed is not None:
+            found = parsed
+    return found
+
+
+# Embeddings one image may become, per projector family, from llama.cpp's own
+# `set_limit_image_tokens` calls in tools/mtmd/clip.cpp; the keys are the
+# `clip.projector_type` strings in clip-impl.h, which is what the mmproj GGUF carries.
+# There is no universal default -- `--image-max-tokens` documents itself as "read from
+# model" -- and the spread is three orders of magnitude, so assuming any one number
+# under-reserves somebody. A family absent here falls back to the default ceiling
+# below, which is the pre-existing behaviour rather than a new guess.
+_MMPROJ_IMAGE_TOKEN_MAX = {
+    "qwen2vl_merger": 4096,
+    "qwen2.5vl_merger": 4096,
+    "qwen3vl_merger": 4096,
+    "glm4v": 4096,
+    "kimik25": 4096,
+    "muse-glimmer": 4096,
+    "youtuvl": 62500,
+    "hunyuanvl": 16384,
+    "pixtral": 1024,
+    "lightonocr": 1024,
+    "kimivl": 1024,
+    "minimax_m3": 576,
+    "gemma4v": 280,
+    "gemma4uv": 280,
+    "lfm2": 256,
+}
+
+
+def _openai_llama_admission_image_tokens(llama_backend) -> int:
+    """Per-image KV allowance for the backend that is actually running.
+
+    Two things move the ceiling off the default. The loaded projector sets its own:
+    measured on b10639, a max-resolution image is 4098 KV positions on Qwen3-VL-4B and
+    258 on Gemma 3 4B, and clip.cpp's own table runs from 256 (lfm2) to 62500 (youtuvl).
+    And ``--image-max-tokens`` is not an Unsloth-managed flag, so ``llama_extra_args``
+    forwards one verbatim: with ``--image-max-tokens 8192`` that same Qwen3-VL image
+    costs 8102.
+
+    Takes the LARGER of the two rather than trusting the flag, because llama-server
+    applies it only to dynamic-resolution projectors -- a low cap against a fixed
+    resolution one is ignored, and believing it would reserve less than the image costs.
+    Over-reserving is the safe direction; under-reserving hands out a slot the cache
+    cannot back.
+    """
+    projector = getattr(llama_backend, "_mmproj_projector_type", None)
+    known = _MMPROJ_IMAGE_TOKEN_MAX.get(str(projector).strip().lower()) if projector else None
+    cap = max(
+        known or _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP,
+        _extra_args_image_max_tokens(getattr(llama_backend, "_extra_args", None)) or 0,
+    )
+    return cap + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+
+
+def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
+    """Remove image bytes before estimating the textual part of a prompt.
+
+    mtmd turns an image into model-specific embedding tokens, so its base64 transport
+    is neither prompt text nor a proxy for that count. Keep each image part's shape for
+    the JSON estimate and return the count, so the caller can add a bounded allowance.
+    """
+    estimate_messages = []
+    image_parts = 0
+    for message in messages:
+        # exclude_none like every other dump here, including the generation paths this
+        # predicts: the five unset optionals on ChatMessage otherwise serialise as
+        # `"name": null` and get priced as prompt text (34 tokens for a two-key message
+        # against 8), reserving KV for punctuation that is never sent.
+        message_dict = (
+            message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        )
+        estimate_message = dict(message_dict)
+        content = message_dict.get("content")
+        if isinstance(content, list):
+            estimate_content = []
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    estimate_content.append(part)
+                    continue
+
+                image_parts += 1
+                image_url = part.get("image_url")
+                compact_image_url = {"url": "[image]"}
+                if isinstance(image_url, dict) and image_url.get("detail") is not None:
+                    compact_image_url["detail"] = image_url["detail"]
+                estimate_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": compact_image_url,
+                    }
+                )
+            estimate_message["content"] = estimate_content
+        estimate_messages.append(estimate_message)
+    return estimate_messages, image_parts
+
+
+def _openai_llama_admission_media_tokens(
+    payload,
+    *,
+    message_image_parts: int = 0,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+) -> int:
+    """Estimate media KV usage without charging transport bytes as prompt tokens.
+
+    Charges the legacy top-level image on exactly the condition both builders splice it
+    on, ``_legacy_image_is_distinct``: Studio echoes one image into both spellings, so
+    charging that twice reserves it twice, while a legacy image the messages do not
+    already carry is a second image really sent. The allowance is per-image rather than
+    per-byte because the real mtmd count follows the loaded projector, not base64 length.
+
+    Audio and video keep the old top-level accounting until they have a model-specific
+    estimate; this is scoped to the image path that regressed vision concurrency.
     """
     extra = 0
-    for attribute in ("image_base64", "audio_base64", "video_base64"):
+    extra += max(0, message_image_parts) * image_tokens
+    if _legacy_image_is_distinct(payload):
+        extra += image_tokens
+    for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
@@ -1653,6 +1805,7 @@ def _openai_llama_admission_tokens(
     budget: Optional[int],
     capacity: int,
     tool_loop: bool = False,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -1669,11 +1822,16 @@ def _openai_llama_admission_tokens(
     messages = getattr(payload, "messages", None)
     if isinstance(messages, list) and messages:
         try:
-            prompt_tokens = estimate_messages_tokens_dense(
-                [m if isinstance(m, dict) else m.model_dump() for m in messages]
+            estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+                messages
             )
+            prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-            prompt_tokens += _openai_llama_admission_media_tokens(payload)
+            prompt_tokens += _openai_llama_admission_media_tokens(
+                payload,
+                message_image_parts = message_image_parts,
+                image_tokens = image_tokens,
+            )
         except Exception:
             prompt_tokens = None
     else:
@@ -1742,6 +1900,7 @@ def _openai_llama_admission_reserve(
             budget = budget,
             capacity = capacity,
             tool_loop = tool_loop,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
         if payload is not None
         else None,
@@ -2750,7 +2909,12 @@ from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_h
 
 import io
 import base64
-from datetime import date as _date
+
+from utils.current_date_prompt_settings import (
+    contains_current_date_prompt_line,
+    current_date_prompt_line,
+    replace_current_date_prompt_lines,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -3291,7 +3455,7 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     return True
 
 
-_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
+_LEGACY_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
 
 
 def _tool_call_names(message) -> list[Optional[str]]:
@@ -3312,33 +3476,40 @@ def _tool_call_names(message) -> list[Optional[str]]:
     return names
 
 
-def _only_studio_memory_tool_history(payload) -> bool:
-    """True when the request's ONLY tool history is Unsloth's own conversation memory.
+def _only_studio_tool_history(payload) -> bool:
+    """True when the request's ONLY tool history was produced by Unsloth's own loop.
 
-    Once the model uses `search_conversation`, the branch keeps an assistant `tool_calls`
-    turn and its `role="tool"` result and the client replays both forever. Read as a CLIENT
-    tool contract, that history routes every later turn to the llama-server passthrough,
-    which runs no context fit, so the epoch, the carried-forward block and the automatic
-    recall vanish one turn after the compaction that created them. It is Unsloth's own
-    read-only tool run by Unsloth's own loop, so it must route as a tools-on Unsloth chat.
+    Once a Studio-local tool runs, the branch keeps an assistant `tool_calls` turn and its
+    `role="tool"` result and the client replays both forever. Read as a CLIENT tool
+    contract, that history routes every later turn to the llama-server passthrough, which
+    runs no context fit, so the epoch, the carried-forward block and the automatic recall
+    vanish one turn after the compaction that created them.
 
-    Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
-    any other tool name means "not ours", so a real client tool loop is never claimed.
+    Current Studio clients say so directly: `studio_tool_history` is set only after every
+    serialized call was checked for local provenance. Older clients send no marker, so the
+    `search_conversation`-only fallback below stays, deliberately strict -- an unnamed call
+    or result, or any other tool name, means "not ours", so a real client tool loop is
+    never claimed.
+
+    A caller-supplied `tools` catalog is a client contract either way.
     """
     if getattr(payload, "tools", None):
         return False
+    messages = getattr(payload, "messages", None) or []
+    if getattr(payload, "studio_tool_history", False):
+        return _has_openai_tool_history(messages)
     saw_call = False
-    for message in getattr(payload, "messages", None) or []:
+    for message in messages:
         role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
         for name in _tool_call_names(message):
             saw_call = True
-            if name not in _STUDIO_MEMORY_TOOLS:
+            if name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
         if role == "tool":
             result_name = (
                 message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
             )
-            if result_name not in _STUDIO_MEMORY_TOOLS:
+            if result_name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
     return saw_call
 
@@ -3356,9 +3527,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
-    ) or (
-        _has_openai_tool_history(payload.messages) and not _only_studio_memory_tool_history(payload)
-    )
+    ) or (_has_openai_tool_history(payload.messages) and not _only_studio_tool_history(payload))
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True
@@ -4011,10 +4180,9 @@ def _build_tool_action_nudge(
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
-    date_line = f"The current date is {_date.today().isoformat()}. "
     if not (has_web or has_code or has_artifact):
         # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
-        return date_line + _TOOL_RESEARCH_TIP
+        return _TOOL_RESEARCH_TIP
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -4031,7 +4199,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
-    return date_line + _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
+    # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
+    return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
 
 # Nudge appended when the RAG knowledge-base tool is active: ground answers in
@@ -4437,7 +4606,7 @@ async def _select_request_tools(
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
-    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search())):
+    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search(payload))):
         tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
         if not tools_on:
             # After a reset, search_conversation is the only route back to what was
@@ -4507,11 +4676,17 @@ _CHECKPOINT_SESSION_NUDGE = (
 )
 
 
-def _checkpoint_needs_search() -> bool:
+def _checkpoint_needs_search(payload = None) -> bool:
     """Whether the context policy makes search_conversation load-bearing rather than extra.
 
-    Read at call time, so flipping UNSLOTH_CONTEXT_POLICY needs no restart.
+    ``context_policy`` on the request overrides UNSLOTH_CONTEXT_POLICY, matching the
+    fitter, so tool admission and the compaction nudge follow the same effective policy.
     """
+    requested = _request_context_policy(payload)
+    if requested == "checkpoint":
+        return True
+    if requested == "rolling":
+        return False
     try:
         from core.inference import checkpoint
         return checkpoint.enabled()
@@ -4525,7 +4700,7 @@ def _checkpoint_recall_may_enable_tools(payload) -> bool:
     return bool(
         get_tool_policy() is not False
         and _rolling_context_policy(payload) is not None
-        and _checkpoint_needs_search()
+        and _checkpoint_needs_search(payload)
         and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
         and _thread_has_checkpoint(
             getattr(payload, "thread_id", None), getattr(payload, "messages", None)
@@ -4538,6 +4713,7 @@ def _apply_compaction_nudge(
     tools: list[dict],
     *,
     checkpoint_fitted: bool = False,
+    payload = None,
 ) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
@@ -4553,7 +4729,7 @@ def _apply_compaction_nudge(
     if "search_conversation" not in tool_names:
         return nudge
     text = _COMPACTED_SESSION_NUDGE
-    if checkpoint_fitted and _checkpoint_needs_search():
+    if checkpoint_fitted and _checkpoint_needs_search(payload):
         text = text + " " + _CHECKPOINT_SESSION_NUDGE
     if not nudge:
         return text
@@ -4562,17 +4738,123 @@ def _apply_compaction_nudge(
 
 async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
-    is active (search_knowledge_base present and a retrieval scope is set). The
-    date is prefixed when the tool nudge is empty (RAG-only tool set). Returns
-    ``nudge`` unchanged when RAG isn't active."""
+    is active (search_knowledge_base present and a retrieval scope is set).
+    Returns ``nudge`` unchanged when RAG isn't active."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
     grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
     if not nudge:
-        date_line = f"The current date is {_date.today().isoformat()}."
-        return date_line + " " + grounding
+        return grounding
     return nudge + " " + grounding
+
+
+def _refresh_stated_date(content: Any, date_line: str) -> tuple[Any, bool, bool]:
+    if isinstance(content, str):
+        stated = contains_current_date_prompt_line(content)
+        refreshed = replace_current_date_prompt_lines(content, date_line)
+        return refreshed, stated, refreshed != content
+    if not isinstance(content, list):
+        return content, False, False
+    refreshed_parts = list(content)
+    stated = False
+    changed = False
+    for index, part in enumerate(content):
+        if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+            continue
+        stated = stated or contains_current_date_prompt_line(part["text"])
+        refreshed_text = replace_current_date_prompt_lines(part["text"], date_line)
+        if refreshed_text == part["text"]:
+            continue
+        refreshed_parts[index] = {**part, "text": refreshed_text}
+        changed = True
+    return refreshed_parts, stated, changed
+
+
+def _wants_current_date(request: Any) -> bool:
+    """Whether this caller's prompt is Studio's to compose: an interactive session, nothing else.
+
+    The router is also mounted at /v1, so a third party's sk-unsloth key reaches the same
+    handlers, and their request is theirs verbatim. Studio's own workflow keys are excluded too:
+    a data recipe generates a dataset, and Deep Research decides once at run creation and stamps
+    the answer into its config, so injecting here would override the state the run started in.
+    """
+    return not _request_has_api_key(request)
+
+
+def _apply_current_date_prompt(
+    system_prompt: str,
+    request: Any = None,
+    *,
+    include_api_key: bool = False,
+) -> str:
+    """Prefix the user's system prompt with today's date when the setting is on.
+
+    Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
+    as the last word to the model.
+    """
+    if request is not None and not _wants_current_date(request):
+        if not include_api_key or _request_is_internal_workflow(request):
+            return system_prompt
+    date_line = current_date_prompt_line(request = request)
+    if not date_line:
+        return system_prompt
+    refreshed_prompt, stated, _ = _refresh_stated_date(system_prompt, date_line)
+    if stated:
+        return refreshed_prompt
+    return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
+
+
+def _prepend_current_date_to_messages(
+    messages: list[dict],
+    request: Any = None,
+    *,
+    include_api_key: bool = False,
+) -> list[dict]:
+    """Apply the date to an already-built message list for a provider Studio proxies to.
+
+    The local path prefixes ``system_prompt`` before the messages exist; an external payload is
+    assembled first, so the date goes onto its leading system turn instead.
+    """
+    if request is not None and not _wants_current_date(request):
+        if not include_api_key or _request_is_internal_workflow(request):
+            return messages
+    date_line = current_date_prompt_line(request = request)
+    if not date_line:
+        return messages
+    copied = [dict(msg) for msg in messages]
+    stated = False
+    refreshed = False
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content, content_stated, changed = _refresh_stated_date(msg.get("content"), date_line)
+        stated = stated or content_stated
+        if changed:
+            msg["content"] = content
+            refreshed = True
+    if stated:
+        if not refreshed:
+            return messages
+        return copied
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            msg["content"] = date_line + "\n\n" + content.lstrip()
+            return copied
+        if isinstance(content, list):
+            copied_parts = [dict(part) if isinstance(part, dict) else part for part in content]
+            for part in copied_parts:
+                if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+                    continue
+                part["text"] = date_line + "\n\n" + part["text"].lstrip()
+                msg["content"] = copied_parts
+                return copied
+            msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
+            return copied
+    return [{"role": "system", "content": date_line}, *copied]
 
 
 # Strip leaked tool-call markup: every shared-parser format plus the leak shapes
@@ -4975,6 +5257,79 @@ def _monitor_tool_calls_text(tool_calls: Any) -> str:
     return "\n".join(parts)
 
 
+def _monitor_stream_tool_call_deltas(
+    monitor_id: Optional[str], choice_index: int, tool_calls: Any
+) -> bool:
+    if not isinstance(tool_calls, list):
+        return False
+    accumulated = False
+    for position, tool_call in enumerate(tool_calls):
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function") or {}
+        if not isinstance(function, dict):
+            function = {}
+        tool_index = tool_call.get("index")
+        tool_index_explicit = isinstance(tool_index, int) and not isinstance(tool_index, bool)
+        if not tool_index_explicit:
+            tool_index = position if len(tool_calls) > 1 else None
+        name = function.get("name")
+        if name is None:
+            name = tool_call.get("name")
+        arguments = function.get("arguments")
+        if arguments is None:
+            arguments = tool_call.get("arguments")
+        api_monitor.accumulate_openai_tool_call(
+            monitor_id,
+            choice_index = choice_index,
+            tool_index = tool_index,
+            tool_index_explicit = tool_index_explicit,
+            call_id = tool_call.get("id"),
+            name_fragment = name,
+            arguments_fragment = arguments,
+        )
+        accumulated = True
+    return accumulated
+
+
+def _monitor_stream_function_call_delta(
+    monitor_id: Optional[str], choice_index: int, function_call: Any
+) -> bool:
+    if not isinstance(function_call, dict):
+        return False
+    api_monitor.accumulate_openai_tool_call(
+        monitor_id,
+        choice_index = choice_index,
+        tool_index = 0,
+        call_id = None,
+        name_fragment = function_call.get("name"),
+        arguments_fragment = function_call.get("arguments"),
+    )
+    return True
+
+
+def _flush_monitor_stream_tool_calls(
+    monitor_id: Optional[str],
+    choice_index: Optional[int] = None,
+    *,
+    completed_only: bool = False,
+) -> None:
+    calls, separate = api_monitor.take_openai_tool_calls(
+        monitor_id,
+        choice_index = choice_index,
+        completed_only = completed_only,
+    )
+    if not calls:
+        return
+    parts = []
+    for name, arguments in calls:
+        if len(name) > 500:
+            name = name[:497] + "..."
+        parts.append(_monitor_call_text(name or "<unknown>", arguments))
+    prefix = "\n" if separate else ""
+    api_monitor.append_reply(monitor_id, prefix + "\n".join(parts), stamp_first_token = False)
+
+
 def _monitor_openai_chunk(
     monitor_id: Optional[str],
     data: dict,
@@ -5003,6 +5358,7 @@ def _monitor_openai_chunk(
     if not isinstance(choices, list) or not choices:
         return
     if isinstance(data, dict) and data.get("_toolEvent"):
+        _flush_monitor_stream_tool_calls(monitor_id)
         # Tool cards ride the chunk beside choices with an empty delta; already seen.
         # Not decoded output though: a tool run (or a human confirming one) between the
         # card and the first token would otherwise be counted as decoding time.
@@ -5011,16 +5367,46 @@ def _monitor_openai_chunk(
     for idx, choice in enumerate(choices):
         if not isinstance(choice, dict):
             continue
+        choice_index = choice.get("index")
+        if not isinstance(choice_index, int):
+            choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
         if isinstance(delta, dict) and delta.get("reasoning_content"):
             api_monitor.mark_first_token(monitor_id)
 
+        streamed_tool_delta = False
+        if streaming and isinstance(delta, dict):
+            streamed_tool_delta = _monitor_stream_tool_call_deltas(
+                monitor_id,
+                choice_index,
+                delta.get("tool_calls"),
+            )
+            if not streamed_tool_delta:
+                streamed_tool_delta = _monitor_stream_function_call_delta(
+                    monitor_id,
+                    choice_index,
+                    delta.get("function_call"),
+                )
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
-            api_monitor.append_reply(monitor_id, content)
+            if streaming:
+                _flush_monitor_stream_tool_calls(
+                    monitor_id,
+                    choice_index,
+                    completed_only = not bool(choice.get("finish_reason")),
+                )
+            api_monitor.append_reply(
+                monitor_id,
+                content,
+                separate_from_openai_tool = True,
+            )
             continue
-        if isinstance(delta, dict):
+        if streamed_tool_delta:
+            if choice.get("finish_reason"):
+                _flush_monitor_stream_tool_calls(monitor_id, choice_index)
+            continue
+        if not streaming and isinstance(delta, dict):
             tool_text = _monitor_tool_calls_text(delta.get("tool_calls"))
             if tool_text:
                 api_monitor.append_reply(monitor_id, tool_text)
@@ -5035,6 +5421,8 @@ def _monitor_openai_chunk(
                 tool_text = _monitor_tool_calls_text(message.get("tool_calls"))
                 if tool_text:
                     reply_parts.append((idx, tool_text))
+        if streaming and choice.get("finish_reason"):
+            _flush_monitor_stream_tool_calls(monitor_id, choice_index)
     if not reply_parts:
         return
     if len(choices) == 1:
@@ -5082,6 +5470,7 @@ def _monitor_openai_sse_line(
         return None
     data_str = raw_line[5:].lstrip()
     if data_str == "[DONE]":
+        _flush_monitor_stream_tool_calls(monitor_id)
         api_monitor.finish(monitor_id)
         return "done"
     try:
@@ -5502,9 +5891,10 @@ def _monitor_active_model() -> Optional[str]:
     # Peek: the monitor overlay is on by default and polls this read-only, so building
     # the singleton to answer "nothing loaded" would import torch on a warm-disabled host.
     backend = _peek_inference_backend()
-    if backend is None:
+    # The advertised alias outlives an unload, so read it only while a model is active.
+    if backend is None or not backend.active_model_name:
         return None
-    return public_model_id(backend.active_model_name) or backend.active_model_name
+    return _orchestrator_public_model_id(backend) or backend.active_model_name
 
 
 @asynccontextmanager
@@ -5848,6 +6238,10 @@ def _gguf_load_response(
         inference = load_inference_config(
             inference_identifier or llama_backend.model_identifier or model
         ),
+        # Advisory, and None on nearly every load. Recorded by load_model when the
+        # weights outgrow fast memory, so the client can say why generation is slow.
+        # getattr: older/custom backend doubles predate this additive field.
+        memory_warning = getattr(llama_backend, "last_load_warning", None),
         **_llama_runtime_fields(llama_backend),
     )
 
@@ -6270,6 +6664,16 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
     )
 
 
+def _orchestrator_public_model_id(backend) -> Optional[str]:
+    """The id to report for the model loaded in the inference orchestrator
+    (safetensors, MLX): the advertised repo id from an auto-switch load, else the
+    cleaned public id. Only meaningful while ``active_model_name`` is set -- an
+    unload leaves the alias behind, and every caller reads it through that gate."""
+    return getattr(backend, "_openai_advertised_id", None) or public_model_id(
+        getattr(backend, "active_model_name", None)
+    )
+
+
 def _llama_status_model_ids(llama_backend) -> "tuple[Optional[str], Optional[str]]":
     """The ``(active_model, model_identifier)`` pair ``/api/inference/status`` publishes
     for a loaded GGUF. A native-lease load reports only the display label, never the
@@ -6348,9 +6752,175 @@ def _target_is_vision(
         return True
 
 
+def _target_accepts_audio_input(load_path: str) -> bool:
+    """Whether a local non-GGUF checkpoint accepts audio input (ASR or an audio VLM).
+
+    Read from the repo's own tokenizer special tokens, offline: the resolver only
+    yields local paths, and a detection failure must not block a swap. The ambient
+    HF token goes through for the same reason as the vision probe above.
+    """
+    from utils.models.model_config import detect_audio_type, is_audio_input_type
+    try:
+        return is_audio_input_type(
+            detect_audio_type(
+                load_path,
+                hf_token = os.environ.get("HF_TOKEN"),
+                local_files_only = True,
+            )
+        )
+    except Exception as exc:
+        logger.debug("auto-switch: audio probe failed for %s: %s", load_path, exc)
+        return True
+
+
+def _target_accepts_request_input(
+    load_path: str,
+    is_gguf: bool,
+    needs_vision: bool,
+    needs_audio: bool,
+    gguf_variant: Optional[str] = None,
+    need_image: bool = True,
+    needs_video: bool = False,
+) -> bool:
+    """Whether a switch target can accept this request's image or audio input.
+
+    A local GGUF takes both capabilities from its companion mmproj, so one probe
+    answers for either, modality-aware through ``need_image``. Other checkpoints
+    declare them apart: vision in the config architecture, audio input in the
+    tokenizer's special tokens.
+    """
+    if is_gguf:
+        return _target_is_vision(load_path, gguf_variant, need_image)
+    # input_video is llama.cpp's own part type, so a clip is refused right after the load.
+    if needs_video:
+        return False
+    if needs_audio and not _target_accepts_audio_input(load_path):
+        return False
+    # need_image, not needs_vision: an audio request sets needs_vision so a GGUF is
+    # asked for its projector, and demanding a vision tower here would refuse the
+    # audio checkpoints that can actually serve it.
+    return _target_is_vision(load_path) if (needs_vision and need_image) else True
+
+
+_AUDIO_IMAGE_INPUT_DETAIL = (
+    "This model takes audio or an image in one message, not both."
+    " Send the image on its own turn."
+)
+
+
+async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: bool) -> None:
+    """Apply the pre-switch audio rules that depend on the target's serving format.
+
+    Only for a swap that is about to run: these exist so a request the target cannot
+    serve fails before the load evicts the resident model, and where no swap happens the
+    serving branch decides for itself. A GGUF target is validated through
+    :func:`_prepare_audio_for_llama`, which accepts a ``data:`` URI and the containers
+    torchaudio cannot open, and supports ``continue_final_message``. A non-GGUF target is served by
+    :func:`_decode_audio_base64`, so the upload is validated with that same decoder and
+    the array handed back under ``decoded`` for the audio branch to reuse.
+    """
+    if target_is_gguf:
+        try:
+            audio_preflight["prepared"] = await asyncio.to_thread(
+                _prepare_audio_for_llama, audio_preflight["b64"]
+            )
+        except Exception:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "The 'audio_base64' value could not be decoded as audio.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "audio_base64",
+                ),
+            ) from None
+        return
+    if audio_preflight.get("continue_final"):
+        raise HTTPException(
+            status_code = 400,
+            detail = "continue_final_message is not supported with audio input.",
+        )
+    if audio_preflight.get("has_image"):
+        raise HTTPException(status_code = 400, detail = _AUDIO_IMAGE_INPUT_DETAIL)
+    if not _audio_decoder_is_available():
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "This server cannot decode audio input for a non-GGUF model: "
+                "torchaudio is not installed.",
+                status = 400,
+                code = "invalid_value",
+                param = "model",
+            ),
+        )
+    try:
+        audio_preflight["decoded"] = await asyncio.to_thread(
+            _decode_audio_base64, audio_preflight["b64"]
+        )
+    except Exception:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "The 'audio_base64' value could not be decoded as audio.",
+                status = 400,
+                code = "invalid_value",
+                param = "audio_base64",
+            ),
+        ) from None
+
+
+def _validate_image_base64(encoded: str) -> None:
+    """Decode one image far enough to reject malformed bytes before a switch."""
+    from io import BytesIO
+    from PIL import Image
+
+    image_data = base64.b64decode(encoded)
+    with Image.open(BytesIO(image_data)) as image:
+        image.load()
+
+
+async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: bool) -> None:
+    """Apply target-specific image checks before loading the resolved target."""
+    if not target_is_gguf and image_preflight.get("multiple"):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This model takes one image per message. Attach one, or load a"
+                " GGUF build of it, which accepts several."
+            ),
+        )
+    if not target_is_gguf and image_preflight.get("remote") and image_preflight.get("b64") is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Remote image URLs are not supported. Use a base64 data URL.",
+        )
+    encoded_images = (
+        image_preflight.get("b64s", ()) if target_is_gguf else (image_preflight.get("b64"),)
+    )
+    for encoded in encoded_images:
+        if encoded is None:
+            continue
+        try:
+            await asyncio.to_thread(_validate_image_base64, encoded)
+        except Exception:
+            detail = "Failed to process image." if target_is_gguf else "Failed to decode image"
+            raise HTTPException(status_code = 400, detail = detail) from None
+
+
 def _messages_have_image(messages) -> bool:
     return any(
         isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    )
+
+
+def _messages_have_remote_image(messages) -> bool:
+    return any(
+        isinstance(m.content, list)
+        and any(
+            isinstance(p, ImageContentPart) and not p.image_url.url.startswith("data:")
+            for p in m.content
+        )
         for m in messages
     )
 
@@ -6373,6 +6943,28 @@ def _anthropic_request_has_image(payload) -> bool:
             if bt == "image":
                 return True
     return False
+
+
+def _anthropic_local_image_payloads(payload) -> list[str]:
+    """Base64 image sources translated by the Anthropic endpoint."""
+    encoded_images = []
+    for msg in getattr(payload, "messages", None) or ():
+        content = msg.get("content") if isinstance(msg, dict) else msg.content
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            block_type = block.get("type") if isinstance(block, dict) else block.type
+            if block_type != "image":
+                continue
+            source = block.get("source") if isinstance(block, dict) else block.source
+            source_type = source.get("type") if isinstance(source, dict) else source.type
+            data = source.get("data") if isinstance(source, dict) else source.data
+            if source_type == "base64" and isinstance(data, str):
+                encoded_images.append(data)
+            url = source.get("url") if isinstance(source, dict) else source.url
+            if source_type == "url" and isinstance(url, str) and url.startswith("data:"):
+                encoded_images.append(url.partition(",")[2])
+    return encoded_images
 
 
 def disable_openai_auto_switch_for_request(scope) -> None:
@@ -6642,7 +7234,13 @@ def _resident_id_is_namespaced() -> bool:
             _llama_public_model_id(llama_backend),
         )
     else:
-        candidates = (getattr(get_inference_backend(), "active_model_name", None),)
+        orchestrator = get_inference_backend()
+        active = getattr(orchestrator, "active_model_name", None)
+        # The alias outlives an unload, so it only describes a resident model while
+        # active_model_name is set, the same gate every other alias reader applies.
+        candidates = (
+            (active, getattr(orchestrator, "_openai_advertised_id", None)) if active else ()
+        )
     return any("/" in (public_model_id(c) or "") for c in candidates if c)
 
 
@@ -6672,13 +7270,17 @@ def _loaded_satisfies(requested: str) -> bool:
             # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
-    active = getattr(get_inference_backend(), "active_model_name", None)
+    backend = get_inference_backend()
+    active = getattr(backend, "active_model_name", None)
     if not active:
         return False
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
         return False
-    return _matches_any(base, [active, public_model_id(active)])
+    # The alias too: auto-switch records the repo id there, not in active_model_name.
+    return _matches_any(
+        base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
+    )
 
 
 def _loaded_identity_satisfies(requested: str) -> bool:
@@ -6704,8 +7306,15 @@ def _loaded_identity_satisfies(requested: str) -> bool:
         if advertised is None and identifier and _looks_like_local_path(identifier):
             return False
         return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
-    active = getattr(get_inference_backend(), "active_model_name", None)
-    return bool(active and _matches_any(base, [active]) and _loaded_satisfies(requested))
+    backend = get_inference_backend()
+    active = getattr(backend, "active_model_name", None)
+    if not active:
+        return False
+    advertised = getattr(backend, "_openai_advertised_id", None)
+    # Same rule as the llama branch: answering from the path alone skips the recording.
+    if advertised is None and _looks_like_local_path(active):
+        return False
+    return _matches_any(base, (active, advertised)) and _loaded_satisfies(requested)
 
 
 def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
@@ -6767,17 +7376,27 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
     return bool(variant) and resident.lower() == variant.strip().lower()
 
 
-def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False) -> bool:
+def _resolves_to_resident(
+    load_path: Optional[str],
+    *,
+    llama_only: bool = False,
+    exact_only: bool = False,
+) -> bool:
     """Whether a resolved on-disk path is what is already loaded.
 
     ``llama_only`` drops the Transformers backend: only llama.cpp carries a quant
     identity, so a Transformers model active from a directory that also holds GGUF
-    exports would otherwise answer a request for one of those quants.
+    exports would otherwise answer a request for one of those quants. ``exact_only``
+    drops the directory prefix rules, which exist for a GGUF loaded out of a directory
+    and would otherwise let a checkpoint nested under the loaded one read as resident.
     """
     if not load_path:
         return False
     target = _norm_path(load_path)
     llama_backend = get_llama_cpp_backend()
+    orchestrator_model = (
+        None if llama_only else getattr(get_inference_backend(), "active_model_name", None)
+    )
     for candidate in (
         getattr(llama_backend, "gguf_path", None)
         if getattr(llama_backend, "is_loaded", False)
@@ -6785,13 +7404,17 @@ def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False)
         getattr(llama_backend, "model_identifier", None)
         if getattr(llama_backend, "is_loaded", False)
         else None,
-        None if llama_only else getattr(get_inference_backend(), "active_model_name", None),
+        orchestrator_model,
     ):
         if not candidate:
             continue
         current = _norm_path(candidate)
         if current == target:
             return True
+        # A non-GGUF checkpoint loads from its own directory, so a row nested under the
+        # loaded one is different weights however that model was loaded.
+        if exact_only or (candidate is orchestrator_model and orchestrator_model is not None):
+            continue
         if current.startswith(f"{target}/"):
             # A model directory holding the weights loaded from it. Nested entries
             # (/models/A alongside /models/A/sub/B) matched too, so a request for A was
@@ -6804,6 +7427,22 @@ def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False)
         if target.startswith(f"{current}/"):
             return True
     return False
+
+
+def _classify_and_probe_residency(
+    load_path: str, alias: Optional[str], llama_only: bool
+) -> tuple[bool, bool]:
+    """Classify a switch target's serving format and probe residency, in one pass.
+
+    Both touch the filesystem, so they share a single off-loop hop, and the format is
+    what decides how residency is matched: a non-GGUF checkpoint loads from its own
+    directory, so the GGUF prefix rules must not let a model nested under the loaded
+    one answer for it. Returns ``(is_gguf, is_resident)``.
+    """
+    from core.inference.local_model_resolver import local_target_is_gguf
+
+    is_gguf = local_target_is_gguf(load_path, alias)
+    return is_gguf, _resolves_to_resident(load_path, llama_only = llama_only, exact_only = not is_gguf)
 
 
 def _innermost_indexed_owner(path: str) -> Optional[str]:
@@ -6890,20 +7529,27 @@ async def _reject_unservable_model(
         # would be answered by a resident Q4_K_M.
         # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
         # skip the offloaded reads, so on a restart this built the singleton on the loop.
-        if (
+        resolved_is_resident = (
             resolved is not None
-            and await asyncio.to_thread(_resolves_to_resident, resolved[0], llama_only = quantified)
-            and (not quantified or _resident_quant_is(variant))
-        ):
+            and (
+                await asyncio.to_thread(
+                    _classify_and_probe_residency, resolved[0], resolved[2], quantified
+                )
+            )[1]
+        )
+        if resolved_is_resident and (not quantified or _resident_quant_is(variant)):
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
         advertised = _advertised_local_path(base)
-        if (
+        # classified from the advertised path itself, since a resolver miss left the pair above safe.
+        advertised_is_resident = (
             advertised is not None
-            and await asyncio.to_thread(_resolves_to_resident, advertised, llama_only = quantified)
-            and (not quantified or _resident_quant_is(variant))
-        ):
+            and (
+                await asyncio.to_thread(_classify_and_probe_residency, advertised, base, quantified)
+            )[1]
+        )
+        if advertised_is_resident and (not quantified or _resident_quant_is(variant)):
             return
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = (
@@ -6979,23 +7625,38 @@ async def _maybe_auto_switch_model(
     require_image: bool = True,
     modality_label: str = "image or audio",
     claim_resident: bool = True,
+    require_audio_input: bool = False,
+    require_video: bool = False,
+    gguf_only: bool = False,
+    audio_preflight: Optional[dict] = None,
+    image_preflight: Optional[dict] = None,
 ) -> None:
-    """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
+    """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
+    Covers both formats this server can serve from disk: a GGUF through llama.cpp
+    and a non-GGUF checkpoint (safetensors, MLX) through the inference orchestrator.
     No-op unless enabled and ``requested_model`` resolves to a downloaded local
     model different from the loaded one. Unknown names fall through (drop-in
     compat); a miss only reaches the network when auto-download is also on, and
     even then only for ``namespace/name`` ids. ``require_vision`` rejects a swap
-    to a text-only target before it runs, so an image request can't evict the
-    resident vision model only to 400 afterwards. ``claim_resident`` claims a
-    resident model the request adopts (clears the preview marker) at the no-load
-    exits; a route that still has its own capability/backend checks that can reject
-    (e.g. GGUF-only /v1/completions, /audio/generate) passes ``False`` and claims
-    itself only after those checks pass, so a later rejection can't strand a
-    preview-owned model as Unsloth-owned. ``require_image`` makes the vision check
-    that rejection modality-aware, since an audio request needs the projector but
-    not a vision tower. ``modality_label`` names the inputs actually attached, so
-    the rejection does not report a modality the request never carried.
+    to a target that cannot accept the request's input before it runs, so an image
+    or audio request can't evict the resident model only to 400 afterwards.
+    ``claim_resident`` claims a resident model the request adopts (clears the preview
+    marker) at the no-load exits; a route that still has its own capability/backend
+    checks that can reject (e.g. GGUF-only /v1/completions, /audio/generate) passes
+    ``False`` and claims itself only after those checks pass, so a later rejection
+    can't strand a preview-owned model as Unsloth-owned. ``require_image`` makes that
+    rejection modality-aware for a GGUF, whose one projector carries both, and
+    ``require_audio_input`` covers a non-GGUF checkpoint, which declares the two
+    separately, and ``require_video`` rules a non-GGUF target out entirely, since
+    only llama.cpp takes a clip. ``modality_label`` names the inputs attached, so the
+    rejection does not report a modality the request never carried. ``gguf_only``
+    marks an endpoint that reads llama.cpp alone, where loading a non-GGUF model
+    would unload the resident one and leave the handler with nothing to serve.
+    ``audio_preflight`` carries an audio upload whose format-dependent
+    checks only the resolved target can decide; see
+    :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
+    non-GGUF image count and byte validation.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -7004,6 +7665,7 @@ async def _maybe_auto_switch_model(
         model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import (
+        local_target_is_gguf,
         resolve_local_gguf,
         resolve_trusted_cached_local_gguf,
         warm_index_soon,
@@ -7056,12 +7718,31 @@ async def _maybe_auto_switch_model(
     if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
         return
     auto_switch_on = get_openai_auto_switch_enabled()
-    # The reload-stash path also runs when idle-unload is active on its own (a
-    # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
-    # loop freed is restored on the next request. The resolver-based switch still
-    # requires the auto-switch toggle.
-    # Configured, not effective: residency zeroes the TTL, and the stash still
-    # has to be restorable after it is turned on.
+
+    def _refuse_non_gguf_endpoint() -> None:
+        """Refuse a switch target this endpoint cannot serve.
+
+        Raised only for a target the resolver found and that is not already serving:
+        a resident non-GGUF model reaches the handler's own error instead, since no
+        swap is pending to refuse.
+        """
+        message = (
+            f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
+            "Use /v1/chat/completions for this model."
+        )
+        # error_body_for_path, not the OpenAI shape: the Anthropic routes reach this too
+        # and the global handler passes an already-formatted body through as is.
+        path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                error_body_for_path(path, message, status = 400, code = "invalid_value", param = "model")
+                if isinstance(path, str)
+                else message
+            ),
+        )
+
+    # configured, not effective: residency zeroes the TTL, and the stash still has to restore.
     if not auto_switch_on and not idle_unload_is_configured():
         # No switching to do, but a named model must still not be answered by another.
         # Reject first: a request that is turned away here must not claim the slot.
@@ -7115,7 +7796,9 @@ async def _maybe_auto_switch_model(
                 await _maybe_auto_download_model(
                     requested_model,
                     fastapi_request,
-                    require_vision = require_vision,
+                    # GGUF carries both from one mmproj, so the download guard takes
+                    # either need; splitting them here would fetch a text-only repo.
+                    require_vision = require_vision or require_audio_input,
                     current_subject = current_subject,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
@@ -7160,6 +7843,22 @@ async def _maybe_auto_switch_model(
             # takes the local branch and cannot trigger a download. override_id is the
             # advertised repo id, the launch-override key and the public model id.
             target_id, variant, override_id = resolved
+        # Not inferred from the quant: a GGUF loaded from a local directory carries none.
+        target_is_gguf = await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
+        # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
+        if (
+            gguf_only
+            and not target_is_gguf
+            and resolved is not None
+            and _peek_inference_backend() is None
+        ):
+            _refuse_non_gguf_endpoint()
+        # Resolved once, off the loop: a cold orchestrator build waits on hardware detection.
+        target_backend = (
+            get_llama_cpp_backend()
+            if target_is_gguf
+            else await asyncio.to_thread(get_inference_backend)
+        )
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
@@ -7174,6 +7873,20 @@ async def _maybe_auto_switch_model(
             # so a model loaded manually by repo id (identifier = repo id) and one
             # loaded by auto-switch (identifier = path, advertised = repo id) both
             # count as already serving rather than triggering a needless reswap.
+            if not target_is_gguf:
+                active = getattr(target_backend, "active_model_name", None)
+                if not active:
+                    return False
+                # _matches_any, not a lowercased set: two scan roots differing only by
+                # case are different weights on a case-sensitive filesystem, and a false
+                # match here records the alias on the wrong resident model.
+                loaded_keys = [active, getattr(target_backend, "_openai_advertised_id", None)]
+                if _matches_any(target_id, loaded_keys):
+                    return True
+                # two scan roots can advertise one basename, so it cannot vouch for a path.
+                if _looks_like_local_path(target_id) and _looks_like_local_path(active):
+                    return False
+                return _matches_any(override_id, loaded_keys)
             if not backend.is_loaded or not backend.model_identifier:
                 return False
             loaded_keys = {backend.model_identifier.lower()}
@@ -7198,9 +7911,8 @@ async def _maybe_auto_switch_model(
             # busy guard), so the loaded model can't change under this.
             if resolved is None or not override_id:
                 return
-            b = get_llama_cpp_backend()
-            if getattr(b, "_openai_advertised_id", None) != override_id:
-                b._openai_advertised_id = override_id
+            if getattr(target_backend, "_openai_advertised_id", None) != override_id:
+                target_backend._openai_advertised_id = override_id
 
         if _already_serving():
             # A non-preview request adopting this model claims it for Unsloth, so a later
@@ -7209,16 +7921,31 @@ async def _maybe_auto_switch_model(
                 _set_preview_resident(None)
             _record_serving_alias()
             return
-        # An image/audio request naming a different text-only GGUF would load it
+        # Loading a non-GGUF model unloads the resident GGUF, and these endpoints read
+        # llama.cpp alone, so the swap would strand them with nothing to serve.
+        if gguf_only and not target_is_gguf and resolved is not None:
+            _refuse_non_gguf_endpoint()
+        # An image/audio request naming a different text-only target would load it
         # here and only 400 below, evicting the working model. Reject before the
         # swap. Only the resolver branch (an explicit new target); the reload-stash
-        # path just restores the model the request was already using. Both vision and
-        # audio input come from a companion mmproj (a filesystem probe) -- run it off
-        # the loop, like the resolver above.
+        # path just restores the model the request was already using. The probe hits
+        # the filesystem, so run it off the loop like the resolver above.
+        target_requires_image = require_image
+        if require_audio_input and not target_is_gguf and audio_preflight is not None:
+            target_requires_image = bool(audio_preflight.get("has_image"))
         if (
-            require_vision
+            (require_vision or require_audio_input)
             and resolved is not None
-            and not await asyncio.to_thread(_target_is_vision, target_id, variant, require_image)
+            and not await asyncio.to_thread(
+                _target_accepts_request_input,
+                target_id,
+                target_is_gguf,
+                require_vision,
+                require_audio_input,
+                variant,
+                target_requires_image,
+                require_video,
+            )
         ):
             raise HTTPException(
                 status_code = 400,
@@ -7229,6 +7956,15 @@ async def _maybe_auto_switch_model(
                     param = "model",
                 ),
             )
+        # resolver branch only, like the probe above: a reload-stash restore changes no format.
+        if audio_preflight is not None and resolved is not None:
+            await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
+        if (
+            image_preflight is not None
+            and resolved is not None
+            and (target_is_gguf or not require_audio_input)
+        ):
+            await _preflight_image_for_switch(image_preflight, target_is_gguf)
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
@@ -7265,12 +8001,7 @@ async def _maybe_auto_switch_model(
                         )
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
                         load_kwargs.update(
-                            model_override_load_kwargs(
-                                override,
-                                # Set for every GGUF the resolver returns; the reload
-                                # stash carries the quant it froze.
-                                is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
-                            )
+                            model_override_load_kwargs(override, is_gguf = target_is_gguf)
                         )
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
@@ -7335,20 +8066,17 @@ async def _maybe_auto_switch_model(
                                     current_request_counted = True,
                                     **durable_cancel_kw,
                                 )
-                            _raise_if_generation_cancelled()
                             _switch_loaded_ok = True
+                            # publish the completed load before a late cancellation is observed.
+                            target_backend._openai_advertised_id = override_id
+                            target_backend._loaded_by_user_action = False
+                            _raise_if_generation_cancelled()
                         finally:
                             if not claim_resident:
                                 if _switch_loaded_ok or _loaded_slot_ident() == target_id:
                                     _set_preview_resident(_loaded_slot_ident())
                                 else:
                                     _set_preview_resident(_switch_prior_marker)
-                        # Advertise the repo id (not the concrete load path) as the loaded
-                        # model's public id and override key for /v1/models and idle stash.
-                        get_llama_cpp_backend()._openai_advertised_id = override_id
-                        # API provenance: idle auto-unload may free this one even when
-                        # scoped to API loads.
-                        get_llama_cpp_backend()._loaded_by_user_action = False
                 finally:
                     # Deregister before releasing the gate: otherwise a swap on another
                     # loop counts this finished request as queued and unloads its model.
@@ -7364,7 +8092,12 @@ async def _maybe_auto_switch_model(
     await _reject_unservable_model(requested_model, fastapi_request)
 
 
-async def _auto_switch_from_request_body(request: Request, current_subject: str):
+async def _auto_switch_from_request_body(
+    request: Request,
+    current_subject: str,
+    *,
+    gguf_only: bool = False,
+):
     """Run auto-switch from a raw-body endpoint's ``model`` without changing its
     pre-feature status codes: a malformed/non-dict body yields no model (so an
     unloaded backend still 503s, not 500), and the caller re-reads to surface the
@@ -7385,7 +8118,9 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
     # GGUF model loaded" after this returns. Don't claim here (claim_resident=False); the
     # caller claims only once it confirms a GGUF is loaded, so that 503 can't strand a
     # preview-owned non-GGUF model as Unsloth-owned.
-    await _maybe_auto_switch_model(model, request, current_subject, claim_resident = False)
+    await _maybe_auto_switch_model(
+        model, request, current_subject, claim_resident = False, gguf_only = gguf_only
+    )
     return body
 
 
@@ -11768,6 +12503,40 @@ async def load_model_gated(
         _finish_load_attempt(attempt)
 
 
+def _restore_alias_if_failed_load_left_the_prior_model(
+    backend, prior_alias: Optional[str], prior_active: Optional[str]
+) -> None:
+    """Put the advertised alias back when a failed load left the previous model serving.
+
+    :func:`_load_model_impl` clears the alias before calling ``load_model`` so a request
+    naming the old model cannot be answered by the new weights. A repair raises
+    ``SidecarSwapInProgress`` before the old worker is torn down, so the orchestrator keeps
+    ``active_model_name`` and its mirrors and that model goes on serving. Without this it
+    would go on serving stripped of the id ``/v1/models``, the monitor and response ids
+    report it under.
+    """
+    if prior_active is None or getattr(backend, "active_model_name", None) != prior_active:
+        return
+    backend._openai_advertised_id = prior_alias
+
+
+def _gguf_load_cancelled(llama_backend, load_cancel_event: Optional[threading.Event]) -> bool:
+    return llama_backend.load_cancelled() or bool(
+        load_cancel_event is not None and load_cancel_event.is_set()
+    )
+
+
+async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bool:
+    try:
+        return await asyncio.to_thread(
+            llama_backend.load_model,
+            intent = intent,
+            load_cancel_event = load_cancel_event,
+        )
+    except GgufDownloadCancelled:
+        return False
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -12251,13 +13020,15 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
-            # same reason: the host-RAM guard reads the finished argv, so it answers too late
-            _host_offload = await asyncio.to_thread(
-                llama_backend.host_offload_refusal_for_intent, gguf_intent
+            # Advisory, not a gate: an oversized GGUF mmaps and pages from disk rather
+            # than failing, which off fast storage is a deliberate way to run a quant
+            # bigger than fast memory, so the load goes ahead. Asked here as well as at
+            # launch because load_model's copy runs too deep to reach the response.
+            _host_offload_warning = await asyncio.to_thread(
+                llama_backend.host_offload_warning_for_intent, gguf_intent
             )
-            if _host_offload:
-                logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
-                raise HTTPException(status_code = 400, detail = _host_offload)
+            if _host_offload_warning:
+                logger.warning("Loading an oversized GGUF: %s", _host_offload_warning)
 
         if chat_load_needs_gpu:
             gpu_acquire_kwargs = {} if allow_gpu_owner_eviction else {"allow_evict": False}
@@ -12356,10 +13127,10 @@ async def _load_model_impl(
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
                 )
-                return await asyncio.to_thread(
-                    llama_backend.load_model,
-                    intent = attempt,
-                    load_cancel_event = load_cancel_event,
+                return await _run_gguf_load_attempt(
+                    llama_backend,
+                    attempt,
+                    load_cancel_event,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -12373,10 +13144,7 @@ async def _load_model_impl(
                     requested_tensor = request.tensor_parallel,
                     extra_args = extra_llama_args,
                     label = config.identifier,
-                    cancelled = lambda: (
-                        llama_backend.load_cancelled()
-                        or bool(load_cancel_event and load_cancel_event.is_set())
-                    ),
+                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
                 )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
@@ -12388,6 +13156,11 @@ async def _load_model_impl(
 
             if not success:
                 _restore_marker_if_prior_preview_still_resident()
+                # A cancelled load is not a failed one. An automatic switch cancels
+                # through its own event without unloading, and the 500 built here
+                # would land before the caller reaches _raise_if_generation_cancelled.
+                if _gguf_load_cancelled(llama_backend, load_cancel_event):
+                    raise HTTPException(status_code = 409, detail = "Model load cancelled")
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
@@ -12505,6 +13278,12 @@ async def _load_model_impl(
 
         # Load in a thread so the event loop stays free for download progress
         # polling and other requests.
+        # Cleared before the load, not after: load_model publishes active_model_name for
+        # the new weights, and a concurrent request matching the old alias in that window
+        # would be answered by them. Auto-switch sets the repo id once this returns.
+        _prior_alias = getattr(backend, "_openai_advertised_id", None)
+        _prior_active = getattr(backend, "active_model_name", None)
+        backend._openai_advertised_id = None
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
@@ -12522,10 +13301,12 @@ async def _load_model_impl(
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
+            _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             raise
 
         if not success:
             _restore_marker_if_prior_preview_still_resident()
+            _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             # Check if YAML says this model needs trust_remote_code.
             if not request.trust_remote_code:
                 model_defaults = load_model_defaults(config.identifier)
@@ -14861,7 +15642,7 @@ async def _generate_tts_wav(
         model_info = backend.models.get(backend.active_model_name, {})
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
-        model_name = public_model_id(backend.active_model_name)
+        model_name = _orchestrator_public_model_id(backend)
         audio_type = model_info.get("audio_type")
         supported_audio_types = _TRANSFORMERS_TTS_AUDIO_TYPES
         _audio_model_id = getattr(backend, "active_model_name", None) or model_name
@@ -15966,6 +16747,16 @@ async def transcribe_audio_raw(
 # =====================================================================
 
 
+def _audio_decoder_is_available() -> bool:
+    """Whether _decode_audio_base64 can run here; it needs torchaudio, which a
+    GGUF-only install does not ship. find_spec keeps this off the import path."""
+    try:
+        from importlib.util import find_spec
+        return find_spec("torchaudio") is not None
+    except Exception:
+        return False
+
+
 def _decode_audio_base64(b64: str) -> "np.ndarray":
     """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
     import torchaudio
@@ -16316,30 +17107,72 @@ def _legacy_image_is_distinct(payload) -> bool:
     against that one value alone: matching any image in the thread let a client
     resend an older image, or an assistant's, and hid a real attachment.
     """
-    if not payload.image_base64:
+    image = getattr(payload, "image_base64", None)
+    if not image:
         return False
-    return _latest_user_image_payload(payload.messages) != payload.image_base64
+    return _latest_user_image_payload(getattr(payload, "messages", None)) != image
 
 
-def _latest_user_image_payload(messages: list) -> "Optional[str]":
+def _latest_user_image_payload(messages) -> "Optional[str]":
     """The value ``findLatestUserImageBase64`` would put in ``image_base64``.
 
     Its scan order: newest turn first, user turns only, first image part, ``data:``
     prefix stripped the way :func:`_extract_content_parts` strips it. A part that
     yields nothing does not end the scan, since the frontend walks on past a falsy
     read; stopping on one refused Studio's echo of a valid earlier image.
+
+    Reads models and plain dicts alike: the generation paths only ever hold models, but
+    the KV admission estimate sees whatever the caller passed, and both have to answer
+    "is the legacy field an echo?" the same way or the reservation stops matching the
+    prompt.
     """
-    for msg in reversed(messages):
-        if msg.role != "user" or not isinstance(msg.content, list):
+    for msg in reversed(list(messages or ())):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if role != "user" or not isinstance(content, list):
             continue
-        for part in msg.content:
-            if part.type != "image_url":
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") != "image_url":
+                    continue
+                image_url = part.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else image_url
+            else:
+                if getattr(part, "type", None) != "image_url":
+                    continue
+                url = getattr(getattr(part, "image_url", None), "url", None)
+            if not isinstance(url, str):
                 continue
-            url = part.image_url.url
             encoded = url.partition(",")[2] if url.startswith("data:") else url
             if encoded:
                 return encoded
     return None
+
+
+def _local_image_payloads_from_messages(messages) -> list[str]:
+    """All data-URL image payloads in OpenAI-format messages."""
+    encoded_images = []
+    for message in messages or ():
+        content = message.get("content") if isinstance(message, dict) else message.content
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            part_type = part.get("type") if isinstance(part, dict) else part.type
+            if part_type != "image_url":
+                continue
+            image_url = part.get("image_url") if isinstance(part, dict) else part.image_url
+            url = image_url.get("url") if isinstance(image_url, dict) else image_url.url
+            if isinstance(url, str) and url.startswith("data:"):
+                encoded_images.append(url.partition(",")[2])
+    return encoded_images
+
+
+def _request_local_image_payloads(payload) -> list[str]:
+    """All data-URL and distinct legacy image payloads forwarded locally."""
+    encoded_images = _local_image_payloads_from_messages(getattr(payload, "messages", None) or ())
+    if _legacy_image_is_distinct(payload):
+        encoded_images.append(payload.image_base64)
+    return encoded_images
 
 
 # ── External provider proxy ──────────────────────────────────────
@@ -17071,6 +17904,11 @@ async def _proxy_to_external_provider(
                 chat_messages = _append_to_codex_instructions(
                     chat_messages, _codex_full_access_nudge
                 )
+        chat_messages = _prepend_current_date_to_messages(
+            chat_messages,
+            request,
+            include_api_key = bool(studio_tool_payloads),
+        )
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
@@ -17364,6 +18202,11 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    chat_messages = _prepend_current_date_to_messages(
+        chat_messages,
+        request,
+        include_api_key = run_studio_tool_loop,
+    )
     if run_studio_tool_loop and payload.bypass_permissions:
         # Full access disables the sandbox at execution time, so the schemas must
         # say so too rather than describing a sandbox the model will not get.
@@ -17499,7 +18342,7 @@ async def _proxy_to_external_provider(
                     sent_done = True
             if not sent_done:
                 if not stream_failed:
-                    api_monitor.finish(monitor_id)
+                    _monitor_openai_sse_line(monitor_id, "data: [DONE]")
                 yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
@@ -17964,6 +18807,11 @@ async def produce_openai_chat_completions(
     _needs_vision = False
     _needs_image = False
     _modality_label = "image or audio"
+    _needs_audio_input = False
+    _needs_video = False
+    _predecoded_audio = None
+    _preprepared_audio = None
+    _image_preflight = None
     if _should_validate_before_switch():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -18048,10 +18896,7 @@ async def produce_openai_chat_completions(
                         param = "tool_choice",
                     ),
                 )
-        # Reject an oversized audio upload before the switch: the size cap is a
-        # cheap, target-independent length check, so a too-large payload must not
-        # load a GGUF only to 413 afterward (the decode itself stays post-switch to
-        # avoid decoding a valid upload twice).
+        # target-independent, unlike the format-dependent checks the switch itself runs.
         if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
             raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
         # Reject streaming n>1 before the switch: only the non-streaming GGUF path
@@ -18065,12 +18910,14 @@ async def produce_openai_chat_completions(
         # Audio input rides the same companion-mmproj projector as vision, so a
         # text-only target can't serve it either; guard both before the switch. An
         # audio-only request asks for the projector alone, since an audio model's
-        # projector carries no vision tower.
+        # projector carries no vision tower. A safetensors or MLX checkpoint
+        # declares audio input separately, so it is tracked apart as well.
         _needs_image = bool(_pre_parsed[2]) or _request_has_image(payload)
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
-        _needs_vision = _needs_image or bool(payload.audio_base64) or bool(payload.video_base64)
+        _needs_video = bool(payload.video_base64)
+        _needs_vision = _needs_image or bool(payload.audio_base64) or _needs_video
         # Name what is actually attached, so the refusal does not report a
         # modality the request never carried.
         _modality_label = (
@@ -18091,6 +18938,35 @@ async def produce_openai_chat_completions(
             _, _video_rejection = _video_b64_rejection(payload.video_base64)
             if _video_rejection is not None:
                 raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
+        _needs_audio_input = bool(payload.audio_base64)
+
+    # the rest of the audio checks depend on the target's format, so the switch runs them.
+    _audio_preflight = (
+        {
+            "b64": payload.audio_base64,
+            "continue_final": _continue_final_message(payload),
+            "has_image": _images_in_last_user_message(payload.messages)
+            or _legacy_image_is_distinct(payload),
+        }
+        if _needs_audio_input
+        else None
+    )
+    if _needs_image and _pre_parsed is not None:
+        _images_on_turn = _images_in_last_user_message(payload.messages)
+        _legacy_image_distinct = _legacy_image_is_distinct(payload)
+        _local_image_payloads = _request_local_image_payloads(payload)
+        _image_b64 = _pre_parsed[2] or payload.image_base64
+        if _image_b64 is None and _local_image_payloads:
+            _image_b64 = _local_image_payloads[0]
+        _image_preflight = {
+            "b64": _image_b64,
+            "b64s": _local_image_payloads,
+            "remote": _messages_have_remote_image(payload.messages),
+            "multiple": (
+                _images_on_turn + int(_legacy_image_distinct) > 1
+                or bool(_pre_parsed[2] and _legacy_image_distinct)
+            ),
+        }
 
     # Defer the resident claim: chat has several post-switch capability checks that can still
     # reject (Whisper without audio, n>1 on a non-GGUF backend, tool or response_format
@@ -18105,7 +18981,14 @@ async def produce_openai_chat_completions(
         require_image = _needs_image,
         modality_label = _modality_label,
         claim_resident = False,
+        require_audio_input = _needs_audio_input,
+        require_video = _needs_video,
+        audio_preflight = _audio_preflight,
+        image_preflight = _image_preflight,
     )
+    if _audio_preflight is not None:
+        _predecoded_audio = _audio_preflight.get("decoded")
+        _preprepared_audio = _audio_preflight.get("prepared")
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
@@ -18209,7 +19092,7 @@ async def produce_openai_chat_completions(
             raise HTTPException(status_code = _status, detail = _detail)
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
-        model_name = public_model_id(backend.active_model_name) or payload.model
+        model_name = _orchestrator_public_model_id(backend) or payload.model
         # Restated here because the pre-switch check runs only when an automatic
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
@@ -18275,15 +19158,19 @@ async def produce_openai_chat_completions(
             # refusing would break asking by voice about a picture attached before.
             # api_monitor directly: _reject is not bound this early in the handler.
             if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
-                _audio_image_detail = (
-                    "This model takes audio or an image in one message, not both."
-                    " Send the image on its own turn."
-                )
+                _audio_image_detail = _AUDIO_IMAGE_INPUT_DETAIL
                 api_monitor.fail(monitor_id, _audio_image_detail)
                 raise HTTPException(status_code = 400, detail = _audio_image_detail)
             try:
-                audio_array = _decode_audio_base64(payload.audio_base64)
+                # Decoded before the switch; only a path that skipped that preflight
+                # (no automatic load could run) still has to do it here.
+                audio_array = (
+                    _predecoded_audio
+                    if _predecoded_audio is not None
+                    else _decode_audio_base64(payload.audio_base64)
+                )
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+                system_prompt = _apply_current_date_prompt(system_prompt, request)
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
@@ -18699,6 +19586,8 @@ async def produce_openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
     else:
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+    # applied once so both backends inherit it, with or without tools, and never state it twice.
+    system_prompt = _apply_current_date_prompt(system_prompt, request)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -18721,8 +19610,10 @@ async def produce_openai_chat_completions(
             if len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
                 raise _reject(413, "Audio file is too large (max ~25 MB).")
             try:
-                audio_b64, audio_format = await asyncio.to_thread(
-                    _prepare_audio_for_llama, payload.audio_base64
+                audio_b64, audio_format = (
+                    _preprepared_audio
+                    if _preprepared_audio is not None
+                    else await asyncio.to_thread(_prepare_audio_for_llama, payload.audio_base64)
                 )
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
@@ -18887,6 +19778,12 @@ async def produce_openai_chat_completions(
                 )
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
+            system_prompt = _apply_current_date_prompt(
+                system_prompt,
+                request,
+                include_api_key = True,
+            )
+            gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
@@ -18903,6 +19800,7 @@ async def produce_openai_chat_completions(
                 _nudge,
                 tools_to_use,
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                payload = payload,
             )
 
             if _nudge:
@@ -18979,6 +19877,8 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     context_overflow = _rolling_context_policy(payload),
+                    context_policy = _request_context_policy(payload),
+                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -19698,6 +20598,8 @@ async def produce_openai_chat_completions(
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 thread_id = payload.thread_id,
                 # These requests suppress the tool loop AND are excluded from the checkpoint
                 # repair above, so search_conversation is offered neither now nor on the
@@ -20572,7 +21474,11 @@ async def produce_openai_chat_completions(
         # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
-        _sf_system_prompt = system_prompt
+        _sf_system_prompt = _apply_current_date_prompt(
+            system_prompt,
+            request,
+            include_api_key = True,
+        )
         if _sf_nudge:
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
@@ -22025,7 +22931,8 @@ def _openai_model_objects() -> list[dict]:
     if backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
-            "id": public_model_id(backend.active_model_name),
+            # The alias, or an LM Studio model switched to by repo id loses its publisher.
+            "id": _orchestrator_public_model_id(backend),
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
@@ -22143,6 +23050,29 @@ async def _cached_local_catalog() -> list:
     return _CATALOG_CACHE["models"]
 
 
+def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...], bool]]:
+    """``(info, is_gguf, quants, resident)`` per catalog entry this server can serve
+    from disk. Module scope, and always called through ``asyncio.to_thread``: the file
+    checks stat many files and the residency check reads the inference singleton."""
+    from core.inference.local_model_resolver import local_load_dir, local_servable_model
+
+    rows = []
+    for info in catalog:
+        servable = local_servable_model(info)
+        if servable is None:
+            continue
+        is_gguf, quants = servable
+        path = getattr(info, "path", None)
+        # the load dir, since an HF cache repo loads as a snapshot exact_only cannot match.
+        resident = _resolves_to_resident(
+            path if is_gguf else local_load_dir(path),
+            llama_only = is_gguf,
+            exact_only = not is_gguf,
+        )
+        rows.append((info, is_gguf, quants, resident))
+    return rows
+
+
 async def _openai_catalog_objects() -> list[dict]:
     """Every model the server knows about for ``GET /v1/models``: the loaded
     model(s) plus locally available (downloaded/cached) models discovered by
@@ -22156,39 +23086,28 @@ async def _openai_catalog_objects() -> list[dict]:
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
 
-    # Locally available (downloaded/cached) models that are not already loaded.
-    # Advertise only GGUF models /v1 can actually serve (llama.cpp). GGUF-ness is
-    # read from the on-disk files, not model_format: the HF-cache scanner leaves
-    # model_format unset for GGUF snapshots, so a model_format filter would drop
-    # every cached GGUF. The file checks run off the loop.
-    from core.inference.local_model_resolver import local_gguf_quants
-
+    # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
-    # One scan yields both "is this servable" and its on-disk quants, so no second pass.
-    servable = await asyncio.to_thread(
-        lambda: [(i, q) for i in catalog if (q := local_gguf_quants(i)) is not None]
-    )
-    for info, quants in servable:
+    for info, is_gguf, quants, loaded in await asyncio.to_thread(_servable_catalog_rows, catalog):
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
+        if loaded and not is_gguf:
+            resident_id = _orchestrator_public_model_id(get_inference_backend())
+            if resident_id in by_id:
+                continue
         obj = {
             "id": cid,
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
-            # A manual load keys the resident entry by path basename while the catalog
-            # uses the alias, so match on the path or the alias reads as not loaded.
-            # llama-only: a Transformers model live from a directory that also holds
-            # GGUF exports must not mark one of these GGUF entries loaded, or the
-            # examples pin a quant nothing can serve with switching off.
-            "loaded": _resolves_to_resident(getattr(info, "path", None), llama_only = True),
+            "loaded": loaded,
         }
         # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
         # For the resident model that must be the quant actually loaded, not the
         # preferred one on disk, or the listing advertises alias:Q4 while Q8 serves.
         resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
-        if obj["loaded"] and resident_quant:
+        if is_gguf and loaded and resident_quant:
             obj["quant"] = resident_quant
         elif quants:
             obj["quant"] = quants[0]
@@ -22200,6 +23119,12 @@ async def _openai_catalog_objects() -> list[dict]:
     return list(by_id.values())
 
 
+# Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
+# literally and do not follow FastAPI's automatic slash redirect. Register the
+# slash form directly so model discovery reaches authentication and returns the
+# catalog in one response. Keep it out of the schema because it is only a wire
+# compatibility alias for the canonical OpenAI path.
+@router.get("/models/", include_in_schema = False)
 @router.get("/models")
 async def openai_list_models(current_subject: str = Depends(get_current_subject)):
     """
@@ -22255,9 +23180,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
             (llama_backend.model_identifier, _llama_public_model_id(llama_backend))
         )
     if backend.active_model_name:
-        raw_to_public.append(
-            (backend.active_model_name, public_model_id(backend.active_model_name))
-        )
+        raw_to_public.append((backend.active_model_name, _orchestrator_public_model_id(backend)))
     for raw, clean in raw_to_public:
         if model_id_matches(model_id, raw):
             for entry in _loaded:
@@ -22339,7 +23262,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
-    body = await _auto_switch_from_request_body(request, current_subject)
+    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
@@ -22653,7 +23576,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
-    body = await _auto_switch_from_request_body(request, current_subject)
+    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
@@ -23356,7 +24279,7 @@ async def _responses_non_streaming(
     try:
         _sink_token = _monitor_perf_sink.set(inner_perf if monitor_id else None)
         try:
-            result = await openai_chat_completions(chat_req, request)
+            result = await openai_chat_completions(chat_req, request, current_subject)
         finally:
             _monitor_perf_sink.reset(_sink_token)
 
@@ -24614,23 +25537,27 @@ async def openai_responses(
                     param = "tool_choice",
                 ),
             )
-    # After input validation so a 400 never triggers a load. Switches the
-    # streaming path; non-streaming re-checks via the idempotent chat handler.
-    # require_vision rejects a swap to a text-only target before it runs, so an
-    # image request can't evict the resident vision model only to 400 afterwards
-    # (the non-streaming chat re-check short-circuits on _already_serving).
-    await _maybe_auto_switch_model(
-        _switch_model_for_payload(payload),
-        request,
-        current_subject,
-        require_vision = _messages_have_image(messages),
-        # Streaming Responses require a GGUF backend and 400 in _responses_stream after this
-        # switch; claiming here would strand a preview-owned model as Unsloth-owned for a
-        # request that never generates. Defer to the middleware, which claims on a 2xx.
-        claim_resident = False,
-    )
-
     if payload.stream:
+        # streaming preflights here; non-streaming delegates its complete preflight to chat.
+        _responses_has_image = _messages_have_image(messages)
+        _responses_image_b64s = _local_image_payloads_from_messages(messages)
+        await _maybe_auto_switch_model(
+            _switch_model_for_payload(payload),
+            request,
+            current_subject,
+            require_vision = _responses_has_image,
+            claim_resident = False,
+            gguf_only = True,
+            image_preflight = (
+                {
+                    "b64": _responses_image_b64s[0],
+                    "b64s": _responses_image_b64s,
+                    "multiple": False,
+                }
+                if _responses_image_b64s
+                else None
+            ),
+        )
         monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
@@ -24858,7 +25785,9 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
 
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
-    payload: ChatCountTokensRequest, current_subject: str = Depends(get_current_subject)
+    payload: ChatCountTokensRequest,
+    current_subject: str = Depends(get_current_subject),
+    request: Request = None,
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
@@ -24914,6 +25843,9 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
+    # the verbatim passthrough carries no date line, so counting one here would overcount it.
+    if not _takes_passthrough:
+        _system_prompt = _apply_current_date_prompt(_system_prompt, request)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
@@ -24974,6 +25906,11 @@ async def chat_count_tokens(
         tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
+            openai_messages = _prepend_current_date_to_messages(
+                openai_messages,
+                request,
+                include_api_key = True,
+            )
             _count_nudge = await _apply_rag_nudge(
                 _build_tool_action_nudge(
                     tools = tools_to_use,
@@ -25090,6 +26027,7 @@ async def anthropic_count_tokens(
         # count_tokens only tokenizes (no generation), so it must not adopt the resident
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
+        gguf_only = True,
     )
 
     llama_backend = get_llama_cpp_backend()
@@ -25119,6 +26057,34 @@ async def anthropic_count_tokens(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
+    # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
+    # routing rather than "any tools": a Studio server-tool alias, or a template without
+    # passthrough support, falls through to plain generation there and does carry the date.
+    _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    _count_has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(t) is not None
+        for t in payload.tools or []
+    )
+    _count_server_tools = (
+        _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
+        and llama_backend.supports_tools
+        and not _anthropic_request_has_image(payload)
+    )
+    _count_client_tools = (
+        not _count_server_tools
+        and any(
+            tool.get("function", {}).get("name") not in _count_studio_tools
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+        )
+        and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
+    )
+    if not _count_client_tools:
+        openai_messages = _prepend_current_date_to_messages(
+            openai_messages,
+            request,
+            include_api_key = _count_server_tools,
+        )
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the
@@ -25206,6 +26172,9 @@ async def anthropic_messages(
     # invalid request never evicts the loaded model.
     _validate_anthropic_client_tools(payload.tools)
 
+    _anthropic_has_image = _anthropic_request_has_image(payload)
+    _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
+
     # Mixing Anthropic server tools with custom client tools is unsupported (the
     # server-tool loop can't relay client functions back to the caller). Reject
     # before the switch too -- it depends only on the payload -- so an invalid
@@ -25249,9 +26218,7 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_request_has_image(
-        payload
-    )
+    _server_tools_requested_pre = _selects_server_tools and not _anthropic_has_image
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
@@ -25291,11 +26258,21 @@ async def anthropic_messages(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_request_has_image(payload),
+        require_vision = _anthropic_has_image,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
         claim_resident = False,
+        gguf_only = True,
+        image_preflight = (
+            {
+                "b64": _anthropic_image_b64s[0],
+                "b64s": _anthropic_image_b64s,
+                "multiple": False,
+            }
+            if _anthropic_image_b64s
+            else None
+        ),
     )
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
@@ -25333,7 +26310,7 @@ async def anthropic_messages(
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
     # endpoint matches /v1/chat/completions.
-    if _anthropic_request_has_image(payload):
+    if _anthropic_has_image:
         _has_image = await asyncio.to_thread(
             _normalize_anthropic_openai_images,
             openai_messages,
@@ -25402,6 +26379,15 @@ async def anthropic_messages(
         and len(openai_client_tools) > 0
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
+
+    # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
+    # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
+    if not client_tools:
+        openai_messages = _prepend_current_date_to_messages(
+            openai_messages,
+            request,
+            include_api_key = server_tools,
+        )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
     # single tool_use block. Computed here so BOTH the client-tool passthrough
@@ -27658,12 +28644,18 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     image is re-encoded to PNG (llama-server's stb_image has limited format
     support) and spliced into the last user message as an OpenAI ``image_url``
     content part so vision + function-calling requests work transparently.
+
+    Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
+    what admission charges for. Studio echoes the current image into both spellings, so
+    splicing that unconditionally sent a tools or response_format request two copies
+    against a reservation for one: 4417 reserved against 8466 charged, which overcommits
+    the KV cache wherever the slot count lets that gap accumulate.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
 
-    if not payload.image_base64:
+    if not _legacy_image_is_distinct(payload):
         return messages
 
     try:
@@ -27748,12 +28740,10 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
             )
         )
     )
-    has_message_image = any(
-        isinstance(msg.get("content"), list)
-        and any(part.get("type") == "image_url" for part in msg["content"])
-        for msg in messages
-    )
-    if payload.image_base64 and not has_message_image:
+    # Distinctness, not "the messages carry no image": Studio's echo is byte-equal to a
+    # part already here and must not be spliced twice, but a legacy image the thread
+    # does not hold is a real attachment. Admission charges on the same predicate.
+    if _legacy_image_is_distinct(payload):
         # Legacy bytes can be any format; the normalizer below sniffs and
         # re-encodes to PNG, so the declared mime is rewritten anyway.
         image_part = {

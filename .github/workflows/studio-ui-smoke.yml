@@ -634,6 +634,20 @@ jobs:
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
 
+      - name: Tool activity collapse regression (Playwright)
+        if: matrix.shard == 'extra'
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm install -g npm@^11 --no-fund --no-audit
+            V=$(npm -v)
+            case "$V" in
+              11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+              *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+            esac
+            npm --prefix studio/frontend ci --strict-allow-scripts --no-fund --no-audit
+          fi
+          python tests/studio/playwright_tool_activity.py --json
+
       # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
       # each other: the suppression sets in loggers/handlers.py and the poll cadences in
       # session.py. A pull request that adds a polling call site in the frontend edits

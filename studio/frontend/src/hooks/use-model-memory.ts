@@ -10,24 +10,32 @@
  * one. Ten rows of the same model cost one read.
  */
 
+// Deep paths, not the `@/features/chat` barrel, and that is load-bearing. The barrel
+// reaches this file back: chat -> apply-inference-status-to-store -> model-picker ->
+// model-selector -> pickers -> here. Importing the barrel closed that ring, and under
+// dev's unbundled ESM the app died on a blank page with "Cannot access
+// 'CHAT_GPU_MEMORY_MODE_KEY' before initialization". Production builds hid it, because
+// the bundler hoists the declarations into one module and the ordering stops mattering.
+import { estimateKvCache } from "@/features/chat/api/chat-api";
 import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
-  estimateKvCache,
+} from "@/features/chat/stores/chat-runtime-keys";
+import {
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   useChatRuntimeStore,
-} from "@/features/chat";
+} from "@/features/chat/stores/chat-runtime-store";
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
-} from "@/features/hub";
+} from "@/features/hub/lib/model-identity";
 import {
   PER_MODEL_CONFIG_STORAGE_KEY,
   PER_MODEL_CONFIG_UPDATED_EVENT,
   type PerModelConfig,
   listPerModelConfigs,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/per-model-config";
 import {
   loadVramBudgetSettings,
   subscribeVramBudgetSettings,

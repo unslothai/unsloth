@@ -48,6 +48,7 @@ import {
   runBoundedVariantsRequest,
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
+import { maxTokensIsTheLimit } from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
@@ -111,10 +112,31 @@ export class StreamInterruptedError extends Error {
  * content, so the chat UI can explain a completed stream holding only a thinking panel.
  */
 export class GenerationLengthError extends Error {
-  constructor() {
+  /**
+   * @param maxTokensWasSet whether the user actually configured a Max Tokens value.
+   *
+   * With Max Tokens left on "Max" the backend already requests the WHOLE context length
+   * (`payload["max_tokens"] = self._effective_context_length`), so generation stops at the
+   * context wall rather than at any setting, and "Increase Max Tokens" is advice that
+   * cannot be followed: it is at its maximum and raising it changes nothing. Observed on a
+   * 4096-token window where the prompt left roughly a thousand tokens to answer in, which
+   * medium thinking spent before writing anything.
+   *
+   * The false branch is NOT only that case. A finite cap the prompt left no room for
+   * lands here too (cap 2048, prompt 3000, window 4096), and the context-length remedy
+   * is right there as well -- which is why the wording says raising the cap cannot
+   * create room, rather than describing the cap itself as having no limit. That
+   * description would contradict the finite value the user can see in Settings.
+   */
+  constructor(maxTokensWasSet = true) {
     super(
-      "The model reached the Max Tokens limit before producing a final answer. " +
-        "Increase Max Tokens or disable thinking, then retry.",
+      maxTokensWasSet
+        ? "The model reached the Max Tokens limit before producing a final answer. " +
+            "Increase Max Tokens or disable thinking, then retry."
+        : "The model ran out of room to answer: thinking used what the context window " +
+            "had left after the prompt, before any answer was written. Raising Max " +
+            "Tokens cannot create room the window does not have -- increase the " +
+            "Context Length in Model settings, or disable thinking, then retry.",
     );
     this.name = "GenerationLengthError";
   }
@@ -312,6 +334,7 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  studio_tool_history?: boolean;
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
@@ -469,8 +492,7 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded quant; optional for older backends. */
   last_modified?: number;
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
@@ -612,8 +634,7 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
@@ -1488,6 +1509,12 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  /**
+   * The window this request is served by, when the caller knows it. Used only to tell a
+   * user-chosen Max Tokens apart from the backend's stand-in for "Max", which is the whole
+   * context length -- the two need opposite advice when generation stops on length.
+   */
+  loadedContextLength?: number | null,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -1514,6 +1541,10 @@ export async function* streamChatCompletions(
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
   let sawReasoningContent = false;
+  // Reported by the server on the final chunk. Needed to tell the two walls apart: a
+  // finite Max Tokens below the context length does not mean Max Tokens is what stopped
+  // the generation.
+  let promptTokens: number | null = null;
 
   const throwIfReasoningOnlyLength = () => {
     if (
@@ -1521,7 +1552,16 @@ export async function* streamChatCompletions(
       sawReasoningContent &&
       !sawAssistantContent
     ) {
-      throw new GenerationLengthError();
+      // The backend substitutes the full context length when the user left Max Tokens on
+      // "Max", so a payload value equal to it is indistinguishable from unset here -- and
+      // both mean the same thing to the user: the setting is not the lever.
+      throw new GenerationLengthError(
+        maxTokensIsTheLimit({
+          cap: payload.max_tokens ?? null,
+          contextLength: loadedContextLength ?? null,
+          promptTokens,
+        }),
+      );
     }
   };
 
@@ -1608,6 +1648,10 @@ export async function* streamChatCompletions(
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
+        }
+        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        if (typeof parsedUsage?.prompt_tokens === "number") {
+          promptTokens = parsedUsage.prompt_tokens;
         }
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (

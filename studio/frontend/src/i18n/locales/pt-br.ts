@@ -694,7 +694,7 @@ export const ptBR = {
         sectionTitle: "Troca automática de modelo (API OpenAI)",
         enable: "Trocar de modelo por requisição",
         enableDescription:
-          "Carrega, antes de responder, um GGUF baixado indicado em uma requisição da API. Desativado por padrão.",
+          "Carrega, antes de responder, um modelo baixado indicado em uma requisição da API. Desativado por padrão.",
         idleUnload: "Descarregamento automático por inatividade",
         idleUnloadDescription:
           "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
@@ -1375,10 +1375,40 @@ export const ptBR = {
       rememberParamsPerModel: "Lembrar as configurações por modelo",
       rememberParamsPerModelDescription:
         "Ao trocar de modelo, a temperatura, o prompt e as demais configurações usadas por último com aquele modelo são restauradas. Desativado, um único conjunto de configurações vale para todos os modelos.",
+      autoCompact: "Compactar automaticamente chats longos",
+      autoCompactDescription:
+        "Quando um chat GGUF local atingir o tamanho de contexto definido, descarte turnos antigos em vez de retornar um erro. Isso não depende da VRAM livre.",
+      compactionStyle: "Quando o contexto estiver cheio",
+      compactionStyleDescription:
+        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
+      compactionStyleInherit: "Usar padrão do servidor",
+      compactionStyleCheckpoint: "Redefinir conversa",
+      compactionStyleRollingDefault:
+        "Descartar turnos antigos (~25% de espaço extra)",
+      compactionStyleRolling10:
+        "Descartar turnos antigos (~10% de espaço extra)",
+      compactionStyleRolling5:
+        "Descartar turnos antigos (~5% de espaço extra)",
+      compactionStyleRollingNone:
+        "Descartar turnos antigos (sem corte extra)",
+      autoCompactKeywords:
+        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem compaction rolling headroom",
       thinking: {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:
           "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
+      currentDate: {
+        label: "Informar a data de hoje ao modelo",
+        description:
+          "Adiciona a data atual ao prompt para que a busca na web e o Deep Research procurem fontes recentes em vez de assumir a data de corte do treinamento do modelo.",
+        loadError: "Não foi possível carregar as configurações de data atual",
+        saveError: "Não foi possível atualizar as configurações de data atual",
+      },
+      tools: {
+        collapseByDefault: "Recolher atividade de ferramentas por padrão",
+        collapseByDefaultDescription:
+          "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
       },
       webSearch: {
         title: "Busca na web",
@@ -1397,6 +1427,11 @@ export const ptBR = {
         blockedBanner: "{count} recurso externo de {hosts} bloqueado.",
         blockedBannerPlural: "{count} recursos externos de {hosts} bloqueados.",
         blockedBannerAction: "Permitir neste Canvas",
+        blockedTitle: "O acesso à rede do Canvas está desativado",
+        blockedHint:
+          "Ative “{setting}” em Configurações → Chat para que os Canvas carreguem recursos externos, ou permita apenas neste Canvas.",
+        blockedSettingsAction: "Abrir configurações",
+        blockedDismiss: "Dispensar",
       },
       data: "Dados",
       exportHistory: "Exportar histórico de chat",

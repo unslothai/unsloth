@@ -250,6 +250,7 @@ export function SettingsDialog() {
   const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const opener = useSettingsDialogStore((s) => s.opener);
+  const openerFallback = useSettingsDialogStore((s) => s.openerFallback);
   const reduced = useReducedMotion();
   // Mounting a heavy tab panel (System, Connections) in the same commit as
   // the nav highlight makes the highlight lag the click. Render the panel
@@ -389,12 +390,14 @@ export function SettingsDialog() {
           showCloseButton={false}
           overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
           onCloseAutoFocus={(e) => {
-            // Restore focus to the element that triggered openDialog(). Radix's
-            // FocusScope races our rAF-scheduled tab focus and loses the
-            // previous-focus reference, so restore it by hand.
-            if (opener && opener.isConnected) {
+            // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
+            const focusTarget = [opener, openerFallback].find(
+              (element) =>
+                element?.isConnected && !element.closest("[inert], [hidden]"),
+            );
+            if (focusTarget) {
               e.preventDefault();
-              opener.focus({ preventScroll: true });
+              focusTarget.focus({ preventScroll: true });
             }
           }}
           className={cn(
