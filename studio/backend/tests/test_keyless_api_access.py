@@ -42,7 +42,6 @@ from utils.keyless_api_access import (
 )
 
 
-# Keep this security matrix compact enough for the PR test-line budget.
 # fmt: off
 @pytest.fixture(autouse = True)
 def isolated_auth_db(tmp_path, monkeypatch):
