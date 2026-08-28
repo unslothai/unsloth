@@ -1187,6 +1187,23 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
     return conn
 
 
+def open_wal_keeper() -> sqlite3.Connection:
+    """Open an idle lifespan connection that prevents last-close WAL checkpoints."""
+    conn = get_connection()
+    try:
+        # sqlite3.connect() is lazy enough that merely holding the object does not
+        # register it as a WAL participant.  Reading journal_mode engages the file;
+        # subsequent short-lived writers can then close without each becoming the
+        # last connection and checkpointing the WAL back into studio.db.
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(mode).lower() != "wal":
+            raise RuntimeError(f"studio.db is not in WAL mode: {mode}")
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
 def create_run(
     id: str,
     model_name: str,

@@ -403,6 +403,13 @@ def append_events(
         return []
     conn = get_connection()
     try:
+        # These are recoverable stream checkpoints, not the authoritative final
+        # message.  In WAL mode FULL issues FlushFileBuffers/fsync after every
+        # commit; at the live-stream cadence that turns small batches into sustained
+        # disk barriers on Windows.  NORMAL keeps the database consistent and the
+        # checkpoints durable across an application crash, while the terminal FULL
+        # transaction in finish_run() syncs the completed stream.
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT status FROM chat_generation_runs WHERE id=? AND worker_token=?",

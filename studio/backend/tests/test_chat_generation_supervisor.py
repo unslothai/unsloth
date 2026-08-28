@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -69,6 +70,20 @@ def _route_request(supervisor):
     return SimpleNamespace(
         app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor))
     )
+
+
+@pytest.mark.asyncio
+async def test_stop_closes_the_lifespan_wal_keeper():
+    keeper = sqlite3.connect(":memory:")
+    supervisor = ChatGenerationSupervisor(
+        SimpleNamespace(state = SimpleNamespace()),
+        wal_keeper = keeper,
+    )
+
+    await supervisor.stop()
+
+    with pytest.raises(sqlite3.ProgrammingError, match = "closed database"):
+        keeper.execute("SELECT 1")
 
 
 @pytest.mark.asyncio

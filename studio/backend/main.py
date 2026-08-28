@@ -717,8 +717,12 @@ async def lifespan(app: FastAPI):
     app.state.research_supervisor.start()
 
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
+    from storage.studio_db import open_wal_keeper
 
-    app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
+    app.state.chat_generation_supervisor = ChatGenerationSupervisor(
+        app,
+        wal_keeper = open_wal_keeper(),
+    )
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir

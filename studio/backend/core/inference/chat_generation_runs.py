@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
 import time
 from typing import Any, AsyncIterator
@@ -99,8 +100,18 @@ async def _close_iterator(iterator: AsyncIterator[Any] | None) -> None:
 
 
 class ChatGenerationSupervisor:
-    def __init__(self, app: Any) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        wal_keeper: sqlite3.Connection | None = None,
+    ) -> None:
         self.app = app
+        # A quiet connection keeps SQLite's WAL alive between the short-lived
+        # event-batch connections.  Without it, each batch can be the last open
+        # connection and SQLite checkpoints/deletes the WAL on close, turning the
+        # 100 ms stream cadence into repeated writes back to studio.db.
+        self._wal_keeper = wal_keeper
         self._tasks: dict[str, asyncio.Task] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._active_registrations: dict[str, active_generations.ActiveGeneration] = {}
@@ -208,32 +219,37 @@ class ChatGenerationSupervisor:
 
     async def stop(self) -> None:
         self._stopping = True
-        tasks = list(self._tasks.items())
-        self._shutdown_runs.update(run_id for run_id, _task in tasks)
-        for run_id, _task in tasks:
-            self.cancel(run_id)
-        if not tasks:
-            return
-        # asyncio.wait, not wait_for(gather(...)): on timeout wait_for cancels the inner
-        # future and then awaits it, so a producer that does not unwind on cancellation --
-        # an engine draining its subprocess inside the generator's aclose -- makes the
-        # wait itself unbounded, and takes the whole uvicorn shutdown down with it. wait
-        # returns the pending set instead and leaves those tasks alone.
-        pending = {task for _run_id, task in tasks}
-        _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_GRACE_SECONDS)
-        if not pending:
-            return
-        for task in pending:
-            task.cancel()
-        _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_CANCEL_SECONDS)
-        if pending:
-            stuck = [run_id for run_id, task in tasks if task in pending]
-            # Abandoned, not leaked: the run is already fenced and reconcile_orphaned_runs
-            # settles it on the next boot. Process exit reclaims the rest.
-            logger.warning(
-                "Durable chat generations did not stop within the shutdown budget: %s",
-                ", ".join(stuck),
-            )
+        try:
+            tasks = list(self._tasks.items())
+            self._shutdown_runs.update(run_id for run_id, _task in tasks)
+            for run_id, _task in tasks:
+                self.cancel(run_id)
+            if not tasks:
+                return
+            # asyncio.wait, not wait_for(gather(...)): on timeout wait_for cancels the inner
+            # future and then awaits it, so a producer that does not unwind on cancellation --
+            # an engine draining its subprocess inside the generator's aclose -- makes the
+            # wait itself unbounded, and takes the whole uvicorn shutdown down with it. wait
+            # returns the pending set instead and leaves those tasks alone.
+            pending = {task for _run_id, task in tasks}
+            _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_GRACE_SECONDS)
+            if not pending:
+                return
+            for task in pending:
+                task.cancel()
+            _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_CANCEL_SECONDS)
+            if pending:
+                stuck = [run_id for run_id, task in tasks if task in pending]
+                # Abandoned, not leaked: the run is already fenced and reconcile_orphaned_runs
+                # settles it on the next boot. Process exit reclaims the rest.
+                logger.warning(
+                    "Durable chat generations did not stop within the shutdown budget: %s",
+                    ", ".join(stuck),
+                )
+        finally:
+            if self._wal_keeper is not None:
+                self._wal_keeper.close()
+                self._wal_keeper = None
 
     async def _produce(
         self,

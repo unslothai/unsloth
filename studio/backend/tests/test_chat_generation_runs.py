@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from routes.chat_generation_runs import (
 from storage import chat_generation_runs_db as runs_db
 from storage import studio_db
 from state.tool_policy import reset_tool_policy, set_tool_policy, set_tool_policy_default
+from utils.paths import studio_db_path
 
 
 @pytest.fixture(autouse = True)
@@ -331,6 +333,40 @@ def test_batched_events_preserve_receipt_timestamps(chat_home):
     )
     chunks = [event for event in runs_db.list_events("run-1") if event["type"] == "chunk"]
     assert [event["createdAt"] for event in chunks] == [1001, 1002]
+
+
+def test_stream_checkpoint_commits_use_normal_wal_synchronization(chat_home, monkeypatch):
+    """Frequent recoverable batches must not issue a disk barrier per commit."""
+    _create()
+    worker_token = runs_db.get_worker_token("run-1")
+    statements = []
+    real_get_connection = runs_db.get_connection
+
+    def traced_connection():
+        conn = real_get_connection()
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(runs_db, "get_connection", traced_connection)
+    runs_db.append_events("run-1", worker_token, [("chunk", {"text": "A"})])
+
+    normalized = [statement.upper().replace(" ", "") for statement in statements]
+    synchronous = normalized.index("PRAGMASYNCHRONOUS=NORMAL")
+    transaction = normalized.index("BEGINIMMEDIATE")
+    assert synchronous < transaction
+
+
+def test_wal_keeper_defers_last_close_checkpoint_between_stream_batches(chat_home):
+    _create()
+    worker_token = runs_db.get_worker_token("run-1")
+    wal_path = Path(f"{studio_db_path()}-wal")
+    keeper = studio_db.open_wal_keeper()
+    try:
+        runs_db.append_events("run-1", worker_token, [("chunk", {"text": "A"})])
+        assert wal_path.is_file()
+    finally:
+        keeper.close()
+    assert not wal_path.exists()
 
 
 def test_cancel_before_registration_and_startup_orphan_reconciliation(chat_home):
