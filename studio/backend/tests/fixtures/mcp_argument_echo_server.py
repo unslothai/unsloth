@@ -8,6 +8,20 @@ import sys
 from fastmcp import FastMCP
 
 
+launch_log = os.environ.get("UNSLOTH_MCP_ARGUMENT_LOG")
+if launch_log:
+    with open(launch_log, "a", encoding="utf-8") as log:
+        log.write(
+            json.dumps(
+                {
+                    "arguments": sys.argv[1:],
+                    "marker": os.environ.get("UNSLOTH_MCP_ARGUMENT_MARKER"),
+                }
+            )
+            + "\n"
+        )
+
+
 server = FastMCP("argument echo")
 
 
@@ -22,4 +36,4 @@ def launch_state() -> str:
 
 
 if __name__ == "__main__":
-    server.run(transport = "stdio", show_banner = False)
+    server.run(transport="stdio", show_banner=False)
