@@ -981,7 +981,6 @@ def _remember_job(job: _VideoJob) -> None:
 
 def _job_from_record(record: dict) -> Optional[_VideoJob]:
     from core.inference.video_families import VIDEO_CANCELLED_MSG
-
     try:
         stored = dict(record)
         outcome = stored.pop("_worker_outcome", None)
