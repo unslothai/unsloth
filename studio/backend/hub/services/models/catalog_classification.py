@@ -17,6 +17,7 @@ from hub.services.models.common import (
     _local_path_can_chat,
 )
 from utils.gguf_archs import SPEECH_GGUF_ARCHS, is_speech_gguf_architecture
+from utils.paths.path_utils import file_contents_available_locally
 
 
 _DIFFUSION_GGUF_ARCHS = frozenset({"flux", "flux2", "qwen_image", "qwenimage", "z_image", "zimage"})
@@ -63,6 +64,13 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 
 
 def _gguf_architecture(path: str) -> Optional[str]:
+    # Every read inventory classification makes goes through here, so this is where "never open
+    # a cloud placeholder" holds: opening one recalls its whole payload. The task probes below
+    # ask the same question again because an unhydrated file needs a different ROUTE, not just a
+    # skipped read; the audio-type probe has no route to pick and relies on this alone. Load-time
+    # inspection calls read_gguf_architecture directly and still hydrates, on purpose.
+    if not file_contents_available_locally(path):
+        return None
     from utils.models.gguf_metadata import read_gguf_architecture
     return read_gguf_architecture(path)
 
@@ -90,6 +98,61 @@ def _video_family_buildable(family) -> bool:
         return True
 
 
+def _hint_leaf(hint: str) -> str:
+    """The last path segment of *hint*, leaving a bare name or repo id untouched."""
+    return str(hint).strip().rstrip("/\\").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+
+def _name_hint_media_task(
+    name_hints: tuple[Optional[str], ...], unmatched: Optional[str]
+) -> Optional[str]:
+    """Media task from name and path hints alone, for a GGUF whose header settles nothing.
+
+    Both callers are files whose architecture cannot answer the question: a denoiser that
+    declares a placeholder arch, and a cloud file we must not open. They differ only in what
+    an unrecognised name means, hence *unmatched*.
+    """
+    from core.inference.video_families import detect_video_family
+
+    for hint in name_hints:
+        family = detect_video_family(hint) if hint else None
+        if family is not None:
+            if not getattr(family, "is_moe", False) and _video_family_buildable(family):
+                return _VIDEO_GEN_TASK
+            return _UNSUPPORTED_DIFFUSION_TASK
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    if any(detect_family_for_pick(hint) is not None for hint in name_hints if hint):
+        return (
+            "text-to-image" if _gguf_family_buildable(name_hints) else _UNSUPPORTED_DIFFUSION_TASK
+        )
+    return unmatched
+
+
+def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str]:
+    """Task for a GGUF still held as a cloud placeholder, read from its name alone.
+
+    The pickers filter On Device rows on an exact task, so an unclassified denoiser drops out
+    of Images and Video -- the pages whose pick is what would hydrate it -- and lists in Chat
+    instead, where a background auto-load recalls it into llama.cpp. The name is the only
+    evidence available, and it is the same evidence _arch_to_task already routes a
+    placeholder-arch denoiser on.
+
+    Speech stays out on purpose. A row tagged automatic-speech-recognition is dropped from
+    every filesystem list, and a text-to-speech GGUF row whose codec is unknown fails Audio's
+    routing check closed, so guessing either from a name hides the model outright. Unknown
+    keeps it in Chat, which is where a GGUF with nothing but a name belongs.
+    """
+    if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
+        return _VIDEO_GEN_TASK
+    # Leaves only. A filesystem row hands over its whole path, and family detection matches a
+    # keyword in ANY segment of it, so a chat GGUF under .../FLUX.1-dev-GGUF/extra/ read as
+    # text-to-image. With an architecture that mismatch only picks the wrong family; here the
+    # name is the entire case, so an ancestor directory -- the user's shelf, not this model --
+    # must not decide it.
+    return _name_hint_media_task(tuple(_hint_leaf(hint) for hint in name_hints if hint), None)
+
+
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
@@ -105,23 +168,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     ):
         return _SPEECH_TASK
     if normalized in _PLACEHOLDER_DIFFUSION_GGUF_ARCHS:
-        from core.inference.video_families import detect_video_family
-
-        for hint in name_hints:
-            family = detect_video_family(hint) if hint else None
-            if family is not None:
-                if not getattr(family, "is_moe", False) and _video_family_buildable(family):
-                    return _VIDEO_GEN_TASK
-                return _UNSUPPORTED_DIFFUSION_TASK
-        from core.inference.diffusion_families import detect_family_for_pick
-
-        if any(detect_family_for_pick(hint) is not None for hint in name_hints if hint):
-            return (
-                "text-to-image"
-                if _gguf_family_buildable(name_hints)
-                else _UNSUPPORTED_DIFFUSION_TASK
-            )
-        return _UNSUPPORTED_DIFFUSION_TASK
+        return _name_hint_media_task(name_hints, _UNSUPPORTED_DIFFUSION_TASK)
     if is_speech_gguf_architecture(normalized):
         return _SPEECH_TASK
     if normalized in _DIFFUSION_GGUF_ARCHS:
@@ -237,8 +284,14 @@ def _gguf_folder_task(
         if index and time.monotonic() >= read_deadline:
             complete = False
             break
+        hints = id_hints + (path.name,)
         try:
-            task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
+            if file_contents_available_locally(path):
+                task = _arch_to_task(_gguf_architecture(str(path)), name_hints = hints)
+            else:
+                # Its header stays unread, so a name that says nothing leaves the candidate
+                # unclassified rather than voting text-generation for the whole folder.
+                task = _unhydrated_gguf_task(hints)
         except Exception:
             # Unread, so unranked: this file might have been the runnable sibling.
             complete = False
@@ -304,9 +357,12 @@ def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) 
     model_path = Path(path)
     try:
         if model_path.suffix.lower() == ".gguf" and model_path.is_file():
+            hints = id_hints + (model_path.name,)
+            if not file_contents_available_locally(model_path):
+                return _unhydrated_gguf_task(hints)
             return _arch_to_task(
                 _gguf_architecture(str(model_path)),
-                name_hints = id_hints + (model_path.name,),
+                name_hints = hints,
             )
         return _gguf_folder_task(model_path, id_hints)
     except Exception:
