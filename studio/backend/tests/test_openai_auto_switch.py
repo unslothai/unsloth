@@ -480,17 +480,42 @@ def test_same_repo_same_variant_does_not_reload(monkeypatch):
     assert rec.calls == []
 
 
-def test_responses_endpoint_wires_auto_switch_before_dispatch():
-    # The /v1/responses endpoint must invoke the auto-switch hook before either
-    # dispatcher so streaming requests switch too. Asserted on the source, which
-    # is immune to test-ordering effects on the shared inference module.
+def test_responses_endpoint_wires_auto_switch_before_streaming_dispatch():
+    # streaming bypasses chat, so its switch must run before dispatch.
     import inspect
 
     src = inspect.getsource(inference_route.openai_responses)
     assert "_maybe_auto_switch_model" in src
     hook_at = src.index("_maybe_auto_switch_model")
+    assert src.index("if payload.stream:") < hook_at
     assert hook_at < src.index("_responses_stream")
-    assert hook_at < src.index("_responses_non_streaming")
+
+
+def test_nonstreaming_responses_passes_subject_to_chat(monkeypatch):
+    from models.inference import ResponsesRequest
+
+    seen = {}
+
+    async def _capture(_payload, _request, current_subject):
+        seen["current_subject"] = current_subject
+        raise RuntimeError("stop after dispatch")
+
+    monkeypatch.setattr(inference_route, "openai_chat_completions", _capture)
+    request = types.SimpleNamespace(
+        state = types.SimpleNamespace(skip_api_monitor = True),
+        url = types.SimpleNamespace(path = "/v1/responses"),
+        method = "POST",
+    )
+    with pytest.raises(RuntimeError, match = "stop after dispatch"):
+        asyncio.run(
+            inference_route.openai_responses(
+                ResponsesRequest(model = "org/B-GGUF", input = "hi"),
+                request,
+                "tester",
+            )
+        )
+
+    assert seen == {"current_subject": "tester"}
 
 
 def test_embeddings_endpoint_wires_auto_switch_before_loaded_check():
@@ -9527,6 +9552,149 @@ def test_the_image_preflight_collects_every_local_request_image():
         "second",
         "legacy",
     ]
+
+
+def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    target_path = "/srv/models/B.gguf" if target_is_gguf else "/srv/models/B"
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (target_path, None, "org/B-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(
+        resolver, "local_target_is_gguf", lambda *_a, **_kw: target_is_gguf
+    )
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+    if not target_is_gguf:
+        orchestrator = types.SimpleNamespace(active_model_name = None, models = {})
+        monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+        monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    return backend, recorder
+
+
+def _responses_image_payload(*images, stream):
+    from models.inference import ResponsesRequest
+
+    return ResponsesRequest(
+        model = "org/B-GGUF",
+        stream = stream,
+        input = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{image}",
+                    }
+                    for image in images
+                ],
+            }
+        ],
+    )
+
+
+def test_streaming_responses_rejects_a_malformed_gguf_image_before_switch(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_responses(
+                _responses_image_payload("bm90IGFuIGltYWdl", stream = True),
+                object(),
+                "tester",
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Failed to process image."
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+def test_nonstreaming_responses_defers_multiple_image_preflight_to_chat(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    request = types.SimpleNamespace(
+        state = types.SimpleNamespace(skip_api_monitor = True),
+        url = types.SimpleNamespace(path = "/v1/responses"),
+        method = "POST",
+        scope = {},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_responses(
+                _responses_image_payload("first", "second", stream = False),
+                request,
+                "tester",
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert "one image per message" in exc.value.detail
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+def test_nonstreaming_responses_defers_malformed_gguf_preflight_to_chat(monkeypatch):
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = True)
+    request = types.SimpleNamespace(
+        state = types.SimpleNamespace(skip_api_monitor = True),
+        url = types.SimpleNamespace(path = "/v1/responses"),
+        method = "POST",
+        scope = {},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_responses(
+                _responses_image_payload("bm90IGFuIGltYWdl", stream = False),
+                request,
+                "tester",
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Failed to process image."
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+def test_anthropic_rejects_a_malformed_gguf_image_before_switch(monkeypatch):
+    from models.inference import AnthropicMessage, AnthropicMessagesRequest
+
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = True)
+    payload = AnthropicMessagesRequest(
+        model = "org/B-GGUF",
+        max_tokens = 16,
+        messages = [
+            AnthropicMessage(
+                role = "user",
+                content = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "bm90IGFuIGltYWdl",
+                        },
+                    }
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Failed to process image."
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
 
 
 def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch):

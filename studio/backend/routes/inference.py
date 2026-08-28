@@ -6709,6 +6709,25 @@ def _anthropic_request_has_image(payload) -> bool:
     return False
 
 
+def _anthropic_local_image_payloads(payload) -> list[str]:
+    """Nonempty base64 image sources translated by the Anthropic endpoint."""
+    encoded_images = []
+    for msg in getattr(payload, "messages", None) or ():
+        content = msg.get("content") if isinstance(msg, dict) else msg.content
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            block_type = block.get("type") if isinstance(block, dict) else block.type
+            if block_type != "image":
+                continue
+            source = block.get("source") if isinstance(block, dict) else block.source
+            source_type = source.get("type") if isinstance(source, dict) else source.type
+            data = source.get("data") if isinstance(source, dict) else source.data
+            if source_type == "base64" and isinstance(data, str) and data:
+                encoded_images.append(data)
+    return encoded_images
+
+
 def disable_openai_auto_switch_for_request(scope) -> None:
     """Opt a request out of OpenAI auto-switch. The public preview route uses this:
     it always serves its pinned checkpoint, so a caller-supplied model must never
@@ -16872,19 +16891,29 @@ def _latest_user_image_payload(messages) -> "Optional[str]":
     return None
 
 
-def _request_local_image_payloads(payload) -> list[str]:
-    """All data-URL and distinct legacy image payloads forwarded locally."""
+def _local_image_payloads_from_messages(messages) -> list[str]:
+    """All data-URL image payloads in OpenAI-format messages."""
     encoded_images = []
-    for message in getattr(payload, "messages", None) or ():
-        content = getattr(message, "content", None)
+    for message in messages or ():
+        content = message.get("content") if isinstance(message, dict) else message.content
         if not isinstance(content, list):
             continue
         for part in content:
-            if getattr(part, "type", None) != "image_url":
+            part_type = part.get("type") if isinstance(part, dict) else part.type
+            if part_type != "image_url":
                 continue
-            url = getattr(getattr(part, "image_url", None), "url", None)
+            image_url = part.get("image_url") if isinstance(part, dict) else part.image_url
+            url = image_url.get("url") if isinstance(image_url, dict) else image_url.url
             if isinstance(url, str) and url.startswith("data:"):
                 encoded_images.append(url.partition(",")[2])
+    return encoded_images
+
+
+def _request_local_image_payloads(payload) -> list[str]:
+    """All data-URL and distinct legacy image payloads forwarded locally."""
+    encoded_images = _local_image_payloads_from_messages(
+        getattr(payload, "messages", None) or ()
+    )
     if _legacy_image_is_distinct(payload):
         encoded_images.append(payload.image_base64)
     return encoded_images
@@ -23962,7 +23991,7 @@ async def _responses_non_streaming(
     try:
         _sink_token = _monitor_perf_sink.set(inner_perf if monitor_id else None)
         try:
-            result = await openai_chat_completions(chat_req, request)
+            result = await openai_chat_completions(chat_req, request, current_subject)
         finally:
             _monitor_perf_sink.reset(_sink_token)
 
@@ -25220,26 +25249,27 @@ async def openai_responses(
                     param = "tool_choice",
                 ),
             )
-    # After input validation so a 400 never triggers a load. Switches the
-    # streaming path; non-streaming re-checks via the idempotent chat handler.
-    # require_vision rejects a swap to a text-only target before it runs, so an
-    # image request can't evict the resident vision model only to 400 afterwards
-    # (the non-streaming chat re-check short-circuits on _already_serving).
-    await _maybe_auto_switch_model(
-        _switch_model_for_payload(payload),
-        request,
-        current_subject,
-        require_vision = _messages_have_image(messages),
-        # Streaming Responses require a GGUF backend and 400 in _responses_stream after this
-        # switch; claiming here would strand a preview-owned model as Unsloth-owned for a
-        # request that never generates. Defer to the middleware, which claims on a 2xx.
-        claim_resident = False,
-        # Streaming Responses is served by llama.cpp alone; the non-streaming path
-        # hands off to the chat handler, which serves either backend.
-        gguf_only = bool(payload.stream),
-    )
-
     if payload.stream:
+        # streaming preflights here; non-streaming delegates its complete preflight to chat.
+        _responses_has_image = _messages_have_image(messages)
+        _responses_image_b64s = _local_image_payloads_from_messages(messages)
+        await _maybe_auto_switch_model(
+            _switch_model_for_payload(payload),
+            request,
+            current_subject,
+            require_vision = _responses_has_image,
+            claim_resident = False,
+            gguf_only = True,
+            image_preflight = (
+                {
+                    "b64": _responses_image_b64s[0],
+                    "b64s": _responses_image_b64s,
+                    "multiple": False,
+                }
+                if _responses_image_b64s
+                else None
+            ),
+        )
         monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
@@ -25816,6 +25846,9 @@ async def anthropic_messages(
     # invalid request never evicts the loaded model.
     _validate_anthropic_client_tools(payload.tools)
 
+    _anthropic_has_image = _anthropic_request_has_image(payload)
+    _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
+
     # Mixing Anthropic server tools with custom client tools is unsupported (the
     # server-tool loop can't relay client functions back to the caller). Reject
     # before the switch too -- it depends only on the payload -- so an invalid
@@ -25859,9 +25892,7 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_request_has_image(
-        payload
-    )
+    _server_tools_requested_pre = _selects_server_tools and not _anthropic_has_image
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
@@ -25901,12 +25932,21 @@ async def anthropic_messages(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_request_has_image(payload),
+        require_vision = _anthropic_has_image,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
         claim_resident = False,
         gguf_only = True,
+        image_preflight = (
+            {
+                "b64": _anthropic_image_b64s[0],
+                "b64s": _anthropic_image_b64s,
+                "multiple": False,
+            }
+            if _anthropic_image_b64s
+            else None
+        ),
     )
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
@@ -25944,7 +25984,7 @@ async def anthropic_messages(
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
     # endpoint matches /v1/chat/completions.
-    if _anthropic_request_has_image(payload):
+    if _anthropic_has_image:
         _has_image = await asyncio.to_thread(
             _normalize_anthropic_openai_images,
             openai_messages,
