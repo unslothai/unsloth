@@ -1402,3 +1402,53 @@ def test_the_strix_reroute_keeps_the_wheels_it_would_have_fetched():
     )
     assert _AMD not in calls, calls
     assert "keeping it" in _run_install.printed, _run_install.printed
+
+
+def test_an_explicit_arch_keeps_its_feature_suffix_out_of_the_target():
+    """rocminfo and HSA both spell a target with its feature flags (gfx1151:sramecc-:xnack-),
+    so a user copying one into UNSLOTH_ROCM_GFX_ARCH offers a string every lookup here misses:
+    the Strix set, the AMD leaf map and the generic list are all keyed on the bare arch, and
+    the override -- the one thing the decline message tells the user to set -- would resolve
+    nothing at all."""
+    assert _target([], "rocminfo", {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151:sramecc-:xnack-"}) == (
+        "gfx1151"
+    )
+    calls = _run_install(
+        gfx_devices = (),
+        rocm_version = (7, 2),
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151:xnack-"},
+        torch_probe = _ROCM_GENERIC_TORCH,
+        torch_owns_rocm = False,
+    )
+    assert f"{_AMD}/gfx1151/" in calls, calls
+
+
+def test_a_version_below_every_index_is_not_read_as_support():
+    """A host reporting a ROCm older than the oldest tag this installer maps resolves no tag
+    at all, and a wheel older than every tag necessarily predates the arches those tags were
+    measured to add. Reading "no tag" as "carries it" preserves exactly the build that cannot
+    run, and does so for the versions furthest from support."""
+    assert stack_mod._generic_rocm_wheel_lacks_kernels("gfx1200", (5, 7))
+    assert stack_mod._generic_rocm_wheel_lacks_kernels("gfx1200", (6, 3))
+    assert not stack_mod._generic_rocm_wheel_lacks_kernels("gfx1200", (6, 4))
+
+
+def test_a_stale_host_version_does_not_pick_a_generic_tag_without_the_target():
+    """gfx950 (MI350X) lives only on the generic index -- AMD publishes no per-arch leaf for
+    it -- so the repair below picks a TAG rather than an index, and a stale /opt/rocm beside a
+    current kernel offers it rocm6.3, which predates the part. The reinstall would then
+    announce itself, download multiple GB, and land on a wheel with no gfx950 kernels."""
+    calls = _run_install(
+        gfx_devices = ("gfx950",),
+        rocm_version = (6, 3),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert f"{_GENERIC}7.2" in calls, calls
+    # A version whose tag does carry the target still takes that tag, not the newest one.
+    assert f"{_GENERIC}7.0" in _run_install(
+        gfx_devices = ("gfx950",),
+        rocm_version = (7, 0),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )

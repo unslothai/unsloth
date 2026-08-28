@@ -1865,6 +1865,11 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
 # that cannot report one. rocm7.0 is the oldest tag measured to carry them; rocm6.3 does not,
 # and AMD's images date the support to 7.1.
 _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
+    # AMD's images date gfx950 (MI350X / MI355X) to ROCm 7.0, and its ISA is genuinely new,
+    # so an older wheel carries no code object for it. It has no entry in
+    # _GFX_TO_AMD_INDEX_ARCH, so the reroute question below still answers no for it -- this
+    # entry is read by the generic tag choice, which can pick a tag that does carry it.
+    "gfx950": (7, 0),
     "gfx1150": (7, 0),
     "gfx1151": (7, 0),
     "gfx1200": (6, 4),
@@ -1886,13 +1891,27 @@ def _generic_rocm_wheel_lacks_kernels(
         return False
     if gfx not in _GENERIC_ROCM_WHEEL_GFX:
         return True
-    _min = _GENERIC_WHEEL_GFX_MIN_ROCM.get(gfx)
-    if _min is None or ver is None:
+    return ver is not None and _generic_tag_lacks_kernels(gfx, ver)
+
+
+def _generic_tag_lacks_kernels(gfx: "str | None", ver: "tuple[int, int]") -> bool:
+    """Whether the generic wheel ``ver`` resolves to predates ``gfx``.
+
+    The tag question on its own, with no reroute attached, so it also answers for the arches
+    _generic_rocm_wheel_lacks_kernels declines: that one serves a choice between indexes and
+    stays silent when there is no AMD leaf to move to, while choosing a generic TAG has a
+    second answer available -- take a newer one -- and needs gfx950 too.
+    """
+    _min = _GENERIC_WHEEL_GFX_MIN_ROCM.get(gfx or "")
+    if _min is None:
         return False
     # The tag this version actually selects, not the version itself: a 6.3.9 host takes the
     # rocm6.3 wheel, and it is that wheel's contents that decide.
+    # No tag resolves below the oldest known index, and a wheel older than every one this
+    # installer knows necessarily predates the arches those tags were measured to add. Reading
+    # it as "support unknown" preserves exactly the build that cannot run.
     _tag_key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
-    return _tag_key is not None and _tag_key < _min
+    return _tag_key is None or _tag_key < _min
 
 
 def _runtime_gfx_target(
@@ -1923,7 +1942,12 @@ def _runtime_gfx_target(
     # it last here made this the one place the documented escape hatch could be overruled by
     # the hardware it exists to override. The masks stay above it: hiding every GPU is a
     # statement about this run, while the arch names what to build for.
-    _explicit_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+    # Split on ":" as _runtime_target_is_gfx906 and the probe normalization do: a value copied
+    # from a full gcnArchName carries feature flags ("gfx1151:sramecc-:xnack-") that no routing
+    # table has a key for, and an unnormalized target matches none of them.
+    _explicit_gfx = (
+        (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":", 1)[0]
+    )
     if _explicit_gfx:
         return _explicit_gfx, [_explicit_gfx], None, [_explicit_gfx]
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
@@ -3913,8 +3937,9 @@ def _ensure_rocm_torch() -> None:
                 # wheels' own bundled runtime. The branch would announce the reinstall,
                 # install nothing, and keep the family it just called incompatible. The
                 # target's own AMD index needs no host version, so use it when there is no tag.
-                if _generic_pytorch_rocm_tag(ver) is None:
-                    if _want:
+                _tag = _generic_pytorch_rocm_tag(ver)
+                if _want:
+                    if _tag is None:
                         _arch_index_url = _amd_arch_index_url(_runtime_gfx)
                         if _arch_index_url is not None:
                             _arch_index_pkgs = (
@@ -3922,14 +3947,17 @@ def _ensure_rocm_torch() -> None:
                                 if _want in _ROCM_GFX_TORCH211_LEAVES
                                 else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
                             )
-                    elif _runtime_gfx in _GENERIC_ROCM_WHEEL_GFX:
-                        # The replacement GPU has no AMD per-arch index at all: gfx942, gfx950
-                        # and the other datacentre parts live only on the generic one. With
-                        # no readable host version there is no tag either, so the branch would
-                        # install nothing and leave the stale per-arch wheels in place on
-                        # every update. Take the newest generic index this installer knows,
-                        # gated on it actually carrying this target so the reinstall works.
-                        ver = max(_ROCM_TORCH_INDEX)
+                elif _runtime_gfx in _GENERIC_ROCM_WHEEL_GFX and (
+                    _tag is None or _generic_tag_lacks_kernels(_runtime_gfx, ver)
+                ):
+                    # The replacement GPU has no AMD per-arch index at all: gfx942, gfx950 and
+                    # the other datacentre parts live only on the generic one. With no readable
+                    # host version there is no tag either, so the branch would install nothing
+                    # and leave the stale per-arch wheels in place on every update. A tag that
+                    # RESOLVES can be just as useless: a stale /opt/rocm beside a current
+                    # kernel puts gfx950 on rocm6.3, which predates it. Both take the newest
+                    # generic index this installer knows, which does carry the target.
+                    ver = max(_ROCM_TORCH_INDEX)
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
