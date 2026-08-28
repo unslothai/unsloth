@@ -849,6 +849,8 @@ _UNSLOTH_TORCH_OVERRIDES=""
 _UIP_WORK=""
 _UIP_STAGE=""
 _UIP_STAGE2=""
+_ROCM_TAG_MEMO_DIR=""
+_ROCM_TAG_MEMO=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -4653,6 +4655,13 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
     case "$TORCH_INDEX_URL" in
         */cpu)
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            # It hands an explicit UNSLOTH_ROCM_GFX_ARCH back verbatim, and HIP's
+            # gcnArchName carries feature flags: gfx1201:sramecc+:xnack-. The index case
+            # table has no arm for that, so the suffix quietly cost the reroute while
+            # get_torch_index_url, which strips it, had already told the user per-arch
+            # wheels were coming. Normalise through the same helper so the two agree.
+            _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
+                || _linux_inferred_gfx=""
             # The no-version host reached this reroute BECAUSE rocminfo/amd-smi read
             # its arch, and that reading is what the decision was made on, so it is
             # what gets routed on. Marketing-name inference is a lookup table over

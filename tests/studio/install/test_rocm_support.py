@@ -3033,6 +3033,8 @@ class TestInstallShStructure:
                 probed_first,
                 probe_stub = "echo gfx1151",
                 probed_family = None,
+                inferred = "gfx1100",
+                override = "",
             ):
                 script = (
                     "set -euo pipefail\n"
@@ -3040,7 +3042,7 @@ class TestInstallShStructure:
                     "_has_amd_rocm_gpu() { return 0; }\n"
                     f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
                     # lspci names the discrete card; the probe named the APU.
-                    "_infer_linux_amd_gfx_arch() { echo gfx1100; }\n"
+                    f"_infer_linux_amd_gfx_arch() {{ echo {inferred}; }}\n"
                     "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n"
                     + family_fn
                     + "\n"
@@ -3063,6 +3065,11 @@ class TestInstallShStructure:
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
                 for var in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_AMD_ROCM_MIRROR"):
                     env.pop(var, None)
+                # An explicit override is the FIRST disjunct of the reroute gate, and on
+                # a host whose probe reads fine it is the only way in. Without setting it
+                # the gate stays shut and an override case silently tests nothing.
+                if override:
+                    env["UNSLOTH_ROCM_GFX_ARCH"] = override
                 return subprocess.run(
                     [shell, sp.replace("\\", "/")], env = env, capture_output = True, text = True
                 )
@@ -3095,6 +3102,21 @@ class TestInstallShStructure:
             assert (
                 "URL:https://download.pytorch.org/whl/cpu GFX:" in r3.stdout
             ), f"a deliberate CPU fallback must stay un-rerouted: {r3.stdout!r}"
+            # An explicit UNSLOTH_ROCM_GFX_ARCH comes back from
+            # _infer_linux_amd_gfx_arch verbatim, and people copy it out of HIP, which
+            # reports gfx1201:sramecc+:xnack-. The index case table has no arm for the
+            # suffix, so it used to cost the reroute while get_torch_index_url, which
+            # strips it, had already promised per-arch wheels.
+            r4 = run(
+                "false",
+                "",
+                inferred = "gfx1201:sramecc+:xnack-",
+                override = "gfx1201:sramecc+:xnack-",
+            )
+            assert r4.returncode == 0, f"suffixed override aborted: {r4.stderr}"
+            assert (
+                "URL:https://repo.amd.com/rocm/whl/gfx120X-all/ GFX:gfx1201" in r4.stdout
+            ), f"a gcnArchName suffix must not cost the reroute: {r4.stdout!r}"
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""

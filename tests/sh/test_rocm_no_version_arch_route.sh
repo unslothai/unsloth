@@ -357,7 +357,25 @@ assert_contains "same-family pair names the family, not a card" "gfx120X-all" "$
 assert_eq "the export is guarded on a single named card" "yes"     "$(grep -q 'export UNSLOTH_ROCM_GFX_ARCH="\$_linux_inferred_gfx"' "$INSTALL_SH" &&        grep -c 'if \[ -n "\$_linux_inferred_gfx" \]; then' "$INSTALL_SH" >/dev/null &&        echo yes || echo no)"
 assert_eq "the torch constraint is chosen off the family" "yes"     "$(grep -q 'gfx120X-all|gfx1151|gfx1150|gfx1152)' "$INSTALL_SH" && echo yes || echo no)"
 
-# ── 10. The version probe runs once per install, not once per caller ────────
+# ── 10. A HIP gcnArchName suffix must not cost the reroute ──────────────────
+# UNSLOTH_ROCM_GFX_ARCH is often copied straight out of HIP, which reports
+# gfx1201:sramecc+:xnack- -- the arch plus two feature flags. The index case table has
+# no arm for that string. get_torch_index_url strips it and promises per-arch wheels,
+# so anything downstream that does not strip it leaves the host on CPU with a warning
+# that says otherwise.
+assert_eq "a gcnArchName suffix normalises to the bare arch" "gfx1201"     "$(run_sole_arch 'gfx1201:sramecc+:xnack-')"
+assert_eq "the suffixed arch would not map on its own" "REJECTED"     "$(PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _amd_arch_index_family_for_gfx 'gfx1201:sramecc+:xnack-' || echo REJECTED" 2>/dev/null)"
+assert_eq "the override reroute normalises before the case table" "yes"     "$(grep -q '_linux_inferred_gfx=\$(_amd_sole_index_arch "\$_linux_inferred_gfx")' "$INSTALL_SH" && echo yes || echo no)"
+
+# ── 11. The memo path is cleared before the traps are installed ─────────────
+# The EXIT trap rm -rf's it. Inherited from the environment and never overwritten (an
+# early exit during argument validation), that is an rm -rf on a path the caller chose.
+# Every other cleanup target is reset in the same block, so assert this one is too.
+_reset_block=$(sed -n '/^# Clear inherited cleanup targets before installing traps\./,/^trap _on_install_exit EXIT/p' "$INSTALL_SH")
+assert_contains "the memo dir is cleared before the traps" '_ROCM_TAG_MEMO_DIR=""' "$_reset_block"
+assert_contains "the memo path is cleared before the traps" '_ROCM_TAG_MEMO=""' "$_reset_block"
+
+# ── 12. The version probe runs once per install, not once per caller ────────
 # get_torch_index_url runs in a command substitution, so the reroute below it has to
 # ask the same question. On a wedged rpm database that is two 10s timeouts. The memo
 # is opt-in: unset means no cache, which is what the harnesses above rely on.
