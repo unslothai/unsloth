@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import socket
 import threading
 import time
 import sys
@@ -439,6 +440,49 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
 
     for literal in addrs:
         assert run._addresses_collide(recorded, literal, 8889) is True
+
+
+def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
+    bind_attempts = []
+    sockets = []
+
+    class _ProbeSocket:
+        def __init__(self, family):
+            self.family = family
+            self.closed = False
+            sockets.append(self)
+
+        def setsockopt(self, *_args):
+            pass
+
+        def bind(self, sockaddr):
+            bind_attempts.append((self.family, sockaddr))
+            if self.family == socket.AF_INET6:
+                raise OSError("address already in use")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8888)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8888, 0, 0)),
+        ],
+    )
+    monkeypatch.setattr(
+        socket,
+        "socket",
+        lambda family, _socktype, _proto: _ProbeSocket(family),
+    )
+
+    assert run._is_port_free("dual-wildcard.test", 8888) is False
+    assert bind_attempts == [
+        (socket.AF_INET, ("0.0.0.0", 8888)),
+        (socket.AF_INET6, ("::", 8888, 0, 0)),
+    ]
+    assert all(probe.closed for probe in sockets)
 
 
 def test_a_multi_address_record_matches_either_literal(tmp_path):
@@ -1075,9 +1119,9 @@ def test_an_interrupt_leaves_the_marker_to_a_live_server_thread(tmp_path, monkey
         with pytest.raises(KeyboardInterrupt):
             run.run_server()
 
-        assert (
-            list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
-        ), "the sibling can no longer see it"
+        assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != [], (
+            "the sibling can no longer see it"
+        )
         assert run._OWN_STARTUP_MARKERS != []
     finally:
         stop.set()

@@ -791,14 +791,28 @@ def _is_port_free(host: str, port: int) -> bool:
 
     # 1. Can we bind to the requested address? getaddrinfo resolves both
     #    IPv4 and IPv6 to the right address family.
+    sockets = []
     try:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        family, socktype, proto, _, sockaddr = addr_info[0]
-        with socket.socket(family, socktype, proto) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(sockaddr)
+        seen = set()
+        for family, socktype, proto, _, sockaddr in addr_info:
+            key = (family, socktype, proto, sockaddr)
+            if key in seen:
+                continue
+            seen.add(key)
+            probe = socket.socket(family, socktype, proto)
+            sockets.append(probe)
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            probe.bind(sockaddr)
+        if not sockets:
+            return False
     except OSError:
         return False
+    finally:
+        for probe in sockets:
+            probe.close()
 
     # 2. On a wildcard bind, verify localhost isn't already claimed by another
     #    process (e.g. an SSH -L tunnel); a successful connect means it is.
