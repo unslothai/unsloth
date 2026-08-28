@@ -5,14 +5,18 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CURRENT_DATE_PROMPT_SETTING_KEY = "include_current_date_in_prompt"
 # Lets callers recognise a prompt that already states a date, whoever put it there.
 CURRENT_DATE_PROMPT_PREFIX = "The current date is "
 # default on: date-blind models answer from their training cutoff and search for stale material.
 DEFAULT_CURRENT_DATE_PROMPT_ENABLED = True
+CURRENT_DATE_TIMEZONE_HEADER = "x-unsloth-timezone"
+CURRENT_DATE_TIMEZONE_OFFSET_HEADER = "x-unsloth-timezone-offset-minutes"
+MAX_TIMEZONE_OFFSET_MINUTES = 14 * 60
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -50,8 +54,33 @@ def set_current_date_prompt_enabled(value: Any) -> bool:
     return parsed
 
 
-def current_date_prompt_line(today: date | None = None) -> str:
+def _request_local_date(request: Any, now: datetime | None = None) -> date:
+    instant = now or datetime.now(timezone.utc)
+    try:
+        headers = request.headers
+    except Exception:
+        return instant.astimezone().date()
+
+    timezone_name = str(headers.get(CURRENT_DATE_TIMEZONE_HEADER) or "").strip()
+    if timezone_name and len(timezone_name) <= 64:
+        try:
+            return instant.astimezone(ZoneInfo(timezone_name)).date()
+        except (ValueError, ZoneInfoNotFoundError, OSError):
+            pass
+
+    try:
+        offset_minutes = int(headers.get(CURRENT_DATE_TIMEZONE_OFFSET_HEADER, ""))
+    except (TypeError, ValueError):
+        return instant.astimezone().date()
+    if abs(offset_minutes) > MAX_TIMEZONE_OFFSET_MINUTES:
+        return instant.astimezone().date()
+    browser_zone = timezone(timedelta(minutes = -offset_minutes))
+    return instant.astimezone(browser_zone).date()
+
+
+def current_date_prompt_line(today: date | None = None, request: Any = None) -> str:
     """Return the shared date sentence, or an empty string when the preference is off."""
     if not get_current_date_prompt_enabled():
         return ""
-    return f"{CURRENT_DATE_PROMPT_PREFIX}{(today or date.today()).isoformat()}."
+    resolved_date = today or _request_local_date(request)
+    return f"{CURRENT_DATE_PROMPT_PREFIX}{resolved_date.isoformat()}."

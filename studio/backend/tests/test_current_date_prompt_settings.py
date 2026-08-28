@@ -3,7 +3,7 @@
 
 """The current-date preference: its endpoints, and the prompts it feeds."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
 import types as _types
@@ -79,7 +79,7 @@ class TestCurrentDatePromptLine:
         import routes.inference as inference
 
         monkeypatch.setattr(
-            inference, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
         )
         already = "The current date is 2026-08-14.\n\nBASE"
         assert inference._apply_current_date_prompt(already) == already
@@ -88,7 +88,7 @@ class TestCurrentDatePromptLine:
         import routes.inference as inference
 
         monkeypatch.setattr(
-            inference, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
         )
         prompt = "The current date is a phrase this prompt discusses, not a date stamp."
         assert (
@@ -99,6 +99,44 @@ class TestCurrentDatePromptLine:
     def test_line_is_empty_when_disabled(self, monkeypatch):
         monkeypatch.setattr(current_date_settings, "get_current_date_prompt_enabled", lambda: False)
         assert current_date_settings.current_date_prompt_line(date(2026, 8, 15)) == ""
+
+    def test_request_timezone_decides_the_calendar_date(self):
+        request = _types.SimpleNamespace(
+            headers = {
+                current_date_settings.CURRENT_DATE_TIMEZONE_HEADER: "Pacific/Auckland",
+            }
+        )
+        instant = datetime(2026, 8, 28, 12, 30, tzinfo = timezone.utc)
+        assert current_date_settings._request_local_date(request, instant) == date(2026, 8, 29)
+
+    def test_request_offset_is_used_when_timezone_is_unknown(self):
+        request = _types.SimpleNamespace(
+            headers = {
+                current_date_settings.CURRENT_DATE_TIMEZONE_HEADER: "Invalid/Zone",
+                current_date_settings.CURRENT_DATE_TIMEZONE_OFFSET_HEADER: "-720",
+            }
+        )
+        instant = datetime(2026, 8, 28, 12, 30, tzinfo = timezone.utc)
+        assert current_date_settings._request_local_date(request, instant) == date(2026, 8, 29)
+
+    def test_research_run_stamp_receives_the_http_request(self, monkeypatch):
+        import routes.research_runs as research_routes
+
+        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "Pacific/Auckland"})
+        monkeypatch.setattr(
+            research_routes,
+            "current_date_prompt_line",
+            lambda **kwargs: kwargs["request"].headers["x-unsloth-timezone"],
+        )
+        payload = research_routes.CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "message-1",
+            inferenceRequest = {"model": "local-model"},
+        )
+
+        config = research_routes._sanitize_config(payload, {"modelId": "local-model"}, request)
+
+        assert config["currentDate"] == "Pacific/Auckland"
 
     def test_unreadable_settings_still_default_to_enabled(self, monkeypatch):
         def _explode(*_args, **_kwargs):
@@ -124,7 +162,7 @@ class TestExternalProviderMessages:
     def _enabled(self, monkeypatch):
         import routes.inference as inference
         monkeypatch.setattr(
-            inference, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
         )
 
     def test_date_prefixes_an_existing_system_turn(self):
@@ -153,7 +191,7 @@ class TestExternalProviderMessages:
     def test_messages_are_untouched_when_disabled(self, monkeypatch):
         import routes.inference as inference
 
-        monkeypatch.setattr(inference, "current_date_prompt_line", lambda: "")
+        monkeypatch.setattr(inference, "current_date_prompt_line", lambda **_kwargs: "")
         messages = [{"role": "user", "content": "hi"}]
         assert self._prepend(messages) is messages
 

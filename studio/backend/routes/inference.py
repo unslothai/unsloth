@@ -4792,7 +4792,7 @@ def _apply_current_date_prompt(system_prompt: str, request: Any = None) -> str:
     """
     if request is not None and not _wants_current_date(request):
         return system_prompt
-    date_line = current_date_prompt_line()
+    date_line = current_date_prompt_line(request = request)
     if not date_line or _states_a_date(system_prompt):
         return system_prompt
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
@@ -4807,7 +4807,7 @@ def _prepend_current_date_to_messages(messages: list[dict], request: Any = None)
     """
     if request is not None and not _wants_current_date(request):
         return messages
-    date_line = current_date_prompt_line()
+    date_line = current_date_prompt_line(request = request)
     if not date_line:
         return messages
     # Scanned across every system turn before anything is inserted: a request whose date sits on
