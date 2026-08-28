@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   audioPipelineTagFor,
+  nativeAudioCheckpointIsLoadable,
   audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
@@ -592,6 +593,16 @@ test("fine-tuned audio rows receive only runnable pipeline tags", () => {
   assert.match(
     pickerSource,
     /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true, isLora\)/,
+  );
+});
+
+test("adapter-only native audio checkpoints are hidden from the runnable picker", () => {
+  assert.equal(nativeAudioCheckpointIsLoadable("moss_tts_local", "adapter"), false);
+  assert.equal(nativeAudioCheckpointIsLoadable("higgs_tts2", "merged"), true);
+  assert.equal(nativeAudioCheckpointIsLoadable("snac", "adapter"), true);
+  assert.match(
+    pickerSource,
+    /fineTunedRows[\s\S]*nativeAudioCheckpointIsLoadable\(m\.audioType, m\.exportType\)/,
   );
 });
 

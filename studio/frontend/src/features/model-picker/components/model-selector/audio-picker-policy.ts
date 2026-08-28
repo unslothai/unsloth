@@ -43,6 +43,13 @@ export function audioPipelineTagFor(
     : undefined;
 }
 
+export function nativeAudioCheckpointIsLoadable(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  return !audioType || !NATIVE_AUDIO_TYPES.has(audioType) || exportType === "merged";
+}
+
 /** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD
  * artifacts are handled by the catalog before this gate, so an uncurated row must
  * identify a non-GGUF Whisper checkpoint. */

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
+import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 
 export type AudioBusy =
   | "loading"
@@ -78,7 +79,7 @@ export function trainedTtsCheckpointIsLoadable(
   audioType?: string | null,
   exportType?: string | null,
 ): boolean {
-  return !audioType || !NATIVE_TTS_AUDIO_TYPES.has(audioType) || exportType === "merged";
+  return nativeAudioCheckpointIsLoadable(audioType, exportType);
 }
 
 export function trainedTtsCheckpointIsRunnableOnMac(

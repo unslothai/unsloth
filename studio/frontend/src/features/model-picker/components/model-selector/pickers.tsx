@@ -124,6 +124,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   macTtsHubRowIsRunnable,
+  nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
   taskCatalogFormatMatches,
@@ -3844,6 +3845,9 @@ export function HubModelPicker({
             exportType: m.exportType,
             isDirectGguf: m.isDirectGguf,
           }),
+      )
+      .filter((m) =>
+        nativeAudioCheckpointIsLoadable(m.audioType, m.exportType),
       )
       .filter((m) => {
         const text = normalizeForSearch(
