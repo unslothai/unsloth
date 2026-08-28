@@ -321,21 +321,36 @@ def reload_secret() -> None:
     load_jwt_secret()
 
 
+def _normalise_x_api_key_dependency(x_api_key: Any) -> Optional[str]:
+    return x_api_key if isinstance(x_api_key, str) else None
+
+
+def _x_api_key_keeps_keyless_admission(x_api_key: str) -> bool:
+    from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
+
+    return x_api_key in APPROVED_DUMMY_BEARERS
+
+
 def _resolve_credentials(
-    credentials: Optional[HTTPAuthorizationCredentials], x_api_key: Optional[str]
+    credentials: Optional[HTTPAuthorizationCredentials], x_api_key: Any
 ) -> HTTPAuthorizationCredentials:
-    if credentials is not None:
+    resolved_x_api_key = _normalise_x_api_key_dependency(x_api_key)
+    if credentials is not None and not is_keyless(credentials):
         return credentials
-    if x_api_key is not None:
-        if not x_api_key.startswith(API_KEY_PREFIX):
+    if resolved_x_api_key is not None:
+        if is_keyless(credentials) and _x_api_key_keeps_keyless_admission(resolved_x_api_key):
+            return credentials
+        if not resolved_x_api_key.startswith(API_KEY_PREFIX):
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
-                detail = _invalid_api_key_detail(x_api_key),
+                detail = _invalid_api_key_detail(resolved_x_api_key),
             )
         return HTTPAuthorizationCredentials(
             scheme = X_API_KEY_HEADER,
-            credentials = x_api_key,
+            credentials = resolved_x_api_key,
         )
+    if credentials is not None:
+        return credentials
     raise HTTPException(
         status_code = status.HTTP_401_UNAUTHORIZED,
         detail = NOT_AUTHENTICATED_DETAIL,
@@ -380,9 +395,12 @@ async def authenticated_via_api_key(
     caller too: it is the same programmatic surface, only without the key, so every
     guard an API key faces still applies to it.
     """
-    if is_keyless(credentials):
+    resolved_x_api_key = _normalise_x_api_key_dependency(x_api_key)
+    if is_keyless(credentials) and (
+        resolved_x_api_key is None or _x_api_key_keeps_keyless_admission(resolved_x_api_key)
+    ):
         return True
-    resolved = _resolve_credentials(credentials, x_api_key)
+    resolved = _resolve_credentials(credentials, resolved_x_api_key)
     return resolved.credentials.startswith(API_KEY_PREFIX)
 
 
@@ -414,9 +432,14 @@ async def credentials_for_token(
 
 
 async def authenticated_without_credential(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    x_api_key: Optional[str] = Depends(x_api_key_security),
 ) -> bool:
     """Dependency form of ``admitted_without_credential``."""
+    resolved_x_api_key = _normalise_x_api_key_dependency(x_api_key)
+    if resolved_x_api_key is not None:
+        resolved = _resolve_credentials(credentials, resolved_x_api_key)
+        return admitted_without_credential(resolved)
     return admitted_without_credential(credentials)
 
 
@@ -447,13 +470,15 @@ async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_a
 
 
 async def authenticated_via_desktop_jwt(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> bool:
     """True when the caller is the local desktop app, not a browser session or API key.
 
     Lets routes treat the desktop as an authority of its own: it authenticates
     with a local secret rather than the account password.
     """
+    if credentials is None or is_keyless(credentials):
+        return False
     return await run_in_threadpool(is_desktop_access_token, credentials.credentials)
 
 

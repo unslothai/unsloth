@@ -42,6 +42,8 @@ KEYLESS_SCOPES = (KEYLESS_SCOPE_OFF, KEYLESS_SCOPE_INFERENCE, KEYLESS_SCOPE_FULL
 DEFAULT_KEYLESS_API_ACCESS_SCOPE = KEYLESS_SCOPE_OFF
 APPROVED_DUMMY_BEARERS = frozenset({"not-needed", "lm-studio", "ollama"})
 KEYLESS_ADMISSION_STATE_KEY = "keyless_api_admitted"
+AUTHORIZATION_HEADER_NAME = b"authorization"
+X_API_KEY_HEADER_NAME = b"x-api-key"
 
 # Named by method and normalized path: /v1 also aliases model loading, media,
 # sandbox, validation, and streaming side-effect routes.
@@ -681,11 +683,14 @@ def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = N
     )
     if not allowed:
         return False
-    authorization = [
-        bytes(value).decode("latin-1")
-        for name, value in asgi_scope.get("headers") or ()
-        if bytes(name).lower() == b"authorization"
-    ]
+    headers = asgi_scope.get("headers") or ()
+    authorization = _asgi_header_values(headers, AUTHORIZATION_HEADER_NAME)
+    x_api_keys = _asgi_header_values(headers, X_API_KEY_HEADER_NAME)
+    if len(x_api_keys) > 1:
+        return False
+    if x_api_keys:
+        if x_api_keys[0] not in APPROVED_DUMMY_BEARERS:
+            return False
     if not authorization:
         return True
     if len(authorization) != 1:
@@ -700,3 +705,11 @@ def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = N
 
     scheme, token = get_authorization_scheme_param(authorization[0])
     return bool(scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS)
+
+
+def _asgi_header_values(headers: Any, name_to_match: bytes) -> list[str]:
+    return [
+        bytes(value).decode("latin-1")
+        for name, value in headers
+        if bytes(name).lower() == name_to_match
+    ]

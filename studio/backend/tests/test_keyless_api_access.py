@@ -777,6 +777,10 @@ def test_credentials_never_downgrade_to_keyless():
     assert resolve(request_for()).scheme == KEYLESS_SCHEME
     for token in ("not-needed", "lm-studio", "ollama"):
         assert resolve(bearer_request(token)).scheme == KEYLESS_FALLBACK_SCHEME
+        assert asgi_request_is_keyless(
+            asgi_scope(headers = {"x-api-key": token}),
+            ("inference", False),
+        )
     set_keyless_api_access("inference")
     with pytest.raises(HTTPException):
         subject_of(bearer_request("not-needed", path = "/v1/load"))
@@ -803,6 +807,10 @@ def test_credentials_never_downgrade_to_keyless():
     valid, _ = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME, name = "valid", expires_at = None)
     assert subject_of(bearer_request(valid)) == storage.DEFAULT_ADMIN_USERNAME
+    assert not asgi_request_is_keyless(
+        asgi_scope(headers = {"x-api-key": valid}),
+        ("inference", False),
+    )
     for name, expires in (
         ("expired", (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat()),
         ("revoked", None),
