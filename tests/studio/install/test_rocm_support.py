@@ -2320,6 +2320,37 @@ class TestGfx1102Rocm64Floor:
         body = "\\n".join(blocks)
         return f"rocminfo() {{ printf '{body}\\n'; }}\n"
 
+    @staticmethod
+    def _amd_smi_stub(*arches, hip_ids = None):
+        """An amd-smi that answers `list -e` separately from the ASIC listing.
+
+        A stub that returns the ASIC text for every argv has no HIP_ID map, and the
+        routing block then refuses to apply an ordinal to unlike adapters it only knows
+        in discovery order. That refusal is correct, but it makes the caller's leaf the
+        default one, so a test expecting the default passes without exercising anything
+        it names. Default `hip_ids` is the identity, i.e. HIP order == discovery order,
+        which is what these callers assume when they index the listing directly.
+        """
+        asic = "\\n".join(
+            line
+            for n, gfx in enumerate(arches)
+            for line in (f"GPU: {n}", f"        TARGET_GRAPHICS_VERSION: {gfx}")
+        )
+        hip_ids = range(len(arches)) if hip_ids is None else hip_ids
+        hip_map = "\\n".join(
+            line
+            for n, hip in enumerate(hip_ids)
+            for line in (f"GPU: {n}", f"        HIP_ID: {hip}")
+        )
+        return (
+            "amd-smi() {\n"
+            "    case \"$*\" in\n"
+            f"        *'list -e'*) printf '{hip_map}\\n' ;;\n"
+            f"        *) printf '{asic}\\n' ;;\n"
+            "    esac\n"
+            "}\n"
+        )
+
     @pytest.mark.parametrize(
         ("mask", "expected"),
         (
@@ -2356,33 +2387,35 @@ class TestGfx1102Rocm64Floor:
     )
     def test_install_sh_splits_amd_smi_gpu_headers(self, mask, expected):
         """amd-smi heads each device with "GPU: N", so two gfx1100 cards stay two entries."""
-        asic = "\\n".join(
-            [
-                "GPU: 0",
-                "        TARGET_GRAPHICS_VERSION: gfx1100",
-                "GPU: 1",
-                "        TARGET_GRAPHICS_VERSION: gfx1100",
-                "GPU: 2",
-                "        TARGET_GRAPHICS_VERSION: gfx1200",
-            ]
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            + self._amd_smi_stub("gfx1100", "gfx1100", "gfx1200")
+            + f"export {mask}"
         )
-        preamble = f"rocminfo() {{ return 1; }}\namd-smi() {{ printf '{asic}\\n'; }}\nexport {mask}"
         assert self._run_install_sh_routing(preamble) == expected
 
     def test_install_sh_still_indexes_amd_smi_output_under_a_rocr_mask(self):
         """amd-smi ignores ROCR_VISIBLE_DEVICES, so its output still needs indexing."""
-        asic = "\\n".join(
-            [
-                "GPU: 0",
-                "        TARGET_GRAPHICS_VERSION: gfx1200",
-                "GPU: 1",
-                "        TARGET_GRAPHICS_VERSION: gfx1100",
-            ]
-        )
         preamble = (
             "rocminfo() { return 1; }\n"
-            f"amd-smi() {{ printf '{asic}\\n'; }}\n"
-            "export ROCR_VISIBLE_DEVICES=1"
+            + self._amd_smi_stub("gfx1200", "gfx1100")
+            + "export ROCR_VISIBLE_DEVICES=1"
+        )
+        assert self._run_install_sh_routing(preamble) == "rocm6.1"
+
+    def test_install_sh_declines_an_ordinal_when_amd_smi_gives_no_hip_map(self):
+        """Without `list -e` there is no HIP order, so an ordinal names no known device.
+
+        The companion to the two above: same unlike adapters, same mask, but the map is
+        withheld. Routing has to decline and leave the caller's leaf alone rather than
+        index a discovery-ordered list. This is the case those tests were silently
+        landing in before the stub learned to answer `list -e`.
+        """
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            "amd-smi() { printf 'GPU: 0\\n        TARGET_GRAPHICS_VERSION: gfx1100\\n"
+            "GPU: 1\\n        TARGET_GRAPHICS_VERSION: gfx1200\\n'; }\n"
+            "export HIP_VISIBLE_DEVICES=1"
         )
         assert self._run_install_sh_routing(preamble) == "rocm6.1"
 
