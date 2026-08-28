@@ -1394,6 +1394,11 @@ export const en = {
         blockedBanner: "Blocked {count} external resource from {hosts}.",
         blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
         blockedBannerAction: "Allow for this canvas",
+        blockedTitle: "Canvas network access is off",
+        blockedHint:
+          "Turn on “{setting}” in Settings → Chat to let canvases load external resources, or allow it just for this canvas.",
+        blockedSettingsAction: "Open Settings",
+        blockedDismiss: "Dismiss",
       },
       data: "Data",
       exportHistory: "Export chat history",

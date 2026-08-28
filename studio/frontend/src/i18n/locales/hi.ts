@@ -1407,6 +1407,11 @@ export const hi = {
         blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
         blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
         blockedBannerAction: "इस Canvas के लिए अनुमति दें",
+        blockedTitle: "Canvas नेटवर्क एक्सेस बंद है",
+        blockedHint:
+          "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
+        blockedSettingsAction: "सेटिंग्स खोलें",
+        blockedDismiss: "खारिज करें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",
