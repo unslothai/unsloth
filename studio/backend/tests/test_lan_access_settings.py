@@ -38,6 +38,7 @@ def _app(**over):
         lan_access_is_colab = False,
         lan_access_launch_managed = False,
         lan_access_wildcard_bind = False,
+        lan_access_wildcard_ip_version = None,
         lan_access_secure_launch = False,
         lan_access_frontend_served = True,
         lan_access_loop = None,
@@ -89,21 +90,23 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
 
 
 @pytest.mark.parametrize(
-    "bind_host,launch_managed,wildcard",
+    "bind_host,launch_managed,wildcard,ip_version",
     [
-        ("127.0.0.1", False, False),
-        ("localhost", False, False),
-        ("::1", False, False),
-        ("0.0.0.0", True, True),
-        ("::", True, True),
-        ("::0", True, True),
-        ("0:0:0:0:0:0:0:0", True, True),
-        ("0", True, True),
-        ("::ffff:0.0.0.0", True, True),
-        ("192.168.1.24", True, False),
+        ("127.0.0.1", False, False, None),
+        ("localhost", False, False, None),
+        ("::1", False, False, None),
+        ("0.0.0.0", True, True, 4),
+        ("::", True, True, 6),
+        ("::0", True, True, 6),
+        ("0:0:0:0:0:0:0:0", True, True, 6),
+        ("0", True, True, 4),
+        ("::ffff:0.0.0.0", True, True, 4),
+        ("192.168.1.24", True, False, None),
     ],
 )
-def test_configure_reads_launch_ownership_from_the_bind_host(bind_host, launch_managed, wildcard):
+def test_configure_reads_launch_ownership_from_the_bind_host(
+    bind_host, launch_managed, wildcard, ip_version
+):
     state = SimpleNamespace()
     lan_settings.configure_lan_access(
         state,
@@ -115,6 +118,7 @@ def test_configure_reads_launch_ownership_from_the_bind_host(bind_host, launch_m
     )
     assert state.lan_access_launch_managed is launch_managed
     assert state.lan_access_wildcard_bind is wildcard
+    assert state.lan_access_wildcard_ip_version == ip_version
     assert state.lan_access_bind_host == bind_host
     assert state.lan_access_ready is False
 
@@ -294,9 +298,9 @@ def test_a_pending_admin_password_blocks_exposing_the_server(monkeypatch):
     "bind_host,wildcard,expected_urls",
     [
         ("0.0.0.0", True, ["http://10.1.1.144:8888"]),
-        ("::", True, ["http://10.1.1.144:8888"]),
-        ("::0", True, ["http://10.1.1.144:8888"]),
-        ("0:0:0:0:0:0:0:0", True, ["http://10.1.1.144:8888"]),
+        ("::", True, ["http://[fd00::144]:8888"]),
+        ("::0", True, ["http://[fd00::144]:8888"]),
+        ("0:0:0:0:0:0:0:0", True, ["http://[fd00::144]:8888"]),
         ("0", True, ["http://10.1.1.144:8888"]),
         ("::ffff:0.0.0.0", True, ["http://10.1.1.144:8888"]),
         ("10.1.1.144", False, ["http://203.0.113.9:8888"]),
@@ -307,7 +311,11 @@ def test_status_carries_the_bind_host_so_a_block_can_name_it(
 ):
     """The launch-managed block covers a wildcard and a single-address bind
     alike, so the address itself has to reach the settings UI."""
-    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["10.1.1.144"])
+    monkeypatch.setattr(
+        lan_access,
+        "detect_lan_addresses",
+        lambda ip_version = 4: ["fd00::144"] if ip_version == 6 else ["10.1.1.144"],
+    )
     state = SimpleNamespace(server_url = "http://203.0.113.9:8888")
     lan_settings.configure_lan_access(
         state,
@@ -357,7 +365,9 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 ):
     """server_url resolves the public IP for sharing, which behind NAT reaches
     nothing on the LAN and would trip the public-address warning as well."""
-    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["192.168.1.24"])
+    monkeypatch.setattr(
+        lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"]
+    )
     state = _app(
         lan_access_launch_managed = True,
         lan_access_wildcard_bind = True,
@@ -367,8 +377,17 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
     assert status["urls"] == ["http://192.168.1.24:8888"]
     assert status["public_urls"] == []
 
-    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["10.0.0.7"])
+    monkeypatch.setattr(
+        lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"]
+    )
     assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
+
+
+def test_listener_urls_bracket_ipv6_literals():
+    assert lan_settings._listener_urls(["192.168.1.24", "fd00::24"], 8888) == [
+        "http://192.168.1.24:8888",
+        "http://[fd00::24]:8888",
+    ]
 
 
 def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):
@@ -400,6 +419,8 @@ def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):
         ("100.64.1.1", False),
         ("64.227.100.5", True),
         ("8.8.8.8", True),
+        ("fd00::24", False),
+        ("2001:4860:4860::8844", True),
         ("not-an-ip", False),
     ],
 )

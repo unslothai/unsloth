@@ -412,7 +412,9 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         return
 
     try:
-        qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
+        qs = urllib.parse.urlencode(
+            {"host": f"{_url_host(display_host)}:{port}", "max_nodes": 3}
+        )
         req = urllib.request.Request(
             f"https://check-host.net/check-tcp?{qs}",
             headers = {
@@ -522,7 +524,15 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
 
 def _display_host_for_bind(host: str) -> str:
-    return _resolve_external_ip() if is_wildcard_host(host) else host
+    loopback_host = wildcard_loopback_host(host)
+    if loopback_host is None:
+        return host
+    if loopback_host == "127.0.0.1":
+        return _resolve_external_ip()
+    from lan_access import detect_lan_addresses
+
+    addresses = detect_lan_addresses(6)
+    return addresses[0] if addresses else "::"
 
 
 def _loopback_bind_host_for(host: str) -> str:

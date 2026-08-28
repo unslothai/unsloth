@@ -251,6 +251,11 @@ test("stop-disconnects does not treat a different port as the same origin", () =
   );
 });
 
+test("stop-disconnects accepts a bracketed IPv6 LAN origin", () => {
+  const url = "http://[fd00::24]:8888";
+  assert.equal(lanAccessStopDisconnectsOrigin([url], url), true);
+});
+
 // ── lanAccessBlockMessage ──
 
 function blocked(

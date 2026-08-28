@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import socket
 
 import pytest
@@ -60,6 +61,22 @@ def test_wildcard_loopback_matches_the_effective_address_family(host, expected):
 )
 def test_effective_wildcards_are_normalized_before_binding(host, expected):
     assert normalize_wildcard_bind_host(host) == expected
+
+
+def test_a_mapped_wildcard_is_bindable_through_asyncio_after_normalization():
+    async def bind():
+        server = await asyncio.start_server(
+            lambda _reader, _writer: None,
+            host = normalize_wildcard_bind_host("::ffff:0.0.0.0"),
+            port = 0,
+        )
+        try:
+            return server.sockets[0].family
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    assert asyncio.run(bind()) == socket.AF_INET
 
 
 def test_a_resolved_ipv6_wildcard_uses_ipv6_loopback(monkeypatch):
