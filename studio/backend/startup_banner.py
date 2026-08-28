@@ -92,11 +92,9 @@ def print_studio_access_banner(
     reachable on this machine only, so the banner must say where else it answers.
 
     ``network_host`` is the address printed under "another device on your
-    network"; it defaults to ``display_host`` for a caller that has only one
-    address to give. A wildcard-bind caller should resolve the two
-    separately and pass both: ``display_host`` can be a public WAN IP (the
-    reachability probe's business), which is not what a LAN peer can open
-    (#8868).
+    network", defaulting to ``display_host``. A wildcard-bind caller passes both:
+    ``display_host`` can be a public WAN IP, which is the reachability probe's
+    business and not what a LAN peer can open (#8868).
     """
     use_color = stdout_supports_color()
     dim = "\033[38;5;245m"
@@ -122,10 +120,7 @@ def print_studio_access_banner(
     else:
         external_url = f"http://{display_host}:{port}"
 
-    # The "share on your network" line needs a LAN-reachable address, which for a
-    # wildcard bind is NOT always display_host (that one may be a public WAN IP --
-    # right for the reachability probe, wrong for a device on this LAN, #8868).
-    # Falls back to display_host so a caller with only one address still works.
+    # Falls back to display_host for a caller with only one address to give.
     resolved_network_host = network_host or display_host
     if ":" in resolved_network_host:
         network_url = f"http://[{resolved_network_host}]:{port}"

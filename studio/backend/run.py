@@ -179,11 +179,8 @@ def public_check_disabled() -> bool:
 def _resolve_lan_ip(ip_version: int = 4) -> str:
     """This machine's own LAN-facing address. No third-party network call.
 
-    LAN discovery uses a UDP route lookup plus the active network interfaces;
-    the route lookup only fixes the local end of the socket and sends no packet.
-    Kept separate from ``_resolve_external_ip`` so a caller that wants an
-    address another device on this network can reach never gets the public WAN
-    IP ifconfig.me reports (#8868).
+    Discovery is a UDP route lookup plus the active interfaces; the lookup only
+    fixes the local end of the socket and sends no packet.
     """
     from lan_access import detect_lan_addresses
 
@@ -255,12 +252,10 @@ def _install_uvicorn_startup_log_rewrite(bind_host: str) -> None:
     this machine answers on, use our Mac-aware stop hint, and rename the prefix
     to "Unsloth Studio running on".
 
-    The line reads as a claim about where the server is reachable, so it takes
-    the LAN address and never _display_host_for_bind's internet-facing one: on a
-    home network that is the router's WAN IP, which this machine does not hold
-    and no LAN peer can open (#8868). Resolved here rather than passed in so the
-    caller cannot hand it the wrong one; with no LAN address to name, the guard
-    below leaves uvicorn's raw wildcard, which is the honest answer.
+    The line is a claim about where the server is reachable, so the address is
+    _network_share_host_for_bind's, resolved here rather than passed in so no
+    caller can hand it the internet-facing one (#8868). With no LAN address to
+    name, the guard below leaves uvicorn's raw wildcard.
     """
     import logging
     import re
@@ -582,13 +577,11 @@ def _network_share_host_for_bind(host: str) -> str:
     """The address to hand another device on this LAN, or to build the API
     panel's direct base URL from.
 
-    Deliberately NOT _display_host_for_bind: that one answers "what is this
-    machine's internet-facing address" (right for the reachability probe and
-    the Cloudflare line), and for a wildcard bind that can be a public WAN IP
-    a LAN peer cannot even route to (#8868). This answers "what can a device
-    on my own network reach," which is _resolve_lan_ip's job, never a
-    third-party lookup's. Resolve only an address family the wildcard actually
-    binds so an IPv6-only launch is never advertised at an IPv4 address.
+    Deliberately not _display_host_for_bind: that answers "what is this
+    machine's internet-facing address" (right for the reachability probe and the
+    Cloudflare line), and for a wildcard bind that can be a public WAN IP a LAN
+    peer cannot route to (#8868). Only a family the wildcard actually binds is
+    resolved, so an IPv6-only launch is never advertised at an IPv4 address.
     """
     wildcard_versions = wildcard_ip_versions(host)
     if not wildcard_versions:
@@ -617,12 +610,10 @@ def _direct_server_url(host: str, port: int) -> "Optional[str]":
     """The API panel's direct (non-tunnel) base, or None when this launch has no
     address worth publishing.
 
-    A wildcard bind whose LAN address cannot be resolved (WSL behind NAT, a host
-    with only loopback) would otherwise publish ``http://0.0.0.0:<port>``, and
-    the frontend prefers any non-null server_url over the origin the client
-    actually reached -- so the API examples, the desktop agent command and a
-    copied preview link would all name an address that resolves to nothing.
-    None hands those callers back their working origin.
+    The frontend prefers any non-null server_url over the origin the client
+    reached, so publishing ``http://0.0.0.0:<port>`` (a wildcard bind with no LAN
+    address: WSL behind NAT, loopback-only) would put an unroutable address in
+    the API examples, the desktop agent command and a copied preview link.
     """
     if not port or port <= 0:
         return None
@@ -2703,8 +2694,8 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # The internet-facing address, for the banner and the reachability probe. The
-    # startup log line resolves its own, LAN-only, answer.
+    # For the banner and the reachability probe; the startup log line resolves
+    # its own, LAN-only, answer.
     display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs every unhandled request exception with its full
