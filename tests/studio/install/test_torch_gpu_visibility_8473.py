@@ -1065,9 +1065,7 @@ def test_the_arm64_excuse_is_decided_on_the_wheel_not_the_host():
     is the state under test.
     """
     text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
-    code = "\n".join(
-        ln for ln in text.splitlines() if not ln.strip().startswith("#")
-    )
+    code = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("#"))
     assert "-not $_gpuCheckArm64Amd -and" not in code, (
         "the gate excuses an ARM64 AMD host before the probe runs, so a +rocm wheel that cannot "
         "see its GPU is never reported there."
