@@ -62,7 +62,8 @@ def _launch_command(output: str) -> list:
 
 
 def _fake_claude(monkeypatch, version_output: str) -> None:
-    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_probe_env", lambda **_: {})
     monkeypatch.setattr(
         start.subprocess,
         "run",
@@ -104,14 +105,20 @@ def test_claude_flags_passed_to_supported_claude(monkeypatch):
     ]
 
 
-def test_claude_flags_skipped_on_old_claude(monkeypatch):
+def test_claude_dynamic_sections_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
-def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
+def test_claude_settings_retained_on_unparseable_version(monkeypatch):
     _fake_claude(monkeypatch, "weird build string\n")
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
 def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
@@ -659,7 +666,10 @@ def test_claude_flags_probes_old_agent_only_in_install_dir(monkeypatch, tmp_path
     monkeypatch.setattr(
         start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
     )
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
 def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, tmp_path):
@@ -694,7 +704,10 @@ def test_claude_flags_probes_npm_install_dir_on_windows(monkeypatch, tmp_path):
     monkeypatch.setattr(
         start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
     )
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
 def test_codex_catalog_probes_old_codex_only_in_install_dir(monkeypatch, tmp_path):

@@ -2483,12 +2483,14 @@ def _claude_version() -> Optional[tuple]:
 
 def _claude_flags(model_id: str) -> list:
     # KV-cache-preserving flags: move per-session context out of the system prompt and pass
-    # the session overlay. claude < 2.1.98 rejects unknown flags; no local binary means a
-    # printout for another machine, so assume a current build.
+    # the session overlay. claude < 2.1.98 rejects the dynamic-sections flag but already
+    # supports --settings; no local binary means a printout for another machine, so assume
+    # a current build.
     version = _claude_version()
+    settings = ["--settings", _claude_settings_overlay(model_id)]
     if version is not None and version < (2, 1, 98):
-        return []
-    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
+        return settings
+    return [_DYNAMIC_SECTIONS_FLAG, *settings]
 
 
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:
