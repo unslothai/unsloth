@@ -53,6 +53,10 @@ def estimate_message_tokens_without_unpriced_media(message: dict) -> int:
     return estimate_message_tokens(_message_without_unpriced_media(message))
 
 
+def estimate_messages_tokens_without_unpriced_media(messages: list[dict]) -> int:
+    return sum(estimate_message_tokens_without_unpriced_media(message) for message in messages)
+
+
 def estimate_messages_tokens(messages: list[dict]) -> int:
     return sum(estimate_message_tokens(message) for message in messages)
 

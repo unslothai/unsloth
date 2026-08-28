@@ -4019,6 +4019,62 @@ def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
     assert payloads[0]["messages"] == [audio_turn]
 
 
+def test_tool_loop_secondary_counts_strip_media_but_payloads_keep_it(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            _structured_tool_call("python", {"code": "print('ok')"}, "call_python"),
+            [_sse({"content": "Done."}), _done()],
+        ],
+        payloads,
+    )
+    counted: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        return 1000
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_args, **_kwargs: "ok",
+    )
+    audio_data = "A" * 100_000
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "x" * 12_000},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": audio_data, "format": "wav"},
+            },
+        ],
+    }
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [audio_turn],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 512,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(counted) >= 3
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in counted
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert len(payloads) == 2
+    assert payloads[0]["messages"][0] == audio_turn
+    assert payloads[1]["messages"][0] == audio_turn
+    assert payloads[1]["messages"][0]["content"][1]["input_audio"]["data"] == audio_data
+
+
 @pytest.mark.parametrize("with_tools", [False, True])
 def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, with_tools):
     from core.inference import llama_cpp

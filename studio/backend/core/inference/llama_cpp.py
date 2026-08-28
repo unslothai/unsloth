@@ -58,7 +58,7 @@ from core.inference.context_window import (
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
     estimate_message_tokens_without_unpriced_media,
-    estimate_messages_tokens,
+    estimate_messages_tokens_without_unpriced_media,
     _reply_floor,
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
@@ -27633,7 +27633,7 @@ class LlamaCppBackend:
                         # messages, priced by the fit with the catalogue and template.
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
-                        ) - estimate_messages_tokens(conversation)
+                        ) - estimate_messages_tokens_without_unpriced_media(conversation)
                     if truncation:
                         _recalled = _archive_and_recall(
                             conversation,
@@ -27905,11 +27905,18 @@ class LlamaCppBackend:
                     _reply_target = prompt_budget(
                         self._effective_context_length, _iteration_max_tokens
                     )
-                    if estimate_messages_tokens_dense(conversation) > 0.7 * _reply_target:
+                    if (
+                        estimate_messages_tokens_dense(
+                            messages_without_unpriced_media(conversation)
+                        )
+                        > 0.7 * _reply_target
+                    ):
                         try:
                             _prompt_now = self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    conversation, _markup_cache, self.markup_profile
+                                    messages_without_unpriced_media(conversation),
+                                    _markup_cache,
+                                    self.markup_profile,
                                 ),
                                 None,
                                 safe_tools,
@@ -29257,7 +29264,12 @@ class LlamaCppBackend:
                         # the write lands before the next request is rejected. Erring
                         # high here only costs an extra count; erring low costs the
                         # whole gate.
-                        if estimate_messages_tokens_conservative(conversation) > 0.7 * _room_target:
+                        if (
+                            estimate_messages_tokens_conservative(
+                                messages_without_unpriced_media(conversation)
+                            )
+                            > 0.7 * _room_target
+                        ):
                             # Priced with a STAND-IN tool message for the call about to
                             # run, not on the conversation as it stands. A chat template
                             # renders an assistant turn's `tool_calls` only once a `tool`
@@ -29283,7 +29295,9 @@ class LlamaCppBackend:
                                 try:
                                     _turn_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            [*conversation, _probe_message],
+                                            messages_without_unpriced_media(
+                                                [*conversation, _probe_message]
+                                            ),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -29340,7 +29354,9 @@ class LlamaCppBackend:
                                     try:
                                         _after_tokens = self.count_chat_tokens(
                                             neutralize_control_markup_in_messages(
-                                                _as_if_run, _markup_cache, self.markup_profile
+                                                messages_without_unpriced_media(_as_if_run),
+                                                _markup_cache,
+                                                self.markup_profile,
                                             ),
                                             None,
                                             safe_tools,
@@ -29539,7 +29555,9 @@ class LlamaCppBackend:
                                 try:
                                     _exact_prompt_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            [*conversation, _size_probe],
+                                            messages_without_unpriced_media(
+                                                [*conversation, _size_probe]
+                                            ),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -29569,7 +29587,9 @@ class LlamaCppBackend:
                                     if _compact_after_execution and _compacted_turn_tokens
                                     else _exact_prompt_tokens
                                     if _exact_prompt_tokens is not None
-                                    else estimate_messages_tokens_dense(conversation)
+                                    else estimate_messages_tokens_dense(
+                                        messages_without_unpriced_media(conversation)
+                                    )
                                     + (
                                         _prompt_token_offset
                                         if _prompt_token_offset is not None
@@ -29656,7 +29676,9 @@ class LlamaCppBackend:
                                                 # is handed to the result.
                                                 _spent_after = self.count_chat_tokens(
                                                     neutralize_control_markup_in_messages(
-                                                        [*conversation, _size_probe],
+                                                        messages_without_unpriced_media(
+                                                            [*conversation, _size_probe]
+                                                        ),
                                                         _markup_cache,
                                                         self.markup_profile,
                                                     ),
@@ -30303,7 +30325,7 @@ class LlamaCppBackend:
                 return True
             try:
                 _tokens = self.count_chat_tokens(
-                    candidate_messages,
+                    messages_without_unpriced_media(candidate_messages),
                     None,
                     None,
                     strict = True,
