@@ -1646,6 +1646,52 @@ def _raw_spans(body: str) -> tuple:
     return tuple((match.start(), match.end()) for match in _JINJA_RAW.finditer(body))
 
 
+def _evaluated_spans(template: str) -> tuple:
+    """The ranges Jinja evaluates, walked quote-aware, with string literals taken out.
+
+    ``_jinja_expression_spans`` ends a block at the first ``}}``, so a template printing
+    literal Jinja -- ``{{ "{{ example.0 }}" }}`` -- reads as code and would be rewritten in
+    the prompt. That scanner is shared with ``model_markup`` (#7066) and stays as it is;
+    this repair edits the template llama-server launches with, so it does its own walk.
+    """
+    spans: list = []
+    index, end = 0, len(template)
+    while index < end - 1:
+        if template[index] != "{" or template[index + 1] not in "{%#":
+            index += 1
+            continue
+        if template[index + 1] == "#":
+            # A comment renders nothing, so a rewrite there would only cost the model a
+            # needless launch through --chat-template-file.
+            closed = template.find("#}", index + 2)
+            index = end if closed < 0 else closed + 2
+            continue
+        closer = "}}" if template[index + 1] == "{" else "%}"
+        block: list = []
+        cursor = index + 2
+        run = cursor
+        quote = ""
+        while cursor < end:
+            char = template[cursor]
+            if quote:
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == quote:
+                    quote = ""
+                    run = cursor + 1
+            elif char in "'\"":
+                block.append((run, cursor))
+                quote = char
+            elif template.startswith(closer, cursor):
+                block.append((run, cursor))
+                spans.extend(block)
+                break
+            cursor += 1
+        index = cursor + 2 if cursor < end else end
+    return tuple(spans)
+
+
 _NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\s*\.\s*\d+)+)")
 
 
@@ -1657,14 +1703,14 @@ def repair_numeric_member_access(template) -> Optional[str]:
     replayed tool call's arguments are never decoded back into an object -- the template's
     own ``arguments.items()`` then dies on the JSON string (GLM-5.3).
 
-    Only the ranges Jinja evaluates are rewritten, never prompt text, a quoted literal, or
-    a raw block.
+    Only the ranges Jinja evaluates are rewritten, never prompt text, a quoted literal, a
+    raw block, or Jinja syntax a template prints as an example.
     A chain rewrites whole ("x.0.1" -> "x[0][1]"): leaving the tail behind still throws.
     Jinja lets whitespace sit around each dot, and llama.cpp throws on that spelling too.
     """
     if not isinstance(template, str) or not template:
         return None
-    spans = _jinja_expression_spans(template)
+    spans = _evaluated_spans(template)
     verbatim = _raw_spans(template)
     out: list = []
     cursor = 0

@@ -73,6 +73,28 @@ def test_a_real_site_outside_a_raw_block_is_still_repaired():
     )
 
 
+def test_jinja_syntax_a_template_prints_as_an_example_is_left_alone():
+    # The quoted "}}" ends the literal, not the expression, so example.0 is prompt text.
+    assert repair_numeric_member_access('{{ "{{ example.0 }}" }}') is None
+    assert repair_numeric_member_access("{{ '{% if x.0 %}' }}") is None
+
+
+def test_a_literal_brace_does_not_hide_a_later_real_site():
+    assert repair_numeric_member_access('{{ "a }} b" }}{{ m.content.0.type }}') == (
+        '{{ "a }} b" }}{{ m.content[0].type }}'
+    )
+
+
+def test_a_comment_is_not_worth_a_relaunch():
+    # Nothing in a comment is rendered, so repairing it would only force the model through
+    # --chat-template-file for a template that needed nothing.
+    assert repair_numeric_member_access("{# {{ a.0 }} #}") is None
+
+
+def test_an_unterminated_block_is_not_treated_as_code():
+    assert repair_numeric_member_access('{{ "unterminated.0 ') is None
+
+
 def test_a_renderable_template_is_left_alone():
     clean = "{% for m in messages %}{{ m.content }}{% endfor %}"
     assert repair_numeric_member_access(clean) is None
