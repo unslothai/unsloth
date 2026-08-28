@@ -682,7 +682,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "cancel_event": cancel_event,
         }
 
-        # Forward only present optional keys so the backend signature can evolve.
         for opt_key in (
             "tools",
             "enable_thinking",
@@ -693,9 +692,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
 
-        # These options are MLX-only. The transformers backend declares none of
-        # them and takes no **kwargs, so forwarding unconditionally would turn
-        # its documented "ignores them" behavior into a TypeError.
         for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
             if gated in cmd and _backend_declares(backend, gated):
                 gen_kwargs[gated] = cmd[gated]

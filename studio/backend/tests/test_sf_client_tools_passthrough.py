@@ -519,7 +519,6 @@ def test_n_serves_one_full_generation_per_choice(monkeypatch):
     assert [c["index"] for c in body["choices"]] == [0, 1]
     assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
     assert len(backend.calls) == 2  # a generation per choice, not one reused
-    # The shared prompt is counted once; only generated tokens accumulate.
     assert _totals(body) == {"prompt_tokens": 7, "completion_tokens": 6, "total_tokens": 13}
 
 

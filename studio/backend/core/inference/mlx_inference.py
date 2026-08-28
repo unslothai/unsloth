@@ -1453,6 +1453,88 @@ def _mlx_sampling_processors(
 # the markers, and 0.6.0-0.6.8 are what this stands in for.
 _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
 
+class _RowStream:
+    """Cumulative snapshots for one generation, from its raw token events."""
+
+    def __init__(
+        self,
+        *,
+        prefix = "",
+        sequences = (),
+        normalizer = None,
+        decode = None,
+    ):
+        self._prefix = prefix
+        self._sequences = sequences
+        self._normalizer = normalizer
+        self._decode = decode
+        self.token_ids = []
+        self.sampled = ""
+        self.stopped = False
+        self._released = 0
+        self._cut = 0
+        self._output = prefix
+
+    def feed(
+        self,
+        token = None,
+        text = "",
+    ):
+        """Consume one token event; return the snapshots it releases."""
+        if token is not None:
+            self.token_ids.append(token)
+        if self._decode is not None:
+            self.sampled = self._decode(self.token_ids)
+        else:
+            self.sampled += text or ""
+        if self._sequences:
+            self._cut, self.stopped = _mlx_stop_cut(self.sampled, self._sequences)
+        else:
+            self._cut = len(self.sampled)
+        if self._normalizer is not None:
+            return self._normalize(self.sampled[self._released : self._cut])
+        if not self._sequences:
+            return [self._prefix + self.sampled]
+        if self._decode is not None:
+            return []
+        if self._cut > self._released:
+            self._released = self._cut
+            return [self._prefix + self.sampled[: self._cut]]
+        return []
+
+    def settle(self):
+        """Snapshots owed once the token loop is over."""
+        if not self._sequences:
+            return []
+        if not self.stopped:
+            self._cut = len(self.sampled)
+        if self._normalizer is not None:
+            return self._normalize(self.sampled[self._released : self._cut])
+        if self._decode is not None:
+            settled = self._prefix + self.sampled[: self._cut]
+            return [settled] if settled != self._prefix else []
+        if not self.stopped and self._released < len(self.sampled):
+            return [self._prefix + self.sampled]
+        return []
+
+    def drain(self, *, cancelled):
+        """Whatever the normalizer still holds, for a row that has one."""
+        if self._normalizer is None:
+            return []
+        drained = cancelled and not self.stopped
+        tail = self._normalizer.drain() if drained else self._normalizer.finish()
+        return self._append(tail)
+
+    def _normalize(self, raw):
+        self._released = self._cut
+        return self._append(self._normalizer.feed(raw))
+
+    def _append(self, delta):
+        if not delta:
+            return []
+        self._output += delta
+        return [self._output]
+
 
 class MLXInferenceBackend:
     def __init__(self):
@@ -2292,8 +2374,6 @@ class MLXInferenceBackend:
             logit_bias = logit_bias,
         )
 
-        preserve_native_channels = reasoning_channel_markers is not None
-        token_ids = []
         normalizer = (
             make_reasoning_normalizer(
                 reasoning_channel_markers,
@@ -2304,17 +2384,16 @@ class MLXInferenceBackend:
             if reasoning_channel_markers is not None
             else None
         )
-        # Sequences match the sampled text, ahead of the prefill this path restores
-        # and the <think> rewriting below: matching delivered text would end turns on
-        # markup the model never wrote, and never find a native marker asked for.
-        sequences = _mlx_stop_sequences(stop)
-        stopped = False
-        sampled = ""
-        released = 0
-        # MLX consumers diff cumulative snapshots. Keep a prompt-prefilled
-        # <think> prefix on every native-protocol snapshot just as the normal
-        # decoding path does below.
-        normalized_output = think_prefix
+        row = _RowStream(
+            prefix = think_prefix,
+            sequences = _mlx_stop_sequences(stop),
+            normalizer = normalizer,
+            decode = (
+                None
+                if normalizer is not None
+                else lambda ids: self._tokenizer.decode(ids, skip_special_tokens = True)
+            ),
+        )
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
             (
                 gen_prompt,
@@ -2333,7 +2412,6 @@ class MLXInferenceBackend:
             )
             final_response = None
             try:
-                # Enter request-scoped model state before yielding any response.
                 if think_prefix:
                     yield think_prefix
                 gen_kwargs = dict(
@@ -2353,38 +2431,11 @@ class MLXInferenceBackend:
                     **gen_kwargs,
                 ):
                     final_response = response
-                    token_ids.append(response.token)
-                    if preserve_native_channels:
-                        sampled += getattr(response, "text", None) or ""
-                        if sequences:
-                            cut, stopped = _mlx_stop_cut(sampled, sequences)
-                        else:
-                            cut = len(sampled)
-                        # Cut before normalizing: the markers the normalizer writes are
-                        # this layer's own, unmatched for the same reason the prefill is.
-                        delta = normalizer.feed(sampled[released:cut])
-                        released = cut
-                        if delta:
-                            normalized_output += delta
-                            yield normalized_output
-                    else:
-                        # Re-decoding every id rebuilds rather than extends, so an
-                        # invalid byte sequence can revise characters already shown.
-                        # Predates stop handling and affects plain replies too.
-                        sampled = self._tokenizer.decode(
-                            token_ids,
-                            skip_special_tokens = True,
-                        )
-                        if not sequences:
-                            yield think_prefix + sampled
-                        else:
-                            # Matched every step, delivered once at the end: this
-                            # decode revises earlier snapshots, and consumers diff
-                            # them by length, so a revised one splices two renderings
-                            # into text that can spell the sequence itself. A stream
-                            # cannot unsend, so nothing goes out until it settles.
-                            cut, stopped = _mlx_stop_cut(sampled, sequences)
-                    if stopped:
+                    yield from row.feed(
+                        token = response.token,
+                        text = getattr(response, "text", None),
+                    )
+                    if row.stopped:
                         break
 
                     if cancel_event and cancel_event.is_set():
@@ -2393,7 +2444,7 @@ class MLXInferenceBackend:
                     history = self._prompt_cache_history
                     if history is not None:
                         try:
-                            history.insert(cache_key, prompt_tokens + token_ids, prompt_cache)
+                            history.insert(cache_key, prompt_tokens + row.token_ids, prompt_cache)
                         except Exception as exc:
                             logger.debug("MLX prompt cache insert failed: %s", exc)
             except Exception as e:
@@ -2401,8 +2452,6 @@ class MLXInferenceBackend:
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
-                # Latch final stats here, so a cancel arriving later cannot
-                # rewrite the reason the generation actually ended for.
                 if final_response is not None:
                     self.last_generation_stats = _build_generation_stats(
                         getattr(final_response, "prompt_tokens", 0),
@@ -2417,32 +2466,11 @@ class MLXInferenceBackend:
                             max_new_tokens,
                         ),
                     )
-        # The turn's settled text: delivered once for the plain path, as the tail for
-        # the native-channel one. Every snapshot was matched as it arrived, so a turn
-        # no sequence ended owes all of its text, held-back partial included.
-        if sequences:
-            if not stopped:
-                cut = len(sampled)
-            if normalizer is None:
-                settled = think_prefix + sampled[:cut]
-                # The prefill already went out, so a turn whose settled text is just
-                # the prefill owes no second snapshot saying the same thing.
-                if settled != think_prefix:
-                    yield settled
-            else:
-                delta = normalizer.feed(sampled[released:cut])
-                if delta:
-                    normalized_output += delta
-                    yield normalized_output
-        if normalizer is not None:
-            # A sequence ends the turn as a stop token would, so a reasoning block it
-            # cut inside is closed. Only a cancelled turn drains: more was coming.
-            cancelled = not stopped and cancel_event is not None and cancel_event.is_set()
-            tail = normalizer.drain() if cancelled else normalizer.finish()
-            if tail:
-                normalized_output += tail
-                yield normalized_output
-        if stopped:
+        yield from row.settle()
+        yield from row.drain(
+            cancelled = cancel_event is not None and cancel_event.is_set(),
+        )
+        if row.stopped:
             self._mark_stopped()
 
     def _render_vlm_prompt(
@@ -2597,9 +2625,12 @@ class MLXInferenceBackend:
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
         prefill = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
-        # Matched on the sampled text, for the reason _generate_text gives.
-        sequences = _mlx_stop_sequences(stop)
-        stopped = False
+        # Deltas here only append, so the cut never moves back over text already
+        # released and no decode= is needed. Reasoning normalization wraps the whole
+        # stream below rather than running per snapshot, so this row has no
+        # normalizer of its own. Matched on the sampled text, for the reason
+        # _generate_text gives.
+        row = _RowStream(prefix = prefill, sequences = _mlx_stop_sequences(stop))
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
@@ -2645,19 +2676,9 @@ class MLXInferenceBackend:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         def _stream_vlm_snapshots():
-            nonlocal stopped
-            sampled = ""
-            released = 0
-            # Hold the generation lock AND the request-scoped adapter state for the
-            # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
-            # wrapper tree is restored on completion, cancellation, or close.
             with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
                 final_response = None
                 try:
-                    # Emit any prefilled <think> block before the first token so the
-                    # UI renders it during prefill, matching _generate_text. Done
-                    # inside the adapter context so an unsupported request raises
-                    # before any output escapes.
                     if prefill:
                         yield prefill
                     for response in vlm_stream(
@@ -2669,26 +2690,13 @@ class MLXInferenceBackend:
                     ):
                         final_response = response
                         token_text = response.text if hasattr(response, "text") else str(response)
-                        sampled += token_text
-                        if not sequences:
-                            yield prefill + sampled
-                        else:
-                            cut, stopped = _mlx_stop_cut(sampled, sequences)
-                            # These deltas only append, so the cut never moves back
-                            # over text already released.
-                            if cut > released:
-                                released = cut
-                                yield prefill + sampled[:cut]
-                            if stopped:
-                                break
+                        yield from row.feed(text = token_text)
+                        if row.stopped:
+                            break
                         if cancel_event and cancel_event.is_set():
                             break
-                    # As in _generate_text: what was withheld is ordinary text now.
-                    if sequences and not stopped and released < len(sampled):
-                        yield prefill + sampled
+                    yield from row.settle()
                 finally:
-                    # mlx_vlm exposes the same stats fields as mlx_lm, minus a
-                    # finish reason, so that one is derived.
                     if final_response is not None:
                         tokenizer = getattr(self._processor, "tokenizer", self._processor)
                         stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
@@ -2712,9 +2720,9 @@ class MLXInferenceBackend:
             tools = tools,
             prompt = prompt,
             continued = vlm_continued,
-            ended = lambda: stopped,
+            ended = lambda: row.stopped,
         )
-        if stopped:
+        if row.stopped:
             self._mark_stopped()
 
     def generate_audio_input_response(
@@ -2827,7 +2835,6 @@ class MLXInferenceBackend:
                             max_new_tokens,
                         ),
                     )
-        # As in _generate_text: what was withheld is ordinary text now.
         if sequences and not stopped:
             delta = sampled[released:]
             if normalizer is not None:
