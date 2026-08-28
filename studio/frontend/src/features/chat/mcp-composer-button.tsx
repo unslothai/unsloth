@@ -118,21 +118,27 @@ export function McpComposerButton({
   // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
-  const refresh = useCallback(async () => {
-    const generation = listRefreshGenerationRef.current + 1;
-    listRefreshGenerationRef.current = generation;
-    try {
-      const rows = await listMcpServers();
-      if (listRefreshGenerationRef.current !== generation) return;
-      setServers(rows);
-    } catch {
-      // Keep prior state if the list call fails.
-    }
-  }, []);
+  const refresh = useCallback(
+    async (waitForPendingMutations = true, minimumMutationEpoch = 0) => {
+      const generation = listRefreshGenerationRef.current + 1;
+      listRefreshGenerationRef.current = generation;
+      try {
+        const rows = await listMcpServers({
+          waitForPendingMutations,
+          minimumMutationEpoch,
+        });
+        if (listRefreshGenerationRef.current !== generation) return;
+        setServers(rows);
+      } catch {
+        // Keep prior state if the list call fails.
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    const unsubscribe = subscribeToMcpServerMutationSettlements(() => {
-      void refresh();
+    const unsubscribe = subscribeToMcpServerMutationSettlements((epoch) => {
+      void refresh(false, epoch);
     });
     return () => {
       unsubscribe();
@@ -283,11 +289,13 @@ export function McpComposerButton({
                 aria-label="Turn off MCP"
                 tabIndex={-1}
                 onPointerDown={(e) => {
-                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  if (e.currentTarget.closest('[data-pill-compact="true"]'))
+                    return;
                   e.stopPropagation();
                 }}
                 onClick={(e) => {
-                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  if (e.currentTarget.closest('[data-pill-compact="true"]'))
+                    return;
                   e.stopPropagation();
                   setMcpEnabledForChat(false);
                 }}

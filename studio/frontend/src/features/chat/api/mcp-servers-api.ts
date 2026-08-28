@@ -5,7 +5,9 @@ import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
 import {
+  getMcpServerMutationEpoch,
   readAfterPendingMcpServerMutations,
+  readMcpServerMutationSnapshot,
   trackMcpServerMutation,
 } from "./mcp-server-mutation-tracker";
 
@@ -38,6 +40,10 @@ export interface McpStdioCommand {
 }
 
 let mcpServerListRequest: Promise<McpServerConfig[]> | null = null;
+let mcpServerSettlementListRequest: {
+  minimumEpoch: number;
+  promise: Promise<McpServerConfig[]>;
+} | null = null;
 
 function parseErrorText(status: number, body: unknown): string {
   if (body && typeof body === "object") {
@@ -65,7 +71,41 @@ async function mcpRequest<T>(
   return json as T;
 }
 
-export function listMcpServers(): Promise<McpServerConfig[]> {
+export function listMcpServers({
+  waitForPendingMutations = true,
+  minimumMutationEpoch,
+}: {
+  waitForPendingMutations?: boolean;
+  minimumMutationEpoch?: number;
+} = {}): Promise<McpServerConfig[]> {
+  if (!waitForPendingMutations) {
+    const requestedEpoch = minimumMutationEpoch ?? getMcpServerMutationEpoch();
+    if (
+      mcpServerSettlementListRequest &&
+      mcpServerSettlementListRequest.minimumEpoch >= requestedEpoch
+    ) {
+      return mcpServerSettlementListRequest.promise;
+    }
+    const request = readMcpServerMutationSnapshot(() =>
+      mcpRequest<McpServerConfig[]>("/"),
+    );
+    const slot = { minimumEpoch: requestedEpoch, promise: request };
+    mcpServerSettlementListRequest = slot;
+    void request.then(
+      () => {
+        if (mcpServerSettlementListRequest === slot) {
+          mcpServerSettlementListRequest = null;
+        }
+      },
+      () => {
+        if (mcpServerSettlementListRequest === slot) {
+          mcpServerSettlementListRequest = null;
+        }
+      },
+    );
+    return request;
+  }
+
   if (mcpServerListRequest) return mcpServerListRequest;
 
   const request = readAfterPendingMcpServerMutations(() =>
@@ -116,7 +156,8 @@ export function updateMcpServer(
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
-  if (payload.displayName !== undefined) body.display_name = payload.displayName;
+  if (payload.displayName !== undefined)
+    body.display_name = payload.displayName;
   if (payload.url !== undefined) body.url = payload.url;
   if (payload.headers !== undefined) body.headers = payload.headers;
   if (payload.isEnabled !== undefined) body.is_enabled = payload.isEnabled;

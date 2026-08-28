@@ -9,7 +9,11 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import { Delete02Icon, Edit03Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import {
+  Delete02Icon,
+  Edit03Icon,
+  PlusSignIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshCwIcon, UploadIcon } from "lucide-react";
 
@@ -97,7 +101,9 @@ function argumentsToStrings(rows: readonly ArgumentRow[]): string[] {
   return rows.map((row) => row.value);
 }
 
-function headersToObject(rows: HeaderRow[]): Record<string, string> | undefined {
+function headersToObject(
+  rows: HeaderRow[],
+): Record<string, string> | undefined {
   const out: Record<string, string> = {};
   for (const row of rows) {
     const key = row.key.trim();
@@ -147,8 +153,7 @@ function ArgumentsEditor({
   const update = (id: string, value: string) =>
     onChange(rows.map((row) => (row.id === id ? { ...row, value } : row)));
   const add = () => onChange([...rows, { id: newRowId(), value: "" }]);
-  const remove = (id: string) =>
-    onChange(rows.filter((row) => row.id !== id));
+  const remove = (id: string) => onChange(rows.filter((row) => row.id !== id));
 
   return (
     <div className="grid gap-2">
@@ -213,10 +218,8 @@ function HeadersEditor({
 }) {
   const update = (id: string, patch: Partial<HeaderRow>) =>
     onChange(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
-  const add = () =>
-    onChange([...rows, { id: newRowId(), key: "", value: "" }]);
-  const remove = (id: string) =>
-    onChange(rows.filter((row) => row.id !== id));
+  const add = () => onChange([...rows, { id: newRowId(), key: "", value: "" }]);
+  const remove = (id: string) => onChange(rows.filter((row) => row.id !== id));
 
   const copy = stdio
     ? {
@@ -255,8 +258,8 @@ function HeadersEditor({
             "Optional. Environment variables passed to the server process."
           ) : (
             <>
-              Optional. Add an <code>Authorization</code> header here for servers
-              that require auth.
+              Optional. Add an <code>Authorization</code> header here for
+              servers that require auth.
             </>
           )}
         </div>
@@ -301,9 +304,7 @@ export interface ChatMcpServersDialogProps {
 }
 
 type View =
-  | { kind: "list" }
-  | { kind: "create" }
-  | { kind: "edit"; id: string };
+  { kind: "list" } | { kind: "create" } | { kind: "edit"; id: string };
 
 export function ChatMcpServersDialog({
   open,
@@ -319,9 +320,8 @@ export function ChatMcpServersDialog({
   const [codecError, setCodecError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState<McpServerConfig | null>(
-    null,
-  );
+  const [confirmingDelete, setConfirmingDelete] =
+    useState<McpServerConfig | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formGenerationRef = useRef(0);
   const activeEditIdRef = useRef<string | null>(null);
@@ -334,27 +334,33 @@ export function ChatMcpServersDialog({
     };
   }, []);
 
-  const refresh = useCallback(async () => {
-    const generation = listRefreshGenerationRef.current + 1;
-    listRefreshGenerationRef.current = generation;
-    setLoading(true);
-    try {
-      const rows = await listMcpServers();
-      if (listRefreshGenerationRef.current !== generation) return;
-      setServers(rows);
-    } catch (err) {
-      if (listRefreshGenerationRef.current !== generation) return;
-      toast.error("Failed to load MCP servers", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      if (listRefreshGenerationRef.current === generation) setLoading(false);
-    }
-  }, []);
+  const refresh = useCallback(
+    async (waitForPendingMutations = true, minimumMutationEpoch = 0) => {
+      const generation = listRefreshGenerationRef.current + 1;
+      listRefreshGenerationRef.current = generation;
+      setLoading(true);
+      try {
+        const rows = await listMcpServers({
+          waitForPendingMutations,
+          minimumMutationEpoch,
+        });
+        if (listRefreshGenerationRef.current !== generation) return;
+        setServers(rows);
+      } catch (err) {
+        if (listRefreshGenerationRef.current !== generation) return;
+        toast.error("Failed to load MCP servers", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        if (listRefreshGenerationRef.current === generation) setLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    const unsubscribe = subscribeToMcpServerMutationSettlements(() => {
-      void refresh();
+    const unsubscribe = subscribeToMcpServerMutationSettlements((epoch) => {
+      void refresh(false, epoch);
     });
     return () => {
       unsubscribe();
@@ -365,10 +371,14 @@ export function ChatMcpServersDialog({
   useEffect(() => {
     formGenerationRef.current += 1;
     activeEditIdRef.current = null;
-    if (!open) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
+      setSaving(false);
+      setTesting(false);
+      setCodecPending(false);
+      setCodecError(null);
+      if (!open) return;
       void refresh();
       // Reset to the list on each open, else a stale create/edit view persists.
       setView({ kind: "list" });
@@ -593,6 +603,7 @@ export function ChatMcpServersDialog({
           headers: headers ?? null,
           useOauth: stdio ? false : form.useOauth,
         });
+        if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");
       } else {
         await createMcpServer({
@@ -601,6 +612,7 @@ export function ChatMcpServersDialog({
           headers: headers,
           useOauth: stdio ? false : form.useOauth,
         });
+        if (formGenerationRef.current !== generation) return;
         toast.success("MCP server added");
       }
       if (formGenerationRef.current !== generation) return;
@@ -864,9 +876,7 @@ export function ChatMcpServersDialog({
                 size="sm"
                 onClick={testConnection}
                 disabled={
-                  formPending ||
-                  codecError !== null ||
-                  !form.url.trim()
+                  formPending || codecError !== null || !form.url.trim()
                 }
               >
                 {testing ? <Spinner /> : null}
@@ -882,9 +892,7 @@ export function ChatMcpServersDialog({
                 </Button>
                 <Button
                   onClick={submitForm}
-                  disabled={
-                    formPending || codecError !== null
-                  }
+                  disabled={formPending || codecError !== null}
                 >
                   {saving ? <Spinner /> : null}
                   {view.kind === "edit" ? "Save changes" : "Add server"}

@@ -94,6 +94,14 @@ def _validate_url(url: str) -> str:
             )
         if not parts or not parts[0].strip():
             raise HTTPException(status_code = 400, detail = "command must not be empty")
+        if any("\x00" in part for part in parts):
+            # Python and the OS process boundary reject embedded NUL in every
+            # argv element. Refuse it here so encode, decode, CRUD, import and
+            # test cannot persist or probe a command that can never launch.
+            raise HTTPException(
+                status_code = 400,
+                detail = "command and arguments must not contain NUL characters",
+            )
         if "://" in parts[0]:
             # A URL-scheme first token is a mistyped URL, not a command. Reject
             # cleanly instead of exec-ing it (mirrors the frontend check).

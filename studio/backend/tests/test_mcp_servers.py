@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
+
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -312,6 +314,95 @@ def test_stdio_command_codec_rejects_non_string_arguments(bad):
 
     with pytest.raises(ValidationError):
         McpStdioCommand.model_validate({"command": "python", "arguments": [bad]})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"command": "py\u0000thon", "arguments": []}, id = "command"),
+        pytest.param({"command": "python", "arguments": ["a\u0000b"]}, id = "argument"),
+    ],
+)
+def test_stdio_command_codec_rejects_json_nul(payload, monkeypatch):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpStdioCommand
+
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    command = McpStdioCommand.model_validate_json(json.dumps(payload))
+
+    with pytest.raises(HTTPException) as exc:
+        routes_mcp.encode_stdio_command(command, current_subject = "u")
+
+    assert exc.value.status_code == 400
+    assert "NUL" in str(exc.value.detail)
+
+
+def test_stdio_raw_nul_is_rejected_before_route_side_effects(tmp_path, monkeypatch):
+    import asyncio
+
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import (
+        McpServerCreate,
+        McpServerImportRequest,
+        McpServerTestRequest,
+        McpServerUpdate,
+        McpStdioDecodeRequest,
+    )
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    raw = "python a\x00b"
+    side_effects: list[str] = []
+
+    async def unexpected_probe(**kwargs):
+        side_effects.append("probe")
+        return []
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", unexpected_probe)
+    monkeypatch.setattr(
+        routes_mcp, "invalidate_tool_cache", lambda *args: side_effects.append("invalidate")
+    )
+    monkeypatch.setattr(
+        routes_mcp, "close_stdio_sessions", lambda *args: side_effects.append("close")
+    )
+
+    with pytest.raises(HTTPException):
+        routes_mcp.decode_stdio_command(McpStdioDecodeRequest(url = raw), current_subject = "u")
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes_mcp.create_mcp_server(
+                McpServerCreate(display_name = "bad", url = raw), current_subject = "u"
+            )
+        )
+    assert mcp_servers_db.list_servers() == []
+
+    mcp_servers_db.create_server(id = "seed", display_name = "seed", url = "python ok")
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes_mcp.update_mcp_server(
+                "seed", McpServerUpdate(url = raw), current_subject = "u"
+            )
+        )
+    assert mcp_servers_db.get_server("seed")["url"] == "python ok"
+
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes_mcp.test_mcp_server(McpServerTestRequest(url = raw), current_subject = "u")
+        )
+
+    imported = asyncio.run(
+        routes_mcp.import_mcp_servers(
+            McpServerImportRequest(
+                config = {"mcpServers": {"bad": {"command": "python", "args": ["a\x00b"]}}}
+            ),
+            current_subject = "u",
+        )
+    )
+    assert imported.created == []
+    assert len(imported.errors) == 1
+    assert "NUL" in imported.errors[0]
+    assert [row["id"] for row in mcp_servers_db.list_servers()] == ["seed"]
+    assert side_effects == []
 
 
 def test_normalize_headers():

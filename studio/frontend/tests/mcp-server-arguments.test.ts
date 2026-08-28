@@ -13,6 +13,7 @@ import {
 } from "../src/features/chat/mcp-server-form.ts";
 import {
   readAfterPendingMcpServerMutations,
+  readMcpServerMutationSnapshot,
   subscribeToMcpServerMutationSettlements,
   trackMcpServerMutation,
   waitForPendingMcpServerMutations,
@@ -128,10 +129,7 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
   );
   assert.match(dialog, /addressIsCommand && \(\s*<ArgumentsEditor/);
   assert.match(dialog, /const addressIsCommand = form\.transport === "stdio"/);
-  assert.match(
-    dialog,
-    /transport: transportFromAddress\(url\)/,
-  );
+  assert.match(dialog, /transport: transportFromAddress\(url\)/);
   assert.match(
     dialog,
     /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setView\(\{ kind: "list" \}\)/,
@@ -140,10 +138,7 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
     dialog,
     /function ArgumentsEditor[\s\S]*\{ id: newRowId\(\), value: "" \}/,
   );
-  assert.match(
-    dialog,
-    /!addressIsCommand && \([\s\S]*Use OAuth sign-in/,
-  );
+  assert.match(dialog, /!addressIsCommand && \([\s\S]*Use OAuth sign-in/);
   assert.match(dialog, /const decision = resolveMcpStdioUrl\(/);
   assert.match(dialog, /decision\.kind === "reuse"[\s\S]*url = decision\.url/);
   assert.match(
@@ -196,7 +191,10 @@ test("every mutable MCP form editor is locked for the full pending interval", ()
     4,
     "header/env add, key, value, and remove must all be locked",
   );
-  assert.match(dialog, /const formPending = codecPending \|\| testing \|\| saving/);
+  assert.match(
+    dialog,
+    /const formPending = codecPending \|\| testing \|\| saving/,
+  );
   assert.match(
     dialog,
     /id="mcp-display-name"[\s\S]*?disabled=\{formPending\}[\s\S]*?\/>/,
@@ -291,6 +289,11 @@ test("full unmount invalidates cancellable stdio encode continuations", async ()
     "const formGenerationRef = useRef(0)",
     "const refresh = useCallback",
   );
+  const openLifecycle = sourceBetween(
+    dialog,
+    "formGenerationRef.current += 1;\n    activeEditIdRef.current = null;",
+    "function startCreate",
+  );
   const encode = sourceBetween(
     dialog,
     "async function encodeStdioForGeneration",
@@ -313,6 +316,11 @@ test("full unmount invalidates cancellable stdio encode continuations", async ()
     "the component mount lifetime must invalidate the form identity on teardown",
   );
   assert.match(
+    openLifecycle,
+    /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;\s*setSaving\(false\);\s*setTesting\(false\);\s*setCodecPending\(false\);\s*setCodecError\(null\);\s*if \(!open\) return;/,
+    "route teardown must clear transient form state before a later reopen",
+  );
+  assert.match(
     encode,
     /await encodeMcpStdioCommand\([\s\S]*formGenerationRef\.current !== generation\) return null/,
   );
@@ -323,6 +331,16 @@ test("full unmount invalidates cancellable stdio encode continuations", async ()
   assert.match(
     crudContinuation,
     /await encodeStdioForGeneration\([\s\S]*if \(encodedUrl === null\) return;[\s\S]*if \(formGenerationRef\.current !== generation\) return;[\s\S]*(?:updateMcpServer|createMcpServer)\(/,
+  );
+  assert.match(
+    crudContinuation,
+    /await updateMcpServer\([\s\S]*if \(formGenerationRef\.current !== generation\) return;\s*toast\.success\("MCP server updated"\)/,
+    "an unmounted edit must not emit a stale success toast",
+  );
+  assert.match(
+    crudContinuation,
+    /await createMcpServer\([\s\S]*if \(formGenerationRef\.current !== generation\) return;\s*toast\.success\("MCP server added"\)/,
+    "an unmounted create must not emit a stale success toast",
   );
 
   const generation = { current: 7 };
@@ -376,7 +394,11 @@ test("open-time reconciliation waits for every mutation across component lifetim
     reconciled = true;
   });
   await Promise.resolve();
-  assert.equal(reconciled, false, "the first pending mutation must hold refresh");
+  assert.equal(
+    reconciled,
+    false,
+    "the first pending mutation must hold refresh",
+  );
 
   // Simulate another API mutation starting after the opening component has
   // already captured and begun waiting on the first batch.
@@ -395,7 +417,44 @@ test("open-time reconciliation waits for every mutation across component lifetim
   await batchNotified.promise;
   unsubscribe();
   assert.equal(reconciled, true);
-  assert.equal(notificationCount, 1, "a drained mutation batch publishes once");
+  assert.equal(
+    notificationCount,
+    2,
+    "each settled mutation publishes its epoch",
+  );
+});
+
+test("a settled successor can reconcile while an older mutation remains pending", async () => {
+  const first = deferred<void>();
+  const second = deferred<void>();
+  let authoritativeRows = ["old"];
+  const snapshots: string[][] = [];
+  const successorVisible = deferred<void>();
+  const predecessorVisible = deferred<void>();
+
+  const unsubscribe = subscribeToMcpServerMutationSettlements(() => {
+    void readMcpServerMutationSnapshot(async () => [...authoritativeRows]).then(
+      (rows) => {
+        snapshots.push(rows);
+        if (rows.includes("successor")) successorVisible.resolve();
+        if (rows.includes("predecessor")) predecessorVisible.resolve();
+      },
+    );
+  });
+
+  trackMcpServerMutation(first.promise);
+  trackMcpServerMutation(second.promise);
+  authoritativeRows = ["old", "successor"];
+  second.resolve();
+  await successorVisible.promise;
+  assert.deepEqual(snapshots.at(-1), ["old", "successor"]);
+
+  authoritativeRows = ["old", "successor", "predecessor"];
+  first.resolve();
+  await predecessorVisible.promise;
+  await waitForPendingMcpServerMutations();
+  unsubscribe();
+  assert.deepEqual(snapshots.at(-1), ["old", "successor", "predecessor"]);
 });
 
 test("failed mutations settle waiters without leaking a tracker rejection", async () => {
@@ -448,7 +507,10 @@ test("settlement refreshes a mounted background consumer after another consumer 
   assert.deepEqual(foregroundRows, ["new"]);
   assert.deepEqual(backgroundRows, ["new"]);
   assert.equal(notificationCount, 1);
-  assert.ok(notifiedEpoch >= 2, "registration and settlement both advance epoch");
+  assert.ok(
+    notifiedEpoch >= 2,
+    "registration and settlement both advance epoch",
+  );
 });
 
 test("a list read retries when a mutation starts after its pre-read drain", async () => {
@@ -590,7 +652,8 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
 
   const listOccurrences = typescriptFilesUnder(chatRoot)
     .flatMap((file) => {
-      const count = readFileSync(file, "utf8").match(/\blistMcpServers\s*\(/g)?.length ?? 0;
+      const count =
+        readFileSync(file, "utf8").match(/\blistMcpServers\s*\(/g)?.length ?? 0;
       return Array.from({ length: count }, () =>
         relative(chatRoot, file).replaceAll("\\", "/"),
       );
@@ -613,19 +676,49 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
     /readAfterPendingMcpServerMutations\(\(\) =>[\s\S]*mcpRequest<McpServerConfig\[\]>\("\/"\)/,
     "the shared query boundary must retry reads that overlap tracked mutations",
   );
-  assert.match(listApi, /if \(mcpServerListRequest\) return mcpServerListRequest/);
-  assert.match(dialogRefresh, /await listMcpServers\(\)/);
-  assert.match(composerRefresh, /await listMcpServers\(\)/);
+  assert.match(
+    listApi,
+    /readMcpServerMutationSnapshot\(\(\) =>[\s\S]*mcpRequest<McpServerConfig\[\]>\("\/"\)/,
+    "settlement refreshes must not wait on unrelated older mutations",
+  );
+  assert.match(
+    listApi,
+    /minimumMutationEpoch \?\? getMcpServerMutationEpoch\(\)[\s\S]*mcpServerSettlementListRequest\.minimumEpoch >= requestedEpoch/,
+    "a newer settlement must replace a snapshot cached for an older epoch",
+  );
+  assert.match(
+    listApi,
+    /const slot = \{ minimumEpoch: requestedEpoch, promise: request \}[\s\S]*mcpServerSettlementListRequest === slot/,
+    "an older completion must not clear the successor epoch slot",
+  );
+  assert.match(
+    listApi,
+    /if \(mcpServerListRequest\) return mcpServerListRequest/,
+  );
+  assert.match(
+    dialogRefresh,
+    /await listMcpServers\(\{\s*waitForPendingMutations,\s*minimumMutationEpoch,\s*\}\)/,
+  );
+  assert.match(
+    composerRefresh,
+    /await listMcpServers\(\{\s*waitForPendingMutations,\s*minimumMutationEpoch,\s*\}\)/,
+  );
   assert.match(
     dialog,
-    /subscribeToMcpServerMutationSettlements\(\(\) => \{\s*void refresh\(\)/,
+    /subscribeToMcpServerMutationSettlements\(\(epoch\) => \{\s*void refresh\(false, epoch\)/,
   );
   assert.match(
     composer,
-    /subscribeToMcpServerMutationSettlements\(\(\) => \{\s*void refresh\(\)/,
+    /subscribeToMcpServerMutationSettlements\(\(epoch\) => \{\s*void refresh\(false, epoch\)/,
   );
-  assert.match(dialogRefresh, /listRefreshGenerationRef\.current !== generation/);
-  assert.match(composerRefresh, /listRefreshGenerationRef\.current !== generation/);
+  assert.match(
+    dialogRefresh,
+    /listRefreshGenerationRef\.current !== generation/,
+  );
+  assert.match(
+    composerRefresh,
+    /listRefreshGenerationRef\.current !== generation/,
+  );
   assert.doesNotMatch(dialog, /waitForPendingMcpServerMutations/);
   assert.doesNotMatch(composer, /waitForPendingMcpServerMutations/);
   assert.doesNotMatch(dialog, /await refresh\(\)/);
