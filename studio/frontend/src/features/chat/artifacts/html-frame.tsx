@@ -12,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 // eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { ShieldAlertIcon, XIcon } from "lucide-react";
@@ -119,6 +119,7 @@ export function ArtifactHtmlFrame({
   actionFocusTargetRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
+  const locale = useLocale();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Every canvas honors this, fence or tool. Off by default; the standing half
   // of the gate, alongside the per-canvas grant below.
@@ -252,6 +253,7 @@ export function ArtifactHtmlFrame({
         <div className="absolute inset-x-0 top-0 p-2">
           <Alert
             role="group"
+            dir={locale === "ar" ? "rtl" : "ltr"}
             aria-label={t("settings.chat.artifacts.blockedTitle")}
             className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur"
           >

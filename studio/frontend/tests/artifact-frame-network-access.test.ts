@@ -521,6 +521,19 @@ test("the shared alert uses logical alignment and action spacing", () => {
   assert.doesNotMatch(source, /\btext-left\b|\bpr-18\b|\bright-3\b/);
 });
 
+test("the blocked alert scopes direction to its locale", () => {
+  const source = sourceFile(FRAME);
+  let alert: string | undefined;
+  const visit = (node: ts.Node): void => {
+    const opening = openingTag(node);
+    if (opening?.tagName.getText() === "Alert") alert = opening.getText();
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(alert, "blocked alert not found");
+  assert.match(alert, /dir=\{locale === "ar" \? "rtl" : "ltr"\}/);
+});
+
 test("the climbing blocked count stays outside the assertive live region", () => {
   const source = sourceFile(FRAME);
   let alert: string | undefined;

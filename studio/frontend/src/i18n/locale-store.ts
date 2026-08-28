@@ -165,10 +165,9 @@ function writeStoredPreference(preference: LocalePreference): void {
   }
 }
 
-function syncDocumentLocale(locale: Locale): void {
+function syncDocumentLang(locale: Locale): void {
   if (typeof document === "undefined") return;
   document.documentElement.lang = locale;
-  document.documentElement.dir = locale === "ar" ? "rtl" : "ltr";
 }
 
 function notifySubscribers(): void {
@@ -196,7 +195,7 @@ function commitPreference(
   pendingPreferenceShouldPersist = false;
   // This preference's catalog is loaded, so a retry has nothing left to fix.
   currentCatalogFailed = false;
-  syncDocumentLocale(locale);
+  syncDocumentLang(locale);
   if (didChange) notifySubscribers();
   return "applied";
 }
@@ -217,7 +216,7 @@ function commitFallbackLocale(
   pendingPreferenceShouldPersist = false;
   // Adopted, but on the fallback catalog rather than this preference's own.
   currentCatalogFailed = true;
-  syncDocumentLocale(currentLocale);
+  syncDocumentLang(currentLocale);
   if (didChange) notifySubscribers();
 }
 

@@ -41,7 +41,6 @@ function fireStorageEvent(key: string | null, newValue: string | null): void {
 }
 
 let documentLanguage = "";
-let documentDirection = "";
 Object.assign(globalThis, {
   document: {
     documentElement: {
@@ -50,12 +49,6 @@ Object.assign(globalThis, {
       },
       set lang(value: string) {
         documentLanguage = value;
-      },
-      get dir() {
-        return documentDirection;
-      },
-      set dir(value: string) {
-        documentDirection = value;
       },
     },
   },
@@ -85,18 +78,7 @@ test("initialization waits for the saved locale catalog before committing it", a
   assert.equal(localeStore.getLocale(), "de");
   assert.equal(localeStore.getLocalePreference(), "de");
   assert.equal(documentLanguage, "de");
-  assert.equal(documentDirection, "ltr");
   assert.equal(messagesModule.translate("common.cancel"), "Abbrechen");
-});
-
-test("the document direction follows the committed locale", async () => {
-  assert.equal(await localeStore.setLocale("ar"), "applied");
-  assert.equal(documentLanguage, "ar");
-  assert.equal(documentDirection, "rtl");
-
-  assert.equal(await localeStore.setLocale("en"), "applied");
-  assert.equal(documentLanguage, "en");
-  assert.equal(documentDirection, "ltr");
 });
 
 test("concurrent requests share one catalog load", async () => {
