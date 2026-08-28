@@ -26,6 +26,26 @@ test("uncached remote TTS GGUFs stage the exact file through the shared manager"
   );
 });
 
+test("remote code approval precedes native model staging and survives completion", () => {
+  const start = source.indexOf("const loadOrStageTtsModel");
+  const end = source.indexOf("const ensureSttLoaded", start);
+  const stagedFlow = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.ok(
+    stagedFlow.indexOf("confirmRemoteCodeIfNeeded(") <
+      stagedFlow.indexOf("getAudioDownloadPlan("),
+  );
+  assert.match(
+    stagedFlow,
+    /pendingStagedTtsLoad\.current = \{[\s\S]*remoteCodeApproval,[\s\S]*generation/,
+  );
+  assert.match(source, /pending\.audioType,[\s\S]*pending\.remoteCodeApproval/);
+  assert.match(
+    source,
+    /audioModelRequiresRemoteCode\(repoId, audioType\) &&[\s\S]*!remoteCodeApproval/,
+  );
+});
+
 test("cached and local TTS picks keep the direct load path and supersede stale staging", () => {
   assert.match(
     source,

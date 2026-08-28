@@ -199,6 +199,10 @@ const galleryCache: {
 };
 
 type CreateMode = "speak" | "transcribe";
+type RemoteCodeApproval = {
+  trustRemoteCode: true;
+  approvedRemoteCodeFingerprint: string | null;
+};
 
 function Field({
   label,
@@ -325,6 +329,7 @@ export function AudioPage({
     ggufFilename?: string | null;
     loadId?: string | null;
     audioType?: string | null;
+    remoteCodeApproval?: RemoteCodeApproval;
   } | null>(null);
   const ttsStatusRefreshGeneration = useRef(0);
   const ttsLoadGeneration = useRef(0);
@@ -408,6 +413,7 @@ export function AudioPage({
     ggufFilename: string | null;
     loadId?: string | null;
     audioType?: string | null;
+    remoteCodeApproval?: RemoteCodeApproval;
     generation: number;
   } | null>(null);
   const stagedTtsLoadDeferred = useRef(false);
@@ -806,6 +812,7 @@ export function AudioPage({
       // Chat threads the same field (chat-page.tsx).
       loadId?: string | null,
       audioType?: string | null,
+      remoteCodeApproval?: RemoteCodeApproval,
     ) => {
       // A routed pick that arrives while a previous load is still tearing down would
       // otherwise be dropped here, and the route effect has already cleared ?model=, so
@@ -816,6 +823,7 @@ export function AudioPage({
           ggufFilename,
           loadId,
           audioType,
+          remoteCodeApproval,
         };
         return;
       }
@@ -854,6 +862,7 @@ export function AudioPage({
           ggufFilename,
           loadId,
           audioType,
+          remoteCodeApproval,
         };
         return;
       }
@@ -881,9 +890,13 @@ export function AudioPage({
       const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`);
       try {
         const hfToken = hfApiToken(getHfToken()) ?? null;
-        let trustRemoteCode = false;
-        let approvedRemoteCodeFingerprint: string | null = null;
-        if (audioModelRequiresRemoteCode(repoId, audioType)) {
+        let trustRemoteCode = remoteCodeApproval?.trustRemoteCode ?? false;
+        let approvedRemoteCodeFingerprint =
+          remoteCodeApproval?.approvedRemoteCodeFingerprint ?? null;
+        if (
+          audioModelRequiresRemoteCode(repoId, audioType) &&
+          !remoteCodeApproval
+        ) {
           const approved = await confirmRemoteCodeIfNeeded({
             modelName: loadId || repoId,
             hfToken,
@@ -980,6 +993,7 @@ export function AudioPage({
       queued.ggufFilename,
       queued.loadId,
       queued.audioType,
+      queued.remoteCodeApproval,
     );
   }, []);
   const invalidatePendingStagedTts = useCallback(() => {
@@ -1069,6 +1083,7 @@ export function AudioPage({
         pending.ggufFilename,
         pending.loadId,
         pending.audioType,
+        pending.remoteCodeApproval,
       );
     },
   });
@@ -1094,6 +1109,7 @@ export function AudioPage({
       pending.ggufFilename,
       pending.loadId,
       pending.audioType,
+      pending.remoteCodeApproval,
     );
   }, [active, busy]);
 
@@ -1108,6 +1124,41 @@ export function AudioPage({
       stagedTtsLoadDeferred.current = false;
       stageTtsDownload([]);
 
+      let remoteCodeApproval: RemoteCodeApproval | undefined;
+      const hfToken = hfApiToken(getHfToken()) ?? null;
+      if (
+        meta.source === "hub" &&
+        !ggufFilename &&
+        audioModelRequiresRemoteCode(repoId, meta.audioType)
+      ) {
+        try {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: meta.loadId || repoId,
+            hfToken,
+            requiresTrustRemoteCode: true,
+            onApprove: (fingerprint) => {
+              remoteCodeApproval = {
+                trustRemoteCode: true,
+                approvedRemoteCodeFingerprint: fingerprint,
+              };
+            },
+          });
+          if (generation !== stagedTtsGeneration.current) return;
+          if (!approved) {
+            toast.error("Custom code approval is required to load this model.");
+            return;
+          }
+        } catch (error) {
+          if (generation !== stagedTtsGeneration.current) return;
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : `Could not verify the code for ${repoId}.`,
+          );
+          return;
+        }
+      }
+
       // Hub TTS picks use the same managed path as Chat. Native models can also
       // depend on a second codec repository, so the selected repo's downloaded
       // badge is not enough: the cache-aware backend plan owns every missing
@@ -1117,7 +1168,7 @@ export function AudioPage({
         try {
           plan = await getAudioDownloadPlan(
             meta.loadId || repoId,
-            hfApiToken(getHfToken()),
+            hfToken ?? undefined,
           );
         } catch (error) {
           if (generation !== stagedTtsGeneration.current) return;
@@ -1127,6 +1178,7 @@ export function AudioPage({
               ggufFilename,
               meta.loadId,
               meta.audioType,
+              remoteCodeApproval,
             );
             return;
           }
@@ -1145,6 +1197,7 @@ export function AudioPage({
             ggufFilename,
             loadId: meta.loadId,
             audioType: meta.audioType,
+            remoteCodeApproval,
             generation,
           };
           stageTtsDownload(
@@ -1170,6 +1223,7 @@ export function AudioPage({
           ggufFilename,
           loadId: meta.loadId,
           audioType: meta.audioType,
+          remoteCodeApproval,
           generation,
         };
         stageTtsDownload([
@@ -1190,6 +1244,7 @@ export function AudioPage({
         ggufFilename,
         meta.loadId,
         meta.audioType,
+        remoteCodeApproval,
       );
     },
     [stageTtsDownload],
