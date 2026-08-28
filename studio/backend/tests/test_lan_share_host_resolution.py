@@ -181,8 +181,7 @@ def test_startup_log_line_names_the_lan_address(uvicorn_log_filters, monkeypatch
 
 
 def test_startup_log_line_keeps_the_wildcard_when_no_lan_address_resolves(
-    uvicorn_log_filters,
-    monkeypatch,
+    uvicorn_log_filters, monkeypatch
 ):
     # The issue's own "expected behavior": say 0.0.0.0 rather than invent an address.
     monkeypatch.setattr(run, "_resolve_lan_ip", lambda ip_version = 4: "0.0.0.0")
