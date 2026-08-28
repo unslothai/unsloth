@@ -38,6 +38,12 @@ def test_a_subscript_result_is_rewritten_too():
     assert repair_numeric_member_access("{{ messages[i].0.role }}") == "{{ messages[i][0].role }}"
 
 
+def test_a_chain_of_numeric_lookups_is_rewritten_whole():
+    # Repairing only the head leaves "[0].1", which llama-server still throws on.
+    assert repair_numeric_member_access("{{ rows.0.1 }}") == "{{ rows[0][1] }}"
+    assert repair_numeric_member_access("{{ a.0.b.10 }}") == "{{ a[0].b[10] }}"
+
+
 def test_every_site_in_one_template_is_rewritten():
     template = (
         "{{ m.content.0.type }}{{ tr.output.0.type }}"

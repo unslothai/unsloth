@@ -1635,7 +1635,7 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
-_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])\.(\d+)")
+_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\.\d+)+)")
 
 
 def repair_numeric_member_access(template) -> Optional[str]:
@@ -1647,6 +1647,7 @@ def repair_numeric_member_access(template) -> Optional[str]:
     own ``arguments.items()`` then dies on the JSON string (GLM-5.3).
 
     Only the ranges Jinja evaluates are rewritten, never prompt text or a quoted literal.
+    A chain rewrites whole ("x.0.1" -> "x[0][1]"): leaving the tail behind still throws.
     """
     if not isinstance(template, str) or not template:
         return None
@@ -1657,7 +1658,8 @@ def repair_numeric_member_access(template) -> Optional[str]:
         if not _within(spans, match.start()):
             continue
         out.append(template[cursor : match.start()])
-        out.append(f"{match.group(1)}[{match.group(2)}]")
+        indices = "".join(f"[{n}]" for n in match.group(2).split(".")[1:])
+        out.append(f"{match.group(1)}{indices}")
         cursor = match.end()
     if not out:
         return None
