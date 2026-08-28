@@ -118,6 +118,30 @@ def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
     assert resp.use_oauth is True
 
 
+def test_connection_test_forces_oauth_off_for_stdio(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpServerTestRequest
+
+    _enable(monkeypatch)
+    captured = {}
+
+    async def capture_probe(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", capture_probe)
+    result = asyncio.run(
+        routes_mcp.test_mcp_server(
+            McpServerTestRequest(url = "python server.py", use_oauth = True),
+            current_subject = "u",
+        )
+    )
+
+    assert result.ok is True
+    assert captured["use_oauth"] is False
+    assert captured["timeout"] == mcp_client.probe_timeout("python server.py", False)
+
+
 def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate

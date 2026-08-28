@@ -455,12 +455,13 @@ async def test_mcp_server(
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
+    use_oauth = payload.use_oauth and not is_stdio(url)
     try:
         tools = await list_tools_async(
             url = url,
             headers = headers,
-            timeout = probe_timeout(url, payload.use_oauth),
-            use_oauth = payload.use_oauth,
+            timeout = probe_timeout(url, use_oauth),
+            use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
