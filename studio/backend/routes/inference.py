@@ -67,6 +67,10 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.memory_contract import (
+    build_memory_estimate,
+    project_estimate_memory_response,
+)
 from core.inference.stream_errors import LlamaStreamError
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
@@ -719,6 +723,20 @@ def _rolling_context_policy(payload) -> Optional[str]:
     return policy if policy == "truncate_oldest" else None
 
 
+def _request_context_policy(payload) -> Optional[str]:
+    requested = getattr(payload, "context_policy", None)
+    if isinstance(requested, str):
+        value = requested.strip().lower()
+        if value in ("checkpoint", "rolling"):
+            return value
+    return None
+
+
+def _request_compaction_headroom_ratio(payload) -> Optional[float]:
+    from core.inference.context_window import clamp_compaction_headroom_ratio
+    return clamp_compaction_headroom_ratio(getattr(payload, "compaction_headroom_ratio", None))
+
+
 def _overflow_truncation_requested(payload) -> bool:
     """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
     for clients that cannot send custom fields) opted into truncation."""
@@ -1217,19 +1235,42 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     )
 
 
-def _stats_finish_reason(stats, default: str = "stop") -> str:
+def _stats_finish_reason(
+    stats,
+    default: str = "stop",
+    *,
+    token_budget: int | None = None,
+) -> str:
     """``"length"`` when the backend reports the turn ran out of token budget.
 
     A backend that names its own reason is believed: MLX decides between a stop
     token and exhaustion from the last token it sampled, which a count at the cap
-    cannot distinguish. The in-process backends instead fill ``truncated``, and a
-    backend reporting neither keeps ``default``.
+    cannot distinguish. The in-process backends instead fill ``truncated``. A caller
+    that knows its backend reports ``stop`` at the cap may also supply the effective
+    token budget; every other path keeps ``default``.
     """
     if not isinstance(stats, dict):
         return default
     if stats.get("finish_reason") in ("stop", "length"):
         return stats["finish_reason"]
-    return "length" if stats.get("truncated") else default
+    if stats.get("truncated"):
+        return "length"
+    usage = stats.get("usage")
+    completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    if (
+        token_budget is not None
+        and isinstance(completion_tokens, int)
+        and not isinstance(completion_tokens, bool)
+        and completion_tokens >= token_budget
+    ):
+        return "length"
+    return default
+
+
+def _safetensors_finish_reason(stats, payload, *, is_mlx: bool, durable_run: bool) -> str:
+    """Normalize MLX's stop-at-cap only for server-owned Studio runs."""
+    token_budget = _effective_openai_max_tokens(payload) if is_mlx and durable_run else None
+    return _stats_finish_reason(stats, token_budget = token_budget)
 
 
 def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:
@@ -1392,6 +1433,7 @@ try:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
+        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
@@ -1447,6 +1489,7 @@ except ImportError:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
+        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
@@ -1595,23 +1638,159 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     return extra
 
 
-def _openai_llama_admission_media_tokens(payload) -> int:
-    """Media the request carries in Unsloth's legacy top-level fields, in tokens.
+# An upper bound per image, not an estimate: under-reserving hands out a slot the cache
+# cannot back, which is the overcommit #9392 exists to stop.
+#
+# 4096 is llama.cpp's default Qwen-VL embedding cap (the projector resizes to its own
+# pixel limits, so transport size never enters into it), but mtmd wraps the embeddings
+# in delimiters. Measured on llama-server b10639: 4098 for a 2048x2048 image on
+# Qwen3-VL-4B, 258 on Gemma 3 4B. The wrapper allowance is far above the two measured
+# so longer delimiters still fit. Only the DEFAULT, though: a load may raise the cap
+# (`_openai_llama_admission_image_tokens`), and a projector whose embeddings exceed it
+# on their own (tiling or multi-crop families) still wants an allowance read off the
+# loaded mmproj rather than a bigger number here.
+_OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP = 4096
+_OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS = 128
+_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
+    _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+)
 
-    Unsloth's own composer sends every attachment as ``image_base64`` /
-    ``audio_base64`` / ``video_base64``, never as ``messages`` content parts, and the
-    generation path splices them into the prompt AFTER this estimate is taken
-    (``_openai_messages_for_gguf_chat``, ``_inject_audio_part``,
-    ``_inject_video_part``). Charging only ``messages`` therefore priced an image at
-    zero while llama.cpp's mtmd embeddings occupy real KV positions, so two
-    media-heavy chats with a line of text each were admitted against a cache that
-    holds one.
 
-    Sized as the same media inlined as a data URL is already sized, so the two
-    spellings of one request cost the same rather than 30x apart.
+def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
+    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
+
+    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``.
+    """
+    args = [str(arg) for arg in (extra_args or ())]
+    found = None
+    for index, raw in enumerate(args):
+        if raw.startswith("--image-max-tokens="):
+            value = raw.partition("=")[2]
+        elif raw == "--image-max-tokens" and index + 1 < len(args):
+            value = args[index + 1]
+        else:
+            continue
+        parsed = _positive_int_or_none(value)
+        if parsed is not None:
+            found = parsed
+    return found
+
+
+# Embeddings one image may become, per projector family, from llama.cpp's own
+# `set_limit_image_tokens` calls in tools/mtmd/clip.cpp; the keys are the
+# `clip.projector_type` strings in clip-impl.h, which is what the mmproj GGUF carries.
+# There is no universal default -- `--image-max-tokens` documents itself as "read from
+# model" -- and the spread is three orders of magnitude, so assuming any one number
+# under-reserves somebody. A family absent here falls back to the default ceiling
+# below, which is the pre-existing behaviour rather than a new guess.
+_MMPROJ_IMAGE_TOKEN_MAX = {
+    "qwen2vl_merger": 4096,
+    "qwen2.5vl_merger": 4096,
+    "qwen3vl_merger": 4096,
+    "glm4v": 4096,
+    "kimik25": 4096,
+    "muse-glimmer": 4096,
+    "youtuvl": 62500,
+    "hunyuanvl": 16384,
+    "pixtral": 1024,
+    "lightonocr": 1024,
+    "kimivl": 1024,
+    "minimax_m3": 576,
+    "gemma4v": 280,
+    "gemma4uv": 280,
+    "lfm2": 256,
+}
+
+
+def _openai_llama_admission_image_tokens(llama_backend) -> int:
+    """Per-image KV allowance for the backend that is actually running.
+
+    Two things move the ceiling off the default. The loaded projector sets its own:
+    measured on b10639, a max-resolution image is 4098 KV positions on Qwen3-VL-4B and
+    258 on Gemma 3 4B, and clip.cpp's own table runs from 256 (lfm2) to 62500 (youtuvl).
+    And ``--image-max-tokens`` is not an Unsloth-managed flag, so ``llama_extra_args``
+    forwards one verbatim: with ``--image-max-tokens 8192`` that same Qwen3-VL image
+    costs 8102.
+
+    Takes the LARGER of the two rather than trusting the flag, because llama-server
+    applies it only to dynamic-resolution projectors -- a low cap against a fixed
+    resolution one is ignored, and believing it would reserve less than the image costs.
+    Over-reserving is the safe direction; under-reserving hands out a slot the cache
+    cannot back.
+    """
+    projector = getattr(llama_backend, "_mmproj_projector_type", None)
+    known = _MMPROJ_IMAGE_TOKEN_MAX.get(str(projector).strip().lower()) if projector else None
+    cap = max(
+        known or _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP,
+        _extra_args_image_max_tokens(getattr(llama_backend, "_extra_args", None)) or 0,
+    )
+    return cap + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+
+
+def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
+    """Remove image bytes before estimating the textual part of a prompt.
+
+    mtmd turns an image into model-specific embedding tokens, so its base64 transport
+    is neither prompt text nor a proxy for that count. Keep each image part's shape for
+    the JSON estimate and return the count, so the caller can add a bounded allowance.
+    """
+    estimate_messages = []
+    image_parts = 0
+    for message in messages:
+        # exclude_none like every other dump here, including the generation paths this
+        # predicts: the five unset optionals on ChatMessage otherwise serialise as
+        # `"name": null` and get priced as prompt text (34 tokens for a two-key message
+        # against 8), reserving KV for punctuation that is never sent.
+        message_dict = (
+            message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        )
+        estimate_message = dict(message_dict)
+        content = message_dict.get("content")
+        if isinstance(content, list):
+            estimate_content = []
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    estimate_content.append(part)
+                    continue
+
+                image_parts += 1
+                image_url = part.get("image_url")
+                compact_image_url = {"url": "[image]"}
+                if isinstance(image_url, dict) and image_url.get("detail") is not None:
+                    compact_image_url["detail"] = image_url["detail"]
+                estimate_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": compact_image_url,
+                    }
+                )
+            estimate_message["content"] = estimate_content
+        estimate_messages.append(estimate_message)
+    return estimate_messages, image_parts
+
+
+def _openai_llama_admission_media_tokens(
+    payload,
+    *,
+    message_image_parts: int = 0,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+) -> int:
+    """Estimate media KV usage without charging transport bytes as prompt tokens.
+
+    Charges the legacy top-level image on exactly the condition both builders splice it
+    on, ``_legacy_image_is_distinct``: Studio echoes one image into both spellings, so
+    charging that twice reserves it twice, while a legacy image the messages do not
+    already carry is a second image really sent. The allowance is per-image rather than
+    per-byte because the real mtmd count follows the loaded projector, not base64 length.
+
+    Audio and video keep the old top-level accounting until they have a model-specific
+    estimate; this is scoped to the image path that regressed vision concurrency.
     """
     extra = 0
-    for attribute in ("image_base64", "audio_base64", "video_base64"):
+    extra += max(0, message_image_parts) * image_tokens
+    if _legacy_image_is_distinct(payload):
+        extra += image_tokens
+    for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
@@ -1624,6 +1803,7 @@ def _openai_llama_admission_tokens(
     budget: Optional[int],
     capacity: int,
     tool_loop: bool = False,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -1640,11 +1820,16 @@ def _openai_llama_admission_tokens(
     messages = getattr(payload, "messages", None)
     if isinstance(messages, list) and messages:
         try:
-            prompt_tokens = estimate_messages_tokens_dense(
-                [m if isinstance(m, dict) else m.model_dump() for m in messages]
+            estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+                messages
             )
+            prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-            prompt_tokens += _openai_llama_admission_media_tokens(payload)
+            prompt_tokens += _openai_llama_admission_media_tokens(
+                payload,
+                message_image_parts = message_image_parts,
+                image_tokens = image_tokens,
+            )
         except Exception:
             prompt_tokens = None
     else:
@@ -1713,6 +1898,7 @@ def _openai_llama_admission_reserve(
             budget = budget,
             capacity = capacity,
             tool_loop = tool_loop,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
         if payload is not None
         else None,
@@ -2522,6 +2708,8 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    EstimateMemoryRequest,
+    EstimateMemoryResponse,
     TransformersUpgradeInfo,
     TransformersUpgradeCheckRequest,
     TransformersUpgradeCheckResponse,
@@ -3225,6 +3413,11 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     """
     if getattr(payload, "mcp_enabled", False):
         return False
+    # Armed research appends Studio's own deep_research past every filter below, and no
+    # provider can run it, so such a selection is never purely hosted. Without this the
+    # request proxies through, the tool is never offered and arming research does nothing.
+    if getattr(payload, "deep_research_armed", False):
+        return False
     enabled = getattr(payload, "enabled_tools", None)
     # None means "every local tool"; an empty list selects nothing and never
     # reaches the loop anyway. Neither is a hosted-tool request.
@@ -3255,7 +3448,7 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     return True
 
 
-_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
+_LEGACY_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
 
 
 def _tool_call_names(message) -> list[Optional[str]]:
@@ -3276,33 +3469,40 @@ def _tool_call_names(message) -> list[Optional[str]]:
     return names
 
 
-def _only_studio_memory_tool_history(payload) -> bool:
-    """True when the request's ONLY tool history is Unsloth's own conversation memory.
+def _only_studio_tool_history(payload) -> bool:
+    """True when the request's ONLY tool history was produced by Unsloth's own loop.
 
-    Once the model uses `search_conversation`, the branch keeps an assistant `tool_calls`
-    turn and its `role="tool"` result and the client replays both forever. Read as a CLIENT
-    tool contract, that history routes every later turn to the llama-server passthrough,
-    which runs no context fit, so the epoch, the carried-forward block and the automatic
-    recall vanish one turn after the compaction that created them. It is Unsloth's own
-    read-only tool run by Unsloth's own loop, so it must route as a tools-on Unsloth chat.
+    Once a Studio-local tool runs, the branch keeps an assistant `tool_calls` turn and its
+    `role="tool"` result and the client replays both forever. Read as a CLIENT tool
+    contract, that history routes every later turn to the llama-server passthrough, which
+    runs no context fit, so the epoch, the carried-forward block and the automatic recall
+    vanish one turn after the compaction that created them.
 
-    Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
-    any other tool name means "not ours", so a real client tool loop is never claimed.
+    Current Studio clients say so directly: `studio_tool_history` is set only after every
+    serialized call was checked for local provenance. Older clients send no marker, so the
+    `search_conversation`-only fallback below stays, deliberately strict -- an unnamed call
+    or result, or any other tool name, means "not ours", so a real client tool loop is
+    never claimed.
+
+    A caller-supplied `tools` catalog is a client contract either way.
     """
     if getattr(payload, "tools", None):
         return False
+    messages = getattr(payload, "messages", None) or []
+    if getattr(payload, "studio_tool_history", False):
+        return _has_openai_tool_history(messages)
     saw_call = False
-    for message in getattr(payload, "messages", None) or []:
+    for message in messages:
         role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
         for name in _tool_call_names(message):
             saw_call = True
-            if name not in _STUDIO_MEMORY_TOOLS:
+            if name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
         if role == "tool":
             result_name = (
                 message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
             )
-            if result_name not in _STUDIO_MEMORY_TOOLS:
+            if result_name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
     return saw_call
 
@@ -3320,9 +3520,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
-    ) or (
-        _has_openai_tool_history(payload.messages) and not _only_studio_memory_tool_history(payload)
-    )
+    ) or (_has_openai_tool_history(payload.messages) and not _only_studio_tool_history(payload))
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True
@@ -3547,6 +3745,7 @@ class _TrackedCancel:
         event: threading.Event,
         *keys,
         thread_id = None,
+        run_id = None,
         model = None,
         kind = "chat",
     ):
@@ -3555,7 +3754,7 @@ class _TrackedCancel:
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, model = model, kind = kind
+            event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
         )
 
     @classmethod
@@ -3565,6 +3764,7 @@ class _TrackedCancel:
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
+            run_id = getattr(payload, "generation_run_id", None),
             model = getattr(payload, "model", None),
         )
 
@@ -3918,6 +4118,22 @@ def _full_access_tip(code_tools: list[str]) -> str:
     )
 
 
+# Armed Deep Research. Stated outright because the schema alone does not move a small model
+# off its prior: asked about 2026 it answers from 2024 training data with no sign it is
+# stale, and the base nudge's "otherwise answer normally" reads as permission to do so.
+# The exception is worded without "greetings" on purpose: with that word in the prompt a
+# 1.7B model opens a fresh chat by greeting the user instead of researching the question
+# (0/4 first-turn calls, against 4/4 with this wording).
+_TOOL_RESEARCH_TIP = (
+    "Deep Research is turned on for this conversation. For any question about the world "
+    "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
+    "changed since your training -- call deep_research instead of answering from memory, "
+    "even when you think you know the answer: the user asked for a researched, cited "
+    "report and your knowledge has a cutoff. If a message has no question in it, such as a "
+    "hello, a thanks, or a remark about you, reply normally. If a topic is too vague to "
+    "research well, ask one short clarifying question first."
+)
+
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
@@ -3952,10 +4168,15 @@ def _build_tool_action_nudge(
     code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
-    if not (has_web or has_code or has_artifact):
+    has_research = "deep_research" in tool_names
+    if not (has_web or has_code or has_artifact or has_research):
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
+    date_line = f"The current date is {_date.today().isoformat()}. "
+    if not (has_web or has_code or has_artifact):
+        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
+        return date_line + _TOOL_RESEARCH_TIP
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -3970,12 +4191,9 @@ def _build_tool_action_nudge(
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
-    return (
-        f"The current date is {_date.today().isoformat()}. "
-        + _TOOL_BASE_NUDGE
-        + " "
-        + " ".join(tool_tip_parts)
-    )
+    if has_research:
+        tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    return date_line + _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
 
 # Nudge appended when the RAG knowledge-base tool is active: ground answers in
@@ -4381,7 +4599,7 @@ async def _select_request_tools(
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
-    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search())):
+    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search(payload))):
         tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
         if not tools_on:
             # After a reset, search_conversation is the only route back to what was
@@ -4397,6 +4615,13 @@ async def _select_request_tools(
         tools = apply_full_access_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
+    # getattr: callers hand in lighter payload objects than the request models, not all of
+    # which know this field.
+    if getattr(payload, "deep_research_armed", None):
+        # Appended past every filter above, including the tools_on gate: arming research in the
+        # composer is what offers this tool, and it is the only way the model can start a run.
+        from core.inference.tools import DEEP_RESEARCH_TOOL
+        tools = tools + [DEEP_RESEARCH_TOOL]
     return tools
 
 
@@ -4444,11 +4669,17 @@ _CHECKPOINT_SESSION_NUDGE = (
 )
 
 
-def _checkpoint_needs_search() -> bool:
+def _checkpoint_needs_search(payload = None) -> bool:
     """Whether the context policy makes search_conversation load-bearing rather than extra.
 
-    Read at call time, so flipping UNSLOTH_CONTEXT_POLICY needs no restart.
+    ``context_policy`` on the request overrides UNSLOTH_CONTEXT_POLICY, matching the
+    fitter, so tool admission and the compaction nudge follow the same effective policy.
     """
+    requested = _request_context_policy(payload)
+    if requested == "checkpoint":
+        return True
+    if requested == "rolling":
+        return False
     try:
         from core.inference import checkpoint
         return checkpoint.enabled()
@@ -4456,11 +4687,26 @@ def _checkpoint_needs_search() -> bool:
         return False
 
 
+def _checkpoint_recall_may_enable_tools(payload) -> bool:
+    """Whether checkpoint recovery can force the internal recall tool loop."""
+    from state.tool_policy import get_tool_policy
+    return bool(
+        get_tool_policy() is not False
+        and _rolling_context_policy(payload) is not None
+        and _checkpoint_needs_search(payload)
+        and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+        and _thread_has_checkpoint(
+            getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+        )
+    )
+
+
 def _apply_compaction_nudge(
     nudge: str,
     tools: list[dict],
     *,
     checkpoint_fitted: bool = False,
+    payload = None,
 ) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
@@ -4476,7 +4722,7 @@ def _apply_compaction_nudge(
     if "search_conversation" not in tool_names:
         return nudge
     text = _COMPACTED_SESSION_NUDGE
-    if checkpoint_fitted and _checkpoint_needs_search():
+    if checkpoint_fitted and _checkpoint_needs_search(payload):
         text = text + " " + _CHECKPOINT_SESSION_NUDGE
     if not nudge:
         return text
@@ -5848,6 +6094,10 @@ def _gguf_load_response(
         inference = load_inference_config(
             inference_identifier or llama_backend.model_identifier or model
         ),
+        # Advisory, and None on nearly every load. Recorded by load_model when the
+        # weights outgrow fast memory, so the client can say why generation is slow.
+        # getattr: older/custom backend doubles predate this additive field.
+        memory_warning = getattr(llama_backend, "last_load_warning", None),
         **_llama_runtime_fields(llama_backend),
     )
 
@@ -7015,6 +7265,16 @@ async def _maybe_auto_switch_model(
         preview_swapped_since_entry,
     )
 
+    generation_cancel_event = getattr(
+        getattr(fastapi_request, "state", None),
+        "generation_cancel_event",
+        None,
+    )
+
+    def _raise_if_generation_cancelled() -> None:
+        if generation_cancel_event is not None and generation_cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Generation cancelled")
+
     # Passed auth and reached local inference, so count it in the admitted-inference tally
     # the preview busy guard uses instead of raw _inflight (no-op for preview scopes).
     _swap_scope = getattr(fastapi_request, "scope", None)
@@ -7083,6 +7343,7 @@ async def _maybe_auto_switch_model(
     async def _resolve_and_switch() -> None:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
+        _raise_if_generation_cancelled()
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
@@ -7288,12 +7549,18 @@ async def _maybe_auto_switch_model(
                         _switch_prior_marker = _get_preview_resident()
                         _switch_loaded_ok = False
                         try:
+                            durable_cancel_kw = (
+                                {"load_cancel_event": generation_cancel_event}
+                                if generation_cancel_event is not None
+                                else {}
+                            )
                             try:
                                 await _load_model_impl(
                                     LoadRequest(**load_kwargs),
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
+                                    **durable_cancel_kw,
                                 )
                             except HTTPException as exc:
                                 # The pre-flight check cannot mirror every loader gpu_ids rule,
@@ -7316,7 +7583,9 @@ async def _maybe_auto_switch_model(
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
+                                    **durable_cancel_kw,
                                 )
+                            _raise_if_generation_cancelled()
                             _switch_loaded_ok = True
                         finally:
                             if not claim_resident:
@@ -7984,8 +8253,66 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
 # truncated header drops the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
 _ASSUMED_MAX_VOCAB = 262144
 
+# Canonical speculative modes whose launch opens no drafter file at all:
+# _build_speculative_flags returns out of each before it reaches --model-draft.
+_SPEC_MODES_WITHOUT_A_DRAFTER = frozenset({"off", "ngram", "ngram-simple"})
 
-def _estimate_gguf_kv_gb(
+
+class _GgufRuntimeBytes(NamedTuple):
+    """The context-dependent half of a GGUF's footprint, itemized.
+
+    ``_estimate_gguf_kv_gb`` sums this into the single number the training guard
+    needs; the Load-Model estimate shows the items separately.
+    """
+
+    kv_bytes: int
+    compute_bytes: int
+    # False when the header lacks the dims _can_estimate_kv() needs: kv_bytes is
+    # then "unknown", not "none". The guard treats them alike; the UI must not.
+    kv_estimable: bool
+    # What was actually priced, after the ctx override and the slot/cache clamps.
+    n_ctx: int
+    cache_type_kv: Optional[str]
+    n_parallel: int
+    # GGUF block_count, carried out of the header walk this already paid for.
+    layer_count: Optional[int] = None
+    # The cache layout this was priced with, for a caller sizing a second cache that
+    # the same launch allocates (a separate drafter's). Resolving them twice is how
+    # the two drift apart.
+    swa_full: bool = False
+    kv_unified: bool = True
+    n_ubatch: Optional[int] = None
+    # The part of kv_bytes that is per-slot context checkpoints. Inside kv_bytes, not
+    # beside it, so the training guard's total is unchanged; carried separately because
+    # it is the one part of the cache that never reaches the GPU. llama.cpp keeps a
+    # checkpoint in common_prompt_checkpoint's std::vector<uint8_t> buffers, host heap,
+    # bounded by --cache-ram; Studio's own load schema says "Each costs host memory".
+    kv_checkpoint_bytes: int = 0
+
+
+_GGUF_RUNTIME_UNKNOWN = _GgufRuntimeBytes(0, 0, False, 0, None, 1)
+
+
+def _inherited_ctx_size() -> int:
+    """A positive inherited ``LLAMA_ARG_CTX_SIZE``, or 0.
+
+    The launch keeps one: it drops the inherited context only when it is ZERO and the
+    auto-layers path needs --fit to run, and says so outright -- "a positive inherited
+    context stays the legitimate way to set one". So with no -c anywhere and no panel
+    value, the child runs at the environment's length, not the header's native one.
+    Falling straight through to native priced a 4k load at 262k, which is the KV cache
+    off by two orders of magnitude in the direction that refuses the load.
+    """
+    raw = (os.environ.get("LLAMA_ARG_CTX_SIZE") or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _gguf_runtime_bytes(
     gguf_path: str,
     max_seq_length: int,
     llama_extra_args: Optional[list[str]] = None,
@@ -7997,33 +8324,74 @@ def _estimate_gguf_kv_gb(
     ctx_checkpoints: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
-) -> float:
-    """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
+) -> _GgufRuntimeBytes:
+    """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
     micro-batch, using the effective cache settings and managed launcher
     defaults. Compute buffers scale with the split the loader budgets: tensor
     mode reserves them on every device, a multi-GPU layer split replicates the
     context-linear term; ``is_diffusion`` skips them, since the diffusion
-    runner ignores the llama-server batch flags. 0 if metadata is unreadable."""
+    runner ignores the llama-server batch flags. All-zero and not estimable if
+    metadata is unreadable.
+
+    ``ctx_last_wins`` swaps that maximum for what the launch will really run
+    (``resolve_requested_ctx``). The default is the coexistence guard's rule, which
+    over-reserves on purpose; a panel quoting a number to a user wants the other
+    one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
         from core.inference.llama_server_args import (
             parse_ctx_override,
             resolve_ctx_checkpoints,
+            resolve_requested_ctx,
         )
 
-        probe = LlamaCppBackend()
+        probe = _probe_backend()
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
+        # Carried out even when the cache cannot be sized: block_count is a separate
+        # key and is usually there, and a caller that loses it prices a manual offload
+        # split as fully GPU-resident (_gguf_offloaded_layer_fraction has nothing to
+        # scale against and answers 1.0), which is the wrong answer at --gpu-layers 0.
+        unknown = _GGUF_RUNTIME_UNKNOWN._replace(
+            layer_count = getattr(probe, "_n_layers", None) or None
+        )
         if not probe._can_estimate_kv():
-            return 0.0
+            return unknown
         try:
-            ctx_override = parse_ctx_override(llama_extra_args) or 0
+            _raw_ctx_override = parse_ctx_override(llama_extra_args)
         except Exception:
-            ctx_override = 0  # malformed extras are rejected upstream; fall back
-        ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
+            _raw_ctx_override = None  # malformed extras are rejected upstream; fall back
+        ctx_override = _raw_ctx_override or 0
+        # An explicit "-c 0" is a REQUEST for the native context, not the absence of
+        # one, and llama.cpp reads argv after the environment so the zero wins at the
+        # child. Folding the two together let an inherited LLAMA_ARG_CTX_SIZE=4096
+        # answer for a launch that opens at the header's 262k, which is the KV cache
+        # understated by two orders of magnitude in the direction that says "fits".
+        _extras_ask_for_native_ctx = _raw_ctx_override == 0
+        if ctx_last_wins:
+            # What the launch runs, through load_model's own resolver: the extras
+            # value wins whichever way it moves. The maximum below is the coexistence
+            # guard's conservative rule, and quoting it to a user prices a context a
+            # smaller -c means they will never get.
+            try:
+                ctx = resolve_requested_ctx(llama_extra_args, max_seq_length or 0)
+            except Exception:
+                ctx = max_seq_length or 0
+            ctx = (
+                ctx
+                or (0 if _extras_ask_for_native_ctx else _inherited_ctx_size())
+                or (probe._context_length or 0)
+            )
+        else:
+            ctx = (
+                max(max_seq_length or 0, ctx_override)
+                or (0 if _extras_ask_for_native_ctx else _inherited_ctx_size())
+                or (probe._context_length or 0)
+            )
         if ctx <= 0:
-            return 0.0
+            return unknown
         slots = max(1, n_parallel or 1)
         planned_cache_types = _planned_main_cache_types(cache_type_kv, llama_extra_args)
         # KV bytes take the heavier axis (conservative for storage); the dequant
@@ -8031,6 +8399,15 @@ def _estimate_gguf_kv_gb(
         # the heavier scalar hides a paired q4_0 behind an f16.
         cache_type_for_budget = max(planned_cache_types, key = _kv_bytes_per_elem)
         cache_type_for_scratch = _planned_scratch_cache_type(cache_type_kv, llama_extra_args)
+        # A quantized V cache is the one layout where flash attention is not a choice:
+        # llama.cpp turns it on itself ("enabling flash_attn since it is required for
+        # quantized V cache") and refuses the load without it. flash_attn = False there
+        # is not conservative, it prices a launch that cannot happen -- the False arm
+        # pads V to f16 and charges the whole quantized saving back. Measured on
+        # llama-server b10632, Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved
+        # against 1008 MiB allocated, identical on the CPU and Vulkan builds.
+        planned_v_type = planned_cache_types[1]
+        v_forces_flash_attn = planned_v_type not in {"f16", "bf16", "f32"}
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -8061,30 +8438,112 @@ def _estimate_gguf_kv_gb(
                 n_batch = _emitted_n_batch(n_batch, slots),
                 n_ubatch = n_ubatch,
             )
-        managed_kv_unified = bool(
-            slots > 1
-            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
+        # Only when it can change an answer. The probe shells out to llama-server, and
+        # the previous expression short-circuited it away at one slot; calling it
+        # unconditionally put a failure-prone call on every single-slot estimate, and
+        # a raise here loses the whole runtime to the unknown fallback.
+        _kv_caps = LlamaCppBackend.probe_server_capabilities() if slots > 1 else {}
+        _supports_kv_unified = bool(_kv_caps.get("supports_kv_unified", False))
+        if slots > 1 and _kv_caps.get("found") and not _supports_kv_unified:
+            # load_model drops to one slot on a build without --kv-unified, because an
+            # explicit --parallel N there splits -c into N windows and would quarter
+            # every context for a feature the build cannot serve. It does that BEFORE
+            # sizing, so keeping the requested count here scaled the compute buffers,
+            # the SWA layout and the reported slot count to a process that will not
+            # launch.
+            slots = 1
+        managed_kv_unified = bool(slots > 1 and _supports_kv_unified)
+        swa_full = _swa_full_from_args_or_env(llama_extra_args)
+        kv_unified = _kv_unified_from_args(
+            llama_extra_args,
+            default = managed_kv_unified,
+        )
+        _resolved_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)
+        if _resolved_checkpoints:
+            # A build predating both --ctx-checkpoints aliases has the request skipped
+            # by the command builder, which logs and moves on, so charging for the
+            # snapshots reserves memory the process never allocates. Same capability
+            # probe the builder itself asks, and the same default-deny on an
+            # unanswerable one: this figure also guards a running training job, so an
+            # unreadable probe keeps the charge rather than dropping it.
+            try:
+                _cc_caps = LlamaCppBackend.probe_server_capabilities()
+                # ``found`` is what separates "this build lacks the flag" from "no
+                # binary was read": the defaults dict reports every capability False,
+                # so keying on the flag alone would drop the charge whenever the probe
+                # simply could not run.
+                if _cc_caps.get("found") and not _cc_caps.get("ctx_checkpoints_flag"):
+                    _resolved_checkpoints = 0
+            except Exception as _cc_exc:
+                logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # load_model appends --flash-attn on to every launch whose build has the flag,
+        # so the default here is ON, not off. The false arm pads variable-width V
+        # tensors to the model-wide maximum (_max_kv_value_width), which on an
+        # architecture whose global and SWA layers disagree about n_embd_v_gqa
+        # inflates the whole cache and can call a load that fits an overflow. Resolved
+        # the way the launch resolves it: the managed default, narrowed by the
+        # capability probe, then llama.cpp's own env-then-last-wins-argv rule. A
+        # quantized V still forces it on top of all that, because llama-context.cpp
+        # turns it on itself rather than refusing the load.
+        _fa_default = True
+        try:
+            _fa_caps = LlamaCppBackend.probe_server_capabilities()
+            # Same ``found`` test as the checkpoint probe above: the defaults dict
+            # reports nothing supported, so keying on the flag alone would size every
+            # unprobed host as flash-attention-less.
+            if _fa_caps.get("found") and not _fa_caps.get("supports_flash_attn", True):
+                _fa_default = False
+        except Exception as _fa_exc:
+            logger.debug("flash-attention capability probe failed: %s", _fa_exc)
+        flash_attn = (
+            _flash_attn_enabled_from_args(llama_extra_args, default = _fa_default, env = os.environ)
+            or v_forces_flash_attn
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
             n_parallel = slots,
-            swa_full = _swa_full_from_args_or_env(llama_extra_args),
-            kv_unified = _kv_unified_from_args(
-                llama_extra_args,
-                default = managed_kv_unified,
-            ),
+            swa_full = swa_full,
+            kv_unified = kv_unified,
             n_ubatch = effective_ubatch,
             # Extras beat the field, as at launch: the control emits its flag
             # before them. Per-slot SWA snapshots scale with the slot's context, so
             # a load asking for them needs materially more memory than one that
             # does not.
-            ctx_checkpoints = resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints),
-            flash_attn = False,
+            ctx_checkpoints = _resolved_checkpoints,
+            flash_attn = flash_attn,
+        )
+        # The checkpoint share of that cache, by difference rather than by re-deriving
+        # the SWA layer walk: the snapshots are the only term that separates the two
+        # calls, and asking the same function twice cannot drift from it. Skipped
+        # entirely when none were asked for, which is the common case.
+        kv_checkpoint_bytes = 0
+        if _resolved_checkpoints:
+            _kv_without = probe._estimate_kv_cache_bytes(
+                ctx,
+                cache_type_for_budget,
+                n_parallel = slots,
+                swa_full = swa_full,
+                kv_unified = kv_unified,
+                n_ubatch = effective_ubatch,
+                ctx_checkpoints = 0,
+                flash_attn = flash_attn,
+            )
+            kv_checkpoint_bytes = max(0, int(kv) - int(_kv_without))
+        _resolved = dict(
+            kv_checkpoint_bytes = kv_checkpoint_bytes,
+            kv_estimable = True,
+            n_ctx = ctx,
+            cache_type_kv = cache_type_for_budget,
+            n_parallel = slots,
+            layer_count = getattr(probe, "_n_layers", None) or None,
+            swa_full = swa_full,
+            kv_unified = kv_unified,
+            n_ubatch = effective_ubatch,
         )
         # the load reserves ubatch-scaled compute buffers, so they count against training too
         if is_diffusion:
-            return kv / (1024**3)
+            return _GgufRuntimeBytes(kv_bytes = int(kv), compute_bytes = 0, **_resolved)
         devices = max(1, int(n_devices))
 
         def _flat_buffer(per_device_tensor: bool) -> int:
@@ -8151,10 +8610,46 @@ def _estimate_gguf_kv_gb(
             # reserves buffers. Floor at the loader's flat reserve, charged once: it is an
             # invented number, and scaling an invention per device has no basis.
             compute = int(getattr(probe, "_TENSOR_PARALLEL_BUFFER_RESERVE_MIB", 0)) * 1024**2
-        return (kv + compute) / (1024**3)
+        return _GgufRuntimeBytes(kv_bytes = int(kv), compute_bytes = int(compute), **_resolved)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
-        return 0.0
+        return _GGUF_RUNTIME_UNKNOWN
+
+
+def _estimate_gguf_kv_gb(
+    gguf_path: str,
+    max_seq_length: int,
+    llama_extra_args: Optional[list[str]] = None,
+    n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    ctx_checkpoints: Optional[int] = None,
+    n_devices: int = 1,
+    is_diffusion: bool = False,
+    model_identifier: Optional[str] = None,
+) -> float:
+    """``_gguf_runtime_bytes`` summed into GB, for the training guard.
+
+    An unreadable header is 0 GB, as it always was: a cache the guard cannot size
+    must not become a refusal on its own.
+    """
+    runtime = _gguf_runtime_bytes(
+        gguf_path,
+        max_seq_length,
+        llama_extra_args,
+        n_parallel,
+        cache_type_kv,
+        tensor_parallel,
+        n_batch,
+        n_ubatch,
+        ctx_checkpoints = ctx_checkpoints,
+        n_devices = n_devices,
+        is_diffusion = is_diffusion,
+        model_identifier = model_identifier,
+    )
+    return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
 
 
 def _remote_gguf_compute_reserve_gb(
@@ -8199,12 +8694,11 @@ def _remote_gguf_compute_reserve_gb(
         budget_ctx = ctx if ctx > 0 else effective_ubatch
         devices = max(1, int(n_devices))
         # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
-        # times, the same step _compute_buffer_ctx_bytes applies locally; charging
-        # the single-copy rate under-reserved 4x. Tensor mode is already correct
-        # (measured at the single-device rate, replicated per device). n_layers is
-        # None here: the header is unread, so -ngl cannot be resolved, but -ot /
-        # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
-        # same model 409s while remote and loads once cached.
+        # times, as _compute_buffer_ctx_bytes applies locally; the single-copy rate
+        # under-reserved 4x. Tensor mode is already correct. n_layers is None here --
+        # the header is unread, so -ngl cannot be resolved -- but -ot / -ncmoe /
+        # --no-kv-offload / -sm none still register. Without this gate the same model
+        # 409s while remote and loads once cached.
         from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
 
         split_mult = (
@@ -8222,18 +8716,15 @@ def _remote_gguf_compute_reserve_gb(
             * devices
             * split_mult
         )
-        # The mask is only the context-linear half. The flat half needs the dims,
-        # which are unreadable remotely, but its dominant term needs just a vocab
-        # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
-        # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
-        # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
-        # an uncached load that then OOMs the training job it exists to protect.
-        # The activation scratch needs embedding_length and stays uncharged: it is
-        # the small half, and over-reserving here denies the load outright.
-        # Scaled per device only in tensor mode, mirroring the local branch: a
-        # layer split folds the flat buffer in once (_flat_buffer(False)), and
-        # only tensor mode replicates it on every card.
-        # The remote header is unknown, so reserve as if it enables embeddings.
+        # The mask is only the context-linear half. The flat half needs dims that are
+        # unreadable remotely, but its dominant term needs only a vocab ceiling:
+        # llama.cpp reserves n_vocab * ubatch * 4 per slot past the first (every slot
+        # under tensor mode), so n_batch = n_ubatch = 32768 on two slots is ~32 GiB the
+        # mask does not cover, and omitting it let the guard admit an uncached load that
+        # then OOMs the training job. The activation scratch needs embedding_length and
+        # stays uncharged: the small half, and over-reserving denies the load outright.
+        # Scaled per device only in tensor mode, mirroring the local branch. The remote
+        # header is unknown, so reserve as if it enables embeddings.
         _out_slots = max(1, n_parallel)
         out_buffer_bytes = (
             _ASSUMED_MAX_VOCAB
@@ -8262,6 +8753,12 @@ def _estimate_gguf_required_gb(
     n_devices: int = 1,
     is_diffusion: bool = False,
     disable_vision: bool = False,
+    # The panel prices from disk and headers only. A --spec-draft-hf repo is otherwise
+    # sized by LISTING it over the network, which is right for the admission guard (a
+    # running training job is worth one request) and wrong for a row that re-prices on
+    # every settings change. This skips that listing; the caller marks the total a
+    # floor instead, exactly as it already does for a drafter it cannot weigh.
+    local_only: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -8269,6 +8766,7 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _extra_args_device,
             _extra_args_draft_offloaded_to_cpu,
             _extra_args_mtp_draft_path,
             _extra_args_mtp_draft_source,
@@ -8365,6 +8863,15 @@ def _estimate_gguf_required_gb(
             or _extras_own_drafter
             or (_forced_dspark and not _dspark_capable)
             or (_forced_dflash and not _dflash_capable)
+            # Three modes return out of _build_speculative_flags before any
+            # --model-draft is emitted: "off" immediately, "ngram-simple" and "ngram"
+            # after their --spec-type. A model shipping an MTP sidecar was billed for it
+            # in all three, so turning speculation OFF could add a multi-GiB drafter --
+            # the same reasoning the DSpark and DFlash branches already apply.
+            #
+            # Only where the extras have not taken speculation over: `--spec-type
+            # draft-dspark` opens the sidecar whatever the panel field says.
+            or (_spec_mode in _SPEC_MODES_WITHOUT_A_DRAFTER and not _extra_args_own_spec)
         )
 
         def _same_file_key(p: str) -> str:
@@ -8386,13 +8893,12 @@ def _estimate_gguf_required_gb(
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
-        # Vision off means llama_cpp.py resolves no projector, so the guard must not
+        # Vision off means llama_cpp.py resolves no projector, and the guard must not
         # refuse a chat load over bytes it provably does not take -- a constrained
-        # machine is where the switch gets used and where this guard bites. But the
-        # loader keeps an AUDIO-ONLY projector despite the switch, and dropping the
-        # bytes of one that does get opened would admit a load the running training job
-        # cannot afford. So ask the loader's own question of the same file, which is on
-        # disk here. Same gate as the remote branch's include_mmproj below.
+        # machine is where the switch gets used. But the loader keeps an AUDIO-ONLY
+        # projector despite the switch, and dropping bytes that do get opened would
+        # admit a load the running training job cannot afford, so ask the loader's own
+        # question of the file. Same gate as the remote branch's include_mmproj.
         _sized_attrs = ["gguf_mmproj_file"]
         # Whether the CONFIGURED projector is one this launch opens. Bound before the
         # switch so the inherited-projector gate below can read it either way.
@@ -8418,6 +8924,18 @@ def _estimate_gguf_required_gb(
                     logger.debug(f"mmproj capability read failed: {_dv_exc}")
             if not _dv_opens_projector:
                 _sized_attrs = []
+        # A --mmproj in the extras last-wins at the child: the launch emits Studio's
+        # projector and appends the extras after it. So the override is the file that
+        # opens, and it is the one to charge -- the configured one was billed while a
+        # possibly much larger custom projector went free.
+        _mmproj_override_bytes = 0
+        if _sized_attrs == ["gguf_mmproj_file"]:
+            _mmproj_override = _extra_args_device(llama_extra_args, {"--mmproj", "-mm"})
+            if _mmproj_override and Path(_mmproj_override).is_file():
+                _sized_attrs = []
+                _mmproj_override_bytes = LlamaCppBackend._get_gguf_size_bytes(_mmproj_override)
+                total_bytes += _mmproj_override_bytes
+                _sized_keys.add(_same_file_key(_mmproj_override))
         if not _charge_no_drafter:
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")
@@ -8450,67 +8968,59 @@ def _estimate_gguf_required_gb(
                 total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(f))
                 _sized_keys.add(_same_file_key(str(f)))
 
-        # A caller that owns speculation through llama_extra_args names the
-        # drafter with --model-draft. load_model hands that path to llama-server,
-        # so it has to be charged, but it is charged exactly once: the same file
-        # is often the local sidecar discovery already put in gguf_dflash_file /
-        # gguf_dspark_file / gguf_mtp_file, and adding it twice billed a 1.5 GiB
-        # drafter as 3 GiB and refused loads that fit. When the drafter really is
-        # outside the model directory nothing above named it and the charge lands
-        # here. It is a companion either way, never evidence of a local main
-        # weight, so it does not decide which branch below produces the estimate:
-        # a remote repo with a local --model-draft still has to price its weights
-        # through the listing, and returning the drafter alone under-estimated a
-        # load by the whole target model.
-        # A remote one (--spec-draft-hf / -hfd names a repo, never a file) is charged
-        # from its OWN listing: the target's companion scan never sees it, so a target
-        # shipping no sidecar left a multi-GB drafter billed nowhere.
+        # A caller owning speculation through llama_extra_args names the drafter with
+        # --model-draft, which load_model hands to llama-server, so it is charged --
+        # exactly once. That file is often the same one sidecar discovery already put
+        # in gguf_dflash_file / gguf_dspark_file / gguf_mtp_file, and billing it twice
+        # made a 1.5 GiB drafter 3 GiB and refused loads that fit; outside the model
+        # directory nothing above named it and the charge lands here.
+        #
+        # A companion either way, never evidence of a local main weight, so it does not
+        # decide the branch below: a remote repo with a local --model-draft still
+        # prices its weights through the listing. A remote drafter (--spec-draft-hf
+        # names a repo, never a file) is charged from its own listing, since the
+        # target's companion scan never sees it.
         _extras_bytes = 0
-        # The value AND which flag carried it. Draft flags are last-wins, so a repo
-        # id followed by a path leaves a path as the drafter, and pricing that path
-        # as a repository would charge a reserve for something that never loads.
+        # The value AND which flag carried it: draft flags are last-wins, so a repo id
+        # followed by a path leaves a path, and pricing that as a repository charges a
+        # reserve for something that never loads.
         _extras_draft, _extras_draft_is_remote = _extra_args_mtp_draft_source(
             llama_extra_args, env = {}
         )
-        # A host-memory drafter competes for RAM, not for the training job's VRAM.
-        # Charging it is not a safe over-estimate, it is the wrong resource, and it
-        # 409s a load that takes no VRAM for the drafter at all.
+        # A host-memory drafter competes for RAM, not the training job's VRAM. Charging
+        # it is the wrong resource, not a safe over-estimate, and 409s a load that takes
+        # no drafter VRAM at all.
         if _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ):
             _extras_bytes = 0
         elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:
                 _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
-        elif _extras_draft and _extras_draft_is_remote:
+        elif _extras_draft and _extras_draft_is_remote and not local_only:
             _extras_bytes = _remote_drafter_repo_bytes(str(_extras_draft), hf_token = hf_token)
         # else: a local --model-draft that is not on disk, so no drafter loads and
         # none is charged. A repository reserve there 409s a load over a typo.
 
         # A projector this config never named: llama-server reads LLAMA_ARG_MMPROJ
         # straight into params.mmproj.path, so an inherited one loads and takes VRAM
-        # that nothing above charged. Two things stop it, and only two. Unsloth's own
-        # --mmproj overrides the env, argv being applied after set_env, so exactly one
-        # file loads and charging both bills one projector twice. And under the vision
-        # switch the loader keeps only an audio-only file, asked through the loader's
-        # own helper so the two cannot answer differently.
+        # nothing above charged. Exactly two things stop it. Unsloth's own --mmproj
+        # overrides the env (argv is applied after set_env), so one file loads and
+        # charging both bills a projector twice; and under the vision switch the loader
+        # keeps only an audio-only file, asked through the loader's own helper.
         #
-        # NOT the extras opt-out on its own. --no-mmproj / --no-mmproj-auto set
-        # params.no_mmproj, which stops Unsloth resolving a projector of its own and
-        # stops the HF auto-download, but server-context.cpp gates the load on a
-        # non-empty mmproj.path and never reads that field. So an inherited path loads
-        # straight through the opt-out. What the opt-out does do is empty the command
-        # line, which is why it feeds _studio_mmproj_on_argv rather than this gate.
+        # NOT the extras opt-out on its own: --no-mmproj sets params.no_mmproj, which
+        # stops Unsloth resolving one and stops the HF auto-download, but
+        # server-context.cpp gates the load on a non-empty mmproj.path and never reads
+        # that field, so an inherited path loads straight through it. What it does do is
+        # empty the command line, which is why it feeds _studio_mmproj_on_argv.
         #
-        # Added to the return rather than to total_bytes, which decides local-vs-remote
-        # above and must stay the main weight's verdict. The remote branch charges the
-        # repo's own projector instead; an inherited local file alongside a remote repo
-        # is charged nowhere, as before this.
+        # Added to the return, not to total_bytes, which decides local-vs-remote above
+        # and must stay the main weight's verdict. The remote branch charges the repo's
+        # own projector; an inherited local file beside a remote repo is charged
+        # nowhere, as before.
         #
-        # argv overrides the env, but only when there IS argv: a configured projector
-        # the switch suppressed, or extras that skipped the resolve, both leave the
-        # command line empty and let the inherited path load after all. So this asks
-        # what Unsloth actually emits, not merely what the config names -- the same
-        # answer _sized_attrs above was built from, so the two cannot disagree about
-        # which single projector this launch opens.
+        # argv overrides the env only when there IS argv -- a suppressed projector or
+        # extras that skipped the resolve both leave it empty and let the inherited path
+        # load -- so this asks what Unsloth emits, not what the config names.
         _studio_mmproj_on_argv = bool(
             getattr(config, "gguf_mmproj_file", None) and _dv_opens_projector
         )
@@ -8603,6 +9113,1301 @@ def _estimate_gguf_required_gb(
         return None
 
 
+class _GgufMemoryBreakdown(NamedTuple):
+    """What a prospective GGUF load would occupy, itemized for the Load-Model panel.
+
+    ``weights_bytes`` is the files that become resident (weights plus whichever
+    projector and drafter this launch opens) and is the one term that does not move
+    with the settings above it.
+    """
+
+    weights_bytes: int
+    kv_bytes: int
+    compute_bytes: int
+    # A separate drafter's KV and rollback state, kept out of compute_bytes so each
+    # line names one thing.
+    drafter_runtime_bytes: int
+    # How much of that lands on the GPU. Its own figure rather than a placement flag,
+    # because the term is not placed as one piece: under MTP the target-side
+    # verification state follows the TARGET cache while the draft cache follows the
+    # drafter, so --no-kv-offload with a GPU drafter splits it. A boolean would have to
+    # answer for both and would be wrong for one of them.
+    drafter_runtime_gpu_bytes: int
+    # The vision encoder's buffers, about 0.4x the projector file on top of it.
+    projector_runtime_bytes: int
+    # A drafter was charged whose cache could not be sized: --spec-draft-hf names a
+    # repository, whose header is not on this disk to read.
+    drafter_kv_unsized: bool
+    # A pass-through --lora / --control-vector naming a file that could not be stat'd,
+    # so its resident bytes are missing from the total. Same floor marker, same reason.
+    adapters_unsized: bool
+    # Weights + KV + compute, wherever they sit: GPU, host RAM, or a unified pool.
+    total_bytes: int
+    # The part that lands on the GPU under the requested offload.
+    gpu_bytes: int
+    kv_estimable: bool
+    kv_on_gpu: bool
+    n_ctx: int
+    cache_type_kv: Optional[str]
+    n_parallel: int
+    layer_count: Optional[int]
+    gpu_layers: Optional[int]
+
+
+def _gguf_offloaded_layer_fraction(
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    layer_count: Optional[int],
+    extras: Optional[list[str]] = None,
+    *,
+    device_pin_governs: bool = False,
+) -> float:
+    """Share of the weights the requested offload keeps on the GPU, in [0, 1].
+
+    Auto is 1.0: it asks llama.cpp to fit the whole model. Manual scales
+    ``--gpu-layers`` over ``block_count + 1``, the ceiling the slider uses. A count in
+    the extras wins in either mode -- Auto appends them after its own ``-ngl -1`` and
+    Manual folds them into the field -- so pricing the field alone read
+    ``--gpu-layers 0 -ngl 999`` as CPU-only.
+
+    ``--n-cpu-moe`` is NOT modelled: it moves expert tensors, not whole blocks, so a
+    manual MoE offload reads high here, which the panel says out loud.
+    """
+    from core.inference.llama_cpp import _device_selection_is_cpu
+    from core.inference.llama_server_args import parse_gpu_layers_override
+
+    # A --device naming no GPU beats every layer count, so the loader's residency gate
+    # asks this first. Same predicate and same env twin here, or the two disagree.
+    if not device_pin_governs and (
+        _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu()
+    ):
+        return 0.0
+
+    try:
+        override = parse_gpu_layers_override(extras)
+    except ValueError:
+        # Malformed value: llama-server names it better than a guess here would.
+        override = None
+    if override is not None:
+        gpu_layers = override
+    elif gpu_memory_mode != "manual":
+        # Auto emits no -ngl, so an inherited LLAMA_ARG_N_GPU_LAYERS is the only layer
+        # policy the child sees and the fitter will not overrule it: fit.cpp:463 throws
+        # "n_gpu_layers already set by user", downgraded to a warning, and the launch
+        # proceeds with the count as given. -1 and auto are its own default, which is
+        # why _env_fixes_gpu_layers excludes them. The panel answered 1.0 for a launch
+        # running a prefix of the weights out of host RAM.
+        from core.inference.llama_cpp import _env_fixes_gpu_layers
+        if not _env_fixes_gpu_layers(os.environ):
+            return 1.0
+        try:
+            gpu_layers = int(str(os.environ.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip())
+        except ValueError:
+            # llama.cpp's own std::stoi would throw on it and the child would never
+            # start, so there is no placement to model.
+            return 1.0
+    if gpu_layers is None or gpu_layers < 0:
+        return 1.0
+    if gpu_layers == 0:
+        # Answers before the layer count, which zero does not need. An unreadable
+        # header leaves it None, and the shrug below then called a manual
+        # --gpu-layers 0 fully GPU-resident: the opposite of what was asked, in the
+        # direction that says fits. An explicit none is not a partial offload.
+        return 0.0
+    if not layer_count or layer_count <= 0:
+        # No dims to scale against; 1.0 keeps it consistent with Auto.
+        return 1.0
+    return max(0.0, min(1.0, gpu_layers / float(layer_count + 1)))
+
+
+def _probe_backend():
+    """A header-reading LlamaCppBackend that owns no child process.
+
+    ``manages_processes = False`` skips the orphan reap and the atexit registration,
+    which is what makes this safe on every settings change.
+
+    The fallback is for stand-ins that predate the keyword: callers substitute
+    ``LlamaCppBackend`` wholesale, and such a stand-in has no reaper to suppress
+    anyway. Only an unsupported KEYWORD may take it, which is why the signature is
+    bound rather than the exception trusted -- a TypeError from inside the constructor
+    body lands in the same except, and the bare constructor it falls back to is the
+    process-reaping one, so a fault would be answered by silently walking /proc and
+    signalling llama-servers on a route the panel fires on every change.
+    """
+    import inspect
+    try:
+        return LlamaCppBackend(manages_processes = False)
+    except TypeError:
+        try:
+            inspect.signature(LlamaCppBackend).bind(manages_processes = False)
+        except (TypeError, ValueError):
+            # Genuinely does not accept the keyword -- or has no introspectable
+            # signature, where today's behaviour is the safe answer.
+            return LlamaCppBackend()
+        # It bound fine, so the fault came from the body. Let it surface.
+        raise
+
+
+def _manual_keeps_tensor_split(
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    extras: Optional[list[str]] = None,
+) -> bool:
+    """Whether a Manual offload still reaches a tensor launch.
+
+    load_model drops the tensor split twice in Manual mode before anything is
+    budgeted, and neither drop is about how many cards are present:
+
+    * ``gpu_layers == 0`` leaves nothing on the GPU to split, and under the CPU-only
+      mask a ``--split-mode tensor`` survivor aborts the server rather than loading.
+    * Auto layers (the field arrives ``None``, the loader sees ``-1``) hand memory
+      management to llama.cpp ``--fit``, which is incompatible with tensor mode.
+
+    A ``-ngl`` in the extras last-wins into the count first, the way /load translates
+    it into the field before its own drop -- so ``--gpu-layers 0`` with ``-ngl 40``
+    keeps the split, and the field alone would have dropped it. Resolved here rather
+    than by the caller so the panel and the device count cannot disagree: one has
+    already stripped the offload flags by the time it asks, the other has not.
+
+    Auto mode is not ours to downgrade; the planner decides there.
+    """
+    if gpu_memory_mode != "manual":
+        return True
+    from core.inference.llama_server_args import parse_gpu_layers_override
+
+    try:
+        override = parse_gpu_layers_override(extras)
+    except ValueError:
+        # Malformed value: same shrug as _gguf_offloaded_layer_fraction, llama-server
+        # names it better than a guess here would.
+        override = None
+    if override is not None:
+        gpu_layers = override
+    return gpu_layers is not None and gpu_layers >= 1
+
+
+# The gate's three answers. ``_estimate_target_is_on_this_disk`` collapses the last
+# two into True and keeps its old bool contract; the caller that decides whether a
+# resolution may go ONLINE needs them apart, because "yes, it is here" and "I could not
+# tell" are the same fall-through but very different permissions.
+_ESTIMATE_DISK_PRESENT = "present"
+_ESTIMATE_DISK_ABSENT = "absent"
+_ESTIMATE_DISK_UNKNOWN = "unknown"
+
+
+def _estimate_disk_residency(model_identifier: str) -> str:
+    """``present`` / ``absent`` / ``unknown`` for the identifier's local weights.
+
+    Same walk as ``_estimate_target_is_on_this_disk``, which is a thin wrapper over
+    this. Split out only so the unanswerable case stays distinguishable: it is the one
+    the route must not answer with a Hub round trip.
+    """
+    try:
+        from utils.paths import is_local_path
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+    if not model_identifier or not model_identifier.strip():
+        return _ESTIMATE_DISK_UNKNOWN
+    identifier = model_identifier.strip()
+    try:
+        if is_local_path(identifier):
+            return _ESTIMATE_DISK_PRESENT
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+
+    # from_identifier prefixes a bare name, so ask about the id it will actually use.
+    candidates = [identifier]
+    if "/" not in identifier:
+        candidates.append(f"unsloth/{identifier}")
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+        roots = _estimate_hf_cache_roots()
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+    if not roots:
+        return _ESTIMATE_DISK_UNKNOWN
+    try:
+        for root in roots:
+            for candidate in candidates:
+                for _snapshot in _iter_hf_cache_snapshots(candidate, cache_dir = root):
+                    return _ESTIMATE_DISK_PRESENT
+    except Exception:
+        return _ESTIMATE_DISK_UNKNOWN
+    return _ESTIMATE_DISK_ABSENT
+
+
+def _estimate_target_is_on_this_disk(model_identifier: str) -> bool:
+    """Whether this identifier could be priced without leaving the machine.
+
+    A local path always can. A remote repo id only if it is already in an HF cache,
+    since one that is not answers ``not_downloaded`` whatever the resolution finds,
+    while a full identification walks to the Hub and caches what it fetches.
+
+    Every cache root Studio scans, not just the configured one: a repo under the
+    legacy root would read as absent and the row would vanish for a model sitting
+    right there.
+
+    Fail-open on error, so an unanswerable question falls through to the resolution
+    that was happening before -- but never to the network; ``_estimate_disk_residency``
+    keeps "yes" and "cannot tell" apart for the caller that decides that. An
+    unreadable root is not one of those errors: ``_iter_hf_cache_snapshots`` swallows
+    the PermissionError and reports absent, so that case answers False.
+    """
+    return _estimate_disk_residency(model_identifier) != _ESTIMATE_DISK_ABSENT
+
+
+def _estimate_hf_cache_roots() -> list:
+    """Every HF cache root to look in, or [] if that cannot be established.
+
+    Two tiers on purpose. ``hf_cache_roots`` is the authority, but it reaches through
+    ``hub.utils.paths`` into the logging stack, and a caller that cannot complete that
+    import would get [] and, through the fail-open above, a check that is silently
+    inert -- worse than an absent one, because it still reads as present. So fall back
+    to the two roots reachable from ``huggingface_hub`` and this package's settings,
+    losing the legacy root, which is the honest cost of the degraded path.
+    """
+    try:
+        from hub.utils.hf_cache_state import hf_cache_roots
+        roots = [Path(r) for r in hf_cache_roots()]
+        if roots:
+            return roots
+    except Exception:
+        pass
+
+    roots = []
+    seen = set()
+
+    def _add(value) -> None:
+        if not value:
+            return
+        try:
+            path = Path(value)
+            key = str(path.resolve())
+        except OSError:
+            return
+        if key not in seen and path.is_dir():
+            seen.add(key)
+            roots.append(path)
+
+    try:
+        from utils.hf_cache_settings import known_hf_hub_caches
+        for configured in known_hf_hub_caches():
+            _add(configured)
+    except Exception:
+        pass
+    try:
+        from huggingface_hub import constants as _hf_constants
+        _add(getattr(_hf_constants, "HF_HUB_CACHE", None))
+    except Exception:
+        pass
+    return roots
+
+
+def _estimate_token_fingerprint(hf_token: Optional[str]) -> str:
+    """Short non-reversible stand-in for an HF token, for cache keys only.
+
+    A token is a credential; it does not belong in a dict key verbatim.
+    """
+    if not hf_token:
+        return ""
+    return _hashlib.sha256(hf_token.encode("utf-8")).hexdigest()[:16]
+
+
+# Resident-file totals, keyed by what decides WHICH files a launch opens. Not by
+# context or cache type: dragging the slider must not re-list a repository.
+_ESTIMATE_FILES_TTL_SECONDS = 30.0
+_ESTIMATE_FILES_CACHE_MAX = 16
+_estimate_files_cache: "dict[tuple, tuple[float, Optional[float]]]" = {}
+# Shared by both estimate caches. Held only across evict-and-insert, never across a
+# header walk or a resolution, so a slow request cannot block a fast one behind it.
+_ESTIMATE_CACHE_LOCK = threading.Lock()
+# Told apart from None on purpose. Both mean "no config", but they are different
+# answers to the user: None is a resolution that was attempted and failed, which is
+# `unsizable`; this one is a model that is not on this disk, which is `not_downloaded`
+# and was the reason that case reported before the resolution was skipped.
+_ESTIMATE_NOT_ON_DISK = object()
+
+
+def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConfig:
+    """A copy of ``config`` whose GGUF paths name the files already on this disk.
+
+    ``from_identifier`` leaves ``gguf_file`` unset for anything it resolved as a
+    repository, even when the weights are in the HF cache. ``_estimate_gguf_required_gb``
+    branches on that field, so a cached repo was priced from a ``paths-info`` call:
+    a network round trip behind a slider, and nothing at all offline.
+
+    Copied, never mutated: the original lives in a TTL cache.
+
+    Returned unchanged when ``gguf_file`` already names a real file (local-folder and
+    native-pick configs), which keeps a native grant's directory boundary intact.
+    """
+    main = getattr(config, "gguf_file", None)
+    if main and Path(main).is_file():
+        return config
+    from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        detect_dflash_file,
+        detect_dspark_file,
+        detect_mmproj_file,
+        detect_mtp_file,
+    )
+
+    local = replace(config, gguf_file = gguf_path)
+    # Companions sit beside the weight, or one level up in the quant-subdir layout.
+    # Derived by the load path's own helper rather than by taking the weight's parent:
+    # a cached repo that files each quant under its own directory (snapshot/UD-Q4_K_XL/
+    # model-00001-of-00002.gguf) keeps the projector and the drafter at the snapshot
+    # root, and a search_root equal to start_dir gives the detectors nothing to walk up
+    # to, so the estimate silently dropped a 1-2 GB projector and the drafter's runtime.
+    search_root = _local_gguf_companion_search_root(gguf_path, gguf_path)
+    try:
+        if getattr(local, "is_vision", False) and not local.gguf_mmproj_file:
+            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root)
+        if not local.gguf_mtp_file:
+            local.gguf_mtp_file = detect_mtp_file(gguf_path, search_root)
+        if not local.gguf_dspark_file:
+            local.gguf_dspark_file = detect_dspark_file(gguf_path, search_root)
+        if not local.gguf_dflash_file:
+            local.gguf_dflash_file = detect_dflash_file(gguf_path, search_root)
+    except Exception as exc:
+        # An uncounted sidecar is a smaller error than no estimate at all.
+        logger.debug("Companion detection failed for the memory estimate: %s", exc)
+    return local
+
+
+def _gguf_resident_file_gb(
+    config: ModelConfig,
+    *,
+    hf_token: Optional[str] = None,
+    llama_extra_args: Optional[list[str]] = None,
+    speculative_type: Optional[str] = None,
+    disable_vision: bool = False,
+    local_only: bool = False,
+) -> Optional[float]:
+    """GB of files a launch would make resident: weights, projector, drafter.
+
+    Derived from ``_estimate_gguf_required_gb`` by subtracting the context term it
+    adds, rather than re-deriving two hundred lines of file resolution that would
+    drift from it. That function has two arms adding different terms, so subtract the
+    matching one -- a local ``gguf_file`` gets ``_estimate_gguf_kv_gb``, a repository
+    ``_remote_gguf_compute_reserve_gb`` -- and branch on the same condition to keep
+    them paired. Exact, since each arm returns files plus its term. Zero-context
+    throughout, so the same value is added and taken away.
+    """
+    main = getattr(config, "gguf_file", None)
+    local_arm = bool(main and Path(main).is_file())
+    key = (
+        getattr(config, "identifier", None),
+        getattr(config, "gguf_variant", None),
+        str(main or ""),
+        bool(disable_vision),
+        speculative_type or "",
+        tuple(llama_extra_args or ()),
+        # A gated repo resolves per token, so entries must not cross subjects.
+        _estimate_token_fingerprint(hf_token),
+    )
+    # In the key: a local-only answer served to the admission guard would drop a
+    # remote drafter it must charge for.
+    key = (*key, local_only)
+    now = time.monotonic()
+    hit = _estimate_files_cache.get(key)
+    if hit is not None and now - hit[0] < _ESTIMATE_FILES_TTL_SECONDS:
+        return hit[1]
+
+    priced = dict(
+        llama_extra_args = llama_extra_args,
+        speculative_type = speculative_type,
+        disable_vision = disable_vision,
+        hf_token = hf_token,
+        local_only = local_only,
+    )
+    required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
+    if required_gb is None:
+        return None  # deliberately not cached: usually a download still in flight
+    if local_arm:
+        # Same identifier the required-GB arm classifies with, or the two halves of the
+        # subtraction below stop being paired and the weights figure moves with context.
+        context_term_gb = _estimate_gguf_kv_gb(
+            str(main),
+            0,
+            llama_extra_args,
+            model_identifier = getattr(config, "identifier", None),
+        )
+    else:
+        context_term_gb = _remote_gguf_compute_reserve_gb(
+            llama_extra_args = llama_extra_args,
+            max_seq_length = 0,
+        )
+    files_gb = max(0.0, required_gb - context_term_gb)
+    # Under the lock: the route body runs in an asyncio.to_thread worker, so two panel
+    # requests are two threads, and min() walks the dict through a Python key function
+    # the interpreter may switch out of. A concurrent pop raises KeyError, a concurrent
+    # insert RuntimeError, and nothing catches either, so it surfaces as a 500 on a
+    # slider drag. Rare -- it took hundreds of thousands of eviction cycles to
+    # reproduce -- but the window is real and the lock costs nothing at this size.
+    with _ESTIMATE_CACHE_LOCK:
+        if len(_estimate_files_cache) >= _ESTIMATE_FILES_CACHE_MAX:
+            oldest = min(_estimate_files_cache, key = lambda k: _estimate_files_cache[k][0])
+            _estimate_files_cache.pop(oldest, None)
+        # Stamped now, not at `now`: same reason as the config cache. A multi-shard
+        # repo whose header walk outlasts the TTL must not be inserted pre-expired.
+        _estimate_files_cache[key] = (time.monotonic(), files_gb)
+    return files_gb
+
+
+# Appended to a probe's argument list to force the drafter charge one way or the
+# other. Both flags are last-wins in llama.cpp's parsers, so an appended value
+# overrides anything earlier in the list AND the environment fallback, which only
+# applies when no argument carries the flag at all.
+_DRAFT_FORCE_GPU_ARGS = ("--spec-draft-ngl", "999", "--spec-draft-device", "gpu")
+_DRAFT_FORCE_CPU_ARGS = ("--spec-draft-ngl", "0")
+
+
+def _charged_drafter_path(
+    config: ModelConfig,
+    drafter_bytes: int,
+    *,
+    extras: Optional[list[str]] = None,
+) -> Optional[tuple[str, str]]:
+    """Which drafter file accounts for ``drafter_bytes``, and by which route.
+
+    Returns ``(path, kind)`` with kind one of ``extras``, ``dspark``, ``dflash``,
+    ``mtp``, or None when no drafter was charged. The kind decides which target-side
+    terms the reserve carries, so it has to come from the same match as the path.
+
+    Identified by size rather than by re-deriving the mode precedence. That
+    precedence lives in ``_estimate_gguf_required_gb`` and depends on capability
+    probes and Auto-mode rules; a second copy of it would pick a different sidecar
+    from the one that was actually charged, which is worse than not pricing the KV
+    at all. Matching on the bytes it added cannot disagree with it.
+
+    An extras ``--model-draft`` is taken first and without the size match: it is the
+    drafter the launch opens whatever discovery found, and it need not be one of the
+    sidecars below. A remote ``--spec-draft-hf`` is not a local file, so it stays
+    unsized either way. The env is read through ``_child_spec_env``, which is empty
+    unless the extras own ``--spec-type`` and is ``os.environ`` when they do: the same
+    view the child gets, so an inherited ``LLAMA_ARG_SPEC_DRAFT_MODEL`` is seen exactly
+    when the launch would honour it.
+    """
+    if drafter_bytes <= 0:
+        return None
+    from core.inference.llama_cpp import _child_spec_env, _extra_args_mtp_draft_path
+
+    named = _extra_args_mtp_draft_path(extras, env = _child_spec_env(extras)) if extras else None
+    if named and Path(named).is_file():
+        return str(named), "extras"
+    for attr, kind in (
+        ("gguf_dspark_file", "dspark"),
+        ("gguf_dflash_file", "dflash"),
+        ("gguf_mtp_file", "mtp"),
+    ):
+        candidate = getattr(config, attr, None)
+        if not candidate or not Path(candidate).is_file():
+            continue
+        if LlamaCppBackend._get_gguf_size_bytes(str(candidate)) == drafter_bytes:
+            return str(candidate), kind
+    return None
+
+
+def _estimate_host_has_no_gpu() -> bool:
+    """Whether this machine has POSITIVELY been shown to have no inference GPU.
+
+    Only a probe that ran and came back empty counts. An unfilled snapshot is not
+    evidence of absence, and neither is the CUDA count: it is zero on every Vulkan and
+    ROCm-via-Vulkan host. Without this an Auto load on a CPU-only Linux or Windows box
+    read as fully GPU-resident, showing a multi-gigabyte GPU figure against a capacity
+    of zero. macOS is unaffected: unified memory shows one pool.
+    """
+    devices = _cached_inference_devices()
+    return devices is not None and len(devices) == 0
+
+
+def _cached_inference_devices() -> Optional[list[tuple[int, int, int]]]:
+    """The inventory /api/system already probed, shaped for _guard_device_count, or
+    None when nothing has filled that snapshot yet.
+
+    Read, never refreshed: the Vulkan inventory costs a subprocess and this endpoint
+    runs on every settings change, while /api/system polls it anyway. sys.modules
+    rather than an import, so this observes the running server's snapshot instead of
+    executing the app module wherever it is not already loaded.
+    """
+    try:
+        cached = getattr(sys.modules.get("main"), "_system_gpu_cache", None)
+        if not cached:
+            return None
+        _, (_, inference_gpu) = cached
+        devices = (inference_gpu or {}).get("devices") or []
+        # NOT `or None`. An empty list is a probe that found no GPU; None is a snapshot
+        # nobody filled, and callers act on the difference. Collapsing them made
+        # _estimate_host_has_no_gpu unreachable: a check that reads as present and does
+        # nothing.
+        return [(int(device.get("index", i)), 0, 0) for i, device in enumerate(devices)]
+    except Exception:
+        return None
+
+
+def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
+    """Whether two devices could take a tensor split at all.
+
+    load_model drops tensor mode below two usable GPUs and restores the quantized KV
+    the attempt stripped, so pricing tensor on one card charges f16 and per-device
+    compute buffers for a layer load that runs neither.
+
+    A pin answers for itself; otherwise the CUDA count does, except on a Vulkan build
+    where it sees nothing and the probed inventory answers. Only an unprobed host
+    assumes the split is possible, rather than pricing a downgrade that may not happen.
+    """
+    if requested_gpu_ids:
+        return len(requested_gpu_ids) >= 2
+    try:
+        if LlamaCppBackend._is_vulkan_backend():
+            devices = _cached_inference_devices()
+            return len(devices) >= 2 if devices is not None else True
+    except Exception:
+        pass
+    try:
+        return LlamaCppBackend._effective_gpu_count(None) >= 2
+    except Exception:
+        return True
+
+
+def _charged_projector_bytes(
+    config: ModelConfig, extras: Optional[list[str]], disable_vision: bool
+) -> int:
+    """Size of the single projector this launch opens, or 0.
+
+    Same precedence ``_estimate_gguf_required_gb`` charges: Studio's own resolved
+    projector goes on argv and wins, since argv is applied after set_env; otherwise an
+    inherited ``LLAMA_ARG_MMPROJ`` loads straight through, including through
+    ``--no-mmproj``, which empties the command line without clearing ``mmproj.path``.
+    Under the vision switch only an audio-only projector survives, asked through the
+    loader's own helpers so the two cannot answer differently.
+    """
+    from core.inference.llama_cpp import (
+        _extra_args_device,
+        _mmproj_env_is_audio_only,
+        extra_args_disable_mmproj,
+    )
+
+    # A --mmproj in Advanced Arguments last-wins: the launch emits Studio's projector
+    # first and appends the extras after it, so the child opens the user's. Charging
+    # the configured one instead priced a file the load never opens and left a
+    # possibly much larger one free.
+    override = _extra_args_device(extras, {"--mmproj", "-mm"})
+    if override and Path(override).is_file() and not extra_args_disable_mmproj(extras):
+        if not disable_vision:
+            return LlamaCppBackend._get_gguf_size_bytes(override)
+        try:
+            from utils.models.gguf_metadata import mmproj_accepts_image
+            if not mmproj_accepts_image(override):
+                return LlamaCppBackend._get_gguf_size_bytes(override)
+        except Exception:
+            pass
+        # Unreadable under the vision switch reads as image-capable, hence dropped:
+        # the same call the configured branch below makes, and what the loader does.
+        return 0
+
+    studio_mmproj = getattr(config, "gguf_mmproj_file", None)
+    on_argv = bool(studio_mmproj) and not extra_args_disable_mmproj(extras)
+    if on_argv and disable_vision:
+        try:
+            from utils.models.gguf_metadata import mmproj_accepts_image
+            on_argv = not mmproj_accepts_image(str(studio_mmproj))
+        except Exception:
+            on_argv = False
+    if on_argv and Path(str(studio_mmproj)).is_file():
+        return LlamaCppBackend._get_gguf_size_bytes(str(studio_mmproj))
+    if on_argv:
+        return 0
+    inherited = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+    if (
+        inherited
+        and (not disable_vision or _mmproj_env_is_audio_only(inherited))
+        and Path(inherited).is_file()
+    ):
+        return LlamaCppBackend._get_gguf_size_bytes(inherited)
+    return 0
+
+
+def _inherited_drafter_bytes(extras: Optional[list[str]]) -> int:
+    """Size of a drafter that arrives only through the inherited environment.
+
+    ``_estimate_gguf_required_gb`` reads ``--model-draft`` with an empty env, so a
+    launch whose extras own ``--spec-type`` and whose drafter comes from
+    ``LLAMA_ARG_SPEC_DRAFT_MODEL`` has no drafter in the files term at all. 0 when the
+    extras name one themselves (already counted), when nothing is inherited, or when
+    the path is not a local file.
+    """
+    from core.inference.llama_cpp import _child_spec_env, _extra_args_mtp_draft_path
+
+    if _extra_args_mtp_draft_path(extras, env = {}):
+        return 0
+    inherited = _extra_args_mtp_draft_path(extras, env = _child_spec_env(extras))
+    if not inherited or not Path(str(inherited)).is_file():
+        return 0
+    try:
+        return LlamaCppBackend._get_gguf_size_bytes(str(inherited))
+    except Exception:
+        return 0
+
+
+def _inherited_remote_files_unsized(extras: Optional[list[str]], disable_vision: bool) -> bool:
+    """Whether the child inherits a file it will fetch and this cannot weigh.
+
+    Two of them, and both are real launch inputs the environment carries through:
+
+    * ``LLAMA_ARG_SPEC_DRAFT_HF_REPO`` (or the legacy ``LLAMA_ARG_HFD_REPO``), which
+      ``_child_spec_env`` preserves once the extras own the spec block. llama-server
+      downloads that drafter and gives it a context-sized cache;
+    * ``LLAMA_ARG_MMPROJ_URL``, which llama.cpp fetches and uses as the projector even
+      when Studio resolved a local one.
+
+    Neither can be sized from here without a network call, which this route is
+    documented not to make. So the total is a floor and says so, rather than quietly
+    omitting a multi-gigabyte file.
+    """
+    from core.inference.llama_cpp import _child_spec_env
+
+    spec_env = _child_spec_env(extras)
+    for key in ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO"):
+        if (spec_env.get(key) or "").strip():
+            return True
+    if not disable_vision and (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
+        return True
+    return False
+
+
+def _build_default_spec_draft_n_max(extras: Optional[list[str]] = None) -> int:
+    """The draft depth a build runs on its own, for extras that own the spec block.
+
+    Loader's order: the inherited LLAMA_ARG_SPEC_* depth first, then the build's own
+    default out of the capability cache. Never probed for -- this runs on every
+    settings change -- so an unprobed build assumes the deepest llama.cpp has shipped,
+    as the loader does.
+    """
+    from core.inference.llama_cpp import _child_spec_env, _is_positive_int
+
+    spec_env = _child_spec_env(extras)
+    inherited = next(
+        (
+            value
+            for value in (
+                spec_env.get("LLAMA_ARG_SPEC_DRAFT_N_MAX"),
+                spec_env.get("LLAMA_ARG_DRAFT_MAX"),
+            )
+            if _is_positive_int(value)
+        ),
+        None,
+    )
+    if inherited is not None:
+        return int(str(inherited).strip())
+    try:
+        binary = LlamaCppBackend._exec_path_for_launch(LlamaCppBackend._find_llama_server_binary())
+        stat = os.stat(str(binary))
+        caps = LlamaCppBackend._capability_cache.get((str(binary), stat.st_mtime_ns, stat.st_size))
+        default = (caps or {}).get("spec_draft_n_max_default")
+        return int(default) if default else LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX
+    except Exception:
+        return LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX
+
+
+def _estimate_spec_mode_terms(
+    drafter_kind: str,
+    extras: list[str],
+    studio_emits_mtp: bool = False,
+) -> tuple[bool, bool]:
+    """Which target-side terms this speculative mode allocates.
+
+    Returns ``(mtp_keeps_target_ctx, target_rollback)`` for
+    ``_estimate_mtp_overhead_bytes``, whose defaults charge both and are both wrong for
+    a separate drafter: only true MTP duplicates the target context (an MLA target's
+    whole KV again, multi-GiB at a long context), and draft-simple keeps no rollback
+    either. Mirrors the loader's budget, which derives the two per mode.
+
+    Extras naming ``--spec-type`` own the mode, so the accumulated types decide;
+    otherwise Studio picked the sidecar, and DSpark and DFlash pay rollback without
+    duplicating the context.
+
+    Naming a FILE is not owning the mode. ``_build_speculative_flags`` returns early on
+    ``--spec-type``, not on a drafter path, so with a bare ``--model-draft`` against a
+    target Studio recognises as MTP it still emits ``--spec-type draft-mtp`` and the
+    path merely last-wins as the drafter -- and the child allocates the duplicated MLA
+    context that reading the path as an extras-owned spec block dropped. Against a
+    target Studio does not recognise, the same extras really are draft-simple and
+    allocate neither, which is why the caller answers ``studio_emits_mtp`` from the
+    header.
+    """
+    from core.inference.llama_cpp import (
+        _accumulated_spec_types,
+        _child_spec_env,
+        _extra_args_set_spec_type,
+        _TARGET_ROLLBACK_SPEC_TYPES,
+    )
+
+    # The env the CHILD sees: scrubbed of LLAMA_ARG_SPEC_* unless the extras own the
+    # spec block, in which case an inherited type accumulates with theirs.
+    spec_types = _accumulated_spec_types(extras, env = _child_spec_env(extras))
+    if spec_types:
+        return (
+            bool(spec_types & {"mtp", "draft-mtp"}),
+            bool(spec_types & _TARGET_ROLLBACK_SPEC_TYPES),
+        )
+    if drafter_kind == "extras" and _extra_args_set_spec_type(extras):
+        # A --spec-type whose value named no flavour we recognise. Theirs either way.
+        return False, False
+    if drafter_kind == "extras":
+        # Studio still emits the mode; only the file came from the extras.
+        return (studio_emits_mtp, True) if studio_emits_mtp else (False, False)
+    return drafter_kind == "mtp", True
+
+
+def _estimate_draft_n_max(
+    config: ModelConfig, drafter_path: str, *, requested: Optional[int], extras: list[str]
+) -> int:
+    """The draft depth the launch would really run at, for a blank Draft Tokens field.
+
+    Blank is not zero. ``_build_speculative_flags`` emits its own default when the
+    field is unset (3 for DSpark, else 2 with a GPU and 3 without), and
+    ``_estimate_mtp_overhead_bytes`` multiplies the Hybrid-Mamba rollback state by
+    this number, so pricing zero dropped that whole allocation -- the dominant hidden
+    cost on a hybrid target at several parallel slots -- from both total and GPU bytes.
+
+    Same precedence as the launch and as the loader's own budget: an extras depth wins
+    (last-wins at launch), then the build's own default where the extras own the spec
+    block, then the request field, then the platform default. An explicit 0 is
+    honoured, since that is a real request to draft nothing.
+    """
+    from core.inference.llama_cpp import _extra_args_set_spec_type, _extra_args_spec_draft_n_max
+
+    depth = _extra_args_spec_draft_n_max(extras)
+    if depth is None and _extra_args_set_spec_type(extras):
+        # _build_speculative_flags returns without emitting a depth here, so neither
+        # the field below nor the platform default reaches the child: it drafts at the
+        # build's number, and the rollback state scales by it.
+        depth = _build_default_spec_draft_n_max(extras)
+    if depth is None:
+        depth = requested
+    if depth is not None:
+        return max(0, int(depth))
+    dspark = getattr(config, "gguf_dspark_file", None)
+    if dspark and str(dspark) == drafter_path:
+        return 3
+    try:
+        gpus = LlamaCppBackend._effective_gpu_count() > 0
+    except Exception:
+        gpus = False
+    return 2 if gpus else 3
+
+
+def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
+    """Whether the launch really turns on an embedded NextN head.
+
+    An embedded head is a drafter with no file, so nothing about it reaches the weights
+    and the only way to know it costs anything is to re-ask what
+    ``_build_speculative_flags`` asks. Every no-MTP outcome it has is mirrored here
+    through its own predicates: no head in the header; a mode emitting no drafter (off,
+    ngram, ngram-simple); DSpark and DFlash, which open a sidecar charged as a file or
+    fall back to --spec-default; a sub-3B head, which Auto drops because MTP regresses
+    there; an MLA head under Auto, where llama.cpp's MTP path runs about half the speed
+    of no speculation, a drop forced mtp overrides.
+    """
+    if not getattr(probe, "_nextn_predict_layers", None):
+        return False
+    from core.inference.llama_cpp import (
+        _MTP_MIN_SIZE_B,
+        _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
+        _extract_model_size_b,
+        _mla_mtp_auto_enabled,
+    )
+
+    if _extra_args_set_spec_type(extras):
+        # Studio emits no spec block here, but the child honours the extras, and
+        # --spec-type draft-mtp on a NextN GGUF engages the head. Assumed off, the whole
+        # draft cache and target-side state went uncharged: with no drafter file there
+        # is nothing in the weights to notice.
+        from core.inference.llama_cpp import _accumulated_spec_types, _child_spec_env
+        return bool(
+            _accumulated_spec_types(extras, env = _child_spec_env(extras)) & {"mtp", "draft-mtp"}
+        )
+    mode = _canonicalize_spec_mode(speculative_type) or "auto"
+    if mode not in ("auto", "mtp", "mtp+ngram"):
+        return False
+    # No mtp_token means the build cannot run MTP at all: the flags builder emits
+    # --spec-default whatever the mode says. A hard incompatibility, so it applies to a
+    # forced request too. Same rule as the other capability gates: only a probe that RAN
+    # and lacks it drops the term.
+    try:
+        caps = LlamaCppBackend.probe_server_capabilities()
+        if caps.get("found") and not caps.get("mtp_token"):
+            return False
+    except Exception as exc:
+        logger.debug("MTP capability probe failed while pricing the draft head: %s", exc)
+
+    if mode != "auto":
+        # Both remaining drops are Auto's judgement. Forced MTP on a sub-3B model logs
+        # "Engaging anyway (user override)" and emits, and the dropdown is the documented
+        # way to override the MLA drop, so an explicit request is charged as asked.
+        return True
+    size_b = _extract_model_size_b(getattr(config, "identifier", None))
+    if size_b is not None and size_b < _MTP_MIN_SIZE_B:
+        return False
+    if getattr(probe, "_kv_lora_rank", None) is not None and not _mla_mtp_auto_enabled():
+        return False
+    return True
+
+
+def _tensor_latches_allow_a_split(
+    gguf_path: str,
+    config: ModelConfig,
+    cache_type_kv: Optional[str],
+    llama_extra_args: Optional[list[str]],
+) -> bool:
+    """Whether this process has already learned that a tensor split will not happen.
+
+    ``load_model`` checks two in-process latches before it plans, and both silently
+    turn the launch into a layer split: a binary that refused a quantized KV cache
+    under ``--split-mode tensor``, and a (binary, model, cache pair) that aborted on
+    one earlier this session. Pricing tensor after either has been set charges
+    per-device flat buffers for a launch that will not use them.
+
+    Fail-open: an unresolvable binary or an unreadable latch answers "allowed", which
+    is what this priced before the check existed.
+    """
+    from core.inference.llama_cpp import _planned_main_cache_types
+    try:
+        binary = LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return True
+        pair = _planned_main_cache_types(cache_type_kv, llama_extra_args)
+        model = getattr(config, "identifier", None) or gguf_path
+        if LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, pair):
+            return False
+        return not LlamaCppBackend._tensor_split_aborts(binary, model, pair)
+    except Exception as exc:
+        logger.debug("Tensor-split latch lookup failed while pricing: %s", exc)
+        return True
+
+
+def _gguf_memory_breakdown(
+    config: ModelConfig,
+    gguf_path: str,
+    *,
+    hf_token: Optional[str] = None,
+    n_ctx: int = 0,
+    llama_extra_args: Optional[list[str]] = None,
+    speculative_type: Optional[str] = None,
+    n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    ctx_checkpoints: Optional[int] = None,
+    n_devices: int = 1,
+    is_diffusion: bool = False,
+    disable_vision: bool = False,
+    gpu_memory_mode: Optional[str] = None,
+    gpu_layers: Optional[int] = None,
+    spec_draft_n_max: Optional[int] = None,
+    spec_draft_cache_type: Optional[str] = None,
+    tensor_split_possible: bool = True,
+    # An explicit GPU pin owns placement: load_model strips the device flags from the
+    # extras and clears the device environment before it launches, because the pin is
+    # the more specific instruction. Without that, a stale "--device none" in the box
+    # made a pinned load read as CPU-only and reported no GPU footprint at all.
+    device_pin_governs: bool = False,
+) -> Optional[_GgufMemoryBreakdown]:
+    """Itemize what loading this GGUF at ``n_ctx`` would cost. None if nothing sizes.
+
+    Two terms, both from functions the training guard already uses: the files, cached
+    since they do not move while the panel is open, and the KV cache plus compute
+    buffers, re-derived every call because that is the half that does.
+    """
+    from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
+        parse_gpu_layers_override,
+        strip_shadowing_flags,
+    )
+
+    # Manual owns the offload flags: /load translates the last -ngl into the field and
+    # then strips the raw flags, so the launch carries neither. Price that same list,
+    # or a stale -ncmoe here reads as pipeline parallelism off and charges one context
+    # buffer where the launch replicates them per device.
+    if gpu_memory_mode == "manual" and llama_extra_args:
+        try:
+            _manual_ngl = parse_gpu_layers_override(llama_extra_args)
+        except ValueError:
+            _manual_ngl = None
+        if _manual_ngl is not None:
+            gpu_layers = _manual_ngl
+        llama_extra_args = strip_shadowing_flags(
+            llama_extra_args,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            # _should_strip_tensor_split's rule, from the same two values it reads.
+            strip_tensor_split = gpu_layers is not None and gpu_layers >= 0,
+            strip_offload = True,
+        )
+
+    # A --split-mode in the extras last-wins over the toggle, and an inherited tensor
+    # LLAMA_ARG_SPLIT_MODE turns it on: the same helper load_model budgets with, so a
+    # launch that runs tensor is not priced as a layer split. Then the downgrades the
+    # loader applies on the way in, so a single card is not priced as one either, and
+    # neither are the two Manual shapes that never reach a tensor launch at all.
+    tensor_parallel = (
+        _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+        and tensor_split_possible
+        # And the two latches load_model consults before it plans: a build that already
+        # refused a quantized KV cache under a tensor split, and a (build, model, cache
+        # pair) that aborted on one this session. Both send the launch straight to a
+        # layer split, whose context buffers are multiplied per device where tensor's
+        # flat buffers are replicated -- gigabytes apart on two cards, and enough to
+        # move the verdict. Asked of the same classmethods rather than re-derived.
+        and _tensor_latches_allow_a_split(gguf_path, config, cache_type_kv, llama_extra_args)
+        # The extras are already stripped of -ngl here and the count already carries it,
+        # so the override lookup inside is a no-op and the field is what decides.
+        and _manual_keeps_tensor_split(gpu_memory_mode, gpu_layers, llama_extra_args)
+    )
+    runtime = _gguf_runtime_bytes(
+        gguf_path,
+        n_ctx,
+        llama_extra_args = llama_extra_args,
+        n_parallel = n_parallel,
+        cache_type_kv = cache_type_kv,
+        tensor_parallel = tensor_parallel,
+        n_batch = n_batch,
+        n_ubatch = n_ubatch,
+        ctx_checkpoints = ctx_checkpoints,
+        n_devices = n_devices,
+        is_diffusion = is_diffusion,
+        # The panel prices the launch, not the admission guard: a smaller -c in the
+        # extras is the context the user gets, not one to over-reserve against.
+        ctx_last_wins = True,
+        # An embedding model is recognised from its identifier, not its header, so the
+        # panel has to hand over the same one /load does or it prices a generation model.
+        model_identifier = getattr(config, "identifier", None),
+    )
+    files_gb = _gguf_resident_file_gb(
+        config,
+        hf_token = hf_token,
+        llama_extra_args = llama_extra_args,
+        speculative_type = speculative_type,
+        disable_vision = disable_vision,
+        # No Hub listing behind a slider: a --spec-draft-hf repo is left uncharged here
+        # and marked below, rather than costing a model_info per settings change.
+        local_only = True,
+    )
+    if files_gb is None:
+        return None
+    from core.inference.llama_cpp import (
+        _canonicalize_spec_mode,
+        _device_selection_is_cpu,
+        _extra_args_draft_cache_types,
+        _extra_args_draft_offloaded_to_cpu,
+        _extra_args_mtp_draft_source,
+        _kv_offload_from_args,
+        _resolved_mmproj_offload,
+    )
+
+    gpu_files_bytes = int(round(files_gb * (1024**3)))
+    extras = list(llama_extra_args or ())
+    # Pass-through adapters are resident weights the files term never carried: it
+    # prices the target and its companions, while llama.cpp loads every --lora /
+    # --control-vector on top of the base model. They do not mmap -- read into a staging
+    # buffer and pushed with ggml_backend_tensor_set -- so the bytes are resident
+    # whatever --load-mode says, and several run to gigabytes. The loader charges them;
+    # the panel did not, so a LoRA load could read as a fit on the base size alone.
+    # Placement follows the base tensor's buffer type, so they scale with the layer
+    # fraction like the main weight, not like a companion.
+    from core.inference.llama_cpp import _sidecar_adapter_bytes
+
+    adapter_bytes = _sidecar_adapter_bytes(extras)
+    # None is "engaged but unsized": a named file we cannot stat. The loader abstains
+    # from the whole figure there, which for a panel would hide the row; a floor with
+    # the marker on says more than silence does.
+    adapters_unsized = adapter_bytes is None
+    adapter_bytes = adapter_bytes or 0
+    files_probe = dict(
+        hf_token = hf_token,
+        speculative_type = speculative_type,
+        disable_vision = disable_vision,
+        local_only = True,
+    )
+
+    def _files_bytes_with(extra: tuple[str, ...]) -> Optional[int]:
+        gb = _gguf_resident_file_gb(config, llama_extra_args = extras + list(extra), **files_probe)
+        return None if gb is None else int(round(gb * (1024**3)))
+
+    # A CPU-pinned drafter is dropped from _estimate_gguf_required_gb, a VRAM admission
+    # figure. This panel reports host RAM too, so those bytes belong in the total.
+    # Recovered by re-pricing with the pin overridden rather than by re-deriving which
+    # sidecar the mode picks. Bound before the branch: a CPU pin on a model shipping no
+    # sidecar charges no drafter either way, and reading this below raised
+    # UnboundLocalError, a 500 that took the whole row out.
+    host_drafter_bytes = 0
+    gpu_drafter_bytes = 0
+    if _extra_args_draft_offloaded_to_cpu(extras):
+        unpinned = _files_bytes_with(_DRAFT_FORCE_GPU_ARGS)
+        if unpinned is not None and unpinned > gpu_files_bytes:
+            host_drafter_bytes = unpinned - gpu_files_bytes
+    else:
+        no_drafter = _files_bytes_with(_DRAFT_FORCE_CPU_ARGS)
+        if no_drafter is not None:
+            gpu_drafter_bytes = max(0, gpu_files_bytes - no_drafter)
+    if not (host_drafter_bytes or gpu_drafter_bytes):
+        # A drafter the files term cannot see. It resolves --model-draft against an
+        # empty env, which is the admission guard's conservative rule, while the child
+        # does inherit LLAMA_ARG_SPEC_DRAFT_MODEL once the extras own --spec-type. That
+        # leaves the panel quoting a load with no drafter at all, file or cache.
+        inherited = _inherited_drafter_bytes(extras)
+        if inherited:
+            if _extra_args_draft_offloaded_to_cpu(extras):
+                host_drafter_bytes = inherited
+            else:
+                gpu_drafter_bytes = inherited
+                gpu_files_bytes += inherited
+    weights_bytes = gpu_files_bytes + host_drafter_bytes + adapter_bytes
+
+    # The drafter keeps its own KV cache and rollback state on top of its file, which
+    # the loader budgets separately and the files term says nothing about. Priced
+    # wherever the drafter itself lives: a CPU-pinned one still holds that state, in
+    # host RAM, so it belongs in the total even though it never reaches the GPU.
+    drafter_runtime_bytes = 0
+    # The part of that reserve allocated in the TARGET's context rather than the
+    # drafter's, so it stays with the target when the two are placed apart.
+    target_spec_bytes = 0
+    drafter_on_gpu = host_drafter_bytes == 0
+    charged_drafter = _charged_drafter_path(
+        config, host_drafter_bytes or gpu_drafter_bytes, extras = extras
+    )
+    # An embedded NextN head is a drafter with no file, so charged_drafter is None and
+    # the runtime block below used to be skipped -- while the head still allocates a
+    # context-sized draft KV plus an MLA target copy or Hybrid-Mamba rollback state,
+    # gigabytes at a long context. Priced through the same helper with
+    # drafter_path = None, the case it documents.
+    #
+    # Safe to ask unconditionally: the helper sizes the head from nextn_predict_layers,
+    # so a header with no NextN key prices nothing for one arithmetic pass, and the mode
+    # test keeps it off a launch running no speculation. The probe is built first
+    # because both questions need the header.
+    probe = _probe_backend()
+    probe._read_gguf_metadata(gguf_path)
+    embedded_mtp = bool(
+        not charged_drafter and _embedded_mtp_engages(probe, config, speculative_type, extras)
+    )
+    # Deliberately NOT re-placed by the draft-only pins. --spec-draft-ngl 0 and
+    # --spec-draft-device cpu carry params.speculative.n_gpu_layers and .devices, which
+    # llama.cpp copies in only on the has_draft path; an embedded head takes
+    # llama_init_from_model(model_tgt) and keeps the target's placement, as
+    # _extra_args_draft_offloaded_to_cpu documents and _draft_cpu_no_embedded enforces.
+    # Moving its cache to host here dropped gigabytes out of gpu_bytes for a load that
+    # allocates them on the card.
+    if charged_drafter or embedded_mtp:
+        drafter_path, drafter_kind = charged_drafter or (None, "mtp")
+        # K and V are independent overrides and extras beat the panel field, as at
+        # launch. Asked twice -- extras alone, then env alone -- to get launch order:
+        # the helper falls back to LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K/_V when the extras
+        # are silent, so one call `or`-ed with the field gave the ENVIRONMENT precedence
+        # over the control, while argv beats the env twin and the extras beat both.
+        draft_k, draft_v = _extra_args_draft_cache_types(extras, env = {})
+        env_draft_k, env_draft_v = _extra_args_draft_cache_types([], env = os.environ)
+        # ... and the field only reaches argv on a build that has the flag; elsewhere
+        # the child uses the inherited value. Only a probe that RAN and lacks it drops
+        # the field.
+        _managed_draft_cache = True
+        try:
+            _dc_caps = LlamaCppBackend.probe_server_capabilities()
+            # BOTH, matching the launcher: it emits the pair or neither, so a build
+            # exposing only one still allocates its inherited or default cache.
+            if _dc_caps.get("found") and not (
+                _dc_caps.get("spec_draft_cache_k_flag") and _dc_caps.get("spec_draft_cache_v_flag")
+            ):
+                _managed_draft_cache = False
+        except Exception as _dc_exc:
+            logger.debug("draft cache-type capability probe failed: %s", _dc_exc)
+        _field_draft_cache = spec_draft_cache_type if _managed_draft_cache else None
+        draft_n_max = _estimate_draft_n_max(
+            config, drafter_path, requested = spec_draft_n_max, extras = extras
+        )
+        keeps_target_ctx, target_rollback = _estimate_spec_mode_terms(
+            drafter_kind,
+            extras,
+            # Asked of the header, not the mode: the same predicate that decides
+            # whether an embedded head engages decides whether Studio emits draft-mtp
+            # over an extras-supplied drafter path.
+            studio_emits_mtp = embedded_mtp
+            or _embedded_mtp_engages(probe, config, speculative_type, extras),
+        )
+        # The layout the target was priced with, not the helper's defaults: a drafter
+        # with sliding-window attention under --swa-full allocates the full window, and
+        # the same slot layout and micro-batch decide its cell count. The loader passes
+        # all four; defaulting them priced a smaller cache than the launch allocates.
+        # flash_attn follows the draft V axis for the same reason the target's does.
+        _draft_v_type = draft_v or _field_draft_cache or env_draft_v
+        layout = dict(
+            swa_full = runtime.swa_full,
+            kv_unified = runtime.kv_unified,
+            n_ubatch = runtime.n_ubatch,
+            flash_attn = bool(_draft_v_type) and _draft_v_type not in {"f16", "bf16", "f32"},
+        )
+        drafter_runtime_bytes = (
+            probe._estimate_mtp_overhead_bytes(
+                runtime.n_ctx,
+                spec_draft_n_max = draft_n_max,
+                draft_cache_type_k = draft_k or _field_draft_cache or env_draft_k,
+                draft_cache_type_v = draft_v or _field_draft_cache or env_draft_v,
+                drafter_path = drafter_path,
+                # The file is already in weights_bytes; this term is runtime only.
+                draft_weights_bytes = 0,
+                n_parallel = runtime.n_parallel,
+                mtp_keeps_target_ctx = keeps_target_ctx,
+                target_rollback = target_rollback,
+                **layout,
+            )
+            or 0
+        )
+        # Same two terms the helper added above, recomputed here to say where they
+        # sit. An MLA target under MTP duplicates its own KV context, and a hybrid
+        # target keeps one rollback copy per drafted token: both are allocated in the
+        # target's context, which is why pinning the drafter to the CPU does not move
+        # them and offloading no target layer does not put them on the GPU.
+        if keeps_target_ctx and probe._kv_lora_rank is not None:
+            # Same layout the helper charged it at, or the subtraction below stops
+            # naming the same bytes.
+            target_spec_bytes += probe._estimate_kv_cache_bytes(
+                runtime.n_ctx, "f16", n_parallel = runtime.n_parallel, **layout
+            )
+        if target_rollback and draft_n_max > 0:
+            target_spec_bytes += (
+                probe._mamba_recurrent_state_bytes(runtime.n_parallel) * draft_n_max
+            )
+        target_spec_bytes = min(target_spec_bytes, drafter_runtime_bytes)
+
+    layer_count = runtime.layer_count
+    gpu_fraction = _gguf_offloaded_layer_fraction(
+        gpu_memory_mode, gpu_layers, layer_count, extras, device_pin_governs = device_pin_governs
+    )
+
+    # Only the main weight is split by --gpu-layers. A projector and a drafter are
+    # placed by their own flags, so scaling them by the model's layer fraction let
+    # --gpu-layers 0 report zero GPU bytes while both sat in VRAM.
+    main_bytes = min(gpu_files_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path))
+    companion_bytes = max(0, gpu_files_bytes - main_bytes)
+    # A drafter is only charged when it lands on the GPU (a CPU-pinned one is dropped
+    # from the total upstream), so the projector is the single companion that can be
+    # charged and off-GPU: --no-mmproj-offload keeps it in host RAM. Priced by itself
+    # rather than by moving every companion, which would strand a resident drafter.
+    host_companion_bytes = 0
+    # The projector costs more than its file: the encoder's buffers run about 1.3x it,
+    # which the placement path budgets as _MMPROJ_VRAM_SAFETY - 1. Charged whenever the
+    # projector is in the resident set, and it is in the total wherever it sits, so a
+    # near-capacity multimodal load is not called a fit on the file size alone.
+    projector_runtime_bytes = 0
+    mmproj_bytes = _charged_projector_bytes(config, extras, disable_vision)
+    if mmproj_bytes and mmproj_bytes <= companion_bytes:
+        # <= companion_bytes is the second half of the test: the files term charges an
+        # inherited projector as readily as a configured one, so its bytes have to be
+        # in there for this launch to be the one opening it.
+        projector_runtime_bytes = int(mmproj_bytes * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
+        if _resolved_mmproj_offload(llama_extra_args) is False:
+            host_companion_bytes = min(companion_bytes, mmproj_bytes)
+    gpu_weights = (
+        int(main_bytes * gpu_fraction)
+        + int(adapter_bytes * gpu_fraction)
+        + companion_bytes
+        - host_companion_bytes
+    )
+    # Charged bytes with no local file behind them: a --spec-draft-hf repository. Its
+    # weights are in the files term, but its cache grows with context like any other
+    # and cannot be read off a header that is not here, so the total is a floor.
+    drafter_kv_unsized = bool(
+        ((host_drafter_bytes or gpu_drafter_bytes) and not charged_drafter)
+        # An inherited remote drafter repo or projector URL is a file the child fetches
+        # and this cannot weigh without leaving the machine. Same marker: the total is
+        # a floor, and saying so beats omitting gigabytes in silence.
+        or _inherited_remote_files_unsized(extras, disable_vision)
+        # A --spec-draft-hf repository in the extras. Its weights are no longer charged
+        # here, because charging them means listing the repo over the network on every
+        # settings change; the marker is what keeps that honest.
+        or bool(_extra_args_mtp_draft_source(extras)[1])
+    )
+    runtime_bytes = (
+        runtime.kv_bytes + runtime.compute_bytes + drafter_runtime_bytes + projector_runtime_bytes
+    )
+
+    # -nkvo puts the cache in host RAM. At a long context that is most of the
+    # footprint, so ignoring it would report VRAM pressure the load never creates.
+    kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
+    # Context checkpoints ride inside kv_bytes but never reach the GPU: a checkpoint is
+    # a host-heap std::vector<uint8_t> in llama.cpp's common_prompt_checkpoint, capped
+    # by --cache-ram, and Studio's own load schema documents it as host memory. They
+    # stay in the total, which is aggregate memory, and come out of the GPU figure,
+    # which is not: 32 snapshots per slot is the default, so charging them to VRAM
+    # warned about GPU pressure an SWA load never creates.
+    gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
+    # And only the offloaded layers' share of it. A cache buffer is allocated on
+    # model.dev_layer(il) (llama-kv-cache.cpp), so a layer left on the CPU keeps its
+    # cache in host RAM -- the same rule the launch documents where it plans a spill.
+    # Charging all of it at a partial offload contradicted the scaled weights term
+    # above, and at a long context the cache is the larger of the two: a 10-of-40
+    # Manual placement read as exceeding a card it fits on. Linear in the layer count
+    # like the weights -- an approximation where layers do not all cache alike, far
+    # nearer than charging everything, and exact at 0 and at a full offload.
+    gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
+    if gpu_fraction > 0.0:
+        # Compute buffers land on the devices running layers.
+        gpu_bytes += runtime.compute_bytes
+    # Target-side spec terms are target KV allocations and follow the target cache. The
+    # drafter's own KV follows the drafter: a separate one does not inherit
+    # --gpu-layers (llama.cpp overwrites it with the draft placement, default auto), so
+    # at --gpu-layers 0 it is still on the GPU holding that cache. An embedded head is
+    # the exception in the other direction -- no file means host_drafter_bytes is 0 and
+    # drafter_on_gpu said yes even for a CPU-placed target -- but it is part of the
+    # target's tensors and takes the target's context, so it goes where the target goes.
+    _drafter_on_gpu = (gpu_fraction > 0.0) if embedded_mtp else drafter_on_gpu
+    drafter_runtime_gpu_bytes = (target_spec_bytes if kv_on_gpu else 0) + (
+        (drafter_runtime_bytes - target_spec_bytes) if _drafter_on_gpu else 0
+    )
+    gpu_bytes += drafter_runtime_gpu_bytes
+    # The encoder's buffers sit with the projector, so --no-mmproj-offload takes them
+    # to host RAM along with the file.
+    if not host_companion_bytes:
+        gpu_bytes += projector_runtime_bytes
+    if not device_pin_governs and (
+        _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu()
+    ):
+        # Nothing is on a GPU because the process was given none, or because this
+        # machine has none. A pin overrides both readings: it names cards, and the
+        # launch strips whatever contradicted it. Applied here rather
+        # than only through the layer fraction because a companion does not follow
+        # --gpu-layers: a drafter and a projector are placed by their own flags, and
+        # neither of those can name a device that this selection has removed.
+        gpu_bytes = 0
+        drafter_runtime_gpu_bytes = 0
+    return _GgufMemoryBreakdown(
+        weights_bytes = weights_bytes,
+        kv_bytes = runtime.kv_bytes,
+        compute_bytes = runtime.compute_bytes,
+        drafter_runtime_bytes = drafter_runtime_bytes,
+        drafter_runtime_gpu_bytes = drafter_runtime_gpu_bytes,
+        projector_runtime_bytes = projector_runtime_bytes,
+        drafter_kv_unsized = drafter_kv_unsized,
+        adapters_unsized = adapters_unsized,
+        total_bytes = weights_bytes + runtime_bytes,
+        gpu_bytes = gpu_bytes,
+        kv_estimable = runtime.kv_estimable,
+        kv_on_gpu = kv_on_gpu,
+        n_ctx = runtime.n_ctx,
+        cache_type_kv = runtime.cache_type_kv,
+        n_parallel = runtime.n_parallel,
+        layer_count = layer_count,
+        gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None,
+    )
+
+
 def _guard_device_count(
     requested_gpu_ids: Optional[list[int]],
     vulkan_gpu_memory: Optional[list[tuple[int, int, int]]] = None,
@@ -8640,7 +10445,7 @@ def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
                 from hub.utils.gguf import resolve_local_gguf_path
                 main = resolve_local_gguf_path(repo, variant)
         if main and Path(main).is_file():
-            probe = LlamaCppBackend()
+            probe = _probe_backend()
             probe._read_gguf_metadata(str(main))
             return getattr(probe, "_n_layers", None) or None
     except Exception as e:
@@ -8680,7 +10485,7 @@ def _is_embedding_gguf(config: ModelConfig) -> bool:
         main = _local_gguf_main_path(config)
         if not main:
             return False
-        probe = LlamaCppBackend()
+        probe = _probe_backend()
         probe._model_identifier = config.identifier
         probe._gguf_path = main
         probe._read_gguf_metadata(main)
@@ -8776,7 +10581,7 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     try:
         main = _local_gguf_main_path(config)
         if main:
-            probe = LlamaCppBackend()
+            probe = _probe_backend()
             probe._read_gguf_metadata(main)
             if probe.is_diffusion:
                 return True
@@ -10696,13 +12501,15 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
-            # same reason: the host-RAM guard reads the finished argv, so it answers too late
-            _host_offload = await asyncio.to_thread(
-                llama_backend.host_offload_refusal_for_intent, gguf_intent
+            # Advisory, not a gate: an oversized GGUF mmaps and pages from disk rather
+            # than failing, which off fast storage is a deliberate way to run a quant
+            # bigger than fast memory, so the load goes ahead. Asked here as well as at
+            # launch because load_model's copy runs too deep to reach the response.
+            _host_offload_warning = await asyncio.to_thread(
+                llama_backend.host_offload_warning_for_intent, gguf_intent
             )
-            if _host_offload:
-                logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
-                raise HTTPException(status_code = 400, detail = _host_offload)
+            if _host_offload_warning:
+                logger.warning("Loading an oversized GGUF: %s", _host_offload_warning)
 
         if chat_load_needs_gpu:
             gpu_acquire_kwargs = {} if allow_gpu_owner_eviction else {"allow_evict": False}
@@ -12111,6 +13918,280 @@ async def install_latest_transformers_route(
             return InstallLatestTransformersResponse(**result, model_unloaded = True)
         raise HTTPException(status_code = 400, detail = result["message"])
     return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
+
+
+# A resolved ModelConfig, kept briefly so dragging the context slider re-runs only the
+# arithmetic. from_identifier builds the detection registry and can reach Hugging Face;
+# at one call per slider tick that is the whole cost of this endpoint. Short TTL because
+# the thing it caches goes stale for a real reason -- a download finishing mid-panel --
+# and 30s is under the time it takes to notice.
+_ESTIMATE_CONFIG_TTL_SECONDS = 30.0
+_ESTIMATE_CONFIG_CACHE_MAX = 8
+_estimate_config_cache: "dict[tuple, tuple[float, Any]]" = {}
+
+
+def _cached_estimate_config(
+    model_identifier: str,
+    gguf_variant: Optional[str],
+    hf_token: Optional[str],
+    native_grant_backed: bool,
+):
+    """``ModelConfig.from_identifier`` behind a small TTL cache. None if it fails.
+
+    A failure is not cached: the common one is a download still in flight, and the
+    next tick of the slider is when that answer changes.
+    """
+    key = (
+        model_identifier,
+        gguf_variant,
+        native_grant_backed,
+        # Same reason as the file cache: a gated repo resolves per token.
+        _estimate_token_fingerprint(hf_token),
+    )
+    now = time.monotonic()
+    hit = _estimate_config_cache.get(key)
+    if hit is not None and now - hit[0] < _ESTIMATE_CONFIG_TTL_SECONDS:
+        return hit[1]
+    if not _estimate_target_is_on_this_disk(model_identifier):
+        # Ahead of from_identifier, the expensive part: it runs the load path's full
+        # identification, and for an uncached REMOTE id that walks to the Hub and
+        # writes. Measured on one uncached safetensors repo: four model_info attempts,
+        # an hf_hub_download of config.json, and 12 new paths / 1828 bytes of HF cache,
+        # for a request whose answer is "not on this disk". Behind a slider that is a
+        # Hub round trip and a disk write, which this route's docstring promises it does
+        # not do. Not cached: a repo is usually absent because a download is in flight,
+        # and the next tick is when that changes.
+        return _ESTIMATE_NOT_ON_DISK
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+    def _resolve():
+        return ModelConfig.from_identifier(
+            model_id = model_identifier,
+            hf_token = hf_token,
+            gguf_variant = gguf_variant,
+            drafter_accept = _native_drafter_accept if native_grant_backed else None,
+        )
+
+    # Offline FIRST, not only when the Hub is unreachable. The gate above established
+    # the repo is on this disk and everything below prices local files, so the
+    # identification needs nothing from the network -- yet from_identifier still runs
+    # detect_gguf_model_remote and list_gguf_variants, an hf_model_info each: two Hub
+    # round trips per cache miss on a route the panel fires on every change, and a rate
+    # limit waiting to happen. The reachable path stays as the fallback, because a slow
+    # right answer beats a fast blank row.
+    config = None
+    try:
+        from utils.utils import force_hf_offline
+        with force_hf_offline():
+            config = _resolve()
+    except Exception as exc:
+        logger.debug(
+            "Offline resolve of %s did not answer, retrying online: %s", model_identifier, exc
+        )
+    #
+    # Not taken when the gate could not be ANSWERED, as opposed to answering yes. The
+    # gate is fail-open, and one thing it opens onto is a host where no HF cache root
+    # could be established -- a missing cache home, or a failed tier-1 import. There it
+    # refuses nothing, so every uncached remote id reached this retry, and this retry is
+    # the network. "Nothing is downloaded" is the route's promise, so an unanswerable
+    # gate stops at the offline resolution above; the cost is a blank row instead of a
+    # slow one, on a host that cannot say where its own cache lives.
+    #
+    # `unknown`, not `present`: a gate that positively said "absent" has already
+    # returned, so these are the same test except for a caller that overrode the gate,
+    # and there the override is the answer.
+    if config is None and _estimate_disk_residency(model_identifier) != _ESTIMATE_DISK_UNKNOWN:
+        try:
+            with _hf_offline_if_unreachable_for(model_identifier):
+                config = _resolve()
+        except Exception as exc:
+            logger.debug("Memory estimate could not resolve %s: %s", model_identifier, exc)
+            return None
+    if config is None:
+        return None
+    # Same lock, same reason as the files cache: see the note at its eviction.
+    with _ESTIMATE_CACHE_LOCK:
+        if len(_estimate_config_cache) >= _ESTIMATE_CONFIG_CACHE_MAX:
+            # Oldest first; the panel works one model at a time, so this is housekeeping.
+            oldest = min(_estimate_config_cache, key = lambda k: _estimate_config_cache[k][0])
+            _estimate_config_cache.pop(oldest, None)
+        # Stamped now, not at `now`, which was read before the slow part: a repo taking
+        # longer than the TTL to identify was inserted already expired, so the cache
+        # stopped existing on exactly the models it was added for.
+        _estimate_config_cache[key] = (time.monotonic(), config)
+    return config
+
+
+@router.post("/estimate-memory", response_model = EstimateMemoryResponse)
+async def estimate_memory(
+    request: EstimateMemoryRequest,
+    fastapi_request: Request = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Price a prospective GGUF load from its header, before anything is allocated.
+
+    Reads only GGUF metadata and file sizes, so it is safe to call on every settings
+    change: no model is loaded, no device is touched, nothing is downloaded. A model
+    that is not on this disk answers ``not_downloaded``.
+
+    The arithmetic is the loader's own KV, compute-buffer and companion sizing, which
+    is the point. Weights times a constant is fine until the KV cache stops being a
+    rounding error: at 262k tokens the cache can outweigh the weights, and it swings
+    fourfold on the cache dtype alone. Where the header cannot supply the dims this
+    answers ``kv_estimable = false`` rather than quoting an assumed total.
+    """
+    from core.inference.llama_cpp import _args_place_tensors_on_cpu
+    from core.inference.llama_server_args import _effective_tensor_parallel
+
+    if is_ollama_manifest_ref(request.model_path):
+        # Resolving one writes a .gguf link to disk; that belongs to the load path.
+        return EstimateMemoryResponse(available = False, reason = "unsupported_source")
+    try:
+        model_identifier, _model_log_label, native_grant_backed = (
+            # "validate-model", not an operation of this route's own: leases are
+            # verified against the exact operation they were signed for, and
+            # "estimate-memory" is not one a client can mint. This is the same
+            # read-only header probe /validate performs, so it is the right grant.
+            _resolve_model_identifier_for_request(request, operation = "validate-model")
+        )
+    except HTTPException:
+        # An expired lease is not worth a red error under a settings panel.
+        return EstimateMemoryResponse(available = False, reason = "unsupported_source")
+
+    # Blank Parallel Slots means the server default (4 in a standard launch), not one,
+    # and /load resolves it the same way: pricing 1 underestimated the KV cache and the
+    # slot-scaled compute buffers for the default configuration.
+    #
+    # The settings read stays on the loop -- an app-state attribute, the one half that
+    # needs the request object. The CLAMP goes into the worker below, because
+    # _effective_parallel_slots asks the binary about --kv-unified, walking nine install
+    # layouts and, on a cold capability cache, running `llama-server --help` with a ten
+    # second timeout. _effective_default_slots threads this same call for the same
+    # reason: inline it "stalled every other request on the first open of the panel
+    # after an update", and this loop is the one streaming chat tokens.
+    requested_slots = _resolve_parallel_slots(request, fastapi_request)
+
+    def _estimate() -> EstimateMemoryResponse:
+        resolved_slots = _effective_parallel_slots(
+            requested_slots,
+            diffusion_kind = False,
+        )
+        config = _cached_estimate_config(
+            model_identifier,
+            request.gguf_variant,
+            request.hf_token,
+            native_grant_backed,
+        )
+        if config is _ESTIMATE_NOT_ON_DISK:
+            return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+        if config is None:
+            return EstimateMemoryResponse(available = False, reason = "unsizable")
+        if not getattr(config, "is_gguf", False):
+            # Safetensors / MLX allocate on a different plan; the GGUF arithmetic
+            # would be a made-up number in a confident box.
+            return EstimateMemoryResponse(available = False, reason = "not_gguf")
+        gguf_path = _local_gguf_main_path(config)
+        if not gguf_path:
+            return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+        # Price the files on this disk, not the repository they came from.
+        config = _localized_estimate_config(config, gguf_path)
+
+        breakdown = _gguf_memory_breakdown(
+            config,
+            gguf_path,
+            hf_token = request.hf_token,
+            n_ctx = request.n_ctx or 0,
+            llama_extra_args = request.llama_extra_args,
+            speculative_type = request.speculative_type,
+            n_parallel = resolved_slots,
+            cache_type_kv = request.cache_type_kv,
+            tensor_parallel = bool(request.tensor_parallel),
+            n_batch = request.n_batch,
+            n_ubatch = request.n_ubatch,
+            ctx_checkpoints = request.ctx_checkpoints,
+            # A layer split across pinned cards replicates the context-linear
+            # compute term and adds per-device pipeline overhead, so the count
+            # matters there too, not just in tensor mode. Automatic placement
+            # stays at one: _guard_device_count makes the same call.
+            n_devices = _guard_device_count(
+                # A pin names cards for a launch that puts something on them. At an
+                # effective layer count of zero the launch is CPU-only and the loader
+                # drops the split flags, so charging the pinned count added per-device
+                # pipeline overhead and replicated the context-linear compute term for
+                # buffers no card allocates: on a two-card pin, 1039 -> 2105 MiB at 4k
+                # and 1417 -> 5129 MiB at 262k. Asked of the same function the panel
+                # prices placement with, so the two cannot disagree.
+                None
+                if _gguf_offloaded_layer_fraction(
+                    request.gpu_memory_mode,
+                    request.gpu_layers,
+                    None,
+                    request.llama_extra_args,
+                    device_pin_governs = bool(request.selected_gpu_ids),
+                )
+                == 0.0
+                else request.selected_gpu_ids or None,
+                # Tensor mode replicates its buffers over the whole pool, and on a
+                # Vulkan build _effective_gpu_count sees none of it. The probed
+                # inventory is the pool; None falls through to the CUDA count as before.
+                _cached_inference_devices(),
+                # Same resolution the breakdown prices with: an extras --split-mode
+                # decides the mode, not the toggle alone, and one card cannot split.
+                tensor_parallel = _effective_tensor_parallel(
+                    request.llama_extra_args, bool(request.tensor_parallel)
+                )
+                and _tensor_split_possible(request.selected_gpu_ids or None)
+                # And the Manual drops, about the layer count rather than the pool: a
+                # tensor count here sizes per-device buffers for a CPU layer split.
+                and _manual_keeps_tensor_split(
+                    request.gpu_memory_mode,
+                    request.gpu_layers,
+                    request.llama_extra_args,
+                ),
+            ),
+            disable_vision = bool(request.disable_vision),
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
+            spec_draft_n_max = request.spec_draft_n_max,
+            spec_draft_cache_type = request.spec_draft_cache_type,
+            tensor_split_possible = _tensor_split_possible(request.selected_gpu_ids or None),
+            # A pin names the cards, so the launch strips any device flag that says
+            # otherwise and this must read the same way.
+            device_pin_governs = bool(request.selected_gpu_ids),
+        )
+        if breakdown is None:
+            return EstimateMemoryResponse(available = False, reason = "unsizable")
+        # Shaped through the canonical MemoryEstimate, the same one
+        # GET /models/kv-cache-estimate goes through, so the two routes cannot
+        # drift apart in vocabulary. The projection is what preserves THIS
+        # route's meaning of weights_bytes -- every resident file, not the quant
+        # file alone. Both mappings live together in
+        # core/inference/memory_contract.py.
+        estimate = build_memory_estimate(
+            breakdown,
+            # Not known here, and 0 rather than a stand-in: this route is given a
+            # resolved config and prices what the launch would hold, so nothing
+            # in it measured the single file the user picked. The legacy shape
+            # below does not carry the field, and inventing a value would put a
+            # wrong number on the canonical route for the sake of a non-null.
+            quant_file_bytes = 0,
+            moe_offload_unmodelled = bool(
+                (request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0)
+                # Outside Manual the extras keep their expert-placement flags: /load
+                # strips those only on the Manual branch, where the field owns them.
+                # Same predicate the loader's own host-residency gate uses, so -ncmoe,
+                # -cmoe and an -ot pattern all say it out loud.
+                or (
+                    request.gpu_memory_mode != "manual"
+                    and _args_place_tensors_on_cpu(request.llama_extra_args)
+                )
+            ),
+        )
+        return EstimateMemoryResponse(**project_estimate_memory_response(estimate))
+
+    # Header walks and file stats are blocking; keep them off the event loop so a
+    # slider drag cannot stall streaming chats.
+    return await asyncio.to_thread(_estimate)
 
 
 @router.post("/unload", response_model = UnloadResponse)
@@ -14487,26 +16568,42 @@ def _legacy_image_is_distinct(payload) -> bool:
     against that one value alone: matching any image in the thread let a client
     resend an older image, or an assistant's, and hid a real attachment.
     """
-    if not payload.image_base64:
+    image = getattr(payload, "image_base64", None)
+    if not image:
         return False
-    return _latest_user_image_payload(payload.messages) != payload.image_base64
+    return _latest_user_image_payload(getattr(payload, "messages", None)) != image
 
 
-def _latest_user_image_payload(messages: list) -> "Optional[str]":
+def _latest_user_image_payload(messages) -> "Optional[str]":
     """The value ``findLatestUserImageBase64`` would put in ``image_base64``.
 
     Its scan order: newest turn first, user turns only, first image part, ``data:``
     prefix stripped the way :func:`_extract_content_parts` strips it. A part that
     yields nothing does not end the scan, since the frontend walks on past a falsy
     read; stopping on one refused Studio's echo of a valid earlier image.
+
+    Reads models and plain dicts alike: the generation paths only ever hold models, but
+    the KV admission estimate sees whatever the caller passed, and both have to answer
+    "is the legacy field an echo?" the same way or the reservation stops matching the
+    prompt.
     """
-    for msg in reversed(messages):
-        if msg.role != "user" or not isinstance(msg.content, list):
+    for msg in reversed(list(messages or ())):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if role != "user" or not isinstance(content, list):
             continue
-        for part in msg.content:
-            if part.type != "image_url":
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") != "image_url":
+                    continue
+                image_url = part.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else image_url
+            else:
+                if getattr(part, "type", None) != "image_url":
+                    continue
+                url = getattr(getattr(part, "image_url", None), "url", None)
+            if not isinstance(url, str):
                 continue
-            url = part.image_url.url
             encoded = url.partition(",")[2] if url.startswith("data:") else url
             if encoded:
                 return encoded
@@ -15982,11 +18079,56 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
 
 
+class _DisconnectPolicyRequest:
+    """Delegate a request while making generation disconnect policy explicit."""
+
+    def __init__(self, request: Request, *, cancel_on_disconnect: bool) -> None:
+        self._request = request
+        self._cancel_on_disconnect = cancel_on_disconnect
+
+    async def is_disconnected(self) -> bool:
+        if not self._cancel_on_disconnect:
+            return False
+        return await self._request.is_disconnected()
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+
+def _chat_cancel_event(request: Request) -> threading.Event:
+    """Reuse a durable run's event across auto-load and generation registration."""
+    event = getattr(getattr(request, "state", None), "generation_cancel_event", None)
+    return event if event is not None else threading.Event()
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+):
+    from auth.authentication import request_admitted_without_credential
+    if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "External providers can only be used from the Unsloth UI or with an API key.",
+        )
+    return await produce_openai_chat_completions(
+        payload,
+        request,
+        current_subject,
+        cancel_on_disconnect = True,
+    )
+
+
+async def produce_openai_chat_completions(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str,
+    *,
+    cancel_on_disconnect: bool,
 ):
     """
     OpenAI-compatible chat completions endpoint.
@@ -16004,6 +18146,11 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    request = _DisconnectPolicyRequest(
+        request,
+        cancel_on_disconnect = cancel_on_disconnect,
+    )
+
     # OpenAI's newer "developer" role is equivalent to "system". Normalize it
     # before provider routing so external providers (which may not accept the
     # "developer" role) get "system" too, matching the local path.
@@ -16408,7 +18555,7 @@ async def openai_chat_completions(
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
-            cancel_event = threading.Event()
+            cancel_event = _chat_cancel_event(request)
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
 
@@ -16784,7 +18931,7 @@ async def openai_chat_completions(
                 "Image provided but current GGUF model does not support vision.",
             )
 
-        cancel_event = threading.Event()
+        cancel_event = _chat_cancel_event(request)
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
         # parity). Naive curl / .NET / System.Text.Json clients omitting the
@@ -16874,7 +19021,7 @@ async def openai_chat_completions(
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
 
-        cancel_event = threading.Event()
+        cancel_event = _chat_cancel_event(request)
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
@@ -16940,16 +19087,8 @@ async def openai_chat_completions(
         if (
             not use_tools
             and not _tool_loop_unusable
-            and _cli_policy is not False
             and llama_backend.supports_tools
-            and _rolling_context_policy(payload) is not None
-            and _checkpoint_needs_search()
-            and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
-            # And an epoch actually happened here: a rolling-window thread archives
-            # identically, and there the loop would open for a repair that cannot happen.
-            and _thread_has_checkpoint(
-                getattr(payload, "thread_id", None), getattr(payload, "messages", None)
-            )
+            and _checkpoint_recall_may_enable_tools(payload)
         ):
             use_tools = True
 
@@ -17032,6 +19171,7 @@ async def openai_chat_completions(
                 _nudge,
                 tools_to_use,
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                payload = payload,
             )
 
             if _nudge:
@@ -17108,6 +19248,8 @@ async def openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     context_overflow = _rolling_context_policy(payload),
+                    context_policy = _request_context_policy(payload),
+                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -17827,6 +19969,8 @@ async def openai_chat_completions(
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 thread_id = payload.thread_id,
                 # These requests suppress the tool loop AND are excluded from the checkpoint
                 # repair above, so search_conversation is offered neither now nor on the
@@ -18622,7 +20766,7 @@ async def openai_chat_completions(
             reasoning_prefilled = prefilled,
         )
 
-    cancel_event = threading.Event()
+    cancel_event = _chat_cancel_event(request)
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
@@ -19442,7 +21586,16 @@ async def openai_chat_completions(
                 _finish = (
                     "tool_calls"
                     if (healer is not None and not _cancelled and healer.healed)
-                    else ("stop" if _cancelled else _stats_finish_reason(_stats))
+                    else (
+                        "stop"
+                        if _cancelled
+                        else _safetensors_finish_reason(
+                            _stats,
+                            payload,
+                            is_mlx = bool(_sf_model_info.get("is_mlx", False)),
+                            durable_run = not cancel_on_disconnect,
+                        )
+                    )
                 )
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Reuse the reason already sent to the client. Outside the stats block
@@ -25778,12 +27931,18 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     image is re-encoded to PNG (llama-server's stb_image has limited format
     support) and spliced into the last user message as an OpenAI ``image_url``
     content part so vision + function-calling requests work transparently.
+
+    Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
+    what admission charges for. Studio echoes the current image into both spellings, so
+    splicing that unconditionally sent a tools or response_format request two copies
+    against a reservation for one: 4417 reserved against 8466 charged, which overcommits
+    the KV cache wherever the slot count lets that gap accumulate.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
 
-    if not payload.image_base64:
+    if not _legacy_image_is_distinct(payload):
         return messages
 
     try:
@@ -25868,12 +28027,10 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
             )
         )
     )
-    has_message_image = any(
-        isinstance(msg.get("content"), list)
-        and any(part.get("type") == "image_url" for part in msg["content"])
-        for msg in messages
-    )
-    if payload.image_base64 and not has_message_image:
+    # Distinctness, not "the messages carry no image": Studio's echo is byte-equal to a
+    # part already here and must not be spliced twice, but a legacy image the thread
+    # does not hold is a real attachment. Admission charges on the same predicate.
+    if _legacy_image_is_distinct(payload):
         # Legacy bytes can be any format; the normalizer below sniffs and
         # re-encodes to PNG, so the declared mime is rewritten anyway.
         image_part = {

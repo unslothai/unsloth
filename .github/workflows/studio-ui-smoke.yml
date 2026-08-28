@@ -698,6 +698,32 @@ jobs:
           mkdir -p logs/playwright_modelcfg
           python tests/studio/playwright_model_config.py
 
+      # "Estimated Memory Usage" row in the same run-settings panel: the collapsible
+      # readout that prices a prospective GGUF load before it runs.
+      #
+      # On the fourth Unsloth rather than a fifth, and immediately after the step above,
+      # for two reasons. The row is GGUF-only, so it needs a GGUF sitting in the picker,
+      # and that step has just put one there. And it needs nothing else from the server:
+      # POST /api/inference/estimate-memory is intercepted in the browser, so the figures
+      # under assertion are the ones the suite handed back rather than this runner's own
+      # memory, which is what makes them assertable at all.
+      #
+      # It attaches with the password the step above minted instead of driving
+      # /change-password itself: the bootstrap password on this instance has already been
+      # rotated by then, so there is no first-boot flow left to drive.
+      - name: Estimated Memory Usage row (Playwright)
+        if: matrix.shard == 'picker'
+        env:
+          BASE_URL: http://127.0.0.1:18898
+          STUDIO_LOGIN_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
+          PW_ART_DIR: logs/playwright_memory_estimate
+          STUDIO_UI_STRICT: '1'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+        run: |
+          mkdir -p logs/playwright_memory_estimate
+          python tests/studio/playwright_memory_estimate.py
+
       - name: Stop fourth Unsloth
         if: (always()) && (matrix.shard == 'picker')
         run: |
@@ -786,6 +812,7 @@ jobs:
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
             logs/playwright_modelcfg
+            logs/playwright_memory_estimate
             logs/playwright_ime
             logs/studio-permissions-*.log
           # 1 day, matching the repository-wide cap. A larger value here is
