@@ -3,6 +3,7 @@
 
 export type LanAccessState = "off" | "online" | "error";
 export type LanAccessOwner = "launch" | "settings" | null;
+export type LanKeylessScope = "off" | "inference" | "full";
 
 export type LanAccessStatus = {
   state: LanAccessState;
@@ -17,6 +18,9 @@ export type LanAccessStatus = {
   bindHost: string | null;
   wildcardBind: boolean;
   servesWebUi: boolean;
+  keylessLanEligible: boolean;
+  keylessScope: LanKeylessScope;
+  keylessTools: boolean;
 };
 
 export type ApiLanAccessStatus = {
@@ -41,11 +45,22 @@ export type ApiLanAccessStatus = {
   wildcard_bind?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   serves_web_ui?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  keyless_lan_eligible?: boolean | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  keyless_scope?: LanKeylessScope | string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  keyless_tools?: boolean | null;
 };
+
+function normalizeKeylessScope(value: unknown): LanKeylessScope {
+  return value === "inference" || value === "full" ? value : "off";
+}
 
 export function normalizeLanAccessStatus(
   status: ApiLanAccessStatus,
 ): LanAccessStatus {
+  const keylessScope = normalizeKeylessScope(status.keyless_scope);
   return {
     state: status.state,
     urls: Array.isArray(status.urls) ? status.urls : [],
@@ -60,7 +75,34 @@ export function normalizeLanAccessStatus(
     wildcardBind: status.wildcard_bind === true,
     // absent on a backend that predates the field, where the web UI is served
     servesWebUi: status.serves_web_ui !== false,
+    keylessLanEligible: status.keyless_lan_eligible === true,
+    keylessScope,
+    keylessTools: keylessScope !== "off" && status.keyless_tools === true,
   };
+}
+
+export function keylessLanAccessDescription(
+  status: LanAccessStatus | null,
+): string {
+  if (!status || status.keylessScope === "off") {
+    return "Authentication is required for LAN API requests.";
+  }
+  if (status.blockReason === "colab") {
+    return "Colab never receives keyless access, regardless of the saved scope.";
+  }
+  if (status.keylessScope === "full") {
+    return "Full keyless access is localhost-only and is never granted over LAN or public URLs.";
+  }
+  const tools = status.keylessTools
+    ? " Agent tools are separately enabled."
+    : " Agent tools remain off unless separately granted.";
+  if (status.keylessLanEligible && status.publicUrls.length > 0) {
+    return `Inference can be keyless on localhost and an active private LAN, but never through the listed public URL.${tools}`;
+  }
+  if (status.keylessLanEligible) {
+    return `Inference can be keyless on localhost and this active private LAN.${tools}`;
+  }
+  return `Inference is keyless on localhost; LAN callers require an active private listener.${tools}`;
 }
 
 // start and stop are synchronous socket work, so there is no transition to chase

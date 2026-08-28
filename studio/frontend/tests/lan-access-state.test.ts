@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   type ApiLanAccessStatus,
   type LanAccessStatus,
+  keylessLanAccessDescription,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
@@ -56,6 +57,8 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       wildcard_bind: true,
       // biome-ignore lint/style/useNamingConvention: API schema
       serves_web_ui: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      keyless_lan_eligible: true,
     }),
   );
   assert.deepEqual(s, {
@@ -71,6 +74,9 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     bindHost: "0.0.0.0",
     wildcardBind: true,
     servesWebUi: true,
+    keylessLanEligible: true,
+    keylessScope: "off",
+    keylessTools: false,
   });
 });
 
@@ -84,6 +90,58 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.bindHost, null);
   assert.equal(s.wildcardBind, false);
   assert.equal(s.servesWebUi, true);
+  assert.equal(s.keylessLanEligible, false);
+  assert.equal(s.keylessScope, "off");
+  assert.equal(s.keylessTools, false);
+});
+
+test("keyless state and messaging preserve every security boundary", () => {
+  const unknown = normalizeLanAccessStatus(
+    apiStatus({ keyless_scope: "unknown", keyless_tools: true }),
+  );
+  assert.deepEqual(
+    [unknown.keylessScope, unknown.keylessTools],
+    ["off", false],
+  );
+  assert.ok(
+    keylessLanAccessDescription(null).includes("Authentication is required"),
+  );
+  const cases: [Partial<ApiLanAccessStatus>, string][] = [
+    [
+      {
+        state: "online",
+        keyless_lan_eligible: false,
+        keyless_scope: "inference",
+      },
+      "active private listener",
+    ],
+    [
+      {
+        state: "online",
+        keyless_lan_eligible: true,
+        keyless_scope: "inference",
+      },
+      "this active private LAN",
+    ],
+    [
+      {
+        state: "online",
+        public_urls: [PUBLIC],
+        keyless_lan_eligible: true,
+        keyless_scope: "inference",
+      },
+      "never through the listed public URL",
+    ],
+    [{ keyless_scope: "full" }, "never granted over LAN or public URLs"],
+    [
+      { block_reason: "colab", keyless_scope: "inference" },
+      "Colab never receives keyless access",
+    ],
+  ];
+  for (const [overrides, fragment] of cases) {
+    const status = normalizeLanAccessStatus(apiStatus(overrides));
+    assert.ok(keylessLanAccessDescription(status).includes(fragment));
+  }
 });
 
 test("urls survives a null or non-array payload without throwing", () => {

@@ -426,7 +426,9 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "retrieve_lexical",
-        lambda c, s, q, k = None: calls.append(("lex", k)) or [],
+        # The archive's shaped FTS query, accepted and ignored: this test is about which
+        # backends run.
+        lambda c, s, q, k = None, *, match_query = None: calls.append(("lex", k)) or [],
     )
     monkeypatch.setattr(
         retrieval,
@@ -509,6 +511,13 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
     assert seen["min_dense_score"] == 0.8
     assert seen["mode"] == "dense"
 
-    # Explicit False disables even with the env default on.
+    # The UI's explicit Off sends both flags. autoinject=False on its own is also
+    # used by large-model Auto and must still allow thread-document grounding.
     monkeypatch.setenv("RAG_AUTOINJECT", "1")
-    assert tools.build_rag_autoinject(conv, {"thread_id": "t1", "autoinject": False}) is None
+    assert (
+        tools.build_rag_autoinject(
+            conv,
+            {"thread_id": "t1", "autoinject": False, "whole_doc": False},
+        )
+        is None
+    )

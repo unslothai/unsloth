@@ -11,14 +11,22 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   type PlusMenuItemId,
+  refreshModelDisclaimerPreference,
+  saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
   useSidebarOrganizationStore,
 } from "@/features/chat";
+import {
+  compactionStyleValue,
+  parseCompactionStyle,
+} from "@/features/chat/utils/auto-compaction";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
+import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
   Download01Icon,
@@ -30,10 +38,11 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -145,6 +154,22 @@ export function ChatTab() {
   const setRememberParamsPerModel = useChatRuntimeStore(
     (state) => state.setRememberParamsPerModel,
   );
+  const autoCompactEnabled = useChatRuntimeStore(
+    (state) => state.autoCompactEnabled,
+  );
+  const setAutoCompactEnabled = useChatRuntimeStore(
+    (state) => state.setAutoCompactEnabled,
+  );
+  const contextPolicy = useChatRuntimeStore((state) => state.contextPolicy);
+  const compactionHeadroomRatio = useChatRuntimeStore(
+    (state) => state.compactionHeadroomRatio,
+  );
+  const setContextPolicy = useChatRuntimeStore(
+    (state) => state.setContextPolicy,
+  );
+  const setCompactionHeadroomRatio = useChatRuntimeStore(
+    (state) => state.setCompactionHeadroomRatio,
+  );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
@@ -167,6 +192,26 @@ export function ChatTab() {
   const setAllowArtifactNetworkAccess = useChatRuntimeStore(
     (state) => state.setAllowArtifactNetworkAccess,
   );
+  const searchImages = useChatRuntimeStore((state) => state.searchImages);
+  const setSearchImages = useChatRuntimeStore(
+    (state) => state.setSearchImages,
+  );
+  const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  useEffect(() => {
+    if (scrollTarget !== "chat-canvas-network") return;
+    const frame = window.requestAnimationFrame(() => {
+      networkAccessRowRef.current?.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("chat-canvas-network");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -182,13 +227,14 @@ export function ChatTab() {
   const setShowAllQuantizations = useChatRuntimeStore(
     (state) => state.setShowAllQuantizations,
   );
+  const showMemoryBar = useChatRuntimeStore((state) => state.showMemoryBar);
+  const setShowMemoryBar = useChatRuntimeStore(
+    (state) => state.setShowMemoryBar,
+  );
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
-  );
-  const setShowModelDisclaimer = useChatPreferencesStore(
-    (state) => state.setShowModelDisclaimer,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
@@ -202,15 +248,30 @@ export function ChatTab() {
   const setCollapseThinkingByDefault = useChatPreferencesStore(
     (state) => state.setCollapseThinkingByDefault,
   );
+  const collapseToolActivityByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const setCollapseToolActivityByDefault = useChatPreferencesStore(
+    (state) => state.setCollapseToolActivityByDefault,
+  );
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
   const setPastedTextMinChars = useChatPreferencesStore(
     (state) => state.setPastedTextMinChars,
   );
+  // The platform's own paste-without-formatting chord, which the composer reads
+  // as "put it in the box" whatever this threshold says. macOS carries it on
+  // Option, that being the chord its Edit menu binds.
+  const macPlatform = isMacPlatform();
+  const plainPasteLabel = formatBindingLabel(
+    { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
+    macPlatform,
+  );
 
   useEffect(() => {
     void hydratePersistedSettings();
+    refreshModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
 
   return (
@@ -246,6 +307,14 @@ export function ChatTab() {
             checked={showAllQuantizations}
             onCheckedChange={setShowAllQuantizations}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.showMemoryBar")}
+          description={t(
+            "settings.chat.modelSelection.showMemoryBarDescription",
+          )}
+        >
+          <Switch checked={showMemoryBar} onCheckedChange={setShowMemoryBar} />
         </SettingsRow>
       </SettingsSection>
 
@@ -292,12 +361,27 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.chat.tools.collapseByDefault")}
+          description={t(
+            "settings.chat.tools.collapseByDefaultDescription",
+          )}
+        >
+          <Switch
+            checked={collapseToolActivityByDefault}
+            onCheckedChange={setCollapseToolActivityByDefault}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.chat.modelDisclaimer")}
           description={t("settings.chat.modelDisclaimerDescription")}
         >
           <Switch
             checked={showModelDisclaimer}
-            onCheckedChange={setShowModelDisclaimer}
+            onCheckedChange={(checked) => {
+              return saveModelDisclaimerPreference(checked).catch(() => {
+                toast.error("Could not save the model disclaimer setting.");
+              });
+            }}
           />
         </SettingsRow>
         <SettingsRow
@@ -336,8 +420,60 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.chat.autoCompact")}
+          description={t("settings.chat.autoCompactDescription")}
+        >
+          <Switch
+            checked={autoCompactEnabled}
+            onCheckedChange={setAutoCompactEnabled}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.compactionStyle")}
+          description={t("settings.chat.compactionStyleDescription")}
+        >
+          <Select
+            value={compactionStyleValue(contextPolicy, compactionHeadroomRatio)}
+            onValueChange={(value) => {
+              const next = parseCompactionStyle(value);
+              setContextPolicy(next.contextPolicy);
+              setCompactionHeadroomRatio(next.compactionHeadroomRatio);
+            }}
+            disabled={!autoCompactEnabled}
+          >
+            <SelectTrigger
+              className="w-64"
+              aria-label={t("settings.chat.compactionStyle")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="inherit">
+                {t("settings.chat.compactionStyleInherit")}
+              </SelectItem>
+              <SelectItem value="checkpoint">
+                {t("settings.chat.compactionStyleCheckpoint")}
+              </SelectItem>
+              <SelectItem value="rolling:0.25">
+                {t("settings.chat.compactionStyleRollingDefault")}
+              </SelectItem>
+              <SelectItem value="rolling:0.1">
+                {t("settings.chat.compactionStyleRolling10")}
+              </SelectItem>
+              <SelectItem value="rolling:0.05">
+                {t("settings.chat.compactionStyleRolling5")}
+              </SelectItem>
+              <SelectItem value="rolling:0">
+                {t("settings.chat.compactionStyleRollingNone")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
-          description={t("settings.chat.pastedTextThresholdDescription")}
+          description={t("settings.chat.pastedTextThresholdDescription", {
+            shortcut: plainPasteLabel,
+          })}
         >
           <Select
             value={String(pastedTextMinChars)}
@@ -384,16 +520,27 @@ export function ChatTab() {
             onCheckedChange={setCollapseHtmlArtifacts}
           />
         </SettingsRow>
+        <div ref={networkAccessRowRef}>
+          <SettingsRow
+            label={t("settings.chat.artifacts.allowNetworkAccess")}
+            description={t(
+              "settings.chat.artifacts.allowNetworkAccessDescription",
+            )}
+          >
+            <Switch
+              checked={allowArtifactNetworkAccess}
+              onCheckedChange={setAllowArtifactNetworkAccess}
+            />
+          </SettingsRow>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.webSearch.title")}>
         <SettingsRow
-          label={t("settings.chat.artifacts.allowNetworkAccess")}
-          description={t(
-            "settings.chat.artifacts.allowNetworkAccessDescription",
-          )}
+          label={t("settings.chat.webSearch.images")}
+          description={t("settings.chat.webSearch.imagesDescription")}
         >
-          <Switch
-            checked={allowArtifactNetworkAccess}
-            onCheckedChange={setAllowArtifactNetworkAccess}
-          />
+          <Switch checked={searchImages} onCheckedChange={setSearchImages} />
         </SettingsRow>
       </SettingsSection>
     </div>

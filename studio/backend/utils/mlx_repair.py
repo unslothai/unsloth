@@ -50,10 +50,35 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 # Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
-_MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
+# mlx-lm's floor tracks unsloth-zoo, which needs GenerationBatch.Response and
+# BatchGenerator.next_generated from 0.31.2; it read 0.22.0 here, which would
+# have let a stack too old for batched generation clear the chat-only gate.
+_MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
+# What the self-heal INSTALLS, as opposed to the floors above, which judge a
+# stack that is already there. Pinned rather than floored because this install is
+# unattended and default-on, and mlx ships breaking changes in patch releases:
+# 0.32.1 broke model loading here (unslothai/unsloth#9466). A floor would fetch
+# whatever shipped since the user last opened Unsloth, unasked.
+#
+# Keep in sync with unsloth-zoo's pyproject darwin deps. mlx-vlm stays a range so
+# the resolver can pick 0.6.15 here, where the installer overrides mlx-vlm's
+# transformers requirement, and 0.6.4 under the plain cap.
+#
+# 0.32.1 is chosen with its known defect, not in ignorance of it: it segfaults at
+# interpreter finalization when a fused Metal custom kernel is the last work a
+# process did, which unsloth-zoo measured and works around in
+# tests/_run_then_exit_hard.py. Staying on 0.32.0 to dodge that would give back
+# mlx#3833, where two fast.metal_kernel instances sharing a name but not a source
+# silently run the first kernel's code for the second. A noisy exit after the work
+# is finished beats wrong numbers from the fused kernels this stack is built on.
+_MLX_INSTALL_SPECS = {
+    "mlx": "==0.32.1",
+    "mlx-lm": "==0.31.3",
+    "mlx-vlm": ">=0.4.4,<0.7.0",
+}
+MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
@@ -351,7 +376,7 @@ def _mlx_install_env() -> dict[str, str]:
     Unsloth secrets or be steered to a hostile index.
 
     Mirror the main installer (install_python_stack.py) by pointing UV_OVERRIDE at
-    overrides-darwin-arm64.txt, which keeps mlx-vlm/mlx-lm on the Studio
+    overrides-darwin-arm64.txt, which keeps mlx-vlm/mlx-lm on the Unsloth
     Transformers floor. Without it, uv keeps the Unsloth transformers pin only
     by silently backtracking mlx-vlm to an old, unsupported version (uv honours
     UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the
@@ -500,6 +525,9 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
+            # The floors, not MLX_PACKAGES: the gate above tests the floors, so
+            # quoting the install pins would tell someone on a usable mlx 0.33
+            # that they need exactly 0.32.1.
             ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
         )
         return False
@@ -545,19 +573,38 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
 
 
 def start_mlx_autorepair_if_needed() -> bool:
-    """If this is an Apple Silicon host whose MLX stack is missing or too old,
-    reinstall it on a daemon thread (off the startup critical path) and re-detect
-    on success. Returns True iff a repair thread was started. No-op (returns False)
-    off Apple Silicon, when the stack is already adequate, when already attempted
-    this process, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1."""
+    """If this is an Apple Silicon host whose MLX stack is missing or too old, reinstall it on
+    a daemon thread (off the startup critical path) and re-detect on success. True iff a repair
+    thread was started; False off Apple Silicon, when already attempted this process, or when
+    disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still
+    overturns a verdict that contradicts it."""
     global _attempted, _repair_thread, _repair_started_at
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
-        return False
     if not is_apple_silicon():
         return False
-    if mlx_stack_available():
-        return False
     from utils.hardware import hardware as _hw
+
+    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but
+    # only when one waits on it: under the warm's kill switch it would be a first MLX import
+    # for no one.
+    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
+    if opted_out and not _hw.verdict_blames_the_mlx_stack():
+        return False
+    # Read before the measurement, so a shutdown during it discards whatever is published on
+    # the strength of it. The repair worker shares this epoch rather than a later one.
+    epoch = _hw.current_detection_epoch()
+    if mlx_stack_available():
+        # Detection asks this as the warm's first stage, early enough to race another thread's
+        # first transformers import: CPython hands the loser a partially initialised module, so
+        # mlx_lm's chain raises on a healthy install (#9120). Usable here means the verdict was
+        # raced. Only the warm's is reachable; with the warm off, a later one stands unreconciled.
+        if _hw.overturn_the_mlx_verdict(epoch):
+            logger.info(
+                "MLX stack measures usable after the warm, against a chat-only verdict "
+                "from before it; re-detected. Train/Export are back (reload the page)."
+            )
+        return False
+    if opted_out:
+        return False
 
     with _attempted_lock:
         if _attempted:
@@ -567,11 +614,9 @@ def start_mlx_autorepair_if_needed() -> bool:
         # half-published: a reader landing between the two sees "attempted, nothing alive"
         # and settles the very verdict this repair is about to overturn. The worker never
         # takes this lock, so the start() handshake cannot deadlock against it.
-        # The epoch is read here rather than in the thread: it may not run for a while, and
-        # reading it there would bind the pass to a later shutdown.
         _repair_thread = threading.Thread(
             target = _run_repair_and_redetect,
-            args = (_hw.current_detection_epoch(),),
+            args = (epoch,),
             daemon = True,
             name = "mlx-autorepair",
         )

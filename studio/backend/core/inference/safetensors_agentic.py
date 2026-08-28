@@ -16,6 +16,7 @@ parses tool calls from the cumulative text and dispatches via
 
 import bisect
 import inspect
+import json
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -33,6 +34,7 @@ from core.inference.tool_call_parser import (
     NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
+    RAG_SEARCH_TOOLS,
     StreamingMarkupStripper,
     TOOL_XML_SIGNALS,
     is_reprompt_repeat,
@@ -61,6 +63,7 @@ from core.inference.chat_template_helpers import (
     append_assistant_turn,
     trailing_assistant_text,
 )
+from core.inference.passthrough_healing import nudge_enabled
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -432,20 +435,29 @@ def _tool_event_provenance(**flags: object) -> dict[str, object]:
     return tool_event_provenance(**flags)
 
 
-def _accepts_output_callback(func: Callable[..., str]) -> bool:
-    """Whether an injectable ``execute_tool`` supports ``output_callback``.
+def _accepts_kwarg(func: Callable[..., str], name: str) -> bool:
+    """Whether an injectable ``execute_tool`` supports the keyword ``name``.
 
     The loop's ``execute_tool`` is a parameter (tests inject fakes), so forward
-    the live-output kwarg only when the callable declares it or takes ``**kwargs``.
+    an optional kwarg only when the callable declares it or takes ``**kwargs``.
     """
     try:
         sig = inspect.signature(func)
     except (TypeError, ValueError):
         return False
     params = sig.parameters
-    if "output_callback" in params:
+    if name in params:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _accepts_output_callback(func: Callable[..., str]) -> bool:
+    return _accepts_kwarg(func, "output_callback")
+
+
+def _search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, bool]:
+    from core.inference.tool_stream_exec import search_images_kwargs
+    return search_images_kwargs(func, tool_name)
 
 
 def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
@@ -479,6 +491,8 @@ def run_safetensors_tool_loop(
     continue_final_message: bool = False,
     markup = None,
     renderable_tools = None,
+    context_length: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -503,6 +517,11 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+    # The branch this request is on, before the loop appends anything. A GGUF-compacted
+    # thread keeps its archive across a switch to safetensors, so search_conversation is
+    # advertised here too and needs the same filtering: the stored rows are the whole
+    # DAG, and Retry leaves the replaced response in them.
+    request_branch = list(messages)
 
     # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
     # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
@@ -709,6 +728,10 @@ def run_safetensors_tool_loop(
             if not isinstance(cumulative, str):
                 continue  # defensive: pipeline yields only strings
 
+            # Deltas by length: this needs snapshots that only grow. A producer that
+            # rebuilds its text each step can revise one instead, and diffing that
+            # splices two renderings together -- which is why the MLX text producer
+            # withholds while it is matching stop sequences.
             delta = cumulative[len(prev_cumulative) :]
             prev_cumulative = cumulative
             if not delta:
@@ -1000,16 +1023,15 @@ def run_safetensors_tool_loop(
             )
             if not safety_tc:
                 # Re-prompt once on plan-without-action, before any tool runs
-                # (GGUF loop parity). The retry is gated on nudge_tool_calls so
-                # Unsloth callers (which send True) always nudge, while API callers
-                # who omit the flag keep today's no-reprompt behavior (opt-in).
+                # (GGUF loop parity). Omitted flags follow the shared process
+                # default, while explicit request values win.
                 intent_text = _reprompt_intent_text(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
                 if (
                     auto_heal_tool_calls
-                    and nudge_tool_calls
+                    and nudge_enabled(nudge_tool_calls)
                     and active_tools
                     and reprompt_count < MAX_ACT_REPROMPTS
                     and not rag_autoinjected
@@ -1158,7 +1180,7 @@ def run_safetensors_tool_loop(
         # abort it and drop the parallel calls that follow.
         deferred_noop_msgs: list = []
 
-        for tc in tool_calls or []:
+        for _call_index, tc in enumerate(tool_calls or []):
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
             provisional_match = (
@@ -1277,7 +1299,7 @@ def run_safetensors_tool_loop(
             eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
             # RAG: cap paraphrased KB re-searches that slip past the dup guard.
             if (
-                decision.tool_name == "search_knowledge_base"
+                decision.tool_name in RAG_SEARCH_TOOLS
                 and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
             ):
                 result = RAG_SEARCH_CAP_NUDGE
@@ -1295,8 +1317,106 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    if _accepts_kwarg(execute_tool, "conversation_branch"):
+                        kwargs["conversation_branch"] = request_branch
+                    # And the room the model has left, as the GGUF loop does: without a
+                    # budget the tool's clamp is skipped and a model-chosen top_k of 8
+                    # appends roughly 4K tokens to an already full prompt.
+                    if context_length and _accepts_kwarg(
+                        execute_tool, "conversation_budget_tokens"
+                    ):
+                        from core.inference.context_window import (
+                            estimate_messages_tokens_dense,
+                            retrieval_budget,
+                        )
+
+                        # Dense, unlike the eviction estimator: four characters per token
+                        # undercounts CJK and emoji by about half, and this path has no
+                        # rolling fit to recover if the tool exchange it sizes then puts
+                        # the next prompt over the window. Measured on an 81-message CJK
+                        # chat: 1295 estimated against 2737 real, reporting 1777 tokens of
+                        # room where 335 remained.
+                        #
+                        # `reply_returns`, as the GGUF loop does: result and reply are
+                        # both protected on the next fit, so one retrieval cannot spend
+                        # the budget they share.
+                        kwargs["conversation_budget_tokens"] = retrieval_budget(
+                            int(context_length),
+                            max_tokens,
+                            estimate_messages_tokens_dense(conversation)
+                            + estimate_messages_tokens_dense(tools or []),
+                            reply_returns = True,
+                        )
+                    # And what a RESULT may add, which is the same question asked of
+                    # every tool rather than of retrieval alone. This loop has no rolling
+                    # fit behind it either, so a `cat` of a file the model just wrote is
+                    # protected as the newest exchange and there is nothing downstream to
+                    # evict it.
+                    if context_length and _accepts_kwarg(execute_tool, "result_budget_tokens"):
+                        from core.inference.context_window import (
+                            estimate_messages_tokens_conservative as _spent_tokens,
+                            estimate_messages_tokens_dense as _dense_tokens,
+                            tool_result_budget,
+                        )
+
+                        # The window itself as well, not only the room: nothing in the
+                        # tools layer can see a native model's context length (its probe
+                        # answers for a resident GGUF), and a cap with no window to size
+                        # against falls back to the window-independent constant.
+                        if _accepts_kwarg(execute_tool, "context_tokens"):
+                            kwargs["context_tokens"] = int(context_length)
+                        # Tool results are counted TWICE, which charges them two
+                        # characters per token instead of four. The estimator's rate is an
+                        # English one, and this budget exists because the results these
+                        # tools return are base64, minified JSON, hashes and command
+                        # output, which run nearer two. Under-pricing what is already in
+                        # the conversation hands the next call room that is occupied, and
+                        # this loop has no exact count and no rolling fit to catch it.
+                        results = [
+                            message for message in conversation if message.get("role") == "tool"
+                        ]
+                        # Removed from the thread below rather than added on top of it:
+                        # the conservative estimate already prices every message it is
+                        # given, so leaving the results in and adding them again charges
+                        # them twice, and a CJK result twice over at a token per character
+                        # each time. A thread with one sizable earlier result would then
+                        # report no room while it still had plenty.
+                        rest = [
+                            message for message in conversation if message.get("role") != "tool"
+                        ]
+                        # Split across the calls still to run in this batch, and after
+                        # their arguments, exactly as the GGUF loop does: one turn can
+                        # call several tools and each call is appended only as it runs,
+                        # so sizing a result as if it were alone lets the first take the
+                        # room the rest of the batch still needs.
+                        pending = list(tool_calls or [])[_call_index + 1 :]
+                        pending_args = [
+                            {"role": "assistant", "content": json.dumps(call, default = str)}
+                            for call in pending
+                        ]
+                        kwargs["result_budget_tokens"] = tool_result_budget(
+                            int(context_length),
+                            max_tokens,
+                            # Conservative for the thread as a whole, not only for the
+                            # tool turns doubled below: a user or assistant turn can hold
+                            # a pasted blob or a block of minified JSON, and priced at the
+                            # English rate it reports a third of what it costs. Nothing
+                            # here can measure exactly, and the room this produces is what
+                            # the next result is admitted against.
+                            _spent_tokens(rest)
+                            + _spent_tokens(tools or [])
+                            # Every ASCII character of a result at two per token, not only
+                            # its unbroken runs: a result is `hexdump`, `ls -l` or a stack
+                            # trace as often as it is a blob, and those carry spaces.
+                            + _spent_tokens(results, dense_ascii = True)
+                            # Doubled for the same reason the results above are: a pending
+                            # call can carry base64, minified JSON or a block of code, and
+                            # nothing on this path can price a string exactly.
+                            + 2 * _dense_tokens(pending_args),
+                        ) // (len(pending) + 1)
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
+                    kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:
@@ -1309,7 +1429,7 @@ def run_safetensors_tool_loop(
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)
                     result = f"Error: tool raised an exception: {exc}"
-                if decision.tool_name == "search_knowledge_base":
+                if decision.tool_name in RAG_SEARCH_TOOLS:
                     kb_search_count += 1
 
             completion = tool_controller.record_result(decision, result)

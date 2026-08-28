@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import run_pwsh
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -45,7 +47,11 @@ def _link_dir(link: Path, target: Path) -> None:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: $shell is always pwsh or powershell (see POWERSHELLS),
+    # and every venv and rollback case in this file reads its stdout, so an interpreter that
+    # died at startup would surface as install.ps1 losing half a moved environment.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
@@ -218,6 +224,7 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
@@ -274,6 +281,7 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
@@ -341,6 +349,7 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
