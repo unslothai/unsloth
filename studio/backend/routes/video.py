@@ -1331,9 +1331,7 @@ async def _create_openai_video(
         )
         validate_video_request_shape(fam, width, height, want_frames)
         h3_task = expected_partition(pick)
-        validate_video_keyframe_conditioning(
-            fam, h3_task, has_keyframes = reference is not None
-        )
+        validate_video_keyframe_conditioning(fam, h3_task, has_keyframes = reference is not None)
         validate_video_reference_conditioning(
             fam,
             h3_task,

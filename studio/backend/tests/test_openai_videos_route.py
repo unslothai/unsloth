@@ -751,7 +751,12 @@ def test_a_reference_only_checkpoint_is_refused_before_the_model_switch(
 
     switched = {"completed": False}
 
-    async def _fake_switch(model, *, before_switch = None, **_kwargs):
+    async def _fake_switch(
+        model,
+        *,
+        before_switch = None,
+        **_kwargs,
+    ):
         pick = types.SimpleNamespace(
             model_path = "MiniMaxAI/MiniMax-H3",
             gguf_filename = "minimax_h3_ref2va-Q4_K_M.gguf",
