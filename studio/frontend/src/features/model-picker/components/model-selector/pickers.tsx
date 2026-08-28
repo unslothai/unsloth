@@ -78,6 +78,11 @@ import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
+import {
+  type GgufFit,
+  classifyGgufVariantFit,
+  ggufFitIsAutoSelectable,
+} from "./gguf-variant-fit.ts";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
   Add01Icon,
@@ -1507,23 +1512,18 @@ function GgufVariantExpander({
   // GGUF fit classification matching llama-server's _select_gpus logic:
   //   fits  = model <= 0.7 * total GPU memory
   //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
-  //   oom   = model > 0.7 * GPU + 0.7 * system RAM
+  //   disk  = beyond that, but mmap pages the rest from the file
+  //   oom   = the file is not even on this disk to page from
   const gpuBudgetGb = (gpuGb ?? 0) * 0.7;
   const totalBudgetGb = gpuBudgetGb + (systemRamGb ?? 0) * 0.7;
 
   const getGgufFit = useCallback(
-    (sizeBytes: number): "fits" | "tight" | "oom" => {
-      // Preserve permissive behavior only when no budget was measured. A known
-      // zero Vulkan budget means every non-empty variant is OOM.
-      if (totalBudgetGb <= 0) return budgetKnown ? "oom" : "fits";
-      const gb = sizeBytes / 1024 ** 3;
-      if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
-      // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the tier
-      // collapses to fit-or-oom against system RAM.
-      if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
-      if (gb <= totalBudgetGb) return "tight";
-      return "oom";
-    },
+    (sizeBytes: number): GgufFit =>
+      classifyGgufVariantFit(sizeBytes, {
+        gpuBudgetGb,
+        totalBudgetGb,
+        budgetKnown,
+      }),
     [budgetKnown, gpuBudgetGb, totalBudgetGb],
   );
 
@@ -1546,12 +1546,12 @@ function GgufVariantExpander({
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
-      if (preferred && getGgufFit(preferred.size_bytes) !== "oom") {
+      if (preferred && ggufFitIsAutoSelectable(getGgufFit(preferred.size_bytes))) {
         recommended.set(group.key, preferred.quant);
         continue;
       }
       const fitting = group.variants
-        .filter((variant) => getGgufFit(variant.size_bytes) !== "oom")
+        .filter((variant) => ggufFitIsAutoSelectable(getGgufFit(variant.size_bytes)))
         .sort((left, right) => right.size_bytes - left.size_bytes);
       if (fitting[0]) {
         recommended.set(group.key, fitting[0].quant);
@@ -1582,10 +1582,12 @@ function GgufVariantExpander({
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
-    // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
+    // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight,
+    // 4 = pages from disk, 5 = OOM. Disk sits above OOM because it runs.
     const tierOf = (v: GgufVariantDetail) => {
       const f = getGgufFit(v.size_bytes);
-      if (f === "oom") return 4;
+      if (f === "oom") return 5;
+      if (f === "disk") return 4;
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
     };
@@ -1840,6 +1842,7 @@ function GgufVariantExpander({
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
+        const paged = fit === "disk";
         const expectedBytes = ggufVariantExpectedBytes(v);
         // This row's own dependency group, never the listing's: see the
         // footprintVariants comment above.
@@ -1905,6 +1908,14 @@ function GgufVariantExpander({
               {tight && (
                 <span className="text-ui-9 font-medium !text-amber-400">
                   TIGHT
+                </span>
+              )}
+              {paged && (
+                <span
+                  className="text-ui-9 font-medium !text-amber-500"
+                  title="Larger than this machine's memory. It still loads: llama.cpp maps the weights and the system pages them from the file, so expect a few tokens per second rather than a refusal."
+                >
+                  FROM DISK
                 </span>
               )}
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
