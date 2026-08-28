@@ -399,7 +399,9 @@ def _process_exited(proc: subprocess.Popen) -> bool:
 
 
 def _origin_url(host: str, port: int) -> str:
-    url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url_host = host.replace("%", "%25")
+    if ":" in url_host and not url_host.startswith("["):
+        url_host = f"[{url_host}]"
     return f"http://{url_host}:{port}"
 
 

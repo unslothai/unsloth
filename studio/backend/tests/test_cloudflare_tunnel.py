@@ -81,6 +81,8 @@ def test_url_regex_skips_api_host_but_matches_real_url():
         ("localhost", "http://localhost:8080"),
         ("127.0.0.1", "http://127.0.0.1:8080"),
         ("::1", "http://[::1]:8080"),
+        ("fe80::1234%eth0", "http://[fe80::1234%25eth0]:8080"),
+        ("fe80::1234%12", "http://[fe80::1234%2512]:8080"),
     ],
 )
 def test_origin_url_brackets_ipv6_hosts(host, expected):
