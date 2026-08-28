@@ -9256,10 +9256,18 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
     validate = True preflight 400'd MIME-wrapped and newline-padded uploads the same
     server served before the preflight existed."""
     import base64 as _b64
+    import io
+    import wave
 
     from fastapi import HTTPException
 
-    payload = b"RIFF" + b"\x00" * 64
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\x00\x00" * 16)
+    payload = wav.getvalue()
     plain = _b64.b64encode(payload).decode()
     for name, encoded in (
         ("plain", plain),
@@ -9285,6 +9293,40 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
                 )
             )
         assert exc.value.status_code == 400, bad
+
+
+def test_non_audio_bytes_are_rejected_before_a_gguf_switch(monkeypatch):
+    import base64 as _b64
+
+    llama = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(llama)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/B.gguf", "Q4_K_M", "org/B-GGUF"),
+        backend = llama,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF",
+                object(),
+                "tester",
+                require_audio_input = True,
+                audio_preflight = {
+                    "b64": _b64.b64encode(b"not audio").decode(),
+                    "continue_final": False,
+                },
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert "decoded as audio" in json.dumps(exc.value.detail)
+    assert recorder.calls == []
+    assert llama.model_identifier == "org/A-GGUF"
 
 
 def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):

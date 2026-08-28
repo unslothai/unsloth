@@ -6593,29 +6593,22 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
 
     Only for a swap that is about to run: these exist so a request the target cannot
     serve fails before the load evicts the resident model, and where no swap happens the
-    serving branch decides for itself. A GGUF target is exempt from all of them, since
-    llama-server takes the audio through :func:`_prepare_audio_for_llama`, which accepts
-    a ``data:`` URI and the containers torchaudio cannot open, and supports
-    ``continue_final_message``. A non-GGUF target is served by
+    serving branch decides for itself. A GGUF target is validated through
+    :func:`_prepare_audio_for_llama`, which accepts a ``data:`` URI and the containers
+    torchaudio cannot open, and supports ``continue_final_message``. A non-GGUF target is served by
     :func:`_decode_audio_base64`, so the upload is validated with that same decoder and
     the array handed back under ``decoded`` for the audio branch to reuse.
     """
     if target_is_gguf:
-        raw = audio_preflight["b64"]
-        if isinstance(raw, str) and raw.startswith("data:"):
-            raw = raw.split(",", 1)[1] if "," in raw else ""
-        # whitespace out then validate: wrapped base64 still passes, "!!!!" no longer decodes to empty.
-        if isinstance(raw, str):
-            raw = "".join(raw.split())
         try:
-            # empty never raises, and is what a blank upload or a comma-less data: URI leaves.
-            if not base64.b64decode(raw, validate = True):
-                raise ValueError("empty audio payload")
+            audio_preflight["prepared"] = await asyncio.to_thread(
+                _prepare_audio_for_llama, audio_preflight["b64"]
+            )
         except Exception:
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    "The 'audio_base64' value is not valid base64.",
+                    "The 'audio_base64' value could not be decoded as audio.",
                     status = 400,
                     code = "invalid_value",
                     param = "audio_base64",
@@ -18463,6 +18456,7 @@ async def produce_openai_chat_completions(
     _needs_audio_input = False
     _needs_video = False
     _predecoded_audio = None
+    _preprepared_audio = None
     if _should_validate_before_switch():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -18621,6 +18615,7 @@ async def produce_openai_chat_completions(
     )
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
+        _preprepared_audio = _audio_preflight.get("prepared")
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
@@ -19239,8 +19234,10 @@ async def produce_openai_chat_completions(
             if len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
                 raise _reject(413, "Audio file is too large (max ~25 MB).")
             try:
-                audio_b64, audio_format = await asyncio.to_thread(
-                    _prepare_audio_for_llama, payload.audio_base64
+                audio_b64, audio_format = (
+                    _preprepared_audio
+                    if _preprepared_audio is not None
+                    else await asyncio.to_thread(_prepare_audio_for_llama, payload.audio_base64)
                 )
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
