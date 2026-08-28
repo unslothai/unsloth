@@ -358,11 +358,18 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
     )
     objects = inf._stt_model_objects(7)
     assert [(o["id"], o["loaded"]) for o in objects] == [
-        ("small", False),
+        ("unsloth/whisper-small", False),
         ("qwen3-asr-0.6b", False),
         ("org/whisper-custom", True),
     ]
     assert all(o["task"] == "automatic-speech-recognition" and o["created"] == 7 for o in objects)
+
+
+def test_curated_stt_alias_reports_canonical_loaded_id(monkeypatch):
+    _stt(monkeypatch, downloaded = ("small",), whisper_loaded = "small")
+    assert [(o["id"], o["loaded"]) for o in inf._stt_model_objects(7)] == [
+        ("unsloth/whisper-small", True)
+    ]
 
 
 def test_a_whisper_id_cached_only_for_whisper_cpp_is_not_advertised(monkeypatch):
@@ -392,7 +399,10 @@ def test_whisper_rows_need_the_transformers_runtime(monkeypatch):
     _stt(monkeypatch, whisper = False, downloaded = ("small", "tiny"))
     assert inf._stt_model_objects(3) == []
     _stt(monkeypatch, whisper = True, downloaded = ("small", "tiny"))
-    assert [o["id"] for o in inf._stt_model_objects(3)] == ["tiny", "small"]
+    assert [o["id"] for o in inf._stt_model_objects(3)] == [
+        "unsloth/whisper-tiny",
+        "unsloth/whisper-small",
+    ]
 
 
 def test_mtmd_models_are_hidden_when_their_runtime_is_missing(monkeypatch):
@@ -404,7 +414,7 @@ def test_mtmd_models_are_hidden_when_their_runtime_is_missing(monkeypatch):
         downloaded = ("small",),
         mtmd_downloaded = ("qwen3-asr-0.6b", "qwen3-asr-1.7b"),
     )
-    assert [o["id"] for o in inf._stt_model_objects(3)] == ["small"]
+    assert [o["id"] for o in inf._stt_model_objects(3)] == ["unsloth/whisper-small"]
 
     _stt(
         monkeypatch,
@@ -413,7 +423,7 @@ def test_mtmd_models_are_hidden_when_their_runtime_is_missing(monkeypatch):
         mtmd_downloaded = ("qwen3-asr-0.6b", "qwen3-asr-1.7b"),
     )
     assert [o["id"] for o in inf._stt_model_objects(3)] == [
-        "small",
+        "unsloth/whisper-small",
         "qwen3-asr-0.6b",
         "qwen3-asr-1.7b",
     ]
@@ -430,13 +440,16 @@ def test_stt_probe_failure_hides_nothing_else(monkeypatch):
 
 
 def test_stt_models_join_the_catalog(monkeypatch):
-    _catalog(monkeypatch, _INFOS[:1])
+    _catalog(
+        monkeypatch,
+        [_Info("/data/models/small.gguf", "small", task = "text-generation")],
+    )
     monkeypatch.setattr(
         inf,
         "_stt_model_objects",
         lambda created: [
             {
-                "id": "small",
+                "id": "unsloth/whisper-small",
                 "object": "model",
                 "created": created,
                 "owned_by": inf._OWNED_BY,
@@ -446,8 +459,8 @@ def test_stt_models_join_the_catalog(monkeypatch):
         ],
     )
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
-    assert ids["small"]["task"] == "automatic-speech-recognition"
-    assert ids["Qwen3-Q4"]["loaded"] is False
+    assert ids["unsloth/whisper-small"]["task"] == "automatic-speech-recognition"
+    assert "task" not in ids["small"]
 
 
 def test_stt_gguf_repository_is_not_advertised_as_chat(monkeypatch):
@@ -549,7 +562,7 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     (entry,) = inf._openai_model_objects()
     assert entry["task"] == "text-to-speech"
 
-    # The MLX worker rejects audio generation even when its model metadata is TTS.
+    # the MLX worker rejects audio generation even when its model metadata is TTS.
     unsloth.models["unsloth/csm-1b"]["is_mlx"] = True
     (entry,) = inf._openai_model_objects()
     assert "task" not in entry

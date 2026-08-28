@@ -23168,7 +23168,8 @@ def _stt_model_objects(created: int) -> list[dict]:
         mtmd_ready = stt_mtmd_sidecar.is_available()
         loaded = set()
         if whisper_ready:
-            loaded.add(stt_sidecar.get_stt_sidecar().loaded_model)
+            whisper_loaded = stt_sidecar.get_stt_sidecar().loaded_model
+            loaded.add(stt_sidecar.STT_MODELS.get(whisper_loaded, whisper_loaded))
         if mtmd_ready:
             loaded.add(stt_mtmd_sidecar.get_mtmd_stt_sidecar().loaded_model)
         loaded -= {None}
@@ -23176,8 +23177,8 @@ def _stt_model_objects(created: int) -> list[dict]:
         ids: list[str] = []
         if whisper_ready:
             ids.extend(
-                model_id
-                for model_id in stt_sidecar.STT_MODELS
+                repo_id
+                for model_id, repo_id in stt_sidecar.STT_MODELS.items()
                 if stt_sidecar.is_model_downloaded(model_id)
             )
         if mtmd_ready:
