@@ -1836,9 +1836,15 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
 # /opt/rocm), leaving that wheel with no kernels for it. AMD's matrices put production
 # gfx1200/gfx1201 at ROCm 6.4, rocm6.3 and below predating RDNA 4 codegen.
 # Only arches with an AMD leaf to reroute TO belong here: gfx950 is missing from the older
-# wheels too but has no _GFX_TO_AMD_INDEX_ARCH entry, so an entry could never fire, and
-# gfx1150/gfx1151 are left to the Strix reroute, which already floors them by version.
+# wheels too but has no _GFX_TO_AMD_INDEX_ARCH entry, so an entry could never fire.
+# The Strix reroute cannot cover gfx1150/gfx1151 on its own, because it is gated on a ROCm
+# VERSION and an unreadable one reads as 0.0, below every tag, which leaves the arm inactive
+# on exactly the bundled-runtime host that cannot report a version. rocm7.0 is the oldest tag
+# measured to carry them; the rocm6.3 wheel does not, and AMD's own images date gfx1150/1151
+# support to ROCm 7.1.
 _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
+    "gfx1150": (7, 0),
+    "gfx1151": (7, 0),
     "gfx1200": (6, 4),
     "gfx1201": (6, 4),
 }
@@ -3739,8 +3745,19 @@ def _ensure_rocm_torch() -> None:
             _want = (_GFX_TO_AMD_INDEX_ARCH.get(_runtime_gfx) or "").lower()
             # A target no index can serve (gfx1010 / RDNA 1) has an empty _want, which would
             # read as "every family is wrong" and spend a multi-GB reinstall on a wheel that
-            # cannot carry kernels for it either. Demote only when there is somewhere to go.
-            if _have is not None and _have != _want and _gfx_has_a_wheel_route(_runtime_gfx):
+            # cannot carry kernels for it either. Demote only when there is somewhere to go --
+            # and ask that of THIS host, not of the arch in the abstract: gfx906's only route
+            # is the rocm6.3 legacy tag, which _runtime_target_is_gfx906 unlocks solely when
+            # gfx906 is the one detected arch. On a mixed host the mask can still select the
+            # MI50, and every generic tag above rocm6.3 dropped its BLAS kernels, so demoting
+            # here downloads a second unusable torch. _MIXED_HOST_UNROUTABLE already names
+            # the arches whose route a second GPU closes.
+            if (
+                _have is not None
+                and _have != _want
+                and _gfx_has_a_wheel_route(_runtime_gfx)
+                and not (_runtime_gfx in _MIXED_HOST_UNROUTABLE and len(set(gfx_codes)) > 1)
+            ):
                 _safe_print(
                     f"   installed ROCm torch is the {_have} build, which carries no\n"
                     f"   {_runtime_gfx} kernels -- reinstalling for this GPU.\n"

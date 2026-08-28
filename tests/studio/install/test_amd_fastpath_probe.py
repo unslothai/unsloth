@@ -134,7 +134,23 @@ def test_a_real_device_selection_is_not_a_hidden_host(monkeypatch):
     ],
 )
 def test_a_rocm_wheel_keeps_the_fast_path(monkeypatch, torch):
-    _host(monkeypatch, torch = torch)
+    # gfx1100 rather than the default gfx1151: the question here is whether a ROCm wheel is
+    # left alone, and only an arch every one of these wheels actually carries asks it. Strix
+    # is not that arch on the older tags, and the case below is where it is answered.
+    _host(monkeypatch, torch = torch, gfx = ("gfx1100",))
+    assert _needs_pass() is False
+
+
+@pytest.mark.parametrize("gfx", ["gfx1150", "gfx1151"])
+def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch, gfx):
+    """The rocm6.4 generation does not carry gfx1150/gfx1151 -- AMD's images date support to
+    7.1 -- and _ensure_rocm_torch already reroutes such a host to the per-arch index on a
+    fresh install. Keeping the fast path here is the preflight declining a repair the repair
+    itself performs, so the reroute was reachable on install and never on update."""
+    _host(monkeypatch, torch = ("2.9.0+rocm6.4", "6.4"), gfx = (gfx,))
+    assert _needs_pass() is True
+    # A tag measured to carry them is left alone.
+    _host(monkeypatch, torch = ("2.11.0+rocm7.2", "7.2"), gfx = (gfx,), rocm_ver = (7, 2))
     assert _needs_pass() is False
 
 

@@ -1229,3 +1229,48 @@ def test_an_arch_with_no_recorded_minimum_is_unaffected_by_the_version(rocm_vers
     it, so everything else keeps the union reading and the generic index it always had."""
     calls = _run_install(gfx_devices = ("gfx1100",), rocm_version = rocm_version)
     assert _AMD not in calls and _GENERIC in calls, calls
+
+
+@pytest.mark.parametrize("gfx", ["gfx1150", "gfx1151"])
+def test_strix_on_an_old_generic_wheel_is_rerouted_without_a_host_version(gfx):
+    """The Strix arm is gated on a ROCm VERSION, and an unreadable one reads as 0.0, below
+    every tag, so it never runs on a bundled-runtime host. The rocm6.3 wheel carries no
+    gfx1150/gfx1151 -- AMD dates their support to 7.1 -- so leaving them out of the version
+    map keeps a build that faults, on the one host shape the arm cannot cover."""
+    calls = _run_install(
+        gfx_devices = (gfx,),
+        rocm_version = None,
+        torch_probe = _ROCM_GENERIC_TORCH_63,
+        torch_owns_rocm = False,
+    )
+    assert f"{_AMD}/{gfx}/" in calls, calls
+    # A tag measured to carry them is left alone.
+    assert _AMD not in _run_install(
+        gfx_devices = (gfx,),
+        rocm_version = None,
+        torch_probe = _ROCM_GENERIC_TORCH_72,
+        torch_owns_rocm = False,
+    )
+
+
+def test_a_masked_gfx906_on_a_mixed_host_is_not_demoted_to_another_dead_wheel():
+    """gfx906's only route is the rocm6.3 legacy tag, which _runtime_target_is_gfx906 unlocks
+    only when gfx906 is the ONE detected arch. A mask can still select the MI50 on a mixed
+    host, and every generic tag above rocm6.3 dropped its BLAS kernels, so demoting the
+    installed family there buys a second unusable torch rather than a repair."""
+    calls = _run_install(
+        gfx_devices = ("gfx1100", "gfx906"),
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert "reinstalling for this GPU" not in _run_install.printed, _run_install.printed
+    assert _GENERIC not in calls, calls
+    # The same stale family with a routable target is still demoted.
+    _run_install(
+        gfx_devices = ("gfx1100", "gfx1200"),
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert "reinstalling for this GPU" in _run_install.printed, _run_install.printed
