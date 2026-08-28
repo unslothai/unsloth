@@ -188,3 +188,42 @@ def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
     prompt cache, so charging one would refuse fits that are real."""
     assert _cache_bytes(None, {"supports_cache_ram": False}) == 0
     assert _cache_bytes(None, {"supports_cache_ram": True}) == 8192 * 1024 * 1024
+
+
+def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
+    """Anchor the (VRAM + RAM) rule to the one cell that actually crossed it.
+
+    Every cell in the offload matrix ran with host RAM untouched, so `A` was
+    always true and the mmap branch was never exercised by a measurement. The
+    gemma-4-31B Q4 RAM sweep on a G4 forced to 12 GiB free is the exception, and
+    it is a cliff rather than a slope (generation t/s, --fit on baseline):
+
+        RAM 24 GiB -> 22.73    host spill 10757 MiB, load-mode none
+        RAM 16 GiB -> 22.62    identical placement, flat to 0.5%
+        RAM 10 GiB -> TIMED OUT past a 2400 s watchdog
+
+    At 10 GiB the 10.5 GiB spill no longer fits, so `A` fails and mmap is the
+    only honest answer; the cell its 16 GiB twin finished in 2.5 minutes did not
+    finish in forty. That asymmetry is why the headroom is not tuned down: being
+    wrong optimistically costs orders of magnitude, being wrong conservatively
+    cost 24% in the worst cell in the matrix.
+    """
+    mib = 1024 ** 2
+    gib = 1024 ** 3
+    backend = object.__new__(LlamaCppBackend)
+
+    # The measured cell: 18.4 GiB of weights plus a 5520 MiB two-part iSWA cache,
+    # against 12 GiB of free VRAM on one card.
+    need = int(18.4 * gib) + 5520 * mib
+    gpus = [(0, 12 * 1024)]
+
+    def mode_at(ram_gib):
+        fits = backend._fits_without_paging(
+            need, gpus, avail_mib = ram_gib * 1024, headroom_mib = 2048,
+        )
+        return "none" if fits is True else ("mmap" if fits is False else None)
+
+    assert mode_at(24) == "none"
+    assert mode_at(16) == "none"
+    # The crossing. 10 GiB of RAM cannot hold a 10.5 GiB spill.
+    assert mode_at(10) == "mmap"
