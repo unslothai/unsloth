@@ -9664,7 +9664,22 @@ def test_nonstreaming_responses_defers_malformed_gguf_preflight_to_chat(monkeypa
     assert backend.model_identifier == "org/A-GGUF"
 
 
-def test_anthropic_rejects_a_malformed_gguf_image_before_switch(monkeypatch):
+@pytest.mark.parametrize(
+    "source",
+    [
+        {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "bm90IGFuIGltYWdl",
+        },
+        {
+            "type": "url",
+            "url": "data:image/png;base64,bm90IGFuIGltYWdl",
+        },
+    ],
+    ids = ["base64 source", "data url source"],
+)
+def test_anthropic_rejects_a_malformed_gguf_image_before_switch(monkeypatch, source):
     from models.inference import AnthropicMessage, AnthropicMessagesRequest
 
     backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = True)
@@ -9677,11 +9692,7 @@ def test_anthropic_rejects_a_malformed_gguf_image_before_switch(monkeypatch):
                 content = [
                     {
                         "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": "bm90IGFuIGltYWdl",
-                        },
+                        "source": source,
                     }
                 ],
             )

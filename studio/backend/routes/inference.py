@@ -6725,6 +6725,9 @@ def _anthropic_local_image_payloads(payload) -> list[str]:
             data = source.get("data") if isinstance(source, dict) else source.data
             if source_type == "base64" and isinstance(data, str) and data:
                 encoded_images.append(data)
+            url = source.get("url") if isinstance(source, dict) else source.url
+            if source_type == "url" and isinstance(url, str) and url.startswith("data:"):
+                encoded_images.append(url.partition(",")[2])
     return encoded_images
 
 
