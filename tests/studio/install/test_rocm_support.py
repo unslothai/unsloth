@@ -5849,7 +5849,10 @@ class TestStrixRocm71Override:
         assert stack_mod._strix_needs_amd_arch_index((7, 14)) is True
         assert stack_mod._strix_needs_amd_arch_index((7, 0)) is True
         assert stack_mod._strix_needs_amd_arch_index((6, 0)) is True
-        assert stack_mod._strix_needs_amd_arch_index((5, 0)) is False
+        # No generic tag resolves below 6.0, so there is no generic wheel to prefer and the
+        # per-arch index -- which needs no host ROCm at all -- is the only route these arches
+        # have. Same answer as an unreadable version, which reads as 0.0 for the same reason.
+        assert stack_mod._strix_needs_amd_arch_index((5, 0)) is True
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""

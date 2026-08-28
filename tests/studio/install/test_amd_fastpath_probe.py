@@ -149,8 +149,18 @@ def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch
     itself performs, so the reroute was reachable on install and never on update."""
     _host(monkeypatch, torch = ("2.9.0+rocm6.4", "6.4"), gfx = (gfx,))
     assert _needs_pass() is True
-    # A tag measured to carry them is left alone.
+    # A generic tag that does carry them is still not the build Strix wants: the reroute
+    # prefers AMD's 7.13 fixes over every generic index below the floor, so the pass is due
+    # until torch IS that build.
     _host(monkeypatch, torch = ("2.11.0+rocm7.2", "7.2"), gfx = (gfx,), rocm_ver = (7, 2))
+    assert _needs_pass() is True
+    _host(
+        monkeypatch,
+        torch = ("2.11.0+rocm7.13.0", "7.13"),
+        gfx = (gfx,),
+        rocm_ver = (7, 2),
+        installed_family = gfx,
+    )
     assert _needs_pass() is False
 
 
@@ -518,10 +528,18 @@ def _repair_installs(monkeypatch):
             dict(rocm_ver = (6, 4), inferred = None, gfx = ("gfx1030",)),
             True,
         ),
-        # The repair prints "skipping torch reinstall" and returns for all three.
+        # The default host here is Strix, whose per-arch index needs no host ROCm version, so
+        # an unreadable one is the shape that route exists for rather than a reason to stop.
+        (
+            "a visible Strix GPU whose ROCm version cannot be read",
+            dict(rocm_ver = None, inferred = None),
+            True,
+        ),
+        # A non-Strix arch the generic wheel does carry: the repair prints "skipping torch
+        # reinstall" and returns, so the preflight must keep the fast path.
         (
             "a visible GPU whose ROCm version cannot be read",
-            dict(rocm_ver = None, inferred = None),
+            dict(rocm_ver = None, inferred = None, gfx = ("gfx1100",)),
             False,
         ),
         (
@@ -657,13 +675,23 @@ def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
     gate above it is skipped. The family question is one of those: asked under a pin it
     answers for whatever card the probing machine has, which is how the end-to-end CLI case
     began failing on an AMD box."""
+    # The pin names the family torch already carries, so nothing is due for it either.
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        gfx = ("gfx1151",),
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.13"},
+    )
+    assert _needs_pass() is False
+    # A pin that no longer matches the installed wheel is the pin's own question, not a
+    # hardware one, and _ensure_rocm_torch reinstalls for it.
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",
         gfx = ("gfx1151",),
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm6.4"},
     )
-    assert _needs_pass() is False
+    assert _needs_pass() is True
     # The same stale family without a pin is exactly what the repair is for.
     _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1151",))
     assert _needs_pass() is True
@@ -698,3 +726,28 @@ def test_a_mixed_host_gfx906_keeps_the_fast_path(monkeypatch):
     # Alone, gfx906 does have a route, and the same stale family is worth the pass.
     _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx906",))
     assert _needs_pass() is True
+
+
+def test_a_confirmed_spoof_forces_the_pass_even_on_a_matching_family(monkeypatch):
+    """_clear_confirmed_hsa_spoof runs only inside _ensure_rocm_torch, so a fast path taken
+    on the wheel question alone leaves HSA_OVERRIDE_GFX_VERSION set: ROCr keeps presenting an
+    ISA the installed wheels have no code for (#7331), however well the family matches."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx1152",
+        gfx = (),
+        rocm_ver = None,
+        env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: ["gfx1152"], raising = False)
+    assert _needs_pass() is True
+
+
+def test_a_sole_gfx906_above_its_legacy_tag_forces_the_pass(monkeypatch):
+    """The gfx906 reroute is a compatibility reroute, not a missing-kernel one, so the wheel
+    question never saw it and the rocm6.3 downgrade was unreachable from `studio update`."""
+    _rocm_torch(monkeypatch, family = None, gfx = ("gfx906",), rocm_ver = (6, 4))
+    assert _needs_pass() is True
+    # Already on the legacy tag: nothing left to do.
+    _host(monkeypatch, torch = ("2.9.0+rocm6.3", "6.3"), gfx = ("gfx906",), rocm_ver = (6, 4))
+    assert _needs_pass() is False

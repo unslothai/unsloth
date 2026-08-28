@@ -1050,9 +1050,12 @@ def test_amd_smi_discovery_order_is_not_indexed_as_hip_order():
     assert _target(["gfx1103", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) is None
     # rocminfo and KFD sysfs are already in the order the masks use.
     assert _target(["gfx1103", "gfx1200"], "kfd", {"HIP_VISIBLE_DEVICES": "1"}) == "gfx1200"
-    # Nothing to mistranslate: one arch, or no mask indexing the list at all.
+    # Nothing to mistranslate: like adapters give the same arch at every ordinal.
     assert _target(["gfx1200", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) == "gfx1200"
-    assert _target(["gfx1103", "gfx1200"], "amd-smi", {}) == "gfx1200"
+    # An unset mask is not safety: the runtime still opens HIP ordinal 0, and discovery-order
+    # 0 can be the other card. setup.sh declines unlike adapters with no HIP map whether or
+    # not a mask is set, and this has to read the host the same way.
+    assert _target(["gfx1103", "gfx1200"], "amd-smi", {}) is None
 
 
 def test_kfd_order_resolves_a_mask_amd_smi_order_cannot():
@@ -1263,12 +1266,13 @@ def test_strix_on_an_old_generic_wheel_is_rerouted_without_a_host_version(gfx):
         torch_owns_rocm = False,
     )
     assert f"{_AMD}/{gfx}/" in calls, calls
-    # A tag measured to carry them is left alone.
+    # Only the build the reroute would fetch is left alone: a generic rocm7.2 wheel does
+    # carry these arches, but Strix wants AMD's 7.13 fixes over any index below the floor.
     assert _AMD not in _run_install(
         gfx_devices = (gfx,),
         rocm_version = None,
-        torch_probe = _ROCM_GENERIC_TORCH_72,
-        torch_owns_rocm = False,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = gfx,
     )
 
 
@@ -1371,3 +1375,30 @@ def test_a_masked_gfx906_is_judged_by_the_host_the_legacy_route_probes(env):
     )
     assert "reinstalling for this GPU" not in _run_install.printed, _run_install.printed
     assert _GENERIC not in calls, calls
+
+
+@pytest.mark.parametrize("gfx", ["gfx1150", "gfx1151"])
+def test_a_strix_host_with_no_readable_version_still_gets_rocm_torch(gfx):
+    """An unreadable version reads as 0.0, below every tag, so the Strix arm sat out and the
+    missing-kernel fallback declined too (these arches are in the generic list, and its
+    below-floor check needs an existing per-arch build). The generic branch then had no tag
+    either, so a visible Strix host on CPU torch was left on CPU torch permanently."""
+    calls = _run_install(
+        gfx_devices = (gfx,),
+        rocm_version = None,
+        torch_owns_rocm = False,
+    )
+    assert f"{_AMD}/{gfx}/" in calls, calls
+
+
+def test_the_strix_reroute_keeps_the_wheels_it_would_have_fetched():
+    """The branch force-reinstalls a multi-GB stack and _ensure_rocm_torch runs twice per
+    install, so acting on the arch alone re-downloads it every time."""
+    calls = _run_install(
+        gfx_devices = ("gfx1151",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx1151",
+    )
+    assert _AMD not in calls, calls
+    assert "keeping it" in _run_install.printed, _run_install.printed
