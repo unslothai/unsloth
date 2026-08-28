@@ -93,20 +93,24 @@ def _reset_scope_cache() -> None:
         _cached_settings = None
 
 
-def _read_settings() -> tuple[str, bool]:
-    try:
-        from storage.studio_db import get_app_settings
+def _read_settings_from_db() -> tuple[str, bool]:
+    from storage.studio_db import get_app_settings
 
-        # Read both values from one SQLite snapshot.
-        values = get_app_settings([KEYLESS_API_ACCESS_SETTING_KEY, KEYLESS_API_TOOLS_SETTING_KEY])
-        scope = _coerce_scope(values.get(KEYLESS_API_ACCESS_SETTING_KEY))
-        tools = _coerce_bool(values.get(KEYLESS_API_TOOLS_SETTING_KEY))
-    except Exception:
-        return KEYLESS_SCOPE_OFF, False
+    # Read both values from one SQLite snapshot.
+    values = get_app_settings([KEYLESS_API_ACCESS_SETTING_KEY, KEYLESS_API_TOOLS_SETTING_KEY])
+    scope = _coerce_scope(values.get(KEYLESS_API_ACCESS_SETTING_KEY))
+    tools = _coerce_bool(values.get(KEYLESS_API_TOOLS_SETTING_KEY))
     return (
         scope or DEFAULT_KEYLESS_API_ACCESS_SCOPE,
         DEFAULT_KEYLESS_API_TOOLS_ENABLED if tools is None else tools,
     )
+
+
+def _read_settings() -> tuple[str, bool]:
+    try:
+        return _read_settings_from_db()
+    except Exception:
+        return KEYLESS_SCOPE_OFF, False
 
 
 def _settings() -> tuple[str, bool]:
@@ -119,8 +123,8 @@ def _settings() -> tuple[str, bool]:
     keep the server open for the rest of the TTL. The generation counter dates each
     read against the writes, so only a read that still describes the DB is published.
 
-    Only one stale-cache caller reads SQLite. Followers fail closed instead of
-    waiting, so a slow refresh cannot occupy AnyIO's shared worker pool (#9901).
+    Only one stale-cache caller reads SQLite. Followers reuse the last published
+    value, or fail closed on a cold start, without occupying AnyIO workers (#9901).
     """
     global _cached_settings, _settings_refresh_inflight
     owner_marker: Optional[object] = None
@@ -131,7 +135,7 @@ def _settings() -> tuple[str, bool]:
             if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
                 return cached[1], cached[2]
             if _settings_refresh_inflight is not None:
-                return KEYLESS_SCOPE_OFF, False
+                return (cached[1], cached[2]) if cached is not None else (KEYLESS_SCOPE_OFF, False)
             owner_marker = _settings_refresh_inflight = object()
             generation = _settings_generation
 
@@ -169,7 +173,7 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
     if scope is None:
         raise ValueError(f"Keyless API access scope must be one of: {', '.join(KEYLESS_SCOPES)}.")
     with _write_lock:
-        allow_tools = _read_settings()[1] if tools is None else _coerce_bool(tools)
+        allow_tools = _read_settings_from_db()[1] if tools is None else _coerce_bool(tools)
         if allow_tools is None:
             raise ValueError("Keyless tool access must be true or false.")
         # tools are meaningless without a scope, and leaving them ticked would surprise

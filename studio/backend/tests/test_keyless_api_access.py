@@ -229,7 +229,11 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
     from utils.keyless_api_access import asgi_request_is_keyless
 
     set_keyless_api_access("inference", tools = False)
-    _reset_scope_cache()
+    keyless._cached_settings = (
+        time.monotonic() - keyless._SETTINGS_CACHE_TTL_S - 1,
+        "inference",
+        False,
+    )
 
     real_read = keyless._read_settings
     call_count = 0
@@ -259,9 +263,8 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
         late_result = late_future.result(timeout = 10)
 
     assert call_count == 1
-    assert results.count(True) == 1
-    assert results.count(False) == n_requests - 1
-    assert isinstance(late_result, bool)
+    assert results == [True] * n_requests
+    assert late_result is True
 
 
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
@@ -271,14 +274,18 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
     from starlette.concurrency import run_in_threadpool
 
     set_keyless_api_access("inference", tools = False)
-    _reset_scope_cache()
+    keyless._cached_settings = (
+        time.monotonic() - keyless._SETTINGS_CACHE_TTL_S - 1,
+        "inference",
+        False,
+    )
 
     owner_started = threading.Event()
     release_owner = threading.Event()
     all_requests_entered = threading.Event()
     entered_count = 0
     entered_lock = threading.Lock()
-    real_read = keyless._read_settings
+    real_read = keyless._read_settings_from_db
     real_check = keyless.asgi_request_is_keyless
 
     def delayed_read():
@@ -335,7 +342,7 @@ def test_scope_write_preserves_tools_during_an_inflight_refresh(monkeypatch):
 
     owner_started = threading.Event()
     release_owner = threading.Event()
-    real_read = keyless._read_settings
+    real_read = keyless._read_settings_from_db
     read_count = 0
     count_lock = threading.Lock()
 
@@ -349,7 +356,7 @@ def test_scope_write_preserves_tools_during_an_inflight_refresh(monkeypatch):
             assert release_owner.wait(timeout = 10)
         return real_read()
 
-    monkeypatch.setattr(keyless, "_read_settings", delayed_first_read)
+    monkeypatch.setattr(keyless, "_read_settings_from_db", delayed_first_read)
     reader = threading.Thread(target = keyless._settings)
     reader.start()
     try:
@@ -361,6 +368,22 @@ def test_scope_write_preserves_tools_during_an_inflight_refresh(monkeypatch):
 
     assert not reader.is_alive()
     assert get_keyless_api_access_settings() == ("inference", True)
+
+
+def test_scope_write_aborts_when_preserved_tools_cannot_be_read(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("full", tools = True)
+    monkeypatch.setattr(
+        keyless,
+        "_read_settings_from_db",
+        lambda: (_ for _ in ()).throw(OSError("db unavailable")),
+    )
+
+    with pytest.raises(OSError, match = "db unavailable"):
+        set_keyless_api_access("inference")
+
+    assert get_keyless_api_access_settings() == ("full", True)
 
 
 def test_overlapping_writes_publish_in_commit_order(monkeypatch):
