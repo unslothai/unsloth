@@ -5090,9 +5090,23 @@ class VideoBackend:
                 error = "Video generation could not start.",
             )
             raise
-        # The canvas this run resolved to. A caller that sent no size cannot infer it:
-        # with a keyframe the canvas follows the source aspect, not the first preset.
-        return {"width": resolved_inputs.width, "height": resolved_inputs.height}
+        # What this run actually reserved, read off the same state the lock committed.
+        # A caller that describes the job from an earlier status() read can be wrong on
+        # every one of these: a load committing in between swaps the family, so the
+        # frame count it computed belongs to the old fps and the model it reports is
+        # already gone. The canvas is here for the same reason -- with a keyframe it
+        # follows the source aspect, not the family's first preset.
+        state = resolved_inputs.state
+        fam = getattr(state, "family", None)
+        return {
+            "width": resolved_inputs.width,
+            "height": resolved_inputs.height,
+            "num_frames": (
+                num_frames if num_frames is not None else getattr(fam, "default_num_frames", None)
+            ),
+            "fps": fps if fps is not None else getattr(fam, "default_fps", None),
+            "model": getattr(state, "repo_id", None),
+        }
 
     def _run_generate(
         self,

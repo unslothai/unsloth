@@ -1010,11 +1010,13 @@ def _sync_jobs() -> None:
                 job.error = error
 
 
-def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEOUT_S) -> None:
+def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEOUT_S) -> bool:
     """Block until the run started for ``video_id`` is no longer in flight.
 
-    Bounded: a wedged backend must not hold the request open, and the delete below is
-    correct either way -- it simply removes nothing when nothing was persisted.
+    Bounded, so a wedged backend cannot hold the request open. Returns False when the
+    wait expired with the run still live: the caller must not report a deletion it
+    could not observe, or the worker commits its sidecar afterwards and the clip
+    reappears through retrieve/list.
     """
     from core.inference.video import get_video_backend
 
@@ -1023,8 +1025,9 @@ def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEO
     while _time.monotonic() < deadline:
         gen = backend.generate_progress()
         if gen.get("video_id") != video_id or not gen.get("active"):
-            return
+            return True
         _time.sleep(0.05)
+    return False
 
 
 def _lookup_video(video_id: str) -> Optional[VideoJob]:
@@ -1148,6 +1151,30 @@ async def openai_create_video(
     current_subject: str = Depends(get_current_subject),
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
+    # The body has to be read before the row can name a model and prompt, so the parse
+    # sits out here and the rest of the handler runs inside the monitor context.
+    from routes.inference import _monitored_media_request
+
+    fields, raw_reference = await _read_video_create_body(request)
+    body = _validate_create_fields(fields)
+    reference = await _reference_to_data_url(raw_reference)
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(body.model) or body.model or "",
+        prompt = body.prompt,
+        subject = current_subject,
+    ):
+        return await _create_openai_video(body, reference, current_subject, hf_token)
+
+
+# Split out so the API monitor row can wrap the whole handler without reindenting it,
+# exactly as the OpenAI image route does.
+async def _create_openai_video(
+    body: VideoJobCreateRequest,
+    reference: Optional[str],
+    current_subject: str,
+    hf_token: Optional[str],
+):
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import maybe_auto_switch_media_model
     from core.inference.video import get_video_backend
@@ -1157,9 +1184,6 @@ async def openai_create_video(
         VideoShapeError,
     )
 
-    fields, raw_reference = await _read_video_create_body(request)
-    body = _validate_create_fields(fields)
-    reference = await _reference_to_data_url(raw_reference)
     try:
         size = _parse_openai_video_size(body.size)
     except ValueError as exc:
@@ -1169,6 +1193,17 @@ async def openai_create_video(
     except ValueError as exc:
         raise _openai_video_error(400, str(exc), param = "seconds")
     width, height = size if size is not None else (None, None)
+    if reference is not None:
+        # Decode here, not at _resolve_keyframes inside begin_generate. That runs after
+        # maybe_auto_switch_media_model, so malformed bytes would evict the resident
+        # pipeline and spend minutes loading the target before returning the 400.
+        from core.inference.diffusion import decode_b64_image
+        try:
+            await asyncio.to_thread(decode_b64_image, reference, mode = "RGB")
+        except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
+            raise _openai_video_error(
+                400, "input_reference is not a readable image.", param = "input_reference"
+            )
 
     def _refuse_unservable_request(pick) -> None:
         from core.inference.media_model_index import expected_partition
@@ -1260,9 +1295,15 @@ async def openai_create_video(
         presets = defaults.get("resolution_presets") or []
         if size is None and presets:
             width, height = int(presets[0][0]), int(presets[0][1])
-    fps = defaults.get("fps")
-    if num_frames is not None and fps:
-        seconds_text = _format_seconds(num_frames / float(fps))
+    # Describe the job from what begin_generate reserved, falling back to the status()
+    # snapshot only where it said nothing. A load committing between that snapshot and
+    # the reservation swaps the family underneath, and the snapshot's fps would then
+    # date a frame count the new model never used.
+    reserved = resolved if isinstance(resolved, dict) else {}
+    run_frames = reserved.get("num_frames") or num_frames
+    fps = reserved.get("fps") or defaults.get("fps")
+    if run_frames and fps:
+        seconds_text = _format_seconds(int(run_frames) / float(fps))
     elif seconds is None and defaults.get("num_frames") and fps:
         seconds_text = _format_seconds(int(defaults["num_frames"]) / float(fps))
     else:
@@ -1271,7 +1312,9 @@ async def openai_create_video(
         id = video_id,
         created_at = int(_time.time()),
         prompt = body.prompt,
-        model = public_model_id(str(status.get("repo_id") or body.model or "video")),
+        model = public_model_id(
+            str(reserved.get("model") or status.get("repo_id") or body.model or "video")
+        ),
         size = f"{width}x{height}" if width and height else "auto",
         seconds = seconds_text,
     )
@@ -1371,7 +1414,12 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
         # settle, then fall through to the same delete the completed branch performs --
         # otherwise the clip persists and the "deleted" job reappears through
         # retrieve/list on the very next call.
-        await asyncio.to_thread(_await_generate_settled, video_id)
+        if not await asyncio.to_thread(_await_generate_settled, video_id):
+            raise _openai_video_error(
+                409,
+                "The video is still being written; retry the delete once it is no longer generating.",
+                code = "video_not_ready",
+            )
     if await asyncio.to_thread(video_gallery.delete, video_id):
         _forget_terminal_video(video_id)
     with _jobs_lock:

@@ -1146,6 +1146,12 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
 )
+# Which of those may arrive with no Content-Length and be counted instead of refused.
+# Deliberately NOT the whole set above: this middleware runs before authentication, and
+# a counted body is a held body, so the dataset path (whose cap is the configurable
+# upload limit, up to 8 GB) and the 25 MB stt paths keep their 411. The videos
+# reference image is bounded at 32 MB, the same order as the default protected cap.
+_CHUNKED_UPLOAD_EXACT_PATHS = _VIDEO_MULTIPART_UPLOAD_PATHS
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
@@ -1224,6 +1230,7 @@ class MaxBodyMiddleware:
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
+        chunked_upload_exact_paths: tuple = (),
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1233,6 +1240,8 @@ class MaxBodyMiddleware:
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
         # Exact path, not prefix: sibling JSON sub-routes must keep the normal (small) body cap.
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
+        # The subset of those allowed to omit Content-Length; the rest still get a 411.
+        self.chunked_upload_exact_paths = chunked_upload_exact_paths
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
@@ -1291,7 +1300,7 @@ class MaxBodyMiddleware:
                     return
                 await self.app(scope, receive, send)
                 return
-            if path.rstrip("/") not in self.upload_passthrough_exact_paths:
+            if path.rstrip("/") not in self.chunked_upload_exact_paths:
                 await _send_411(send)
                 return
             max_bytes = upload_max_bytes
@@ -1344,6 +1353,7 @@ app.add_middleware(
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
+    chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.

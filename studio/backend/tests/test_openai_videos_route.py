@@ -18,7 +18,12 @@ import core.inference.video_gallery as gallery_module
 import routes.video as video_routes
 from auth.authentication import get_current_subject
 from core.inference.video_families import VIDEO_CANCELLED_MSG
-from routes.video import _frames_for_seconds, _parse_openai_video_seconds, _parse_openai_video_size
+from routes.video import (
+    _format_seconds,
+    _frames_for_seconds,
+    _parse_openai_video_seconds,
+    _parse_openai_video_size,
+)
 from routes.video import openai_router, router as video_router
 from utils.api_errors import install_api_error_handlers
 
@@ -169,6 +174,23 @@ def _wait_terminal(
             return video
         time.sleep(0.01)
     raise AssertionError(f"job never reached a terminal state: {video}")
+
+
+def _reference_image_bytes(fmt: str) -> bytes:
+    """A real, decodable image. The route decodes the reference before any model
+    switch, so a magic-byte stub is refused before it can reach begin_generate."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(buf, format = fmt)
+    return buf.getvalue()
+
+
+def _reference_data_url(fmt: str, mime: str) -> str:
+    import base64
+    return f"data:{mime};base64," + base64.b64encode(_reference_image_bytes(fmt)).decode("ascii")
 
 
 def _save_clip(
@@ -420,22 +442,22 @@ def test_only_the_video_variant_exists(client, backend):
 def test_input_reference_upload_becomes_the_first_frame(client, backend, monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(backend, "begin_generate", lambda **kwargs: captured.update(kwargs))
-    png = b"\x89PNG\r\n\x1a\nfake"
+    png = _reference_image_bytes("PNG")
     resp = _create(
         client, {"prompt": "animate this"}, {"input_reference": ("frame.png", png, "image/png")}
     )
     assert resp.status_code == 200, resp.json()
     assert captured["first_frame"].startswith("data:image/png;base64,")
     assert captured["video_id"] == resp.json()["id"]
-    resp = _create(
-        client, {"prompt": "x", "input_reference[image_url]": "data:image/jpeg;base64,AAAA"}
-    )
-    assert resp.status_code == 200 and captured["first_frame"] == "data:image/jpeg;base64,AAAA"
+    jpeg_url = _reference_data_url("JPEG", "image/jpeg")
+    resp = _create(client, {"prompt": "x", "input_reference[image_url]": jpeg_url})
+    assert resp.status_code == 200 and captured["first_frame"] == jpeg_url
+    png_url = _reference_data_url("PNG", "image/png")
     resp = client.post(
         "/v1/videos",
-        json = {"prompt": "x", "input_reference": {"image_url": "data:image/png;base64,BBBB"}},
+        json = {"prompt": "x", "input_reference": {"image_url": png_url}},
     )
-    assert resp.status_code == 200 and captured["first_frame"] == "data:image/png;base64,BBBB"
+    assert resp.status_code == 200 and captured["first_frame"] == png_url
 
 
 def test_input_reference_refusals(client, backend):
@@ -460,7 +482,7 @@ def test_input_reference_refusals(client, backend):
 def test_octet_stream_uploads_are_sniffed(client, backend, monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(backend, "begin_generate", lambda **kwargs: captured.update(kwargs))
-    jpeg = b"\xff\xd8\xff\xe0fake"
+    jpeg = _reference_image_bytes("JPEG")
     resp = _create(
         client,
         {"prompt": "x"},
@@ -468,7 +490,7 @@ def test_octet_stream_uploads_are_sniffed(client, backend, monkeypatch):
     )
     assert resp.status_code == 200, resp.json()
     assert captured["first_frame"].startswith("data:image/jpeg;base64,")
-    webp = b"RIFF\x00\x00\x00\x00WEBPVP8 "
+    webp = _reference_image_bytes("WEBP")
     resp = _create(
         client, {"prompt": "x"}, {"input_reference": ("frame", webp, "application/octet-stream")}
     )
@@ -615,3 +637,113 @@ def test_deleting_a_job_that_finishes_mid_cancel_removes_the_clip(client, backen
     assert gallery_module.owned_video_path(job["id"]) is None
     assert client.get(f"/v1/videos/{job['id']}").status_code == 404
     assert [v["id"] for v in client.get("/v1/videos").json()["data"]] == []
+
+
+def test_an_undecodable_reference_is_refused_before_the_model_switch(client, backend, monkeypatch):
+    """A well-formed content type is not a readable image.
+
+    _resolve_keyframes only decodes inside begin_generate, which runs after the auto
+    switch, so bad bytes used to evict the resident pipeline and load the target first.
+    """
+    import types
+
+    from core.inference import media_auto_switch
+
+    switched = {"completed": False}
+
+    async def _fake_switch(
+        model,
+        *,
+        before_switch = None,
+        **_kwargs,
+    ):
+        pick = types.SimpleNamespace(model_path = "Lightricks/LTX-2", gguf_filename = None)
+        if before_switch is not None:
+            before_switch(pick)
+        switched["completed"] = True
+
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _fake_switch)
+
+    resp = _create(
+        client,
+        {"prompt": "x", "model": "Lightricks/LTX-2"},
+        {"input_reference": ("frame.png", b"\x89PNG\r\n\x1a\nnot-an-image", "image/png")},
+    )
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == "input_reference"
+    # The message matters: without the eager decode this path still 400s, but only via
+    # the keyframe-conditioning check, leaving real decode failures to run post-switch.
+    assert "not a readable image" in resp.json()["error"]["message"], resp.json()
+    assert switched["completed"] is False, "the model was switched before the refusal"
+
+
+def test_a_delete_that_cannot_observe_the_settle_does_not_confirm(client, backend, monkeypatch):
+    """Returning deleted:true on a timed-out wait let the worker commit afterwards.
+
+    The clip then reappeared through retrieve/list, so the caller was told a deletion
+    happened that had not. Report 409 instead and let them retry.
+    """
+    monkeypatch.setattr(video_routes, "_DELETE_SETTLE_TIMEOUT_S", 0.05)
+    backend.gate.clear()
+    try:
+        job = _create(client, {"prompt": "still writing"}).json()
+        assert client.get(f"/v1/videos/{job['id']}").json()["status"] in (
+            "queued",
+            "in_progress",
+        )
+        monkeypatch.setattr(backend, "cancel_generate", lambda: False)
+        resp = client.delete(f"/v1/videos/{job['id']}")
+        assert resp.status_code == 409, resp.json()
+        assert resp.json()["error"]["code"] == "video_not_ready"
+    finally:
+        backend.gate.set()
+
+
+def test_the_create_call_opens_an_api_monitor_row(client, backend, monkeypatch):
+    """The OpenAI image and audio routes open a row; videos never did.
+
+    Without it the newly supported API is invisible to the API Monitor and its usage
+    receipts, so per-subject history silently undercounts video generation.
+    """
+    from core.inference.api_monitor import api_monitor
+
+    started: list[dict] = []
+    real_start = api_monitor.start
+
+    def _spy(**kwargs):
+        started.append(kwargs)
+        return real_start(**kwargs)
+
+    monkeypatch.setattr(api_monitor, "start", _spy)
+    resp = _create(client, {"prompt": "a monitored clip"})
+    assert resp.status_code == 200, resp.json()
+    rows = [r for r in started if r.get("endpoint") == "/v1/videos"]
+    assert rows, started
+    assert rows[0]["prompt"] == "a monitored clip"
+    assert rows[0]["method"] == "POST"
+
+
+def test_the_job_describes_the_run_the_backend_reserved(client, backend, monkeypatch):
+    """A load committing between status() and the reservation swaps the family.
+
+    The job used to be described from the earlier snapshot, so it advertised the model
+    that had just been replaced and a duration computed against that model's fps.
+    """
+    real = backend.begin_generate
+
+    def _begin(**kwargs):
+        real(**kwargs)
+        # What the reservation actually committed to, different from the snapshot.
+        return {
+            "width": 704,
+            "height": 1216,
+            "num_frames": 121,
+            "fps": 24,
+            "model": "unsloth/Some-Other-Video-Model",
+        }
+
+    monkeypatch.setattr(backend, "begin_generate", _begin)
+    job = _create(client, {"prompt": "swapped underneath", "seconds": "4"}).json()
+    assert job["model"] == "unsloth/Some-Other-Video-Model"
+    assert job["size"] == "704x1216"
+    assert job["seconds"] == _format_seconds(121 / 24)

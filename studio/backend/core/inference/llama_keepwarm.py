@@ -98,8 +98,13 @@ _INFERENCE_SUFFIXES = (
     "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
     # Video runs as a background job (the POST returns at once), so this covers only the brief accept; the training-start guards also probe generate-progress.
     "/video/generate",  # /api/inference/video/generate
-    "/videos",
 )
+
+# Matched WHOLE, not by suffix. The suffix tuple above is an endswith test, so a bare
+# "/videos" entry would also class an unrouted /v1/anything/videos as inference: that
+# 404s before any auth dependency, and this middleware only excludes 401/403, so each
+# such probe would refresh the chat model's idle timer and keep it resident for free.
+_INFERENCE_EXACT_PATHS = frozenset({"/v1/videos", "/api/inference/videos"})
 
 # Tracked above (they hold the GPU, so the in-flight count must see them) but served by the
 # diffusion/video engines, never the llama slot. A successful one therefore did NOT run against
@@ -124,6 +129,8 @@ def _is_preview_path(path: str) -> bool:
 
 
 def _is_inference_path(path: str) -> bool:
+    if path.rstrip("/") in _INFERENCE_EXACT_PATHS:
+        return True
     if path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES):
         return True
     return _is_preview_path(path)

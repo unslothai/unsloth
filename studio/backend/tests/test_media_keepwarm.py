@@ -795,6 +795,12 @@ def test_the_openai_videos_route_never_claims_the_llama_slot():
     preview ownership so the next preview of a different checkpoint 503s on the guard.
     """
     from core.inference import llama_keepwarm as kw
+
     for path in ("/v1/videos", "/api/inference/videos"):
         assert kw._is_inference_path(path), path
         assert path.endswith(kw._NON_LLM_SLOT_SUFFIXES), path
+    # Matched whole. As an endswith suffix it also caught unrouted paths, and those
+    # 404 before auth -- which this middleware does not exclude -- so each probe would
+    # have refreshed the chat model's idle timer and kept it resident for free.
+    for path in ("/v1/anything/videos", "/api/inference/nope/videos", "/v1/videosx"):
+        assert not kw._is_inference_path(path), path
