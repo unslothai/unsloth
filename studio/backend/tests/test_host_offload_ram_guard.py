@@ -191,31 +191,30 @@ def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
 
 
 def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
-    """Pin the (VRAM + RAM) switch point, and record that the measurement
-    DISAGREES with it at the margin.
+    """Pin where the (VRAM + RAM) rule switches to mmap. Nothing more.
 
-    gemma-4-31B Q4 on a G4 forced to 12 GiB free VRAM, host spill 10757 MiB
-    (10.50 GiB), RAM swept. Same cell, same placement, only RAM differs
-    (generation t/s):
+    This docstring has been wrong twice, so it is worth stating only what
+    replicated. gemma-4-31B Q4 on a G4 forced to 12 GiB free VRAM, host spill
+    10757 MiB (10.50 GiB), host RAM swept. Generation t/s, --fit on baselines:
 
-        RAM 15.76 GiB   --fit on 22.62      --fit on --load-mode none 23.23
-        RAM 10.44 GiB   --fit on TIMED OUT  --fit on --load-mode none 23.18
-                                 (>2400 s)
+        RAM 15.76 GiB   mmap 22.62   no-mmap 23.23
+        RAM 10.44 GiB   mmap TIMED OUT past 2400 s   no-mmap 23.18
+        RAM 10.12 GiB   mmap 22.71                   (re-run, quieter box)
+        RAM  8.53 GiB   mmap 22.53                   (larger deficit still fine)
 
-    At 10.44 GiB the 10.50 GiB spill does not fit, so `A` fails by about 60 MiB
-    and `_fits_without_paging` returns False, i.e. mmap. But mmap is the arm that
-    DIED there, while --load-mode none ran at full speed. mmap's benefit is
-    demand-paging a footprint the machine cannot hold; its cost is thrashing
-    precisely when the machine cannot hold it, so at the margin it is the worse
-    of the two options the rule chooses between.
+    The 10.44 GiB timeout DID NOT REPRODUCE. A re-run of the same cell served in
+    144 s at a larger deficit, and a 2 GiB deficit served too, so that timeout was
+    environmental (eleven other jobs were running) and not the rule biting. Two
+    earlier readings built on it -- "the boundary is a cliff" and "mmap is what
+    fails at the margin" -- are withdrawn.
 
-    This test pins the current switch point so a change to it is deliberate. It
-    is NOT a validation of that switch point: on this evidence the boundary is
-    in the wrong place, and the honest fix is to move it down (or price the
-    thrash) rather than to trust `A` alone. One cell, one host, so it is not
-    enough to move the rule on -- but it is enough to stop calling the rule
-    validated, which an earlier version of this docstring wrongly did after
-    reading the first arm's timeout without waiting for the second.
+    What replicated across seven cells is only this: --load-mode none is 2-3%
+    faster than mmap wherever the spill fits, and never slower. Whether mmap is
+    better or worse where the spill does NOT fit is still unmeasured, because no
+    run has yet reached a deficit large enough for no-mmap to fail to allocate.
+
+    So this test pins the switch point so a change to it is deliberate. It does
+    not claim the switch point is right, and it does not claim it is wrong.
     """
     mib = 1024 ** 2
     gib = 1024 ** 3
@@ -232,5 +231,7 @@ def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
 
     assert mode_at(24) == "none"
     assert mode_at(15.76) == "none"
-    # The switch. Measured: mmap timed out here and none ran at 23.18 t/s.
-    assert mode_at(10.44) == "mmap"
+    # Below the spill size the rule switches. Measured behaviour on both sides of
+    # this point is "no-mmap works fine"; mmap's behaviour here is unresolved.
+    assert mode_at(10.12) == "mmap"
+    assert mode_at(8.53) == "mmap"
