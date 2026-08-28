@@ -1906,6 +1906,10 @@ def studio_default(
             )
         host = "127.0.0.1"
 
+    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
+
+    host = normalize_wildcard_bind_host(host)
+
     # --verbose restores the per-request access logs that are suppressed by
     # default (plain-server path; the `run` subcommand has its own --verbose).
     if verbose:
@@ -2585,6 +2589,10 @@ def run(
                 err = True,
             )
         host = "127.0.0.1"
+
+    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
+
+    host = normalize_wildcard_bind_host(host)
 
     # Tool policy does not depend on the bind: tools default on everywhere
     # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag

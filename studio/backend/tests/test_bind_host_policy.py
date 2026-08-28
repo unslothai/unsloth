@@ -6,7 +6,11 @@ import socket
 import pytest
 
 from utils import host_policy
-from utils.host_policy import is_wildcard_host, wildcard_loopback_host
+from utils.host_policy import (
+    is_wildcard_host,
+    normalize_wildcard_bind_host,
+    wildcard_loopback_host,
+)
 
 
 @pytest.mark.parametrize(
@@ -45,6 +49,19 @@ def test_wildcard_loopback_matches_the_effective_address_family(host, expected):
     assert wildcard_loopback_host(host) == expected
 
 
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("0", "0.0.0.0"),
+        ("::0", "::"),
+        ("::ffff:0.0.0.0", "0.0.0.0"),
+        ("192.168.1.24", "192.168.1.24"),
+    ],
+)
+def test_effective_wildcards_are_normalized_before_binding(host, expected):
+    assert normalize_wildcard_bind_host(host) == expected
+
+
 def test_a_resolved_ipv6_wildcard_uses_ipv6_loopback(monkeypatch):
     monkeypatch.setattr(
         host_policy.socket,
@@ -53,6 +70,7 @@ def test_a_resolved_ipv6_wildcard_uses_ipv6_loopback(monkeypatch):
     )
 
     assert is_wildcard_host("wildcard.test") is True
+    assert normalize_wildcard_bind_host("wildcard.test") == "::"
     assert wildcard_loopback_host("wildcard.test") == "::1"
 
 

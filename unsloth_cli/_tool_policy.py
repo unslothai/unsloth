@@ -67,6 +67,14 @@ def is_wildcard_host(host: str) -> bool:
     return _unspecified_address(host) is not None
 
 
+def normalize_wildcard_bind_host(host: str) -> str:
+    """Return the canonical literal for an effective wildcard bind."""
+    address = _unspecified_address(host)
+    if isinstance(address, ipaddress.IPv6Address):
+        return "::"
+    return "0.0.0.0" if address is not None else host
+
+
 def wildcard_loopback_host(host: str) -> Optional[str]:
     """The loopback address reachable through a wildcard bind."""
     address = _unspecified_address(host)
