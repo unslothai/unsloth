@@ -1582,6 +1582,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
     monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "1")
     monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])

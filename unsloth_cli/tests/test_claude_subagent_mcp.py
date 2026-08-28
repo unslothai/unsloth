@@ -271,6 +271,7 @@ def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
     monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "1")
     monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
@@ -301,6 +302,7 @@ def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
         "CLAUDE_CODE_USE_MANTLE",
     ):
         assert child_env.get(name, "") == "", name
