@@ -813,9 +813,7 @@ def test_a_reference_only_checkpoint_is_refused_before_the_model_switch(
 
 
 @pytest.mark.parametrize("reference_size", [(8, 8), (5000, 1000)])
-def test_ref2va_routes_the_input_image_as_a_reference(
-    client, backend, monkeypatch, reference_size
-):
+def test_ref2va_routes_the_input_image_as_a_reference(client, backend, monkeypatch, reference_size):
     import types
 
     from core.inference import media_auto_switch
