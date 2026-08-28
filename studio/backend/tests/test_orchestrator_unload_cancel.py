@@ -1080,12 +1080,58 @@ def test_standard_load_honors_scoped_cancel_before_worker_start():
 
 
 def test_gguf_load_cancellation_includes_the_backend_unload_event():
+    import asyncio
+
     import routes.inference as inference_route
+
     class _Llama:
         def load_cancelled(self):
             return True
 
     assert inference_route._gguf_load_cancelled(_Llama(), threading.Event()) is True
+
+    scoped = threading.Event()
+
+    class _CancellingLlama:
+        def load_cancelled(self):
+            return False
+
+        def load_model(self, *, intent, load_cancel_event):
+            load_cancel_event.set()
+            raise RuntimeError("Cancelled")
+
+    assert (
+        asyncio.run(
+            inference_route._run_gguf_load_attempt(
+                _CancellingLlama(),
+                object(),
+                scoped,
+            )
+        )
+        is False
+    )
+
+
+def test_gguf_load_attempt_does_not_hide_a_real_resolver_failure():
+    import asyncio
+
+    import routes.inference as inference_route
+
+    class _Llama:
+        def load_cancelled(self):
+            return False
+
+        def load_model(self, *, intent, load_cancel_event):
+            raise RuntimeError("resolver failed")
+
+    with pytest.raises(RuntimeError, match = "resolver failed"):
+        asyncio.run(
+            inference_route._run_gguf_load_attempt(
+                _Llama(),
+                object(),
+                threading.Event(),
+            )
+        )
 
 
 # ----------------------------------------------------------------------------

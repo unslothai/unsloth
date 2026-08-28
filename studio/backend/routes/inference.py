@@ -12413,6 +12413,19 @@ def _gguf_load_cancelled(llama_backend, load_cancel_event: Optional[threading.Ev
     )
 
 
+async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bool:
+    try:
+        return await asyncio.to_thread(
+            llama_backend.load_model,
+            intent = intent,
+            load_cancel_event = load_cancel_event,
+        )
+    except Exception:
+        if _gguf_load_cancelled(llama_backend, load_cancel_event):
+            return False
+        raise
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -13003,10 +13016,10 @@ async def _load_model_impl(
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
                 )
-                return await asyncio.to_thread(
-                    llama_backend.load_model,
-                    intent = attempt,
-                    load_cancel_event = load_cancel_event,
+                return await _run_gguf_load_attempt(
+                    llama_backend,
+                    attempt,
+                    load_cancel_event,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
