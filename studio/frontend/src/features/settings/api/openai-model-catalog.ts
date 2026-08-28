@@ -13,7 +13,7 @@ type ApiOpenAIModelList = {
   data?: { id?: unknown; loaded?: unknown; quant?: unknown; task?: unknown }[];
 };
 
-const CHAT_TASKS = new Set(["text-generation", "text-to-speech"]);
+const CHAT_TASKS = new Set(["text-generation"]);
 
 export function chatModelsFromCatalog(body: unknown): OpenAIModel[] {
   const data = (body as ApiOpenAIModelList | null)?.data;

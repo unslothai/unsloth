@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { chatModelsFromCatalog } from "../src/features/settings/api/openai-model-catalog.ts";
 
-test("image, video and stt entries never reach the chat example picker", () => {
+test("non-chat entries never reach the chat example picker", () => {
   const models = chatModelsFromCatalog({
     data: [
       { id: "unsloth/Qwen3-8B-GGUF", loaded: true, quant: "Q4_K_M" },
@@ -19,7 +19,6 @@ test("image, video and stt entries never reach the chat example picker", () => {
   });
   assert.deepEqual(models, [
     { id: "unsloth/Qwen3-8B-GGUF", loaded: true, quant: "Q4_K_M" },
-    { id: "unsloth/orpheus-3b-0.1-ft-GGUF", loaded: false, quant: "Q8_0" },
     { id: "unsloth/Llama-3.2-1B-Instruct-GGUF", loaded: false, quant: undefined },
   ]);
 });
