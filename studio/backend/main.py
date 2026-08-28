@@ -2071,6 +2071,24 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
 
+    # The volume downloads actually land on. HF_HUB_CACHE or the Studio cache
+    # setting can put the hub cache on a different disk than the root the panel
+    # reports, and the downloader's own guard measures the cache dir, so a fit
+    # verdict scored against the root would be judging the wrong volume. Probed
+    # at the nearest existing ancestor because the cache dir may not exist yet.
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        cache_probe = Path(active_hf_hub_cache())
+        while not cache_probe.exists():
+            if cache_probe.parent == cache_probe:
+                break
+            cache_probe = cache_probe.parent
+        cache_disk = psutil.disk_usage(str(cache_probe))
+    except Exception as e:
+        logger.debug(f"Failed to get cache disk usage: {e}")
+        cache_disk = None
+
     try:
         current_process = psutil.Process(os.getpid())
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
@@ -2118,6 +2136,12 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             "total_gb": round(disk.total / 1e9, 2) if disk else 0,
             "free_gb": round(disk.free / 1e9, 2) if disk else 0,
             "percent_used": disk.percent if disk else 0,
+            # Free space on the volume holding the active HF hub cache, which is
+            # where a model download lands. Falls back to the root figure when
+            # the cache probe failed, so a consumer can always read it.
+            "cache_free_gb": round(cache_disk.free / 1e9, 2)
+            if cache_disk
+            else (round(disk.free / 1e9, 2) if disk else 0),
         },
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,

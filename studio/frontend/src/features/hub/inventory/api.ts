@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import {
   disposableTimeoutSignal,
   withAbort,
@@ -396,6 +397,9 @@ export async function deleteCachedModel(
     await throwIfNotOk(response);
     discardDeletedModelInventoryHints(repoId, variant);
     bumpInventoryVersion();
+    // A delete frees the disk the fit badges score against; refresh the cached
+    // system snapshot so a row refused for space is re-judged.
+    void fetchSystemInfo({ force: true });
   } finally {
     invalidateGgufVariantsCache(repoId);
   }

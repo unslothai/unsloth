@@ -84,6 +84,7 @@ import {
   ggufFitIsAutoSelectable,
   ggufFitIsRefusal,
 } from "./gguf-variant-fit.ts";
+import { ggufVariantTransferBytes } from "@/features/hub/lib/gguf-variant-sort";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
   Add01Icon,
@@ -1523,7 +1524,7 @@ function GgufVariantExpander({
   const totalBudgetGb = gpuBudgetGb + (systemRamGb ?? 0) * 0.7;
 
   const getGgufFit = useCallback(
-    (sizeBytes: number, onDisk?: boolean): GgufFit =>
+    (sizeBytes: number, onDisk?: boolean, downloadBytes?: number): GgufFit =>
       classifyGgufVariantFit(
         sizeBytes,
         {
@@ -1533,6 +1534,7 @@ function GgufVariantExpander({
           diskFreeGb: diskFreeGb ?? 0,
         },
         onDisk,
+        downloadBytes,
       ),
     [budgetKnown, gpuBudgetGb, totalBudgetGb, diskFreeGb],
   );
@@ -1558,14 +1560,26 @@ function GgufVariantExpander({
       }
       if (
         preferred &&
-        ggufFitIsAutoSelectable(getGgufFit(preferred.size_bytes, preferred.downloaded))
+        ggufFitIsAutoSelectable(
+          getGgufFit(
+            preferred.size_bytes,
+            preferred.downloaded,
+            ggufVariantTransferBytes(preferred),
+          ),
+        )
       ) {
         recommended.set(group.key, preferred.quant);
         continue;
       }
       const fitting = group.variants
         .filter((variant) =>
-          ggufFitIsAutoSelectable(getGgufFit(variant.size_bytes, variant.downloaded)),
+          ggufFitIsAutoSelectable(
+            getGgufFit(
+              variant.size_bytes,
+              variant.downloaded,
+              ggufVariantTransferBytes(variant),
+            ),
+          ),
         )
         .sort((left, right) => right.size_bytes - left.size_bytes);
       if (fitting[0]) {
@@ -1600,7 +1614,7 @@ function GgufVariantExpander({
     // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight,
     // 4 = pages from disk, 5 = OOM. Disk sits above OOM because it runs.
     const tierOf = (v: GgufVariantDetail) => {
-      const f = getGgufFit(v.size_bytes, v.downloaded);
+      const f = getGgufFit(v.size_bytes, v.downloaded, ggufVariantTransferBytes(v));
       if (ggufFitIsRefusal(f)) return 5;
       if (f === "disk") return 4;
       const base = f === "fits" ? 0 : 1;
@@ -1854,7 +1868,7 @@ function GgufVariantExpander({
         const isRecommended =
           group != null &&
           effectiveRecommendedByGroup.get(group.key) === v.quant;
-        const fit = getGgufFit(v.size_bytes, v.downloaded);
+        const fit = getGgufFit(v.size_bytes, v.downloaded, ggufVariantTransferBytes(v));
         const noSpace = fit === "nospace";
         const oom = fit === "oom";
         const tight = fit === "tight";

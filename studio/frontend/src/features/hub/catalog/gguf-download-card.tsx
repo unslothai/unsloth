@@ -66,6 +66,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
+  ggufVariantTransferBytes,
   ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
@@ -281,6 +282,7 @@ function createGgufVariantMenuItems(
     fit: classifyGgufFit(variant.size_bytes, {
       ...resources,
       onDisk: Boolean(variant.downloaded),
+      downloadBytes: ggufVariantTransferBytes(variant),
     }),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
@@ -797,16 +799,10 @@ export function GgufDownloadCard({
             budgetFraction,
             diskFreeGb,
             onDisk: Boolean(selected.downloaded),
+            downloadBytes: ggufVariantTransferBytes(selected),
           })
         : null,
-    [
-      gpuGb,
-      selected?.size_bytes,
-      selected?.downloaded,
-      systemRamGb,
-      budgetFraction,
-      diskFreeGb,
-    ],
+    [gpuGb, selected, systemRamGb, budgetFraction, diskFreeGb],
   );
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)

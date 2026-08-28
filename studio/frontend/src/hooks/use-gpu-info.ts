@@ -104,7 +104,9 @@ function toGpuInfo(
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
     systemRamAvailableHostGb: data?.memory?.available_gb ?? 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
-    diskFreeGb: data?.disk?.free_gb ?? 0,
+    // The cache volume when the backend reports it (downloads land there, and it
+    // can be a different disk than the root), else the root figure.
+    diskFreeGb: data?.disk?.cache_free_gb ?? data?.disk?.free_gb ?? 0,
   };
   const gpuData =
     source === "inference_gpu" ? (data?.inference_gpu ?? data?.gpu) : data?.gpu;

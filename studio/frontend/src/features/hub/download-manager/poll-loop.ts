@@ -3,6 +3,7 @@
 
 import { carriesOverSeed, seededMeasuredTransfer } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
@@ -238,6 +239,11 @@ export function finalize(
       error: null,
     });
     notify(job, "onComplete", bytes);
+    // The fit badges score against free disk, and this download just consumed
+    // it. The system snapshot is module-cached and nothing else polls it while
+    // the picker is the only surface open, so refresh it at the one point every
+    // completed download passes through.
+    void fetchSystemInfo({ force: true });
     scheduleRemoval(key, COMPLETE_LINGER_MS);
   } else if (outcome === "cancelled") {
     patchJob(key, {

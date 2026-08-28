@@ -28,6 +28,10 @@ export interface GgufFitInput {
   /** True when this file is already on the machine. The floor is about landing
    *  the download, and a landed file needs no space it does not already hold. */
   onDisk?: boolean;
+  /** Bytes the download would actually transfer: full footprint with companions
+   *  for a fresh fetch, the measured remainder for a resumable partial. Defaults
+   *  to the checkpoint size. */
+  downloadBytes?: number;
   /** The user's saved VRAM Budget, when it is known.
    *
    *  Absent means "not loaded yet, or a backend too old to serve the route", and
@@ -76,7 +80,7 @@ export function requiredGgufMemoryGb(
 
 export function classifyGgufFit(
   sizeBytes: number,
-  { gpuGb, systemRamGb, budgetFraction, diskFreeGb, onDisk }: GgufFitInput,
+  { gpuGb, systemRamGb, budgetFraction, diskFreeGb, onDisk, downloadBytes }: GgufFitInput,
 ): GgufFitClass {
   // Before any memory question: every tier below is a claim about where the
   // weights sit, and all of them, `disk` loudest, assume the file is on the
@@ -84,7 +88,7 @@ export function classifyGgufFit(
   // (disk holds the file, not the runtime) and no share taken out (a floor,
   // not a budget).
   if (!onDisk && typeof diskFreeGb === "number" && diskFreeGb > 0) {
-    if (sizeBytes / 1e9 > diskFreeGb) return "nospace";
+    if ((downloadBytes ?? sizeBytes) / 1e9 > diskFreeGb) return "nospace";
   }
   const required = requiredGgufMemoryGb(sizeBytes);
   if (!gpuGb || gpuGb <= 0) {

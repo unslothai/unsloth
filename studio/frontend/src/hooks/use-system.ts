@@ -69,6 +69,9 @@ export interface SystemInfoResponse {
     total_gb: number;
     free_gb: number;
     percent_used: number;
+    /** Free space on the volume holding the active HF hub cache, where a
+     *  download lands. Absent on a backend older than the field. */
+    cache_free_gb?: number;
   };
   gpu: SystemGpuInfo;
   /** Devices available to GGUF inference; differs when llama.cpp uses Vulkan. */

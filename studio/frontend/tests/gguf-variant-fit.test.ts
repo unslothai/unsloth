@@ -118,6 +118,21 @@ test("both refusals share a pill, and neither is auto-selected", () => {
   assert.equal(ggufFitIsAutoSelectable("nospace"), false);
 });
 
+test("the floor judges the bytes a download would transfer, not the file size", () => {
+  const box = { ...budget(80, 160), diskFreeGb: 124.7 };
+  // A resumable partial needs only its remainder: 40e9 bytes left of a 158 GB
+  // quant lands in 124.7 GB free, so refusing it would refuse a resume that fits.
+  assert.equal(classifyGgufVariantFit(147 * GB, box, false, 40e9), "tight");
+  // A fresh fetch carries companion files (mmproj and friends): a 110 GB
+  // checkpoint whose full footprint is 130 GB does not fit 124.7 GB free, and
+  // judging the checkpoint alone would promise a download that cannot land.
+  assert.equal(classifyGgufVariantFit(102 * GB, box, false, 130e9), "nospace");
+  // Same rule on the Hub card (120 GiB needs 139 GiB, inside its offload band).
+  const hub = { gpuGb: 80, systemRamGb: 160, diskFreeGb: 124.7 };
+  assert.equal(hubFit(120 * GB, { ...hub, downloadBytes: 40e9 }), "partial");
+  assert.equal(hubFit(102 * GB, { ...hub, downloadBytes: 130e9 }), "nospace");
+});
+
 test("a quant already on the machine is never refused for the space it holds", () => {
   // Free space excludes the file's own bytes, so a downloaded 147 GiB quant on a
   // nearly-full disk would read as undownloadable while sitting there loadable.

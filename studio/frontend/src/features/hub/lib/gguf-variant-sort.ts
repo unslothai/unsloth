@@ -58,6 +58,7 @@ export function ggufVariantFitRank(
     classifyGgufFit(variant.size_bytes, {
       ...resources,
       onDisk: Boolean(variant.downloaded),
+      downloadBytes: ggufVariantTransferBytes(variant),
     })
   ) {
     case "fits":
@@ -84,7 +85,11 @@ export function compareGgufVariantFitAndSize(
   const aFit = ggufVariantFitRank(a, resources);
   const bFit = ggufVariantFitRank(b, resources);
   if (aFit !== bFit) return aFit - bFit;
-  return aFit === 3 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
+  // Fitting tiers largest-first (best quality that fits); disk and the refusals
+  // smallest-first (closest to viable). `=== 3` here silently flipped the
+  // refusal tier to largest-first when it moved to rank 4, and a host with no
+  // measured budget defaulted its download card to the biggest quant.
+  return aFit >= 3 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
 }
 
 export function ggufVariantDownloadStatusRank(
