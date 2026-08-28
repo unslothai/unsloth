@@ -781,7 +781,11 @@ class NativeAudioBackend:
 
         token_kwargs = self._token_kwargs(hf_token)
         pipeline = ModularPipeline.from_pretrained(source, **token_kwargs)
-        pipeline.load_components(dtype = self._dtype(), **token_kwargs)
+        pipeline.load_components(
+            pretrained_model_name_or_path = source,
+            dtype = self._dtype(),
+            **token_kwargs,
+        )
         pipeline.to(self.device)
         entry.update(pipeline = pipeline, sample_rate = int(pipeline.sampling_rate))
 

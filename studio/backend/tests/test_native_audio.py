@@ -359,6 +359,42 @@ def test_minimax_generation_and_cancellation_contract():
     assert seen["removed"] is True
 
 
+def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeypatch):
+    seen = {}
+
+    class Pipeline:
+        sampling_rate = 44100
+
+        def load_components(self, **kwargs):
+            seen["components"] = kwargs
+
+        def to(self, device):
+            seen["device"] = device
+
+    pipeline = Pipeline()
+
+    def from_pretrained(source, **_kwargs):
+        seen["source"] = source
+        return pipeline
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        SimpleNamespace(
+            ModularPipeline = SimpleNamespace(from_pretrained = from_pretrained)
+        ),
+    )
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cuda"
+    backend._dtype = lambda: torch.float16
+
+    entry = {}
+    backend._load_minimax_music3(entry, "/models/minimax-custom", None)
+    assert seen["components"]["pretrained_model_name_or_path"] == "/models/minimax-custom"
+    assert seen["device"] == "cuda"
+    assert entry["pipeline"] is pipeline
+
+
 def test_minimax_requires_a_separate_description():
     backend = _backend("minimax_music3", pipeline = object(), sample_rate = 44100)
     with pytest.raises(RuntimeError, match = "music description"):
