@@ -217,10 +217,14 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
         raise ValueError(f"Keyless API access scope must be one of: {', '.join(KEYLESS_SCOPES)}.")
     with _write_lock:
         write_marker = object()
+        upsert_started = False
         with _cache_lock:
             _settings_write_inflight = write_marker
         try:
-            allow_tools = _read_settings_from_db()[1] if tools is None else _coerce_bool(tools)
+            if scope == KEYLESS_SCOPE_OFF:
+                allow_tools = False
+            else:
+                allow_tools = _read_settings_from_db()[1] if tools is None else _coerce_bool(tools)
             if allow_tools is None:
                 raise ValueError("Keyless tool access must be true or false.")
             # tools are meaningless without a scope, and leaving them ticked would surprise
@@ -229,6 +233,7 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
 
             from storage.studio_db import upsert_app_settings
 
+            upsert_started = True
             upsert_app_settings(
                 {
                     KEYLESS_API_ACCESS_SETTING_KEY: scope,
@@ -239,6 +244,14 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
                 _settings_generation += 1
                 _cached_settings = (time.monotonic(), scope, allow_tools)
             return scope, allow_tools
+        except Exception:
+            # The SQLite helper can fail after commit while reading its result. Do not
+            # let any previously permissive cache survive an indeterminate write.
+            if upsert_started:
+                with _cache_lock:
+                    _settings_generation += 1
+                    _cached_settings = (time.monotonic(), KEYLESS_SCOPE_OFF, False)
+            raise
         finally:
             with _cache_lock:
                 if _settings_write_inflight is write_marker:
@@ -619,7 +632,9 @@ class KeylessToolPolicyMiddleware:
             if _settings_write_inflight is not None or generation != _settings_generation:
                 settings = (KEYLESS_SCOPE_OFF, False)
                 admitted = False
-        asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
+            # Publishing the admission marker is the request's linearization point.
+            # A settings write must sort entirely before or after this decision.
+            asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
         if not admitted:
             await self.app(asgi_scope, receive, send)
             return

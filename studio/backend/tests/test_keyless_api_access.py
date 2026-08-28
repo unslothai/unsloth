@@ -454,6 +454,42 @@ def test_scope_write_aborts_when_preserved_tools_cannot_be_read(monkeypatch):
     assert get_keyless_api_access_settings() == ("full", True)
 
 
+def test_disable_without_tools_does_not_depend_on_a_preservation_read(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("full", tools = True)
+    monkeypatch.setattr(
+        keyless,
+        "_read_settings_from_db",
+        lambda: (_ for _ in ()).throw(OSError("db unavailable")),
+    )
+
+    assert set_keyless_api_access("off") == ("off", False)
+    assert get_keyless_api_access_settings() == ("off", False)
+
+
+def test_post_commit_write_error_invalidates_a_permissive_cache(monkeypatch):
+    import storage.studio_db as studio_db
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("inference", tools = True)
+    generation = keyless._settings_generation
+    real_upsert = studio_db.upsert_app_settings
+
+    def commit_then_raise(settings):
+        real_upsert(settings)
+        raise RuntimeError("result read failed after commit")
+
+    monkeypatch.setattr(studio_db, "upsert_app_settings", commit_then_raise)
+
+    with pytest.raises(RuntimeError, match = "after commit"):
+        set_keyless_api_access("off", tools = False)
+
+    assert keyless._settings_generation == generation + 1
+    assert get_keyless_api_access_settings() == ("off", False)
+    assert asgi_request_is_keyless(asgi_scope(path = "/v1/models")) is False
+
+
 def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
     import storage.studio_db as studio_db
     import utils.keyless_api_access as keyless
@@ -547,6 +583,48 @@ def test_middleware_rechecks_a_setting_changed_during_classification(monkeypatch
         assert observed == [False]
 
     asyncio.run(exercise())
+
+
+def test_middleware_linearizes_admission_before_a_concurrent_disable():
+    set_keyless_api_access("inference", tools = True)
+    publication_started = threading.Event()
+    writer_done = threading.Event()
+    committed_before_publication = []
+
+    class PublicationGate(dict):
+        def setdefault(self, key, default = None,):
+            if key == "state":
+                publication_started.set()
+                committed_before_publication.append(writer_done.wait(timeout = 0.2))
+            return super().setdefault(key, default)
+
+    scope = PublicationGate(asgi_scope())
+
+    def disable():
+        assert publication_started.wait(timeout = 10)
+        set_keyless_api_access("off", tools = False)
+        writer_done.set()
+
+    writer = threading.Thread(target = disable)
+    writer.start()
+
+    async def exercise():
+        observed = []
+
+        async def downstream(request_scope, *_args):
+            observed.append(request_scope["state"][KEYLESS_ADMISSION_STATE_KEY])
+
+        await KeylessToolPolicyMiddleware(downstream)(scope, lambda: None, lambda _message: None)
+        return observed
+
+    try:
+        assert asyncio.run(exercise()) == [True]
+    finally:
+        writer.join(timeout = 10)
+
+    assert not writer.is_alive()
+    assert committed_before_publication == [False]
+    assert get_keyless_api_access_settings() == ("off", False)
 
 
 def test_overlapping_writes_publish_in_commit_order(monkeypatch):
