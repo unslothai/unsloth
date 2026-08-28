@@ -230,9 +230,7 @@ def test_start_ingestion_rejects_malformed_content_hash(rag_home, stub_embedding
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
     scope = store.kb_scope("K1")
     with pytest.raises(ValueError):
-        ingestion.start_ingestion(
-            scope, "K1", None, "doc.txt", path, content_hash = "not-a-sha256"
-        )
+        ingestion.start_ingestion(scope, "K1", None, "doc.txt", path, content_hash = "not-a-sha256")
 
 
 def test_manual_upload_does_not_dedupe_to_linked_folder_document(
