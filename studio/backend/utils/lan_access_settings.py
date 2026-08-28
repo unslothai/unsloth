@@ -205,8 +205,10 @@ def configure_lan_access(
     app_state, *, port: int, bind_host: str, secure: bool, is_colab: bool, frontend_served: bool
 ) -> None:
     """Publish immutable launch policy used by every settings request."""
+    from utils.host_policy import is_wildcard_host
+
     app_state.lan_access_port = port
-    app_state.lan_access_wildcard_bind = bind_host in ("0.0.0.0", "::")
+    app_state.lan_access_wildcard_bind = is_wildcard_host(bind_host)
     app_state.lan_access_bind_host = bind_host
     app_state.lan_access_launch_addresses = tuple(
         str(address) for address in _resolve_host_addresses(bind_host, port)

@@ -96,6 +96,10 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
         ("::1", False, False),
         ("0.0.0.0", True, True),
         ("::", True, True),
+        ("::0", True, True),
+        ("0:0:0:0:0:0:0:0", True, True),
+        ("0", True, True),
+        ("", True, True),
         ("192.168.1.24", True, False),
     ],
 )
@@ -190,6 +194,9 @@ def test_private_lan_ignores_forwarding_headers(monkeypatch):
         ("192.168.1.24", None, "192.168.1.24", False, False, True),
         ("0.0.0.0", None, "192.168.1.24", False, False, True),
         ("::", None, "fd00::24", False, False, True),
+        ("::0", None, "fd00::24", False, False, True),
+        ("0", None, "192.168.1.24", False, False, True),
+        ("", None, "192.168.1.24", False, False, True),
         ("studio.lan", "192.168.1.24", "192.168.1.24", False, False, True),
         ("studio.lan", "127.0.0.1", "127.0.0.1", False, False, False),
         ("studio.lan", "64.227.100.5", "64.227.100.5", False, False, False),
@@ -283,25 +290,39 @@ def test_a_pending_admin_password_blocks_exposing_the_server(monkeypatch):
     assert status["can_start"] is False
 
 
-def test_status_carries_the_bind_host_so_a_block_can_name_it(monkeypatch):
+@pytest.mark.parametrize(
+    "bind_host,wildcard,expected_urls",
+    [
+        ("0.0.0.0", True, ["http://10.1.1.144:8888"]),
+        ("::", True, ["http://10.1.1.144:8888"]),
+        ("::0", True, ["http://10.1.1.144:8888"]),
+        ("0:0:0:0:0:0:0:0", True, ["http://10.1.1.144:8888"]),
+        ("0", True, ["http://10.1.1.144:8888"]),
+        ("", True, ["http://10.1.1.144:8888"]),
+        ("10.1.1.144", False, ["http://203.0.113.9:8888"]),
+    ],
+)
+def test_status_carries_the_bind_host_so_a_block_can_name_it(
+    monkeypatch, bind_host, wildcard, expected_urls
+):
     """The launch-managed block covers a wildcard and a single-address bind
     alike, so the address itself has to reach the settings UI."""
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["10.1.1.144"])
-    for bind_host in ("0.0.0.0", "::", "10.1.1.144"):
-        state = SimpleNamespace(server_url = "http://10.1.1.144:8888")
-        lan_settings.configure_lan_access(
-            state,
-            port = 8888,
-            bind_host = bind_host,
-            secure = False,
-            is_colab = False,
-            frontend_served = True,
-        )
-        state.lan_access_ready = True
-        status = lan_settings.lan_access_status(SimpleNamespace(state = state))
-        assert status["bind_host"] == bind_host
-        assert status["wildcard_bind"] is (bind_host in ("0.0.0.0", "::"))
-        assert status["block_reason"] == "launch_managed"
+    state = SimpleNamespace(server_url = "http://203.0.113.9:8888")
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = bind_host,
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+    state.lan_access_ready = True
+    status = lan_settings.lan_access_status(SimpleNamespace(state = state))
+    assert status["bind_host"] == bind_host
+    assert status["wildcard_bind"] is wildcard
+    assert status["urls"] == expected_urls
+    assert status["block_reason"] == "launch_managed"
 
 
 def test_the_response_model_carries_the_bind_host_to_the_client():
