@@ -71,7 +71,7 @@ MECHANISM_FIX: Mapping[str, str] = {
         "the cost is style and layout of off-screen content. The obvious fix, content-visibility: "
         "auto, is NOT available: the shipped override that disables it is kept for a height "
         "flicker during stream finalisation and because WebKit below Safari 26 cannot find "
-        "skipped content with find-in-page and Studio has no in-thread search. So a win here "
+        "skipped content with find-in-page and Unsloth has no in-thread search. So a win here "
         "names the cost and still needs a different mechanism to remove it"
     ),
     "layout_geometry": (

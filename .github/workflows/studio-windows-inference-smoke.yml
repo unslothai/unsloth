@@ -276,7 +276,7 @@ jobs:
       # key on THIS step rather than on assert-prebuilt. shim only runs when
       # assert-prebuilt succeeded, so `steps.shim.outcome == 'success'` implies
       # the assertion passed and additionally catches a missing shim, which
-      # would otherwise let all three phases boot a Studio that is not on PATH.
+      # would otherwise let all three phases boot an Unsloth that is not on PATH.
       - name: Add Unsloth shim to GITHUB_PATH
         id: shim
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
@@ -470,7 +470,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -962,7 +962,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped
@@ -1351,7 +1351,7 @@ jobs:
         # resolve to the real Windows process. pwsh keeps us off Git Bash, and
         # every failure is swallowed so teardown can never fail the job.
         #
-        # The command-line sweep after it is not redundant. A Studio that hangs
+        # The command-line sweep after it is not redundant. An Unsloth that hangs
         # during startup never binds the port -- the health wait exists for
         # exactly that case -- so the port lookup finds no owner and would leave
         # the process alive to collide with the next phase. The match is scoped

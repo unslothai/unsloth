@@ -320,7 +320,7 @@ def assert_not_dev_server(page: Any, base_url: str) -> dict[str, Any]:
     if status == 200:
         raise CellFailure(
             "vite_dev_server",
-            f"{url} answered 200, so this Studio is being served by a Vite dev server. "
+            f"{url} answered 200, so this Unsloth is being served by a Vite dev server. "
             "Every timing from it is inflated and the run must be refused.",
         )
     return {"vite_client_status": int(status), "dev_server_ruled_out": True}
@@ -330,7 +330,7 @@ def assert_attribution_build(page: Any) -> dict[str, Any]:
     """Confirm the dist under measurement is the studiobench attribution build.
 
     Catches the staleness failure: a shipping dist left in the directory handed
-    to `unsloth studio --frontend <dir>` produces a perfectly healthy Studio
+    to `unsloth studio --frontend <dir>` produces a perfectly healthy Unsloth
     serving the WRONG bundle, with no profiling renderer and therefore a React
     stage that reads 0.00. `attribution/vite.studiobench.config.ts` defines
     `__STUDIOBENCH_ATTRIBUTION_BUILD__` for exactly this check.
@@ -352,7 +352,7 @@ def verify_build_provenance(
     *,
     require_attribution: bool = True,
 ) -> dict[str, Any]:
-    """All the provenance gates at once, for a Studio that is up and rendering.
+    """All the provenance gates at once, for an Unsloth that is up and rendering.
 
     Call this once per cell before any measurement. Every failure raises, and
     that is deliberate: each of these conditions produces numbers that look

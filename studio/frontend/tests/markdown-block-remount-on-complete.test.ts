@@ -36,7 +36,7 @@ const ANIMATION_FREE_HELPER_RE = /withoutStreamdownAnimationPlugin/;
 const NULL_ANIMATION_PLUGIN_RE = /animatePlugin:\s*null/;
 // The block component is now rendered inside MarkdownBlockBoundary, because a
 // lazy chunk that fails to load anywhere in a reply used to unmount all of
-// Studio through the router's error boundary. `memo` is still the OUTERMOST
+// Unsloth through the router's error boundary. `memo` is still the OUTERMOST
 // wrapper, which is the property this pins: on a memo hit React skips the
 // boundary and the block together, exactly as it did before. Pinned to the new
 // spelling rather than loosened, because a version with memo INSIDE the boundary

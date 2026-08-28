@@ -38,7 +38,7 @@ from typing import Optional
 # of each other in every React build, minified or not.
 _WINDOW = 4000
 
-# BACKTICKS as well as quotes. Studio's production bundle is minified with a pass that rewrites
+# BACKTICKS as well as quotes. Unsloth's production bundle is minified with a pass that rewrites
 # short string literals as template literals, so the marker on the shipped build reads
 # ``rendererPackageName:`react-dom` `` and a quote-only pattern misses it on every asset -- which
 # reads as "build mode could not be established" on a perfectly good production build, i.e. the
@@ -87,8 +87,8 @@ def _get(url: str, timeout: float = 20.0) -> tuple[int, bytes, str]:
 def _is_vite_client(status: int, body: bytes, content_type: str) -> bool:
     """A 200 alone does NOT mean a dev server, and assuming it does breaks the gate.
 
-    Studio serves its built frontend as a single-page app, so ANY unknown path returns 200 with
-    `index.html` -- measured here against two production Studios, both of which answered 200 to
+    Unsloth serves its built frontend as a single-page app, so ANY unknown path returns 200 with
+    `index.html` -- measured here against two production Unsloth instances, both of which answered 200 to
     `/@vite/client` and were failed as dev servers by the first version of this check. A gate that
     fails every correct build is a gate someone turns off.
 

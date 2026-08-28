@@ -6,6 +6,7 @@
 import os
 import sys
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -52,6 +53,7 @@ from routes.inference import (
     _effective_openai_max_tokens,
     _effective_openai_max_tokens_from_values,
     _extract_content_parts,
+    _images_in_last_user_message,
     _friendly_error,
     _friendly_upstream_error,
     _merge_user_content,
@@ -80,6 +82,14 @@ from routes.inference import (
     openai_chat_completions,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
+
+# 1x1 PNGs that Pillow can actually decode, for the paths that reach the decoder.
+_RED_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+)
+_BLUE_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC"
+)
 
 
 @pytest.fixture(autouse = True)
@@ -729,6 +739,984 @@ class TestChatCompletionRequestToolFields:
         [entry] = monitor.snapshot()
         assert entry["status"] == "error"
         assert "does not advertise tools" in entry["error"]
+        assert monitor.active_count() == 0
+
+    def test_a_multi_image_message_closes_the_monitor_row(self, monkeypatch):
+        """The single-image refusal lands after the monitor row opens, so it must
+        close it: a row left running keeps Studio reporting the backend as
+        generating long after the request has been answered with a 400."""
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        class _VisionBackend:
+            active_model_name = "vision-sf"
+            models = {
+                "vision-sf": {
+                    "is_vision": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_chat_response(self, **kwargs):
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _VisionBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "compare these"}, image, image],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "one image per message" in resp.text
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "one image per message" in entry["error"]
+        assert monitor.active_count() == 0
+
+    def _standard_vision_client(
+        self,
+        monkeypatch,
+        monitor,
+        is_vision = True,
+    ):
+        """A loaded safetensors backend on the standard path, recording generation."""
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _Backend:
+            active_model_name = "vision-sf"
+            models = {
+                "vision-sf": {
+                    "is_vision": is_vision,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+            generated = calls
+
+            def resize_image(self, image):
+                return image
+
+            def generate_chat_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        backend = _Backend()
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        return self._v1_client(monkeypatch, _LlamaOff(), backend), backend
+
+    def test_several_undecodable_images_on_one_message_are_still_refused(self, monkeypatch):
+        """The count is of image PARTS, not of images extraction could decode.
+
+        Only a data URL becomes base64, so several remote image URLs decode to
+        nothing; gating on a decoded image would let exactly those be flattened
+        away unannounced, which is the silent drop this guard exists to stop."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        remote = {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+        empty = {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}}
+
+        for parts in ([remote, remote], [empty, empty], [empty, remote]):
+            resp = client.post(
+                "/v1/chat/completions",
+                json = {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "compare these"}, *parts],
+                        }
+                    ]
+                },
+            )
+            assert resp.status_code == 400, parts
+            assert "one image per message" in resp.text
+
+        assert backend.generated == []
+        assert monitor.active_count() == 0
+        assert all(e["status"] == "error" for e in monitor.snapshot())
+
+    @pytest.mark.parametrize(
+        "legacy,expected",
+        [(_BLUE_PNG_B64, 400), (_RED_PNG_B64, 200)],
+        ids = ["distinct_legacy_image_is_a_second_image", "echoed_legacy_image_is_the_same_one"],
+    )
+    def test_a_distinct_legacy_image_beside_a_message_image(self, legacy, expected, monkeypatch):
+        """`extracted_image_b64 or image_base64` always picks the message image, so a
+        DIFFERENT top-level image is a second one the caller never hears about.
+        Studio's echo byte-matches the part, so it must not be counted twice."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"},
+                            },
+                        ],
+                    }
+                ],
+                "image_base64": legacy,
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "one image per message" in resp.text
+            assert backend.generated == []
+        else:
+            assert len(backend.generated) == 1
+
+    @pytest.mark.parametrize(
+        "bad_part",
+        [
+            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
+        ],
+        ids = ["remote_url", "payloadless_data_url"],
+    )
+    def test_an_unreadable_part_plus_a_distinct_legacy_image_is_two_images(
+        self, bad_part, monkeypatch
+    ):
+        """The count is structural, so a part the extractor cannot read still counts.
+        With a distinct top-level image beside it the caller supplied two, and the
+        part is the one that gets dropped."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "x"}, bad_part]}
+                ],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "one image per message" in resp.text
+        assert backend.generated == []
+        assert monitor.active_count() == 0
+
+    def test_an_unreadable_part_alone_is_still_answered(self, monkeypatch):
+        """Control: one remote image and no top-level image is not a multi-image
+        call, and clients relying on that text answer must keep it."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "x"},
+                            {"type": "image_url", "image_url": {"url": "https://e.com/a.png"}},
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert backend.generated[0]["image"] is None
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize("n_images,expected", [(2, 400), (1, 400), (0, 200)])
+    def test_a_tts_model_refuses_an_image_instead_of_speaking_over_it(
+        self, n_images, expected, monkeypatch
+    ):
+        """The TTS auto-route returns before the standard image path and speaks the
+        newest user text, so an attached image is discarded. It is also why the
+        text-only rejection never sees such a request."""
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        spoken = []
+
+        class _TtsBackend:
+            active_model_name = "tts"
+            models = {
+                "tts": {
+                    "is_vision": False,
+                    "is_audio": True,
+                    "audio_type": "csm",
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_response(self, **kwargs):
+                spoken.append(kwargs)
+                import numpy as np
+                return np.zeros(16000, dtype = "float32"), 16000
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _TtsBackend())
+        image = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+        content = [{"type": "text", "text": "say hi"}] + [image] * n_images
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {"messages": [{"role": "user", "content": content}]},
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "does not read images" in resp.text
+            assert spoken == []
+        else:
+            assert len(spoken) == 1
+
+    @pytest.mark.parametrize(
+        "legacy_is_newest,expected",
+        [(False, 400), (True, 200)],
+        ids = ["older_user_image_is_not_the_echo", "newest_user_image_is_the_echo"],
+    )
+    def test_only_the_newest_user_image_counts_as_the_echo(
+        self, legacy_is_newest, expected, monkeypatch
+    ):
+        """findLatestUserImageBase64 returns the first image on the newest user turn,
+        so that one value is all the field could carry. Matching anywhere let a
+        client resend an older image while the newest turn supplied its own."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+        newest = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_BLUE_PNG_B64}"},
+        }
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "first"}, older]},
+                    {"role": "assistant", "content": "ok"},
+                    {"role": "user", "content": [{"type": "text", "text": "second"}, newest]},
+                ],
+                "image_base64": _BLUE_PNG_B64 if legacy_is_newest else _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "one image per message" in resp.text
+            assert backend.generated == []
+        else:
+            assert len(backend.generated) == 1
+
+    def test_a_comma_in_a_remote_url_is_not_an_echo(self, monkeypatch):
+        """Only a data: URL carries an inline payload, the way _extract_content_parts
+        reads it. Splitting every URL on its first comma let a remote URL that merely
+        contains one pose as an echo of the top-level image, hiding a second image."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "x"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"https://h.example/img,{_RED_PNG_B64}"},
+                            },
+                        ],
+                    }
+                ],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "one image per message" in resp.text
+        assert backend.generated == []
+        assert monitor.active_count() == 0
+
+    def test_a_payloadless_newest_image_does_not_end_the_echo_scan(self, monkeypatch):
+        """findLatestUserImageBase64 walks on past a falsy read, so an empty newest
+        part is not the value the field carries. Stopping on it refused Studio's
+        echo of a valid earlier image as a second attachment."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+        empty = {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "first"}, older]},
+                    {"role": "assistant", "content": "ok"},
+                    {"role": "user", "content": [{"type": "text", "text": "second"}, empty]},
+                ],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize(
+        "n_images,expected",
+        [(1, 400), (0, 200)],
+        ids = ["image_on_a_gguf_speech_model_is_refused", "no_image_still_speaks"],
+    )
+    def test_a_gguf_speech_model_refuses_an_image(self, n_images, expected, monkeypatch):
+        """The GGUF audio branch returns before every image check, exactly as the
+        safetensors audio branch does, and speaks the newest user TEXT. An attached
+        image went unread and unmentioned."""
+        import routes.inference as inference_route
+
+        spoken = []
+
+        class _LlamaTts:
+            is_loaded = True
+            model_identifier = "tts.gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = True
+            _audio_type = "snac"
+            context_length = 4096
+
+            def generate_audio_response(self, **kwargs):
+                spoken.append(kwargs)
+                import numpy as np
+                return np.zeros(16000, dtype = "float32"), 16000
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _LlamaTts(), None)
+        image = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "say hi"}] + [image] * n_images,
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "does not read images" in resp.text
+            assert spoken == []
+        else:
+            assert len(spoken) == 1
+
+    def test_a_legacy_image_alone_is_still_served(self, monkeypatch):
+        """With nothing extracted from the messages the top-level image IS the one
+        that gets used, so it must not be refused as a second image."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "what is this?"}],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert backend.generated[0]["image"] is not None
+        assert monitor.active_count() == 0
+
+    def test_a_single_undecodable_image_is_left_alone(self, monkeypatch):
+        """One remote image is not a multi-image call. Clients that pass a remote
+        URL today get a text answer, and this guard must not turn that into a 400."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.com/a.png"},
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert backend.generated[0]["image"] is None
+        assert monitor.active_count() == 0
+
+    def test_a_text_only_model_closes_the_monitor_row(self, monkeypatch):
+        """Same defect as the multi-image refusal, one branch up: this rejection
+        also lands after the monitor row opens and must finalize it."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor, is_vision = False)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "text-only" in resp.text
+        assert backend.generated == []
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "text-only" in entry["error"]
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize("n_images,expected", [(2, 400), (1, 400), (0, 200)])
+    def test_an_image_with_audio_input_is_refused_not_dropped(
+        self, n_images, expected, monkeypatch
+    ):
+        """The audio-input branch returns before the standard image path and forwards
+        only the flattened messages plus the audio, so an attached image is
+        discarded. Any count: one is dropped here as silently as two."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "audio_type": "audio_vlm",
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+            generated = calls
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def generate_chat_response(self, **kwargs):
+                raise AssertionError("audio input should take the audio branch")
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        content = [{"type": "text", "text": "what is this?"}] + [image] * n_images
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": content}],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "audio or an image in one message" in resp.text
+            assert calls == []
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "audio or an image in one message" in entry["error"]
+        else:
+            assert len(calls) == 1
+
+    def test_a_legacy_image_field_with_audio_is_refused(self, monkeypatch):
+        """A client attaching its image through the top-level image_base64
+        extension, with no image parts anywhere, means that image for THIS
+        request. The audio branch cannot forward it, so refuse rather than drop."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "what is this?"}],
+                "image_base64": "AAAA",
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "audio or an image in one message" in resp.text
+        assert calls == []
+        assert monitor.active_count() == 0
+
+    def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
+        """Studio fills image_base64 from anywhere in the thread, so it is not a
+        per-turn signal. When an earlier turn carries the image the parts decide,
+        and the voice follow-up must still be answered."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "what is this?"}, image],
+                    },
+                    {"role": "assistant", "content": "a square"},
+                    {"role": "user", "content": "and now by voice"},
+                ],
+                "image_base64": "AAAA",
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(calls) == 1
+        assert monitor.active_count() == 0
+
+    def test_a_new_legacy_image_is_refused_even_with_image_bearing_history(self, monkeypatch):
+        """A direct client can attach a NEW image through the legacy field while the
+        newest turn stays text-only. Studio's own field is copied out of the thread
+        and byte-matches a part; one matching nothing came with this request."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        old = {"type": "image_url", "image_url": {"url": "data:image/png;base64,T0xE"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "this?"}, old]},
+                    {"role": "assistant", "content": "a square"},
+                    {"role": "user", "content": "and this one?"},
+                ],
+                "image_base64": "TkVX",
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "audio or an image in one message" in resp.text
+        assert calls == []
+        assert monitor.active_count() == 0
+
+    def test_an_assistant_image_cannot_hide_a_top_level_attachment(self, monkeypatch):
+        """findLatestUserImageBase64 derives the legacy field only from USER turns,
+        so an image on an assistant turn is not something it could be an echo of.
+        Matching any role let an explicitly attached image be discarded here."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        generated = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_BLUE_PNG_B64}"},
+        }
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": "draw one"},
+                    {"role": "assistant", "content": [generated]},
+                    {"role": "user", "content": "describe it"},
+                ],
+                "image_base64": _BLUE_PNG_B64,
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "audio or an image in one message" in resp.text
+        assert calls == []
+        assert monitor.active_count() == 0
+
+    def test_an_image_on_an_earlier_turn_still_allows_a_voice_follow_up(self, monkeypatch):
+        """The count is scoped to the newest user turn, so asking by voice about a
+        picture attached on an earlier turn keeps working."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "what is this?"}, image],
+                    },
+                    {"role": "assistant", "content": "a square"},
+                    {"role": "user", "content": "and now by voice"},
+                ],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(calls) == 1
+        assert monitor.active_count() == 0
+
+    def test_a_failed_image_decode_closes_the_monitor_row(self, monkeypatch):
+        """A single image whose payload is not an image fails inside the decode,
+        after the row opens. That rejection must finalize the row too."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "Failed to decode image" in resp.text
+        assert backend.generated == []
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "Failed to decode image" in entry["error"]
         assert monitor.active_count() == 0
 
     def test_client_tools_use_passthrough_capability_when_tool_loop_is_disabled(self, monkeypatch):
@@ -1858,6 +2846,296 @@ class TestOpenAICompatibilityHelpers:
         assert chat_messages == [{"role": "user", "content": "hi"}]
         assert image_b64 is None
 
+    def _turn(self, images: int):
+        content = [{"type": "text", "text": "what is this?"}]
+        for _ in range(images):
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                }
+            )
+        return {"role": "user", "content": content}
+
+    def test_two_images_on_one_turn_are_counted(self):
+        payload = ChatCompletionRequest(messages = [self._turn(2)])
+        assert _images_in_last_user_message(payload.messages) == 2
+
+    def test_one_image_per_turn_is_not_a_multi_image_call(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                self._turn(1),
+                {"role": "assistant", "content": "the first one"},
+                self._turn(1),
+            ]
+        )
+        assert _images_in_last_user_message(payload.messages) == 1
+
+    def test_earlier_multi_image_turn_does_not_block_a_later_one(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                self._turn(2),
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "and now just text"},
+            ]
+        )
+        assert _images_in_last_user_message(payload.messages) == 0
+
+    def test_undecodable_image_urls_still_count(self):
+        """Structural count, not a decoded one: remote and empty data URLs are
+        image parts the caller attached, whether or not extraction can read them."""
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
+                    ],
+                }
+            ]
+        )
+        assert _images_in_last_user_message(payload.messages) == 2
+
+    def test_a_trailing_assistant_turn_does_not_change_which_turn_is_counted(self):
+        payload = ChatCompletionRequest(
+            messages = [self._turn(2), {"role": "assistant", "content": "partial"}]
+        )
+        assert _images_in_last_user_message(payload.messages) == 2
+
+    def test_latest_image_wins_over_earlier_turns(self):
+        def turn(letter):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"what is {letter}?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{letter}"},
+                    },
+                ],
+            }
+
+        payload = ChatCompletionRequest(
+            messages = [
+                turn("AAAA"),
+                {"role": "assistant", "content": "the first one"},
+                turn("BBBB"),
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "BBBB"
+
+    def test_single_image_still_returned(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AAAA"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "AAAA"
+
+    def test_payloadless_later_image_keeps_earlier_one(self):
+        def turn(url):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+
+        for empty_url in ("data:image/png;base64,", "data:image/png;base64"):
+            payload = ChatCompletionRequest(
+                messages = [
+                    turn("data:image/png;base64,AAAA"),
+                    {"role": "assistant", "content": "a cat"},
+                    turn(empty_url),
+                ]
+            )
+
+            _, _, image_b64 = _extract_content_parts(payload.messages)
+
+            assert image_b64 == "AAAA", empty_url
+
+    def test_user_attachment_outranks_assistant_generated_image(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,USERPHOTO"},
+                        },
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "here is a cartoon of it"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,GENERATED"},
+                        },
+                    ],
+                },
+                {"role": "user", "content": "what colour was the shirt?"},
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "USERPHOTO"
+
+    def test_assistant_only_image_is_still_returned(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {"role": "user", "content": "show me something"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "here you go"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,GENERATED"},
+                        },
+                    ],
+                },
+                {"role": "user", "content": "describe it"},
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "GENERATED"
+
+    def test_first_image_wins_within_one_message(self):
+        # The composer allows multi-select, and findLatestUserImageBase64
+        # (chat-adapter.ts) names the first of them, so this must agree.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LEFT"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "LEFT"
+
+    def test_later_turn_still_wins_over_a_multi_image_turn(self):
+        # Per-message first, per-thread latest: the two rules compose.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LEFT"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                },
+                {"role": "assistant", "content": "two cats"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "and this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LATER"},
+                        },
+                    ],
+                },
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "LATER"
+
+    def test_payloadless_part_does_not_claim_the_message_slot(self):
+        # An empty data URL is not an image, so the first real one still wins.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "RIGHT"
+
+    def test_earlier_real_image_survives_a_payloadless_opening_turn(self):
+        # The old helper latched "" here and suppressed every later image, so
+        # the request reached the model with none.
+        def turn(url):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+
+        payload = ChatCompletionRequest(
+            messages = [
+                turn("data:image/png;base64,"),
+                {"role": "assistant", "content": "I cannot see an image"},
+                turn("data:image/png;base64,REAL"),
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "REAL"
+
 
 # =====================================================================
 # _friendly_error — httpx transport failures
@@ -2469,6 +3747,107 @@ class TestGgufVisionToolRouting:
         self._consume_response(response)
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
+
+    def test_enabled_tools_web_search_only_enters_gguf_tool_loop(self, monkeypatch):
+        """#9730: enable_tools + enabled_tools: ["web_search"] on a local GGUF
+        must enter Studio's loop with that catalog, not answer from memory."""
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            captured["kwargs"] = kwargs
+            yield {"type": "content", "text": "The current version of the Linux kernel is 6.10."}
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "Qwen3.5-2B-MTP-GGUF",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Search the web for the current version of the Linux kernel, "
+                        "then answer in one sentence."
+                    ),
+                }
+            ],
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            permission_mode = "off",
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tokens = 512,
+            temperature = 0.0,
+            stream = True,
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        self._consume_response(response)
+
+        assert "kwargs" in captured
+        assert [t["function"]["name"] for t in captured["kwargs"]["tools"]] == ["web_search"]
+        assert captured["kwargs"]["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "web_search"},
+        }
+        assert captured["kwargs"]["permission_mode"] == "off"
+
+    def test_forced_tool_choice_must_be_in_the_selected_gguf_catalog(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _tools(**_kwargs):
+            raise AssertionError("invalid forced choice must not start generation")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "run python"}],
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            permission_mode = "off",
+            tool_choice = {"type": "function", "function": {"name": "python"}},
+            stream = True,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == "tool_choice"
 
     def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
         import routes.inference as inf_mod
@@ -3981,7 +5360,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def is_disconnected(self):
                 return False
 
-        async def fake_send(*_args, **_kwargs):
+        upstream_bodies = []
+
+        async def fake_send(_client, built_request, *_args, **_kwargs):
+            upstream_bodies.append(json.loads(built_request.content))
             return httpx.Response(200, content = b"")
 
         async def fake_items(*_args, **_kwargs):
@@ -4028,7 +5410,12 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor_id = monitor_id,
         )
         chunks = [chunk async for chunk in response.body_iterator]
-        return SimpleNamespace(chunks = chunks, body = "".join(chunks), monitor = monitor)
+        return SimpleNamespace(
+            chunks = chunks,
+            body = "".join(chunks),
+            monitor = monitor,
+            upstream_bodies = upstream_bodies,
+        )
 
     def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
         async def _run():
@@ -5005,6 +6392,62 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": True}
+
+                async def is_disconnected(self):
+                    return False
+
+            upstream_bodies = []
+
+            async def fake_send(_client, built_request, *_args, **_kwargs):
+                upstream_bodies.append(json.loads(built_request.content))
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield (
+                    b'data: {"choices":[{"text":"ok","finish_reason":"stop"}]}\n\n'
+                    b'data: {"choices":[],"usage":{"prompt_tokens":3,'
+                    b'"completion_tokens":2,"total_tokens":5}}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+
+            response = await openai_completions(Request(), current_subject = "test")
+            body = b"".join([chunk async for chunk in response.body_iterator])
+
+            assert upstream_bodies[0]["stream_options"]["include_usage"] is True
+            assert b'"usage"' not in body
+            [entry] = monitor.snapshot()
+            assert entry["prompt_tokens"] == 3
+            assert entry["completion_tokens"] == 2
+            assert entry["total_tokens"] == 5
+
+        asyncio.run(_run())
+
     def test_completions_non_streaming_post_error_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -5815,6 +7258,26 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_requests_usage_for_monitor_without_exposing_it(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+                    'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                    'data: {"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+                ],
+            )
+
+            assert result.upstream_bodies[0]["stream_options"]["include_usage"] is True
+            assert '"usage"' not in result.body
+            [entry] = result.monitor.snapshot()
+            assert entry["prompt_tokens"] == 3
+            assert entry["completion_tokens"] == 2
+            assert entry["total_tokens"] == 5
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6594,10 +8057,16 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(200, content = b"")
 
-            async def fake_items(*_args, **_kwargs):
+            async def fake_items(
+                *_args,
+                post_first_item_read_timeout_s = None,
+                **_kwargs,
+            ):
                 yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
                 yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
-                await asyncio.Event().wait()  # upstream never closes
+                timeout = post_first_item_read_timeout_s()
+                await asyncio.sleep(timeout)
+                raise httpx.ReadTimeout("upstream never closed")
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
