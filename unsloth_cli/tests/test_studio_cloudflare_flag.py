@@ -319,7 +319,7 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     assert calls == []
 
 
-def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
+def test_run_silent_uses_ipv6_loopback_for_internal_requests(monkeypatch):
     import types
 
     studio_mod = _studio()
@@ -373,12 +373,19 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
 
-    monkeypatch.setattr(studio_mod, "_wait_for_server", lambda *a, **k: True)
+    monkeypatch.setattr(
+        studio_mod,
+        "_wait_for_server",
+        lambda port, **kwargs: calls.append(("health", port, kwargs)) or True,
+    )
     monkeypatch.setattr(studio_mod, "_create_api_key_inprocess", lambda name: "sk-test")
     monkeypatch.setattr(
         studio_mod,
         "_load_model_via_http",
-        lambda **_kwargs: {"model": "unsloth/Qwen3-1.7B-GGUF", "context_length": 4096},
+        lambda **kwargs: (
+            calls.append(("load", kwargs))
+            or {"model": "unsloth/Qwen3-1.7B-GGUF", "context_length": 4096}
+        ),
     )
 
     import typer as _typer
@@ -389,13 +396,15 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     )(studio_mod.run)
     result = CliRunner().invoke(
         app,
-        _BASE + ["--silent", "-H", "0.0.0.0"],
+        _BASE + ["--silent", "-H", "::"],
         catch_exceptions = True,
     )
 
     assert result.exit_code == 0, result.output
-    assert ("verify", "198.51.100.7", 8888) in calls
-    assert ("print", {"secure": False, "loopback_host": "127.0.0.1"}) in calls
+    assert ("health", 8888, {"request_host": "::1"}) in calls
+    assert next(entry[1] for entry in calls if entry[0] == "load")["request_host"] == "::1"
+    assert ("verify", "::", 8888) in calls
+    assert ("print", {"secure": False, "loopback_host": "::1"}) in calls
 
 
 # ── parent-level --cloudflare/--no-cloudflare with a subcommand is rejected ─

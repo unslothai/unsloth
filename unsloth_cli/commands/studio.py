@@ -342,6 +342,11 @@ def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
 
+def _local_request_host_for(host: str) -> str:
+    from unsloth_cli._tool_policy import wildcard_loopback_host
+    return wildcard_loopback_host(host) or host
+
+
 def _require_bind_host(host: str) -> None:
     if isinstance(host, str) and host.strip():
         return
@@ -841,12 +846,16 @@ def _find_frontend_dist() -> Optional[Path]:
 # ── helpers for `unsloth studio run` ────────────────────────────────
 
 
-def _wait_for_server(port: int, timeout: int = 30) -> bool:
+def _wait_for_server(
+    port: int,
+    timeout: int = 30,
+    request_host: str = "127.0.0.1",
+) -> bool:
     """Poll ``GET /api/health`` until the server responds 200 or *timeout* expires."""
     import urllib.request
     import urllib.error
 
-    url = f"http://127.0.0.1:{port}/api/health"
+    url = f"http://{_url_host(request_host)}:{port}/api/health"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -1655,6 +1664,7 @@ def _load_model_via_http(
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
+    request_host: str = "127.0.0.1",
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
     import json
@@ -1683,7 +1693,7 @@ def _load_model_via_http(
         payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
-    url = f"http://127.0.0.1:{port}/api/inference/load"
+    url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
     req = urllib.request.Request(
         url,
         data = data,
@@ -2816,6 +2826,7 @@ def run(
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
         app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
+    request_host = _local_request_host_for(host)
 
     # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
     # slow load); tear the server and its children (llama-server, cloudflared) down
@@ -2826,7 +2837,7 @@ def run(
         # 3. Wait for server health.
         if not silent:
             typer.echo("Starting Unsloth Studio...")
-        if not _wait_for_server(actual_port):
+        if not _wait_for_server(actual_port, request_host = request_host):
             typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
             raise typer.Exit(1)
 
@@ -2853,6 +2864,7 @@ def run(
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
+                request_host = request_host,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)
