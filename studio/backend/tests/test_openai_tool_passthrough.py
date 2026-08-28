@@ -2324,8 +2324,8 @@ class TestBuildPassthroughPayloadToolChoice:
             "keptScript": {"type": "string", "maxLength": 1999, "minLength": 1999},
             "budgetScript": {"type": "string", "maxLength": 2000},
             "budgetFloor": {"type": "string", "minLength": 2000},
-            "keptList": {"type": "array", "items": {"type": "string"}, "maxItems": 1998},
-            "budgetList": {"type": "array", "items": {"type": "string"}, "maxItems": 1999},
+            "keptList": {"type": "array", "items": {"type": "string"}, "maxItems": 1997},
+            "budgetList": {"type": "array", "items": {"type": "string"}, "maxItems": 1998},
             "keptFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2000},
             "budgetFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2001},
             # An integral bound can decode to float, and llama.cpp reads one either way.
@@ -2362,14 +2362,14 @@ class TestBuildPassthroughPayloadToolChoice:
         assert forwarded["keptScript"] == {"type": "string", "maxLength": 1999, "minLength": 1999}
         assert forwarded["budgetScript"] == {"type": "string"}
         assert forwarded["budgetFloor"] == {"type": "string"}
-        assert forwarded["keptList"]["maxItems"] == 1998
+        assert forwarded["keptList"]["maxItems"] == 1997
         assert forwarded["budgetList"] == {"type": "array", "items": {"type": "string"}}
         assert forwarded["keptFloorList"]["minItems"] == 2000
         assert forwarded["budgetFloorList"] == {"type": "array", "items": {"type": "string"}}
         assert forwarded["floatList"] == {"type": "array", "items": {"type": "string"}}
         assert forwarded["tupleList"]["items"] == [{"type": "string"}]
         assert schema["properties"]["budgetScript"]["maxLength"] == 2000
-        assert schema["properties"]["budgetList"]["maxItems"] == 1999
+        assert schema["properties"]["budgetList"]["maxItems"] == 1998
         assert forwarded["impossibleList"] == {"type": "array", "items": {"type": "string"}}
         assert forwarded["impossibleScript"] == {"type": "string"}
         assert schema["properties"]["tupleList"]["items"][0]["maxLength"] == 2000
@@ -2381,6 +2381,17 @@ class TestBuildPassthroughPayloadToolChoice:
         assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
         assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
         assert schema["properties"]["largeScript"]["maxLength"] == 65536
+
+    def test_repetition_limits_match_the_measured_grammar_budget(self):
+        # First bound llama-server refuses, measured against llama.cpp b10639 and b10679 by
+        # posting each schema to a live server. maxItems costs N+2 rules, not N+1, so 1998 is
+        # already over budget even though the other three keywords reach 2000.
+        from routes.inference import _JSON_SCHEMA_REPETITION_LIMITS
+
+        first_rejected = {"maxItems": 1998, "maxLength": 2000, "minItems": 2001, "minLength": 2000}
+        assert _JSON_SCHEMA_REPETITION_LIMITS == {
+            keyword: value - 1 for keyword, value in first_rejected.items()
+        }
 
     def test_response_format_schema_drops_incompatible_constraints(self):
         # Guided decoding reaches the same grammar engine tool schemas do.

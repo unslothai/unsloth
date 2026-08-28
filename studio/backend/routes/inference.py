@@ -27597,12 +27597,13 @@ _JSON_SCHEMA_SINGLE_KEYWORDS = frozenset(
 )
 # "items" is in both sets: draft 2020-12 gives it one schema, draft-07 a tuple of them.
 _JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "items", "oneOf", "prefixItems"})
-# Highest bound each keyword can reach in llama-grammar.cpp's budget of 2000 generated rules: a
-# string bound of N becomes an N-fold repetition, an array bound of N an N-1 repetition inside a
-# group charged N+1, and the array limits assume no lower bound, the costliest shape. Bounds far
-# past the budget compile again as unbounded repetitions; the band just above these does not.
+# Highest bound each keyword can reach in llama-grammar.cpp's budget of 2000 generated rules.
+# Measured against llama.cpp b10639 and b10679: a string bound of N costs N rules, minItems N-1,
+# and maxItems N+2, its repetition sitting inside a group the enclosing quantifier is charged for
+# too. The array limits assume no lower bound, the costliest shape. Bounds far past the budget
+# compile again as unbounded repetitions; the band just above these does not.
 _JSON_SCHEMA_REPETITION_LIMITS = {
-    "maxItems": 1998,
+    "maxItems": 1997,
     "maxLength": 1999,
     "minItems": 2000,
     "minLength": 1999,
