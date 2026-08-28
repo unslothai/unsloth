@@ -34,6 +34,7 @@ import {
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
 import {
   Outlet,
@@ -366,6 +367,7 @@ function RootLayout() {
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
 
   useTrainingUnloadGuard();
+  useTypeToActivate();
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
