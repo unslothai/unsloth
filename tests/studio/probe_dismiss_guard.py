@@ -75,10 +75,10 @@ and too much nowhere:
                  non-focusable element and the probe FAILS rather than falling back if none
                  exists, because a probe that cannot tell you it missed is worse than none.
 
-Every verdict is a DOM fact: did the assistant message count go down, did the menu close, did
-the watched click land. Clicks go through `page.mouse` / `page.touchscreen`, real hit tests that
-honour pointer-events. `locator.click()` throws on interception and `element.click()` skips hit
-testing, and each would lie in a different direction.
+Every verdict is a DOM fact: did the assistant message count go down, did the menu close or
+reopen from its focused trigger, did the watched click land. Clicks go through `page.mouse` /
+`page.touchscreen`, real hit tests that honour pointer-events. `locator.click()` throws on
+interception and `element.click()` skips hit testing, and each would lie in a different direction.
 
 Run against the PR head AND the merge base. On the merge base these menus are modal, the body
 carries `pointer-events: none`, and no variant reaches the control at all.
@@ -304,7 +304,6 @@ async def one_case(
     if not rect:
         return {"case": case, "error": "no Delete button"}
     x, y = rect["x"], rect["y"]
-
     if case == "quick":
         await page.mouse.move(x, y)
         await page.mouse.down()
