@@ -327,6 +327,13 @@ export function ChatMcpServersDialog({
   const activeEditIdRef = useRef<string | null>(null);
   const listRefreshGenerationRef = useRef(0);
 
+  useEffect(() => {
+    return () => {
+      formGenerationRef.current += 1;
+      activeEditIdRef.current = null;
+    };
+  }, []);
+
   const refresh = useCallback(async () => {
     const generation = listRefreshGenerationRef.current + 1;
     listRefreshGenerationRef.current = generation;

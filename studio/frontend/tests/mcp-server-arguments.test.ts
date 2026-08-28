@@ -278,6 +278,88 @@ test("dialog closure is blocked only after a save mutation starts", () => {
   );
 });
 
+test("full unmount invalidates cancellable stdio encode continuations", async () => {
+  const dialog = readFileSync(
+    new URL(
+      "../src/features/chat/chat-mcp-servers-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const refsAndCleanup = sourceBetween(
+    dialog,
+    "const formGenerationRef = useRef(0)",
+    "const refresh = useCallback",
+  );
+  const encode = sourceBetween(
+    dialog,
+    "async function encodeStdioForGeneration",
+    "async function testConnection",
+  );
+  const testContinuation = sourceBetween(
+    dialog,
+    "async function testConnection",
+    "async function submitForm",
+  );
+  const crudContinuation = sourceBetween(
+    dialog,
+    "async function submitForm",
+    "async function onImportFile",
+  );
+
+  assert.match(
+    refsAndCleanup,
+    /useEffect\(\(\) => \{\s*return \(\) => \{\s*formGenerationRef\.current \+= 1;\s*activeEditIdRef\.current = null;\s*\};\s*\}, \[\]\)/,
+    "the component mount lifetime must invalidate the form identity on teardown",
+  );
+  assert.match(
+    encode,
+    /await encodeMcpStdioCommand\([\s\S]*formGenerationRef\.current !== generation\) return null/,
+  );
+  assert.match(
+    testContinuation,
+    /await encodeStdioForGeneration\([\s\S]*if \(url === null \|\| formGenerationRef\.current !== generation\) return;[\s\S]*testMcpServer\(/,
+  );
+  assert.match(
+    crudContinuation,
+    /await encodeStdioForGeneration\([\s\S]*if \(encodedUrl === null\) return;[\s\S]*if \(formGenerationRef\.current !== generation\) return;[\s\S]*(?:updateMcpServer|createMcpServer)\(/,
+  );
+
+  const generation = { current: 7 };
+  const activeEditId = { current: "server-1" as string | null };
+  const encoded = deferred<string>();
+  let testCalls = 0;
+  let createCalls = 0;
+  let updateCalls = 0;
+  let staleUiEffects = 0;
+
+  async function continueAfterEncode(kind: "test" | "create" | "update") {
+    const capturedGeneration = generation.current;
+    await encoded.promise;
+    if (generation.current !== capturedGeneration) return;
+    if (kind === "test") testCalls += 1;
+    if (kind === "create") createCalls += 1;
+    if (kind === "update") updateCalls += 1;
+    staleUiEffects += 1;
+  }
+
+  const continuations = [
+    continueAfterEncode("test"),
+    continueAfterEncode("create"),
+    continueAfterEncode("update"),
+  ];
+  generation.current += 1;
+  activeEditId.current = null;
+  encoded.resolve("encoded command");
+  await Promise.all(continuations);
+
+  assert.equal(activeEditId.current, null);
+  assert.equal(testCalls, 0);
+  assert.equal(createCalls, 0);
+  assert.equal(updateCalls, 0);
+  assert.equal(staleUiEffects, 0);
+});
+
 test("open-time reconciliation waits for every mutation across component lifetimes", async () => {
   const first = deferred<void>();
   const second = deferred<void>();
