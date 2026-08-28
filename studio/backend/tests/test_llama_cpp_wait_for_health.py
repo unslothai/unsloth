@@ -671,3 +671,48 @@ def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
     assert kills, "the healthy-but-cancelled child was left resident"
     assert b._cpu_fallback_runtime is None
     assert cleaned == [1]
+
+
+def test_a_cancel_after_audio_setup_unloads_the_codec(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    emptied = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    scoped = threading.Event()
+    codec = mock.Mock()
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", None)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _types.SimpleNamespace(
+            cuda = _types.SimpleNamespace(
+                is_available = lambda: True,
+                empty_cache = lambda: emptied.append(1),
+            )
+        ),
+    )
+
+    def _apply_audio(_detected):
+        LlamaCppBackend._codec_mgr = codec
+        scoped.set()
+        return True
+
+    b._wait_for_health = lambda **_kwargs: True
+    b._detect_audio_type_strict = lambda: "snac"
+    b._apply_detected_audio = _apply_audio
+
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            ),
+            load_cancel_event = scoped,
+        )
+        is False
+    )
+    codec.unload.assert_called_once_with()
+    assert LlamaCppBackend._codec_mgr is None
+    assert emptied == [1]
