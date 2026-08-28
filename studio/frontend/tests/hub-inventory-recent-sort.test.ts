@@ -14,13 +14,26 @@ const { compareInventoryItemsByRecent } = await import(
 const {
   buildCachedInventoryRow,
   buildLocalInventoryRows,
-  epochMillisecondsToSeconds,
 } = await import("../src/features/hub/inventory/view-models.ts");
+const { epochMillisecondsToSeconds } = await import(
+  "../src/features/hub/inventory/inventory-timestamps.ts"
+);
 const {
   createPendingInventoryHints,
+  INVENTORY_HINT_TTL_MS,
+  pruneExpiredInventoryHints,
   reconcileInventoryHints,
   rememberInventoryHint,
 } = await import("../src/features/hub/inventory/inventory-hints.ts");
+const {
+  pendingWithInventoryHints,
+  useInventoryHintStore,
+} = await import(
+  "../src/features/hub/inventory/inventory-hint-store.ts"
+);
+const { getState, jobKeyOf, patchJob, putJob, removeJob } = await import(
+  "../src/features/hub/download-manager/download-manager-state.ts"
+);
 
 function cached(repoId: string, lastModified?: number) {
   return {
@@ -109,6 +122,134 @@ test("Recent keeps a completed download first until the cache rescan", () => {
 
   assert.equal(sorted[0]?.row.repoId, "Org/Just-Downloaded");
   assert.equal(sorted[0]?.row.lastModified, completedAt);
+});
+
+test("a newer completion refreshes the same repo timestamp and expiry", () => {
+  const firstCompletedAt = 1_900_000_000_000;
+  const secondCompletedAt = firstCompletedAt + 60_000;
+  let pending = pendingWithInventoryHints(createPendingInventoryHints(), [
+    {
+      kind: "gguf",
+      repoId: "Org/Repeated",
+      bytes: 20,
+      createdAt: firstCompletedAt,
+    },
+  ]);
+  pending = pendingWithInventoryHints(pending, [
+    {
+      kind: "gguf",
+      repoId: "Org/Repeated",
+      bytes: 10,
+      createdAt: secondCompletedAt,
+    },
+  ]);
+
+  assert.deepEqual(pending.gguf.get("org/repeated"), {
+    kind: "gguf",
+    repoId: "Org/Repeated",
+    bytes: 20,
+    createdAt: secondCompletedAt,
+  });
+  assert.equal(
+    pruneExpiredInventoryHints(
+      pending,
+      firstCompletedAt + INVENTORY_HINT_TTL_MS + 1,
+    ).gguf.size,
+    1,
+  );
+  assert.equal(
+    pruneExpiredInventoryHints(
+      pending,
+      secondCompletedAt + INVENTORY_HINT_TTL_MS,
+    ).gguf.size,
+    0,
+  );
+});
+
+test("a stale aggregate row cannot consume a newer variant hint", () => {
+  const completedAt = 1_900_000_000_000;
+  const pending = pendingWithInventoryHints(createPendingInventoryHints(), [
+    {
+      kind: "gguf",
+      repoId: "Org/Existing",
+      bytes: 200,
+      createdAt: completedAt,
+    },
+  ]);
+  const stale = reconcileInventoryHints({
+    pending,
+    kind: "gguf",
+    rows: [
+      {
+        repo_id: "Org/Existing",
+        size_bytes: 500,
+        last_modified: 1_700_000_000,
+      },
+    ],
+    previouslyObserved: new Set<string>(),
+  });
+
+  assert.equal(stale.pending.gguf.size, 1);
+  assert.equal(stale.rows[0]?.last_modified, completedAt);
+
+  const rescanned = reconcileInventoryHints({
+    pending: stale.pending,
+    kind: "gguf",
+    rows: [
+      {
+        repo_id: "Org/Existing",
+        size_bytes: 700,
+        last_modified: completedAt / 1000,
+      },
+    ],
+    previouslyObserved: new Set(["org/existing"]),
+  });
+  assert.equal(rescanned.pending.gguf.size, 0);
+});
+
+test("a new download clears historical observation and records completion time", () => {
+  const repoId = "Org/Redownload";
+  const key = jobKeyOf("model", repoId, "Q4_K_M");
+  const hintState = useInventoryHintStore.getState();
+  useInventoryHintStore.setState({
+    observedKeys: {
+      ...hintState.observedKeys,
+      gguf: new Set(["org/redownload"]),
+    },
+  });
+  putJob({
+    key,
+    kind: "model",
+    repoId,
+    variant: "Q4_K_M",
+    state: "running",
+    downloadedBytes: 0,
+    completedBytes: 0,
+    completeOnDisk: false,
+    expectedBytes: 10,
+    fraction: 0,
+    bytesPerSec: 0,
+    etaSeconds: 0,
+    error: null,
+    startedAt: 1_900_000_000_000,
+  });
+  const beforeCompletion = Date.now();
+  patchJob(key, { state: "complete" });
+  const afterCompletion = Date.now();
+  const [hint] = getState().completedInventoryHints;
+
+  assert.equal(
+    useInventoryHintStore.getState().observedKeys.gguf.has("org/redownload"),
+    false,
+  );
+  assert.ok(hint?.createdAt && hint.createdAt >= beforeCompletion);
+  assert.ok(hint?.createdAt && hint.createdAt <= afterCompletion);
+
+  removeJob(key);
+  useInventoryHintStore.setState({
+    pending: createPendingInventoryHints(),
+    observedKeys: hintState.observedKeys,
+  });
 });
 
 test("picker dto timestamps stay in epoch seconds", () => {

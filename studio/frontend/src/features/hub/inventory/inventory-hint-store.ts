@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { evictOldestUnprotected } from "../lib/lru-map.ts";
 import { INVENTORY_HINT_KINDS } from "./constants.ts";
 import {
   type InventoryHintReconciliation,
@@ -15,7 +16,6 @@ import {
   repoKey,
 } from "./inventory-hints.ts";
 import type { InventoryHint } from "./types.ts";
-import { evictOldestUnprotected } from "../lib/lru-map.ts";
 
 export const MAX_OBSERVED_INVENTORY_KEYS_PER_KIND = 1024;
 
@@ -136,7 +136,10 @@ function pendingHasHint(
   if (!existing) {
     return false;
   }
-  return (existing.bytes ?? 0) >= (hint.bytes ?? 0);
+  return (
+    (existing.bytes ?? 0) >= (hint.bytes ?? 0) &&
+    (existing.createdAt ?? 0) >= (hint.createdAt ?? 0)
+  );
 }
 
 export function pendingWithInventoryHints(
@@ -172,6 +175,22 @@ function rememberObservedInventoryKeys(
     return current;
   }
   return { ...current, [kind]: observed };
+}
+
+export function forgetObservedInventoryHint(
+  kind: InventoryHint["kind"],
+  repoId: string,
+): void {
+  const state = useInventoryHintStore.getState();
+  const key = repoKey(repoId);
+  if (!state.observedKeys[kind].has(key)) {
+    return;
+  }
+  const observed = new Set(state.observedKeys[kind]);
+  observed.delete(key);
+  useInventoryHintStore.setState({
+    observedKeys: { ...state.observedKeys, [kind]: observed },
+  });
 }
 
 export const useInventoryHintStore = create<InventoryHintState>()(

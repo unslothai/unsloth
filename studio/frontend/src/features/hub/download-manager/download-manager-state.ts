@@ -5,6 +5,7 @@ import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
+import { forgetObservedInventoryHint } from "../inventory/inventory-hint-store";
 import { inventoryHintKey } from "../inventory/inventory-hints";
 import type { InventoryHint } from "../inventory/types";
 import { createThrottledStorage, noopStorage } from "../stores/persist-storage";
@@ -233,6 +234,7 @@ function collectCompletedInventoryHints(
         kind,
         repoId: job.repoId,
         ...(bytes > 0 ? { bytes } : {}),
+        ...(job.completedAt ? { createdAt: job.completedAt } : {}),
       },
     ];
   });
@@ -240,7 +242,10 @@ function collectCompletedInventoryHints(
 
 function buildCompletedHintSignature(hints: readonly InventoryHint[]): string {
   return hints
-    .map((hint) => `${hint.kind}:${hint.repoId}:${hint.bytes ?? ""}`)
+    .map(
+      (hint) =>
+        `${hint.kind}:${hint.repoId}:${hint.bytes ?? ""}:${hint.createdAt ?? ""}`,
+    )
     .sort()
     .join("|");
 }
@@ -421,7 +426,13 @@ export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
   setState((state) => {
     const job = state.jobs[key];
     if (!job) return state;
-    const nextJob = { ...job, ...patch };
+    const nextJob = {
+      ...job,
+      ...patch,
+      ...(job.state !== "complete" && patch.state === "complete"
+        ? { completedAt: patch.completedAt ?? Date.now() }
+        : {}),
+    };
     const nextState = {
       ...state,
       jobs: { ...state.jobs, [key]: nextJob },
@@ -435,6 +446,12 @@ export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
 
 export function putJob(job: ManagedDownload): void {
   runtimeRegistry.clearRemovalTimer(job.key);
+  if (!job.external) {
+    forgetObservedInventoryHint(
+      completedInventoryHintKind(job.kind, job.variant),
+      job.repoId,
+    );
+  }
   const suppressionChanged =
     runtimeRegistry.suppressedCompletedInventoryHints.delete(
       inventoryHintKey(

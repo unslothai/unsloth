@@ -44,14 +44,16 @@ export {
   buildLocalInventoryRows,
   buildCachedInventoryRow,
   defaultCapabilities,
-  epochMillisecondsToSeconds,
   formatLocalUpdated,
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
   normalizeRuntime,
-  normalizeTimestamp,
 } from "./view-models";
+export {
+  epochMillisecondsToSeconds,
+  normalizeTimestamp,
+} from "./inventory-timestamps";
 export {
   resolveInventoryResource,
   type InventoryResourceFormatHint,

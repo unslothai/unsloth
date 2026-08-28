@@ -35,8 +35,8 @@ import {
   buildCachedInventoryRow,
   buildLocalInventoryRows,
   defaultCapabilities,
-  normalizeTimestamp,
 } from "./view-models";
+import { normalizeTimestamp } from "./inventory-timestamps";
 import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   isInventoryStampFresh,
