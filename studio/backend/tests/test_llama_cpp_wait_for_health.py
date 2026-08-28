@@ -455,17 +455,20 @@ def test_every_failed_health_wait_in_load_model_checks_the_cancel_flag():
 
     src = Path(_BACKEND_DIR, "core", "inference", "llama_cpp.py").read_text(encoding = "utf-8")
     load_model = next(
-        n for n in ast.walk(ast.parse(src))
+        n
+        for n in ast.walk(ast.parse(src))
         if isinstance(n, ast.FunctionDef) and n.name == "load_model"
     )
     waits = [
-        n.lineno for n in ast.walk(load_model)
+        n.lineno
+        for n in ast.walk(load_model)
         if isinstance(n, ast.Call)
         and isinstance(n.func, ast.Attribute)
         and n.func.attr == "_wait_for_health"
     ]
     guards = [
-        n.lineno for n in ast.walk(load_model)
+        n.lineno
+        for n in ast.walk(load_model)
         if isinstance(n, ast.Constant) and n.value == "_health_wait_cancelled"
     ]
     assert waits, "the health waits moved; re-pin this test"
