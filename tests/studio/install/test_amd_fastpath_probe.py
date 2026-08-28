@@ -773,3 +773,14 @@ def test_a_pin_naming_the_installed_leaf_keeps_the_fast_path(monkeypatch):
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all/"},
     )
     assert _needs_pass() is False
+
+
+def test_a_pin_at_a_non_floor_leaf_already_satisfied_keeps_the_fast_path(monkeypatch):
+    """The pin arm now answers the preflight, so a heuristic that calls a valid environment
+    stale costs a dependency pass on every update as well as the reinstall behind it."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx110X-all/"},
+    )
+    assert _needs_pass() is False

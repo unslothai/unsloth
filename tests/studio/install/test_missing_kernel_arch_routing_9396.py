@@ -1550,3 +1550,38 @@ def test_a_repin_between_per_arch_leaves_is_applied():
         installed_family = "gfx120x-all",
         env = {"UNSLOTH_TORCH_INDEX_URL": f"https://{_AMD}/gfx120X-all/"},
     )
+
+
+def test_a_pin_at_a_non_floor_leaf_keeps_the_build_from_that_leaf():
+    """The version heuristic reads any 2.11 build as a mismatch for these leaves, because
+    that is what a build from some OTHER index looks like. The leaf serves 2.11 too, so a
+    correctly pinned host force-reinstalled under the legacy torch<2.11 cap on every update,
+    downgrading or failing to resolve the environment it already had. A readable family says
+    which index this build came from, and it is decisive both ways."""
+    assert _AMD not in _run_install(
+        gfx_devices = ("gfx1100",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": f"https://{_AMD}/gfx110X-all/"},
+    )
+    # The other family under the same pin is still repinned.
+    assert f"{_AMD}/gfx110X-all" in _run_install(
+        gfx_devices = ("gfx1100",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx120x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": f"https://{_AMD}/gfx110X-all/"},
+    )
+
+
+def test_a_floor_leaf_still_repairs_a_sub_211_build_of_its_own_family():
+    """gfx1151 and the other floor leaves carry the _grouped_mm bug below torch 2.11, which is
+    the one thing their pin has to keep repairing, so a matching family must NOT satisfy it."""
+    assert f"{_AMD}/gfx1151" in _run_install(
+        gfx_devices = ("gfx1151",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_ARCH_TORCH_210,
+        installed_family = "gfx1151",
+        env = {"UNSLOTH_TORCH_INDEX_URL": f"https://{_AMD}/gfx1151/"},
+    )

@@ -2694,9 +2694,19 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         if _family is not None and _family != leaf:
             return True
         # 2.11-allowlist arches expect the AMD per-arch wheel (three-part +rocmA.B.C,
-        # torch 2.11+); a generic or pre-2.11 build is a mismatch.
+        # torch 2.11+); a generic or pre-2.11 build is a mismatch. Asked before the family
+        # can settle it, because these leaves have a FLOOR: a matching family on a 2.10 build
+        # is the _grouped_mm bug, which is the one thing the pin has to keep repairing.
         if leaf in _ROCM_GFX_TORCH211_LEAVES:
             return not (_inst_is_211 and _inst_is_perarch)
+        # The family reading is decisive the other way too, on the leaves with no floor to
+        # enforce. The heuristic below reads any 2.11 build as a mismatch, since that is what
+        # a build from some OTHER index looks like -- but these leaves serve 2.11 as well, and
+        # the family says this one came from the pinned index. Without this a correctly pinned
+        # gfx110X host tries to force-reinstall under the legacy torch<2.11 cap on every
+        # update, downgrading or failing to resolve the environment it already had.
+        if _family is not None and _inst_is_perarch:
+            return False
         # Non-2.11 gfx leaf (<2.11 specs): mismatch on an untagged wheel or torch 2.11+.
         return (not _inst_has_rocm) or _inst_is_211
 
