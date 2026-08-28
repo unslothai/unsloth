@@ -1242,9 +1242,9 @@ def test_a_rocm_build_with_no_local_label_is_read_as_rocm_on_windows():
     text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
     fn = text[text.index("function Test-VenvTorchIsRocm") :]
     fn = fn[: fn.index("\n}")]
-    assert "^hip\\s*(:[^=]*)?=\\s*'[^']" in fn, (
-        "Test-VenvTorchIsRocm reads the local label alone, so an AMD or source build is unknown."
-    )
+    assert (
+        "^hip\\s*(:[^=]*)?=\\s*'[^']" in fn
+    ), "Test-VenvTorchIsRocm reads the local label alone, so an AMD or source build is unknown."
     assert "__version__\\s*=\\s*'[^']*\\+(rocm|gfx)" in fn
 
 
