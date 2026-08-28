@@ -6582,6 +6582,12 @@ def _target_accepts_request_input(
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
+_AUDIO_IMAGE_INPUT_DETAIL = (
+    "This model takes audio or an image in one message, not both."
+    " Send the image on its own turn."
+)
+
+
 async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: bool) -> None:
     """Apply the pre-switch audio rules that depend on the target's serving format.
 
@@ -6621,6 +6627,8 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
             status_code = 400,
             detail = "continue_final_message is not supported with audio input.",
         )
+    if audio_preflight.get("has_image"):
+        raise HTTPException(status_code = 400, detail = _AUDIO_IMAGE_INPUT_DETAIL)
     if not _audio_decoder_is_available():
         raise HTTPException(
             status_code = 400,
@@ -18585,7 +18593,11 @@ async def produce_openai_chat_completions(
 
     # the rest of the audio checks depend on the target's format, so the switch runs them.
     _audio_preflight = (
-        {"b64": payload.audio_base64, "continue_final": _continue_final_message(payload)}
+        {
+            "b64": payload.audio_base64,
+            "continue_final": _continue_final_message(payload),
+            "has_image": _needs_image,
+        }
         if _needs_audio_input
         else None
     )
@@ -18778,10 +18790,7 @@ async def produce_openai_chat_completions(
             # refusing would break asking by voice about a picture attached before.
             # api_monitor directly: _reject is not bound this early in the handler.
             if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
-                _audio_image_detail = (
-                    "This model takes audio or an image in one message, not both."
-                    " Send the image on its own turn."
-                )
+                _audio_image_detail = _AUDIO_IMAGE_INPUT_DETAIL
                 api_monitor.fail(monitor_id, _audio_image_detail)
                 raise HTTPException(status_code = 400, detail = _audio_image_detail)
             try:

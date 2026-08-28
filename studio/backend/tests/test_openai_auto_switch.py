@@ -9206,6 +9206,49 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
     assert "audio input" in exc.value.detail
 
 
+def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch):
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    recorder = _LoadRecorder(llama)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Audio-VLM", None, "org/Audio-VLM"),
+        backend = llama,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: _FakeOrchestrator())
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Audio-VLM",
+                object(),
+                "tester",
+                require_vision = True,
+                require_image = True,
+                require_audio_input = True,
+                audio_preflight = {
+                    "b64": "AAAA",
+                    "continue_final": False,
+                    "has_image": True,
+                },
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == inference_route._AUDIO_IMAGE_INPUT_DETAIL
+    assert recorder.calls == []
+    assert llama.is_loaded is True
+
+
 def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
     """The preflight must refuse exactly what _prepare_audio_for_llama refuses.
 
