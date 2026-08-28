@@ -15,19 +15,14 @@ export function inventoryItemSize(item: InventoryItem): number {
   return item.variant === "cached" ? item.row.bytes : 0;
 }
 
-/** The row's own timestamp in epoch MILLISECONDS, or null when unknown.
- *
- * Both builders normalize their wire value, which is what makes a cached row
- * and an LM Studio row comparable. Before that they were seconds and
- * milliseconds, so every local row outranked every cached one whatever the date.
- */
+/** row timestamp in epoch milliseconds, or null when unknown. */
 export function inventoryItemUpdatedAt(item: InventoryItem): number | null {
   return item.variant === "cached"
     ? (item.row.lastModified ?? null)
     : item.row.updatedAt;
 }
 
-/** Newest known timestamp first; return 0 to preserve source order for ties/unknowns. */
+/** newest known timestamp first; preserve source order for ties and unknowns. */
 export function compareInventoryItemsByRecent(
   a: InventoryItem,
   b: InventoryItem,

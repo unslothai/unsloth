@@ -49,8 +49,7 @@ export interface CachedGgufRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  /** Epoch seconds. buildCachedInventoryRow normalizes to milliseconds; any
-   * other reader must do the same. */
+  /** epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
@@ -73,8 +72,7 @@ export interface CachedModelRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  /** Epoch seconds. buildCachedInventoryRow normalizes to milliseconds; any
-   * other reader must do the same. */
+  /** epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
@@ -130,8 +128,7 @@ export interface LocalModelListResponse {
 export interface CachedDatasetRepo {
   repo_id: string;
   size_bytes: number;
-  /** Epoch seconds. Absent when no cache path had a readable mtime, which Recent
-   * reads as unknown rather than as the epoch. */
+  /** epoch seconds; absent when no cache path has a readable mtime. */
   last_modified?: number | null;
   cache_path?: string;
   load_cache_path?: string;

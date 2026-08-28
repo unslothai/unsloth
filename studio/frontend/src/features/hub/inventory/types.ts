@@ -48,7 +48,7 @@ export interface CachedInventoryRow {
   bytes: number;
   cachePath?: string | null;
   loadCachePath?: string | null;
-  /** Last changed time as epoch milliseconds. */
+  /** last changed time as epoch milliseconds. */
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
@@ -97,7 +97,7 @@ export interface LocalInventoryRow {
   trainingMethod?: string | null;
   task?: string | null;
   audioType?: string | null;
-  /** Last changed time as epoch milliseconds. */
+  /** last changed time as epoch milliseconds. */
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;

@@ -215,9 +215,7 @@ function liveDownloadInventoryRows(
                 ? "transformers"
                 : "unknown",
           size_bytes: job.displayBytes,
-          // Already epoch MILLISECONDS (Date.now() at every write site), so it
-          // clears the pivot untouched and sorts against server mtimes on one
-          // scale instead of landing in 1970.
+          // live jobs already use epoch milliseconds
           last_modified: job.startedAt,
           partial: true,
           partial_transport: null,

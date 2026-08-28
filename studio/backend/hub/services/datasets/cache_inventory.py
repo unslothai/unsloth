@@ -86,7 +86,7 @@ def _directory_stats(path: Path) -> tuple[int, float]:
 
 
 def _usable_mtime(value) -> float:
-    """A timestamp we are willing to publish, else 0.0 meaning "unknown".
+    """a timestamp we are willing to publish, else 0.0 meaning "unknown".
 
     Finiteness is not paranoia about stat(): ``candidate`` is whatever
     huggingface_hub put on the object, and Starlette encodes with
@@ -99,7 +99,7 @@ def _usable_mtime(value) -> float:
 
 
 def _safe_mtime(path: Path) -> float:
-    """Directory mtime as POSIX seconds, or 0.0 when unreadable.
+    """directory mtime as POSIX seconds, or 0.0 when unreadable.
 
     mtime only, so it is portable across Windows, macOS and Linux. A broken
     symlink or a share with no clock lands on 0.0, which callers drop.
@@ -111,7 +111,7 @@ def _safe_mtime(path: Path) -> float:
 
 
 def _dataset_last_modified(candidate, *paths: Optional[Path]) -> float:
-    """Newest change time for a cached dataset row, as POSIX seconds.
+    """newest change time for a cached dataset row, as POSIX seconds.
 
     Prefers huggingface_hub's own value, else stat()s the cache dirs. Same unit
     as the cached-model scan.
@@ -125,7 +125,7 @@ def _dataset_last_modified(candidate, *paths: Optional[Path]) -> float:
 
 
 def _merge_last_modified(existing: dict, row: dict) -> None:
-    """Keep the newer of two timestamps when two scans describe one dataset."""
+    """keep the newer timestamp when two scans describe one dataset."""
     newest = max(
         _usable_mtime(existing.get("last_modified")),
         _usable_mtime(row.get("last_modified")),
@@ -135,7 +135,7 @@ def _merge_last_modified(existing: dict, row: dict) -> None:
 
 
 def _adopt_newer_last_modified(winner: dict, loser: Optional[dict]) -> None:
-    """Carry a discarded row's timestamp onto the row that replaces it.
+    """carry a discarded row's timestamp onto the row that replaces it.
 
     Winning is decided on completeness then size, neither of which is recency,
     so a bigger-but-older copy would otherwise bury the newer date and sink the
