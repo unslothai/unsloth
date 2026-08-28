@@ -369,9 +369,7 @@ def _workspace_overlaps_chat_sandbox_root(workspace_path: str) -> bool:
         root = sandbox_root()
     except Exception:  # noqa: BLE001 - an unanswerable check must not block a pick
         return False
-    return project_workspace_overlaps_managed_root(
-        workspace_path, root, check_descendants = True
-    )
+    return project_workspace_overlaps_managed_root(workspace_path, root, check_descendants = True)
 
 
 def _workspace_overlaps_live_project_path(

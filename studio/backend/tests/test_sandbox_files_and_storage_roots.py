@@ -5470,9 +5470,9 @@ def test_changing_a_working_directory_records_the_folder_it_retires(tmp_path, mo
     recorded = tools._recorded_project_workdir("switcher", retired_session)
     assert recorded == str(first.resolve()), recorded
     # Kept, not queued for deletion: the user asked to change folders, not lose one.
-    assert [
-        (path, pending) for _, path, _, pending, _ in tools.list_orphaned_projects()
-    ] == [(str(first.resolve()), False)]
+    assert [(path, pending) for _, path, _, pending, _ in tools.list_orphaned_projects()] == [
+        (str(first.resolve()), False)
+    ]
 
 
 def test_corrupt_workspace_overlap_is_never_deleted(tmp_path, monkeypatch):
