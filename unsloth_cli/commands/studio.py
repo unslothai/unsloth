@@ -355,6 +355,16 @@ def _is_wildcard_bind(host: str) -> bool:
     return is_wildcard_host(host)
 
 
+def _openable_host_for_bind(run_mod, host: str) -> str:
+    """The host for a URL we tell the user to open: the LAN address when one
+    resolves, else loopback. A wildcard bind with no LAN address (WSL NAT,
+    loopback-only) must never be printed as-is; no browser can open it."""
+    share_host = _network_share_host_for_bind(run_mod, host)
+    if _is_wildcard_bind(share_host):
+        return _loopback_bind_host_for(host)
+    return share_host
+
+
 def _require_bind_host(host: str) -> None:
     if isinstance(host, str) and host.strip():
         return
@@ -2137,8 +2147,8 @@ def studio_default(
     run_server = run_mod.run_server
 
     if not silent:
-        share_host = _network_share_host_for_bind(run_mod, host)
-        typer.echo(f"Starting Unsloth Studio on http://{_url_host(share_host)}:{port}")
+        launch_host = _openable_host_for_bind(run_mod, host)
+        typer.echo(f"Starting Unsloth Studio on http://{_url_host(launch_host)}:{port}")
 
     run_kwargs = dict(
         host = host,
@@ -2933,9 +2943,7 @@ def run(
     # 6. Print banner.
     # Keep the public host for reachability, but print a LAN or loopback URL.
     display_host = _display_host_for_bind(run_mod, host)
-    base_host = _network_share_host_for_bind(run_mod, host)
-    if _is_wildcard_bind(base_host):
-        base_host = _loopback_bind_host_for(host)
+    base_host = _openable_host_for_bind(run_mod, host)
     base_url = f"http://{_url_host(base_host)}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
     # run_server started the tunnel during the silent run above (wildcard or --secure).
