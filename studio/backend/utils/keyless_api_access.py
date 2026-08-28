@@ -158,7 +158,7 @@ def _settings() -> tuple[str, bool]:
         scope, tools = _read_settings()
         with _cache_lock:
             if generation == _settings_generation:
-                _cached_settings = (now, scope, tools)
+                _cached_settings = (time.monotonic(), scope, tools)
             published = _cached_settings
         return (published[1], published[2]) if published is not None else (scope, tools)
     finally:

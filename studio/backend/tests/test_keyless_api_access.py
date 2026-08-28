@@ -193,6 +193,8 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
     set_keyless_api_access("inference", tools = False)
     _reset_scope_cache()
 
+    clock = [0.0]
+    monkeypatch.setattr(keyless.time, "monotonic", lambda: clock[0])
     real_read = keyless._read_settings
     call_count = 0
     count_lock = threading.Lock()
@@ -222,6 +224,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
         t.start()
     entered.wait(timeout = 10)  # release every worker into _settings() together
     time.sleep(0.2)  # let the followers reach the inflight Event before unblocking the owner
+    clock[0] = keyless._SETTINGS_CACHE_TTL_S + 1.0
     release.set()
     for t in threads:
         t.join(timeout = 10)
