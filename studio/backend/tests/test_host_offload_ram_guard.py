@@ -191,39 +191,46 @@ def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
 
 
 def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
-    """Anchor the (VRAM + RAM) rule to the one cell that actually crossed it.
+    """Pin the (VRAM + RAM) switch point, and record that the measurement
+    DISAGREES with it at the margin.
 
-    Every cell in the offload matrix ran with host RAM untouched, so `A` was
-    always true and the mmap branch was never exercised by a measurement. The
-    gemma-4-31B Q4 RAM sweep on a G4 forced to 12 GiB free is the exception, and
-    it is a cliff rather than a slope (generation t/s, --fit on baseline):
+    gemma-4-31B Q4 on a G4 forced to 12 GiB free VRAM, host spill 10757 MiB
+    (10.50 GiB), RAM swept. Same cell, same placement, only RAM differs
+    (generation t/s):
 
-        RAM 24 GiB -> 22.73    host spill 10757 MiB, load-mode none
-        RAM 16 GiB -> 22.62    identical placement, flat to 0.5%
-        RAM 10 GiB -> TIMED OUT past a 2400 s watchdog
+        RAM 15.76 GiB   --fit on 22.62      --fit on --load-mode none 23.23
+        RAM 10.44 GiB   --fit on TIMED OUT  --fit on --load-mode none 23.18
+                                 (>2400 s)
 
-    At 10 GiB the 10.5 GiB spill no longer fits, so `A` fails and mmap is the
-    only honest answer; the cell its 16 GiB twin finished in 2.5 minutes did not
-    finish in forty. That asymmetry is why the headroom is not tuned down: being
-    wrong optimistically costs orders of magnitude, being wrong conservatively
-    cost 24% in the worst cell in the matrix.
+    At 10.44 GiB the 10.50 GiB spill does not fit, so `A` fails by about 60 MiB
+    and `_fits_without_paging` returns False, i.e. mmap. But mmap is the arm that
+    DIED there, while --load-mode none ran at full speed. mmap's benefit is
+    demand-paging a footprint the machine cannot hold; its cost is thrashing
+    precisely when the machine cannot hold it, so at the margin it is the worse
+    of the two options the rule chooses between.
+
+    This test pins the current switch point so a change to it is deliberate. It
+    is NOT a validation of that switch point: on this evidence the boundary is
+    in the wrong place, and the honest fix is to move it down (or price the
+    thrash) rather than to trust `A` alone. One cell, one host, so it is not
+    enough to move the rule on -- but it is enough to stop calling the rule
+    validated, which an earlier version of this docstring wrongly did after
+    reading the first arm's timeout without waiting for the second.
     """
     mib = 1024 ** 2
     gib = 1024 ** 3
     backend = object.__new__(LlamaCppBackend)
 
-    # The measured cell: 18.4 GiB of weights plus a 5520 MiB two-part iSWA cache,
-    # against 12 GiB of free VRAM on one card.
     need = int(18.4 * gib) + 5520 * mib
     gpus = [(0, 12 * 1024)]
 
     def mode_at(ram_gib):
         fits = backend._fits_without_paging(
-            need, gpus, avail_mib = ram_gib * 1024, headroom_mib = 2048,
+            need, gpus, avail_mib = int(ram_gib * 1024), headroom_mib = 2048,
         )
         return "none" if fits is True else ("mmap" if fits is False else None)
 
     assert mode_at(24) == "none"
-    assert mode_at(16) == "none"
-    # The crossing. 10 GiB of RAM cannot hold a 10.5 GiB spill.
-    assert mode_at(10) == "mmap"
+    assert mode_at(15.76) == "none"
+    # The switch. Measured: mmap timed out here and none ran at 23.18 t/s.
+    assert mode_at(10.44) == "mmap"
