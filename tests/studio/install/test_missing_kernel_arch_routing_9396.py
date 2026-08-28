@@ -432,14 +432,36 @@ def test_the_named_arch_repairs_a_host_no_probe_can_see():
     assert f"{_AMD}/gfx110X-all/" in calls, calls
 
 
-def test_a_probed_arch_still_wins_over_the_named_one():
-    """The fallback is last: a runtime that enumerates a GPU still decides (#7305)."""
+def test_a_probed_arch_still_wins_over_the_inferred_one():
+    """The product-name fallback is last: a runtime that enumerates a GPU decides (#7305).
+    That precedence is about the CPU-model guess, which is the half _infer_linux_amd_gfx_arch
+    reaches only after the explicit variable, and the case below is the other half."""
     calls = _run_install(
         gfx_devices = ("gfx1100",),
-        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+        inferred = "gfx1103",
         torch_probe = _ROCM_GENERIC_TORCH,
     )
     assert _AMD not in calls, calls
+
+
+def test_an_explicit_arch_outranks_the_probe():
+    """UNSLOTH_ROCM_GFX_ARCH is the documented escape hatch, and the rest of the installer
+    reads it before probing: install.sh seeds its device list from it and probes only when it
+    is empty, _infer_linux_amd_gfx_arch returns it ahead of its own host guards, and
+    _runtime_target_is_gfx906 and _detect_windows_gfx_arch both consult it first. Resolving it
+    after the probes made this the one place the hardware could overrule the override."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200",),
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+        torch_probe = _ROCM_GENERIC_TORCH,
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+    # Hiding every GPU is a statement about this run, and still outranks the arch.
+    assert _AMD not in _run_install(
+        gfx_devices = ("gfx1200",),
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1103", "HIP_VISIBLE_DEVICES": ""},
+        torch_probe = _ROCM_GENERIC_TORCH,
+    )
 
 
 def test_the_inferred_arch_install_is_not_repeated_by_the_reroute():

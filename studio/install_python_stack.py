@@ -1421,7 +1421,10 @@ def _torch_requires_rocm_sdk() -> bool:
         for _req in metadata.requires("torch") or []:
             # The distribution named exactly `rocm`: "rocm[libraries]==7.13.0". Anchored so
             # rocm-sdk-core and triton-rocm, which both builds can carry, do not match.
-            if re.match(r"\s*rocm\s*(?:\[|[=<>!~;,]|$)", _req):
+            # Case-insensitive because Requires-Dist records the name as the author wrote it
+            # while pip compares them normalized, so "ROCm[libraries]" is the same dependency
+            # -- and reading it as absent would call a per-arch build generic.
+            if re.match(r"\s*rocm\s*(?:\[|[=<>!~;,]|$)", _req, re.IGNORECASE):
                 return True
     except Exception:
         pass
@@ -1909,6 +1912,15 @@ def _runtime_gfx_target(
     # generic index; a mask naming a device is unaffected and still gets ROCm torch.
     if _visible_masks_select_no_gpu():
         return None, [], None, []
+    # An explicit arch outranks the probes, not merely the cases where they answer nothing.
+    # install.sh seeds its list from UNSLOTH_ROCM_GFX_ARCH and probes only when it is empty,
+    # and _runtime_target_is_gfx906 and _detect_windows_gfx_arch both read it first; resolving
+    # it last here made this the one place the documented escape hatch could be overruled by
+    # the hardware it exists to override. The masks stay above it: hiding every GPU is a
+    # statement about this run, while the arch names what to build for.
+    _explicit_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+    if _explicit_gfx:
+        return _explicit_gfx, [_explicit_gfx], None, [_explicit_gfx]
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     # Keyed to the userland probe: ROCr spoofs that reading and no other.
     physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
