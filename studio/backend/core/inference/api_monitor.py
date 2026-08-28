@@ -133,6 +133,30 @@ def _stream_tool_call_is_complete(state: _OpenAIStreamToolCall) -> bool:
     return isinstance(arguments, (dict, list))
 
 
+def _stream_tool_call_preview(state: _OpenAIStreamToolCall) -> str:
+    name = state.name or "<unknown>"
+    if len(name) > 500:
+        name = name[:497] + "..."
+    if not state.arguments:
+        return f"Tool call: {name}"
+    arguments = state.arguments
+    if len(arguments) > 500:
+        arguments = arguments[:497] + "..."
+    return f"Tool call: {name}({arguments})"
+
+
+def _append_stream_tool_previews(
+    entry: ApiMonitorEntry,
+    states: list[_OpenAIStreamToolCall],
+) -> None:
+    if not states:
+        return
+    text = "\n".join(_stream_tool_call_preview(state) for state in states)
+    if entry.reply and not entry.reply.endswith("\n"):
+        text = "\n" + text
+    entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
+
+
 def _stream_tool_call_id(value: Any) -> Optional[str]:
     if not isinstance(value, str) or not value:
         return None
@@ -488,6 +512,7 @@ class ApiMonitor:
         *,
         choice_index: int,
         tool_index: Optional[int],
+        tool_index_explicit: bool = True,
         call_id: Optional[str],
         name_fragment: Any,
         arguments_fragment: Any,
@@ -508,22 +533,19 @@ class ApiMonitor:
             if tool_index is None:
                 tool_index = entry.openai_stream_last_tool_indexes.get(choice_index, 0)
             state = None
-            if call_id is not None:
+            same_index = [
+                candidate for candidate in same_choice if candidate.tool_index == tool_index
+            ]
+            if tool_index_explicit:
                 state = next(
                     (
                         candidate
-                        for candidate in reversed(same_choice)
+                        for candidate in reversed(same_index)
                         if candidate.call_id == call_id
                     ),
                     None,
                 )
-            if state is None:
-                same_index = [
-                    candidate for candidate in same_choice if candidate.tool_index == tool_index
-                ]
-                if call_id is None:
-                    state = same_index[-1] if same_index else None
-                else:
+                if state is None and call_id is not None:
                     state = next(
                         (
                             candidate
@@ -532,6 +554,17 @@ class ApiMonitor:
                         ),
                         None,
                     )
+            elif call_id is not None:
+                state = next(
+                    (
+                        candidate
+                        for candidate in reversed(same_choice)
+                        if candidate.call_id == call_id
+                    ),
+                    None,
+                )
+            if state is None and call_id is None:
+                state = same_index[-1] if same_index else None
             if state is None:
                 pending_chars = sum(
                     len(candidate.name) + len(candidate.arguments)
@@ -768,6 +801,7 @@ class ApiMonitor:
             # already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
+            _append_stream_tool_previews(entry, entry.openai_stream_tool_calls)
             entry.openai_stream_tool_calls.clear()
             entry.openai_stream_last_tool_indexes.clear()
             entry.openai_stream_last_segment_was_tool = False
@@ -816,6 +850,7 @@ class ApiMonitor:
         self._notify_terminal(notification)
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
+        _append_stream_tool_previews(entry, entry.openai_stream_tool_calls)
         entry.openai_stream_tool_calls.clear()
         entry.openai_stream_last_tool_indexes.clear()
         entry.openai_stream_last_segment_was_tool = False

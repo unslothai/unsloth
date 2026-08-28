@@ -5157,7 +5157,8 @@ def _monitor_stream_tool_call_deltas(
         if not isinstance(function, dict):
             function = {}
         tool_index = tool_call.get("index")
-        if not isinstance(tool_index, int) or isinstance(tool_index, bool):
+        tool_index_explicit = isinstance(tool_index, int) and not isinstance(tool_index, bool)
+        if not tool_index_explicit:
             tool_index = position if len(tool_calls) > 1 else None
         name = function.get("name")
         if name is None:
@@ -5169,6 +5170,7 @@ def _monitor_stream_tool_call_deltas(
             monitor_id,
             choice_index = choice_index,
             tool_index = tool_index,
+            tool_index_explicit = tool_index_explicit,
             call_id = tool_call.get("id"),
             name_fragment = name,
             arguments_fragment = arguments,
@@ -5243,6 +5245,7 @@ def _monitor_openai_chunk(
     if not isinstance(choices, list) or not choices:
         return
     if isinstance(data, dict) and data.get("_toolEvent"):
+        _flush_monitor_stream_tool_calls(monitor_id)
         # Tool cards ride the chunk beside choices with an empty delta; already seen.
         # Not decoded output though: a tool run (or a human confirming one) between the
         # card and the first token would otherwise be counted as decoding time.

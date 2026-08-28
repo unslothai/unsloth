@@ -7155,6 +7155,44 @@ class TestApiMonitorProviderAndCompletionStreams:
             'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
         )
 
+    def test_streamed_tool_monitor_separates_duplicate_ids_by_explicit_index(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for tool_call in [
+            {
+                "index": 0,
+                "id": "duplicate",
+                "function": {"name": "alpha", "arguments": '{"a":1}'},
+            },
+            {
+                "index": 1,
+                "id": "duplicate",
+                "function": {"name": "beta", "arguments": '{"b":2}'},
+            },
+        ]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
     @pytest.mark.parametrize("terminal", ["cancelled", "error", "eof"])
     def test_streamed_tool_monitor_terminal_cleanup_is_request_local(self, monkeypatch, terminal):
         import routes.inference as inf_mod
@@ -7218,7 +7256,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             streaming = True,
         )
 
-        assert monitor.get(first_id)["reply"] == ""
+        assert monitor.get(first_id)["reply"] == "Tool call: terminal({)"
         assert monitor.get(second_id)["reply"] == 'Tool call: <unknown>({"b":2})'
 
     def test_streamed_non_tool_monitor_content_is_unchanged(self, monkeypatch):
@@ -7394,6 +7432,52 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert monitor.get(monitor_id)["reply"] == (
             'Checking.\nTool call: lookup({"query":"weather"})'
         )
+
+    @pytest.mark.parametrize(
+        "arguments",
+        ["1", json.dumps({"query": "x" * 600})],
+    )
+    def test_streamed_tool_monitor_flushes_on_tool_event_boundary(
+        self, monkeypatch, arguments
+    ):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"name": "lookup", "arguments": arguments},
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "choices": [{"index": 0, "delta": {}}],
+                "_toolEvent": {"type": "tool_start"},
+            },
+            {"choices": [{"index": 0, "delta": {"content": "Done."}}]},
+        ]
+        for chunk in chunks:
+            _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+
+        reply = monitor.get(monitor_id)["reply"]
+        assert reply.startswith("Tool call: lookup(")
+        assert reply.endswith("\nDone.")
 
     def test_streamed_tool_monitor_bounds_pending_preview_state(self, monkeypatch):
         import routes.inference as inf_mod
