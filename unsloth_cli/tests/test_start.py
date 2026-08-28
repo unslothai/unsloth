@@ -1703,6 +1703,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
 )
 def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch, tmp_path):
     captured = {}
+    windows_settings = r"C:\\Users\\samle\\AppData\\Local\\unsloth\\settings.json"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
@@ -1711,7 +1712,12 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
-    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(start, "_wsl_windows_path", lambda _: windows_settings)
+    monkeypatch.setattr(
+        start,
+        "_claude_flags",
+        lambda model_id, settings: ["--settings", settings],
+    )
 
     def run(command, env):
         captured["command"] = command
@@ -1726,6 +1732,8 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         "/mnt/c/Users/samle/AppData/Roaming/npm/claude",
         "--model",
         MODEL["id"],
+        "--settings",
+        windows_settings,
     ]
     for name in start._CLAUDE_ENV_UNSET:
         assert captured["env"][name] == ""
@@ -2130,12 +2138,14 @@ def test_resolved_launch_command_leaves_non_npm_batch_file_unchanged(monkeypatch
 def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
     fake_studio, monkeypatch, tmp_path
 ):
+    windows_settings = r"C:\\Users\\samle\\AppData\\Local\\unsloth\\settings.json"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
+    monkeypatch.setattr(start, "_wsl_windows_path", lambda _: windows_settings)
 
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
 
@@ -2149,6 +2159,8 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
     assert "PWD/p" in result.output
     assert "ANTHROPIC_AUTH_TOKEN" in result.output
     assert "CLAUDE_CODE_OAUTH_TOKEN" in result.output
+    command = _launch_command(result.output)
+    assert command[command.index("--settings") + 1] == windows_settings
 
 
 def test_connect_codex_no_launch(fake_studio, tmp_path):
