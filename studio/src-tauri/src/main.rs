@@ -36,7 +36,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -1680,6 +1680,26 @@ fn setup_terminate_interception(app: &tauri::App) {
     }
 }
 
+struct TrayServerToggle(MenuItem<tauri::Wry>);
+
+fn tray_toggle_label(status: &str) -> (&'static str, bool) {
+    match status {
+        "running" => ("Stop Server", true),
+        "stopped" | "error" => ("Start Server", true),
+        "starting" => ("Starting\u{2026}", false),
+        _ => ("Start Server", false),
+    }
+}
+
+#[tauri::command]
+fn set_tray_server_status(app: tauri::AppHandle, status: String) {
+    if let Some(toggle) = app.try_state::<TrayServerToggle>() {
+        let (text, enabled) = tray_toggle_label(&status);
+        let _ = toggle.0.set_text(text);
+        let _ = toggle.0.set_enabled(enabled);
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -1687,6 +1707,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = MenuBuilder::new(app)
         .items(&[&open, &toggle, &quit])
         .build()?;
+    app.manage(TrayServerToggle(toggle));
 
     TrayIconBuilder::new()
         .menu(&menu)
@@ -1803,11 +1824,11 @@ fn main() {
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
-    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
-    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
-    // before any GTK/WebKit object can be initialized.
+    // WebKitGTK's hardware dmabuf path breaks on the proprietary NVIDIA driver on
+    // either display server, and on an AppImage that cannot load GLES. Select a
+    // compatible fallback before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
-    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
+    let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -1817,8 +1838,13 @@ fn main() {
     info!("Unsloth desktop app starting");
 
     #[cfg(target_os = "linux")]
-    if let Some(variable) = webkit_rendering_workaround {
-        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+    if let Some((variables, reason)) = webkit_rendering_workaround {
+        let applied = variables
+            .iter()
+            .map(|variable| format!("{variable}=1"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!("{reason}; set {applied} for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
@@ -1913,6 +1939,7 @@ fn main() {
             set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            set_tray_server_status,
         ])
         .setup(|app| {
             // Resolve here, before any window path can ask: this consumes the relaunch marker.
@@ -2746,5 +2773,51 @@ mod tests {
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
         assert_eq!(renderer_activity(&state), (false, true));
+    }
+
+    /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
+    /// on, plus the one the tray reports progress for.
+    #[test]
+    fn the_tray_toggle_names_the_action_a_click_would_take() {
+        assert_eq!(tray_toggle_label("running"), ("Stop Server", true));
+        assert_eq!(tray_toggle_label("stopped"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("error"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
+    }
+
+    /// Every remaining BackendStatus: the listener acts on none of them, so the item is
+    /// greyed rather than offering a click that would be a silent no-op. Keep this list in
+    /// step with the union in use-tauri-backend.ts.
+    #[test]
+    fn a_status_the_tray_cannot_act_on_greys_the_toggle() {
+        for status in [
+            "checking",
+            "not-installed",
+            "installing",
+            "install-error",
+            "needs-elevation",
+            "repairing",
+            "repair-error",
+        ] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status} offered a click the renderer would drop"
+            );
+        }
+    }
+
+    /// The status is whatever string the webview sent, so a mismatched bundle can pass
+    /// something that is not a status at all. Match the whole string: a prefix or a case
+    /// fold would let "run" read as an offer to stop a server that is not running.
+    #[test]
+    fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
+        for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status:?} was read as a known status"
+            );
+        }
     }
 }

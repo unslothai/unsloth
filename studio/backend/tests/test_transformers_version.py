@@ -3627,6 +3627,20 @@ class TestOverlayRepairsIncompleteSidecar:
         live = tmp_path / "venv_t5_latest"
         (live / "transformers").mkdir(parents = True)
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        # Every other tier dir too, not just latest.
+        #
+        # _install_to_dir below is patched but the DESTINATIONS were not, and _probe_tier
+        # walks 530, 550 and 510 provisioning each one it finds missing. So this class
+        # wrote a fake transformers 5.99.0 sidecar, whose CONFIG_MAPPING_NAMES is
+        # {"brandnew": "C"}, into the developer's real ~/.unsloth/studio.
+        #
+        # It then poisons the NEXT run rather than this one, which is why it stayed
+        # hidden: tier resolution finds "brandnew" in 530, and the three tests here that
+        # assert an unknown model type routes to "latest" get "530" instead. Reproducible
+        # on plain main, in isolation, on any machine that has run this file before, and
+        # observed on the CI runner too.
+        for name in ("_VENV_T5_530_DIR", "_VENV_T5_550_DIR", "_VENV_T5_510_DIR"):
+            monkeypatch.setattr(tv, name, str(live.parent / name.lower()))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
         monkeypatch.setattr(
@@ -3876,6 +3890,30 @@ class TestDamagedLatestSidecarRepairHandoff:
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        # The other three tiers go to tmp_path as well, and this is not tidiness.
+        #
+        # _fake_install below writes a sidecar at whatever target it is handed, and
+        # _probe_tier walks _PROBE_TIER_ORDER provisioning each tier it tries. With only
+        # the latest dir redirected, the 530, 550 and 510 targets were the REAL ones under
+        # ~/.unsloth/studio, so running this file wrote a fake transformers 5.99.0 whose
+        # CONFIG_MAPPING_NAMES is {"brandnew": "C"} into the developer's own Unsloth.
+        #
+        # It then failed the next run of this same class: _lowest_tier_for("brandnew")
+        # found it in tier 530 and returned "530" where the test asserts "latest". Three
+        # tests, on a clean checkout of main, only on a machine that had run the suite
+        # before. That is also what CI reproduced, since a runner accumulates the same
+        # state within one session.
+        # Derived from the module rather than listed, because listing them is what went
+        # wrong: the list would have to be updated by whoever adds a tier, and the
+        # consequence of forgetting is invisible until a later run of an unrelated test.
+        # This also caught _VENV_T5_DIR, a fifth constant aliasing the 550 sidecar that a
+        # hand-written list of the three obvious ones missed.
+        for _tier_dir in [
+            name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")
+        ]:
+            if _tier_dir == "_VENV_T5_LATEST_DIR":
+                continue  # already pointed at `live`, which is the sidecar under test
+            monkeypatch.setattr(tv, _tier_dir, str(live.parent / _tier_dir.lower().strip("_")))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
         monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: False)
@@ -3893,6 +3931,38 @@ class TestDamagedLatestSidecarRepairHandoff:
 
         monkeypatch.setattr(tv, "_install_to_dir", _fake_install)
         return tv, installs
+
+    def test_every_sidecar_dir_is_redirected_away_from_the_real_studio_home(
+        self, monkeypatch, tmp_path
+    ):
+        """Adding a fifth tier must not silently start writing to the developer's home.
+
+        _fake_install writes a sidecar at whatever target it is handed, and _probe_tier
+        walks the tiers provisioning each one it tries. Redirecting only the latest dir
+        meant the other three targets were the real ones, and this file wrote a fake
+        transformers 5.99.0 into ~/.unsloth/studio, then failed its own next run.
+
+        So the assertion is over whatever tier constants the module defines, not over the
+        four that exist today: a new _VENV_T5_..._DIR that _patch does not redirect fails
+        here rather than in whichever unrelated test happens to read the tier mapping
+        next.
+        """
+        import utils.transformers_version as tv
+
+        tiers = [name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")]
+        assert tiers, "no tier directory constants found; this guard would pass on nothing"
+
+        self._patch(monkeypatch, self._sidecar(tmp_path / "venv_t5_latest"))
+        stray = {
+            name: getattr(tv, name)
+            for name in tiers
+            if not str(getattr(tv, name)).startswith(str(tmp_path))
+        }
+        assert not stray, (
+            f"_patch leaves {stray} pointing outside tmp_path. A repair or probe that "
+            f"provisions one of those writes test fixture data into the real Unsloth "
+            f"install, which poisons tier resolution for every later run on that machine."
+        )
 
     def _damage(self, live: Path):
         """Disk-full shape: the file is still there, just short."""

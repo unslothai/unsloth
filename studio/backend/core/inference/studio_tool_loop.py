@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio-owned tool execution loop, shared by every external provider transport.
+"""Unsloth-owned tool execution loop, shared by every external provider transport.
 
 The loop owns the parts that do not depend on how bytes reach the provider:
 turn cycling, the tool budget, the approval handshake, local execution through
@@ -55,7 +55,7 @@ from typing import Any, Protocol
 
 from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
-from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
+from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
@@ -67,11 +67,14 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
+    mcp_display_parts,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
+    accepts_kwarg,
     accepts_output_callback,
+    search_images_kwargs,
     stream_tool_execution,
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
@@ -85,19 +88,19 @@ from state.tool_approvals import (
 
 
 _TOOL_BUDGET_EXHAUSTED = (
-    "Studio did not execute this tool call because the per-message tool-call limit was reached. "
+    "Unsloth did not execute this tool call because the per-message tool-call limit was reached. "
     "Continue with the available results and answer without calling another tool."
 )
 
-_TOOL_DISABLED = "Studio did not execute this tool call because the tool is disabled."
+_TOOL_DISABLED = "Unsloth did not execute this tool call because the tool is disabled."
 
 _TOOL_CANCELLED = (
-    "Studio stopped this tool call before it returned, so there is no result. "
+    "Unsloth stopped this tool call before it returned, so there is no result. "
     "The tool may have already done part of its work."
 )
 
 _TOOL_TRUNCATED = (
-    "Studio did not execute this tool call because the provider stopped mid-call at its "
+    "Unsloth did not execute this tool call because the provider stopped mid-call at its "
     "output limit."
 )
 
@@ -105,9 +108,9 @@ _TOOL_TRUNCATED = (
 # from the provider's own tool_calls delta, so it needs a short result; the long
 # model-facing nudge stays in the conversation.
 _TOOL_SKIPPED = {
-    "duplicate": "Studio did not run this call because an identical one had already completed.",
+    "duplicate": "Unsloth did not run this call because an identical one had already completed.",
     "disabled": _TOOL_DISABLED,
-    "render_html_repeat": "Studio did not run this call because render_html already ran.",
+    "render_html_repeat": "Unsloth did not run this call because render_html already ran.",
 }
 
 # Verbatim from the local loops: the last pass answers instead of asking for more.
@@ -229,7 +232,7 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     if not isinstance(function, dict):
         return None
     if not isinstance(call_id, str) or not call_id:
-        # The id is Studio's correlation key, not the model's contract. Several
+        # The id is Unsloth's correlation key, not the model's contract. Several
         # OpenAI-compatible servers omit it; dropping the call lost a real
         # request with no error, so mint one instead.
         call_id = fallback_id
@@ -304,7 +307,7 @@ class ToolLoopTransport(Protocol):
     # structured delta.tool_calls. Codex never does; a self-hosted GGUF often does.
     heals_text_tool_calls: bool
 
-    # Whether the transport already stripped Studio's control vocabulary from
+    # Whether the transport already stripped Unsloth's control vocabulary from
     # every raw upstream line. A transport that has not is sanitized here; one
     # that has must not be sanitized twice, because by this point its own
     # synthesized frames (a provider-hosted image result, say) are indis-
@@ -344,6 +347,8 @@ class ToolLoopPolicy:
     rag_scope: dict[str, Any] | None
     # None means "follow the process default"; False disables text-form healing.
     auto_heal: bool | None = None
+    # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
+    nudge_tool_calls: bool | None = None
 
 
 @dataclass
@@ -370,7 +375,7 @@ class _Turn:
 
         These reach the client as their own frames but are not part of the
         assistant message this loop replays, so the follow-up request would lose
-        whatever the provider just produced. Studio's own events carry a
+        whatever the provider just produced. Unsloth's own events carry a
         top-level ``type``, so ``_toolEvent`` is unambiguously the provider's.
 
         Both halves matter: ``tool_end`` generally omits ``tool_name``, and for
@@ -546,7 +551,15 @@ class _Turn:
                 # Never replayed upstream: the conversation carries the
                 # de-duplicated id, which is the whole point of the rename.
                 normalized["stream_id"] = normalized["id"]
-                normalized["id"] = f"{normalized['id']}_{self.round}_{position}"
+                # The renamed id is itself stored and replayed, so a single-shot
+                # rename collides again on the next request. Counting up over a
+                # finite ledger terminates and leaves the first attempt as is.
+                renamed = f"{normalized['id']}_{self.round}_{position}"
+                attempt = 0
+                while renamed in seen:
+                    attempt += 1
+                    renamed = f"{normalized['id']}_{self.round}_{position}_{attempt}"
+                normalized["id"] = renamed
             seen.add(normalized["id"])
             out.append(normalized)
         return out
@@ -562,6 +575,16 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
     new_payload = {key: value for key, value in payload.items() if key != "choices"}
     new_payload["choices"] = [new_choice] + list(payload.get("choices", [])[1:])
     return _sse(new_payload)
+
+
+def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
+    """Provenance for a hand-built unrun card; carries the MCP display name so a
+    budget-exhausted or truncated MCP call never shows the internal server id."""
+    provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        provenance["mcp_server"] = mcp[0]
+    return provenance
 
 
 def _unrun_call_card(
@@ -650,6 +673,27 @@ def _is_usage_only(payload: dict[str, Any]) -> bool:
     return "usage" in payload and isinstance(choices, list) and not choices
 
 
+def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
+    """Every tool-call id already in the history this run starts from.
+
+    The healer restarts its counter every request, so a freshly minted call_0
+    collides with a stripped call_0 replayed from history inside one upstream
+    body. Seeding the ledger makes calls() rename the new one as it does any
+    repeat within a run.
+    """
+    taken: set[str] = set()
+    for message in conversation:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]:
+                taken.add(call["id"])
+        result_id = message.get("tool_call_id")
+        if isinstance(result_id, str) and result_id:
+            taken.add(result_id)
+    return taken
+
+
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     """Append a user turn, merging into a trailing one so roles keep alternating.
 
@@ -716,8 +760,10 @@ async def stream_with_studio_tools(
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
 ) -> AsyncIterator[str]:
-    """Stream a provider, execute requested Studio tools, continue to a final answer."""
+    """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # Kept before the loop appends anything: this is the branch the request is on.
+    request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -767,7 +813,7 @@ async def stream_with_studio_tools(
     max_reprompts = MAX_ACT_REPROMPTS
     last_reprompt_text = ""
     provider_turns = 0
-    used_call_ids: set[str] = set()
+    used_call_ids: set[str] = _replayed_call_ids(conversation)
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
@@ -982,7 +1028,7 @@ async def stream_with_studio_tools(
                     # well formed to show; the result says what happened.
                     arguments = {},
                     result = _TOOL_TRUNCATED,
-                    provenance = {"source": "local", "round_id": round_id + 1},
+                    provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
         # tool_choice "none" is an instruction, and a provider that emits a call
@@ -999,6 +1045,7 @@ async def stream_with_studio_tools(
             visible_answer = "".join(turn.text)
             if (
                 tools_available
+                and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
                 and is_short_intent_without_action(visible_answer)
@@ -1054,7 +1101,7 @@ async def stream_with_studio_tools(
                     tool_call_id = call.get("stream_id") or call["id"],
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = {"source": "local", "round_id": round_id},
+                    provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
                 # The result below has to be replayed with its call: only the
@@ -1098,7 +1145,7 @@ async def stream_with_studio_tools(
                 # a repeated call is exactly the one this loop renames above.
                 #
                 # Only for a tool the user DID enable. A call for something
-                # outside the catalog is not a tool of Studio's that declined to
+                # outside the catalog is not a tool of Unsloth's that declined to
                 # run, it is a name this install never offered, and giving it a
                 # card would advertise a tool the user switched off. That one is
                 # answered in the conversation only.
@@ -1108,7 +1155,7 @@ async def stream_with_studio_tools(
                     tool_name = decision.tool_name,
                     tool_call_id = call.get("stream_id") or decision.tool_call_id,
                     arguments = decision.arguments,
-                    result = _TOOL_SKIPPED.get(decision.action, "Studio did not run this call."),
+                    result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
                     provenance = decision.provenance,
                 ):
                     yield card_line
@@ -1209,8 +1256,32 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # Provider loops share the local catalogue selector, so
+                # search_conversation is advertised here too once a thread has an archive
+                # and needs the same branch: the stored rows are the whole DAG, and Retry
+                # leaves the replaced response in them.
+                if accepts_kwarg(execute_tool, "conversation_branch"):
+                    kwargs["conversation_branch"] = request_branch
+                # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure
+                # an external model's window, and a custom OpenAI-compatible endpoint can
+                # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
+                # replayed on every later call. Unmeasurable means one recall's worth.
+                # Explicitly unknowable, not absent: this request is served by an
+                # external provider, so the resident GGUF's window says nothing about
+                # what it can hold. 0 keeps the default page cap instead of inheriting it.
+                if accepts_kwarg(execute_tool, "context_tokens"):
+                    kwargs["context_tokens"] = 0
+                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                    try:
+                        from core.rag import config as rag_config
+                        kwargs["conversation_budget_tokens"] = max(
+                            1, int(rag_config.CHUNK_TOKENS)
+                        ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
+                    except Exception:
+                        pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for

@@ -548,7 +548,7 @@ class TestArchRetryDropsTensorSplit:
         assert LlamaCppBackend._without_tensor_split(cmd) is None
         # Known limitation, pinned not fixed: the scan is positional, so a VALUE
         # spelled exactly like the flag is removed as if it were one and the
-        # two-token form then swallows the argument after it. No Studio-built argv
+        # two-token form then swallows the argument after it. No Unsloth-built argv
         # can reach this -- the only free-text values are the model path and the
         # HF-derived --alias, llama.cpp's own value tokens being numbers or enum
         # words -- so teaching the scanner every flag's arity is not worth it. If a

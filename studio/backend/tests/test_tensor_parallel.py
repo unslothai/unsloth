@@ -1699,13 +1699,251 @@ def test_load_model_reserves_pipeline_per_device_overhead():
     assert "_subset_model_size(n_gpus)" in compact  # used in the layer-split fit
 
 
-def test_load_model_restores_quantized_kv_on_tensor_downgrade():
-    # A quantized KV dropped for the tensor attempt must be restored if tensor
-    # downgrades to layer split (Finding D); captured once, restored at both the
-    # GPU-count and capacity-gate downgrades.
-    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
-    # Restore is shared in one closure, called at every tensor->layer downgrade.
-    assert "cache_type_kv=_tensor_dropped_cache_type_kv" in compact  # restored in the closure
-    assert "def_restore_after_tensor_downgrade():" in compact  # one shared restore helper
-    assert compact.count("_restore_after_tensor_downgrade()") >= 3  # called at each downgrade
+def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():
+    # llama.cpp runs a quantized KV cache under --split-mode tensor (ggml-org/
+    # llama.cpp#23792), so Unsloth must not carry its own whitelist.
+    assert not hasattr(LlamaCppBackend, "_TENSOR_PARALLEL_KV_TYPES")
+
+
+# ── Pre-b9455 llama.cpp: one doomed attempt, latched, then never again ───────
+
+
+class TestLegacyBuildQuantizedKvInTensorMode:
+    """Unsloth stopped pre-emptively rewriting a quantized KV cache for the tensor
+    attempt (ggml-org/llama.cpp#23792, b9455), so an older binary now refuses the
+    load itself. That refusal is a clean LLAMA_LOG_ERROR + return nullptr, not a
+    GGML_ASSERT, so nothing in the #6415 path can see it -- these pin the marker's
+    own handling: skip the --fit retry, latch it, and hand the route a message that
+    names the remedy.
+
+    The child is a captured Popen; no llama-server runs.
+    """
+
+    _REJECTION = (
+        "llama_init_from_model: simultaneous use of SPLIT_MODE_TENSOR and "
+        "KV cache quantization not implemented"
+    )
+    _QUANTIZED = ("q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl")
+
+    @classmethod
+    def _doomed(cls, cmd) -> bool:
+        """What a pre-#23792 llama-server rejects: tensor split + a quantized axis."""
+        if "--split-mode" not in cmd or cmd[cmd.index("--split-mode") + 1] != "tensor":
+            return False
+        return any(
+            flag in ("--cache-type-k", "--cache-type-v") and cmd[i + 1] in cls._QUANTIZED
+            for i, flag in enumerate(cmd[:-1])
+        )
+
+    def _run(self, tmp_path, monkeypatch):
+        """One load_model call against a legacy child; returns the spawned commands."""
+        import subprocess
+        from unittest.mock import patch
+
+        import importlib.util
+        from pathlib import Path as _Path
+
+        spec = importlib.util.spec_from_file_location(
+            "_placement_harness_legacy_build",
+            _Path(__file__).resolve().parent / "test_llama_cpp_placement.py",
+        )
+        placement = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(placement)
+
+        backend, gguf = placement._backend(
+            tmp_path, vulkan = False, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
+        )
+        real_popen = subprocess.Popen
+        spawns: list[list[str]] = []
+
+        def fake_popen(cmd, **kwargs):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return real_popen(cmd, **kwargs)
+            cmd = list(cmd)
+            spawns.append(cmd)
+            doomed = self._doomed(cmd)
+            if doomed:
+                backend._stdout_lines = [self._REJECTION, "srv load_model: failed to load model"]
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 123,
+                    "stdout": (),
+                    "returncode": 1 if doomed else None,
+                    "poll": lambda _self, _d = doomed: 1 if _d else None,
+                    "terminate": lambda _self: None,
+                    "wait": lambda _self, timeout = None: 1 if doomed else 0,
+                    "kill": lambda _self: None,
+                },
+            )()
+
+        backend._wait_for_health = lambda timeout: not self._doomed(spawns[-1])
+        error: list[BaseException] = []
+        with patch.object(subprocess, "Popen", side_effect = fake_popen):
+            try:
+                backend.load_model(
+                    GgufLoadIntent(
+                        gguf_path = str(gguf),
+                        model_identifier = "test",
+                        tensor_parallel = True,
+                        cache_type_kv = "q8_0",
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001
+                error.append(exc)
+        return backend, gguf, spawns, (error[0] if error else None)
+
+    @pytest.fixture(autouse = True)
+    def _clear_latch(self):
+        """Both latches are class-level and process-wide; a leak would make the
+        second cell pass for the first cell's reason (an already-latched binary
+        skips tensor up front, so no doomed spawn happens at all)."""
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+        yield
+        LlamaCppBackend._tensor_split_abort_keys.clear()
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+
+    def test_the_refusal_costs_exactly_one_spawn(self, tmp_path, monkeypatch):
+        """Not two. The --fit off -> --fit on retry cannot fix a missing capability,
+        and on a 27B each doomed attempt is a full model-load cycle."""
+        _backend, _gguf, spawns, error = self._run(tmp_path, monkeypatch)
+
+        assert len(spawns) == 1, [c[c.index("--split-mode") + 1] for c in spawns]
+        assert isinstance(error, RuntimeError), error
+
+    def test_it_raises_to_the_route_fallback_naming_the_build(self, tmp_path, monkeypatch):
+        """load_with_tensor_fallback catches the raise and relaunches layer-split;
+        the message is what reaches the user if anything reports it."""
+        _backend, _gguf, _spawns, error = self._run(tmp_path, monkeypatch)
+
+        assert "b9455" in str(error)
+        assert "layer split" in str(error)
+
+    def test_the_binary_is_latched_so_the_next_load_skips_tensor(self, tmp_path, monkeypatch):
+        """Without this the doomed attempt repeats on every load, forever."""
+        backend, gguf, _spawns, _error = self._run(tmp_path, monkeypatch)
+
+        # Binary-wide, not model-and-pair: the refusal is a capability this
+        # llama.cpp lacks for every model and every quantized type.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("q8_0", "q8_0")
+        )
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("q4_0", "q4_0")
+        )
+        # But f16 runs fine under a tensor split on such a binary, so the latch
+        # must not take tensor mode away from a config that works.
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            "/fake/llama-server", ("f16", "f16")
+        )
+        # The model+pair latch stays clean: this was never a geometry abort.
+        assert not LlamaCppBackend._tensor_split_abort_keys
+
+    def test_a_current_build_is_untouched(self, tmp_path, monkeypatch):
+        """The guard must not cost anything on a binary that supports the pair:
+        one spawn, tensor mode kept, quantized cache emitted."""
+        import importlib.util
+        from pathlib import Path as _Path
+
+        spec = importlib.util.spec_from_file_location(
+            "_placement_harness_current_build",
+            _Path(__file__).resolve().parent / "test_llama_cpp_placement.py",
+        )
+        placement = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(placement)
+
+        backend, gguf = placement._backend(
+            tmp_path, vulkan = False, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
+        )
+        backend._tensor_split_aborts = lambda *a, **k: False
+        cmd = placement._launch(backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0")["cmd"]
+
+        assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+        assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
+        assert not LlamaCppBackend._tensor_split_abort_keys
+
+
+class TestLegacyBuildLatchIsBinaryWide:
+    """The pre-b9455 refusal is a missing capability of the BINARY: llama.cpp
+    refuses every quantized type for every model on it. Keying it per model and
+    per cache pair (like the #6415 split-axis abort, which really is specific to
+    both) would pay another doomed full model load for each new model and each
+    q8_0 -> q4_0 switch."""
+
+    @pytest.fixture(autouse = True)
+    def _clear(self):
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+        yield
+        LlamaCppBackend._tensor_quant_kv_unsupported_binaries.clear()
+
+    def test_one_detection_covers_other_models_and_other_types(self, tmp_path):
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("x")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+
+        # Same model, a different quantized type.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "q4_0"))
+        # A completely different model.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+        # One quantized axis is enough, since llama.cpp checks both.
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q4_0", "f16"))
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("f16", "q4_0"))
+
+    def test_a_non_quantized_pair_still_gets_a_tensor_split(self, tmp_path):
+        """f16 runs fine under a tensor split on such a binary -- the refusal is
+        about quantization, so latching it must not cost the working config."""
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("x")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("f16", "f16"))
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("bf16", "f32"))
+
+    def test_a_replaced_binary_is_re_probed(self, tmp_path):
+        """An update is exactly what fixes this, so the mtime must invalidate it."""
+        import os
+        import time
+
+        binary = str(tmp_path / "llama-server")
+        Path(binary).write_text("old")
+        LlamaCppBackend._record_tensor_quant_kv_unsupported(binary)
+        assert LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+
+        time.sleep(0.01)
+        Path(binary).write_text("new")
+        os.utime(binary, ns = (time.time_ns(), time.time_ns()))
+
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(binary, ("q8_0", "q8_0"))
+
+    def test_an_unseen_binary_is_not_latched(self, tmp_path):
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(
+            str(tmp_path / "never-seen"), ("q8_0", "q8_0")
+        )
+        assert not LlamaCppBackend._tensor_quant_kv_unsupported_binary(None, ("q8_0", "q8_0"))
+
+    def test_the_skip_keeps_the_multi_gpu_request(self):
+        """A missing capability says nothing about capacity, so the layer load it
+        falls back to must still spread. Without the _layer_min_gpus bump the auto
+        layer planner starts at one GPU and stops there as soon as the model fits,
+        silently collapsing a multi-GPU request onto one card -- the same reason
+        the adjacent split-axis skip raises it."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        gate = load.find("self._tensor_quant_kv_unsupported_binary(")
+        assert gate != -1
+        # The bump sits inside this skip's own body, before the next gate.
+        nxt = load.find("self._tensor_split_aborts(", gate)
+        assert nxt != -1
+        assert "_layer_min_gpus=max(_layer_min_gpus,len(gpus))" in load[gate:nxt]
+
+    def test_the_loader_consults_it_before_spawning(self):
+        """Source-pinned: the whole point is to skip the doomed load, so the check
+        has to sit at the up-front gate, not after a spawn."""
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        gate = load.find("self._tensor_quant_kv_unsupported_binary(")
+        assert gate != -1, "the binary-wide gate is gone"
+        # Ahead of the first spawn.
+        assert gate < load.find("healthy=_spawn_and_wait(cmd)")
+        # And the skip must strip the split-mode group like every other TP drop.
+        assert "extra_args=strip_split_mode_only(extra_args)" in load
