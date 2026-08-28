@@ -9594,6 +9594,34 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
     return backend, recorder
 
 
+def test_chat_rejects_an_empty_openai_image_before_non_gguf_switch(monkeypatch):
+    from models.inference import ChatMessage, ImageContentPart, ImageUrl
+
+    backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    ImageContentPart(
+                        type = "image_url",
+                        image_url = ImageUrl(url = "data:image/png;base64,"),
+                    )
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Failed to decode image"
+    assert recorder.calls == []
+    assert backend.model_identifier == "org/A-GGUF"
+
+
 def _responses_image_payload(*images, stream):
     from models.inference import ResponsesRequest
     return ResponsesRequest(

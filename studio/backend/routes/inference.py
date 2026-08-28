@@ -18689,9 +18689,13 @@ async def produce_openai_chat_completions(
     if _needs_image and _pre_parsed is not None:
         _images_on_turn = _images_in_last_user_message(payload.messages)
         _legacy_image_distinct = _legacy_image_is_distinct(payload)
+        _local_image_payloads = _request_local_image_payloads(payload)
+        _image_b64 = _pre_parsed[2] or payload.image_base64
+        if _image_b64 is None and _local_image_payloads:
+            _image_b64 = _local_image_payloads[0]
         _image_preflight = {
-            "b64": _pre_parsed[2] or payload.image_base64,
-            "b64s": _request_local_image_payloads(payload),
+            "b64": _image_b64,
+            "b64s": _local_image_payloads,
             "multiple": (
                 _images_on_turn + int(_legacy_image_distinct) > 1
                 or bool(_pre_parsed[2] and _legacy_image_distinct)
