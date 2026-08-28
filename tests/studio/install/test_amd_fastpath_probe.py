@@ -681,3 +681,20 @@ def test_a_stale_family_no_index_can_repair_keeps_the_fast_path(monkeypatch):
     for _gfx in ("gfx942", "gfx950"):
         _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = (_gfx,))
         assert _needs_pass() is True, _gfx
+
+
+def test_a_mixed_host_gfx906_keeps_the_fast_path(monkeypatch):
+    """gfx906 answers the abstract routability question yes on the generic union, but its one
+    usable route is the rocm6.3 legacy tag, which opens only when gfx906 is the sole detected
+    arch. _ensure_rocm_torch declines the demotion there, so a preflight that asks the
+    abstract question requests a full dependency pass on every update and never a repair."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        gfx = ("gfx1100", "gfx906"),
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+    )
+    assert _needs_pass() is False
+    # Alone, gfx906 does have a route, and the same stale family is worth the pass.
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx906",))
+    assert _needs_pass() is True
