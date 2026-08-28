@@ -34,6 +34,10 @@ def is_wildcard_host(host: str) -> bool:
     if literal is not None:
         return literal.is_unspecified
     try:
+        return socket.inet_aton(host) == b"\0\0\0\0"
+    except OSError:
+        pass
+    try:
         addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except OSError:
         return False

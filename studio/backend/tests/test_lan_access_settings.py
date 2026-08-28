@@ -208,7 +208,7 @@ def test_private_lan_ignores_forwarding_headers(monkeypatch):
 def test_private_lan_launch_managed_matrix(
     monkeypatch, bind_host, resolved, server, secure, is_colab, expected
 ):
-    def resolve(_host, port, **_kwargs):
+    def resolve(_host, port, *_args, **_kwargs):
         if resolved == "error":
             raise OSError("dns unavailable")
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (resolved, port))]
