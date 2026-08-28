@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from core.inference.web_access_policy import website_policy_prompt
+from utils.current_date_prompt_settings import strip_current_date_prompt_lines
 
 
 _REPORT_BOUNDARY_MARKER = "<!-- UNSLOTH_FINAL_REPORT -->"
@@ -119,6 +120,8 @@ def _system_prompt_with_instructions(base: str, config: dict) -> str:
     if current_date:
         prompt = f"{current_date}\n\n{prompt}"
     instructions = str(config.get("instructions") or "").strip()
+    if current_date:
+        instructions = strip_current_date_prompt_lines(instructions)
     if not instructions:
         return prompt
     return (

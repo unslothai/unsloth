@@ -6,17 +6,39 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CURRENT_DATE_PROMPT_SETTING_KEY = "include_current_date_in_prompt"
 # Lets callers recognise a prompt that already states a date, whoever put it there.
 CURRENT_DATE_PROMPT_PREFIX = "The current date is "
+CURRENT_DATE_PROMPT_LINE_RE = re.compile(
+    rf"(?m)^{re.escape(CURRENT_DATE_PROMPT_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\.(?=\r?$)"
+)
 # default on: date-blind models answer from their training cutoff and search for stale material.
 DEFAULT_CURRENT_DATE_PROMPT_ENABLED = True
 CURRENT_DATE_TIMEZONE_HEADER = "x-unsloth-timezone"
 CURRENT_DATE_TIMEZONE_OFFSET_HEADER = "x-unsloth-timezone-offset-minutes"
 MAX_TIMEZONE_OFFSET_MINUTES = 14 * 60
+
+
+def contains_current_date_prompt_line(text: str) -> bool:
+    return CURRENT_DATE_PROMPT_LINE_RE.search(text) is not None
+
+
+def replace_current_date_prompt_lines(text: str, date_line: str) -> str:
+    return CURRENT_DATE_PROMPT_LINE_RE.sub(date_line, text)
+
+
+def strip_current_date_prompt_lines(text: str) -> str:
+    if not contains_current_date_prompt_line(text):
+        return text
+    return "".join(
+        line
+        for line in text.splitlines(keepends = True)
+        if not CURRENT_DATE_PROMPT_LINE_RE.fullmatch(line.rstrip("\r\n"))
+    ).strip()
 
 
 def _coerce_bool(value: Any) -> bool | None:

@@ -2910,12 +2910,9 @@ import io
 import base64
 
 from utils.current_date_prompt_settings import (
-    CURRENT_DATE_PROMPT_PREFIX,
+    contains_current_date_prompt_line,
     current_date_prompt_line,
-)
-
-_CURRENT_DATE_PROMPT_LINE_RE = _re.compile(
-    rf"{_re.escape(CURRENT_DATE_PROMPT_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\."
+    replace_current_date_prompt_lines,
 )
 
 if TYPE_CHECKING:
@@ -4751,26 +4748,26 @@ async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + grounding
 
 
-def _states_a_date(content: Any) -> bool:
-    """Whether system content contains a canonical current-date prompt line.
-
-    Durable research stamps its own date at run creation and then posts the prompt back through
-    this route, so a second one would contradict the first once the run crosses midnight. Text
-    parts are read as well as plain strings. Only a complete ISO-shaped stamp line counts, so
-    unrelated prose that discusses the prefix does not suppress injection.
-    """
-
-    def _text_states_a_date(text: str) -> bool:
-        return any(_CURRENT_DATE_PROMPT_LINE_RE.fullmatch(line) for line in text.splitlines())
-
+def _refresh_stated_date(content: Any, date_line: str) -> tuple[Any, bool, bool]:
     if isinstance(content, str):
-        return _text_states_a_date(content)
-    if isinstance(content, list):
-        return any(
-            isinstance(part, dict) and _text_states_a_date(str(part.get("text") or ""))
-            for part in content
-        )
-    return False
+        stated = contains_current_date_prompt_line(content)
+        refreshed = replace_current_date_prompt_lines(content, date_line)
+        return refreshed, stated, refreshed != content
+    if not isinstance(content, list):
+        return content, False, False
+    refreshed_parts = list(content)
+    stated = False
+    changed = False
+    for index, part in enumerate(content):
+        if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+            continue
+        stated = stated or contains_current_date_prompt_line(part["text"])
+        refreshed_text = replace_current_date_prompt_lines(part["text"], date_line)
+        if refreshed_text == part["text"]:
+            continue
+        refreshed_parts[index] = {**part, "text": refreshed_text}
+        changed = True
+    return refreshed_parts, stated, changed
 
 
 def _wants_current_date(request: Any) -> bool:
@@ -4793,8 +4790,11 @@ def _apply_current_date_prompt(system_prompt: str, request: Any = None) -> str:
     if request is not None and not _wants_current_date(request):
         return system_prompt
     date_line = current_date_prompt_line(request = request)
-    if not date_line or _states_a_date(system_prompt):
+    if not date_line:
         return system_prompt
+    refreshed_prompt, stated, _ = _refresh_stated_date(system_prompt, date_line)
+    if stated:
+        return refreshed_prompt
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
@@ -4810,14 +4810,21 @@ def _prepend_current_date_to_messages(messages: list[dict], request: Any = None)
     date_line = current_date_prompt_line(request = request)
     if not date_line:
         return messages
-    # Scanned across every system turn before anything is inserted: a request whose date sits on
-    # a later turn than the first would otherwise get a second, contradictory one.
-    if any(
-        msg.get("role") in ("system", "developer") and _states_a_date(msg.get("content"))
-        for msg in messages
-    ):
-        return messages
     copied = [dict(msg) for msg in messages]
+    stated = False
+    refreshed = False
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content, content_stated, changed = _refresh_stated_date(msg.get("content"), date_line)
+        stated = stated or content_stated
+        if changed:
+            msg["content"] = content
+            refreshed = True
+    if stated:
+        if not refreshed:
+            return messages
+        return copied
     for msg in copied:
         if msg.get("role") not in ("system", "developer"):
             continue

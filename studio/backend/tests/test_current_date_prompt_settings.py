@@ -75,14 +75,26 @@ class TestCurrentDatePromptLine:
             == "The current date is 2026-08-15."
         )
 
-    def test_system_prompt_helper_is_idempotent(self, monkeypatch):
+    def test_system_prompt_helper_refreshes_a_stale_date(self, monkeypatch):
         import routes.inference as inference
 
         monkeypatch.setattr(
             inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
         )
         already = "The current date is 2026-08-14.\n\nBASE"
-        assert inference._apply_current_date_prompt(already) == already
+        assert (
+            inference._apply_current_date_prompt(already)
+            == "The current date is 2026-08-15.\n\nBASE"
+        )
+
+    def test_system_prompt_helper_does_not_duplicate_the_current_date(self, monkeypatch):
+        import routes.inference as inference
+
+        monkeypatch.setattr(
+            inference, "current_date_prompt_line", lambda **_kwargs: "The current date is 2026-08-15."
+        )
+        prompt = "The current date is 2026-08-15.\n\nBASE"
+        assert inference._apply_current_date_prompt(prompt) == prompt
 
     def test_discussing_the_date_phrase_does_not_suppress_injection(self, monkeypatch):
         import routes.inference as inference
@@ -195,18 +207,16 @@ class TestExternalProviderMessages:
         messages = [{"role": "user", "content": "hi"}]
         assert self._prepend(messages) is messages
 
-    def test_a_prompt_that_already_states_a_date_is_left_alone(self):
-        # Deep Research stamps its own date at run creation, then posts the prompt back through
-        # this route; a second line would contradict the first once the run crosses midnight.
+    def test_a_stale_date_is_refreshed_for_an_interactive_request(self):
         stamped = [
             {"role": "system", "content": "The current date is 2026-08-14.\n\nBe terse."},
             {"role": "user", "content": "hi"},
         ]
-        assert self._prepend(stamped) is stamped
+        refreshed = self._prepend(stamped)
+        assert refreshed[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
+        assert stamped[0]["content"] == "The current date is 2026-08-14.\n\nBe terse."
 
-    def test_a_stated_date_buried_under_research_instructions_still_suppresses(self):
-        # _system_prompt_with_instructions buries the date under a header, so a startswith
-        # check would miss it and re-date the prompt.
+    def test_a_stale_date_buried_under_instructions_is_refreshed(self):
         buried = [
             {
                 "role": "system",
@@ -217,17 +227,19 @@ class TestExternalProviderMessages:
                 ),
             }
         ]
-        assert self._prepend(buried) is buried
+        refreshed = self._prepend(buried)
+        assert "The current date is 2026-08-15." in refreshed[0]["content"]
+        assert "The current date is 2026-08-14." not in refreshed[0]["content"]
 
-    def test_a_date_on_a_later_system_turn_still_suppresses(self):
-        # The first eligible turn is undated, so a scan that stopped there would date the prompt
-        # a second time.
+    def test_a_stale_date_on_a_later_system_turn_is_refreshed(self):
         messages = [
             {"role": "system", "content": "Be terse."},
             {"role": "developer", "content": "The current date is 2026-08-14."},
             {"role": "user", "content": "hi"},
         ]
-        assert self._prepend(messages) is messages
+        refreshed = self._prepend(messages)
+        assert refreshed[0]["content"] == "Be terse."
+        assert refreshed[1]["content"] == "The current date is 2026-08-15."
 
     def test_any_api_key_request_is_left_verbatim(self, monkeypatch):
         # studio's own workflow keys are excluded too, not just third-party sk-unsloth callers.
@@ -247,8 +259,7 @@ class TestExternalProviderMessages:
         )
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
 
-    def test_a_date_inside_a_text_part_still_suppresses(self):
-        # content parts are as much a stated date as a plain string.
+    def test_a_stale_date_inside_a_text_part_is_refreshed(self):
         messages = [
             {
                 "role": "system",
@@ -256,7 +267,9 @@ class TestExternalProviderMessages:
             },
             {"role": "user", "content": "hi"},
         ]
-        assert self._prepend(messages) is messages
+        refreshed = self._prepend(messages)
+        assert refreshed[0]["content"][0]["text"] == "The current date is 2026-08-15."
+        assert messages[0]["content"][0]["text"] == "The current date is 2026-08-14."
 
     def test_a_phrase_discussion_inside_a_text_part_does_not_suppress(self):
         messages = [
@@ -313,6 +326,18 @@ class TestResearchSystemPrompt:
         )
         assert "<chat_instructions>\nBe terse.\n</chat_instructions>" in prompt
         assert prompt.endswith("Non-overridable rules:\nThe current date is 2026-08-15.\n\nBASE")
+
+    def test_stale_manual_date_is_removed_from_instructions(self):
+        prompt = _system_prompt_with_instructions(
+            "BASE",
+            {
+                "currentDate": "The current date is 2026-08-15.",
+                "instructions": "The current date is 2025-03-01.\nBe terse.",
+            },
+        )
+        assert "The current date is 2025-03-01." not in prompt
+        assert prompt.count("The current date is 2026-08-15.") == 1
+        assert "<chat_instructions>\nBe terse.\n</chat_instructions>" in prompt
 
     def test_run_without_a_stamped_date_is_unchanged(self):
         # runs created before the field existed, and runs started with the setting off.
