@@ -765,8 +765,20 @@ const LoraCompareContent = memo(function LoraCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+        // Both persisted shapes: a pair saved by the generalized compare
+        // stores model1/model2, and this component can be swapped in over it
+        // once the async LoRA list marks the loaded checkpoint as a LoRA.
+        // Matching only base/lora blanked both panes for that pair (#9823).
+        setBaseThreadId(
+          threads.find(
+            (t) => t.modelType === "base" || t.modelType === "model1",
+          )?.id,
+        );
+        setLoraThreadId(
+          threads.find(
+            (t) => t.modelType === "lora" || t.modelType === "model2",
+          )?.id,
+        );
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
