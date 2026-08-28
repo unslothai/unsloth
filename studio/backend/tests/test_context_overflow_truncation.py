@@ -39,6 +39,9 @@ from routes.inference import (
 )
 from core.inference import context_window
 from core.inference.context_window import (
+    estimate_message_tokens,
+    estimate_message_tokens_without_unpriced_media,
+    estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
     group_turns,
@@ -262,6 +265,22 @@ def test_rolling_token_count_reuses_text_only_messages():
     assert messages_without_unpriced_media(messages) is messages
 
 
+def test_media_free_estimates_do_not_change_shared_admission_estimates():
+    message = {
+        "role": "user",
+        "content": [
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            }
+        ],
+    }
+
+    assert estimate_message_tokens(message) > 20_000
+    assert estimate_messages_tokens_dense([message]) > 20_000
+    assert estimate_message_tokens_without_unpriced_media(message) < 20
+
+
 def test_rolling_eviction_does_not_charge_protected_media_transport_bytes():
     history = [
         {"role": role, "content": marker * 10}
@@ -298,6 +317,7 @@ def test_rolling_eviction_does_not_charge_protected_media_transport_bytes():
             context_length = 120,
             max_tokens = 20,
             count_tokens = count_text,
+            estimate_message = estimate_message_tokens_without_unpriced_media,
         )
 
         assert truncation and truncation["fits"]

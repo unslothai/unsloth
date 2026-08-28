@@ -44,10 +44,13 @@ def _message_without_unpriced_media(message: dict) -> dict:
 
 def estimate_message_tokens(message: dict) -> int:
     try:
-        countable = _message_without_unpriced_media(message)
-        return max(1, len(json.dumps(countable, ensure_ascii = False)) // 4)
+        return max(1, len(json.dumps(message, ensure_ascii = False)) // 4)
     except Exception:
         return 1
+
+
+def estimate_message_tokens_without_unpriced_media(message: dict) -> int:
+    return estimate_message_tokens(_message_without_unpriced_media(message))
 
 
 def estimate_messages_tokens(messages: list[dict]) -> int:
@@ -71,7 +74,7 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
     total = 0
     for message in messages:
         try:
-            text = json.dumps(_message_without_unpriced_media(message), ensure_ascii = False)
+            text = json.dumps(message, ensure_ascii = False)
         except Exception:
             total += 1
             continue
@@ -122,7 +125,7 @@ def estimate_messages_tokens_conservative(
     total = 0
     for message in messages:
         try:
-            text = json.dumps(_message_without_unpriced_media(message), ensure_ascii = False)
+            text = json.dumps(message, ensure_ascii = False)
         except Exception:
             total += 1
             continue
@@ -183,6 +186,7 @@ def truncate_oldest_messages(
     *,
     protected_message_ids: Optional[set[int]] = None,
     min_dropped: int = 0,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
 ) -> tuple[list[dict], int]:
     """Drop complete oldest turns while preserving system messages and the latest turn.
 
@@ -197,7 +201,7 @@ def truncate_oldest_messages(
     if len(groups) <= 1:
         return messages, 0
 
-    estimates = {id(message): estimate_message_tokens(message) for message in messages}
+    estimates = {id(message): estimate_message(message) for message in messages}
     current_estimate = sum(estimates.values())
     target_estimate = int(current_estimate * max(0.0, keep_ratio))
     dropped = 0
@@ -1135,6 +1139,7 @@ def fit_rolling_context(
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
     headroom_ratio: Optional[float] = None,
+    estimate_message: Callable[[dict], int] = estimate_message_tokens,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its real context by dropping oldest complete turns.
 
@@ -1174,6 +1179,7 @@ def fit_rolling_context(
             1.0,
             protected_message_ids = protected_message_ids,
             min_dropped = sticky_dropped,
+            estimate_message = estimate_message,
         )
         if dropped:
             fitted = candidate
@@ -1212,6 +1218,7 @@ def fit_rolling_context(
             fitted,
             keep_ratio,
             protected_message_ids = protected_message_ids,
+            estimate_message = estimate_message,
         )
         if dropped == 0:
             break
