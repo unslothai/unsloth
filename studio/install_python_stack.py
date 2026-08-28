@@ -1915,6 +1915,24 @@ def _runtime_gfx_target(
         # Nothing enumerated a device, so the #7305 precedence (a runtime-visible arch
         # outranks the product name) has nothing left to protect. Honour what the user
         # named, as _runtime_target_is_gfx906 and _detect_windows_gfx_arch already do.
+        # This is one guess about the machine, not a device list, so an ordinal past its only
+        # entry indexes nothing: the mask names a second GPU the guess cannot account for,
+        # while _pick_visible_index's out-of-range rule would answer with the guess anyway and
+        # commit a per-arch reinstall to it. Decline instead, unless the arch was named
+        # outright -- that is the user answering the question the ordinal left open.
+        # Resolved against a length nothing can exceed, so a real ordinal comes back as
+        # itself rather than folding onto 0 through the out-of-range rule this is asking about.
+        if not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() and _pick_visible_index(
+            _INDEX_PROBE_LEN, warn = False, masks = _HIP_LAYER_MASKS
+        ):
+            _safe_print(
+                f"   {_first_set_visible_mask()} selects a GPU past the only architecture\n"
+                f"   this host could name ({inferred_linux_gfx}, inferred from the product\n"
+                f"   name with no ROCm runtime to enumerate devices); which GPU it means\n"
+                f"   cannot be read here, so the AMD per-gfx index is left alone.\n"
+                f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
+            )
+            return None, [], None
         gfx_devices = [inferred_linux_gfx]
     # The two mask layers COMPOSE: ROCr filters first and HIP indexes the survivors (AMD's
     # GPU isolation guide: "the ROCR env var is processed first, which then reduces the
@@ -2220,6 +2238,10 @@ _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VI
 # layer and stay first-set-wins between themselves; ROCR_VISIBLE_DEVICES is the layer
 # BENEATH and is applied separately by _rocr_visible_subset.
 _HIP_LAYER_MASKS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+# A device count no host reaches, for asking what index a mask names rather than which of a
+# real list it selects: any ordinal below it resolves to itself instead of the 0 fallback.
+_INDEX_PROBE_LEN = 1 << 20
 
 
 def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
@@ -3535,6 +3557,11 @@ def _ensure_rocm_torch() -> None:
         and not has_hip_torch
         and _rocm_pin is None
         and (_gfx_override_env or not _has_rocm_gpu())
+        # This branch installs for the inferred arch without asking the mask layers, so an
+        # ordinal naming a GPU that one guess cannot account for reaches the same wrong wheel
+        # the preflight already declines. An explicit arch is exempt above, and is the one
+        # reading no ordinal contradicts.
+        and (_gfx_override_env or _runtime_gfx_target(_inferred_linux_gfx)[0] is not None)
     ):
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:

@@ -1271,3 +1271,60 @@ def test_a_masked_gfx906_on_a_mixed_host_is_not_demoted_to_another_dead_wheel():
         installed_family = "gfx110x-all",
     )
     assert "reinstalling for this GPU" in _run_install.printed, _run_install.printed
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"HIP_VISIBLE_DEVICES": "1"},
+        {"CUDA_VISIBLE_DEVICES": "2"},
+    ],
+)
+def test_an_ordinal_past_an_inferred_arch_resolves_nothing(env):
+    """The inferred arch is one guess about the machine, not a device list, so an ordinal
+    past its only entry indexes nothing: the mask names a GPU the guess cannot account for.
+    _pick_visible_index's out-of-range rule would answer with the guess anyway, and this
+    branch then commits a per-arch reinstall to it."""
+    calls = _run_install(
+        gfx_devices = (),
+        kfd = (),
+        inferred = "gfx1103",
+        rocm_gpu_visible = False,
+        env = env,
+    )
+    assert _AMD not in calls, calls
+    assert "past the only architecture" in _run_install.printed, _run_install.printed
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"HIP_VISIBLE_DEVICES": "0"},
+        {"ROCR_VISIBLE_DEVICES": "1"},
+    ],
+)
+def test_an_inferred_arch_still_installs_where_no_ordinal_contradicts_it(env):
+    """Only the contradiction declines. No mask and index 0 agree with the guess, and an
+    out-of-range ROCr index keeps the fallback the ROCr layer already documents."""
+    calls = _run_install(
+        gfx_devices = (),
+        kfd = (),
+        inferred = "gfx1103",
+        rocm_gpu_visible = False,
+        env = env,
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_named_arch_outranks_an_ordinal_the_inference_cannot_place():
+    """UNSLOTH_ROCM_GFX_ARCH is the user answering the question the ordinal left open, and
+    the decline message says to set it, so it has to be honoured here too."""
+    calls = _run_install(
+        gfx_devices = (),
+        kfd = (),
+        inferred = "gfx1103",
+        rocm_gpu_visible = False,
+        env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
