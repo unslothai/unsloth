@@ -8,7 +8,14 @@ import { ToolFallbackResult } from "@/components/assistant-ui/tool-fallback";
 import { ToolLiveOutputPane } from "@/components/assistant-ui/tool-live-output";
 import { CodeExecutionResultOutput } from "@/components/assistant-ui/tool-ui-code-execution";
 
-import { preferSanitizedFullToolOutput } from "@/features/chat";
+// Load-bearing import order. Several assistant-ui tool components reach the
+// `@/features/chat` barrel, which re-exports chat-runtime-store and sits in a
+// cycle with them; entering that graph from the barrel dies with "Cannot access
+// 'CHAT_GPU_MEMORY_MODE_KEY' before initialization". Enter from the store
+// module instead. Same pattern as smoke-tool-activity-main.tsx.
+/* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
+import "@/features/chat/stores/chat-runtime-store";
+import { preferSanitizedFullToolOutput } from "@/features/chat/tool-output-scope";
 
 const ESC = "\u001b";
 const coloured = `${ESC}[32mfile.txt${ESC}[0m\n${ESC}[01;31merror${ESC}[0m`;

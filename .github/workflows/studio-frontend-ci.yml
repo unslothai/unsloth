@@ -19,6 +19,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
+      - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
@@ -379,6 +380,12 @@ jobs:
         env:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
+
+      - name: Browser smoke for tool activity collapse
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_BROWSER: chromium
+        run: python3 tests/studio/playwright_tool_activity.py
 
       # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
       # wrapper and killing it orphans the node child.
