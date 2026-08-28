@@ -84,7 +84,6 @@ _cached_settings: Optional[tuple[float, str, bool]] = None
 _settings_generation = 0
 _cache_lock = threading.Lock()
 _write_lock = threading.Lock()
-# Coalesces concurrent cache misses; see _settings().
 _settings_refresh_inflight: Optional[object] = None
 _settings_write_inflight: Optional[object] = None
 _async_settings_locks = weakref.WeakKeyDictionary()
@@ -100,7 +99,6 @@ def _reset_scope_cache() -> None:
 def _read_settings_from_db() -> tuple[str, bool]:
     from storage.studio_db import get_app_settings
 
-    # Read both values from one SQLite snapshot.
     values = get_app_settings([KEYLESS_API_ACCESS_SETTING_KEY, KEYLESS_API_TOOLS_SETTING_KEY])
     scope = _coerce_scope(values.get(KEYLESS_API_ACCESS_SETTING_KEY))
     tools = _coerce_bool(values.get(KEYLESS_API_TOOLS_SETTING_KEY))
@@ -127,8 +125,8 @@ def _settings_once() -> tuple[str, bool, bool, int]:
     keep the server open for the rest of the TTL. The generation counter dates each
     read against the writes, so only a read that still describes the DB is published.
 
-    Only one stale-cache caller reads SQLite. A pending result tells async callers
-    to retry without occupying an AnyIO worker; synchronous callers fail closed.
+    One caller refreshes SQLite; async followers retry without worker tokens; sync
+    followers fail closed.
     """
     global _cached_settings, _settings_refresh_inflight
     owner_marker: Optional[object] = None
@@ -246,8 +244,7 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
                 _cached_settings = (time.monotonic(), scope, allow_tools)
             return scope, allow_tools
         except Exception:
-            # The SQLite helper can fail after commit while reading its result. Do not
-            # let any previously permissive cache survive an indeterminate write.
+            # The write may have committed, so fail closed.
             if upsert_started:
                 with _cache_lock:
                     _settings_generation += 1
@@ -633,8 +630,7 @@ class KeylessToolPolicyMiddleware:
             if _settings_write_inflight is not None or generation != _settings_generation:
                 settings = (KEYLESS_SCOPE_OFF, False)
                 admitted = False
-            # Publishing the admission marker is the request's linearization point.
-            # A settings write must sort entirely before or after this decision.
+            # Publish under the lock to linearize admission with writes.
             asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
         if not admitted:
             await self.app(asgi_scope, receive, send)

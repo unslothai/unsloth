@@ -177,7 +177,6 @@ def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
 
 
 def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch):
-    """Concurrent stale-cache misses share one SQLite read (#9901)."""
     import utils.keyless_api_access as keyless
 
     set_keyless_api_access("inference", tools = False)
@@ -196,7 +195,6 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
         nonlocal call_count
         with count_lock:
             call_count += 1
-        # Keep the owner blocked while the followers arrive.
         assert release.wait(timeout = 10)
         return real_read()
 
@@ -211,8 +209,8 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
     threads = [threading.Thread(target = worker, args = (i,)) for i in range(n_threads)]
     for t in threads:
         t.start()
-    entered.wait(timeout = 10)  # release all workers together
-    time.sleep(0.2)  # let followers observe the in-flight read
+    entered.wait(timeout = 10)
+    time.sleep(0.2)  # let followers queue
     clock[0] = keyless._SETTINGS_CACHE_TTL_S + 1.0
     release.set()
     for t in threads:
@@ -224,7 +222,6 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
 
 
 def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
-    """Exercise #9901 through asgi_request_is_keyless and a finite worker pool."""
     import utils.keyless_api_access as keyless
     from utils.keyless_api_access import asgi_request_is_keyless
 
@@ -251,12 +248,11 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
 
     scope = asgi_scope(path = "/v1/models")
     n_requests = 20
-    pool_workers = 4  # model AnyIO's finite worker pool
+    pool_workers = 4
 
     with ThreadPoolExecutor(max_workers = pool_workers) as pool:
         futures = [pool.submit(asgi_request_is_keyless, scope) for _ in range(n_requests)]
-        time.sleep(0.2)  # let the pool reach the in-flight read
-        # Submit a lightweight request after the burst starts.
+        time.sleep(0.2)  # fill the pool
         late_future = pool.submit(asgi_request_is_keyless, scope)
         release.set()
         results = [f.result(timeout = 10) for f in futures]
@@ -269,7 +265,6 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
 
 
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
-    """Followers await one refresh without occupying shared worker tokens (#9901)."""
     import anyio.to_thread
     import utils.keyless_api_access as keyless
     from starlette.concurrency import run_in_threadpool
