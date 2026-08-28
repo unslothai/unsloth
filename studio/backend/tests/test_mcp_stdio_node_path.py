@@ -104,6 +104,19 @@ def test_stdio_env_is_none_without_managed_node_or_vars(tmp_path, monkeypatch):
     assert mcp_client._stdio_env(None) is None
 
 
+@pytest.mark.parametrize(
+    "environment",
+    [
+        pytest.param({"BAD\x00NAME": "value"}, id = "nul-name"),
+        pytest.param({"NAME": "bad\x00value"}, id = "nul-value"),
+        pytest.param({"BAD=NAME": "value"}, id = "equals-name"),
+    ],
+)
+def test_stdio_env_rejects_invalid_legacy_values(environment):
+    with pytest.raises(ValueError):
+        mcp_client._stdio_env(environment, "python")
+
+
 def test_client_passes_node_path_to_transport(managed_node, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     monkeypatch.setenv("PATH", "/usr/bin")

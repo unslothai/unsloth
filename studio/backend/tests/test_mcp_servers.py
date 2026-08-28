@@ -424,6 +424,80 @@ def test_normalize_headers():
     assert _normalize_headers({"   ": "x"}) is None
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param({"BAD\x00NAME": "value"}, id = "nul-name"),
+        pytest.param({"NAME": "bad\x00value"}, id = "nul-value"),
+        pytest.param({"BAD=NAME": "value"}, id = "equals-name"),
+    ],
+)
+def test_invalid_headers_and_environment_are_rejected_before_side_effects(
+    headers, tmp_path, monkeypatch
+):
+    import asyncio
+
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import (
+        McpServerCreate,
+        McpServerImportRequest,
+        McpServerTestRequest,
+        McpServerUpdate,
+    )
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    probes: list[str] = []
+
+    async def unexpected_probe(**kwargs):
+        probes.append("probe")
+        return []
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", unexpected_probe)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes_mcp.create_mcp_server(
+                McpServerCreate(display_name = "bad", url = "python server.py", headers = headers),
+                current_subject = "u",
+            )
+        )
+    assert mcp_servers_db.list_servers() == []
+
+    mcp_servers_db.create_server(id = "seed", display_name = "seed", url = "python server.py")
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes_mcp.update_mcp_server(
+                "seed", McpServerUpdate(headers = headers), current_subject = "u"
+            )
+        )
+    assert mcp_servers_db.get_server("seed")["headers_json"] is None
+
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes_mcp.test_mcp_server(
+                McpServerTestRequest(url = "python server.py", headers = headers),
+                current_subject = "u",
+            )
+        )
+
+    imported = asyncio.run(
+        routes_mcp.import_mcp_servers(
+            McpServerImportRequest(
+                config = {
+                    "mcpServers": {
+                        "bad": {"command": "python", "args": ["server.py"], "env": headers}
+                    }
+                }
+            ),
+            current_subject = "u",
+        )
+    )
+    assert imported.created == []
+    assert len(imported.errors) == 1
+    assert [row["id"] for row in mcp_servers_db.list_servers()] == ["seed"]
+    assert probes == []
+
+
 def test_changes_from_payload_tristate_headers():
     from routes.mcp_servers import _changes_from_payload
     from models.mcp_servers import McpServerUpdate

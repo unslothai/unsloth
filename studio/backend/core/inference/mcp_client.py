@@ -312,6 +312,13 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
     """Process env for a stdio server: its own vars, plus the managed Node bin dir
     on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
     env = dict(headers or {})
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("stdio environment names and values must be strings")
+        if "\x00" in key or "\x00" in value:
+            raise ValueError("stdio environment must not contain NUL characters")
+        if "=" in key:
+            raise ValueError("stdio environment variable names must not contain '='")
     key = _path_key(env)
     base = env.get(key)
     if isinstance(base, str) and not base:

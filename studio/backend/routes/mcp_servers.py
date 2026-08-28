@@ -134,7 +134,18 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     for raw_key, value in headers.items():
         key = str(raw_key).strip()
         if key:
-            out[key] = str(value)
+            normalized_value = str(value)
+            if "\x00" in key or "\x00" in normalized_value:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "headers and environment variables must not contain NUL characters",
+                )
+            if "=" in key:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "header and environment variable names must not contain '='",
+                )
+            out[key] = normalized_value
     return out or None
 
 
@@ -407,13 +418,13 @@ async def import_mcp_servers(
             # http entries and reports the stdio ones.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
+            headers = _normalize_headers(entry.headers)
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")
             continue
         if url in seen_urls:
             skipped.append(entry.display_name)
             continue
-        headers = _normalize_headers(entry.headers)
         server_id = uuid.uuid4().hex[:16]
         mcp_servers_db.create_server(
             id = server_id,
