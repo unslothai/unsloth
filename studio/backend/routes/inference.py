@@ -22809,6 +22809,10 @@ async def _openai_catalog_objects() -> list[dict]:
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
+        if loaded and not is_gguf:
+            resident_id = _orchestrator_public_model_id(get_inference_backend())
+            if resident_id in by_id:
+                continue
         obj = {
             "id": cid,
             "object": "model",

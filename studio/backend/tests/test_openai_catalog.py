@@ -118,6 +118,72 @@ def test_a_resident_non_gguf_model_is_marked_loaded_and_stays_quantless(monkeypa
     assert "quant" not in ids["Mistral-7B"]
 
 
+def test_a_manually_loaded_non_gguf_model_has_one_catalog_row(monkeypatch):
+    class _Orchestrator:
+        active_model_name = "/srv/lmstudio/mlx-community/Qwen3-8B-4bit"
+        models: dict = {}
+        context_length = 8192
+        max_seq_length = None
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _Orchestrator())
+
+    info = _Info(
+        "/srv/lmstudio/mlx-community/Qwen3-8B-4bit",
+        "Qwen3-8B-4bit",
+        model_id = "mlx-community/Qwen3-8B-4bit",
+        is_gguf = False,
+    )
+    info.path = info.id
+
+    async def _fake_catalog():
+        return [info]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_servable_model", lambda _info: (False, ()))
+    data = asyncio.run(inf._openai_catalog_objects())
+
+    assert data == [
+        {
+            "id": "Qwen3-8B-4bit",
+            "object": "model",
+            "created": data[0]["created"],
+            "owned_by": "unsloth-studio",
+            "context_length": 8192,
+            "loaded": True,
+        }
+    ]
+
+
+def test_non_gguf_catalog_dedupe_keeps_a_distinct_same_basename_path(monkeypatch):
+    class _Orchestrator:
+        active_model_name = "/srv/a/publisher/model"
+        models: dict = {}
+        context_length = None
+        max_seq_length = None
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _Orchestrator())
+
+    resident = _Info("/srv/a/publisher/model", "model", model_id = "publisher-a/model", is_gguf = False)
+    available = _Info(
+        "/srv/b/publisher/model", "model", model_id = "publisher-b/model", is_gguf = False
+    )
+    resident.path = resident.id
+    available.path = available.id
+
+    async def _fake_catalog():
+        return [resident, available]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_servable_model", lambda _info: (False, ()))
+    ids = {entry["id"]: entry for entry in asyncio.run(inf._openai_catalog_objects())}
+
+    assert set(ids) == {"model", "publisher-b/model"}
+    assert ids["model"]["loaded"] is True
+    assert ids["publisher-b/model"]["loaded"] is False
+
+
 def test_catalog_lock_is_per_loop():
     # Codex P2: a module-level asyncio.Lock ties its waiters to the loop that first
     # awaited it, so a second event loop awaiting it in a multi-loop process can
