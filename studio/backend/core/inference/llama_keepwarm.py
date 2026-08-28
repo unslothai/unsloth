@@ -129,7 +129,7 @@ def _is_preview_path(path: str) -> bool:
 
 
 def _is_inference_path(path: str) -> bool:
-    if path.rstrip("/") in _INFERENCE_EXACT_PATHS:
+    if path in _INFERENCE_EXACT_PATHS:
         return True
     if path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES):
         return True

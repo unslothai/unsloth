@@ -804,3 +804,5 @@ def test_the_openai_videos_route_never_claims_the_llama_slot():
     # have refreshed the chat model's idle timer and kept it resident for free.
     for path in ("/v1/anything/videos", "/api/inference/nope/videos", "/v1/videosx"):
         assert not kw._is_inference_path(path), path
+    for path in ("/v1/videos/", "/api/inference/videos/"):
+        assert not kw._is_inference_path(path), path

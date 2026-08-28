@@ -161,16 +161,22 @@ class TestMaxBodyMiddleware:
             assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
                 upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
             ), path
-        from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
+        from utils.upload_limits import (
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            VIDEO_INPUT_REFERENCE_MAX_BYTES,
+        )
 
         for path in ("/v1/videos", "/api/inference/videos"):
-            assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
-                VIDEO_INPUT_REFERENCE_MAX_BYTES
-            ), path
+            expected = max(
+                upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+                VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            )
+            assert main_module._get_request_body_max_bytes(path) == expected, path
             assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
-            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
-                upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES)
-            ), path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == expected, path
+            assert VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES > (
+                4 * ((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3)
+            )
         assert "/v1/videos/video_abc" not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
         assert main_module._get_request_body_max_bytes("/v1/videos/video_abc") == (
             main_module.default_request_body_limit_bytes()

@@ -1097,6 +1097,7 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
@@ -1160,7 +1161,10 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
-        return upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES)
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1180,7 +1184,10 @@ def _get_request_body_max_bytes(path: str) -> int:
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
-        return upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES)
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     return default_request_body_limit_bytes()
 
 

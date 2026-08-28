@@ -4967,6 +4967,7 @@ class VideoBackend:
         width: Optional[int] = None,
         height: Optional[int] = None,
         num_frames: Optional[int] = None,
+        duration_s: Optional[float] = None,
         fps: Optional[int] = None,
         steps: Optional[int] = None,
         guidance: Optional[float] = None,
@@ -5020,6 +5021,14 @@ class VideoBackend:
             shift, audio_shift = self._resolve_flow_shifts(
                 state.family, state.engine, flow_shift, audio_flow_shift
             )
+            run_num_frames = num_frames
+            if duration_s is not None:
+                run_fps = int(fps or state.family.default_fps or 24)
+                step = max(1, int(state.family.frame_step))
+                offset = max(1, int(state.family.frame_offset))
+                wanted = max(offset, int(round(float(duration_s) * run_fps)))
+                k = max(1, int(round((wanted - offset) / step)))
+                run_num_frames = k * step + offset
             if references:
                 conditioning = h3_conditioning_mode(has_references = True)
             resolved_inputs = _VideoResolvedInputs(
@@ -5039,7 +5048,7 @@ class VideoBackend:
                 if self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
                 validate_video_request_shape(
-                    state.family, width = width, height = height, num_frames = num_frames
+                    state.family, width = width, height = height, num_frames = run_num_frames
                 )
                 self._generate_job_active = True
                 self._generate_job_token = job_token
@@ -5063,7 +5072,7 @@ class VideoBackend:
                 negative_prompt = negative_prompt,
                 width = width,
                 height = height,
-                num_frames = num_frames,
+                num_frames = run_num_frames,
                 fps = fps,
                 steps = steps,
                 guidance = guidance,
@@ -5102,7 +5111,9 @@ class VideoBackend:
             "width": resolved_inputs.width,
             "height": resolved_inputs.height,
             "num_frames": (
-                num_frames if num_frames is not None else getattr(fam, "default_num_frames", None)
+                run_num_frames
+                if run_num_frames is not None
+                else getattr(fam, "default_num_frames", None)
             ),
             "fps": fps if fps is not None else getattr(fam, "default_fps", None),
             "model": getattr(state, "repo_id", None),

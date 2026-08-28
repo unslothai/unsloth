@@ -373,6 +373,24 @@ def test_an_unpolled_failure_keeps_its_error_after_the_next_job(client, backend)
     assert failed["error"]["message"] == "Prompt rejected before polling."
 
 
+def test_unpolled_terminal_jobs_still_obey_the_memory_cap(client, backend, monkeypatch):
+    monkeypatch.setattr(video_routes, "_MAX_REMEMBERED_JOBS", 2)
+    ids = []
+    for prompt in ("first", "second", "third"):
+        job = _create(client, {"prompt": prompt}).json()
+        ids.append(job["id"])
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if backend.generate_progress().get("phase") == "completed":
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError(f"{prompt} never completed")
+    assert len(video_routes._jobs) == 2
+    assert ids[0] not in video_routes._jobs
+    assert gallery_module.get_job(ids[0]) is None
+
+
 def test_a_worker_outcome_that_arrives_before_the_job_record_is_not_overwritten(client, backend):
     video_id = "video_worker_won_the_race"
     gallery_module.record_job_outcome(
@@ -867,4 +885,23 @@ def test_the_job_describes_the_run_the_backend_reserved(client, backend, monkeyp
     job = _create(client, {"prompt": "swapped underneath", "seconds": "4"}).json()
     assert job["model"] == "unsloth/Some-Other-Video-Model"
     assert job["size"] == "704x1216"
+    assert job["seconds"] == _format_seconds(121 / 24)
+
+
+def test_requested_duration_is_recomputed_for_the_reserved_family(client, backend, monkeypatch):
+    real_status = backend.status
+
+    def _stale_status():
+        status = real_status()
+        status["defaults"] = {
+            **status["defaults"],
+            "fps": 16,
+            "frame_step": 4,
+            "frame_offset": 1,
+        }
+        return status
+
+    monkeypatch.setattr(backend, "status", _stale_status)
+    job = _create(client, {"prompt": "five seconds", "seconds": "5"}).json()
+    assert backend.last_generate_kwargs["num_frames"] == 121
     assert job["seconds"] == _format_seconds(121 / 24)

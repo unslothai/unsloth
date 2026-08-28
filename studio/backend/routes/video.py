@@ -964,6 +964,14 @@ def _job_to_openai(job: _VideoJob) -> VideoJob:
 def _remember_job(job: _VideoJob) -> None:
     from core.inference import video_gallery
     with _jobs_lock:
+        pending = [existing for existing in _jobs.values() if not existing.terminal]
+    for existing in pending:
+        persisted = _job_from_record(video_gallery.get_job(existing.id) or {})
+        if persisted is not None and persisted.terminal:
+            with _jobs_lock:
+                if _jobs.get(existing.id) is existing:
+                    _jobs[existing.id] = persisted
+    with _jobs_lock:
         _jobs[job.id] = job
         excess = len(_jobs) - _MAX_REMEMBERED_JOBS
         forgotten = []
@@ -1354,7 +1362,7 @@ async def _create_openai_video(
             prompt = body.prompt,
             width = width,
             height = height,
-            num_frames = num_frames,
+            duration_s = seconds,
             first_frame = reference,
             video_id = video_id,
         )
