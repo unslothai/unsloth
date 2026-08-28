@@ -952,7 +952,6 @@ def _job_to_openai(job: _VideoJob) -> VideoJob:
 
 def _remember_job(job: _VideoJob) -> None:
     from core.inference import video_gallery
-
     with _jobs_lock:
         _jobs[job.id] = job
         excess = len(_jobs) - _MAX_REMEMBERED_JOBS
