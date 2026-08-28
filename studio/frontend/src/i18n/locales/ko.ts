@@ -435,7 +435,7 @@ export const ko = {
     debugging: {
       logSection: "로그 파일",
       source: "로그 파일",
-      sourceHint: "모델 러너는 각자 자체 로그를 기록하므로, 로드나 생성이 실패한 이유는 서버 로그가 아니라 그쪽에 남아 있는 경우가 많습니다.",
+      sourceHint: "모델 실행기는 별도의 로그를 기록하므로, 모델 로드나 생성 실패 원인은 서버 로그보다 해당 로그에서 확인되는 경우가 많습니다.",
       path: "위치",
       pathCopy: "경로 복사",
       refreshSection: "새로 고침",
@@ -444,7 +444,7 @@ export const ko = {
       modeInterval: "3초마다",
       modeManual: "수동",
       refreshNow: "지금 새로 고침",
-      privacyNote: "이 화면에서는 자격 증명이 가려집니다. 디스크에 저장된 파일에서는 가려지지 않습니다.",
+      privacyNote: "이 화면에서는 인증 정보가 가려져 표시됩니다. 실제 로그 파일에는 가려지지 않습니다.",
       copyVisible: "표시된 로그 복사",
       empty: "아직 기록된 내용이 없습니다.",
       disabled: "파일 로깅이 꺼져 있습니다 (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -458,7 +458,7 @@ export const ko = {
     },
     voice: {
       title: "음성",
-      description: "마이크, 받아쓰기, 음성 인식 및 소리 내어 읽기",
+      description: "마이크, 받아쓰기, 음성 인식 및 답변 읽어주기",
       dictation: {
         sectionTitle: "받아쓰기",
         engineLabel: "받아쓰기 엔진",
@@ -592,8 +592,8 @@ export const ko = {
         openChat: "채팅 열기",
       },
       readAloud: {
-        sectionTitle: "소리 내어 읽기",
-        buttonLabel: "소리 내어 읽기 버튼",
+        sectionTitle: "답변 읽어주기",
+        buttonLabel: "답변 읽어주기 버튼",
         buttonDescription: "어시스턴트 응답에 표시",
         engineLabel: "TTS 엔진",
         engineSystemDescription: "기기 내장 음성",
@@ -614,7 +614,7 @@ export const ko = {
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
         openAudioAction: "오디오 열기",
         voiceLabel: "음성",
-        voiceDescription: "이 기기에서 가장 좋은 음성",
+        voiceDescription: "기기에서 사용 가능한 최적의 음성",
         speedLabel: "속도",
         pitchLabel: "음높이",
         volumeLabel: "볼륨",
@@ -676,7 +676,7 @@ export const ko = {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "시작 시 Helper LLM 미리 캐시",
         preloadOnStartupDescription:
-          "시작 시 백그라운드에서 AI Assist 헬퍼 모델을 다운로드합니다. 기본값은 꺼짐이며, AI Assist는 필요할 때 언제든 가져올 수 있습니다.",
+          "시작 시 백그라운드에서 AI Assist 헬퍼 모델을 다운로드합니다. 기본값은 비활성화이며, AI Assist는 필요할 때 언제든 가져올 수 있습니다.",
         disabledByEnv:
           "백엔드 환경의 UNSLOTH_HELPER_MODEL_DISABLE에 의해 비활성화되었습니다.",
         loadError: "Helper LLM 설정을 불러오지 못했습니다.",
@@ -686,7 +686,7 @@ export const ko = {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
         enable: "요청에 따라 모델 전환",
         enableDescription:
-          "API 요청에 지정된 모델이 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
+          "API 요청에서 지정된 GGUF 모델이 이미 다운로드 되어 있다면, 요청을 처리하기 전에 자동으로 해당 모델을 불러옵니다. 기본적으로 비활성화 되어 있습니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
@@ -709,7 +709,7 @@ export const ko = {
         idleError: "모델을 로드 상태로 유지하려면 0을, 그렇지 않으면 60초 이상을 입력하세요.",
         autoDownload: "아직 받지 않은 모델 다운로드",
         autoDownloadDescription:
-          "API 요청에 지정되었지만 아직 내려받지 않은 GGUF를 가져옵니다. 그러면 API 키가 있는 사람은 누구나 디스크와 대역폭을 사용할 수 있습니다.",
+          "API 요청에 지정된 GGUF 모델이 아직 다운로드되어 있지 않으면 해당 모델을 자동으로 다운로드 합니다. 이 기능을 사용하면 API 키를 가진 사용자가 디스크 공간과 네트워크 대역폭을 사용할 수 있습니다.",
         keepKv: "유휴 해제 후에도 채팅 컨텍스트 유지",
         keepKvDescription:
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
@@ -721,12 +721,12 @@ export const ko = {
         sectionTitle: "미리보기 공유",
         enableLabel: "공개 미리보기 링크",
         enableDescription:
-          "서명된 링크가 있는 누구나 로그인 없이 완성된 모델과 채팅할 수 있게 합니다. 끄면 공개 미리보기 화면이 오프라인이 되고 공유된 링크가 작동하지 않습니다.",
+          "인증된 링크가 있는 사용자는 로그인 없이도 완성된 모델과 채팅할 수 있습니다. 이 옵션을 끄면 공개 미리보기가 비활성화 되고, 기존의 공유 링크도 사용할 수 없습니다.",
         loadError: "미리보기 공유 설정을 불러오지 못했습니다.",
         saveError: "미리보기 공유 설정을 저장하지 못했습니다.",
         revokeLabel: "모든 미리보기 링크 취소",
         revokeDescription:
-          "서명 비밀 키를 교체하여 이전에 공유한 모든 링크가 작동하지 않게 합니다. 새로 복사한 링크는 계속 작동합니다.",
+          "인증 키를 교체하면 지금까지 공유한 모든 링크가 더 이상 작동하지 않습니다. 이후 새로 복사한 링크들은 사용 가능합니다.",
         revokeAction: "링크 취소",
         revoking: "취소 중...",
         revokeConfirmTitle: "모든 미리보기 링크를 취소하시겠습니까?",
@@ -740,7 +740,7 @@ export const ko = {
         sectionTitle: "알림",
         showLlamaUpdates: "llama.cpp 업데이트 알림",
         showLlamaUpdatesDescription:
-          "새 모델을 실행할 수 있는 최신 llama.cpp 빌드가 있으면 알립니다. 학습만 사용한다면 끄세요.",
+          "새 모델 실행을 위한 최신 llama.cpp 업데이트가 있으면 알려드립니다. 학습 기능만 사용하는 경우 꺼두세요.",
         showLoadedModels: "로드된 모델 표시기",
         showLoadedModelsDescription:
           "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
@@ -790,10 +790,10 @@ export const ko = {
         sectionTitle: "문서 & RAG",
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
-          "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
+          "문서 인덱싱 및 검색에 사용할 Hugging Face 모델이나 로컬 경로를 지정합니다. 기본값은 {defaultModel}입니다.",
         searchPlaceholder: "HF의 모든 모델 검색",
         reindexWarning:
-          "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
+          "새로 인덱싱되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
         loadError: "임베딩 모델 설정을 불러오지 못했습니다.",
         saveError: "임베딩 모델을 저장하지 못했습니다.",
@@ -812,7 +812,7 @@ export const ko = {
         notDownloadedSized: "다운로드되지 않음 · {size}",
         loaded: "로드됨",
         downloading: "{model} 다운로드 중",
-        downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 색인에 사용됩니다.",
+        downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 인덱싱에 사용됩니다.",
         downloadFailed: "다운로드를 시작할 수 없습니다",
         downloadConflict: "Hub에서 이 다운로드를 재개하세요",
         downloadBusy: "이미 다운로드가 진행 중입니다",
@@ -1210,7 +1210,7 @@ export const ko = {
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
       intro:
-        "명령은 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
+        "명령어를 사용하면 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 여러 에이전트를 Unsloth가 로컬에서 실행하는 모델에 연결해 오프라인으로 사용할 수 있습니다. OpenAI 호환 서버를 실행하며, 에이전트의 설정 파일은 변경하지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",
@@ -1232,24 +1232,21 @@ export const ko = {
       docs: "문서",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "별도의 플래그를 설정하지 않은 경우, Unsloth가 해당 모델의 권장 설정을 자동으로 적용합니다.",
       configurationNote:
-        "You can also adjust any configuration. See further below or",
-      configurationDocs: "docs",
-      configurationFlagsSuffix: "for flags.",
+        "모든 설정을 조정할 수도 있습니다. 자세한 플래그 설정은 아래 내용이나",
+      configurationDocs: "문서",
+      configurationFlagsSuffix: "를 참고하세요.",
       modelNote:
-        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 쓰려면 --model을 빼세요.",
+        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
       subagent: {
         title: "로컬 모델을 서브에이전트로 사용",
         description:
           "{agent}는 현재 모델을 유지한 채, 선택한 작업만 이 로컬 Unsloth 모델에 위임합니다.",
         setupCommand: "설정 명령",
         copySetupCommand: "서브에이전트 설정 명령 복사",
-        usagePrompt: "그런 다음 {agent}에서 다음과 같이 입력하세요:",
+        usagePrompt: "다음으로 {agent}에서 다음과 같이 입력하세요:",
         copyUsagePrompt: "서브에이전트 사용 프롬프트 복사",
         defaultPrompt: "로컬 에이전트를 실행해 이 함수를 구현해 줘.",
         opencodePrompt: "@unsloth 이 테스트 실패의 원인을 찾아줘",
@@ -1343,7 +1340,7 @@ export const ko = {
         exportChat: "채팅 내보내기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
-      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 그래도 입력창에 붙여넣습니다.",
+      pastedTextThresholdDescription: "이 길이를 초과해 붙여넣은 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 입력창에 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
@@ -1353,7 +1350,7 @@ export const ko = {
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
-        "프로젝트에 속한 채팅에서 첨부한 파일의 기본 동작입니다. 프로젝트 전체에 색인하여 해당 프로젝트의 모든 채팅에서 사용할 수 있게 합니다. 채팅마다 첨부 메뉴에서 변경할 수 있습니다.",
+        "프로젝트에 속한 채팅에서 첨부한 파일의 기본 동작입니다. 프로젝트 전체에 인덱싱하여 해당 프로젝트의 모든 채팅에서 사용할 수 있게 합니다. 채팅마다 첨부 메뉴에서 변경할 수 있습니다.",
       rememberParamsPerModel: "모델별로 설정 기억",
       rememberParamsPerModelDescription:
         "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
