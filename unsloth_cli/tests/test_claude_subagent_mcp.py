@@ -211,11 +211,17 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "32768")
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", bypass)
+    settings_path = tmp_path / "settings-private.json"
+    monkeypatch.setenv(bridge._CLAUDE_SUBAGENT_SETTINGS_ENV, str(settings_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "cloud-key")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cloud-oauth")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
+    monkeypatch.setattr(
+        bridge,
+        "_claude_flags",
+        lambda model, settings = None: ["--settings", settings],
+    )
 
     class Process:
         pid = 1234
@@ -237,6 +243,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert bridge.run_local_agent("reply exactly LOCAL_OK") == "LOCAL_OK"
     command = captured["command"]
     assert command[:3] == ["/usr/local/bin/claude", "--model", "unsloth/model-GGUF:Q4_K_M"]
+    assert command[command.index("--settings") + 1] == str(settings_path)
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
     disallowed = command[command.index("--disallowedTools") + 1]
