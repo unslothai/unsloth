@@ -13020,9 +13020,7 @@ async def _load_model_impl(
                     requested_tensor = request.tensor_parallel,
                     extra_args = extra_llama_args,
                     label = config.identifier,
-                    cancelled = lambda: _gguf_load_cancelled(
-                        llama_backend, load_cancel_event
-                    ),
+                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
                 )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an

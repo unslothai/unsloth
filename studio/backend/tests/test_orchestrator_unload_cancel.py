@@ -1081,7 +1081,6 @@ def test_standard_load_honors_scoped_cancel_before_worker_start():
 
 def test_gguf_load_cancellation_includes_the_backend_unload_event():
     import routes.inference as inference_route
-
     class _Llama:
         def load_cancelled(self):
             return True

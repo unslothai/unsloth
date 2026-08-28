@@ -25779,7 +25779,9 @@ class LlamaCppBackend:
                         logger.info("MTP-crash reload stopped before the replacement was ready.")
                         return
                     if self._unload_epoch != unload_epoch:
-                        logger.info("MTP-crash reload undone: the model was unloaded during reload.")
+                        logger.info(
+                            "MTP-crash reload undone: the model was unloaded during reload."
+                        )
                         self.unload_model()
                         return
                     # Same reason the mode is restored below: the replay launched a

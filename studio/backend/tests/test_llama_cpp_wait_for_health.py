@@ -402,7 +402,11 @@ class TestCancelledWaitEndsTheLoad:
         scoped = threading.Event()
         real_wait = b._wait_for_health
 
-        def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+        def _wait(
+            timeout = 600.0,
+            interval = 0.5,
+            cancelled = None,
+        ):
             scoped.set()
             return real_wait(timeout = 2.0, interval = 0.05, cancelled = cancelled)
 
@@ -472,7 +476,11 @@ def test_a_diffusion_cancel_after_health_reaps_the_runner():
     b._find_free_port = lambda *a, **kw: 45999
     scoped = threading.Event()
 
-    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
         scoped.set()
         return True
 
@@ -597,7 +605,11 @@ def test_cancelled_health_wait_removes_the_staged_cpu_runtime(tmp_path):
     b, gguf = _cancel_scaffold(tmp_path, kills)
     scoped = threading.Event()
 
-    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
         waits.append(1)
         b._process = mock.Mock(returncode = -9)
         b._process.poll.return_value = -9
