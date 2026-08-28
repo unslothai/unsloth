@@ -24,11 +24,13 @@ function fromApi(
   };
 }
 
-export async function loadCurrentDatePrompt(): Promise<CurrentDatePromptSettings> {
+export async function loadCurrentDatePrompt(
+  fallbackMessage: string,
+): Promise<CurrentDatePromptSettings> {
   const res = await authFetch("/api/settings/current-date-prompt");
   if (!res.ok) {
     throw new Error(
-      await readFastApiError(res, "Failed to load current date settings"),
+      await readFastApiError(res, fallbackMessage),
     );
   }
   return fromApi(await res.json());
@@ -36,6 +38,7 @@ export async function loadCurrentDatePrompt(): Promise<CurrentDatePromptSettings
 
 export async function updateCurrentDatePrompt(
   enabled: boolean,
+  fallbackMessage: string,
 ): Promise<CurrentDatePromptSettings> {
   const res = await authFetch("/api/settings/current-date-prompt", {
     method: "PUT",
@@ -44,7 +47,7 @@ export async function updateCurrentDatePrompt(
   });
   if (!res.ok) {
     throw new Error(
-      await readFastApiError(res, "Failed to update current date settings"),
+      await readFastApiError(res, fallbackMessage),
     );
   }
   return fromApi(await res.json());

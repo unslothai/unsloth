@@ -289,7 +289,7 @@ export function ChatTab() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadCurrentDatePrompt()
+    void loadCurrentDatePrompt(t("settings.chat.currentDate.loadError"))
       .then((settings) => {
         if (cancelled) return;
         setCurrentDatePrompt(settings);
@@ -312,7 +312,10 @@ export function ChatTab() {
     setIsSavingCurrentDatePrompt(true);
     setCurrentDatePromptError(null);
     try {
-      const settings = await updateCurrentDatePrompt(enabled);
+      const settings = await updateCurrentDatePrompt(
+        enabled,
+        t("settings.chat.currentDate.saveError"),
+      );
       setCurrentDatePrompt(settings);
       void refreshContextUsage({ invalidate: true });
     } catch (error) {
