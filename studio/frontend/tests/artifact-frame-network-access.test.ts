@@ -485,13 +485,19 @@ test("the named iframe is the visible focus fallback", () => {
   );
 });
 
-// Alert is assertive and atomic, so any change inside it re-reads the title,
-// the description and the actions. The count climbs once per blocked URL, so
-// left in the region a CDN-heavy canvas interrupts a screen reader repeatedly.
-test("the climbing blocked count is kept out of the assertive alert", () => {
+test("the climbing blocked count stays outside the assertive live region", () => {
   const source = sourceFile(FRAME);
+  let alert: string | undefined;
+  let alertTitle: string | undefined;
   let paragraph: string | undefined;
   const visit = (node: ts.Node): void => {
+    const opening = openingTag(node);
+    if (opening?.tagName.getText() === "Alert") {
+      alert = opening.getText();
+    }
+    if (opening?.tagName.getText() === "AlertTitle") {
+      alertTitle = opening.getText();
+    }
     if (
       ts.isJsxElement(node) &&
       node.openingElement.tagName.getText() === "p" &&
@@ -502,12 +508,12 @@ test("the climbing blocked count is kept out of the assertive alert", () => {
     node.forEachChild(visit);
   };
   source.forEachChild(visit);
+  assert.ok(alert, "the blocked alert is missing");
+  assert.ok(alertTitle, "the blocked alert title is missing");
   assert.ok(paragraph, "the paragraph carrying the blocked count is missing");
-  assert.match(
-    paragraph,
-    /aria-live="off"/,
-    "the count line must opt out of the live region",
-  );
+  assert.match(alert, /role="group"/);
+  assert.match(alertTitle, /role="alert"/);
+  assert.doesNotMatch(paragraph, /aria-live/);
 });
 
 /** The opening tag of the `<Button>` whose subtree calls `needle`. */

@@ -236,7 +236,11 @@ export function ArtifactHtmlFrame({
       />
       {showBlockedBanner ? (
         <div className="absolute inset-x-0 top-0 p-2">
-          <Alert className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur">
+          <Alert
+            role="group"
+            aria-label={t("settings.chat.artifacts.blockedTitle")}
+            className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur"
+          >
             <ShieldAlertIcon className="text-amber-500" />
             <AlertAction>
               <Button
@@ -251,13 +255,17 @@ export function ArtifactHtmlFrame({
                 <XIcon />
               </Button>
             </AlertAction>
-            <AlertTitle>{t("settings.chat.artifacts.blockedTitle")}</AlertTitle>
+            <AlertTitle role="alert">
+              {t("settings.chat.artifacts.blockedTitle")}
+              <span className="sr-only">
+                {" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </span>
+            </AlertTitle>
             <AlertDescription>
-              {/* Alert is an assertive live region, and the count climbs once per
-                  blocked URL, up to BLOCKED_URIS_TRACKED. Excluding this line
-                  keeps the appearance announced once instead of the whole alert
-                  re-reading on every report. */}
-              <p aria-live="off">
+              <p>
                 {t(
                   blockedForCanvas.uris.length === 1
                     ? "settings.chat.artifacts.blockedBanner"
@@ -268,9 +276,6 @@ export function ArtifactHtmlFrame({
                   setting: t("settings.chat.artifacts.allowNetworkAccess"),
                 })}
               </p>
-              {/* Same pairing as the tool Allow / Always allow controls: the
-                  narrow grant leads as the primary action and the one that
-                  widens every canvas is the quieter outline beside it. */}
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
