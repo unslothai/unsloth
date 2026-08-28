@@ -1021,6 +1021,31 @@ def test_hip_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
     assert aggregate == pytest.approx(3 * GB)
 
 
+def test_hip_luid_join_bounds_the_counter_by_the_carve_out(win_rocm, monkeypatch):
+    """A unified APU is shown the whole driver pool as its total, so bounding
+    with that admits any reading at all. The carve-out is what the counter
+    fills, and the DirectX join already declines this."""
+    apu = [
+        {
+            "visible_ordinal": 0,
+            "name": "AMD Radeon(TM) 8060S Graphics",
+            "gfx": "gfx1151",
+            "total_bytes": 96 * GB,
+            "dedicated_bytes": 0.5 * GB,
+        }
+    ]
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0)))
+    over = [("luid_0x00000000_0x00015369_phys_0", 2 * GB)]
+    assert hw._match_adapter_used_by_hip_luid(over, apu) is None
+    assert hw._attribute_adapter_useds_by_key({"k": [2 * GB]}, {"k": [0]}, apu) is None
+
+    # Inside the carve-out still resolves, so the decline above is the bound.
+    under = [("luid_0x00000000_0x00015369_phys_0", 0.25 * GB)]
+    assigned, aggregate = hw._match_adapter_used_by_hip_luid(under, apu)
+    assert assigned[0] == pytest.approx(0.25 * GB)
+    assert aggregate == pytest.approx(0.25 * GB)
+
+
 class _Callable:
     """A ctypes function pointer: callable, and argtypes/restype are settable."""
 

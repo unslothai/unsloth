@@ -2369,7 +2369,9 @@ def _match_adapter_used_by_hip_luid(
         if len(useds) != nodes_by_luid[luid]:
             return None
         used = float(sum(useds))
-        capacity = sum(dev_meta[position]["total_bytes"] for position in positions)
+        # The carve-out, not the displayed total: on a unified APU the latter is
+        # the whole driver pool, against which no reading is out of range.
+        capacity = sum(_adapter_counter_capacity(dev_meta[position]) for position in positions)
         if used > capacity:
             return None
         total_used += used
