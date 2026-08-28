@@ -591,6 +591,52 @@ def _cancel_scaffold(tmp_path, kills):
     return b, gguf
 
 
+def test_combined_download_cancel_wait_observes_the_scoped_event():
+    from core.inference.llama_cpp import _CombinedCancelEvent
+
+    shared = threading.Event()
+    scoped = threading.Event()
+    timer = threading.Timer(0.01, scoped.set)
+    timer.start()
+    try:
+        assert _CombinedCancelEvent(shared, scoped).wait(0.5)
+    finally:
+        timer.cancel()
+
+
+@pytest.mark.parametrize("cancel_source", ["shared", "scoped"])
+def test_remote_download_observes_both_load_cancel_sources(tmp_path, cancel_source):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    b._remote_non_chat_gguf_refusal = lambda **_kw: None
+    scoped = threading.Event()
+    seen = []
+
+    def _download(**kwargs):
+        cancel_event = kwargs["cancel_event"]
+        seen.append(cancel_event)
+        (b._cancel_event if cancel_source == "shared" else scoped).set()
+        assert cancel_event.is_set()
+        return str(gguf)
+
+    b._download_gguf = _download
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                hf_repo = "owner/model-GGUF",
+                speculative_type = "none",
+                n_ctx = 4096,
+            ),
+            load_cancel_event = scoped,
+        )
+        is False
+    )
+    assert len(seen) == 1
+
+
 def test_a_stale_cancel_marker_does_not_abort_the_next_load(tmp_path):
     """The marker belongs to one attempt. Left set, a guard that runs before this
     load's first health wait reads the previous request's cancellation and swallows

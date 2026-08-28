@@ -468,6 +468,29 @@ class _LlamaStreamCancelled(Exception):
     __slots__ = ()
 
 
+class _CombinedCancelEvent:
+    __slots__ = ("_events",)
+
+    def __init__(self, *events: threading.Event):
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        if self.is_set():
+            return True
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return self.is_set()
+            pause = 0.05 if remaining is None else min(0.05, remaining)
+            self._events[0].wait(pause)
+            if self.is_set():
+                return True
+
+
 # Deliberately NOT ``slots=True``: it drops ``__dict__``, so ``vars(intent)`` raises and
 # every GGUF load breaks. Reflection over this dataclass is part of how it is used.
 @dataclass(frozen = True)
@@ -12849,6 +12872,8 @@ class LlamaCppBackend:
         touching the shared one; defaults to the shared event.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            raise RuntimeError("Cancelled")
         from utils.hf_cache_settings import get_hf_cache_paths
 
         download_cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -13335,6 +13360,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
@@ -13346,6 +13372,10 @@ class LlamaCppBackend:
         higher-precision copies under ``MTP/`` are for explicit selection and
         are intentionally skipped. Returns the local path, or None.
         """
+
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
 
         if near_path:
             cached = _companion_snapshot_sibling(near_path, _pick_mtp)
@@ -13371,6 +13401,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_mtp,
             label = "MTP drafter",
+            cancel_event = cancel_event,
             near_path = near_path,
         )
 
@@ -13413,6 +13444,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
         caps_probe: Optional[Callable[[Optional[str]], dict]] = None,
@@ -13428,6 +13460,13 @@ class LlamaCppBackend:
         guess here has to latch like any other, or a load that skipped the sidecar on an
         inconclusive probe looks conclusive once the retry window lapses mid-download.
         """
+        cancel_event = (
+            cancel_event
+            if cancel_event is not None
+            else getattr(self, "_cancel_event", threading.Event())
+        )
+        if cancel_event.is_set():
+            return None
         if caps_probe is None:
             caps_probe = self.probe_server_capabilities
 
@@ -13461,6 +13500,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_dspark,
             label = "DSpark drafter",
+            cancel_event = cancel_event,
             near_path = near_path,
             outcome = outcome,
         )
@@ -13555,6 +13595,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
     ) -> Optional[str]:
@@ -13569,6 +13610,9 @@ class LlamaCppBackend:
         engage.
         """
 
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
         weight_name = Path(near_path).name if near_path else None
         # Whatever a previous load concluded, this one is asking again.
         self._dflash_retry_needed = False
@@ -13658,7 +13702,7 @@ class LlamaCppBackend:
         # it too, so a scan that ignores the pool cannot spin here.
         cached: Optional[str] = None
         seen_siblings: set[str] = set()
-        while near_path:
+        while near_path and not cancel_event.is_set():
             sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
             if sibling is None or sibling in seen_siblings:
                 break
@@ -13707,6 +13751,7 @@ class LlamaCppBackend:
                 hf_token = hf_token,
                 pick = _pick_dflash,
                 label = "DFlash drafter",
+                cancel_event = cancel_event,
                 near_path = near_path,
                 outcome = outcome,
                 # Not a header rejection: that candidate is settled and the loop moves
@@ -16676,6 +16721,12 @@ class LlamaCppBackend:
                 load_cancel_event is not None and load_cancel_event.is_set()
             )
 
+        download_cancel_event = (
+            _CombinedCancelEvent(self._cancel_event, load_cancel_event)
+            if load_cancel_event is not None
+            else self._cancel_event
+        )
+
         gguf_path = intent.gguf_path
         mmproj_path = intent.mmproj_path
         mtp_draft_path = intent.mtp_draft_path
@@ -16986,6 +17037,7 @@ class LlamaCppBackend:
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        cancel_event = download_cancel_event,
                     )
                 _preflight_is_diffusion = self._gguf_path_is_diffusion(
                     _preflight_model_path, model_identifier
@@ -17150,6 +17202,7 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_variant = hf_variant,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                         )
                     # Auto-download mmproj for vision models unless opted out. Vision
                     # switched off does NOT opt out: remote discovery calls any mmproj
@@ -17162,6 +17215,7 @@ class LlamaCppBackend:
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
@@ -17179,6 +17233,7 @@ class LlamaCppBackend:
                         mtp_draft_path = self._download_mtp(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
                     # "auto" is included: DSpark is the default whenever the repo
@@ -17192,6 +17247,7 @@ class LlamaCppBackend:
                         dspark_draft_path = self._download_dspark(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                             binary = binary,
                             caps_probe = _launch_caps,
@@ -17226,6 +17282,7 @@ class LlamaCppBackend:
                         dflash_draft_path = self._download_dflash(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                             binary = binary,
                         )
