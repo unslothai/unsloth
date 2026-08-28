@@ -352,7 +352,9 @@ def test_a_specific_host_launch_reports_the_address_it_was_given():
     assert status["can_stop"] is False
 
 
-def test_a_wildcard_launch_shows_lan_addresses_not_the_public_sharing_address(monkeypatch):
+def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public_address(
+    monkeypatch,
+):
     """server_url resolves the public IP for sharing, which behind NAT reaches
     nothing on the LAN and would trip the public-address warning as well."""
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["192.168.1.24"])
@@ -365,11 +367,8 @@ def test_a_wildcard_launch_shows_lan_addresses_not_the_public_sharing_address(mo
     assert status["urls"] == ["http://192.168.1.24:8888"]
     assert status["public_urls"] == []
 
-    # detection is not repeated on every poll
-    monkeypatch.setattr(
-        lan_access, "detect_lan_addresses", lambda: pytest.fail("re-detected on a poll")
-    )
-    assert lan_settings.lan_access_status(state)["urls"] == ["http://192.168.1.24:8888"]
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["10.0.0.7"])
+    assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
 
 
 def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):

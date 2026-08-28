@@ -236,14 +236,10 @@ def _launch_urls(app_state) -> list[str]:
     sharing, and behind NAT that address reaches nothing on the LAN.
     """
     if getattr(app_state, "lan_access_wildcard_bind", False):
-        cached = getattr(app_state, "lan_access_wildcard_urls", None)
-        if cached is None:
-            from lan_access import detect_lan_addresses
-            cached = _listener_urls(
-                detect_lan_addresses(), getattr(app_state, "lan_access_port", None)
-            )
-            app_state.lan_access_wildcard_urls = cached
-        return list(cached)
+        from lan_access import detect_lan_addresses
+        return _listener_urls(
+            detect_lan_addresses(), getattr(app_state, "lan_access_port", None)
+        )
     url = getattr(app_state, "server_url", None)
     return [url] if url else []
 
