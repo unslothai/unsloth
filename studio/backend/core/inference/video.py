@@ -121,6 +121,7 @@ from .diffusion_precision import (
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
+    VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
     VideoFamily,
     default_video_generation_params,
@@ -4938,6 +4939,37 @@ class VideoBackend:
             state = self._state
         return getattr(state, "family", None) if state is not None else None
 
+    def generation_snapshot(self) -> tuple[dict[str, Any], Optional[object]]:
+        """Return the route-facing generation fields and their exact resident-state token."""
+        from hub.utils.gguf import extract_quant_token
+
+        with self._lock:
+            state = self._state
+            if state is None:
+                return {"loaded": False, "repo_id": None, "defaults": None}, None
+            fam = state.family
+            status = {
+                "loaded": True,
+                "repo_id": getattr(state, "repo_id", None),
+                "dtype": getattr(state, "dtype", None),
+                "model_kind": getattr(state, "kind", None),
+                "gguf_variant": (
+                    extract_quant_token(state.gguf_filename)
+                    if getattr(state, "kind", None) == "gguf"
+                    and getattr(state, "gguf_filename", None)
+                    else None
+                ),
+                "h3_task": getattr(state, "h3_task", None),
+                "defaults": {
+                    "num_frames": fam.default_num_frames,
+                    "fps": fam.default_fps,
+                    "frame_step": fam.frame_step,
+                    "frame_offset": fam.frame_offset,
+                    "resolution_presets": [list(p) for p in fam.resolution_presets],
+                },
+            }
+            return status, state
+
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
         """Clear FBCache residuals on the resident DiT(s) before a generation.
@@ -4982,6 +5014,7 @@ class VideoBackend:
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
         video_id: Optional[str] = None,
+        expected_state: Optional[object] = None,
     ) -> dict[str, int]:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
@@ -5000,6 +5033,8 @@ class VideoBackend:
             # Resolve outside the lock, then retry if the resident state changed.
             with self._lock:
                 state = self._state
+                if expected_state is not None and state is not expected_state:
+                    raise RuntimeError(VIDEO_MODEL_CHANGED_MSG)
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
                 if self._generate_job_active:

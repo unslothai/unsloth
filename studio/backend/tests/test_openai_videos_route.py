@@ -437,6 +437,20 @@ def test_a_worker_outcome_that_arrives_before_the_job_record_is_not_overwritten(
     assert failed["error"]["message"] == "Failed before the create response."
 
 
+def test_an_overflowing_worker_timestamp_is_ignored():
+    job = video_routes._VideoJob(
+        id = "video_overflowing_timestamp",
+        created_at = 100,
+        prompt = "bad persisted timestamp",
+        model = "model",
+        size = "768x512",
+        seconds = "5",
+    )
+    record = {**vars(job), "_worker_outcome": {"completed_at": float("inf"), "error": None}}
+
+    assert video_routes._job_from_record(record) is None
+
+
 def test_completed_job_keeps_its_submission_time_after_restart(client, backend, monkeypatch):
     monkeypatch.setattr(video_routes._time, "time", lambda: 100)
     job = _create(client, {"prompt": "slow timestamp"}).json()
@@ -1013,6 +1027,55 @@ def test_terminal_hydration_cannot_restore_a_deleted_job(client, backend, monkey
     assert video_id not in video_routes._jobs
 
 
+def test_concurrent_pollers_cannot_move_progress_backward(backend, monkeypatch):
+    video_id = "video_monotonic_progress"
+    job = video_routes._VideoJob(
+        id = video_id,
+        created_at = 1,
+        prompt = "concurrent polls",
+        model = "model",
+        size = "768x512",
+        seconds = "5",
+        status = "in_progress",
+        progress = 10,
+    )
+    video_routes._jobs[video_id] = job
+    gallery_module.save_job(video_id, vars(job))
+
+    older_waiting = threading.Event()
+    release_older = threading.Event()
+    real_get = gallery_module.get_job
+
+    def _delayed_get(requested_id):
+        if threading.current_thread().name == "older-video-poll":
+            older_waiting.set()
+            assert release_older.wait(timeout = 5.0)
+        return real_get(requested_id)
+
+    def _progress():
+        fraction = 0.2 if threading.current_thread().name == "older-video-poll" else 0.3
+        return {
+            "video_id": video_id,
+            "phase": "denoise",
+            "active": True,
+            "fraction": fraction,
+        }
+
+    monkeypatch.setattr(gallery_module, "get_job", _delayed_get)
+    monkeypatch.setattr(backend, "generate_progress", _progress)
+    older = threading.Thread(target = video_routes._sync_jobs, name = "older-video-poll")
+    older.start()
+    assert older_waiting.wait(timeout = 5.0)
+    video_routes._sync_jobs()
+    release_older.set()
+    older.join(timeout = 5.0)
+
+    assert not older.is_alive()
+    assert job.status == "in_progress"
+    assert job.progress == 30
+    assert gallery_module.get_job(video_id)["progress"] == 30
+
+
 def test_an_undecodable_reference_is_refused_before_the_model_switch(client, backend, monkeypatch):
     """A well-formed content type is not a readable image.
 
@@ -1129,6 +1192,50 @@ def test_the_job_describes_the_run_the_backend_reserved(client, backend, monkeyp
     assert job["model"] == "unsloth/Some-Other-Video-Model"
     assert job["size"] == "704x1216"
     assert job["seconds"] == _format_seconds(121 / 24)
+
+
+@pytest.mark.parametrize("swap_before_snapshot", [True, False])
+def test_requested_model_cannot_change_before_the_generation_reservation(
+    client, backend, monkeypatch, swap_before_snapshot
+):
+    import types
+
+    from core.inference import media_auto_switch
+    from utils import openai_auto_switch_settings
+
+    requested = backend.status()["repo_id"]
+
+    def _swap_model():
+        with backend._lock:
+            backend._state = types.SimpleNamespace(
+                **{
+                    **vars(backend._state),
+                    "repo_id": "unsloth/Replacement-Video-Model",
+                }
+            )
+
+    async def _resident_fast_path(*_args, **_kwargs):
+        if swap_before_snapshot:
+            _swap_model()
+        return None
+
+    real_begin = backend.begin_generate
+
+    def _racing_begin(**kwargs):
+        if not swap_before_snapshot:
+            _swap_model()
+        return real_begin(**kwargs)
+
+    monkeypatch.setattr(
+        media_auto_switch, "maybe_auto_switch_media_model", _resident_fast_path
+    )
+    monkeypatch.setattr(openai_auto_switch_settings, "get_media_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(backend, "begin_generate", _racing_begin)
+
+    response = _create(client, {"prompt": "keep the requested model", "model": requested})
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["error"]["code"] == "model_changed"
 
 
 def test_requested_duration_is_recomputed_for_the_reserved_family(client, backend, monkeypatch):

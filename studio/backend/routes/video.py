@@ -1018,7 +1018,7 @@ def _job_from_record(record: dict) -> Optional[_VideoJob]:
         if job.status not in ("queued", "in_progress", "completed", "failed"):
             return None
         _job_to_openai(job)
-    except (TypeError, ValueError, ValidationError):
+    except (TypeError, ValueError, OverflowError, ValidationError):
         return None
     return job
 
@@ -1096,6 +1096,12 @@ def _sync_jobs() -> None:
         with _jobs_lock:
             if _jobs.get(job.id) is not job:
                 continue
+            if job.terminal:
+                continue
+            if job.status == "in_progress" and status == "queued":
+                continue
+            if job.status == "in_progress" and status == "in_progress":
+                progress = max(job.progress, progress)
             job.status = status
             job.progress = progress
             if completed_at is not None:
@@ -1290,13 +1296,18 @@ async def _create_openai_video(
     hf_token: Optional[str],
 ):
     from core.inference.gpu_arbiter import VIDEO
-    from core.inference.media_auto_switch import maybe_auto_switch_media_model
+    from core.inference.media_auto_switch import (
+        maybe_auto_switch_media_model,
+        resident_answers_media_request,
+    )
     from core.inference.video import get_video_backend
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_MODEL_CHANGED_MSG,
         VIDEO_NOT_LOADED_MSG,
         VideoShapeError,
     )
+    from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
 
     try:
         size = _parse_openai_video_size(body.size)
@@ -1359,6 +1370,9 @@ async def _create_openai_video(
             has_references = reference is not None and ref2va,
         )
 
+    pin_requested_model = bool(
+        isinstance(body.model, str) and body.model.strip() and get_media_auto_switch_enabled()
+    )
     try:
         await maybe_auto_switch_media_model(
             body.model,
@@ -1376,7 +1390,20 @@ async def _create_openai_video(
         raise _openai_video_error(400, str(exc), param = "input_reference")
 
     backend = get_video_backend()
-    status = await asyncio.to_thread(backend.status)
+    expected_state = None
+    if pin_requested_model:
+        status, expected_state = await asyncio.to_thread(backend.generation_snapshot)
+        if not await asyncio.to_thread(
+            resident_answers_media_request, status, body.model, owner = VIDEO
+        ):
+            raise _openai_video_error(
+                409,
+                VIDEO_MODEL_CHANGED_MSG,
+                code = "model_changed",
+                param = "model",
+            )
+    else:
+        status = await asyncio.to_thread(backend.status)
     if not status.get("loaded"):
         raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
@@ -1386,8 +1413,7 @@ async def _create_openai_video(
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
     try:
-        resolved = await asyncio.to_thread(
-            backend.begin_generate,
+        generate_kwargs = dict(
             prompt = body.prompt,
             width = width,
             height = height,
@@ -1396,6 +1422,9 @@ async def _create_openai_video(
             reference_images = [reference] if ref2va and reference is not None else None,
             video_id = video_id,
         )
+        if expected_state is not None:
+            generate_kwargs["expected_state"] = expected_state
+        resolved = await asyncio.to_thread(backend.begin_generate, **generate_kwargs)
     except VideoShapeError as exc:
         raise _openai_video_error(
             400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
@@ -1410,6 +1439,8 @@ async def _create_openai_video(
             raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
         if msg == VIDEO_GENERATION_BUSY_MSG:
             raise _openai_video_error(409, msg)
+        if msg == VIDEO_MODEL_CHANGED_MSG:
+            raise _openai_video_error(409, msg, code = "model_changed", param = "model")
         logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Video generation failed.")
 
