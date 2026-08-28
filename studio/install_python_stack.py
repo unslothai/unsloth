@@ -1322,9 +1322,10 @@ def _index_url_join(base: str, leaf: str) -> str:
     gfx110X-all/", which asks for /whl and hides the arch in the token. Splits on the FIRST
     of "?" or "#", so a URL carrying both keeps them in order.
     """
-    _head, _sep, _tail = base.partition("?")
-    if not _sep:
-        _head, _sep, _tail = base.partition("#")
+    _cuts = [base.index(_c) for _c in "?#" if _c in base]
+    _head, _sep, _tail = (
+        (base[: min(_cuts)], base[min(_cuts)], base[min(_cuts) + 1 :]) if _cuts else (base, "", "")
+    )
     return f"{_head.rstrip('/')}/{leaf}/{_sep}{_tail}"
 
 
@@ -1932,6 +1933,20 @@ def _runtime_gfx_target(
         _discovery_ordered = _LAST_AMD_GFX_PROBE == "amd-smi" and any(
             _m in os.environ for _m in _VISIBLE_DEVICE_MASKS
         )
+        if _discovery_ordered and _unlike_adapters:
+            # Discovery order is unusable, but the kernel's own topology is not: KFD nodes
+            # ARE the order HIP and ROCr index, which is why the branch above reads them
+            # whenever no userland probe answered. Reading them here too replaces an ordering
+            # no ordinal can be applied to with one that can, rather than declining a repair
+            # this host needs -- a Ryzen box with an APU beside a dGPU and amd-smi installed
+            # is the reported shape (#9396), not an exotic one. Only when the two sources see
+            # the same number of devices: a KFD list of another length is a different view of
+            # the machine, and indexing it would answer for a device set amd-smi never saw.
+            _kfd_ordered = _kfd_gfx_targets()
+            if len(_kfd_ordered) == len(gfx_devices):
+                gfx_devices = _kfd_ordered
+                _unlike_adapters = len(set(gfx_devices)) > 1
+                _discovery_ordered = False
         gfx_devices, _rocr_unresolved = _rocr_visible_subset(gfx_devices)
         # A UUID names a device this cannot place. Judged against the list BEFORE the mask
         # was applied: dropping the tokens that did resolve can leave one arch standing and
@@ -1944,7 +1959,17 @@ def _runtime_gfx_target(
             # decide a host the probe left open.
             _named_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
             if _named_gfx:
-                return _named_gfx, list(dict.fromkeys(gfx_devices)), physical_gfx
+                # The named arch leads the returned set. Stacked masks can leave a list the
+                # override is not even in (ROCr keeps the gfx1200, the user names the
+                # gfx1103), and the caller reads that set to decide whether any detected arch
+                # lacks generic kernels -- so a target absent from it is selected and then
+                # never repaired, which is the arch being authoritative for one of the two
+                # answers only.
+                return (
+                    _named_gfx,
+                    list(dict.fromkeys([_named_gfx, *gfx_devices])),
+                    physical_gfx,
+                )
             _why = (
                 "ROCR_VISIBLE_DEVICES names a GPU by UUID"
                 if _rocr_unresolved
@@ -3262,6 +3287,19 @@ def _amd_torch_needs_dependency_pass() -> bool:
     )
 
 
+def _installed_generic_rocm_tag() -> "tuple[int, int] | None":
+    """(major, minor) of the ROCm tag the INSTALLED torch names, or None if it names none.
+
+    Generic pytorch.org wheels carry it in the local version ("2.9.1+rocm6.3"). AMD per-arch
+    builds are read by _installed_rocm_wheel_family instead, so their tag is not wanted here.
+    """
+    _ran, _importable, _ver, _hip, _cuda = _probe_torch_runtime()
+    if not (_ran and _importable):
+        return None
+    _m = re.search(r"\+rocm(\d+)\.(\d+)", (_ver or "").lower())
+    return (int(_m.group(1)), int(_m.group(2))) if _m else None
+
+
 def _rocm_torch_family_needs_repair(
     runtime_gfx: "str | None", ver: "tuple[int, int] | None" = None
 ) -> bool:
@@ -3294,7 +3332,13 @@ def _rocm_torch_family_needs_repair(
         # on a family it never read, so it would reinstall the multi-GB stack on EVERY update
         # once the fast path stops hiding it. Leave it alone.
         return False
-    return _generic_rocm_wheel_lacks_kernels(runtime_gfx, ver)
+    # Which arches a generic wheel carries belongs to THAT wheel, so read the tag off the
+    # installed torch when it states one. ``ver`` describes the host's ROCm, and the two part
+    # company on ordinary hosts: pin rocm6.3 once, or upgrade /opt/rocm afterwards, and a
+    # gfx1200 box carries a 2.9.1+rocm6.3 build with no kernels for it while the host reads
+    # 7.2 -- judged by the host, that install looks healthy and survives every update. The
+    # host version stays the fallback, for a wheel whose own tag will not read back.
+    return _generic_rocm_wheel_lacks_kernels(runtime_gfx, _installed_generic_rocm_tag() or ver)
 
 
 def _ensure_rocm_torch() -> None:
@@ -3580,7 +3624,16 @@ def _ensure_rocm_torch() -> None:
         # No ROCm-version floor here: whichever generic index a host's ROCm version picks,
         # its wheel carries no kernels for these targets (see _GENERIC_ROCM_WHEEL_GFX).
         if _arch_index_url is None:
-            _missing_kernels = {g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g, ver)}
+            # Judged by the wheel already installed, when it is a generic build naming its own
+            # rocm tag; ``ver`` is the HOST's ROCm and the two part company whenever an index
+            # was pinned once or /opt/rocm was upgraded afterwards. ``ver`` still chooses the
+            # tag for any generic reinstall below -- that IS a question about the host.
+            _kernel_ver = (
+                has_hip_torch and not _torch_requires_rocm_sdk() and _installed_generic_rocm_tag()
+            ) or ver
+            _missing_kernels = {
+                g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g, _kernel_ver)
+            }
             # A sub-2.11 build of a floor leaf is broken wherever it came from, and several of
             # those leaves (gfx120X-all, and gfx1150/gfx1151 whenever an unreadable ROCm
             # version leaves the Strix arm inactive) serve GPUs the generic wheel DOES list.
@@ -3600,7 +3653,8 @@ def _ensure_rocm_torch() -> None:
                 _leaf = (
                     _runtime_leaf
                     if (
-                        _generic_rocm_wheel_lacks_kernels(_runtime_gfx, ver) or _below_floor_on_leaf
+                        _generic_rocm_wheel_lacks_kernels(_runtime_gfx, _kernel_ver)
+                        or _below_floor_on_leaf
                     )
                     else None
                 )

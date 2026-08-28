@@ -36,6 +36,10 @@ _CPU_TORCH = stack_mod._TORCH_PROBE_MARKER + "2.10.0+cpu||\n"
 _ROCM_GENERIC_TORCH = stack_mod._TORCH_PROBE_MARKER + "2.10.0+rocm7.1|7.1|\n"
 # AMD per-arch torch, as repo.amd.com serves it.
 _ROCM_ARCH_TORCH = stack_mod._TORCH_PROBE_MARKER + "2.11.0+rocm7.13.0|7.13|\n"
+# Generic wheels whose own rocm tag disagrees with the host: pinned once, or outlived by an
+# /opt/rocm upgrade.
+_ROCM_GENERIC_TORCH_63 = stack_mod._TORCH_PROBE_MARKER + "2.9.1+rocm6.3|6.3|\n"
+_ROCM_GENERIC_TORCH_72 = stack_mod._TORCH_PROBE_MARKER + "2.11.0+rocm7.2|7.2|\n"
 
 _GENERIC = "download.pytorch.org/whl/rocm"
 _AMD = "repo.amd.com/rocm/whl"
@@ -619,6 +623,16 @@ def test_the_leaf_lands_on_the_path_not_inside_a_mirror_token():
     )
 
 
+def test_the_split_lands_on_whichever_delimiter_comes_first():
+    """A fragment may itself contain "?". Reaching for "?" first then cuts inside the
+    fragment, so the leaf is appended to a fragment and the request still asks for the bare
+    path -- the same failure the query case above exists to prevent."""
+    assert (
+        stack_mod._index_url_join("https://m.example/whl#sha256=abc?download=1", "gfx110X-all")
+        == "https://m.example/whl/gfx110X-all/#sha256=abc?download=1"
+    )
+
+
 def test_a_plain_mirror_is_joined_exactly_as_before():
     for base in ("https://repo.amd.com/rocm/whl", "https://repo.amd.com/rocm/whl/"):
         assert (
@@ -959,11 +973,19 @@ def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unrea
 # ── two orders, and the mask that cannot be applied to either ────────────────
 
 
-def _target(gfx_devices, probe_source, env):
-    """Resolve the runtime target with ``probe_source`` named as the probe that answered."""
+def _target(
+    gfx_devices,
+    probe_source,
+    env,
+    kfd = (),
+):
+    """Resolve the runtime target with ``probe_source`` named as the probe that answered.
+
+    ``kfd`` is the kernel topology, empty by default: a host whose /sys/class/kfd this
+    cannot read is the one that has only the probe's own ordering to go on."""
     with (
         patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = list(gfx_devices)),
-        patch.object(stack_mod, "_kfd_gfx_targets", return_value = [], create = True),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd), create = True),
         patch.object(stack_mod, "_LAST_AMD_GFX_PROBE", probe_source),
         patch.dict(os.environ, env, clear = False),
     ):
@@ -1001,13 +1023,90 @@ def test_amd_smi_discovery_order_is_not_indexed_as_hip_order():
     order, which the library derives from the KFD node id. setup.sh translates through
     `amd-smi list -e`'s HIP_ID map and keeps discovery order -- refusing to apply a mask --
     when that map is missing or not 1:1. No map is read here, so on unlike adapters an
-    untranslated ordinal names another card's arch."""
+    untranslated ordinal names another card's arch. No KFD topology here, so the ordering
+    the test below substitutes is unavailable and the ordinal has nothing to be read against."""
     assert _target(["gfx1103", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) is None
     # rocminfo and KFD sysfs are already in the order the masks use.
     assert _target(["gfx1103", "gfx1200"], "kfd", {"HIP_VISIBLE_DEVICES": "1"}) == "gfx1200"
     # Nothing to mistranslate: one arch, or no mask indexing the list at all.
     assert _target(["gfx1200", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) == "gfx1200"
     assert _target(["gfx1103", "gfx1200"], "amd-smi", {}) == "gfx1200"
+
+
+def test_kfd_order_resolves_a_mask_amd_smi_order_cannot():
+    """KFD nodes ARE the order the masks index, which is why the fallback above reads them
+    when no userland probe answers. A mask over an amd-smi list has an ordering problem the
+    same file already solves, so declining leaves a Ryzen APU-plus-dGPU box -- the reported
+    shape -- on a wheel with no kernels for the card it selected."""
+    assert (
+        _target(
+            ["gfx1200", "gfx1103"],
+            "amd-smi",
+            {"HIP_VISIBLE_DEVICES": "0"},
+            kfd = ["gfx1103", "gfx1200"],
+        )
+        == "gfx1103"
+    )
+    # A KFD list of another length is a different view of the machine, not a translation of
+    # this one, so the ordinal still has nothing trustworthy to index.
+    assert (
+        _target(
+            ["gfx1200", "gfx1103"],
+            "amd-smi",
+            {"HIP_VISIBLE_DEVICES": "0"},
+            kfd = ["gfx1103", "gfx1200", "gfx1200"],
+        )
+        is None
+    )
+    # A UUID names a device no source can place, so KFD does not rescue that one.
+    assert (
+        _target(
+            ["gfx1200", "gfx1103"],
+            "amd-smi",
+            {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
+            kfd = ["gfx1103", "gfx1200"],
+        )
+        is None
+    )
+
+
+def test_an_explicit_arch_is_authoritative_for_the_repair_gate_too():
+    """Stacked masks can leave a device list the override is not in: ROCr keeps the gfx1200,
+    the user names the gfx1103 the message told them to name. The caller reads the returned
+    code set to decide whether any detected arch lacks generic kernels, so a target missing
+    from it is selected and then never repaired -- the override authoritative for the
+    target and ignored for the gate."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200", "gfx1103"),
+        probe_source = "amd-smi",
+        env = {
+            "ROCR_VISIBLE_DEVICES": "0",
+            "HIP_VISIBLE_DEVICES": "0",
+            "UNSLOTH_ROCM_GFX_ARCH": "gfx1103",
+        },
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_generic_wheel_is_judged_by_its_own_rocm_tag():
+    """Which arches a generic wheel carries belongs to THAT wheel. Pin rocm6.3 once, or
+    upgrade /opt/rocm afterwards, and a gfx1200 box runs a 2.9.1+rocm6.3 build with no
+    kernels for it while the host reads 7.2 -- judged by the host, the install looks healthy
+    and survives every update."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_GENERIC_TORCH_63,
+        torch_owns_rocm = False,
+    )
+    assert f"{_AMD}/gfx120X-all/" in calls, calls
+    # The wheel that does carry it is left alone, whatever the host version reads.
+    assert _AMD not in _run_install(
+        gfx_devices = ("gfx1200",),
+        rocm_version = (6, 3),
+        torch_probe = _ROCM_GENERIC_TORCH_72,
+        torch_owns_rocm = False,
+    )
 
 
 def test_a_named_arch_resolves_an_ordering_no_probe_can():
