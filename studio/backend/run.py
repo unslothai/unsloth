@@ -152,6 +152,7 @@ import _platform_compat  # noqa: F401
 
 from loggers import get_logger, install_uvicorn_duplicate_exception_filter
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
+from utils.host_policy import is_wildcard_host
 
 logger = get_logger(__name__)
 
@@ -221,9 +222,7 @@ def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> N
     import logging
     import re
 
-    rewrite_host = (
-        bind_host in ("0.0.0.0", "::") and bool(display_host) and display_host != bind_host
-    )
+    rewrite_host = is_wildcard_host(bind_host) and bool(display_host) and display_host != bind_host
     new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
     old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
     old_prefix = "Uvicorn running on "
@@ -374,7 +373,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     import urllib.parse
     import urllib.request
 
-    if not display_host or display_host in ("0.0.0.0", "::"):
+    if not display_host or is_wildcard_host(display_host):
         return
 
     use_color = _stdout_color_ok()
@@ -519,11 +518,11 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
 
 def _display_host_for_bind(host: str) -> str:
-    return _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+    return _resolve_external_ip() if is_wildcard_host(host) else host
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    return "::1" if host == "::" else "127.0.0.1"
+    return "::1" if is_wildcard_host(host) and ":" in host else "127.0.0.1"
 
 
 def _url_host(host: str) -> str:
@@ -554,7 +553,7 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
         )
     from utils.host_policy import is_external_host
 
-    if host in ("0.0.0.0", "::") or is_external_host(host):
+    if is_external_host(host):
         return (
             f"Server-side tools are {state} and this port is network-reachable. "
             "Anyone who can reach it with the API key can run code on this "
@@ -596,7 +595,7 @@ def _emit_startup_output(
     if secure:
         _emit_secure_startup_output(port, enable_tools)
         return
-    wildcard_bind = host in ("0.0.0.0", "::")
+    wildcard_bind = is_wildcard_host(host)
     localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
     print_studio_access_banner(
         port = port,
@@ -792,7 +791,7 @@ def _is_port_free(host: str, port: int) -> bool:
 
     # 2. On a wildcard bind, verify localhost isn't already claimed by another
     #    process (e.g. an SSH -L tunnel); a successful connect means it is.
-    if host in ("0.0.0.0", "::"):
+    if is_wildcard_host(host):
         for loopback, family in [
             ("127.0.0.1", socket.AF_INET),
             ("::1", socket.AF_INET6),
@@ -1968,7 +1967,7 @@ def _cloudflare_tunnel_should_start(
         return False
     if secure:
         return True
-    return host in ("0.0.0.0", "::") and not api_only
+    return is_wildcard_host(host) and not api_only
 
 
 def _final_bound_port(server, requested_port: int) -> int:

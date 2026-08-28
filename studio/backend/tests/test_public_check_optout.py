@@ -88,6 +88,12 @@ def test_public_ip_lookup_skipped_when_disabled(monkeypatch, calls):
     assert IFCONFIG not in calls
 
 
+def test_display_host_resolves_every_wildcard_alias(monkeypatch):
+    monkeypatch.setattr(run, "_resolve_external_ip", lambda: "192.168.1.50")
+    for host in ("0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0", ""):
+        assert run._display_host_for_bind(host) == "192.168.1.50"
+
+
 def test_reachability_probe_runs_by_default(calls):
     _verify_global_reachability("95.216.11.2", 8888)
     assert any(CHECK_HOST in url for url in calls)

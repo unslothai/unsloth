@@ -24,6 +24,10 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         # Non-secure wildcard binds tunnel only when --cloudflare is passed (True).
         (True, "0.0.0.0", False, False, False, True),
         (True, "::", False, False, False, True),
+        (True, "::0", False, False, False, True),
+        (True, "0:0:0:0:0:0:0:0", False, False, False, True),
+        (True, "0", False, False, False, True),
+        (True, "", False, False, False, True),
         (True, "127.0.0.1", False, False, False, False),
         (True, "localhost", False, False, False, False),
         # --secure tunnels a loopback bind too.
