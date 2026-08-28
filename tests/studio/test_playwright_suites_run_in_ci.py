@@ -180,7 +180,7 @@ def test_tool_activity_install_enforces_the_script_allowlist():
     document = yaml.safe_load(
         (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
     )
-    steps = document["jobs"]["ui-indicator"]["steps"]
+    steps = document["jobs"]["ui-smoke"]["steps"]
     run = next(
         str(step["run"])
         for step in steps
