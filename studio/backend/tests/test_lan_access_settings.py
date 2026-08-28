@@ -455,7 +455,7 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
     monkeypatch.setattr(
         lan_access,
         "_interface_addresses",
-        lambda: [
+        lambda _ip_version = 4: [
             "127.0.0.1",
             "169.254.10.1",
             "224.0.0.1",
@@ -475,7 +475,9 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
 @pytest.mark.allow_network
 def test_the_default_route_address_leads_so_it_becomes_the_shown_url(monkeypatch):
     routed = _require_lan_address()
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["203.0.113.9"])
+    monkeypatch.setattr(
+        lan_access, "_interface_addresses", lambda _ip_version = 4: ["203.0.113.9"]
+    )
     assert lan_access.detect_lan_addresses() == [routed, "203.0.113.9"]
 
 
@@ -524,6 +526,33 @@ def test_interface_enumeration_skips_adapters_that_are_down(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "psutil", fake)
     assert lan_access._interface_addresses() == ["10.0.0.7"]
+    assert lan_access._interface_addresses(6) == ["fe80::1"]
+
+
+def test_ipv6_detection_keeps_only_reachable_unscoped_addresses(monkeypatch):
+    class _NoRouteSocket:
+        def connect(self, _address):
+            raise OSError("network is unreachable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(lan_access.socket, "socket", lambda *_args, **_kwargs: _NoRouteSocket())
+    monkeypatch.setattr(
+        lan_access,
+        "_interface_addresses",
+        lambda _ip_version = 4: [
+            "::1",
+            "fe80::1%en0",
+            "ff02::1",
+            "::",
+            "fd00::24",
+            "2001:4860:4860::8844",
+            "fd00::24",
+        ],
+    )
+
+    assert lan_access.detect_lan_addresses(6) == ["fd00::24", "2001:4860:4860::8844"]
 
 
 def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
@@ -560,19 +589,25 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
 
 def test_wsl_nat_address_is_not_advertised(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "nat")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["172.25.35.232"])
+    monkeypatch.setattr(
+        lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"]
+    )
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_unknown_networking_mode_fails_closed(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["172.25.35.232"])
+    monkeypatch.setattr(
+        lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"]
+    )
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_mirrored_networking_keeps_reachable_addresses(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "mirrored")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(
+        lan_access, "_interface_addresses", lambda _ip_version = 4: ["192.168.1.20"]
+    )
     assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
 
 

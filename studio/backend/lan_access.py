@@ -15,9 +15,9 @@ runs on the primary server's event loop with ``lifespan="off"``, so the app's
 startup and shutdown handlers stay owned by the primary server and never fire
 twice.
 
-IPv4 only. Every consumer of this (URLs in the UI, the QR code, the frontend
-gate) works off the addresses reported here, and a link-local IPv6 URL is not
-something a phone can be handed.
+The settings-managed listener remains IPv4 only. Address discovery also serves
+an existing IPv6 wildcard launch, while link-local IPv6 addresses are omitted
+because another device cannot use them without the listener's interface scope.
 """
 
 from __future__ import annotations
@@ -64,8 +64,8 @@ _pending_drains = 0
 _bound_addresses: tuple[str, ...] = ()
 
 
-def detect_lan_addresses() -> list[str]:
-    """The machine's own reachable IPv4 addresses, default route first.
+def detect_lan_addresses(ip_version: int = 4) -> list[str]:
+    """The machine's own reachable addresses for one IP version, default route first.
 
     Loopback, link-local (169.254/16) and multicast are dropped: none of them is
     an address another device on the network can open. A public address is kept
@@ -79,27 +79,38 @@ def detect_lan_addresses() -> list[str]:
     if _wsl_networking_mode() not in (None, "mirrored"):
         return []
 
+    if ip_version == 4:
+        socket_family = socket.AF_INET
+        route_probe = ("8.8.8.8", 80)
+    elif ip_version == 6:
+        socket_family = socket.AF_INET6
+        route_probe = ("2001:4860:4860::8888", 80, 0, 0)
+    else:
+        raise ValueError("ip_version must be 4 or 6")
+
     addresses: list[str] = []
 
     def _add(candidate: str) -> None:
+        candidate = candidate.split("%", 1)[0]
         try:
             parsed = ipaddress.ip_address(candidate)
         except ValueError:
             return
-        if parsed.version != 4:
+        if parsed.version != ip_version:
             return
         if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
             return
         if parsed.is_unspecified or parsed.is_reserved:
             return
-        if candidate not in addresses:
-            addresses.append(candidate)
+        normalized = str(parsed)
+        if normalized not in addresses:
+            addresses.append(normalized)
 
-    # a UDP connect only fixes the local end of the socket; nothing is sent to 8.8.8.8
+    # a UDP connect only fixes the local end of the socket; nothing is sent to the target
     probe = None
     try:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        probe.connect(("8.8.8.8", 80))
+        probe = socket.socket(socket_family, socket.SOCK_DGRAM)
+        probe.connect(route_probe)
         _add(probe.getsockname()[0])
     except OSError:
         pass
@@ -107,9 +118,9 @@ def detect_lan_addresses() -> list[str]:
         if probe is not None:
             probe.close()
 
-    # every other adapter that is up: the route to 8.8.8.8 picks one source address, and
+    # every other adapter that is up: a route probe picks one source address, and
     # an isolated LAN has no route at all, so neither it nor the hostname enumerates them
-    for address in _interface_addresses():
+    for address in _interface_addresses(ip_version):
         _add(address)
     return addresses
 
@@ -149,8 +160,8 @@ def _is_host_only_interface(name: str) -> bool:
     )
 
 
-def _interface_addresses() -> list[str]:
-    """IPv4 addresses on every interface that is up.
+def _interface_addresses(ip_version: int = 4) -> list[str]:
+    """Addresses for one IP version on every interface that is up.
 
     Falls back to resolving the hostname where psutil is unavailable. That
     fallback is not an enumeration: a Linux host mapping its name to 127.0.1.1
@@ -162,12 +173,17 @@ def _interface_addresses() -> list[str]:
         try:
             return [
                 info[4][0]
-                for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+                for info in socket.getaddrinfo(
+                    socket.gethostname(),
+                    None,
+                    socket.AF_INET if ip_version == 4 else socket.AF_INET6,
+                )
             ]
         except OSError:
             return []
     try:
         stats = psutil.net_if_stats()
+        family = socket.AF_INET if ip_version == 4 else socket.AF_INET6
         addresses = []
         for name, entries in psutil.net_if_addrs().items():
             if _is_host_only_interface(name):
@@ -175,7 +191,7 @@ def _interface_addresses() -> list[str]:
             interface = stats.get(name)
             if interface is not None and not interface.isup:
                 continue
-            addresses.extend(e.address for e in entries if e.family == socket.AF_INET)
+            addresses.extend(e.address for e in entries if e.family == family)
         return addresses
     except Exception:
         return []
