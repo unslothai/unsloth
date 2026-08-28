@@ -110,6 +110,10 @@ _NON_LLM_SLOT_SUFFIXES = (
     "/images/generate",
     "/images/generations",
     "/video/generate",
+    # The OpenAI videos route (/v1/videos + /api/inference/videos) runs the video
+    # backend only, exactly like /video/generate. It is tracked as an inference path,
+    # so without this it would claim the slot and clear preview ownership.
+    "/videos",
 )
 
 

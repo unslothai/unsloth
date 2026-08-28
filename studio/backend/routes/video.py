@@ -790,6 +790,8 @@ _VIDEO_POLL_AFTER_MS = "2000"
 _NO_VIDEO_MODEL_MSG = "No video model loaded. Load a video model first."
 _VIDEO_FAILED_CODE = "video_generation_failed"
 _VIDEO_CREATE_FIELDS = ("prompt", "model", "seconds", "size")
+# Upper bound on how long DELETE waits for a cancelled run to stop writing.
+_DELETE_SETTLE_TIMEOUT_S = 10.0
 
 
 @dataclass
@@ -1008,6 +1010,23 @@ def _sync_jobs() -> None:
                 job.error = error
 
 
+def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEOUT_S) -> None:
+    """Block until the run started for ``video_id`` is no longer in flight.
+
+    Bounded: a wedged backend must not hold the request open, and the delete below is
+    correct either way -- it simply removes nothing when nothing was persisted.
+    """
+    from core.inference.video import get_video_backend
+
+    backend = get_video_backend()
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        gen = backend.generate_progress()
+        if gen.get("video_id") != video_id or not gen.get("active"):
+            return
+        _time.sleep(0.05)
+
+
 def _lookup_video(video_id: str) -> Optional[VideoJob]:
     from core.inference import video_gallery
 
@@ -1162,7 +1181,22 @@ async def openai_create_video(
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
-        validate_video_request_shape(fam, width, height, None)
+        # Judge the duration against the family being switched TO, using its own lattice.
+        # Passing None here accepted any seconds and only refused it in begin_generate --
+        # after the resident pipeline had been evicted and the target fully loaded.
+        want_frames = (
+            _frames_for_seconds(
+                seconds,
+                {
+                    "fps": fam.default_fps,
+                    "frame_step": fam.frame_step,
+                    "frame_offset": fam.frame_offset,
+                },
+            )
+            if seconds is not None
+            else None
+        )
+        validate_video_request_shape(fam, width, height, want_frames)
         validate_video_keyframe_conditioning(
             fam, expected_partition(pick), has_keyframes = reference is not None
         )
@@ -1177,7 +1211,9 @@ async def openai_create_video(
             before_switch = _refuse_unservable_request,
         )
     except VideoShapeError as exc:
-        raise _openai_video_error(400, str(exc), param = "size")
+        raise _openai_video_error(
+            400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
+        )
     except ValueError as exc:
         raise _openai_video_error(400, str(exc), param = "input_reference")
 
@@ -1189,7 +1225,7 @@ async def openai_create_video(
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
     try:
-        await asyncio.to_thread(
+        resolved = await asyncio.to_thread(
             backend.begin_generate,
             prompt = body.prompt,
             width = width,
@@ -1215,9 +1251,15 @@ async def openai_create_video(
         logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Video generation failed.")
 
-    presets = defaults.get("resolution_presets") or []
-    if size is None and presets:
-        width, height = int(presets[0][0]), int(presets[0][1])
+    # begin_generate hands back the canvas it resolved. Without it a reference-image
+    # request reported the family's first preset while the clip rendered at the source
+    # aspect, so the job advertised one size and the finished record another.
+    if isinstance(resolved, dict) and resolved.get("width") and resolved.get("height"):
+        width, height = int(resolved["width"]), int(resolved["height"])
+    else:
+        presets = defaults.get("resolution_presets") or []
+        if size is None and presets:
+            width, height = int(presets[0][0]), int(presets[0][1])
     fps = defaults.get("fps")
     if num_frames is not None and fps:
         seconds_text = _format_seconds(num_frames / float(fps))
@@ -1324,7 +1366,13 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
         raise _not_found(video_id)
     if video.status in ("queued", "in_progress"):
         await asyncio.to_thread(get_video_backend().cancel_generate)
-    elif await asyncio.to_thread(video_gallery.delete, video_id):
+        # The run can reach its terminal state between the lookup and the cancel, so a
+        # refused cancellation is not proof that nothing was written. Let the worker
+        # settle, then fall through to the same delete the completed branch performs --
+        # otherwise the clip persists and the "deleted" job reappears through
+        # retrieve/list on the very next call.
+        await asyncio.to_thread(_await_generate_settled, video_id)
+    if await asyncio.to_thread(video_gallery.delete, video_id):
         _forget_terminal_video(video_id)
     with _jobs_lock:
         _jobs.pop(video_id, None)

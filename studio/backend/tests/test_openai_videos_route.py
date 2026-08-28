@@ -534,3 +534,84 @@ def test_create_hands_the_model_to_auto_switch(client, backend, monkeypatch):
 )
 def test_record_epoch_accepts_old_and_new_sidecar_timestamps(created_at, expected):
     assert video_routes._record_epoch({"created_at": created_at}) == expected
+
+
+def test_an_unservable_duration_is_refused_before_the_model_switch(client, backend, monkeypatch):
+    """The preflight judged size but passed None for the frame count.
+
+    A duration no family can serve was therefore only refused inside begin_generate --
+    after the resident pipeline had been evicted and the target model fully loaded.
+    """
+    import types
+
+    from core.inference import media_auto_switch
+
+    switched = {"completed": False}
+
+    async def _fake_switch(
+        model,
+        *,
+        before_switch = None,
+        **_kwargs,
+    ):
+        pick = types.SimpleNamespace(model_path = "Lightricks/LTX-2", gguf_filename = None)
+        if before_switch is not None:
+            before_switch(pick)
+        switched["completed"] = True
+
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _fake_switch)
+
+    # 120s is inside the route's own bound but ~2880 frames, over the 1024 global ceiling.
+    resp = _create(client, {"prompt": "x", "model": "Lightricks/LTX-2", "seconds": "120"})
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == "seconds"
+    assert switched["completed"] is False, "the model was switched before the refusal"
+
+
+def test_the_created_job_reports_the_canvas_the_backend_resolved(client, backend, monkeypatch):
+    """With a reference image and no size the canvas follows the source aspect.
+
+    The route used to record the family's first resolution preset regardless, so the
+    create response advertised one size while the clip rendered at another, and the
+    same job's size changed once it was read back from the gallery.
+    """
+    real = backend.begin_generate
+
+    def _begin(**kwargs):
+        real(**kwargs)
+        return {"width": 704, "height": 1216}
+
+    monkeypatch.setattr(backend, "begin_generate", _begin)
+    job = _create(client, {"prompt": "a tall portrait"}).json()
+    assert job["size"] == "704x1216"
+
+
+def test_deleting_a_job_that_finishes_mid_cancel_removes_the_clip(client, backend, monkeypatch):
+    """Cancellation losing the race is not proof that nothing was written.
+
+    The handler used to cancel and return deleted:true without ever deleting the pair,
+    so a clip persisted in that window came straight back through retrieve and list.
+    """
+    backend.gate.clear()
+    job = _create(client, {"prompt": "racy"}).json()
+    assert client.get(f"/v1/videos/{job['id']}").json()["status"] in ("queued", "in_progress")
+
+    def _cancel_after_it_finishes():
+        backend.gate.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if gallery_module.owned_video_path(job["id"]) is not None:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("the clip was never persisted")
+        return False
+
+    monkeypatch.setattr(backend, "cancel_generate", _cancel_after_it_finishes)
+
+    resp = client.delete(f"/v1/videos/{job['id']}")
+    assert resp.status_code == 200, resp.json()
+    assert resp.json()["deleted"] is True
+    assert gallery_module.owned_video_path(job["id"]) is None
+    assert client.get(f"/v1/videos/{job['id']}").status_code == 404
+    assert [v["id"] for v in client.get("/v1/videos").json()["data"]] == []

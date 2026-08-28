@@ -4981,7 +4981,7 @@ class VideoBackend:
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
         video_id: Optional[str] = None,
-    ) -> None:
+    ) -> dict[str, int]:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
         Returns at once, mirroring begin_load: a clip takes minutes to denoise, and
@@ -5090,6 +5090,9 @@ class VideoBackend:
                 error = "Video generation could not start.",
             )
             raise
+        # The canvas this run resolved to. A caller that sent no size cannot infer it:
+        # with a keyframe the canvas follows the source aspect, not the first preset.
+        return {"width": resolved_inputs.width, "height": resolved_inputs.height}
 
     def _run_generate(
         self,

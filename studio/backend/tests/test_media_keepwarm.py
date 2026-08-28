@@ -785,3 +785,16 @@ def test_an_authenticated_request_is_still_counted_before_its_body(media, monkey
     _step()
     _stalled_media_request("/api/inference/images/generate", _BEARER)
     assert media[arb.DIFFUSION].unloads == 0
+
+
+def test_the_openai_videos_route_never_claims_the_llama_slot():
+    """/v1/videos runs the video backend, exactly like /video/generate.
+
+    Adding "/videos" to the inference suffixes made it a tracked path; without the
+    matching non-LLM entry its completion called _claim_non_preview_slot(), clearing
+    preview ownership so the next preview of a different checkpoint 503s on the guard.
+    """
+    from core.inference import llama_keepwarm as kw
+    for path in ("/v1/videos", "/api/inference/videos"):
+        assert kw._is_inference_path(path), path
+        assert path.endswith(kw._NON_LLM_SLOT_SUFFIXES), path
