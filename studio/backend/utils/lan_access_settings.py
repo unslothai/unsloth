@@ -206,7 +206,6 @@ def configure_lan_access(
 ) -> None:
     """Publish immutable launch policy used by every settings request."""
     app_state.lan_access_port = port
-    app_state.lan_access_bind_host = bind_host
     app_state.lan_access_wildcard_bind = bind_host in ("0.0.0.0", "::")
     app_state.lan_access_bind_host = bind_host
     app_state.lan_access_launch_addresses = tuple(
