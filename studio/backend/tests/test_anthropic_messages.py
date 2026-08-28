@@ -4527,3 +4527,21 @@ class TestPreserveThinkingHonoursTheBackendDefault:
 
         asyncio.run(anthropic_count_tokens(payload, request = _Request(), current_subject = "t"))
         assert seen["count_messages"] == gen_messages
+
+
+def test_effort_resolved_from_output_config():
+    # Claude Code sends the tier as output_config.effort, never as reasoning_effort.
+    assert _basic_payload(
+        output_config = {"effort": "high"}, thinking = {"type": "adaptive"}
+    ).reasoning_effort == "high"
+
+
+def test_explicit_reasoning_effort_outranks_output_config():
+    assert _basic_payload(
+        output_config = {"effort": "low"}, reasoning_effort = "max"
+    ).reasoning_effort == "max"
+
+
+def test_unknown_output_config_effort_is_ignored():
+    assert _basic_payload(output_config = {"effort": "turbo"}).reasoning_effort is None
+    assert _basic_payload(output_config = {"format": {"type": "json"}}).reasoning_effort is None
