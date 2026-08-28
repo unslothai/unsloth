@@ -522,9 +522,7 @@ def test_clips_made_before_this_process_list_and_retrieve_as_completed(client, b
 
 def test_archived_clips_remain_in_the_openai_listing(client, backend):
     clip = _save_clip("archived", "2026-01-01T00:00:00Z")
-    archived = client.patch(
-        f"/api/inference/video/gallery/{clip['id']}", json = {"archived": True}
-    )
+    archived = client.patch(f"/api/inference/video/gallery/{clip['id']}", json = {"archived": True})
     assert archived.status_code == 200, archived.json()
     listed = client.get("/v1/videos").json()["data"]
     assert [video["id"] for video in listed] == [clip["id"]]
