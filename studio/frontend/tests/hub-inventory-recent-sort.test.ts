@@ -16,6 +16,11 @@ const {
   buildLocalInventoryRows,
   epochMillisecondsToSeconds,
 } = await import("../src/features/hub/inventory/view-models.ts");
+const {
+  createPendingInventoryHints,
+  reconcileInventoryHints,
+  rememberInventoryHint,
+} = await import("../src/features/hub/inventory/inventory-hints.ts");
 
 function cached(repoId: string, lastModified?: number) {
   return {
@@ -73,6 +78,37 @@ test("Recent puts unknown timestamps last and leaves ties stable", () => {
     sorted.map((item) => item.row.id),
     [firstTie.row.id, secondTie.row.id, unknownCached.row.id],
   );
+});
+
+test("Recent keeps a completed download first until the cache rescan", () => {
+  const completedAt = Date.now();
+  const pending = rememberInventoryHint(createPendingInventoryHints(), {
+    kind: "gguf",
+    repoId: "Org/Just-Downloaded",
+    bytes: 10,
+    createdAt: completedAt,
+  });
+  const reconciled = reconcileInventoryHints({
+    pending,
+    kind: "gguf",
+    rows: [
+      {
+        repo_id: "Org/Older",
+        size_bytes: 10,
+        last_modified: 1_700_000_000,
+      },
+    ],
+    previouslyObserved: new Set<string>(),
+  });
+  const sorted = reconciled.rows
+    .map((row) => ({
+      variant: "cached" as const,
+      row: buildCachedInventoryRow(row, "gguf"),
+    }))
+    .sort(compareInventoryItemsByRecent);
+
+  assert.equal(sorted[0]?.row.repoId, "Org/Just-Downloaded");
+  assert.equal(sorted[0]?.row.lastModified, completedAt);
 });
 
 test("picker dto timestamps stay in epoch seconds", () => {
