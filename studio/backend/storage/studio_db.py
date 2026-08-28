@@ -351,6 +351,23 @@ def project_workspace_overlaps_managed_root(
         return True
 
 
+def _workspace_overlaps_chat_sandbox_root(workspace_path: str) -> bool:
+    """Whether this folder is, holds, or sits inside the standalone chat sandboxes.
+
+    A chat's tool calls are fenced under its own session key and a project's under
+    the project's, so the same directory reached through both is two locks and one
+    folder: concurrent calls overwrite each other. Normally unreachable, since the
+    sandboxes live under the studio home, but UNSLOTH_STUDIO_SANDBOX_HOME can put
+    them somewhere the folder picker will happily offer.
+    """
+    try:
+        from core.inference.tools import sandbox_root
+        root = sandbox_root()
+    except Exception:  # noqa: BLE001 - an unanswerable check must not block a pick
+        return False
+    return project_workspace_overlaps_managed_root(workspace_path, root)
+
+
 def _workspace_overlaps_live_project_path(
     workspace_path: str,
     column: Literal["root_path", "workspace_path"],
@@ -399,6 +416,8 @@ def _ensure_external_project_workspace(
             raise PermissionError("unsafe workspace path")
         if is_denied_system_path(str(resolved)):
             raise PermissionError("unsafe workspace path")
+        if _workspace_overlaps_chat_sandbox_root(str(resolved)):
+            raise PermissionError("workspace overlaps the chat sandbox folder")
         if (
             expected_identity is not None
             and _directory_identity(str(resolved)) != expected_identity
@@ -2993,26 +3012,27 @@ def _new_project_workspace_session_id(project_id: str) -> str:
 
 
 def _project_default_session_orphan_exists(project_id: str) -> bool:
+    """Whether anything is already kept under this project's default session.
+
+    Only that a record is there, not what it says: a file under either key names a
+    workspace some fork's cards may still resolve through, and handing the default
+    session out again would point them at the new one. An unreadable record counts
+    for the same reason.
+    """
     session_id = f"project-{project_id}"
     storage_ids = (project_id, f"workspace\x1f{project_id}\x1f{session_id}")
     for storage_id in storage_ids:
         digest = hashlib.sha256(storage_id.encode("utf-8", "surrogatepass")).hexdigest()[:32]
         path = studio_root() / "orphaned-projects" / f"project-{digest}"
         try:
-            with open(path, encoding = "utf-8") as fh:
-                record = json.loads(fh.read(4096).strip())
+            os.stat(path)
+            return True
         except FileNotFoundError:
             continue
-        except (OSError, ValueError, TypeError):
+        except OSError:
+            # Unreadable is not absent, and handing the session out on a guess is
+            # the one outcome there is no way back from.
             return True
-        if (
-            isinstance(record, dict)
-            and record.get("id") == project_id
-            and not record.get("chat")
-            and record.get("sessionId") in (None, "", session_id)
-        ):
-            return True
-        return True
     return False
 
 
@@ -3125,7 +3145,6 @@ def _upsert_chat_project(
             exclude_project_id = str(project["id"]),
             expected_identity = workspace_identity,
         )
-        workspace_identity = workspace_identity or _directory_identity(workspace_path)
     elif external_workspace_path and not existing:
         workspace_path = _ensure_external_project_workspace(
             external_workspace_path,

@@ -1213,6 +1213,14 @@ def patch_project(
     return _chat_project_response(project)
 
 
+def _managed_workspace_remains(sandbox_path: str, root_path: "str | None") -> bool:
+    """Whether a project's managed folder is still worth a kept-folder record."""
+    for path in (sandbox_path, root_path):
+        if path and os.path.isdir(path) and not os.path.islink(path):
+            return True
+    return False
+
+
 def _delete_project_rag_sources(project_id: str) -> None:
     """Retire an ownerless project scope and reap it when RAG is available."""
     from storage import rag_db
@@ -1326,7 +1334,14 @@ async def delete_project(
             managed_sandbox_path,
             managed_root_path,
         )
-        if delete_files and managed_sandbox_path and ownership is not True:
+        managed_remains = managed_sandbox_path is not None and await run_in_threadpool(
+            _managed_workspace_remains, managed_sandbox_path, managed_root_path
+        )
+        # A project that started managed and switched later left the folder it
+        # filled before the switch on disk, and the row that knew where it was has
+        # gone. Recorded whichever way the delete went, so it stays reachable and
+        # can still be collected; pending only when the files were to go.
+        if managed_remains and ownership is not True:
             import uuid
 
             cleanup_session = f"workspace-cleanup-{uuid.uuid4().hex}"
@@ -1334,11 +1349,11 @@ async def delete_project(
                 record_orphaned_project_if_unowned,
                 project_id,
                 managed_sandbox_path,
-                True,
+                delete_files,
                 managed_root_path,
                 cleanup_session,
             )
-            if ownership is False:
+            if delete_files and ownership is False:
                 await run_in_threadpool(delete_chat_project_workspace, managed_project)
                 await run_in_threadpool(
                     forget_orphaned_project_if_gone,
@@ -1466,7 +1481,6 @@ async def delete_project(
                 0.0,
             )
             if not fenced:
-                idle = False
                 await run_in_threadpool(
                     record_orphaned_project_if_unowned,
                     project_id,

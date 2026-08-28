@@ -8055,15 +8055,6 @@ def live_project_ownership(
     return False
 
 
-def live_project_owns(
-    project_id: str,
-    workspace: str,
-    root: "str | None" = None,
-) -> bool:
-    """Treat an unanswerable ownership check as owned so deletion stays safe."""
-    return live_project_ownership(project_id, workspace, root) is not False
-
-
 def _project_exists(project_id: str) -> bool:
     """Whether a project of the user's is stored under this exact id."""
     try:
@@ -8903,9 +8894,15 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = _sandbox_fallback(sandbox_root_path, "_default", create = True)
         created = not os.path.isdir(workdir)
         if project_external:
+            # Never created here: the folder is the user's, and one that has gone
+            # since the resolve is a 410, not a directory to make. Resolving again
+            # is what raises the specific error the route turns into that status,
+            # so anything it lets through still has to fail here.
             if created or os.path.islink(workdir):
                 _project_workdir_info_for(session_id)
-                raise OSError(f"Project workspace is unavailable: {workdir}")
+                raise ProjectWorkspaceSessionUnavailableError(
+                    f"Project workspace is unavailable: {workdir}"
+                )
         else:
             os.makedirs(workdir, exist_ok = True)
         if not project_workdir and not session_id:

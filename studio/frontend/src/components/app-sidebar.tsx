@@ -136,6 +136,7 @@ import {
   clearNewChatDraft,
   deleteChatProject,
   deleteChatItem,
+  getStoredChatProject,
   listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
@@ -2598,16 +2599,32 @@ export function AppSidebar() {
         throw error;
       }
       // Nothing recorded means no tool has run yet, so the id it would get is
-      // the one current membership gives it.
-      sessionId ??=
-        item.type === "single" || item.projectId
-          ? sandboxSessionIdFor(
-              ids[0],
-              item.projectId,
-              projects.find((project) => project.id === item.projectId)
-                ?.workspaceSessionId,
-            )
-          : undefined;
+      // the one current membership gives it. Read the project rather than the
+      // cached list: changing a project's folder rotates its session, and a list
+      // that has not caught up yet would hand out the id from before the change.
+      if (sessionId === undefined && (item.type === "single" || item.projectId)) {
+        let workspaceSessionId: string | undefined;
+        if (item.projectId) {
+          try {
+            workspaceSessionId = (await getStoredChatProject(item.projectId))
+              ?.workspaceSessionId;
+          } catch {
+            workspaceSessionId = undefined;
+          }
+          if (!workspaceSessionId) {
+            refusal.value = {
+              title: "Could not read this project's folder.",
+              description: "Try again once the project list has loaded.",
+            };
+            throw new Error("no project workspace session");
+          }
+        }
+        sessionId = sandboxSessionIdFor(
+          ids[0],
+          item.projectId,
+          workspaceSessionId,
+        );
+      }
       if (!sessionId) {
         refusal.value = { title: "This chat has no single session id" };
         throw new Error("no session id");
@@ -3011,13 +3028,19 @@ export function AppSidebar() {
     const isPinned = pinnedIdSet.has(item.id);
     // A compare row outside a project spans two sandboxes, and there is no
     // honest single folder to offer for it.
+    const itemProject = item.projectId
+      ? projects.find((project) => project.id === item.projectId)
+      : undefined;
+    // A project whose row has not loaded yet is the same case: guessing
+    // `project-<id>` here would open the folder from before its last working
+    // directory change, which the backend answers with a 410. The action is
+    // hidden on an undefined id, so withholding it is the honest answer.
     const sandboxSessionId =
-      item.type === "single" || item.projectId
+      (item.type === "single" && !item.projectId) || itemProject
         ? sandboxSessionIdFor(
             threadIds[0] ?? item.id,
             item.projectId,
-            projects.find((project) => project.id === item.projectId)
-              ?.workspaceSessionId,
+            itemProject?.workspaceSessionId,
           )
         : undefined;
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.

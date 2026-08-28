@@ -101,6 +101,11 @@ export function NewProjectDialog({
     // Sidebar callers keep this mounted across routes, so unmounting alone
     // cannot tell whether the user has moved on during a slow upload.
     const origin = currentRoute();
+    // A folder grant is single-use, so a failed create cannot be retried with the
+    // one already spent. Cleared on the way out either way, and said out loud on
+    // failure: silently dropping it would make the next Create a managed project
+    // without the user ever choosing one.
+    let leaseSpent = false;
     try {
       const workspaceLease = workspace
         ? await consumeNativePathToken(
@@ -108,10 +113,11 @@ export function NewProjectDialog({
             "set-project-workspace",
           )
         : null;
-      if (workspaceLease) setWorkspace(null);
+      leaseSpent = Boolean(workspaceLease);
       const project = await createChatProject(trimmed, workspaceLease ? {
         nativePathLease: workspaceLease.nativePathLease,
       } : undefined);
+      setWorkspace(null);
       // Upload before closing so the Sources panel lists them on first fetch.
       await uploadStagedSources(project.id, staged);
       if (!mounted.current) return;
@@ -128,8 +134,12 @@ export function NewProjectDialog({
       runtime.setActiveProjectId(project.id);
       navigate({ to: "/chat", search: { project: project.id } });
     } catch (err) {
+      const reason = err instanceof Error ? err.message : undefined;
+      if (leaseSpent) setWorkspace(null);
       toast.error("Failed to create project", {
-        description: err instanceof Error ? err.message : undefined,
+        description: leaseSpent
+          ? `${reason ? `${reason} ` : ""}Choose the folder again to retry.`
+          : reason,
       });
     } finally {
       setBusy(false);

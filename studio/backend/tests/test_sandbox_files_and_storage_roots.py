@@ -4188,7 +4188,7 @@ def test_a_project_workspace_a_fork_still_shows_is_kept():
     assert "project_session_id(project_id)" in route
     assert "sandbox_is_referenced_elsewhere, shared" in route
     assert route.index("sandbox_is_referenced_elsewhere, shared") < route.index(
-        "run_in_threadpool(delete_project_workspace, managed_project)"
+        "delete_project_workspace(managed_project)"
     )
 
 
@@ -4574,7 +4574,7 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
     assert "if managed_sandbox_path and" in route
     assert "if not delete_files:" in route
     body = route[route.index("if not delete_files:") :]
-    assert "record_orphaned_project," in body[:400]
+    assert "record_orphaned_project_if_unowned," in body[:400]
     assert "False," in body[:400], "a keep must not be recorded as pending deletion"
 
 
@@ -5269,7 +5269,7 @@ def test_orphan_collection_checks_every_session_sharing_a_workspace(tmp_path, mo
     tools.record_orphaned_project("same-id", str(workspace), True, None, first_session)
     tools.record_orphaned_project("same-id", str(workspace), True, None, second_session)
     deleted = []
-    monkeypatch.setattr(tools, "live_project_owns", lambda *args: False)
+    monkeypatch.setattr(tools, "live_project_ownership", lambda *args: False)
     monkeypatch.setattr(tools, "wait_for_sessions_idle", lambda *args, **kwargs: True)
     monkeypatch.setattr(tools, "_delete_recorded_workspace", lambda *args: deleted.append(args))
     monkeypatch.setattr(
@@ -5373,6 +5373,43 @@ def test_version_shaped_project_id_gets_an_unambiguous_live_session(tmp_path, mo
     assert second["workspaceSessionId"].startswith("project-workspace-")
 
 
+def test_a_chat_sandbox_cannot_be_adopted_as_a_project_workspace(tmp_path, monkeypatch):
+    """A chat's calls are fenced under its own session and a project's under the
+    project's, so one directory reached through both is two locks and one folder."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    # The only way to reach this: the override can put the sandboxes anywhere,
+    # including a folder the picker will offer.
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "shared"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    studio_db._schema_ready = False
+    chat_sandbox = tools.get_sandbox_workdir("chat-abc123")
+    root = tools.sandbox_root()
+
+    for label, target in (
+        ("the chat's own sandbox", chat_sandbox),
+        ("the sandbox root", root),
+        ("a folder holding the sandbox root", str(Path(root).parent)),
+    ):
+        with pytest.raises(studio_db.ProjectWorkspaceUnavailableError) as caught:
+            studio_db.upsert_chat_project(
+                {
+                    "id": f"proj-{abs(hash(label))}",
+                    "name": "P",
+                    "archived": False,
+                    "createdAt": 1,
+                    "updatedAt": 1,
+                },
+                external_workspace_path = target,
+                external_workspace_identity = studio_db._directory_identity(target),
+            )
+        assert "sandbox" in str(caught.value.cause), f"{label} was accepted"
+
+
 def test_corrupt_workspace_overlap_is_never_deleted(tmp_path, monkeypatch):
     import asyncio
 
@@ -5417,6 +5454,60 @@ def test_corrupt_workspace_overlap_is_never_deleted(tmp_path, monkeypatch):
     )
 
     assert marker.read_text(encoding = "utf-8") == "keep"
+
+
+def test_a_retired_managed_workspace_is_recorded_when_files_are_kept(tmp_path, monkeypatch):
+    """A project that started managed and switched folders left the one it filled
+    before the switch on disk, and the row that knew where it was is gone."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "retired1"
+    managed_root = tmp_path / "Notes-retired1"
+    managed_sandbox = managed_root / "sandbox"
+    managed_sandbox.mkdir(parents = True)
+    (managed_sandbox / "notes.txt").write_text("written while managed", encoding = "utf-8")
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    project = {
+        "id": project_id,
+        "name": "Notes",
+        "createdAt": 1,
+        "updatedAt": 1,
+        "workspaceKind": "external",
+        "workspacePath": str(selected),
+        "sandboxPath": str(selected),
+        "rootPath": str(managed_root),
+        "workspaceSessionId": "project-workspace-cmV0aXJlZDE-" + "0" * 32,
+        "memberIds": [],
+        "activeResearchRunIds": [],
+    }
+    monkeypatch.setattr(
+        chat_history, "delete_chat_project", lambda pid, delete_files: dict(project)
+    )
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    asyncio.new_event_loop().run_until_complete(
+        chat_history.delete_project(
+            project_id,
+            request = None,
+            delete_files = False,
+            current_subject = "test",
+        )
+    )
+
+    assert (managed_sandbox / "notes.txt").exists()
+    recorded = {(path, pending) for _, path, _, pending, _ in tools.list_orphaned_projects()}
+    assert (str(selected), False) in recorded
+    assert (str(managed_sandbox), False) in recorded, recorded
 
 
 def test_a_half_deleted_workspace_keeps_its_record(tmp_path, monkeypatch):
@@ -7161,8 +7252,8 @@ def test_a_project_remade_somewhere_else_does_not_strand_the_old_workspace(tmp_p
         "get_chat_project",
         lambda pid: {"id": pid, "rootPath": str(new), "sandboxPath": str(new / "sandbox")},
     )
-    assert tools.live_project_owns(project_id, str(old / "sandbox"), str(old)) is False
-    assert tools.live_project_owns(project_id, str(new / "sandbox"), str(new)) is True
+    assert tools.live_project_ownership(project_id, str(old / "sandbox"), str(old)) is False
+    assert tools.live_project_ownership(project_id, str(new / "sandbox"), str(new)) is True
 
     tools.collect_orphaned_project_workspaces()
     assert not old.exists(), "the old workspace was stranded"

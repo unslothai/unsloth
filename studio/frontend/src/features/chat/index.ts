@@ -250,6 +250,7 @@ export {
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatProject,
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
