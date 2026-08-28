@@ -78,29 +78,34 @@ def _write_gguf(path: Path, tensors: "list[tuple[str, tuple[int, ...]]]") -> Non
 def backend():
     pytest.importorskip("gguf")
     from core.inference.llama_cpp import LlamaCppBackend
-
     return LlamaCppBackend
 
 
 @pytest.fixture
 def tied_gguf(tmp_path: Path) -> Path:
     path = tmp_path / "tied.gguf"
-    _write_gguf(path, [
-        ("token_embd.weight", (8, 64)),          # 2048 bytes at f32
-        ("blk.0.attn_q.weight", (8, 8)),
-        ("blk.0.ffn_down.weight", (8, 8)),
-    ])
+    _write_gguf(
+        path,
+        [
+            ("token_embd.weight", (8, 64)),  # 2048 bytes at f32
+            ("blk.0.attn_q.weight", (8, 8)),
+            ("blk.0.ffn_down.weight", (8, 8)),
+        ],
+    )
     return path
 
 
 @pytest.fixture
 def untied_gguf(tmp_path: Path) -> Path:
     path = tmp_path / "untied.gguf"
-    _write_gguf(path, [
-        ("token_embd.weight", (8, 64)),
-        ("output.weight", (8, 64)),
-        ("blk.0.attn_q.weight", (8, 8)),
-    ])
+    _write_gguf(
+        path,
+        [
+            ("token_embd.weight", (8, 64)),
+            ("output.weight", (8, 64)),
+            ("blk.0.attn_q.weight", (8, 8)),
+        ],
+    )
     return path
 
 
@@ -181,6 +186,6 @@ def test_the_budget_adds_the_duplicate_to_the_gguf_size(backend, tied_gguf):
     import inspect
 
     src = inspect.getsource(backend)
-    assert "model_size = gguf_size + mmproj_size + self._tied_output_bytes(model_path)" in src, (
-        "the context budget no longer charges the tied-embedding duplicate"
-    )
+    assert (
+        "model_size = gguf_size + mmproj_size + self._tied_output_bytes(model_path)" in src
+    ), "the context budget no longer charges the tied-embedding duplicate"

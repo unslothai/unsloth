@@ -7283,7 +7283,9 @@ class LlamaCppBackend:
         # name, and the context search calls this once per candidate context, so
         # an uncached read of a 30 GB header would be paid on every step.
         return LlamaCppBackend._tied_output_bytes_cached(
-            model_path, stat.st_size, stat.st_mtime_ns,
+            model_path,
+            stat.st_size,
+            stat.st_mtime_ns,
         )
 
     @staticmethod
