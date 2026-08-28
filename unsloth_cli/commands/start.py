@@ -7,6 +7,7 @@ import atexit
 import base64
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import re
@@ -2463,6 +2464,14 @@ def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) ->
     )
 
 
+def _write_claude_settings(path: Path, model_id: str, local_env: dict) -> Path:
+    overlay = _claude_settings_overlay(model_id, local_env)
+    digest = hashlib.sha256(overlay.encode("utf-8")).hexdigest()[:16]
+    settings = path / f"settings-{digest}.json"
+    _write_private_text(settings, overlay)
+    return settings
+
+
 def _claude_version() -> Optional[tuple]:
     # None = no local `claude` (a --no-launch printout for another machine; assume a
     # current build). An unparseable version is treated as too old for the new flags.
@@ -2978,8 +2987,7 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             "id": model_id,
             "context_length": int(server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0),
         }
-        settings = plugin / "settings.json"
-        _write_private_text(settings, _claude_settings_overlay(model_id, _claude_local_env(base, key, entry)))
+        settings = _write_claude_settings(plugin, model_id, _claude_local_env(base, key, entry))
         mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
@@ -4549,8 +4557,7 @@ def claude(
     # relocate, so a session already survives exit; resume it with `claude --continue`
     # or `--resume <id>` passed through.
     with _session_config("claude", launch, persist = persist) as config:
-        settings = config / "settings.json"
-        _write_private_text(settings, _claude_settings_overlay(model_id, env))
+        settings = _write_claude_settings(config, model_id, env)
         command = _claude_local_command(
             model_id,
             _agent_config_path(settings, ["claude"]),

@@ -157,6 +157,16 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
 
+def test_claude_settings_files_preserve_concurrent_sessions(tmp_path):
+    first_env = start._claude_local_env("http://127.0.0.1:8001", "first-key", MODEL)
+    second_env = start._claude_local_env("http://127.0.0.1:8002", "second-key", MODEL)
+    first = start._write_claude_settings(tmp_path, MODEL["id"], first_env)
+    second = start._write_claude_settings(tmp_path, MODEL["id"], second_env)
+    assert first != second
+    assert json.loads(first.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == "first-key"
+    assert json.loads(second.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == "second-key"
+
+
 def test_install_agent_prompts_then_installs(monkeypatch):
     # TTY + yes: run the documented install command, then re-resolve the now-present binary.
     monkeypatch.setattr(start.os, "name", "posix")
@@ -1484,7 +1494,7 @@ def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
     positions = [index for index, arg in enumerate(command) if arg == "--settings"]
     assert len(positions) == 2
     assert command[positions[0] + 1] == forwarded
-    assert Path(command[positions[1] + 1]).name == "settings.json"
+    assert Path(command[positions[1] + 1]).name.startswith("settings-")
 
 
 def test_connect_claude_session_settings_precede_forwarded_delimiter(fake_studio):
@@ -1498,7 +1508,7 @@ def test_connect_claude_session_settings_precede_forwarded_delimiter(fake_studio
     positions = [index for index, arg in enumerate(command) if arg == "--settings"]
     assert len(positions) == 2
     assert positions[0] < command.index("--") < positions[1]
-    assert Path(command[positions[0] + 1]).name == "settings.json"
+    assert Path(command[positions[0] + 1]).name.startswith("settings-")
 
 
 def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
@@ -1538,6 +1548,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "unsloth-local-agent"
     )
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    settings_path = next(plugin.glob("settings-*.json"))
     assert mcp["command"] == sys.executable
     assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
     assert mcp["env"] == {
@@ -1546,9 +1557,9 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
         "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
         "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
-        start._CLAUDE_SUBAGENT_SETTINGS_ENV: str(plugin / "settings.json"),
+        start._CLAUDE_SUBAGENT_SETTINGS_ENV: str(settings_path),
     }
-    settings = json.loads((plugin / "settings.json").read_text())
+    settings = json.loads(settings_path.read_text())
     assert settings["availableModels"] == [MODEL["id"] + ":UD-Q4_K_XL"]
     assert settings["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
@@ -1576,6 +1587,7 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
     }
     plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    settings_path = next(plugin.glob("settings-*.json"))
     assert mcp["command"] == "wsl.exe"
     assert mcp["args"] == [
         "-d",
@@ -1586,7 +1598,7 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
         start._CLAUDE_SUBAGENT_MCP_MODULE,
     ]
     assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
-    assert mcp["env"][start._CLAUDE_SUBAGENT_SETTINGS_ENV] == str(plugin / "settings.json")
+    assert mcp["env"][start._CLAUDE_SUBAGENT_SETTINGS_ENV] == str(settings_path)
     assert mcp["env"]["WSLENV"].split(":") == [
         "EXISTING",
         "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL",
