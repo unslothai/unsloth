@@ -64,6 +64,10 @@ export interface GpuInfo {
   /** raw host RAM free as the probe reported it. */
   systemRamAvailableHostGb: number;
   systemRamTotalGb: number;
+  /** Free space on the cache volume. Not a GPU fact, carried here because it is the
+   *  floor under every other budget: a GGUF too big to land cannot be paged from a
+   *  file that was never written. */
+  diskFreeGb: number;
 }
 
 const DEFAULT_GPU: GpuInfo = {
@@ -84,6 +88,7 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamAvailableGb: 0,
   systemRamAvailableHostGb: 0,
   systemRamTotalGb: 0,
+  diskFreeGb: 0,
 };
 
 function toGpuInfo(
@@ -99,6 +104,7 @@ function toGpuInfo(
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
     systemRamAvailableHostGb: data?.memory?.available_gb ?? 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
+    diskFreeGb: data?.disk?.free_gb ?? 0,
   };
   const gpuData =
     source === "inference_gpu" ? (data?.inference_gpu ?? data?.gpu) : data?.gpu;

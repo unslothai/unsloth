@@ -16,6 +16,7 @@ import { test } from "node:test";
 import {
   classifyGgufVariantFit,
   ggufFitIsAutoSelectable,
+  ggufFitIsRefusal,
 } from "../src/features/model-picker/components/model-selector/gguf-variant-fit.ts";
 import { classifyGgufFit as hubFit } from "../src/lib/gguf-fit.ts";
 
@@ -70,6 +71,43 @@ test("an unmeasured budget stays permissive, a measured zero does not", () => {
 
 test("a zero-byte listing never reads as an overage", () => {
   assert.equal(classifyGgufVariantFit(0, budget(24, 64)), "fits");
+});
+
+// ── the floor under every other verdict ──────────────────────────────────────
+
+test("past free disk is a refusal, because there is nothing to page from", () => {
+  // Measured on the A100 box this branch was tested on: 124.7 GB free of 253.1.
+  // Every quant from UD-Q5_K_XL up is larger than the space it would land in, so
+  // FROM DISK there is a promise about a file that cannot be written.
+  const box = { ...budget(80, 134.5), diskFreeGb: 124.7 };
+  assert.equal(classifyGgufVariantFit(103 * GB, box), "tight");
+  assert.equal(classifyGgufVariantFit(147 * GB, box), "nospace");
+  assert.equal(classifyGgufVariantFit(329 * GB, box), "nospace");
+});
+
+test("the disk check outranks memory, since placement assumes a local file", () => {
+  // Small enough for VRAM outright, still undownloadable. The order matters: ask
+  // memory first and this returns `fits` for a file that never arrives.
+  const tinyDisk = { ...budget(80, 134.5), diskFreeGb: 4 };
+  assert.equal(classifyGgufVariantFit(10 * GB, tinyDisk), "nospace");
+});
+
+test("an unread disk figure abstains rather than refusing everything", () => {
+  // 0 is what the probe reports before it has answered, and a machine with
+  // genuinely zero bytes free has worse problems than a badge.
+  const unread = { ...budget(80, 134.5), diskFreeGb: 0 };
+  assert.equal(classifyGgufVariantFit(103 * GB, unread), "tight");
+  assert.equal(classifyGgufVariantFit(329 * GB, unread), "disk");
+  // Absent entirely is the same as unread: every existing caller omits it.
+  assert.equal(classifyGgufVariantFit(329 * GB, budget(80, 134.5)), "disk");
+});
+
+test("both refusals share a pill, and neither is auto-selected", () => {
+  assert.equal(ggufFitIsRefusal("nospace"), true);
+  assert.equal(ggufFitIsRefusal("oom"), true);
+  assert.equal(ggufFitIsRefusal("disk"), false);
+  assert.equal(ggufFitIsRefusal("tight"), false);
+  assert.equal(ggufFitIsAutoSelectable("nospace"), false);
 });
 
 // ── the Hub download card, same bug in different words ───────────────────────

@@ -82,6 +82,7 @@ import {
   type GgufFit,
   classifyGgufVariantFit,
   ggufFitIsAutoSelectable,
+  ggufFitIsRefusal,
 } from "./gguf-variant-fit.ts";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
@@ -1339,6 +1340,7 @@ function GgufVariantExpander({
   resolveDownloadFootprint,
   gpuGb,
   systemRamGb,
+  diskFreeGb,
   budgetKnown = false,
   hfToken,
   parentOptionKey,
@@ -1361,6 +1363,9 @@ function GgufVariantExpander({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   gpuGb?: number;
   systemRamGb?: number;
+  /** Free space on the cache volume. Undefined means unread, and the fit check
+   *  abstains rather than refusing every row. */
+  diskFreeGb?: number;
   budgetKnown?: boolean;
   /** HF token threaded into the variant fetch so private/gated repos resolve
    *  their GGUF variants (and update badges). */
@@ -1513,7 +1518,7 @@ function GgufVariantExpander({
   //   fits  = model <= 0.7 * total GPU memory
   //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
   //   disk  = beyond that, but mmap pages the rest from the file
-  //   oom   = the file is not even on this disk to page from
+  //   oom   = the file is not even on this disk to page from, or nothing was measured
   const gpuBudgetGb = (gpuGb ?? 0) * 0.7;
   const totalBudgetGb = gpuBudgetGb + (systemRamGb ?? 0) * 0.7;
 
@@ -1523,8 +1528,9 @@ function GgufVariantExpander({
         gpuBudgetGb,
         totalBudgetGb,
         budgetKnown,
+        diskFreeGb: diskFreeGb ?? 0,
       }),
-    [budgetKnown, gpuBudgetGb, totalBudgetGb],
+    [budgetKnown, gpuBudgetGb, totalBudgetGb, diskFreeGb],
   );
 
   const variantGroups = useMemo(
@@ -1586,7 +1592,7 @@ function GgufVariantExpander({
     // 4 = pages from disk, 5 = OOM. Disk sits above OOM because it runs.
     const tierOf = (v: GgufVariantDetail) => {
       const f = getGgufFit(v.size_bytes);
-      if (f === "oom") return 5;
+      if (ggufFitIsRefusal(f)) return 5;
       if (f === "disk") return 4;
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
@@ -1840,6 +1846,7 @@ function GgufVariantExpander({
           group != null &&
           effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getGgufFit(v.size_bytes);
+        const noSpace = fit === "nospace";
         const oom = fit === "oom";
         const tight = fit === "tight";
         const paged = fit === "disk";
@@ -1900,10 +1907,14 @@ function GgufVariantExpander({
               ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              {oom && (
+              {(noSpace || oom) && (
                 <span
                   className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded"
-                  title="No memory budget was detected for this machine."
+                  title={
+                    noSpace
+                      ? "Larger than the free space on this machine, so it cannot be downloaded. Every other verdict assumes the file is here to read; this one is the floor under them. Free up space or take a smaller quant."
+                      : "No memory budget was detected for this machine."
+                  }
                 >
                   OOM
                 </span>
@@ -1913,7 +1924,7 @@ function GgufVariantExpander({
                   className="text-ui-9 font-medium !text-amber-400"
                   title="Bigger than the GPU's share of memory, small enough for GPU plus system RAM. It loads, with the overflow held in RAM, which is slower than running entirely on the GPU."
                 >
-                  TIGHT
+                  PART IN RAM
                 </span>
               )}
               {paged && (
@@ -5140,6 +5151,7 @@ export function HubModelPicker({
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={expanderGpuGb}
             systemRamGb={inferenceGpu.systemRamAvailableGb || undefined}
+            diskFreeGb={inferenceGpu.diskFreeGb || undefined}
             budgetKnown={inferenceGpu.budgetKnown}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
@@ -6033,6 +6045,7 @@ export function HubModelPicker({
                                     inferenceGpu.systemRamAvailableGb ||
                                     undefined
                                   }
+                                  diskFreeGb={inferenceGpu.diskFreeGb || undefined}
                                   budgetKnown={inferenceGpu.budgetKnown}
                                 />
                               )}
@@ -6171,6 +6184,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                diskFreeGb={inferenceGpu.diskFreeGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
@@ -6299,6 +6313,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                diskFreeGb={inferenceGpu.diskFreeGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
@@ -6393,6 +6408,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                diskFreeGb={inferenceGpu.diskFreeGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
@@ -6515,6 +6531,7 @@ export function HubModelPicker({
                               systemRamGb={
                                 inferenceGpu.systemRamAvailableGb || undefined
                               }
+                              diskFreeGb={inferenceGpu.diskFreeGb || undefined}
                               budgetKnown={inferenceGpu.budgetKnown}
                               variantActions={{
                                 onDelete: async (quant) => {
@@ -6628,6 +6645,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                diskFreeGb={inferenceGpu.diskFreeGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
@@ -6730,6 +6748,7 @@ function FineTunedRows({
     budgetKnown: boolean;
     memoryTotalGb: number;
     systemRamAvailableGb: number;
+    diskFreeGb: number;
   };
 }) {
   return (
@@ -6879,6 +6898,7 @@ function FineTunedRows({
                 }
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
+                diskFreeGb={gpu.diskFreeGb || undefined}
                 budgetKnown={gpu.budgetKnown}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
                 variantActions={{

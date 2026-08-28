@@ -12,16 +12,28 @@
 
 /** How a GGUF lands on this machine, worst tier last.
  *
- * `disk` is not a softer `oom`, it is a different claim. `oom` says the load cannot
- * happen; `disk` says it happens off the page cache and will be slow. Only the first
- * is a reason not to try, so they are not allowed to share a name.
+ * `disk` is not a softer refusal, it is a different claim. A refusal says the load
+ * cannot happen; `disk` says it happens off the page cache and will be slow. Only
+ * the first is a reason not to try, so they are not allowed to share a name.
+ *
+ * The ladder is about PLACEMENT, and reads down as one: on the card, part in host
+ * RAM, paged from the file, nowhere to put it. `nospace` sits above `disk` because
+ * it is the one condition that defeats paging too.
  */
-export type GgufFit = "fits" | "tight" | "disk" | "oom";
+export type GgufFit = "fits" | "tight" | "disk" | "nospace" | "oom";
 
 /** Tiers that auto-selection may pick. `disk` runs, but nobody wants a 169 GB quant
  * chosen for them, so the recommendation stays inside memory. */
 export function ggufFitIsAutoSelectable(fit: GgufFit): boolean {
   return fit === "fits" || fit === "tight";
+}
+
+/** The two tiers that render as one `OOM` pill. They are separate here because the
+ *  reasons are not interchangeable (one is the machine's storage, the other is our
+ *  own ignorance) and only the first is something the user can act on, but they
+ *  share a pill because the action is identical: pick a smaller quant. */
+export function ggufFitIsRefusal(fit: GgufFit): boolean {
+  return fit === "nospace" || fit === "oom";
 }
 
 /** Classify one variant against a measured budget. Mirrors llama-server `_select_gpus`.
@@ -35,12 +47,26 @@ export function classifyGgufVariantFit(
     gpuBudgetGb,
     totalBudgetGb,
     budgetKnown,
-  }: { gpuBudgetGb: number; totalBudgetGb: number; budgetKnown: boolean },
+    diskFreeGb = 0,
+  }: {
+    gpuBudgetGb: number;
+    totalBudgetGb: number;
+    budgetKnown: boolean;
+    /** Free space on the cache volume, 0 when unread. */
+    diskFreeGb?: number;
+  },
 ): GgufFit {
   // Preserve permissive behavior only when no budget was measured. A known
   // zero Vulkan budget means every non-empty variant is OOM.
   if (totalBudgetGb <= 0) return budgetKnown ? "oom" : "fits";
   const gb = sizeBytes / 1024 ** 3;
+  // Before any memory question. Every tier below is a claim about WHERE the weights
+  // sit, and all of them, `disk` loudest, assume the file is on the machine. A quant
+  // larger than the free space cannot be downloaded, so there is nothing to place
+  // and nothing to page. Checked against the raw figure with no share taken out of
+  // it: this is a hard floor, not a budget, and shaving it would refuse downloads
+  // that fit. 0 means the probe said nothing, so the check abstains.
+  if (diskFreeGb > 0 && gb > diskFreeGb) return "nospace";
   if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
   // No-GPU / unified-memory hosts (Mac) have only the RAM budget, and past it they
   // page from the file like anything else. mmap does not care about pool topology.
