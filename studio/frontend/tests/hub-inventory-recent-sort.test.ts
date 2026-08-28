@@ -329,6 +329,43 @@ test("a new download clears historical observation and records completion time",
   });
 });
 
+test("full deletion stays suppressed as completed variant jobs expire", () => {
+  const repoId = "Org/Deleted-Variants";
+  const keys = ["Q4_K_M", "Q8_0"].map((variant, index) => {
+    const key = jobKeyOf("model", repoId, variant);
+    putJob({
+      key,
+      kind: "model",
+      repoId,
+      variant,
+      state: "running",
+      downloadedBytes: 10,
+      completedBytes: 10,
+      completeOnDisk: true,
+      expectedBytes: 10,
+      fraction: 1,
+      bytesPerSec: 0,
+      etaSeconds: 0,
+      error: null,
+      startedAt: 1_900_000_000_000 + index,
+    });
+    patchJob(key, {
+      state: "complete",
+      completedAt: 1_900_000_060_000 + index,
+    });
+    return key;
+  });
+
+  assert.equal(getState().completedInventoryHints.length, 2);
+  discardDeletedInventoryHints(repoId, ["gguf"]);
+  assert.equal(getState().completedInventoryHints.length, 0);
+
+  removeJob(keys[0]);
+  assert.equal(getState().completedInventoryHints.length, 0);
+  removeJob(keys[1]);
+  assert.equal(getState().completedInventoryHints.length, 0);
+});
+
 test("picker dto timestamps stay in epoch seconds", () => {
   assert.equal(epochMillisecondsToSeconds(1_900_000_000_500), 1_900_000_000.5);
   assert.equal(epochMillisecondsToSeconds(null), undefined);

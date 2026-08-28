@@ -495,23 +495,13 @@ export function putJob(job: ManagedDownload): void {
 export function removeJob(key: string): void {
   const job = getState().jobs[key];
   teardownRuntime(key);
-  let suppressionChanged = false;
-  if (job) {
-    suppressionChanged =
-      runtimeRegistry.suppressedCompletedInventoryHints.delete(
-        inventoryHintKey(
-          completedInventoryHintKind(job.kind, job.variant),
-          job.repoId,
-        ),
-      );
-  }
   runtimeRegistry.clearRemovalTimer(key);
   setState((state) => {
     if (!(key in state.jobs)) return state;
     const next = { ...state.jobs };
     delete next[key];
     const nextState = { ...state, jobs: next };
-    if (!suppressionChanged && job?.state !== "complete") return nextState;
+    if (job?.state !== "complete") return nextState;
     return withCompletedHintSignature(nextState);
   });
 }
