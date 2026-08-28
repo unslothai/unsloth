@@ -354,7 +354,6 @@ def _require_bind_host(host: str) -> None:
 
 def _normalize_wildcard_bind_host(host: str) -> str:
     from unsloth_cli._tool_policy import normalize_wildcard_bind_host
-
     try:
         return normalize_wildcard_bind_host(host)
     except ValueError as exc:

@@ -238,6 +238,7 @@ def _launch_urls(app_state) -> list[str]:
     """
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
+
         addresses = []
         for ip_version in getattr(app_state, "lan_access_wildcard_ip_versions", ()) or (4,):
             for address in detect_lan_addresses(ip_version):

@@ -139,6 +139,5 @@ def test_run_server_rejects_a_mixed_family_wildcard_before_startup(monkeypatch):
         ],
     )
     from run import run_server
-
     with pytest.raises(SystemExit, match = "mixes wildcard and specific address families"):
         run_server(host = "mixed-wildcard.test")

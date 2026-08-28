@@ -1301,9 +1301,9 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():

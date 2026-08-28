@@ -92,9 +92,7 @@ def normalize_wildcard_bind_host(host: str) -> str:
     specific_versions = {address.version for address in addresses if not address.is_unspecified}
     if len(wildcard_versions) == 2 and not specific_versions:
         return host
-    if specific_versions - wildcard_versions or (
-        len(wildcard_versions) == 2 and specific_versions
-    ):
+    if specific_versions - wildcard_versions or (len(wildcard_versions) == 2 and specific_versions):
         raise ValueError(
             f"--host {host!r} mixes wildcard and specific address families; "
             "use an explicit bind address."
