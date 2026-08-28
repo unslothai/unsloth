@@ -48,13 +48,11 @@ The guard must swallow too little nowhere:
                  swallow-too-little direction only: the second pointer's own press raises no
                  `click` while a touch point is live, on either tree, so it cannot also stand in
                  for the swallow-too-much direction.
-  dismiss_then_  click the button to dismiss, then press Space, the key a reader uses to scroll.
-    space        No click is involved for the guard to swallow: the press it DID swallow left the
-                 button focused, and a focused button activates on Space. The guard now restores
-                 focus to the More trigger, so the final Space intentionally reopens the menu.
-                 Discriminates on chromium, firefox and webkit. The modal shape cannot reach it,
-                 because with `pointer-events: none` on the body the press lands on `HTML` and
-                 focus never moves off `BODY`.
+  dismiss_then_  click the button to dismiss, then press Space. The swallowed press must move
+    space        focus off the dangerous control and back to the menu trigger. Space then reopens
+                 the menu instead of activating Delete. Discriminates on chromium, firefox and
+                 webkit. The modal shape cannot reach it, because with `pointer-events: none` on
+                 the body the press lands on `HTML` and focus never moves off `BODY`.
 
 and too much nowhere:
 
@@ -114,6 +112,12 @@ CHARS = int(os.environ.get("PROBE_CHARS", "25000"))
 HOLD_MS = int(os.environ.get("PROBE_HOLD_MS", "600"))
 # Deliberately beyond CLICK_GRACE_MS (500).
 GRACE_HOLD_MS = int(os.environ.get("PROBE_GRACE_HOLD_MS", "900"))
+SPACE_REOPEN_CASES = {
+    "held_space_then_space",
+    "dismiss_then_space",
+    "drag_then_space",
+    "blur_then_space",
+}
 
 OPEN_MENU_JS = """
 async () => {
@@ -149,11 +153,14 @@ FACTS_JS = """
 }
 """
 
-PRE_SPACE_FACTS_JS = """
-() => ({
-  menuOpen: Boolean(document.querySelector(".aui-action-bar-more-content")),
-  triggerFocused: document.activeElement === window.__heavyThread.actionButton("More"),
-})
+FOCUS_FACTS_JS = """
+() => {
+  const trigger = window.__heavyThread.actionButton("More");
+  return {
+    menuClosed: !document.querySelector(".aui-action-bar-more-content"),
+    focusReturnedToTrigger: document.activeElement === trigger,
+  };
+}
 """
 
 # Simulate main-thread work between pointerdown and the synthesized click.
@@ -292,12 +299,11 @@ async def one_case(
     if not opened.get("ok"):
         return {"case": case, "error": "menu never opened"}
     before = await page.evaluate(FACTS_JS)
+    before_space = None
     rect = before["deleteRect"]
     if not rect:
         return {"case": case, "error": "no Delete button"}
     x, y = rect["x"], rect["y"]
-    pre_space_facts = None
-
     if case == "quick":
         await page.mouse.move(x, y)
         await page.mouse.down()
@@ -351,13 +357,13 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
         await page.wait_for_timeout(300)
-        pre_space_facts = await page.evaluate(PRE_SPACE_FACTS_JS)
+        before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_then_space":
         # A swallowed dismissal must not leave Delete focused for Space activation.
         await page.mouse.click(x, y)
         await page.wait_for_timeout(300)
-        pre_space_facts = await page.evaluate(PRE_SPACE_FACTS_JS)
+        before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case in ("drag_then_space", "blur_then_space"):
         # A drag may retarget the click; blur exercises the no-click cleanup path.
@@ -372,7 +378,7 @@ async def one_case(
         await page.mouse.move(spot["x"], spot["y"])
         await page.mouse.up()
         await page.wait_for_timeout(700)
-        pre_space_facts = await page.evaluate(PRE_SPACE_FACTS_JS)
+        before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
         # Dismissing into the composer must preserve its caret.
@@ -582,13 +588,13 @@ async def one_case(
         "deleted": after["assistantMessages"] < before["assistantMessages"],
         "menuClosed": not after["menuOpen"],
     }
-    if pre_space_facts is not None:
-        result["menuClosedBeforeSpace"] = not pre_space_facts["menuOpen"]
-        result["triggerFocusedBeforeSpace"] = pre_space_facts["triggerFocused"]
-        result["menuReopenedFromTrigger"] = (
-            not pre_space_facts["menuOpen"]
-            and pre_space_facts["triggerFocused"]
-            and after["menuOpen"]
+    if before_space is not None:
+        result.update(
+            {
+                "menuClosedBeforeSpace": before_space["menuClosed"],
+                "focusReturnedToTrigger": before_space["focusReturnedToTrigger"],
+                "menuReopenedBySpace": after["menuOpen"],
+            }
         )
     return result
 
@@ -660,22 +666,17 @@ def main() -> int:
     stuck = [
         c["case"]
         for c in result["cases"]
-        if "menuClosed" in c and not c["menuClosed"] and "menuClosedBeforeSpace" not in c
+        if "menuClosed" in c and not c["menuClosed"] and c["case"] not in SPACE_REOPEN_CASES
     ]
-    not_dismissed = [
+    unsafe_space = [
         c["case"]
         for c in result["cases"]
-        if "menuClosedBeforeSpace" in c and not c["menuClosedBeforeSpace"]
-    ]
-    wrong_focus = [
-        c["case"]
-        for c in result["cases"]
-        if "triggerFocusedBeforeSpace" in c and not c["triggerFocusedBeforeSpace"]
-    ]
-    not_reopened = [
-        c["case"]
-        for c in result["cases"]
-        if "menuReopenedFromTrigger" in c and not c["menuReopenedFromTrigger"]
+        if c["case"] in SPACE_REOPEN_CASES
+        and (
+            not c.get("menuClosedBeforeSpace")
+            or not c.get("focusReturnedToTrigger")
+            or not c.get("menuReopenedBySpace")
+        )
     ]
     broken = [c["case"] for c in result["cases"] if c.get("error")]
     over = [
@@ -689,21 +690,6 @@ def main() -> int:
     if over:
         print(f"[probe] FAIL: the guard swallowed a click it should not have: {over}", flush = True)
         broken = broken + over
-    if wrong_focus:
-        print(
-            f"[probe] FAIL: focus did not return to the More trigger on {wrong_focus}",
-            flush = True,
-        )
-    if not_dismissed:
-        print(
-            f"[probe] FAIL: the menu was still open before Space on {not_dismissed}",
-            flush = True,
-        )
-    if not_reopened:
-        print(
-            f"[probe] FAIL: Space did not reopen the menu from More on {not_reopened}",
-            flush = True,
-        )
     if deleted:
         print(
             f"[probe] FAIL: dismissing the menu also deleted a message via {deleted}",
@@ -713,7 +699,13 @@ def main() -> int:
         print(f"[probe] FAIL: cases did not run: {broken}", flush = True)
     if stuck:
         print(f"[probe] FAIL: the menu did not close on {stuck}", flush = True)
-    if deleted or broken or stuck or wrong_focus or not_dismissed or not_reopened:
+    if unsafe_space:
+        print(
+            "[probe] FAIL: the Space follow-up did not dismiss safely, restore trigger focus, "
+            f"and reopen the menu: {unsafe_space}",
+            flush = True,
+        )
+    if deleted or broken or stuck or unsafe_space:
         return 1
     print("[probe] PASS: no dismissal variant reached the control underneath", flush = True)
     return 0
