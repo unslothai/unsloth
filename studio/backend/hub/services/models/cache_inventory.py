@@ -67,6 +67,11 @@ _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
 
 
+class _CachedInventoryScan(NamedTuple):
+    rows: list[dict]
+    confirmed: bool
+
+
 _cached_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
 ] = {}
@@ -699,7 +704,7 @@ def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
     return rows
 
 
-async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
+async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryScan:
     for _attempt in range(_INVENTORY_SCAN_MAX_ATTEMPTS):
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         try:
@@ -713,7 +718,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
         except _CacheSourceChanged:
             continue
         _last_confirmed_inventory[name] = rows
-        return rows
+        return _CachedInventoryScan(rows, True)
     # Invalidations are arriving faster than the walk completes, so no scan will
     # confirm as current. Answer with the last one that did rather than spin a
     # full cache walk per epoch forever.
@@ -721,14 +726,14 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
         "Cached %s inventory kept racing cache invalidations; serving the last confirmed scan",
         name,
     )
-    return _last_confirmed_inventory.get(name, [])
+    return _CachedInventoryScan(_last_confirmed_inventory.get(name, []), False)
 
 
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
-        return {"cached": cached}
+        scan = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
+        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(
@@ -1221,8 +1226,8 @@ def _scan_cached_models(
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await _shared_cached_inventory_scan("models", _scan_cached_models)
-        return {"cached": cached}
+        scan = await _shared_cached_inventory_scan("models", _scan_cached_models)
+        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(

@@ -217,6 +217,15 @@ test("a stale aggregate row cannot consume a newer variant hint", () => {
     refreshStartedAt: completedAt + 1,
   });
   assert.equal(rescanned.pending.gguf.size, 0);
+
+  const unconfirmed = reconcileInventoryHints({
+    pending: stale.pending,
+    kind: "gguf",
+    rows: rescanned.rows,
+    previouslyObserved: new Set(["org/existing"]),
+    refreshStartedAt: null,
+  });
+  assert.equal(unconfirmed.pending.gguf.size, 1);
 });
 
 test("a new download clears historical observation and records completion time", () => {
