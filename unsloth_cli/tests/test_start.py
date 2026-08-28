@@ -6387,6 +6387,7 @@ _RESUME_ENV_VAR = {
 
 def _capture_launch(monkeypatch, argv):
     captured = {}
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
 
     def run(
         command,
@@ -6620,7 +6621,9 @@ def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
-    assert captured["command"][-2:] == ["--resume", "some-session-guid"]
+    resume = captured["command"].index("--resume")
+    assert captured["command"][resume : resume + 2] == ["--resume", "some-session-guid"]
+    assert resume < captured["command"].index("--model")
     # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]
