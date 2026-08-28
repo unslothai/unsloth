@@ -86,7 +86,8 @@ _cache_lock = threading.Lock()
 _write_lock = threading.Lock()
 _settings_refresh_inflight: Optional[object] = None
 _settings_write_inflight: Optional[object] = None
-_async_settings_locks = weakref.WeakKeyDictionary()
+_async_settings_tasks = weakref.WeakKeyDictionary()
+_async_settings_pending_tasks: set[asyncio.Task] = set()
 
 
 def _reset_scope_cache() -> None:
@@ -167,30 +168,46 @@ def _settings() -> tuple[str, bool]:
 
 
 async def _settings_async() -> tuple[str, bool, int]:
+    return await asyncio.shield(_async_settings_task())
+
+
+async def _refresh_settings_async() -> tuple[str, bool, int]:
     from starlette.concurrency import run_in_threadpool
 
-    scope, tools, pending, generation = await run_in_threadpool(_settings_once)
-    if not pending:
-        return scope, tools, generation
-
-    retry_lock = _async_settings_retry_lock()
-    async with retry_lock:
-        while True:
-            scope, tools, pending, generation = await run_in_threadpool(_settings_once)
-            if not pending:
-                return scope, tools, generation
-            await asyncio.sleep(0.01)
+    while True:
+        scope, tools, pending, generation = await run_in_threadpool(_settings_once)
+        if not pending:
+            return scope, tools, generation
+        await asyncio.sleep(0.01)
 
 
-def _async_settings_retry_lock() -> asyncio.Lock:
+def _async_settings_task() -> asyncio.Task:
     loop = asyncio.get_running_loop()
     with _cache_lock:
-        lock_ref = _async_settings_locks.get(loop)
-        retry_lock = lock_ref() if lock_ref is not None else None
-        if retry_lock is None:
-            retry_lock = asyncio.Lock()
-            _async_settings_locks[loop] = weakref.ref(retry_lock)
-    return retry_lock
+        task_ref = _async_settings_tasks.get(loop)
+        task = task_ref() if task_ref is not None else None
+        if task is None or task.done():
+            task = loop.create_task(_refresh_settings_async())
+            _async_settings_tasks[loop] = weakref.ref(task)
+            _async_settings_pending_tasks.add(task)
+            task.add_done_callback(
+                lambda completed, loop_ref = weakref.ref(loop):
+                    _release_async_settings_task(completed, loop_ref)
+            )
+    return task
+
+
+def _release_async_settings_task(task: asyncio.Task, loop_ref: weakref.ReferenceType) -> None:
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+    with _cache_lock:
+        _async_settings_pending_tasks.discard(task)
+        loop = loop_ref()
+        task_ref = _async_settings_tasks.get(loop) if loop is not None else None
+        if task_ref is not None and task_ref() is task:
+            del _async_settings_tasks[loop]
 
 
 def get_keyless_api_access_scope() -> str:

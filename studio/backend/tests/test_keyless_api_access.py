@@ -264,6 +264,56 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
     assert isinstance(late_result, bool)
 
 
+def test_async_stale_cache_miss_broadcasts_one_refresh_result(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("inference", tools = True)
+    _reset_scope_cache()
+
+    owner_started = threading.Event()
+    release_owner = threading.Event()
+    real_once = keyless._settings_once
+    call_count = 0
+    count_lock = threading.Lock()
+
+    def counted_once():
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+        return real_once()
+
+    def delayed_read():
+        owner_started.set()
+        assert release_owner.wait(timeout = 10)
+        return "inference", True
+
+    monkeypatch.setattr(keyless, "_settings_once", counted_once)
+    monkeypatch.setattr(keyless, "_read_settings", delayed_read)
+
+    async def exercise():
+        cancelled = asyncio.create_task(keyless._settings_async())
+        requests = [asyncio.create_task(keyless._settings_async()) for _ in range(100)]
+        try:
+            for _ in range(100):
+                if owner_started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert owner_started.is_set()
+            await asyncio.sleep(0.1)
+            assert call_count == 1
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+        finally:
+            release_owner.set()
+        results = await asyncio.gather(*requests)
+        assert [result[:2] for result in results] == [("inference", True)] * 100
+        assert len({result[2] for result in results}) == 1
+        assert call_count == 1
+
+    asyncio.run(exercise())
+
+
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
     import anyio.to_thread
     import utils.keyless_api_access as keyless
@@ -278,11 +328,10 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
 
     owner_started = threading.Event()
     release_owner = threading.Event()
-    all_followers_pending = threading.Event()
-    pending_count = 0
-    pending_lock = threading.Lock()
     real_read = keyless._read_settings_from_db
     real_once = keyless._settings_once
+    once_count = 0
+    count_lock = threading.Lock()
 
     def delayed_read():
         owner_started.set()
@@ -290,14 +339,10 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
         return real_read()
 
     def counted_once():
-        nonlocal pending_count
-        result = real_once()
-        if result[2]:
-            with pending_lock:
-                pending_count += 1
-                if pending_count == 3:
-                    all_followers_pending.set()
-        return result
+        nonlocal once_count
+        with count_lock:
+            once_count += 1
+        return real_once()
 
     monkeypatch.setattr(keyless, "_read_settings", delayed_read)
     monkeypatch.setattr(keyless, "_settings_once", counted_once)
@@ -319,10 +364,11 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
         ]
         try:
             for _ in range(100):
-                if owner_started.is_set() and all_followers_pending.is_set():
+                if owner_started.is_set():
                     break
                 await asyncio.sleep(0.01)
-            assert owner_started.is_set() and all_followers_pending.is_set()
+            assert owner_started.is_set()
+            assert once_count == 1
 
             unrelated = asyncio.create_task(run_in_threadpool(lambda: "available"))
             assert await asyncio.wait_for(unrelated, timeout = 1) == "available"
@@ -331,6 +377,7 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
             await asyncio.gather(*requests)
             limiter.total_tokens = original_tokens
         assert observed == [True] * 4
+        assert once_count == 1
 
     asyncio.run(exercise())
 
@@ -379,19 +426,24 @@ def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
     asyncio.run(exercise())
 
 
-def test_async_retry_locks_do_not_retain_closed_event_loops():
+def test_async_settings_tasks_do_not_retain_closed_event_loops(monkeypatch):
     import gc
     import weakref
     import utils.keyless_api_access as keyless
 
     loop_refs = []
 
-    async def register_lock():
+    async def immediate_settings():
+        return "off", False, 0
+
+    monkeypatch.setattr(keyless, "_refresh_settings_async", immediate_settings)
+
+    async def read_settings():
         loop_refs.append(weakref.ref(asyncio.get_running_loop()))
-        assert isinstance(keyless._async_settings_retry_lock(), asyncio.Lock)
+        assert (await keyless._settings_async())[:2] == ("off", False)
 
     for _ in range(3):
-        asyncio.run(register_lock())
+        asyncio.run(read_settings())
     gc.collect()
 
     assert all(ref() is None for ref in loop_refs)
