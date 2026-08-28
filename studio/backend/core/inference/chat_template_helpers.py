@@ -1635,34 +1635,26 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
-# A raw block is prompt text that happens to contain braces, so its "{{" never opens an
-# expression. _jinja_expression_spans reads it as code; a rewrite there would edit the
-# literal an example is meant to show.
-_JINJA_RAW = re.compile(r"\{%-?\s*raw\s*-?%\}.*?\{%-?\s*endraw\s*-?%\}", re.S)
-
-
-def _raw_spans(body: str) -> tuple:
-    """The character ranges a ``{% raw %}`` block emits verbatim."""
-    return tuple((match.start(), match.end()) for match in _JINJA_RAW.finditer(body))
-
-
 def _evaluated_spans(template: str) -> tuple:
     """The ranges Jinja evaluates, walked quote-aware, with string literals taken out.
 
     ``_jinja_expression_spans`` ends a block at the first ``}}``, so a template printing
-    literal Jinja -- ``{{ "{{ example.0 }}" }}`` -- reads as code and would be rewritten in
-    the prompt. That scanner is shared with ``model_markup`` (#7066) and stays as it is;
-    this repair edits the template llama-server launches with, so it does its own walk.
+    literal Jinja -- ``{{ "{{ example.0 }}" }}`` -- reads as code. That scanner is shared
+    with ``model_markup`` (#7066) and stays as it is; this repair edits the template
+    llama-server launches with, so it walks the blocks itself.
+
+    A comment and a ``{% raw %}`` body are both skipped. Raw is tracked through this same
+    walk rather than matched in the source, so tag text that only appears inside a comment
+    or a literal cannot make a real expression between two of them look verbatim.
     """
     spans: list = []
     index, end = 0, len(template)
+    verbatim = False
     while index < end - 1:
         if template[index] != "{" or template[index + 1] not in "{%#":
             index += 1
             continue
         if template[index + 1] == "#":
-            # A comment renders nothing, so a rewrite there would only cost the model a
-            # needless launch through --chat-template-file.
             closed = template.find("#}", index + 2)
             index = end if closed < 0 else closed + 2
             continue
@@ -1671,6 +1663,7 @@ def _evaluated_spans(template: str) -> tuple:
         cursor = index + 2
         run = cursor
         quote = ""
+        closed = False
         while cursor < end:
             char = template[cursor]
             if quote:
@@ -1685,10 +1678,18 @@ def _evaluated_spans(template: str) -> tuple:
                 quote = char
             elif template.startswith(closer, cursor):
                 block.append((run, cursor))
-                spans.extend(block)
+                closed = True
                 break
             cursor += 1
-        index = cursor + 2 if cursor < end else end
+        if not closed:
+            # An unterminated block is text, not code, so nothing in it is rewritten.
+            break
+        tag = template[index + 2 : cursor].strip().strip("-").strip()
+        if closer == "%}" and tag in ("raw", "endraw"):
+            verbatim = tag == "raw"
+        elif not verbatim:
+            spans.extend(block)
+        index = cursor + 2
     return tuple(spans)
 
 
@@ -1711,11 +1712,10 @@ def repair_numeric_member_access(template) -> Optional[str]:
     if not isinstance(template, str) or not template:
         return None
     spans = _evaluated_spans(template)
-    verbatim = _raw_spans(template)
     out: list = []
     cursor = 0
     for match in _NUMERIC_MEMBER.finditer(template):
-        if not _within(spans, match.start()) or _within(verbatim, match.start()):
+        if not _within(spans, match.start()):
             continue
         out.append(template[cursor : match.start()])
         indices = "".join(f"[{n}]" for n in re.findall(r"\d+", match.group(2)))

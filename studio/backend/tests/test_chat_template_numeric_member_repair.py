@@ -66,6 +66,14 @@ def test_a_raw_block_keeps_the_braces_it_prints():
     assert repair_numeric_member_access("{%- raw -%}{{ example.0 }}{%- endraw -%}") is None
 
 
+def test_raw_tags_that_are_only_comment_text_do_not_open_a_raw_block():
+    # Matching the tags in the source would read the middle expression as verbatim and
+    # leave llama-server the numeric member it rejects.
+    assert repair_numeric_member_access("{# {% raw %} #}{{ m.content.0 }}{# {% endraw %} #}") == (
+        "{# {% raw %} #}{{ m.content[0] }}{# {% endraw %} #}"
+    )
+
+
 def test_a_real_site_outside_a_raw_block_is_still_repaired():
     assert (
         repair_numeric_member_access("{% raw %}{{ example.0 }}{% endraw %}{{ m.content.0.output }}")
