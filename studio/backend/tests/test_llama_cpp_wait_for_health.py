@@ -476,3 +476,32 @@ def test_every_failed_health_wait_in_load_model_checks_the_cancel_flag():
         f"{len(waits)} health wait(s) in load_model but only {len(guards)} cancel guard(s); "
         "a failure branch classifies a cancelled load as a server-start failure"
     )
+
+
+def test_a_cancelled_diffusion_start_reaps_the_runner():
+    """An automatic switch cancels without unloading, so nothing else reaps the shim
+    and the visual server; they would keep loading and holding memory."""
+    import subprocess
+
+    b = LlamaCppBackend()
+    kills = []
+    b._kill_process = lambda *a, **kw: kills.append(1)
+    b._find_diffusion_assets = lambda *a, **kw: (["/bin/true"], "/bin/true", None)
+    b._find_free_port = lambda *a, **kw: 45999
+
+    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+        b._health_wait_cancelled = True
+        return False
+
+    b._wait_for_health = _wait
+    proc = mock.Mock()
+    proc.poll.return_value = None
+    proc.pid = 999
+    with mock.patch.object(subprocess, "Popen", return_value = proc):
+        assert b._start_diffusion_server(
+            model_path = "/m/x.gguf", gguf_path = "/m/x.gguf", hf_repo = None,
+            hf_variant = None, model_identifier = "o/m", n_ctx = 4096,
+            extra_args = None, cancelled = lambda: True,
+        ) is False
+    # One teardown before the launch, one for the cancelled runner.
+    assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"

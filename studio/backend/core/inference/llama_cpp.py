@@ -12810,7 +12810,14 @@ class LlamaCppBackend:
             self._requested_n_ctx = int(n_ctx)
         else:
             self._healthy = False
-            logger.error("DiffusionGemma runner failed to become healthy")
+            if getattr(self, "_health_wait_cancelled", False):
+                # An automatic switch cancels without unloading, so nothing else reaps
+                # the shim and the visual server: they would keep loading and holding
+                # memory until some later teardown.
+                logger.info("DiffusionGemma start cancelled; stopping the runner")
+                self._kill_process()
+            else:
+                logger.error("DiffusionGemma runner failed to become healthy")
         return healthy
 
     # ── HF download (no lock held) ───────────────────────────────
@@ -22118,6 +22125,13 @@ class LlamaCppBackend:
                             # and keep the staged runtime for the caller's next argv.
                             self._kill_process()
                             return False
+                        if getattr(self, "_health_wait_cancelled", False):
+                            # Cancelled during the staged replay's wait. Reap the child
+                            # and report no replay; load_model turns that into a return.
+                            self._kill_process()
+                            self._cleanup_failed_cpu_fallback()
+                            self._vram_fraction_pending = None
+                            return False
                         cpu_rc = self._process.poll() if self._process is not None else None
                         detail = self._classify_llama_start_failure(
                             "\n".join(self._stdout_lines[-50:]),
@@ -22253,6 +22267,8 @@ class LlamaCppBackend:
                             avail_mib = _preflight_avail_mib,
                         )
                         if prepared is None:
+                            if getattr(self, "_health_wait_cancelled", False):
+                                return False
                             _raise_terminal_load_failure(
                                 "The prior Vulkan CPU fallback could not be reconstructed; run "
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
@@ -22940,6 +22956,8 @@ class LlamaCppBackend:
                                 elif self._is_gpu_memory_start_failure(_cpu_projector_out):
                                     # The projector was already off the GPU, so removing it
                                     # cannot repair this allocation failure; keep the real error.
+                                    if getattr(self, "_health_wait_cancelled", False):
+                                        return False
                                     _raise_terminal_load_failure(
                                         self._classify_llama_start_failure(
                                             _cpu_projector_out,
@@ -22955,6 +22973,8 @@ class LlamaCppBackend:
                         elif _projector_memory and _paravirtual_mmproj_pinnable(server_caps):
                             # An env/argv pin already put mmproj on CPU. Text-only
                             # cannot free additional GPU memory, so surface the OOM.
+                            if getattr(self, "_health_wait_cancelled", False):
+                                return False
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(
                                     out,
@@ -23039,6 +23059,8 @@ class LlamaCppBackend:
                                         if not _projector_msg:
                                             self._mmproj_fallback_reason = None
                                     else:
+                                        if getattr(self, "_health_wait_cancelled", False):
+                                            return False
                                         _raise_terminal_load_failure(
                                             self._gpu_init_crash_message(binary)
                                         )
@@ -23053,6 +23075,8 @@ class LlamaCppBackend:
                                         (self._api_key,),
                                         self._extra_args,
                                     )
+                                    if getattr(self, "_health_wait_cancelled", False):
+                                        return False
                                     _raise_terminal_load_failure(
                                         self._mmproj_retry_failure_message(
                                             projector_confirmed = _projector_msg,
@@ -23079,6 +23103,8 @@ class LlamaCppBackend:
                         if _replayed:
                             healthy = True
                         else:
+                            if getattr(self, "_health_wait_cancelled", False):
+                                return False
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(
                                     out,
