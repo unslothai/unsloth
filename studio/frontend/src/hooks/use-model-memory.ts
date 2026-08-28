@@ -20,6 +20,8 @@ import { estimateKvCache } from "@/features/chat/api/chat-api";
 import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
+} from "@/features/chat/stores/chat-runtime-keys";
+import {
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   useChatRuntimeStore,
