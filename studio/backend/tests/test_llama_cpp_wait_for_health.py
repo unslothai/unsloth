@@ -151,9 +151,7 @@ class TestWaitForHealthResilience:
             return mock.Mock(status_code = 200)
 
         monkeypatch.setattr(httpx, "get", probe)
-        assert b._wait_for_health(
-            timeout = 30.0, interval = 0.01, cancelled = scoped.is_set
-        ) is False
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01, cancelled = scoped.is_set) is False
 
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
@@ -432,9 +430,18 @@ class TestCancelledWaitEndsTheLoad:
         scoped.set()
         real_wait = b._wait_for_health
         b._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: real_wait(
-            timeout = 2.0, interval = 0.05, cancelled = scoped.is_set,
+            timeout = 2.0,
+            interval = 0.05,
+            cancelled = scoped.is_set,
         )
 
-        assert b.load_model(GgufLoadIntent(
-            model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096,
-        )) is False
+        assert (
+            b.load_model(
+                GgufLoadIntent(
+                    model_identifier = "owner/model",
+                    gguf_path = str(gguf),
+                    n_ctx = 4096,
+                )
+            )
+            is False
+        )
