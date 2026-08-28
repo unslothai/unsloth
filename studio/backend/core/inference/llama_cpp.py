@@ -25849,6 +25849,12 @@ class LlamaCppBackend:
 
             health_probe_event.wait(interval)
 
+        if cancelled is not None and cancelled():
+            self._stdout_lines.append("llama-server startup cancelled")
+            logger.info("llama-server startup cancelled at the health-check deadline")
+            self._health_wait_cancelled = True
+            return False
+
         # Leave a marker so _classify_llama_start_failure tells a live but
         # never-healthy load (too large, or a proxy hijacking the loopback
         # probe) apart from a bad GGUF (#5740).

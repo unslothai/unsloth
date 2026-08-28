@@ -103,6 +103,20 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert len(probes) == 3
 
+    def test_cancel_at_the_deadline_is_not_reported_as_a_timeout(self, monkeypatch):
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        b._health_probe_event = mock.Mock()
+        b._health_probe_event.wait.side_effect = lambda _interval: b._cancel_event.set()
+        ticks = iter((0.0, 0.0, 1.0))
+        monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+
+        assert b._wait_for_health(timeout = 0.5, interval = 0.5) is False
+        assert b._health_wait_cancelled is True
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
     def test_a_scoped_load_cancel_stops_the_wait(self, monkeypatch):
         """An auto-switch or a /load carrying load_request_id cancels through its own
         event and never calls unload_model, so _cancel_event stays clear. The wait has
