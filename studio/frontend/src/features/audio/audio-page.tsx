@@ -114,8 +114,13 @@ import {
   MOSS_TTS_DEFAULT_SECONDS,
   MOSS_TTS_FRAMES_PER_SECOND,
   MOSS_TTS_MAX_FRAMES,
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_SECONDS,
+  minimaxMusicFramesForSeconds,
   mossTtsMaxFrames,
   mossTtsFramesForSeconds,
+  nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
   resolveAudioPickTask,
@@ -321,6 +326,9 @@ export function AudioPage({
   }, []);
   const [maxTokens, setMaxTokens] = useState(2048);
   const [mossMaxSeconds, setMossMaxSeconds] = useState(MOSS_TTS_DEFAULT_SECONDS);
+  const [minimaxMaxSeconds, setMinimaxMaxSeconds] = useState(
+    MINIMAX_MUSIC_DEFAULT_SECONDS,
+  );
   const generateAbort = useRef<AbortController | null>(null);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
@@ -1654,6 +1662,9 @@ export function AudioPage({
     status?.audio_type === "minimax_music3" ||
     isMusicGenerationModel(status?.active_model);
   const mossLocalGeneration = status?.audio_type === "moss_tts_local";
+  const instructionsKind = musicGeneration
+    ? "music"
+    : nativeAudioInstructionsKind(status?.audio_type);
   const handleEject = useCallback(() => {
     if (busy !== null || isRecording) {
       toast.info("Stop the active audio task before ejecting its model.");
@@ -1801,10 +1812,12 @@ export function AudioPage({
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
         max_tokens:
-          mossFrameLimit !== null
+          musicGeneration
+            ? minimaxMusicFramesForSeconds(minimaxMaxSeconds)
+            : mossFrameLimit !== null
             ? mossTtsFramesForSeconds(mossMaxSeconds, mossFrameLimit)
             : maxTokens,
-        ...((musicGeneration || mossLocalGeneration) && instructions
+        ...(instructionsKind !== null && instructions
           ? { audio_instructions: instructions }
           : {}),
         ...(mossLocalGeneration && language
@@ -1867,6 +1880,8 @@ export function AudioPage({
     mossLocalGeneration,
     mossFrameLimit,
     mossMaxSeconds,
+    minimaxMaxSeconds,
+    instructionsKind,
     temperature,
     temperatureEdited,
     maxTokens,
@@ -2432,15 +2447,21 @@ export function AudioPage({
                     className="min-h-28"
                   />
                 </Field>
-                {musicGeneration || mossLocalGeneration ? (
+                {instructionsKind !== null ? (
                   <Field
                     label={
-                      musicGeneration ? "Music description" : "Style instructions"
+                      instructionsKind === "music"
+                        ? "Music description"
+                        : instructionsKind === "scene"
+                          ? "Scene description"
+                          : "Style instructions"
                     }
                     hint={
-                      musicGeneration
+                      instructionsKind === "music"
                         ? "Describe genre, tempo, mood, vocals, and arrangement. MiniMax Music 3 requires this separately from the lyrics."
-                        : "Optional MOSS Local guidance such as speaking style, emotion, pace, or delivery."
+                        : instructionsKind === "scene"
+                          ? "Optional Higgs TTS 2 scene guidance such as room acoustics, recording conditions, or background ambience."
+                          : "Optional MOSS Local guidance such as speaking style, emotion, pace, or delivery."
                     }
                   >
                     <Textarea
@@ -2449,9 +2470,11 @@ export function AudioPage({
                         setAudioInstructions(event.target.value)
                       }
                       placeholder={
-                        musicGeneration
+                        instructionsKind === "music"
                           ? "Acoustic pop, 96 BPM, warm female lead, fingerpicked guitar and soft piano…"
-                          : "Warm, measured delivery with a calm conversational tone…"
+                          : instructionsKind === "scene"
+                            ? "Close-mic studio recording in a quiet, softly treated room…"
+                            : "Warm, measured delivery with a calm conversational tone…"
                       }
                       className="min-h-24"
                     />
@@ -2488,7 +2511,18 @@ export function AudioPage({
                       onChange={handleTemperatureChange}
                     />
                   ) : null}
-                  {mossFrameLimit !== null ? (
+                  {musicGeneration ? (
+                    <ParamSlider
+                      label="Max duration (seconds)"
+                      value={minimaxMaxSeconds}
+                      min={1}
+                      max={MINIMAX_MUSIC_MAX_SECONDS}
+                      step={1 / MINIMAX_MUSIC_FRAMES_PER_SECOND}
+                      onChange={setMinimaxMaxSeconds}
+                      valueSize={8}
+                      info={`Starts at ${MINIMAX_MUSIC_DEFAULT_SECONDS} seconds. MiniMax Music 3 generates ${MINIMAX_MUSIC_FRAMES_PER_SECOND} frames per second, up to ${MINIMAX_MUSIC_MAX_SECONDS} seconds.`}
+                    />
+                  ) : mossFrameLimit !== null ? (
                     <ParamSlider
                       label="Max duration (seconds)"
                       value={mossMaxSeconds}

@@ -39,6 +39,35 @@ export const MOSS_TTS_DEFAULT_SECONDS = 15;
 export const MOSS_TTS_MAX_FRAMES = 32768;
 export const MOSS_TTS_MAX_SECONDS =
   MOSS_TTS_MAX_FRAMES / MOSS_TTS_FRAMES_PER_SECOND;
+export const MINIMAX_MUSIC_FRAMES_PER_SECOND = 25;
+export const MINIMAX_MUSIC_DEFAULT_SECONDS = 30;
+export const MINIMAX_MUSIC_MAX_FRAMES = 9000;
+export const MINIMAX_MUSIC_MAX_SECONDS =
+  MINIMAX_MUSIC_MAX_FRAMES / MINIMAX_MUSIC_FRAMES_PER_SECOND;
+
+export type NativeAudioInstructionsKind = "scene" | "style" | "music";
+
+export function nativeAudioInstructionsKind(
+  audioType?: string | null,
+): NativeAudioInstructionsKind | null {
+  if (audioType === "higgs_tts2") {
+    return "scene";
+  }
+  if (audioType === "moss_tts_local") {
+    return "style";
+  }
+  if (audioType === "minimax_music3") {
+    return "music";
+  }
+  return null;
+}
+
+export function minimaxMusicFramesForSeconds(seconds: number): number {
+  return Math.min(
+    MINIMAX_MUSIC_MAX_FRAMES,
+    Math.max(1, Math.floor(seconds * MINIMAX_MUSIC_FRAMES_PER_SECOND)),
+  );
+}
 
 export function mossTtsFramesForSeconds(
   seconds: number,
