@@ -391,6 +391,30 @@ def test_unpolled_terminal_jobs_still_obey_the_memory_cap(client, backend, monke
     assert gallery_module.get_job(ids[0]) is not None
 
 
+def test_listing_keeps_persisted_failures_beyond_the_memory_cap(client, backend, monkeypatch):
+    monkeypatch.setattr(video_routes, "_MAX_REMEMBERED_JOBS", 2)
+    ids = []
+    for index in range(3):
+        job = video_routes._VideoJob(
+            id = f"video_failed_{index}",
+            created_at = index + 1,
+            prompt = f"failed {index}",
+            model = "model",
+            size = "768x512",
+            seconds = "5",
+            status = "failed",
+            completed_at = index + 1,
+            error = {"code": "video_generation_failed", "message": f"failure {index}"},
+        )
+        gallery_module.save_job(job.id, vars(job))
+        ids.append(job.id)
+
+    video_routes._jobs = {}
+    listed = client.get("/v1/videos").json()
+    assert [video["id"] for video in listed["data"]] == list(reversed(ids))
+    assert listed["has_more"] is False
+
+
 def test_a_worker_outcome_that_arrives_before_the_job_record_is_not_overwritten(client, backend):
     video_id = "video_worker_won_the_race"
     gallery_module.record_job_outcome(
@@ -822,6 +846,71 @@ def test_deleting_a_job_that_finishes_mid_cancel_removes_the_clip(client, backen
     assert gallery_module.owned_video_path(job["id"]) is None
     assert client.get(f"/v1/videos/{job['id']}").status_code == 404
     assert [v["id"] for v in client.get("/v1/videos").json()["data"]] == []
+
+
+def test_a_stale_poller_cannot_recreate_a_deleted_job(client, backend, monkeypatch):
+    video_id = "video_delete_poll_race"
+    job = video_routes._VideoJob(
+        id = video_id,
+        created_at = 1,
+        prompt = "racy poll",
+        model = "model",
+        size = "768x512",
+        seconds = "5",
+    )
+    video_routes._jobs[video_id] = job
+    gallery_module.save_job(video_id, vars(job))
+
+    save_started = threading.Event()
+    release_save = threading.Event()
+    forget_started = threading.Event()
+    delete_done = threading.Event()
+    real_save = gallery_module.save_job
+    real_forget = gallery_module.forget_job
+
+    def _delayed_save(saved_id, record):
+        save_started.set()
+        assert release_save.wait(timeout = 5.0)
+        real_save(saved_id, record)
+
+    def _observed_forget(forgotten_id):
+        result = real_forget(forgotten_id)
+        forget_started.set()
+        return result
+
+    monkeypatch.setattr(gallery_module, "save_job", _delayed_save)
+    monkeypatch.setattr(gallery_module, "forget_job", _observed_forget)
+    monkeypatch.setattr(
+        video_routes,
+        "_lookup_video",
+        lambda requested_id: video_routes._job_to_openai(job)
+        if requested_id == video_id
+        else None,
+    )
+    monkeypatch.setattr(video_routes, "_await_generate_settled", lambda _video_id: True)
+
+    poller = threading.Thread(target = video_routes._sync_jobs)
+    poller.start()
+    assert save_started.wait(timeout = 5.0)
+
+    responses = []
+
+    def _delete():
+        responses.append(client.delete(f"/v1/videos/{video_id}"))
+        delete_done.set()
+
+    deleter = threading.Thread(target = _delete)
+    deleter.start()
+    if forget_started.wait(timeout = 0.5):
+        assert delete_done.wait(timeout = 5.0)
+    release_save.set()
+    poller.join(timeout = 5.0)
+    deleter.join(timeout = 5.0)
+
+    assert not poller.is_alive() and not deleter.is_alive()
+    assert responses[0].status_code == 200, responses[0].json()
+    assert gallery_module.get_job(video_id) is None
+    assert video_id not in video_routes._jobs
 
 
 def test_an_undecodable_reference_is_refused_before_the_model_switch(client, backend, monkeypatch):

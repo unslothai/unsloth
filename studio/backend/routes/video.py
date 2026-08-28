@@ -757,10 +757,8 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     _forget_terminal_video(video_id)
-    if not video_gallery.forget_job(video_id):
+    if not await asyncio.to_thread(_forget_openai_job, video_id):
         raise HTTPException(status_code = 500, detail = "Could not delete the video job.")
-    with _jobs_lock:
-        _jobs.pop(video_id, None)
     return {"deleted": True}
 
 
@@ -781,11 +779,7 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
         )
     # Clear-all takes the terminal record's clip with it whatever its id.
     _forget_terminal_video(None)
-    failed = [video_id for video_id in cleared if not video_gallery.forget_job(video_id)]
-    with _jobs_lock:
-        for video_id in cleared:
-            if video_id not in failed:
-                _jobs.pop(video_id, None)
+    failed = await asyncio.to_thread(_forget_openai_jobs, cleared)
     if failed:
         raise HTTPException(status_code = 500, detail = "Could not delete every video job.")
     return {"removed": len(cleared)}
@@ -825,6 +819,25 @@ class _VideoJob:
 
 _jobs: dict[str, _VideoJob] = {}
 _jobs_lock = threading.Lock()
+
+
+def _forget_openai_job(video_id: str) -> bool:
+    """Forget disk and memory state without letting a stale poll save between them."""
+    from core.inference import video_gallery
+
+    with _jobs_lock:
+        if not video_gallery.forget_job(video_id):
+            return False
+        _jobs.pop(video_id, None)
+    return True
+
+
+def _forget_openai_jobs(video_ids: list[str]) -> list[str]:
+    failed = []
+    for video_id in video_ids:
+        if not _forget_openai_job(video_id):
+            failed.append(video_id)
+    return failed
 
 
 def _openai_video_error(
@@ -978,10 +991,10 @@ def _remember_job(job: _VideoJob) -> None:
         if excess > 0:
             for stale in [j for j in _jobs.values() if j.terminal][:excess]:
                 _jobs.pop(stale.id, None)
-    try:
-        video_gallery.save_job(job.id, asdict(job))
-    except OSError as exc:
-        logger.warning("openai_videos.persist_job_failed: %s", exc)
+        try:
+            video_gallery.save_job(job.id, asdict(job))
+        except OSError as exc:
+            logger.warning("openai_videos.persist_job_failed: %s", exc)
 
 
 def _job_from_record(record: dict) -> Optional[_VideoJob]:
@@ -1016,20 +1029,22 @@ def _hydrate_job(video_id: str) -> None:
     with _jobs_lock:
         if video_id in _jobs:
             return
-    job = _job_from_record(video_gallery.get_job(video_id) or {})
-    if job is not None:
-        with _jobs_lock:
+        job = _job_from_record(video_gallery.get_job(video_id) or {})
+        if job is not None:
             _jobs.setdefault(job.id, job)
 
 
-def _hydrate_jobs() -> None:
+def _hydrate_jobs() -> list[_VideoJob]:
     from core.inference import video_gallery
 
-    jobs = [job for raw in video_gallery.list_jobs() if (job := _job_from_record(raw)) is not None]
-    jobs.sort(key = lambda job: job.created_at, reverse = True)
     with _jobs_lock:
+        jobs = [
+            job for raw in video_gallery.list_jobs() if (job := _job_from_record(raw)) is not None
+        ]
+        jobs.sort(key = lambda job: job.created_at, reverse = True)
         for job in jobs[:_MAX_REMEMBERED_JOBS]:
             _jobs.setdefault(job.id, job)
+    return jobs
 
 
 def _sync_jobs() -> None:
@@ -1080,6 +1095,8 @@ def _sync_jobs() -> None:
                     "message": "The generation ended before a clip was saved.",
                 }
         with _jobs_lock:
+            if _jobs.get(job.id) is not job:
+                continue
             job.status = status
             job.progress = progress
             if completed_at is not None:
@@ -1087,10 +1104,10 @@ def _sync_jobs() -> None:
             if error is not None:
                 job.error = error
             persisted = asdict(job)
-        try:
-            video_gallery.save_job(job.id, persisted)
-        except OSError as exc:
-            logger.warning("openai_videos.persist_job_failed: %s", exc)
+            try:
+                video_gallery.save_job(job.id, persisted)
+            except OSError as exc:
+                logger.warning("openai_videos.persist_job_failed: %s", exc)
 
 
 def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEOUT_S) -> bool:
@@ -1131,10 +1148,11 @@ def _lookup_video(video_id: str) -> Optional[VideoJob]:
 def _all_videos() -> list[VideoJob]:
     from core.inference import video_gallery
 
-    _hydrate_jobs()
+    persisted_jobs = _hydrate_jobs()
     _sync_jobs()
     with _jobs_lock:
-        jobs = dict(_jobs)
+        jobs = {job.id: job for job in persisted_jobs}
+        jobs.update(_jobs)
     records = video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record)
     records.extend(
         video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record, archived = True)
@@ -1527,8 +1545,6 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
         _forget_terminal_video(video_id)
     elif await asyncio.to_thread(video_gallery.get_record, video_id) is not None:
         raise _openai_video_error(500, "Could not delete the video; retry the request.")
-    if not await asyncio.to_thread(video_gallery.forget_job, video_id):
+    if not await asyncio.to_thread(_forget_openai_job, video_id):
         raise _openai_video_error(500, "Could not delete the video job; retry the request.")
-    with _jobs_lock:
-        _jobs.pop(video_id, None)
     return VideoJobDeleteResponse(id = video_id)
