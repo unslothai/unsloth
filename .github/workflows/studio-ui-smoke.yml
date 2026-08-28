@@ -638,6 +638,12 @@ jobs:
         if: matrix.shard == 'extra'
         run: |
           if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm install -g npm@^11 --no-fund --no-audit
+            V=$(npm -v)
+            case "$V" in
+              11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+              *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+            esac
             npm --prefix studio/frontend ci --strict-allow-scripts --no-fund --no-audit
           fi
           python tests/studio/playwright_tool_activity.py --json
