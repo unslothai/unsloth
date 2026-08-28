@@ -442,6 +442,10 @@ def _local_model_audio_type(model) -> Optional[str]:
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
     try:
+        if getattr(model, "source", None) == "hf_cache":
+            from hub.utils.inventory_scan import resolve_hf_cache_realpath
+
+            path = resolve_hf_cache_realpath(Path(path)) or path
         from utils.audio_tokens import detect_local_tts_audio_type
         return detect_local_tts_audio_type(path)
     except Exception:
