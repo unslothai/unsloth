@@ -9747,6 +9747,38 @@ class LlamaCppBackend:
         # byte is the paging case this is trying to avoid.
         return spill <= max(0, avail - headroom_mib) * 1024 * 1024
 
+    # llama-server's own --cache-ram default, in MiB (common/common.h:632). Named
+    # rather than repeated, so the footprint and any future bound cannot drift.
+    _DEFAULT_CACHE_RAM_MIB = 8192
+
+    @staticmethod
+    def _effective_prompt_cache_bytes(
+        cache_ram: Optional[int],
+        server_caps: Optional[Mapping[str, object]] = None,
+    ) -> int:
+        """Host RAM llama-server may take for its prompt cache on this launch.
+
+        ``cache_ram`` follows llama.cpp's own spelling: None means "not set, so the
+        default applies", 0 disables the cache, and -1 means no limit. -1 is charged
+        as the default rather than as infinity -- an unbounded cache cannot be
+        budgeted at all, and answering "never fits" for it would be worse than
+        answering with the size it is actually likely to reach.
+
+        A build without ``--cache-ram`` predates the prompt cache, so there is
+        nothing to charge.
+        """
+        if server_caps is not None and not server_caps.get("supports_cache_ram"):
+            return 0
+        if cache_ram is None:
+            mib = LlamaCppBackend._DEFAULT_CACHE_RAM_MIB
+        else:
+            mib = int(cache_ram)
+            if mib == 0:
+                return 0
+            if mib < 0:
+                mib = LlamaCppBackend._DEFAULT_CACHE_RAM_MIB
+        return max(0, mib) * 1024 * 1024
+
     def _fit_derived_load_mode(
         self,
         *,
@@ -9757,6 +9789,7 @@ class LlamaCppBackend:
         mtp_bytes: int = 0,
         mtp_unsized: bool = False,
         host_only_bytes: int = 0,
+        prompt_cache_bytes: int = 0,
         compute_buffer_flat: int = 0,
         compute_buffer_ctx: int = 0,
         pipeline_overhead_bytes: int = 0,
@@ -9945,6 +9978,21 @@ class LlamaCppBackend:
                 + max(0, mmproj_pinned_bytes)
                 # Same split as the pinned projector: counted once above, charged to RAM.
                 + (max(0, kv_cache_bytes) if _kv_on_host else 0)
+                # llama-server's prompt cache: host RAM, and free VRAM can never pay
+                # for it. `server_prompt::data.main` is a std::vector<uint8_t>
+                # (tools/server/server-task.h:589) filled by
+                # llama_state_seq_get_data_ext, and it defaults to 8192 MiB
+                # (common/common.h:632). No term here charged it, which is the one
+                # thing this footprint is documented never to do -- understating
+                # claims a fit that is not there and then hands the load a loader
+                # that CANNOT page, so the cache filling later is an OOM kill rather
+                # than a slowdown.
+                #
+                # Observed filling in a real run's log, 2339 -> 4679 MiB over 277
+                # requests, so this is not a ceiling that never gets reached. It is
+                # charged in full rather than at some assumed live fraction because
+                # this predicate's whole bias is to refuse rather than to hope.
+                + max(0, prompt_cache_bytes)
             ),
             vram_margin_mib = fit_margin_mib,
             avail_mib = avail_mib,
@@ -19958,6 +20006,13 @@ class LlamaCppBackend:
                         # Host-only, not pooled: -ngld 0 puts the drafter in RAM, which
                         # free VRAM cannot pay for.
                         host_only_bytes = _cpu_draft_fit_bytes or 0,
+                        # The prompt cache this launch will really permit: the panel's
+                        # value when one was typed, else llama-server's own default.
+                        # A build too old for --cache-ram has no prompt cache to
+                        # charge, and an explicit 0 disables it, so both come out 0.
+                        prompt_cache_bytes = self._effective_prompt_cache_bytes(
+                            cache_ram, server_caps
+                        ),
                         # One lump on the layer path, where the graph buffer is
                         # allocated once. A tensor split replicates it on every selected
                         # device, so pricing one LAYER-mode buffer there understates a

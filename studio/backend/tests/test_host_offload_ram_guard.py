@@ -152,3 +152,39 @@ def test_cgroup_v1_reclaims_hierarchical_inactive_file_cache(tmp_path, monkeypat
     monkeypatch.setattr(llama_cpp_module, "_PROC_SELF_CGROUP", str(proc_cgroup))
 
     assert LlamaCppBackend._cgroup_available_memory_mib() == 12 * _MIB_PER_GB
+
+
+# ------------------------------------------------- prompt cache in the footprint
+
+def _cache_bytes(cache_ram, caps = None):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    return LlamaCppBackend._effective_prompt_cache_bytes(cache_ram, caps)
+
+
+def test_the_prompt_cache_defaults_to_llama_cpps_own_8192_mib():
+    """Unset means llama-server's default applies, and that default is 8 GiB of
+    host RAM (common/common.h:632) that no footprint term used to charge."""
+    assert _cache_bytes(None) == 8192 * 1024 * 1024
+
+
+def test_an_explicit_zero_disables_the_cache_and_costs_nothing():
+    assert _cache_bytes(0) == 0
+
+
+def test_a_typed_ceiling_is_charged_at_what_was_typed():
+    assert _cache_bytes(512) == 512 * 1024 * 1024
+
+
+def test_no_limit_is_charged_as_the_default_not_as_infinity():
+    """-1 is llama.cpp's "no limit". Charging infinity would answer "never fits"
+    for every load and take --load-mode none away from hosts that are fine; the
+    default is the size it is actually likely to reach."""
+    assert _cache_bytes(-1) == 8192 * 1024 * 1024
+
+
+def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
+    """--cache-ram predates nothing here: a server that does not accept it has no
+    prompt cache, so charging one would refuse fits that are real."""
+    assert _cache_bytes(None, {"supports_cache_ram": False}) == 0
+    assert _cache_bytes(None, {"supports_cache_ram": True}) == 8192 * 1024 * 1024

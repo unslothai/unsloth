@@ -458,7 +458,10 @@ def test_the_per_device_check_passes_when_the_shares_really_fit():
     that each one's row share fits with room to spare return None -- no abstain
     reason -- for the same full spill the tight case rejects."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
-    spilled = {b.index for b in layout.blocks}
+    # BYTES per block, not a set of indices: once a rung can move part of a
+    # block, crediting the whole block for a partial move is the optimistic
+    # direction and a per-device shortfall is a hard throw.
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     tight = _ALL_SPILL_VRAM // 2
     assert (
         _per_device_shortfall(
@@ -998,20 +1001,41 @@ def test_the_spill_pattern_never_reaches_an_excluded_mtp_block():
     assert len(plan.spilled_blocks) == len(layout.blocks), "every block goes"
     assert len(plan.ot_patterns) >= 1
 
-    pattern = re.compile(plan.ot_patterns[0])
-    assert pattern.search("blk.0.ffn_up.weight"), "a target block still spills"
-    assert pattern.search("blk.63.ffn_up.weight")
+    # The UNION, not patterns[0]. Boundary grading emits the last block taken as
+    # its own pattern, so a single-pattern assertion reads block 63 as missing
+    # when it is simply in the next one.
+    def spills(tensor: str) -> bool:
+        return any(re.compile(p).search(tensor) for p in plan.ot_patterns)
+
+    assert spills("blk.0.ffn_up.weight"), "a target block still spills"
+    assert spills("blk.63.ffn_up.weight")
     for excluded in ("blk.64.ffn_up.weight", "blk.65.ffn_down.weight"):
-        assert pattern.search(excluded) is None, excluded
+        assert not spills(excluded), excluded
 
 
-def test_a_gguf_without_excluded_blocks_keeps_the_compact_pattern():
-    """The bound is only paid where it buys something: with nothing excluded the
-    global form is still used, which is the shape the benchmarks measured."""
+def test_every_spill_pattern_is_bounded_to_blocks_the_layout_knows():
+    """The unbounded ``^blk\\.\\d+\\.`` form is gone, including where nothing is
+    excluded.
+
+    This test used to assert the OPPOSITE -- that a GGUF with no excluded blocks
+    kept the compact global form, on the grounds that the bound is only worth
+    paying where it buys something. The ladder settled that differently: block
+    indices are enumerated because a rung may take a block in part, and the
+    boundary block is emitted separately, so no path still produces the global
+    form. That is the safer of the two, since llama.cpp applies these with
+    ``std::regex_search`` (llama-model-loader.cpp:1182) and an unbounded pattern
+    matches any future trailing block the layout never sized.
+    """
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     plan = plan_placement(layout, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
     assert len(plan.spilled_blocks) == len(layout.blocks)
-    assert re.compile(plan.ot_patterns[0]).search("blk.999.ffn_up.weight")
+
+    def spills(tensor: str) -> bool:
+        return any(re.compile(p).search(tensor) for p in plan.ot_patterns)
+
+    assert spills("blk.0.ffn_up.weight")
+    assert spills("blk.63.ffn_up.weight"), "the boundary block is covered too"
+    assert not spills("blk.999.ffn_up.weight"), "no block outside the layout"
 
 
 def test_extra_resident_bytes_are_charged_against_the_pooled_budget():
@@ -1039,7 +1063,10 @@ def test_row_ownership_is_modelled_on_raw_free_not_on_the_budget():
     card's TOTAL, so the two agree only when every card has the same free/total.
     Feeding the budget in as the split weight silently moves the boundary."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
-    spilled = {b.index for b in layout.blocks}
+    # BYTES per block, not a set of indices: once a rung can move part of a
+    # block, crediting the whole block for a partial move is the optimistic
+    # direction and a per-device shortfall is a hard throw.
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     budgets = [2 * GIB, 2 * GIB]
 
     # Same budgets, different RAW free: the rows move, so the verdict may too.
@@ -1083,9 +1110,33 @@ def test_a_sliding_window_model_abstains_on_a_multi_gpu_split():
     assert plan.changed is False
     assert "sliding-window" in plan.reason
 
-    # One card has no split to mislocate the caches across.
+    # A SINGLE card abstains too, and this assertion is the reverse of what it
+    # used to be. The old premise was that only a split needs to know WHERE the
+    # full-context layers are, so one card could plan normally. gemma-4 refutes
+    # it: `layout.kv_bytes` charges every attention layer the full context at
+    # full head width, while the model caps most layers at a 512-token window,
+    # narrows their heads (key_length_swa 256 against key_length 512) and shares
+    # one cache across 20 layers. Measured, the product said 0.615 GiB at
+    # n_ctx 9216 where llama.cpp allocated 48 MiB -- a 13x over-count. So the
+    # layout cannot size the TOTAL either, not just its placement, and with no
+    # caller-supplied measurement the honest answer on any device count is to
+    # decline rather than spill to cover arithmetic.
     one = plan_placement(swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
-    assert len(one.spilled_blocks) == len(layout.blocks)
+    assert one.changed is False
+    assert one.spilled_blocks == ()
+    assert "sliding-window" in one.reason
+
+    # ...and a supplied measurement lifts it, because then the total IS known.
+    # It spills 56 of 64 rather than all of them: the honest 48 MiB cache leaves
+    # a smaller deficit than the layout's own over-count would have invented,
+    # which is the whole point of preferring the measurement.
+    measured = plan_placement(
+        swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096,
+        opts = _NO_OVERHEAD, kv_bytes_floor = 48 * MIB,
+    )
+    assert measured.changed is True
+    assert "sliding-window" not in measured.reason
+    assert 0 < len(measured.spilled_blocks) <= len(layout.blocks)
 
 
 def _moe_reader(names):
@@ -1153,7 +1204,10 @@ def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
     evenly, so it refuses; with one it knows where the big caches land."""
     layout = _swa_layout()
     half = _ALL_SPILL_VRAM // 2
-    spilled = {b.index for b in layout.blocks}
+    # BYTES per block, not a set of indices: once a rung can move part of a
+    # block, crediting the whole block for a partial move is the optimistic
+    # direction and a per-device shortfall is a hard throw.
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
 
     without = _per_device_shortfall(
         layout,
@@ -1187,7 +1241,10 @@ def test_the_vector_places_the_cache_it_does_not_resize_it():
     """Scaled to the total the caller already priced, so changing only its SHAPE
     moves the cache between devices without changing how much cache there is."""
     layout = _swa_layout()
-    spilled = {b.index for b in layout.blocks}
+    # BYTES per block, not a set of indices: once a rung can move part of a
+    # block, crediting the whole block for a partial move is the optimistic
+    # direction and a per-device shortfall is a hard throw.
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     n = layout.n_layers
     budgets = [_ALL_SPILL_VRAM // 2, _ALL_SPILL_VRAM // 2]
 
@@ -1224,7 +1281,10 @@ def test_the_vector_places_the_cache_it_does_not_resize_it():
 def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
     """A vector of the wrong length is not evidence: abstain, do not stretch it."""
     layout = _swa_layout()
-    spilled = {b.index for b in layout.blocks}
+    # BYTES per block, not a set of indices: once a rung can move part of a
+    # block, crediting the whole block for a partial move is the optimistic
+    # direction and a per-device shortfall is a hard throw.
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     half = _ALL_SPILL_VRAM // 2
     got = _per_device_shortfall(
         layout,
