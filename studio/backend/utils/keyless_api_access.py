@@ -26,8 +26,10 @@ matches the ASGI accepting address and port. Signing in to Unsloth is unaffected
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
+import weakref
 from typing import Any, Optional
 
 KEYLESS_API_ACCESS_SETTING_KEY = "keyless_api_access_scope"
@@ -84,6 +86,8 @@ _cache_lock = threading.Lock()
 _write_lock = threading.Lock()
 # Coalesces concurrent cache misses; see _settings().
 _settings_refresh_inflight: Optional[object] = None
+_settings_write_inflight: Optional[object] = None
+_async_settings_locks = weakref.WeakKeyDictionary()
 
 
 def _reset_scope_cache() -> None:
@@ -113,7 +117,7 @@ def _read_settings() -> tuple[str, bool]:
         return KEYLESS_SCOPE_OFF, False
 
 
-def _settings() -> tuple[str, bool]:
+def _settings_once() -> tuple[str, bool, bool]:
     """Read the persisted scope and tool grant; anything unreadable counts as off.
 
     Unlike a normal setting these remove an authentication requirement, so a damaged
@@ -123,19 +127,21 @@ def _settings() -> tuple[str, bool]:
     keep the server open for the rest of the TTL. The generation counter dates each
     read against the writes, so only a read that still describes the DB is published.
 
-    Only one stale-cache caller reads SQLite. Followers reuse the last published
-    value, or fail closed on a cold start, without occupying AnyIO workers (#9901).
+    Only one stale-cache caller reads SQLite. A pending result tells async callers
+    to retry without occupying an AnyIO worker; synchronous callers fail closed.
     """
     global _cached_settings, _settings_refresh_inflight
     owner_marker: Optional[object] = None
     try:
         now = time.monotonic()
         with _cache_lock:
+            if _settings_write_inflight is not None:
+                return KEYLESS_SCOPE_OFF, False, False
             cached = _cached_settings
             if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
-                return cached[1], cached[2]
+                return cached[1], cached[2], False
             if _settings_refresh_inflight is not None:
-                return (cached[1], cached[2]) if cached is not None else (KEYLESS_SCOPE_OFF, False)
+                return KEYLESS_SCOPE_OFF, False, True
             owner_marker = _settings_refresh_inflight = object()
             generation = _settings_generation
 
@@ -144,12 +150,39 @@ def _settings() -> tuple[str, bool]:
             if generation == _settings_generation:
                 _cached_settings = (time.monotonic(), scope, tools)
             published = _cached_settings
-        return (published[1], published[2]) if published is not None else (scope, tools)
+        if published is not None:
+            return published[1], published[2], False
+        return scope, tools, False
     finally:
         if owner_marker is not None:
             with _cache_lock:
                 if _settings_refresh_inflight is owner_marker:
                     _settings_refresh_inflight = None
+
+
+def _settings() -> tuple[str, bool]:
+    scope, tools, _pending = _settings_once()
+    return scope, tools
+
+
+async def _settings_async() -> tuple[str, bool]:
+    from starlette.concurrency import run_in_threadpool
+
+    scope, tools, pending = await run_in_threadpool(_settings_once)
+    if not pending:
+        return scope, tools
+
+    loop = asyncio.get_running_loop()
+    with _cache_lock:
+        retry_lock = _async_settings_locks.get(loop)
+        if retry_lock is None:
+            retry_lock = _async_settings_locks[loop] = asyncio.Lock()
+    async with retry_lock:
+        while True:
+            scope, tools, pending = await run_in_threadpool(_settings_once)
+            if not pending:
+                return scope, tools
+            await asyncio.sleep(0.01)
 
 
 def get_keyless_api_access_scope() -> str:
@@ -168,30 +201,38 @@ def get_keyless_api_tools_enabled() -> bool:
 
 def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]:
     """Persist which routes are served without a key, and whether tools come with them."""
-    global _cached_settings, _settings_generation
+    global _cached_settings, _settings_generation, _settings_write_inflight
     scope = _coerce_scope(value)
     if scope is None:
         raise ValueError(f"Keyless API access scope must be one of: {', '.join(KEYLESS_SCOPES)}.")
     with _write_lock:
-        allow_tools = _read_settings_from_db()[1] if tools is None else _coerce_bool(tools)
-        if allow_tools is None:
-            raise ValueError("Keyless tool access must be true or false.")
-        # tools are meaningless without a scope, and leaving them ticked would surprise
-        # whoever turns keyless back on later
-        allow_tools = allow_tools and scope != KEYLESS_SCOPE_OFF
-
-        from storage.studio_db import upsert_app_settings
-
-        upsert_app_settings(
-            {
-                KEYLESS_API_ACCESS_SETTING_KEY: scope,
-                KEYLESS_API_TOOLS_SETTING_KEY: allow_tools,
-            }
-        )
+        write_marker = object()
         with _cache_lock:
-            _settings_generation += 1
-            _cached_settings = (time.monotonic(), scope, allow_tools)
-        return scope, allow_tools
+            _settings_write_inflight = write_marker
+        try:
+            allow_tools = _read_settings_from_db()[1] if tools is None else _coerce_bool(tools)
+            if allow_tools is None:
+                raise ValueError("Keyless tool access must be true or false.")
+            # tools are meaningless without a scope, and leaving them ticked would surprise
+            # whoever turns keyless back on later
+            allow_tools = allow_tools and scope != KEYLESS_SCOPE_OFF
+
+            from storage.studio_db import upsert_app_settings
+
+            upsert_app_settings(
+                {
+                    KEYLESS_API_ACCESS_SETTING_KEY: scope,
+                    KEYLESS_API_TOOLS_SETTING_KEY: allow_tools,
+                }
+            )
+            with _cache_lock:
+                _settings_generation += 1
+                _cached_settings = (time.monotonic(), scope, allow_tools)
+            return scope, allow_tools
+        finally:
+            with _cache_lock:
+                if _settings_write_inflight is write_marker:
+                    _settings_write_inflight = None
 
 
 def access_exposure(app_state: Any) -> Optional[str]:
@@ -511,7 +552,10 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
 
 def keyless_request_allowed(request: Any) -> bool:
     """Whether the route and transport are eligible for keyless authentication."""
-    scope = get_keyless_api_access_scope()
+    return _keyless_request_allowed_for_scope(request, get_keyless_api_access_scope())
+
+
+def _keyless_request_allowed_for_scope(request: Any, scope: str) -> bool:
     if scope == KEYLESS_SCOPE_OFF:
         return False
     asgi_scope = getattr(request, "scope", {})
@@ -556,14 +600,13 @@ class KeylessToolPolicyMiddleware:
         if asgi_scope.get("type") != "http":
             await self.app(asgi_scope, receive, send)
             return
-        from starlette.concurrency import run_in_threadpool
-
-        admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope)
+        settings = await _settings_async()
+        admitted = asgi_request_is_keyless(asgi_scope, settings)
         asgi_scope.setdefault("state", {})[KEYLESS_ADMISSION_STATE_KEY] = admitted
         if not admitted:
             await self.app(asgi_scope, receive, send)
             return
-        if await run_in_threadpool(get_keyless_api_tools_enabled):
+        if settings[1]:
             await self.app(asgi_scope, receive, send)
             return
         from state.tool_policy import tools_force_disabled
@@ -572,7 +615,7 @@ class KeylessToolPolicyMiddleware:
             await self.app(asgi_scope, receive, send)
 
 
-def asgi_request_is_keyless(asgi_scope) -> bool:
+def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = None) -> bool:
     """Whether this ASGI request is admitted by the setting rather than by a credential.
 
     Middleware-side twin of ``auth.authentication.admitted_without_credential``, reading
@@ -585,7 +628,12 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
         request = Request(asgi_scope)
     except Exception:
         return False
-    if not keyless_request_allowed(request):
+    allowed = (
+        keyless_request_allowed(request)
+        if settings is None
+        else _keyless_request_allowed_for_scope(request, settings[0])
+    )
+    if not allowed:
         return False
     authorization = [
         bytes(value).decode("latin-1")

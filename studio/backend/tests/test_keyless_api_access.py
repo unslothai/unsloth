@@ -263,12 +263,13 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
         late_result = late_future.result(timeout = 10)
 
     assert call_count == 1
-    assert results == [True] * n_requests
-    assert late_result is True
+    assert results.count(True) == 1
+    assert results.count(False) == n_requests - 1
+    assert isinstance(late_result, bool)
 
 
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
-    """Followers fail closed without occupying every shared worker token (#9901)."""
+    """Followers await one refresh without occupying shared worker tokens (#9901)."""
     import anyio.to_thread
     import utils.keyless_api_access as keyless
     from starlette.concurrency import run_in_threadpool
@@ -282,35 +283,39 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
 
     owner_started = threading.Event()
     release_owner = threading.Event()
-    all_requests_entered = threading.Event()
-    entered_count = 0
-    entered_lock = threading.Lock()
+    all_followers_pending = threading.Event()
+    pending_count = 0
+    pending_lock = threading.Lock()
     real_read = keyless._read_settings_from_db
-    real_check = keyless.asgi_request_is_keyless
+    real_once = keyless._settings_once
 
     def delayed_read():
         owner_started.set()
         assert release_owner.wait(timeout = 10)
         return real_read()
 
-    def counted_check(scope):
-        nonlocal entered_count
-        with entered_lock:
-            entered_count += 1
-            if entered_count == 4:
-                all_requests_entered.set()
-        return real_check(scope)
+    def counted_once():
+        nonlocal pending_count
+        result = real_once()
+        if result[2]:
+            with pending_lock:
+                pending_count += 1
+                if pending_count == 3:
+                    all_followers_pending.set()
+        return result
 
     monkeypatch.setattr(keyless, "_read_settings", delayed_read)
-    monkeypatch.setattr(keyless, "asgi_request_is_keyless", counted_check)
+    monkeypatch.setattr(keyless, "_settings_once", counted_once)
 
     async def exercise():
         limiter = anyio.to_thread.current_default_thread_limiter()
         original_tokens = limiter.total_tokens
         limiter.total_tokens = 4
 
-        async def downstream(*_args):
-            return None
+        observed = []
+
+        async def downstream(scope, *_args):
+            observed.append(scope["state"][KEYLESS_ADMISSION_STATE_KEY])
 
         middleware = KeylessToolPolicyMiddleware(downstream)
         requests = [
@@ -319,10 +324,10 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
         ]
         try:
             for _ in range(100):
-                if owner_started.is_set() and all_requests_entered.is_set():
+                if owner_started.is_set() and all_followers_pending.is_set():
                     break
                 await asyncio.sleep(0.01)
-            assert owner_started.is_set() and all_requests_entered.is_set()
+            assert owner_started.is_set() and all_followers_pending.is_set()
 
             unrelated = asyncio.create_task(run_in_threadpool(lambda: "available"))
             assert await asyncio.wait_for(unrelated, timeout = 1) == "available"
@@ -330,6 +335,51 @@ def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
             release_owner.set()
             await asyncio.gather(*requests)
             limiter.total_tokens = original_tokens
+        assert observed == [True] * 4
+
+    asyncio.run(exercise())
+
+
+def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("inference", tools = True)
+    keyless._cached_settings = (
+        time.monotonic() - keyless._SETTINGS_CACHE_TTL_S - 1,
+        "inference",
+        True,
+    )
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+
+    def failed_read():
+        refresh_started.set()
+        assert release_refresh.wait(timeout = 10)
+        raise OSError("db unavailable")
+
+    monkeypatch.setattr(keyless, "_read_settings_from_db", failed_read)
+
+    async def exercise():
+        observed = []
+
+        async def downstream(scope, *_args):
+            observed.append(scope["state"][KEYLESS_ADMISSION_STATE_KEY])
+
+        middleware = KeylessToolPolicyMiddleware(downstream)
+        requests = [
+            asyncio.create_task(middleware(asgi_scope(), lambda: None, lambda _message: None))
+            for _ in range(2)
+        ]
+        try:
+            for _ in range(100):
+                if refresh_started.is_set() and keyless._settings_refresh_inflight is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert refresh_started.is_set()
+        finally:
+            release_refresh.set()
+            await asyncio.gather(*requests)
+        assert observed == [False, False]
 
     asyncio.run(exercise())
 
@@ -384,6 +434,57 @@ def test_scope_write_aborts_when_preserved_tools_cannot_be_read(monkeypatch):
         set_keyless_api_access("inference")
 
     assert get_keyless_api_access_settings() == ("full", True)
+
+
+def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
+    import storage.studio_db as studio_db
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("inference", tools = True)
+    keyless._cached_settings = (
+        time.monotonic() - keyless._SETTINGS_CACHE_TTL_S - 1,
+        "inference",
+        True,
+    )
+
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    write_committed = threading.Event()
+    release_writer = threading.Event()
+    real_read = keyless._read_settings
+    real_upsert = studio_db.upsert_app_settings
+
+    def delayed_read():
+        refresh_started.set()
+        assert release_refresh.wait(timeout = 10)
+        return real_read()
+
+    def delayed_upsert(settings):
+        result = real_upsert(settings)
+        write_committed.set()
+        assert release_writer.wait(timeout = 10)
+        return result
+
+    monkeypatch.setattr(keyless, "_read_settings", delayed_read)
+    monkeypatch.setattr(studio_db, "upsert_app_settings", delayed_upsert)
+    refresh = threading.Thread(target = keyless._settings)
+    writer = threading.Thread(target = set_keyless_api_access, args = ("off",),
+                              kwargs = {"tools": False})
+    refresh.start()
+    assert refresh_started.wait(timeout = 10)
+    writer.start()
+    try:
+        assert write_committed.wait(timeout = 10)
+        assert asgi_request_is_keyless(asgi_scope(path = "/v1/models")) is False
+        assert get_keyless_api_tools_enabled() is False
+    finally:
+        release_writer.set()
+        writer.join(timeout = 10)
+        release_refresh.set()
+        refresh.join(timeout = 10)
+
+    assert not writer.is_alive() and not refresh.is_alive()
+    assert get_keyless_api_access_settings() == ("off", False)
 
 
 def test_overlapping_writes_publish_in_commit_order(monkeypatch):
