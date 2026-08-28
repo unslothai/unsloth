@@ -23224,8 +23224,9 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
     except Exception as exc:  # noqa: BLE001
         logger.debug("stt models unavailable for /v1/models: %s", exc)
         return []
-    return [
-        {
+    objects = []
+    for model_id in ids:
+        obj = {
             "id": model_id,
             "object": "model",
             "created": created,
@@ -23233,8 +23234,15 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
             "task": _STT_MODEL_TASK,
             "loaded": model_id in loaded,
         }
-        for model_id in ids
-    ]
+        spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model_id)
+        if spec is not None:
+            from hub.utils.gguf import extract_quant_token
+
+            quant = extract_quant_token(spec.model_file)
+            if quant:
+                obj["quant"] = quant
+        objects.append(obj)
+    return objects
 
 
 async def _cached_local_catalog() -> list:

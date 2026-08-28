@@ -364,6 +364,11 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
         ("org/whisper-custom", True),
     ]
     assert all(o["task"] == "automatic-speech-recognition" and o["created"] == 7 for o in objects)
+    assert {o["id"]: o.get("quant") for o in objects} == {
+        "unsloth/whisper-small": None,
+        "qwen3-asr-0.6b": "Q8_0",
+        "org/whisper-custom": None,
+    }
 
 
 def test_curated_stt_alias_reports_canonical_loaded_id(monkeypatch):
