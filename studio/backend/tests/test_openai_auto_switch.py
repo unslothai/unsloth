@@ -3359,6 +3359,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
             modality_label = modality_label,
             claim_resident = claim_resident,
             require_audio_input = require_audio_input,
+            audio_preflight_has_image = (
+                audio_preflight.get("has_image") if audio_preflight is not None else None
+            ),
         )
         raise _Reached()
 
@@ -3374,6 +3377,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "modality_label": "audio",
         "claim_resident": False,
         "require_audio_input": True,
+        "audio_preflight_has_image": False,
     }
 
     # An image in the same request does need the vision tower.
@@ -3391,7 +3395,23 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "modality_label": "image or audio",
         "claim_resident": False,
         "require_audio_input": True,
+        "audio_preflight_has_image": True,
     }
+
+    # an image on an earlier turn stays valid: the non-GGUF audio route listens to
+    # the current recording and deliberately permits referring back to prior images.
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        audio_base64 = "AAAA",
+        messages = [
+            ChatMessage(role = "user", content = [img]),
+            ChatMessage(role = "assistant", content = "I can see it."),
+            ChatMessage(role = "user", content = "Tell me more."),
+        ],
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert captured["audio_preflight_has_image"] is False
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):

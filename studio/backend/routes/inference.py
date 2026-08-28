@@ -18590,7 +18590,8 @@ async def produce_openai_chat_completions(
         {
             "b64": payload.audio_base64,
             "continue_final": _continue_final_message(payload),
-            "has_image": _needs_image,
+            "has_image": _images_in_last_user_message(payload.messages)
+            or _legacy_image_is_distinct(payload),
         }
         if _needs_audio_input
         else None
