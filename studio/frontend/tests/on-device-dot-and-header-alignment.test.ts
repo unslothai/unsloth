@@ -87,7 +87,7 @@ test("list header actions end where a hovered row's action does", () => {
 
   assert.match(
     SIDEBAR,
-    /const scrollRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5";/,
+    /const unrailedRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5";/,
   );
   assert.ok(
     SIDEBAR.includes(
