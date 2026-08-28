@@ -98,27 +98,28 @@ function canUseLocalAgentDetection(base: string): boolean {
 
 // bind feedback to the copied text so command changes cannot retain a stale tick.
 function useCopyButton(text: string) {
-  const [copiedText, setCopiedText] = useState<string | null>(null);
+  const textVersion = useMemo(() => Symbol(text), [text]);
+  const [copiedVersion, setCopiedVersion] = useState<symbol | null>(null);
   const timeoutRef = useRef<number | null>(null);
-  const textRef = useRef(text);
-  textRef.current = text;
+  const currentVersionRef = useRef(textVersion);
 
   useEffect(() => {
-    setCopiedText(null);
+    currentVersionRef.current = textVersion;
     return () => {
       if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     };
-  }, [text]);
+  }, [textVersion]);
 
   const copy = async () => {
     const requestedText = text;
+    const requestedVersion = textVersion;
     if (!(await copyToClipboard(requestedText))) return;
-    if (textRef.current !== requestedText) return;
-    setCopiedText(requestedText);
+    if (currentVersionRef.current !== requestedVersion) return;
+    setCopiedVersion(requestedVersion);
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = window.setTimeout(() => {
-      setCopiedText(null);
+      setCopiedVersion(null);
       timeoutRef.current = null;
     }, 1600);
   };
@@ -128,10 +129,10 @@ function useCopyButton(text: string) {
       window.clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    setCopiedText(null);
+    setCopiedVersion(null);
   };
 
-  return { copied: copiedText === text, copy, reset };
+  return { copied: copiedVersion === textVersion, copy, reset };
 }
 
 type AgentDetails = {
