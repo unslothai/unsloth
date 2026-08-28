@@ -5028,7 +5028,9 @@ class VideoBackend:
         sentinels the route maps to 409.
         """
         if input_reference is not None and (first_frame is not None or reference_images):
-            raise ValueError("input_reference cannot be combined with explicit conditioning inputs.")
+            raise ValueError(
+                "input_reference cannot be combined with explicit conditioning inputs."
+            )
         cancel = threading.Event()
         job_token = object()  # this reservation's identity; only its own worker may finalise it
         while True:
