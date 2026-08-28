@@ -36,11 +36,18 @@ fn discard_bundle(path: Option<&PathBuf>) {
 pub(crate) type DesktopUpdateState = Arc<Mutex<DesktopUpdate>>;
 
 pub(crate) fn new_desktop_update_state() -> DesktopUpdateState {
-    // Which bundle is prepared is in-memory state, so a bundle that outlived the
-    // process it was prepared in is claimed by nothing and would sit there at full
-    // installer size forever. Single-instance keeps a second app off this file.
-    let _ = fs::remove_file(bundle_path());
     Arc::new(Mutex::new(DesktopUpdate::default()))
+}
+
+/// Drop a bundle left behind by a previous run.
+///
+/// Which bundle is prepared is in-memory state, so one that outlived its process is
+/// claimed by nothing and would sit at full installer size forever. Call this only
+/// from the app setup hook: `.manage(...)` runs while the builder is still being
+/// assembled, before the single-instance plugin turns a duplicate launch away, so a
+/// second process would delete the bundle the first one is holding a path to.
+pub(crate) fn discard_stale_bundle() {
+    let _ = fs::remove_file(bundle_path());
 }
 
 pub(crate) fn pending_version(state: &DesktopUpdateState) -> Result<Option<String>, String> {

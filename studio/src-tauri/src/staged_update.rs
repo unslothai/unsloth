@@ -183,8 +183,11 @@ fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     swap_entries(home, &stage, &prev, false)?;
     if let Err(error) = write_versions(&prev.join(PENDING_MARKER), &versions) {
         // Without the marker the next launch drops the previous runtime instead of
-        // restoring it, so an unverified backend would become permanent. Put it back.
-        let _ = swap_entries(home, &prev, &stage, false);
+        // restoring it, so an unverified backend would become permanent. Put it back,
+        // evicting like the rollback does: an older install with no tiered sidecars
+        // has nothing to swap them back with, and leaving them live beside the
+        // restored venv is the same mixed runtime, with no marker left to undo it.
+        let _ = swap_entries(home, &prev, &stage, true);
         let _ = fs::remove_dir_all(&prev);
         return Err(error);
     }
@@ -521,6 +524,32 @@ mod tests {
             assert!(!home.join(name).exists(), "{name}");
         }
         assert_eq!(status(&home).state, "failed");
+        cleanup(home);
+    }
+
+    #[test]
+    fn undoing_an_activation_takes_the_staged_only_sidecars_back() {
+        let home = temp_home("undo-extra");
+        // A legacy install: the managed venv, and no tiered sidecars to swap back.
+        fs::create_dir_all(home.join("unsloth_studio")).unwrap();
+        fs::write(home.join("unsloth_studio").join("tag"), "old").unwrap();
+        let stage = home.join(STAGE_DIR);
+        make_runtime(&stage, "new");
+        let prev = home.join(PREV_DIR);
+        fs::create_dir_all(&prev).unwrap();
+
+        swap_entries(&home, &stage, &prev, false).unwrap();
+        assert_eq!(tag(&home, ".venv_t5_530"), "new");
+
+        // What activate_ready runs when the pending marker cannot be written.
+        swap_entries(&home, &prev, &stage, true).unwrap();
+
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        for name in [".venv_t5_530", ".venv_t5_550", ".venv_t5_510"] {
+            // No marker is left to undo these later, so they cannot stay live.
+            assert!(!home.join(name).exists(), "{name}");
+            assert_eq!(tag(&stage, name), "new", "{name}");
+        }
         cleanup(home);
     }
 
