@@ -264,6 +264,59 @@ def test_higgs_tts3_generation_contract():
     )
 
 
+def test_moss_cuda_sdpa_disables_the_broken_cudnn_backend(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        torch.backends.cuda, "enable_flash_sdp", lambda value: calls.append(("flash", value))
+    )
+    monkeypatch.setattr(
+        torch.backends.cuda,
+        "enable_mem_efficient_sdp",
+        lambda value: calls.append(("memory", value)),
+    )
+    monkeypatch.setattr(
+        torch.backends.cuda, "enable_math_sdp", lambda value: calls.append(("math", value))
+    )
+    monkeypatch.setattr(
+        torch.backends.cuda, "enable_cudnn_sdp", lambda value: calls.append(("cudnn", value))
+    )
+    monkeypatch.setattr(torch.version, "hip", None)
+
+    NativeAudioBackend._configure_moss_cuda_sdpa()
+    assert calls == [("flash", True), ("memory", True), ("math", True), ("cudnn", False)]
+
+
+def test_moss_nano_overrides_flash_attention_on_cpu(monkeypatch):
+    seen = {}
+
+    def load_model(*_args, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(to = lambda _device: None, eval = lambda: None)
+
+    movable = SimpleNamespace(to = lambda _device: None, eval = lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoModelForCausalLM = SimpleNamespace(from_pretrained = load_model),
+            AutoModel = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: movable),
+            AutoTokenizer = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: object()),
+        ),
+    )
+    monkeypatch.setattr(
+        "core.inference.native_audio._moss_transformers5_config_compat",
+        lambda *_args: None,
+    )
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cpu"
+    backend._dtype = lambda: torch.float32
+    entry = {}
+
+    backend._load_moss_nano(entry, "OpenMOSS-Team/MOSS-TTS-Nano-100M", None, True)
+    assert seen["attn_implementation"] == "eager"
+    assert seen["local_transformer_attn_implementation"] == "eager"
+
+
 def test_moss_local_generation_contract():
     seen = {}
 

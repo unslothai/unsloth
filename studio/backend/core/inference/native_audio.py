@@ -612,6 +612,17 @@ class NativeAudioBackend:
             model.eval()
         return model
 
+    @staticmethod
+    def _configure_moss_cuda_sdpa() -> None:
+        import torch
+
+        if getattr(torch.version, "hip", None):
+            return
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cuda.enable_math_sdp(True)
+        torch.backends.cuda.enable_cudnn_sdp(False)
+
     def load_model(
         self,
         config,
@@ -717,7 +728,9 @@ class NativeAudioBackend:
         audio_tokenizer = getattr(processor, "audio_tokenizer", None)
         if audio_tokenizer is not None and hasattr(audio_tokenizer, "to"):
             processor.audio_tokenizer = audio_tokenizer.to(self.device)
-        attention = "eager" if self.device in ("cpu", "mps") else "sdpa"
+        attention = "sdpa" if self.device == "cuda" else "eager"
+        if self.device == "cuda":
+            self._configure_moss_cuda_sdpa()
         model = AutoModel.from_pretrained(
             source,
             trust_remote_code = trust_remote_code,
@@ -735,9 +748,14 @@ class NativeAudioBackend:
 
         token_kwargs = self._token_kwargs(hf_token)
         _moss_transformers5_config_compat(MOSS_NANO_CODEC_REPO, token_kwargs)
+        attention = "sdpa" if self.device == "cuda" else "eager"
+        if self.device == "cuda":
+            self._configure_moss_cuda_sdpa()
         model = AutoModelForCausalLM.from_pretrained(
             source,
             trust_remote_code = trust_remote_code,
+            attn_implementation = attention,
+            local_transformer_attn_implementation = attention,
             torch_dtype = self._dtype(),
             **token_kwargs,
         )
