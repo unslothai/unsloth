@@ -860,6 +860,27 @@ def _find_frontend_dist() -> Optional[Path]:
 
 # ── helpers for `unsloth studio run` ────────────────────────────────
 
+_direct_http_opener = None
+
+
+def _direct_urlopen(request, timeout):
+    """Open a process-local URL without proxies or redirects."""
+    global _direct_http_opener
+
+    if _direct_http_opener is None:
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise urllib.error.HTTPError(
+                    req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+                )
+
+        _direct_http_opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _NoRedirect(),
+        )
+    return _direct_http_opener.open(request, timeout = timeout)
+
 
 def _wait_for_server(
     port: int,
@@ -874,7 +895,7 @@ def _wait_for_server(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout = 2) as resp:
+            with _direct_urlopen(url, timeout = 2) as resp:
                 if resp.status == 200:
                     return True
         except (urllib.error.URLError, OSError, ConnectionError):
@@ -1719,7 +1740,7 @@ def _load_model_via_http(
         method = "POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
+        with _direct_urlopen(req, timeout = timeout) as resp:
             try:
                 body = json.loads(resp.read())
             except ValueError:
