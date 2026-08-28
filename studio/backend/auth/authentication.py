@@ -327,7 +327,6 @@ def _normalise_x_api_key_dependency(x_api_key: Any) -> Optional[str]:
 
 def _x_api_key_keeps_keyless_admission(x_api_key: str) -> bool:
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
-
     return x_api_key in APPROVED_DUMMY_BEARERS
 
 

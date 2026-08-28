@@ -181,7 +181,9 @@ def test_keyless_admission_still_resolves_to_admin_without_x_api_key(monkeypatch
 
 
 def test_keyless_admission_still_counts_as_programmatic_without_x_api_key() -> None:
-    assert asyncio.run(authentication.authenticated_via_api_key(authentication._KEYLESS_CREDENTIALS))
+    assert asyncio.run(
+        authentication.authenticated_via_api_key(authentication._KEYLESS_CREDENTIALS)
+    )
 
 
 def test_dummy_x_api_key_keeps_keyless_admission(monkeypatch) -> None:
