@@ -483,8 +483,7 @@ def _directory_identity(path: str) -> tuple[str, str]:
 
 
 def same_directory_identity(
-    recorded: "tuple[str | None, str | None]",
-    current: "tuple[str | None, str | None]",
+    recorded: "tuple[str | None, str | None]", current: "tuple[str | None, str | None]"
 ) -> bool:
     """Whether two identities name one directory, tolerating a pre-ctime record."""
     if not all(recorded) or not all(current):
