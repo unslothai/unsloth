@@ -95,10 +95,20 @@ def _extract_sh_function_body(source: str, name: str) -> str:
 
 
 def _gpu_record_helpers(source: str) -> str:
-    """install.sh's per-device GPU record parsers, for injecting into a probe block."""
+    """install.sh's per-device GPU helpers, for injecting into a probe block.
+
+    Every helper the extracted block calls has to be here. A missing one is not a loud
+    failure: the block's `|| true` swallows the command-not-found and the assertion then
+    runs against an empty architecture list, so the test passes for the wrong reason.
+    """
     return "\n".join(
         _extract_sh_function_body(source, name)
-        for name in ("_rocminfo_gpu_records", "_amd_smi_gpu_records")
+        for name in (
+            "_rocminfo_gpu_records",
+            "_amd_smi_gpu_records",
+            "_gfx_arch_slots",
+            "_amd_smi_hip_order",
+        )
     )
 
 

@@ -377,6 +377,27 @@ assert_eq "HIP_ID: N/A is not a map either" \
     "$(printf 'GPU: 0\n    HIP_ID: N/A\nGPU: 1\n    HIP_ID: N/A\n' \
         | _amd_smi_hip_order "$MIXED" | head -n 1)"
 
+# install.sh is a sequential script and the GPU probing runs at top level, so a helper
+# defined below its first call is simply not in scope: the shell says command not found,
+# the caller's `|| true` swallows it, and the probe silently answers nothing. That is not
+# a hypothetical, it shipped once. Pin the order rather than the line numbers, which move.
+echo "=== helpers are defined before they are called ==="
+for _fn in _rocminfo_gpu_records _amd_smi_gpu_records _gfx_arch_slots _amd_smi_hip_order; do
+    _def=$(grep -n "^$_fn() {" "$INSTALL_SH" | head -n 1 | cut -d: -f1)
+    # Calls only, never the definition line and never a comment.
+    _first_use=$(grep -n "[|( ]$_fn\b" "$INSTALL_SH" \
+        | grep -v "^[0-9]*: *#" | head -n 1 | cut -d: -f1)
+    if [ -z "$_first_use" ]; then
+        echo "  FAIL: $_fn is defined but never called"; FAIL=$((FAIL + 1)); continue
+    fi
+    if [ "$_def" -lt "$_first_use" ]; then
+        echo "  PASS: $_fn defined at $_def, first called at $_first_use"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $_fn is called at $_first_use but not defined until $_def"
+        FAIL=$((FAIL + 1))
+    fi
+done
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
