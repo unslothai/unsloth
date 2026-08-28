@@ -1384,6 +1384,13 @@ export const it = {
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
       },
+      currentDate: {
+        label: "Comunica al modello la data di oggi",
+        description:
+          "Aggiunge la data corrente al prompt in modo che la ricerca web e Deep Research cerchino fonti recenti invece di basarsi sulla data di fine addestramento del modello.",
+        loadError: "Impossibile caricare le impostazioni della data corrente",
+        saveError: "Impossibile aggiornare le impostazioni della data corrente",
+      },
       tools: {
         collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
         collapseByDefaultDescription:

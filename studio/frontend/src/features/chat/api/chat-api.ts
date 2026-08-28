@@ -492,8 +492,7 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded quant; optional for older backends. */
   last_modified?: number;
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
@@ -635,8 +634,7 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;

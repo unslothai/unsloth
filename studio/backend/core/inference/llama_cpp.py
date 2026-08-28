@@ -462,10 +462,39 @@ class LlamaServerNotFoundError(RuntimeError):
     __slots__ = ()
 
 
+class GgufDownloadCancelled(RuntimeError):
+    """Expected signal from a cancelled GGUF download."""
+
+    __slots__ = ()
+
+
 class _LlamaStreamCancelled(Exception):
     """Internal signal for an expected client/request cancellation."""
 
     __slots__ = ()
+
+
+class _CombinedCancelEvent:
+    __slots__ = ("_events",)
+
+    def __init__(self, *events: threading.Event):
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        if self.is_set():
+            return True
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return self.is_set()
+            pause = 0.05 if remaining is None else min(0.05, remaining)
+            self._events[0].wait(pause)
+            if self.is_set():
+                return True
 
 
 # Deliberately NOT ``slots=True``: it drops ``__dict__``, so ``vars(intent)`` raises and
@@ -12549,6 +12578,7 @@ class LlamaCppBackend:
         gpu_ids: Optional[List[int]] = None,
         gpu_memory_mode: Literal["auto", "manual"] = "auto",
         gpu_layers: int = -1,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Launch the OpenAI-compat diffusion shim (which drives the on-device
         visual decoder) and wait for health. Presents the same /v1 + /health
@@ -12782,7 +12812,7 @@ class LlamaCppBackend:
         self._effective_context_length = maxtok or self._context_length
         self._max_context_length = self._context_length or maxtok or None
 
-        healthy = self._wait_for_health(timeout = 600.0)
+        healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
         if healthy:
             self._healthy = True
             self._gpu_offload_active = not holds_no_gpu
@@ -12807,9 +12837,21 @@ class LlamaCppBackend:
                 self._effective_context_length = chosen
                 self._max_context_length = chosen
             self._requested_n_ctx = int(n_ctx)
+            if cancelled is not None and cancelled():
+                logger.info("DiffusionGemma start cancelled after it became healthy")
+                self._healthy = False
+                self._kill_process()
+                return False
         else:
             self._healthy = False
-            logger.error("DiffusionGemma runner failed to become healthy")
+            if getattr(self, "_health_wait_cancelled", False):
+                # An automatic switch cancels without unloading, so nothing else reaps
+                # the shim and the visual server: they would keep loading and holding
+                # memory until some later teardown.
+                logger.info("DiffusionGemma start cancelled; stopping the runner")
+                self._kill_process()
+            else:
+                logger.error("DiffusionGemma runner failed to become healthy")
         return healthy
 
     # ── HF download (no lock held) ───────────────────────────────
@@ -12836,6 +12878,8 @@ class LlamaCppBackend:
         touching the shared one; defaults to the shared event.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            raise GgufDownloadCancelled("Cancelled")
         from utils.hf_cache_settings import get_hf_cache_paths
 
         download_cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -13000,7 +13044,7 @@ class LlamaCppBackend:
         logger.info(f"Resolving GGUF: {gguf_label}")
         try:
             if cancel_event.is_set():
-                raise RuntimeError("Cancelled")
+                raise GgufDownloadCancelled("Cancelled")
             dl_start = time.monotonic()
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
             local_path = hf_hub_download_with_xet_fallback(
@@ -13014,7 +13058,7 @@ class LlamaCppBackend:
             )
             for shard in gguf_extra_shards:
                 if cancel_event.is_set():
-                    raise RuntimeError("Cancelled")
+                    raise GgufDownloadCancelled("Cancelled")
                 logger.info(f"Resolving GGUF shard: {shard}")
                 hf_hub_download_with_xet_fallback(
                     hf_repo,
@@ -13025,8 +13069,10 @@ class LlamaCppBackend:
                     cache_dir = download_cache_dir,
                 )
         except Exception as e:
-            if isinstance(e, RuntimeError) and "Cancelled" in str(e):
+            if isinstance(e, GgufDownloadCancelled):
                 raise
+            if isinstance(e, RuntimeError) and "Cancelled" in str(e):
+                raise GgufDownloadCancelled(str(e)) from e
             raise RuntimeError(
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
             )
@@ -13322,6 +13368,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
@@ -13333,6 +13380,10 @@ class LlamaCppBackend:
         higher-precision copies under ``MTP/`` are for explicit selection and
         are intentionally skipped. Returns the local path, or None.
         """
+
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
 
         if near_path:
             cached = _companion_snapshot_sibling(near_path, _pick_mtp)
@@ -13358,6 +13409,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_mtp,
             label = "MTP drafter",
+            cancel_event = cancel_event,
             near_path = near_path,
         )
 
@@ -13400,6 +13452,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
         caps_probe: Optional[Callable[[Optional[str]], dict]] = None,
@@ -13415,6 +13468,13 @@ class LlamaCppBackend:
         guess here has to latch like any other, or a load that skipped the sidecar on an
         inconclusive probe looks conclusive once the retry window lapses mid-download.
         """
+        cancel_event = (
+            cancel_event
+            if cancel_event is not None
+            else getattr(self, "_cancel_event", threading.Event())
+        )
+        if cancel_event.is_set():
+            return None
         if caps_probe is None:
             caps_probe = self.probe_server_capabilities
 
@@ -13448,6 +13508,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_dspark,
             label = "DSpark drafter",
+            cancel_event = cancel_event,
             near_path = near_path,
             outcome = outcome,
         )
@@ -13542,6 +13603,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
     ) -> Optional[str]:
@@ -13556,6 +13618,9 @@ class LlamaCppBackend:
         engage.
         """
 
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
         weight_name = Path(near_path).name if near_path else None
         # Whatever a previous load concluded, this one is asking again.
         self._dflash_retry_needed = False
@@ -13645,7 +13710,7 @@ class LlamaCppBackend:
         # it too, so a scan that ignores the pool cannot spin here.
         cached: Optional[str] = None
         seen_siblings: set[str] = set()
-        while near_path:
+        while near_path and not cancel_event.is_set():
             sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
             if sibling is None or sibling in seen_siblings:
                 break
@@ -13694,6 +13759,7 @@ class LlamaCppBackend:
                 hf_token = hf_token,
                 pick = _pick_dflash,
                 label = "DFlash drafter",
+                cancel_event = cancel_event,
                 near_path = near_path,
                 outcome = outcome,
                 # Not a header rejection: that candidate is settled and the loop moves
@@ -16654,6 +16720,12 @@ class LlamaCppBackend:
                 load_cancel_event is not None and load_cancel_event.is_set()
             )
 
+        download_cancel_event = (
+            _CombinedCancelEvent(self._cancel_event, load_cancel_event)
+            if load_cancel_event is not None
+            else self._cancel_event
+        )
+
         gguf_path = intent.gguf_path
         mmproj_path = intent.mmproj_path
         mtp_draft_path = intent.mtp_draft_path
@@ -16845,6 +16917,9 @@ class LlamaCppBackend:
             # Placement is undecided until the spawn site narrows it: a needless
             # reload prompt beats sizing a child against a replaced budget.
             self._cancel_event.clear()
+            # Belongs to this attempt only; a guard that runs before this load's first
+            # health wait would otherwise read the previous request's cancellation.
+            self._health_wait_cancelled = False
             if _load_cancelled():
                 logger.info("Load cancelled before GGUF resolution")
                 return False
@@ -16961,6 +17036,7 @@ class LlamaCppBackend:
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        cancel_event = download_cancel_event,
                     )
                 _preflight_is_diffusion = self._gguf_path_is_diffusion(
                     _preflight_model_path, model_identifier
@@ -17125,6 +17201,7 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_variant = hf_variant,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                         )
                     # Auto-download mmproj for vision models unless opted out. Vision
                     # switched off does NOT opt out: remote discovery calls any mmproj
@@ -17137,6 +17214,7 @@ class LlamaCppBackend:
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
@@ -17154,6 +17232,7 @@ class LlamaCppBackend:
                         mtp_draft_path = self._download_mtp(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
                     # "auto" is included: DSpark is the default whenever the repo
@@ -17167,6 +17246,7 @@ class LlamaCppBackend:
                         dspark_draft_path = self._download_dspark(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                             binary = binary,
                             caps_probe = _launch_caps,
@@ -17201,6 +17281,7 @@ class LlamaCppBackend:
                         dflash_draft_path = self._download_dflash(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                             binary = binary,
                         )
@@ -17316,6 +17397,7 @@ class LlamaCppBackend:
                         gpu_ids = gpu_ids,
                         gpu_memory_mode = gpu_memory_mode,
                         gpu_layers = gpu_layers,
+                        cancelled = _load_cancelled,
                     )
 
             if not binary:
@@ -21834,12 +21916,14 @@ class LlamaCppBackend:
                             target = self._drain_stdout, daemon = True, name = "llama-stdout"
                         )
                         self._stdout_thread.start()
-                        if self._wait_for_health(timeout = 600.0):
+                        if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                             if _did_rocm_retry:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
                             return True
+                        if getattr(self, "_health_wait_cancelled", False):
+                            return False
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
@@ -22043,6 +22127,19 @@ class LlamaCppBackend:
                     self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
+                def _cleanup_cancelled_load(message: str) -> None:
+                    logger.info(message)
+                    self._cleanup_failed_cpu_fallback()
+                    self._unload_audio_codec()
+                    self._healthy = False
+                    self._vram_fraction_pending = None
+
+                def _finish_cancelled_health_wait(message: str) -> bool:
+                    if not getattr(self, "_health_wait_cancelled", False):
+                        return False
+                    _cleanup_cancelled_load(message)
+                    return True
+
                 def _try_auto_vulkan_cpu_fallback(
                     failed_cmd: list[str],
                     failed_rc: Optional[int],
@@ -22083,7 +22180,7 @@ class LlamaCppBackend:
                         # Staging copies a whole runtime, so an /unload can land after
                         # the gate above with no runtime yet for unload_model() to
                         # remove; take it back here.
-                        self._cleanup_cpu_fallback_runtime()
+                        _cleanup_cancelled_load("Load cancelled while staging the CPU fallback")
                         return False
                     replay, _spawn_cwd, _cpu_pageable_note = prepared
                     # The rewrite mutates the SHARED env in place, so it happens once
@@ -22101,6 +22198,10 @@ class LlamaCppBackend:
                         "startup; retrying once with llama.cpp devices disabled."
                     )
                     if not _spawn_and_wait(replay, label = "-cpu"):
+                        if _finish_cancelled_health_wait(
+                            "Load cancelled during the staged CPU replay health wait"
+                        ):
+                            return False
                         if not terminal:
                             # This argv's drafter may be why it cannot start at all,
                             # which the GPU crash says nothing about. Reap the child
@@ -22242,6 +22343,11 @@ class LlamaCppBackend:
                             avail_mib = _preflight_avail_mib,
                         )
                         if prepared is None:
+                            if _load_cancelled():
+                                _cleanup_cancelled_load(
+                                    "Load cancelled while reconstructing the CPU fallback"
+                                )
+                                return False
                             _raise_terminal_load_failure(
                                 "The prior Vulkan CPU fallback could not be reconstructed; run "
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
@@ -22308,6 +22414,10 @@ class LlamaCppBackend:
                     healthy = _spawn_and_wait(cmd)
                 finally:
                     self._memory_launch_pending = False
+                if not healthy and _finish_cancelled_health_wait(
+                    "Load cancelled during the llama-server health wait"
+                ):
+                    return False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -22348,7 +22458,7 @@ class LlamaCppBackend:
                 # narrowed set. Auto selection only; an explicit pick keeps its error.
                 if (
                     not healthy
-                    and not self._cancel_event.is_set()
+                    and not _load_cancelled()
                     and not gpu_ids
                     and not is_vulkan_backend
                     and gpu_indices
@@ -22852,6 +22962,13 @@ class LlamaCppBackend:
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
                     self._kill_process()
+                    # Only when the WAIT itself was cancelled. A cancel that lands later,
+                    # while a crashed launch is staging its CPU fallback, must still run
+                    # that recovery, so _load_cancelled() alone is the wrong test here.
+                    if _finish_cancelled_health_wait(
+                        "Load cancelled during the llama-server health wait"
+                    ):
+                        return False
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     _projector_msg = self._is_projector_incompatibility(out)
@@ -22916,7 +23033,14 @@ class LlamaCppBackend:
                                     self._process.poll() if self._process is not None else None
                                 )
                                 self._kill_process()
+                                if _finish_cancelled_health_wait(
+                                    "Load cancelled during the CPU-projector health wait"
+                                ):
+                                    return False
                                 if _load_cancelled():
+                                    _cleanup_cancelled_load(
+                                        "Load cancelled after the CPU-projector health wait"
+                                    )
                                     return False
                                 if self._is_projector_incompatibility(_cpu_projector_out):
                                     _projector_msg = True
@@ -22976,7 +23100,7 @@ class LlamaCppBackend:
                             self._is_vision = False
                             self._mmproj_has_audio = False
                             self._start_llama_process(cmd, env)
-                            if self._wait_for_health(timeout = 600.0):
+                            if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                                 healthy = True
                                 # The child that serves this session never read the
                                 # CPU-pinned projector, so the host-memory advisory the
@@ -23000,6 +23124,10 @@ class LlamaCppBackend:
                                     self._process.poll() if self._process is not None else None
                                 )
                                 self._kill_process()
+                                if _finish_cancelled_health_wait(
+                                    "Load cancelled during the text-only retry health wait"
+                                ):
+                                    return False
                                 # A text-only signal crash is independent evidence of a GPU
                                 # startup fault. Keep a confirmed bad projector out of the
                                 # replay; a guessed one still gets a CPU try with vision.
@@ -23017,6 +23145,10 @@ class LlamaCppBackend:
                                         if not _projector_msg:
                                             self._mmproj_fallback_reason = None
                                     else:
+                                        if _finish_cancelled_health_wait(
+                                            "Load cancelled during the CPU replay health wait"
+                                        ):
+                                            return False
                                         _raise_terminal_load_failure(
                                             self._gpu_init_crash_message(binary)
                                         )
@@ -23031,6 +23163,10 @@ class LlamaCppBackend:
                                         (self._api_key,),
                                         self._extra_args,
                                     )
+                                    if _finish_cancelled_health_wait(
+                                        "Load cancelled during the text-only recovery"
+                                    ):
+                                        return False
                                     _raise_terminal_load_failure(
                                         self._mmproj_retry_failure_message(
                                             projector_confirmed = _projector_msg,
@@ -23057,6 +23193,10 @@ class LlamaCppBackend:
                         if _replayed:
                             healthy = True
                         else:
+                            if _finish_cancelled_health_wait(
+                                "Load cancelled during the CPU replay health wait"
+                            ):
+                                return False
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(
                                     out,
@@ -23272,6 +23412,13 @@ class LlamaCppBackend:
                 return False
 
             if not self._healthy:
+                return False
+            if _load_cancelled():
+                # Cancelled during the post-health setup or the audio probe. Publishing
+                # now leaves the child resident while the cancel route sees is_loaded.
+                _cleanup_cancelled_load(
+                    "Load cancelled after llama-server became healthy; unwinding"
+                )
                 return False
             # Snapshot the files the server actually loaded. If a GGUF shard or a
             # LoRA/control-vector sidecar is swapped on disk afterwards while the
@@ -24128,14 +24275,7 @@ class LlamaCppBackend:
                 except Exception:
                     pass
                 self._chat_template_file = None
-            # Free audio codec GPU memory.
-            if LlamaCppBackend._codec_mgr is not None:
-                LlamaCppBackend._codec_mgr.unload()
-                LlamaCppBackend._codec_mgr = None
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            self._unload_audio_codec()
             return True
 
     @staticmethod
@@ -25603,15 +25743,17 @@ class LlamaCppBackend:
                 # load_model) so a newer load isn't clobbered by this stale replay.
                 requested_mode = snapshot.speculative_type
                 with self._serial_load_lock:
-                    if self._cancel_event.is_set():
-                        logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
-                        return
-                    if self._process is not proc:
-                        logger.info("MTP-crash reload skipped: a newer load is already active.")
-                        return
-                    if self._last_load_intent != snapshot:
-                        logger.info("MTP-crash reload skipped: load settings changed.")
-                        return
+                    with self._lock:
+                        if self._cancel_event.is_set():
+                            logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
+                            return
+                        if self._process is not proc:
+                            logger.info("MTP-crash reload skipped: a newer load is already active.")
+                            return
+                        if self._last_load_intent != snapshot:
+                            logger.info("MTP-crash reload skipped: load settings changed.")
+                            return
+                        unload_epoch = self._unload_epoch
                     # Appending --spec-default cannot drop MTP: llama.cpp appends spec
                     # types rather than replacing, so the extras have to lose theirs.
                     # Once they do, Unsloth owns the block and the launch scrubs the
@@ -25634,21 +25776,35 @@ class LlamaCppBackend:
                         speculative_type = "off",
                         extra_args = fallback_extra_args,
                     )
-                    self.load_model(fallback)
-                    # Same reason the mode is restored below: the replay launched a
-                    # stripped list but the caller keeps sending the original, so a
-                    # comparator seeing only the stripped one would reload the very MTP
-                    # configuration that just crashed.
-                    if fallback_extra_args is not snapshot.extra_args:
-                        self._requested_extra_args = (
-                            self._strip_device_extra_args(_ea)
-                            if snapshot.gpu_ids is not None
-                            else list(_ea)
+                    started = bool(self.load_model(fallback))
+                    if not started:
+                        logger.info("MTP-crash reload stopped before the replacement was ready.")
+                        return
+                    undo_reload = False
+                    with self._lock:
+                        if self._cancel_event.is_set() or self._unload_epoch != unload_epoch:
+                            undo_reload = True
+                        else:
+                            # Same reason the mode is restored below: the replay launched a
+                            # stripped list but the caller keeps sending the original, so a
+                            # comparator seeing only the stripped one would reload the very MTP
+                            # configuration that just crashed.
+                            if fallback_extra_args is not snapshot.extra_args:
+                                self._requested_extra_args = (
+                                    self._strip_device_extra_args(_ea)
+                                    if snapshot.gpu_ids is not None
+                                    else list(_ea)
+                                )
+                            # Restore the requested mode + reason load_model("off") cleared,
+                            # so /status shows the user's mode + note (like the startup fallback).
+                            self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
+                            self._spec_fallback_reason = "runtime_error"
+                    if undo_reload:
+                        logger.info(
+                            "MTP-crash reload undone: the model was unloaded during reload."
                         )
-                    # Restore the requested mode + reason load_model("off") cleared,
-                    # so /status shows the user's mode + note (like the startup fallback).
-                    self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
-                    self._spec_fallback_reason = "runtime_error"
+                        self.unload_model()
+                        return
                 logger.info("Reloaded without MTP after the tensor-parallel crash.")
             except Exception as e:
                 logger.error(f"Reload without MTP failed: {e}")
@@ -25707,6 +25863,7 @@ class LlamaCppBackend:
         self,
         timeout: float = 120.0,
         interval: float = 0.5,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Poll llama-server's /health until 200; also detect early exit/crash."""
         deadline = time.monotonic() + timeout
@@ -25715,7 +25872,22 @@ class LlamaCppBackend:
         if health_probe_event is None:  # Backward-compatible with lightweight test doubles.
             health_probe_event = self._health_probe_event = threading.Event()
 
+        if cancelled is None:
+            # A scoped /load carries its own cancel event, so load_model passes its own
+            # predicate; fall back to the unload flag for callers that have none.
+            cancel_event = getattr(self, "_cancel_event", None)
+            cancelled = cancel_event.is_set if cancel_event is not None else None
+
+        # Why this wait ended, for callers that must tell a cancel apart from a crash:
+        # a cancel landing during CPU-fallback staging is not a cancelled wait.
+        self._health_wait_cancelled = False
+
         while time.monotonic() < deadline:
+            # unload_model() blocks on self._lock, which the load holds across this wait.
+            if cancelled is not None and cancelled():
+                logger.info("llama-server startup cancelled before it became healthy")
+                self._health_wait_cancelled = True
+                return False
             # Cleared before probing so output during the request stays latched for
             # the fallback wait below.
             health_probe_event.clear()
@@ -25744,6 +25916,12 @@ class LlamaCppBackend:
                 # for 127.0.0.1 loops the probe until timeout and hangs load.
                 resp = httpx.get(url, timeout = 2.0, trust_env = False)
                 if resp.status_code == 200:
+                    # The probe blocks for up to 2s; a cancel landing inside that window
+                    # would otherwise publish the model the user just asked us to drop.
+                    if cancelled is not None and cancelled():
+                        logger.info("llama-server became healthy after the load was cancelled")
+                        self._health_wait_cancelled = True
+                        return False
                     return True
             except (
                 httpx.ConnectError,
@@ -25757,6 +25935,11 @@ class LlamaCppBackend:
                 pass
 
             health_probe_event.wait(interval)
+
+        if cancelled is not None and cancelled():
+            logger.info("llama-server startup cancelled at the health-check deadline")
+            self._health_wait_cancelled = True
+            return False
 
         # Leave a marker so _classify_llama_start_failure tells a live but
         # never-healthy load (too large, or a proxy hijacking the loopback
@@ -30830,6 +31013,17 @@ class LlamaCppBackend:
     }
 
     _codec_mgr = None  # Shared AudioCodecManager instance
+
+    @staticmethod
+    def _unload_audio_codec() -> None:
+        if LlamaCppBackend._codec_mgr is None:
+            return
+        LlamaCppBackend._codec_mgr.unload()
+        LlamaCppBackend._codec_mgr = None
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def init_audio_codec(self, audio_type: str) -> None:
         """Load the audio codec at model load time (mirrors the non-GGUF path)."""

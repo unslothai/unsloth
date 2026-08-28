@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { InventoryHint } from "./types";
+import { normalizeTimestamp } from "./inventory-timestamps";
 
 export type PendingInventoryHints = Record<
   InventoryHint["kind"],
@@ -13,6 +14,8 @@ export type InventoryHintRow = {
   size_bytes: number;
   partial?: boolean;
   optimistic?: boolean;
+  /** epoch seconds from the server or milliseconds from an optimistic row. */
+  last_modified?: number | null;
 };
 
 export type InventoryHintReconciliation = {
@@ -43,6 +46,10 @@ function optimisticRow(hint: InventoryHint): InventoryHintRow {
     size_bytes: hint.bytes ?? 0,
     partial: false,
     optimistic: true,
+    // keep a finished download first until the cache scan catches up
+    ...(hint.createdAt && hint.createdAt > 0
+      ? { last_modified: hint.createdAt }
+      : {}),
   };
 }
 
@@ -104,6 +111,10 @@ function mergeInventoryHint(
     return [...rows, seed];
   }
   const serverRow = rows[idx];
+  const lastModified = Math.max(
+    normalizeTimestamp(serverRow.last_modified) ?? 0,
+    normalizeTimestamp(seed.last_modified) ?? 0,
+  );
   const merged = {
     ...serverRow,
     // A completed hint may arrive before a partial server scan catches up. In
@@ -112,6 +123,7 @@ function mergeInventoryHint(
     // the hint's full-snapshot byte count, so do not mark that merge optimistic.
     ...(serverRow.partial ? seed : { optimistic: false }),
     size_bytes: Math.max(rowSizeBytes(rows[idx]), rowSizeBytes(seed)),
+    ...(lastModified > 0 ? { last_modified: lastModified } : {}),
   };
   return [...rows.slice(0, idx), merged, ...rows.slice(idx + 1)];
 }
@@ -124,11 +136,20 @@ export function rememberInventoryHint(
   const key = repoKey(hint.repoId);
   const existing = next[hint.kind].get(key);
   const bytes = Math.max(existing?.bytes ?? 0, hint.bytes ?? 0);
-  const createdAt = existing?.createdAt ?? hint.createdAt ?? Date.now();
+  const existingCreatedAt = existing?.createdAt ?? 0;
+  const hintCreatedAt = hint.createdAt ?? (existing ? 0 : Date.now());
+  const createdAt = Math.max(existingCreatedAt, hintCreatedAt);
+  const startedAt =
+    hintCreatedAt > existingCreatedAt
+      ? hint.startedAt
+      : hintCreatedAt < existingCreatedAt
+        ? existing?.startedAt
+        : (hint.startedAt ?? existing?.startedAt);
   next[hint.kind].set(key, {
     kind: hint.kind,
     repoId: hint.repoId,
     ...(bytes > 0 ? { bytes } : {}),
+    ...(startedAt && startedAt > 0 ? { startedAt } : {}),
     createdAt,
   });
   return next;
@@ -176,9 +197,20 @@ export function pruneExpiredInventoryHints(
 function serverRowSatisfiesHint(
   row: InventoryHintRow,
   hint: InventoryHint,
+  refreshStartedAt?: number | null,
 ): boolean {
   if (row.partial) {
     return false;
+  }
+  const hintTimestamp = normalizeTimestamp(hint.startedAt ?? hint.createdAt);
+  if (hintTimestamp != null) {
+    const rowTimestamp = normalizeTimestamp(row.last_modified);
+    if (rowTimestamp != null && rowTimestamp >= hintTimestamp) {
+      return true;
+    }
+    return Boolean(
+      hint.createdAt && refreshStartedAt && refreshStartedAt >= hint.createdAt,
+    );
   }
   return !hint.bytes || rowSizeBytes(row) >= hint.bytes;
 }
@@ -188,11 +220,13 @@ export function reconcileInventoryHints<T extends InventoryHintRow>({
   kind,
   rows,
   previouslyObserved,
+  refreshStartedAt,
 }: {
   pending: PendingInventoryHints;
   kind: InventoryHint["kind"];
   rows: T[];
   previouslyObserved: ReadonlySet<string>;
+  refreshStartedAt?: number | null;
 }): InventoryHintReconciliation {
   const pruned = pruneExpiredInventoryHints(pending);
   const serverRows = new Map(rows.map((row) => [repoKey(rowRepoId(row)), row]));
@@ -212,7 +246,10 @@ export function reconcileInventoryHints<T extends InventoryHintRow>({
 
   for (const [key, hint] of hints) {
     const serverRow = serverRows.get(key);
-    if (serverRow && serverRowSatisfiesHint(serverRow, hint)) {
+    if (
+      serverRow &&
+      serverRowSatisfiesHint(serverRow, hint, refreshStartedAt)
+    ) {
       hints.delete(key);
     } else if (!serverRow && previouslyObserved.has(key)) {
       hints.delete(key);
@@ -259,7 +296,10 @@ export function commitInventoryHintReconciliation({
     const nextHint = next[kind].get(key);
     const currentHint = sharedHints.get(key);
     const currentIsNewer =
-      currentHint && (currentHint.bytes ?? 0) > (baselineHint.bytes ?? 0);
+      currentHint &&
+      ((currentHint.createdAt ?? 0) > (baselineHint.createdAt ?? 0) ||
+        ((currentHint.createdAt ?? 0) === (baselineHint.createdAt ?? 0) &&
+          (currentHint.bytes ?? 0) > (baselineHint.bytes ?? 0)));
 
     if (nextHint) {
       if (!currentIsNewer) {
