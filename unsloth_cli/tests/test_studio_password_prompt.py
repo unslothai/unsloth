@@ -368,21 +368,21 @@ def test_an_ephemeral_multi_address_bind_is_rejected_before_password_or_launch(
         _tool_policy.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 2)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 3)),
         ],
     )
     if command == "default":
         result = _invoke_studio_default(
             monkeypatch,
             events,
-            ["--host", "dual-wildcard.test", "--port", "0", "--cloudflare"],
+            ["--host", "scoped.test", "--port", "0", "--cloudflare"],
         )
     else:
         result = _invoke_run(
             monkeypatch,
             events,
-            _BASE + ["--host", "dual-wildcard.test", "--port", "0", "--cloudflare"],
+            _BASE + ["--host", "scoped.test", "--port", "0", "--cloudflare"],
         )
 
     assert result.exit_code == 2, result.output

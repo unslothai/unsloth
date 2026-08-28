@@ -74,7 +74,20 @@ def wildcard_ip_versions(host: str) -> tuple[int, ...]:
 
 def resolved_bind_address_count(host: str) -> int:
     """Number of distinct socket addresses this host resolves to."""
-    return len(_resolved_ip_addresses(host))
+    if _literal_ip_address(host) is not None:
+        return 1
+    if not isinstance(host, str) or not host:
+        return 0
+    try:
+        addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return 0
+    endpoints = {
+        (family, tuple(sockaddr))
+        for family, _kind, _protocol, _name, sockaddr in addresses
+        if sockaddr
+    }
+    return len(endpoints)
 
 
 def is_wildcard_host(host: str) -> bool:

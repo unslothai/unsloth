@@ -125,6 +125,19 @@ def test_a_mixed_family_wildcard_hostname_is_rejected(monkeypatch):
         normalize_wildcard_bind_host("mixed-wildcard.test")
 
 
+def test_scoped_ipv6_endpoints_count_as_distinct_binds(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 2)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 3)),
+        ],
+    )
+
+    assert resolved_bind_address_count("scoped.test") == 2
+
+
 def test_run_server_rejects_an_empty_bind_before_startup():
     from run import run_server
     with pytest.raises(SystemExit, match = "--host cannot be empty"):
