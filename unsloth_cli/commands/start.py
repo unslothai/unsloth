@@ -2985,7 +2985,9 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     if base and key and model_id:
         entry = {
             "id": model_id,
-            "context_length": int(server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0),
+            "context_length": int(
+                server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0
+            ),
         }
         settings = _write_claude_settings(plugin, model_id, _claude_local_env(base, key, entry))
         mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
