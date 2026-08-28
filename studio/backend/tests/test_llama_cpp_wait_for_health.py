@@ -517,3 +517,62 @@ def test_a_cancelled_diffusion_start_reaps_the_runner():
         )
     # One teardown before the launch, one for the cancelled runner.
     assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"
+
+
+def _cancel_scaffold(tmp_path, kills):
+    """A backend wired far enough to run load_model without weights or a server."""
+    b = LlamaCppBackend()
+    b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+    b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
+    b._non_chat_gguf_refusal = lambda *a, **kw: None
+    b._kill_process = lambda *a, **kw: kills.append(1)
+
+    def _start(cmd, env, **kw):
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.pid = 424242
+        b._process = proc
+        b._stdout_lines = ["build: 6543", "main: loading model"]
+        return proc
+
+    b._start_llama_process = _start
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF" + b"\0" * 4096)
+    return b, gguf
+
+
+def test_a_stale_cancel_marker_does_not_abort_the_next_load(tmp_path):
+    """The marker belongs to one attempt. Left set, a guard that runs before this
+    load's first health wait reads the previous request's cancellation and swallows
+    a genuine start failure."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    b._health_wait_cancelled = True  # left over from an earlier cancelled load
+    # A genuine failure: the wait fails and does NOT mark the load cancelled.
+    b._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: False
+
+    with pytest.raises(RuntimeError):
+        b.load_model(GgufLoadIntent(
+            model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096,
+        ))
+
+
+def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
+    """Cancelling during the post-health setup used to leave the child resident while
+    the cancel route saw is_loaded and skipped teardown."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+
+    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+        b._cancel_event.set()  # the user cancels while the load finishes publishing
+        return True
+
+    b._wait_for_health = _wait
+    assert b.load_model(GgufLoadIntent(
+        model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096,
+    )) is False
+    assert kills, "the healthy-but-cancelled child was left resident"

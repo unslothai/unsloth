@@ -16862,6 +16862,9 @@ class LlamaCppBackend:
             # Placement is undecided until the spawn site narrows it: a needless
             # reload prompt beats sizing a child against a replaced budget.
             self._cancel_event.clear()
+            # Belongs to this attempt only; a guard that runs before this load's first
+            # health wait would otherwise read the previous request's cancellation.
+            self._health_wait_cancelled = False
             if _load_cancelled():
                 logger.info("Load cancelled before GGUF resolution")
                 return False
@@ -22119,6 +22122,13 @@ class LlamaCppBackend:
                         "startup; retrying once with llama.cpp devices disabled."
                     )
                     if not _spawn_and_wait(replay, label = "-cpu"):
+                        if getattr(self, "_health_wait_cancelled", False):
+                            # Cancelled during the staged replay. The caller abandons its
+                            # next argv too, so nothing later reclaims the copied runtime.
+                            self._kill_process()
+                            self._cleanup_failed_cpu_fallback()
+                            self._vram_fraction_pending = None
+                            return False
                         if not terminal:
                             # This argv's drafter may be why it cannot start at all,
                             # which the GPU crash says nothing about. Reap the child
@@ -23320,6 +23330,13 @@ class LlamaCppBackend:
                 return False
 
             if not self._healthy:
+                return False
+            if _load_cancelled():
+                # Cancelled during the post-health setup or the audio probe. Publishing
+                # now leaves the child resident while the cancel route sees is_loaded.
+                logger.info("Load cancelled after llama-server became healthy; unwinding")
+                self._kill_process()
+                self._healthy = False
                 return False
             # Snapshot the files the server actually loaded. If a GGUF shard or a
             # LoRA/control-vector sidecar is swapped on disk afterwards while the
