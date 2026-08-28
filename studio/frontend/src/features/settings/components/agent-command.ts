@@ -9,6 +9,20 @@
 
 const DEFAULT_STUDIO_PORT = "8888";
 const DEFAULT_AGENT = "claude";
+const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
+
+export type AgentCommandOs = "unix" | "windows";
+
+export const shSingle = (value: string): string =>
+  value.replace(/'/g, "'\\''");
+export const psSingle = (value: string): string => value.replace(/'/g, "''");
+
+export function quoteShellArg(value: string, os: AgentCommandOs): string {
+  if (SAFE_SHELL_ARG_PATTERN.test(value)) {
+    return value;
+  }
+  return os === "windows" ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
+}
 
 // URL.hostname brackets IPv6 literals (`new URL("http://[::1]:8888").hostname` is
 // "[::1]"), so strip the brackets before matching the bare "::1" loopback rules below.
@@ -39,7 +53,7 @@ export function isLoopbackHost(host: string): boolean {
 export function buildAgentCommand(
   base: string | null | undefined,
   key: string | null | undefined,
-  os: "unix" | "windows",
+  os: AgentCommandOs,
   agent: string = DEFAULT_AGENT,
 ): string {
   const bare = `unsloth start ${agent}`;

@@ -58,9 +58,9 @@ import {
   buildAgentCommand,
   isLoopbackHost,
   normalizeHost,
+  quoteShellArg,
 } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
-import { psSingle, shSingle } from "../components/usage-examples";
 import {
   isChatGenerativeHubModel,
   isClassifierOrRerankerHubModel,
@@ -80,7 +80,6 @@ const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
-const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
 
 function isLoopbackBase(base: string): boolean {
@@ -594,14 +593,6 @@ function CommandBlock({ command }: { command: string }) {
   );
 }
 
-// Quote only values with shell metacharacters, e.g. a local path with spaces.
-function quoteShellArg(value: string, windows: boolean): string {
-  if (SAFE_SHELL_ARG_PATTERN.test(value)) {
-    return value;
-  }
-  return windows ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
-}
-
 function SubagentSection({
   agent,
   baseCommand,
@@ -718,7 +709,6 @@ export function AgentsTab() {
     storedPrefs.agentsOs,
   );
   const commandOs = commandOsOverride ?? inferredCommandOs;
-  const isWindowsCommand = commandOs === "windows";
   const [agents, setAgents] = useState<string[]>(
     SUPPORTED_AGENTS.map((agent) => agent.id),
   );
@@ -863,13 +853,13 @@ export function AgentsTab() {
     selectedVariant && suffixVariant
       ? `${modelId}:${selectedVariant}`
       : modelId;
-  const commandModelArg = quoteShellArg(commandModel, isWindowsCommand);
+  const commandModelArg = quoteShellArg(commandModel, commandOs);
   // A bare `unsloth start` attaches to whatever is loaded, which is the only way
   // to reach a native-grant GGUF: naming it would switch the server to another model.
   const attachOnly = selectedModel === attachOnlyModel;
   const selectedModelArgs =
     selectedVariant && !suffixVariant
-      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsCommand)}`
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, commandOs)}`
       : `--model ${commandModelArg}`;
   const selectedModelFlags =
     modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)
