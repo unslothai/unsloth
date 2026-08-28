@@ -1945,9 +1945,7 @@ def _runtime_gfx_target(
     # Split on ":" as _runtime_target_is_gfx906 and the probe normalization do: a value copied
     # from a full gcnArchName carries feature flags ("gfx1151:sramecc-:xnack-") that no routing
     # table has a key for, and an unnormalized target matches none of them.
-    _explicit_gfx = (
-        (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":", 1)[0]
-    )
+    _explicit_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":", 1)[0]
     if _explicit_gfx:
         return _explicit_gfx, [_explicit_gfx], None, [_explicit_gfx]
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
