@@ -12,7 +12,10 @@ import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
-import { discardDeletedInventoryHints } from "../download-manager/download-manager-state";
+import {
+  discardDeletedInventoryHints,
+  discardDeletedModelInventoryHints,
+} from "../download-manager/download-manager-state";
 import type { ScanFolderStatus } from "../lib/scan-folder-status";
 import type { LocalSource } from "./constants";
 import { bumpGgufVariantsCacheVersion } from "./gguf-variants-cache-events";
@@ -391,9 +394,7 @@ export async function deleteCachedModel(
   });
   try {
     await throwIfNotOk(response);
-    if (!variant) {
-      discardDeletedInventoryHints(repoId, ["model", "gguf"]);
-    }
+    discardDeletedModelInventoryHints(repoId, variant);
     bumpInventoryVersion();
   } finally {
     invalidateGgufVariantsCache(repoId);

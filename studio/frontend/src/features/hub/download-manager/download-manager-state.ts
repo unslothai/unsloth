@@ -429,6 +429,18 @@ function refreshCompletedHintSignature(): void {
 
 export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
   const previousJob = getState().jobs[key];
+  if (
+    previousJob &&
+    previousJob.state !== "complete" &&
+    patch.state === "complete"
+  ) {
+    runtimeRegistry.suppressedCompletedInventoryHints.delete(
+      inventoryHintKey(
+        completedInventoryHintKind(previousJob.kind, previousJob.variant),
+        previousJob.repoId,
+      ),
+    );
+  }
   setState((state) => {
     const job = state.jobs[key];
     if (!job) return state;
@@ -562,6 +574,32 @@ export function discardDeletedInventoryHints(
   for (const kind of kinds) {
     discardPendingInventoryHint(kind, repoId);
     clearCompletedInventoryHint({ kind, repoId });
+  }
+  const repoIdentity = normalizeRepoIdentity(repoId);
+  for (const job of Object.values(getState().jobs)) {
+    if (
+      job.state === "complete" &&
+      normalizeRepoIdentity(job.repoId) === repoIdentity &&
+      kinds.includes(completedInventoryHintKind(job.kind, job.variant))
+    ) {
+      removeJob(job.key);
+    }
+  }
+}
+
+export function discardDeletedModelInventoryHints(
+  repoId: string,
+  variant?: string,
+): void {
+  if (!variant) {
+    discardDeletedInventoryHints(repoId, ["model", "gguf"]);
+    return;
+  }
+  discardPendingInventoryHint("gguf", repoId);
+  clearCompletedInventoryHint({ kind: "gguf", repoId });
+  const job = getState().jobs[jobKeyOf(DOWNLOAD_KIND.MODEL, repoId, variant)];
+  if (job?.state === "complete") {
+    removeJob(job.key);
   }
 }
 
