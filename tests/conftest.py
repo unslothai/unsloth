@@ -171,7 +171,9 @@ def _install_device_type_stub(name: str) -> None:
     # COLLECTION, which is an error for the whole run rather than a skip. The stub
     # stands in for a non-HIP host, where there are no HIP devices to read and
     # nothing is gated, so these are the answers the real module gives there.
-    stub.arch_lacks_bf16 = lambda arch: str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    stub.arch_lacks_bf16 = (
+        lambda arch: str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    )
     stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 
