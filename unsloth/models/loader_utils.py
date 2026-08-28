@@ -45,11 +45,11 @@ LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
 WORLD_SIZE_KEYS = ("WORLD_SIZE",)
 
 BAD_MAPPINGS = {
-    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit".lower(),  # 32B dynamic quant is way too big
-    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B".lower(),  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B".lower(),  # We rather do it on the fly
-    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # We rather do it on the fly
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit",  # 32B dynamic quant is way too big
+    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
+    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
 }
 
 
@@ -563,12 +563,352 @@ def _resolve_with_mappers(
     )
 
 
+def _prefer_legacy_lowercase_cache(
+    repo_id,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+    require_tokenizer = True,
+    require_config = True,
+    require_processor = True,
+    subfolder = None,
+    variant = None,
+    use_safetensors = None,
+    trust_remote_code = False,
+    model_config = None,
+    gguf_file = None,
+    from_tf = False,
+    from_flax = False,
+    can_load_text_only = None,
+):
+    """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
+    if (
+        not (local_files_only or _env_says_offline())
+        or type(repo_id) is not str
+        or repo_id.count("/") != 1
+    ):
+        return repo_id
+    legacy_repo_id = repo_id.lower()
+    if legacy_repo_id == repo_id:
+        return repo_id
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        from huggingface_hub.file_download import repo_folder_name
+
+        try:
+            from transformers.utils.hub import TRANSFORMERS_CACHE
+        except ImportError:
+            TRANSFORMERS_CACHE = HF_HUB_CACHE
+
+        default_cache = TRANSFORMERS_CACHE or HF_HUB_CACHE
+        cache_root = default_cache if cache_dir is None else os.path.expanduser(str(cache_dir))
+        canonical_cache = os.path.join(
+            cache_root, repo_folder_name(repo_id = repo_id, repo_type = "model")
+        )
+        legacy_cache = os.path.join(
+            cache_root, repo_folder_name(repo_id = legacy_repo_id, repo_type = "model")
+        )
+    except Exception:
+        return repo_id
+
+    def _snapshot_has_tokenizer(snapshot):
+        try:
+            has_tiktoken = any(
+                entry.is_file() and entry.name.endswith(".tiktoken")
+                for entry in os.scandir(snapshot)
+            )
+        except OSError:
+            has_tiktoken = False
+        return (
+            any(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in (
+                    "tokenizer.json",
+                    "tokenizer.model",
+                    "vocab.txt",
+                    "spiece.model",
+                    "spm.model",
+                    "tokenizer.model.v3",
+                    "sentencepiece.bpe.model",
+                    "sentencepiece.model",
+                    "bpe.codes",
+                    "vocab.bpe",
+                )
+            )
+            or (
+                os.path.isfile(os.path.join(snapshot, "vocab.json"))
+                and os.path.isfile(os.path.join(snapshot, "merges.txt"))
+            )
+            or all(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in ("source.spm", "target.spm")
+            )
+            or all(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in ("vocab-src.json", "vocab-tgt.json", "merges.txt")
+            )
+            or has_tiktoken
+        )
+
+    def _snapshot_has_complete_model(snapshot):
+        config_path = os.path.join(snapshot, "config.json")
+        try:
+            import json
+            with open(config_path, encoding = "utf-8") as config_file:
+                cached_config = json.load(config_file)
+
+            if not isinstance(cached_config, dict):
+                return False
+        except (OSError, ValueError, TypeError):
+            if require_config:
+                return False
+            cached_config = {}
+        if require_tokenizer and not _snapshot_has_tokenizer(snapshot):
+            return False
+        cache_config = model_config if model_config is not None else cached_config
+        architectures = (
+            cache_config.get("architectures")
+            if isinstance(cache_config, dict)
+            else getattr(cache_config, "architectures", None)
+        ) or []
+        is_vlm = (
+            "vision_config" in cache_config
+            if isinstance(cache_config, dict)
+            else hasattr(cache_config, "vision_config")
+        ) or any(
+            architecture.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+            for architecture in architectures
+            if isinstance(architecture, str)
+        )
+        processor_required = (
+            is_vlm
+            and require_processor
+            and not (can_load_text_only and can_load_text_only(cache_config))
+        )
+        if processor_required:
+            if not any(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in ("processor_config.json", "preprocessor_config.json")
+            ):
+                return False
+            model_type = (
+                cache_config.get("model_type")
+                if isinstance(cache_config, dict)
+                else getattr(cache_config, "model_type", None)
+            )
+            if (
+                transformers_version >= Version("4.52.0")
+                and model_type in ("qwen2_5_vl", "qwen3_vl", "qwen3_vl_moe")
+                and not os.path.isfile(os.path.join(snapshot, "video_preprocessor_config.json"))
+            ):
+                return False
+
+        if trust_remote_code:
+            import ast
+
+            module_files = set()
+
+            def _add_auto_map_modules(auxiliary_config):
+                auto_map = (
+                    auxiliary_config.get("auto_map")
+                    if isinstance(auxiliary_config, dict)
+                    else getattr(auxiliary_config, "auto_map", None)
+                ) or {}
+                entries = auto_map.items() if isinstance(auto_map, dict) else ()
+                for auto_class, reference in entries:
+                    if not isinstance(auto_class, str):
+                        continue
+                    if not require_tokenizer and "Tokenizer" in auto_class:
+                        continue
+                    if not processor_required and any(
+                        name in auto_class for name in ("Processor", "FeatureExtractor")
+                    ):
+                        continue
+                    candidates = reference if isinstance(reference, (list, tuple)) else (reference,)
+                    for candidate in candidates:
+                        if (
+                            not isinstance(candidate, str)
+                            or "--" in candidate
+                            or "." not in candidate
+                        ):
+                            continue
+                        module = candidate.rsplit(".", 1)[0]
+                        module_files.add(module.replace(".", "/") + ".py")
+
+            if model_config is not None:
+                _add_auto_map_modules(model_config)
+            config_names = []
+            if require_config:
+                config_names.append("config.json")
+            if require_tokenizer:
+                config_names.append("tokenizer_config.json")
+            if processor_required:
+                config_names.extend(
+                    (
+                        "processor_config.json",
+                        "preprocessor_config.json",
+                        "video_preprocessor_config.json",
+                    )
+                )
+            for config_name in config_names:
+                try:
+                    with open(os.path.join(snapshot, config_name), encoding = "utf-8") as file:
+                        auxiliary_config = json.load(file)
+                except (OSError, ValueError, TypeError):
+                    continue
+                _add_auto_map_modules(auxiliary_config)
+
+            pending = list(module_files)
+            checked = set()
+            while pending:
+                module_file = pending.pop()
+                if module_file in checked:
+                    continue
+                checked.add(module_file)
+                module_path = os.path.join(snapshot, module_file)
+                if not os.path.isfile(module_path):
+                    return False
+                try:
+                    with open(module_path, encoding = "utf-8") as file:
+                        module_tree = ast.parse(file.read(), module_path)
+                except (OSError, SyntaxError, UnicodeError):
+                    return False
+                package = module_file[:-3].split("/")[:-1]
+                for node in ast.walk(module_tree):
+                    if not isinstance(node, ast.ImportFrom) or node.level == 0:
+                        continue
+                    if node.level > len(package) + 1:
+                        return False
+                    base = package[: len(package) + 1 - node.level]
+                    if node.module:
+                        dependency = base + node.module.split(".")
+                        dependency_file = "/".join(dependency) + ".py"
+                        if dependency_file not in checked:
+                            pending.append(dependency_file)
+                    else:
+                        for alias in node.names:
+                            dependency_file = "/".join(base + [alias.name]) + ".py"
+                            if dependency_file not in checked:
+                                pending.append(dependency_file)
+            if any(name not in checked for name in module_files):
+                return False
+        weights_root = os.path.abspath(
+            os.path.join(snapshot, str(subfolder).strip("/\\")) if subfolder else snapshot
+        )
+        snapshot_root = os.path.abspath(snapshot)
+        try:
+            if os.path.commonpath((snapshot_root, weights_root)) != snapshot_root:
+                return False
+        except ValueError:
+            return False
+
+        def _variant_name(filename):
+            if not variant:
+                return filename
+            stem, extension = filename.rsplit(".", 1)
+            return f"{stem}.{variant}.{extension}"
+
+        if gguf_file is not None:
+            gguf_path = os.path.abspath(os.path.join(weights_root, str(gguf_file)))
+            try:
+                is_cached_gguf = os.path.commonpath((weights_root, gguf_path)) == weights_root
+            except ValueError:
+                is_cached_gguf = False
+            return is_cached_gguf and os.path.isfile(gguf_path)
+        if from_tf:
+            return os.path.isfile(os.path.join(weights_root, _variant_name("tf_model.h5")))
+        if from_flax:
+            return os.path.isfile(os.path.join(weights_root, _variant_name("flax_model.msgpack")))
+
+        safetensors_names = ("model.safetensors", "model.safetensors.index.json")
+        pytorch_names = ("pytorch_model.bin", "pytorch_model.bin.index.json")
+        if use_safetensors is True:
+            weight_name, index_name = safetensors_names
+        elif use_safetensors is False:
+            weight_name, index_name = pytorch_names
+        elif any(
+            os.path.isfile(os.path.join(weights_root, _variant_name(filename)))
+            for filename in safetensors_names
+        ):
+            weight_name, index_name = safetensors_names
+        else:
+            weight_name, index_name = pytorch_names
+        if os.path.isfile(os.path.join(weights_root, _variant_name(weight_name))):
+            return True
+        index_path = os.path.join(weights_root, _variant_name(index_name))
+        try:
+            import json
+
+            with open(index_path, encoding = "utf-8") as index_file:
+                index = json.load(index_file)
+            weight_map = index.get("weight_map") if isinstance(index, dict) else None
+            if not isinstance(weight_map, dict):
+                return False
+            shard_names = set(weight_map.values())
+        except (OSError, ValueError, TypeError):
+            return False
+        return bool(shard_names) and all(
+            isinstance(shard_name, str) and os.path.isfile(os.path.join(weights_root, shard_name))
+            for shard_name in shard_names
+        )
+
+    def _snapshot_for_revision(repo_cache):
+        requested_revision = "main" if revision is None else str(revision)
+        snapshots = os.path.abspath(os.path.join(repo_cache, "snapshots"))
+        if "/" not in requested_revision and "\\" not in requested_revision:
+            direct_snapshot = os.path.join(snapshots, requested_revision)
+            if os.path.isdir(direct_snapshot):
+                return direct_snapshot
+
+        refs = os.path.abspath(os.path.join(repo_cache, "refs"))
+        ref_path = os.path.abspath(os.path.join(refs, requested_revision))
+        try:
+            if os.path.commonpath((refs, ref_path)) != refs:
+                return None
+        except ValueError:
+            return None
+        try:
+            with open(ref_path, encoding = "utf-8") as ref_file:
+                commit = ref_file.read().strip()
+        except OSError:
+            return None
+        snapshot = os.path.abspath(os.path.join(snapshots, commit))
+        try:
+            is_cached_snapshot = os.path.commonpath((snapshots, snapshot)) == snapshots
+        except ValueError:
+            is_cached_snapshot = False
+        return snapshot if commit and is_cached_snapshot and os.path.isdir(snapshot) else None
+
+    def _has_complete_model(repo_cache):
+        snapshot = _snapshot_for_revision(repo_cache)
+        return snapshot is not None and _snapshot_has_complete_model(snapshot)
+
+    if not _has_complete_model(canonical_cache) and _has_complete_model(legacy_cache):
+        return legacy_repo_id
+    return repo_id
+
+
 def get_model_name(
     model_name,
     load_in_4bit = True,
     load_in_fp8 = False,
     token = None,
     trust_remote_code = False,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+    require_tokenizer = True,
+    require_config = True,
+    require_processor = True,
+    subfolder = None,
+    variant = None,
+    use_safetensors = None,
+    return_mapper_changed = False,
+    config = None,
+    gguf_file = None,
+    from_tf = False,
+    from_flax = False,
+    can_load_text_only = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -579,6 +919,7 @@ def get_model_name(
         float_to_int = FLOAT_TO_INT_MAPPER,
         map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
     )
+
     # Remap "bad" names (e.g. oversized dynamic quants or MoEs)
     if (
         new_model_name is not None
@@ -591,6 +932,31 @@ def get_model_name(
         # of the mappers, not values, so the resolver returns None for them and
         # the remap above is skipped; remap the input name directly instead.
         new_model_name = BAD_MAPPINGS[model_name.lower()]
+
+    mapper_changed_name = new_model_name is not None and new_model_name != model_name
+
+    if new_model_name is not None:
+        # A caller-supplied ref only survives case-only canonicalization. Cross-repo
+        # mapper and BAD_MAPPINGS redirects are loaded from their default branch.
+        cache_revision = revision if new_model_name.lower() == str(model_name).lower() else None
+        new_model_name = _prefer_legacy_lowercase_cache(
+            new_model_name,
+            cache_dir,
+            local_files_only,
+            cache_revision,
+            require_tokenizer,
+            require_config,
+            require_processor,
+            subfolder,
+            variant,
+            use_safetensors,
+            trust_remote_code,
+            config,
+            gguf_file,
+            from_tf,
+            from_flax,
+            can_load_text_only,
+        )
 
     if (
         new_model_name is None
@@ -629,7 +995,7 @@ def get_model_name(
     if new_model_name is None:
         new_model_name = model_name
 
-    return new_model_name
+    return (new_model_name, mapper_changed_name) if return_mapper_changed else new_model_name
 
 
 def _offline_quantize_to_fp8(

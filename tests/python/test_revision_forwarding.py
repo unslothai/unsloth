@@ -64,6 +64,21 @@ def _revision_kwarg(call):
     return None
 
 
+def test_cache_probes_forward_requested_weight_format():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        calls = _calls(function, "get_model_name")
+        assert len(calls) == 2
+        for call in calls:
+            kwargs = {keyword.arg: keyword.value for keyword in call.keywords}
+            for name in ("gguf_file", "from_tf", "from_flax"):
+                value = kwargs[name]
+                assert isinstance(value, ast.Call)
+                assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
+                assert isinstance(value.args[0], ast.Constant) and value.args[0].value == name
+
+
 def test_fast_llama_model_reads_its_revision_argument():
     """The whole of #3544: the parameter existed but had zero reads."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
@@ -174,6 +189,19 @@ def test_revision_survives_when_the_repo_is_unchanged():
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
 
 
+def test_revision_survives_case_only_mapper_canonicalization():
+    gate = _load_gate()
+    assert (
+        gate(
+            "pinned-ref",
+            "unsloth/gemma-4-26B-A4B-it",
+            "unsloth/gemma-4-26b-a4b-it",
+            True,
+        )
+        == "pinned-ref"
+    )
+
+
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [
@@ -239,6 +267,85 @@ def test_both_loader_paths_pass_the_mapper_flag():
         for call in _calls(function, "_revision_for_resolved_repo"):
             names = [getattr(a, "id", None) for a in call.args]
             assert "mapper_moved_name" in names, "the gate needs the flag to tailor its remedy"
+
+
+def test_primary_mapper_resolution_receives_the_requested_revision():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        mapper_call = _calls(function, "get_model_name")[0]
+        revision_kwarg = _revision_kwarg(mapper_call)
+        assert revision_kwarg is not None, f"{class_name} must pass revision to cache selection"
+        assert getattr(revision_kwarg.value, "id", None) == "revision"
+
+
+def test_all_mapper_calls_receive_downstream_artifact_requirements():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        mapper_calls = _calls(function, "get_model_name")
+        assert len(mapper_calls) == 2
+        for call in mapper_calls:
+            keywords = {keyword.arg for keyword in call.keywords}
+            assert "require_tokenizer" in keywords
+            assert "require_config" in keywords
+            assert "require_processor" in keywords
+            assert "subfolder" in keywords
+            assert "variant" in keywords
+
+            assert "use_safetensors" in keywords
+
+
+def test_cache_artifact_requirements_are_resolved_before_mapper_calls():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        requirements = _calls(function, "_resolve_checkpoint_tokenizer_name")
+        mapper_calls = _calls(function, "get_model_name")
+        assert len(requirements) >= 2
+        assert max(call.lineno for call in requirements[:2]) < min(
+            call.lineno for call in mapper_calls
+        )
+
+
+def test_dynamic_fp8_uses_mapper_metadata_not_resolved_name_spelling():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        mapper_calls = _calls(function, "get_model_name")
+        primary = mapper_calls[0]
+        metadata_kwarg = next(
+            (keyword for keyword in primary.keywords if keyword.arg == "return_mapper_changed"),
+            None,
+        )
+        assert metadata_kwarg is not None and isinstance(metadata_kwarg.value, ast.Constant)
+        assert metadata_kwarg.value.value is True
+        fp8_guards = [
+            ast.unparse(node.test)
+            for node in ast.walk(function)
+            if isinstance(node, ast.If) and "mapper_selected_name" in ast.unparse(node.test)
+        ]
+        assert fp8_guards, f"{class_name} must use pre-cache mapper metadata for FP8"
+
+
+def test_all_config_probes_receive_the_explicit_cache_dir():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        probes = [
+            call
+            for call in _calls(function, "from_pretrained")
+            if ast.unparse(call.func).split(".")[0] in ("AutoConfig", "PeftConfig")
+        ]
+        assert probes
+        for probe in probes:
+            cache_kwarg = next((kw for kw in probe.keywords if kw.arg == "cache_dir"), None)
+            assert (
+                cache_kwarg is not None
+            ), f"{class_name} probe at line {probe.lineno} drops cache_dir"
+            assert ast.unparse(cache_kwarg.value).replace(" ", "").replace("'", '"') == (
+                'kwargs.get("cache_dir")'
+            )
 
 
 def test_both_loader_paths_gate_before_and_after_resolution():
