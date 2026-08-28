@@ -1425,6 +1425,7 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -1481,6 +1482,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -12407,6 +12409,23 @@ def _restore_alias_if_failed_load_left_the_prior_model(
     backend._openai_advertised_id = prior_alias
 
 
+def _gguf_load_cancelled(llama_backend, load_cancel_event: Optional[threading.Event]) -> bool:
+    return llama_backend.load_cancelled() or bool(
+        load_cancel_event is not None and load_cancel_event.is_set()
+    )
+
+
+async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bool:
+    try:
+        return await asyncio.to_thread(
+            llama_backend.load_model,
+            intent = intent,
+            load_cancel_event = load_cancel_event,
+        )
+    except GgufDownloadCancelled:
+        return False
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -12997,10 +13016,10 @@ async def _load_model_impl(
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
                 )
-                return await asyncio.to_thread(
-                    llama_backend.load_model,
-                    intent = attempt,
-                    load_cancel_event = load_cancel_event,
+                return await _run_gguf_load_attempt(
+                    llama_backend,
+                    attempt,
+                    load_cancel_event,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -13014,10 +13033,7 @@ async def _load_model_impl(
                     requested_tensor = request.tensor_parallel,
                     extra_args = extra_llama_args,
                     label = config.identifier,
-                    cancelled = lambda: (
-                        llama_backend.load_cancelled()
-                        or bool(load_cancel_event and load_cancel_event.is_set())
-                    ),
+                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
                 )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
@@ -13029,6 +13045,11 @@ async def _load_model_impl(
 
             if not success:
                 _restore_marker_if_prior_preview_still_resident()
+                # A cancelled load is not a failed one. An automatic switch cancels
+                # through its own event without unloading, and the 500 built here
+                # would land before the caller reaches _raise_if_generation_cancelled.
+                if _gguf_load_cancelled(llama_backend, load_cancel_event):
+                    raise HTTPException(status_code = 409, detail = "Model load cancelled")
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
