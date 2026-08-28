@@ -4414,7 +4414,9 @@ def test_a_kept_workspace_replaced_at_the_same_path_is_not_served(tmp_path, monk
 
     assert tools.record_orphaned_project(project_id, str(workspace), session_id = session_id)
     monkeypatch.setattr(
-        studio_db, "project_id_for_workspace_session", lambda s: project_id if s == session_id else None
+        studio_db,
+        "project_id_for_workspace_session",
+        lambda s: project_id if s == session_id else None,
     )
     monkeypatch.setattr(studio_db, "get_chat_project", lambda p: None)
 
@@ -4455,7 +4457,9 @@ def test_a_kept_workspace_recorded_before_identity_still_resolves(tmp_path, monk
                 json.dump(record, handle)
 
     monkeypatch.setattr(
-        studio_db, "project_id_for_workspace_session", lambda s: project_id if s == session_id else None
+        studio_db,
+        "project_id_for_workspace_session",
+        lambda s: project_id if s == session_id else None,
     )
     monkeypatch.setattr(studio_db, "get_chat_project", lambda p: None)
 
