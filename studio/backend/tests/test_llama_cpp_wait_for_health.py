@@ -533,6 +533,42 @@ def test_a_cancelled_diffusion_start_reaps_the_runner():
     assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"
 
 
+def test_a_diffusion_cancel_after_health_reaps_the_runner():
+    import subprocess
+
+    b = LlamaCppBackend()
+    kills = []
+    b._kill_process = lambda *a, **kw: kills.append(1)
+    b._find_diffusion_assets = lambda *a, **kw: (["/bin/true"], "/bin/true", None)
+    b._find_free_port = lambda *a, **kw: 45999
+    scoped = threading.Event()
+
+    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+        scoped.set()
+        return True
+
+    b._wait_for_health = _wait
+    proc = mock.Mock()
+    proc.poll.return_value = None
+    proc.pid = 999
+    with mock.patch.object(subprocess, "Popen", return_value = proc):
+        assert (
+            b._start_diffusion_server(
+                model_path = "/m/x.gguf",
+                gguf_path = "/m/x.gguf",
+                hf_repo = None,
+                hf_variant = None,
+                model_identifier = "o/m",
+                n_ctx = 4096,
+                extra_args = None,
+                cancelled = scoped.is_set,
+            )
+            is False
+        )
+    assert b._healthy is False
+    assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"
+
+
 def _cancel_scaffold(tmp_path, kills):
     """A backend wired far enough to run load_model without weights or a server."""
     b = LlamaCppBackend()
