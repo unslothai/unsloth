@@ -219,6 +219,33 @@ def test_higgs_tts2_generation_contract_and_prompt_neutralization():
     assert seen["generate"]["max_new_tokens"] == 321
 
 
+def test_higgs_tts2_loader_moves_the_audio_tokenizer(monkeypatch):
+    codec = SimpleNamespace(to = lambda _device: None)
+    processor = SimpleNamespace(audio_tokenizer = codec)
+    model = object()
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoProcessor = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: processor),
+            HiggsAudioV2ForConditionalGeneration = SimpleNamespace(
+                from_pretrained = lambda *_args, **_kwargs: model
+            ),
+        ),
+    )
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cuda"
+    backend._dtype = lambda: torch.float16
+    moved = []
+    backend._move = lambda value: moved.append(value) or f"moved-{len(moved)}"
+
+    entry = {}
+    backend._load_higgs_tts2(entry, "bosonai/higgs-tts-2-3b-base", None)
+    assert moved == [codec, model]
+    assert processor.audio_tokenizer == "moved-1"
+    assert entry["model"] == "moved-2"
+
+
 def test_higgs_tts3_generation_contract():
     seen = {}
     tokenizer = object()

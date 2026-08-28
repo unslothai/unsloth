@@ -690,6 +690,9 @@ class NativeAudioBackend:
 
         token_kwargs = self._token_kwargs(hf_token)
         processor = AutoProcessor.from_pretrained(source, **token_kwargs)
+        audio_tokenizer = getattr(processor, "audio_tokenizer", None)
+        if audio_tokenizer is not None and hasattr(audio_tokenizer, "to"):
+            processor.audio_tokenizer = self._move(audio_tokenizer)
         model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
             source,
             torch_dtype = self._dtype(),
