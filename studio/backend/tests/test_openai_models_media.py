@@ -551,18 +551,23 @@ def test_engine_if_imported_stays_out_of_torch(monkeypatch):
 
 
 def test_classified_catalog_tags_task(monkeypatch):
-    import routes.models as models_mod
+    from hub.services.models import catalog_classification
 
     class _Model(BaseModel):
         id: str
         task: Optional[str] = None
+        audio_type: Optional[str] = None
 
-    monkeypatch.setattr(models_mod, "_local_model_task", lambda m: "text-to-image")
+    monkeypatch.setattr(
+        catalog_classification,
+        "_local_model_classification",
+        lambda model: ("text-to-speech", "csm"),
+    )
     plain = object()
     tagged, kept, passthrough = inf._classified_catalog(
         [_Model(id = "a"), _Model(id = "b", task = "text-generation"), plain]
     )
-    assert tagged.task == "text-to-image"
+    assert tagged.task == "text-to-speech" and tagged.audio_type == "csm"
     assert kept.task == "text-generation"
     assert passthrough is plain
 

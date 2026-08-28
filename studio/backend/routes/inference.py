@@ -23029,13 +23029,14 @@ def _catalog_lock() -> asyncio.Lock:
 
 
 def _classified_catalog(models: list) -> list:
-    from routes.models import _local_model_task
+    from hub.services.models.catalog_classification import _local_model_classification
 
     classified = []
     for model in models:
         if getattr(model, "task", None) is None and hasattr(model, "model_copy"):
             try:
-                model = model.model_copy(update = {"task": _local_model_task(model)})
+                task, audio_type = _local_model_classification(model)
+                model = model.model_copy(update = {"task": task, "audio_type": audio_type})
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "model task classification failed for %s: %s", getattr(model, "id", "?"), exc
