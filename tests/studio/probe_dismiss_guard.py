@@ -149,8 +149,11 @@ FACTS_JS = """
 }
 """
 
-TRIGGER_FOCUSED_JS = """
-() => document.activeElement === window.__heavyThread.actionButton("More")
+PRE_SPACE_FACTS_JS = """
+() => ({
+  menuOpen: Boolean(document.querySelector(".aui-action-bar-more-content")),
+  triggerFocused: document.activeElement === window.__heavyThread.actionButton("More"),
+})
 """
 
 # Simulate main-thread work between pointerdown and the synthesized click.
@@ -293,7 +296,7 @@ async def one_case(
     if not rect:
         return {"case": case, "error": "no Delete button"}
     x, y = rect["x"], rect["y"]
-    trigger_focused_before_space = None
+    pre_space_facts = None
 
     if case == "quick":
         await page.mouse.move(x, y)
@@ -348,13 +351,13 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
         await page.wait_for_timeout(300)
-        trigger_focused_before_space = await page.evaluate(TRIGGER_FOCUSED_JS)
+        pre_space_facts = await page.evaluate(PRE_SPACE_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_then_space":
         # A swallowed dismissal must not leave Delete focused for Space activation.
         await page.mouse.click(x, y)
         await page.wait_for_timeout(300)
-        trigger_focused_before_space = await page.evaluate(TRIGGER_FOCUSED_JS)
+        pre_space_facts = await page.evaluate(PRE_SPACE_FACTS_JS)
         await page.keyboard.press("Space")
     elif case in ("drag_then_space", "blur_then_space"):
         # A drag may retarget the click; blur exercises the no-click cleanup path.
@@ -369,7 +372,7 @@ async def one_case(
         await page.mouse.move(spot["x"], spot["y"])
         await page.mouse.up()
         await page.wait_for_timeout(700)
-        trigger_focused_before_space = await page.evaluate(TRIGGER_FOCUSED_JS)
+        pre_space_facts = await page.evaluate(PRE_SPACE_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
         # Dismissing into the composer must preserve its caret.
@@ -579,10 +582,13 @@ async def one_case(
         "deleted": after["assistantMessages"] < before["assistantMessages"],
         "menuClosed": not after["menuOpen"],
     }
-    if trigger_focused_before_space is not None:
-        result["triggerFocusedBeforeSpace"] = trigger_focused_before_space
+    if pre_space_facts is not None:
+        result["menuClosedBeforeSpace"] = not pre_space_facts["menuOpen"]
+        result["triggerFocusedBeforeSpace"] = pre_space_facts["triggerFocused"]
         result["menuReopenedFromTrigger"] = (
-            trigger_focused_before_space and after["menuOpen"]
+            not pre_space_facts["menuOpen"]
+            and pre_space_facts["triggerFocused"]
+            and after["menuOpen"]
         )
     return result
 
@@ -656,12 +662,22 @@ def main() -> int:
         for c in result["cases"]
         if "menuClosed" in c
         and not c["menuClosed"]
-        and not c.get("menuReopenedFromTrigger")
+        and "menuClosedBeforeSpace" not in c
+    ]
+    not_dismissed = [
+        c["case"]
+        for c in result["cases"]
+        if "menuClosedBeforeSpace" in c and not c["menuClosedBeforeSpace"]
     ]
     wrong_focus = [
         c["case"]
         for c in result["cases"]
         if "triggerFocusedBeforeSpace" in c and not c["triggerFocusedBeforeSpace"]
+    ]
+    not_reopened = [
+        c["case"]
+        for c in result["cases"]
+        if "menuReopenedFromTrigger" in c and not c["menuReopenedFromTrigger"]
     ]
     broken = [c["case"] for c in result["cases"] if c.get("error")]
     over = [
@@ -680,6 +696,16 @@ def main() -> int:
             f"[probe] FAIL: focus did not return to the More trigger on {wrong_focus}",
             flush = True,
         )
+    if not_dismissed:
+        print(
+            f"[probe] FAIL: the menu was still open before Space on {not_dismissed}",
+            flush = True,
+        )
+    if not_reopened:
+        print(
+            f"[probe] FAIL: Space did not reopen the menu from More on {not_reopened}",
+            flush = True,
+        )
     if deleted:
         print(
             f"[probe] FAIL: dismissing the menu also deleted a message via {deleted}",
@@ -689,7 +715,7 @@ def main() -> int:
         print(f"[probe] FAIL: cases did not run: {broken}", flush = True)
     if stuck:
         print(f"[probe] FAIL: the menu did not close on {stuck}", flush = True)
-    if deleted or broken or stuck or wrong_focus:
+    if deleted or broken or stuck or wrong_focus or not_dismissed or not_reopened:
         return 1
     print("[probe] PASS: no dismissal variant reached the control underneath", flush = True)
     return 0
