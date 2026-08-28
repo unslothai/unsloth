@@ -2684,6 +2684,15 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     )
 
     if leaf.startswith("gfx"):
+        # A repin BETWEEN per-arch leaves (gfx1151 -> gfx120X-all, the swapped-card case)
+        # keeps every shape the version string carries: both are torch 2.11 with a three-part
+        # +rocmA.B.C tag. Judged on that alone the pin the user just edited reads as already
+        # satisfied and is dropped in silence, leaving wheels with no kernels for the new
+        # card. The installed `rocm` meta-package names the family outright, so ask it. None
+        # means unknowable, which is why this can only ADD a mismatch, never talk one away.
+        _family = _installed_rocm_wheel_family()
+        if _family is not None and _family != leaf:
+            return True
         # 2.11-allowlist arches expect the AMD per-arch wheel (three-part +rocmA.B.C,
         # torch 2.11+); a generic or pre-2.11 build is a mismatch.
         if leaf in _ROCM_GFX_TORCH211_LEAVES:

@@ -1525,3 +1525,28 @@ def test_an_arch_naming_what_the_override_spoofs_to_keeps_the_spoof():
         env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1100", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
     )
     assert _run_install.hsa_override_after == "11.0.0"
+
+
+def test_a_repin_between_per_arch_leaves_is_applied():
+    """Swap the card, edit UNSLOTH_TORCH_INDEX_URL to the new leaf, and every shape the
+    version string carries stays put: gfx1151 and gfx120X-all are both torch 2.11 with a
+    three-part +rocm7.13.0 tag. Judged on that alone the edited pin reads as already
+    satisfied, so nothing is installed and the old wheels -- which carry no kernels for the
+    new card -- survive the update in silence."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": f"https://{_AMD}/gfx120X-all/"},
+    )
+    assert f"{_AMD}/gfx120X-all" in calls, calls
+    # A pin naming the family already installed is still not a reinstall: this runs on every
+    # update and the stack is multi-GB.
+    assert _AMD not in _run_install(
+        gfx_devices = ("gfx1200",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx120x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": f"https://{_AMD}/gfx120X-all/"},
+    )

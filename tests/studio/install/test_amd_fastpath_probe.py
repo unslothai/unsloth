@@ -751,3 +751,25 @@ def test_a_sole_gfx906_above_its_legacy_tag_forces_the_pass(monkeypatch):
     # Already on the legacy tag: nothing left to do.
     _host(monkeypatch, torch = ("2.9.0+rocm6.3", "6.3"), gfx = ("gfx906",), rocm_ver = (6, 4))
     assert _needs_pass() is False
+
+
+def test_a_repin_to_another_per_arch_leaf_forces_the_pass(monkeypatch):
+    """Both leaves are torch 2.11 with a three-part +rocm7.13.0 tag, so the pin arm's version
+    comparison sees no change and would keep the fast path over an edited pin -- the update
+    that was supposed to move the card onto its own wheels."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all/"},
+    )
+    assert _needs_pass() is True
+
+
+def test_a_pin_naming_the_installed_leaf_keeps_the_fast_path(monkeypatch):
+    """The same comparison the other way: nothing to apply, so nothing to pass for."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx120x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all/"},
+    )
+    assert _needs_pass() is False
