@@ -4780,14 +4780,20 @@ def _wants_current_date(request: Any) -> bool:
     return not _request_has_api_key(request)
 
 
-def _apply_current_date_prompt(system_prompt: str, request: Any = None) -> str:
+def _apply_current_date_prompt(
+    system_prompt: str,
+    request: Any = None,
+    *,
+    include_api_key: bool = False,
+) -> str:
     """Prefix the user's system prompt with today's date when the setting is on.
 
     Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
     as the last word to the model.
     """
     if request is not None and not _wants_current_date(request):
-        return system_prompt
+        if not include_api_key or _request_is_internal_workflow(request):
+            return system_prompt
     date_line = current_date_prompt_line(request = request)
     if not date_line:
         return system_prompt
@@ -4797,14 +4803,20 @@ def _apply_current_date_prompt(system_prompt: str, request: Any = None) -> str:
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
-def _prepend_current_date_to_messages(messages: list[dict], request: Any = None) -> list[dict]:
+def _prepend_current_date_to_messages(
+    messages: list[dict],
+    request: Any = None,
+    *,
+    include_api_key: bool = False,
+) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
     assembled first, so the date goes onto its leading system turn instead.
     """
     if request is not None and not _wants_current_date(request):
-        return messages
+        if not include_api_key or _request_is_internal_workflow(request):
+            return messages
     date_line = current_date_prompt_line(request = request)
     if not date_line:
         return messages
@@ -18127,7 +18139,11 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
-    chat_messages = _prepend_current_date_to_messages(chat_messages, request)
+    chat_messages = _prepend_current_date_to_messages(
+        chat_messages,
+        request,
+        include_api_key = studio_tool_loop,
+    )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -19736,6 +19752,12 @@ async def produce_openai_chat_completions(
                 )
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
+            system_prompt = _apply_current_date_prompt(
+                system_prompt,
+                request,
+                include_api_key = True,
+            )
+            gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
@@ -21426,7 +21448,11 @@ async def produce_openai_chat_completions(
         # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
-        _sf_system_prompt = system_prompt
+        _sf_system_prompt = _apply_current_date_prompt(
+            system_prompt,
+            request,
+            include_api_key = True,
+        )
         if _sf_nudge:
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
@@ -25854,6 +25880,11 @@ async def chat_count_tokens(
         tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
+            openai_messages = _prepend_current_date_to_messages(
+                openai_messages,
+                request,
+                include_api_key = True,
+            )
             _count_nudge = await _apply_rag_nudge(
                 _build_tool_action_nudge(
                     tools = tools_to_use,
@@ -26023,7 +26054,11 @@ async def anthropic_count_tokens(
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
     if not _count_client_tools:
-        openai_messages = _prepend_current_date_to_messages(openai_messages, request)
+        openai_messages = _prepend_current_date_to_messages(
+            openai_messages,
+            request,
+            include_api_key = _count_server_tools,
+        )
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the
@@ -26322,7 +26357,11 @@ async def anthropic_messages(
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
     # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
     if not client_tools:
-        openai_messages = _prepend_current_date_to_messages(openai_messages, request)
+        openai_messages = _prepend_current_date_to_messages(
+            openai_messages,
+            request,
+            include_api_key = server_tools,
+        )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
     # single tool_use block. Computed here so BOTH the client-tool passthrough

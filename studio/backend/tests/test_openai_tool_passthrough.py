@@ -3600,6 +3600,7 @@ class TestGgufVisionToolRouting:
         tool_generate = None,
         payload_kwargs = None,
         backend_kwargs = None,
+        request = None,
     ):
         import routes.inference as inf_mod
 
@@ -3637,7 +3638,11 @@ class TestGgufVisionToolRouting:
             request_data.update(payload_kwargs)
         payload = ChatCompletionRequest(**request_data)
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+            openai_chat_completions(
+                payload,
+                request = request or self._Request(),
+                current_subject = "test",
+            )
         )
         result = SimpleNamespace(response = response, monitor = monitor, backend = backend)
         if request_data.get("stream"):
@@ -3808,6 +3813,41 @@ class TestGgufVisionToolRouting:
             "function": {"name": "web_search"},
         }
         assert captured["kwargs"]["permission_mode"] == "off"
+
+    def test_api_server_tool_loop_keeps_the_current_date(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _tools(**kwargs):
+            captured.update(kwargs)
+            yield {"type": "content", "text": "done"}
+
+        class ApiRequest(self._Request):
+            headers = {"authorization": "Bearer sk-unsloth-test"}
+            state = SimpleNamespace(skip_api_monitor = True)
+
+        monkeypatch.setattr(
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+        self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "permission_mode": "off",
+                "stream": True,
+            },
+            request = ApiRequest(),
+        )
+
+        system_messages = [message for message in captured["messages"] if message["role"] == "system"]
+        assert len(system_messages) == 1
+        assert system_messages[0]["content"].startswith("The current date is 2026-08-15.\n\n")
 
     def test_forced_tool_choice_must_be_in_the_selected_gguf_catalog(self, monkeypatch):
         import routes.inference as inf_mod
@@ -5263,7 +5303,7 @@ class TestGgufVisionToolRouting:
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
         # Pinned, not left to the host's stored setting, so the assertion is the same everywhere.
-        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda: date_line)
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: date_line)
 
         payload = ChatCompletionRequest(
             model = "default",

@@ -2209,7 +2209,7 @@ def _mock_backend(monkeypatch, **overrides):
 
     # Pinned off by default so prompt assertions do not depend on the host's stored setting;
     # the date's own behaviour on this route is covered in test_current_date_prompt_settings.
-    monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda: "")
+    monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
 
     calls = []
 
@@ -2294,9 +2294,10 @@ class TestAnthropicMessagesToolRouting:
 
         backend = _mock_backend(monkeypatch, context_length = 2048)
         monkeypatch.setattr(
-            inf_mod, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
         )
-
         _drive(anthropic_messages(_basic_payload(), request = self._Request(), current_subject = "t"))
 
         [(_path, kwargs)] = backend.calls
@@ -2744,6 +2745,32 @@ class TestAnthropicMessagesToolRouting:
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "tools"
+
+    def test_api_server_tool_request_keeps_the_current_date(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        backend = _mock_backend(monkeypatch)
+        monkeypatch.setattr(
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+
+        class ApiRequest(self._Request):
+            headers = {"authorization": "Bearer sk-unsloth-test"}
+            state = SimpleNamespace(skip_api_monitor = True)
+
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+        _drive(anthropic_messages(payload, request = ApiRequest(), current_subject = "t"))
+
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert kwargs["messages"][0]["content"].startswith(
+            "The current date is 2026-08-15.\n\n"
+        )
 
     def test_server_tool_choice_alias_uses_the_selected_studio_name(self, monkeypatch):
         backend = _mock_backend(monkeypatch)

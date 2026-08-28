@@ -267,6 +267,31 @@ class TestExternalProviderMessages:
         assert inference._prepend_current_date_to_messages(messages, object()) is messages
         assert inference._apply_current_date_prompt("Be terse.", object()) == "Be terse."
 
+    def test_server_tool_loop_can_date_an_api_key_request(self, monkeypatch):
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: True)
+        messages = [{"role": "user", "content": "hi"}]
+        out = inference._prepend_current_date_to_messages(
+            messages,
+            object(),
+            include_api_key = True,
+        )
+        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+
+    def test_server_tool_loop_keeps_an_internal_workflow_stamp(self, monkeypatch):
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: True)
+        monkeypatch.setattr(inference, "_request_is_internal_workflow", lambda _request: True)
+        messages = [{"role": "system", "content": "The current date is 2026-08-14."}]
+        out = inference._prepend_current_date_to_messages(
+            messages,
+            object(),
+            include_api_key = True,
+        )
+        assert out is messages
+
     def test_a_studio_session_request_is_dated(self, monkeypatch):
         import routes.inference as inference
 

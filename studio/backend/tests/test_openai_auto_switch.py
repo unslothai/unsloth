@@ -3914,7 +3914,7 @@ def _count_tokens_backend(
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
     # Pinned off so message-shape assertions do not depend on the host's stored setting;
     # test_chat_count_tokens_prices_the_current_date covers the date's own effect on the count.
-    monkeypatch.setattr(inference_route, "current_date_prompt_line", lambda: "")
+    monkeypatch.setattr(inference_route, "current_date_prompt_line", lambda **_kwargs: "")
     return switched, counted
 
 
@@ -4158,7 +4158,9 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     """The bar has to price what generation sends, and only the passthrough is sent undated."""
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
     monkeypatch.setattr(
-        inference_route, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+        inference_route,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
     )
     thread = [{"role": "user", "content": "hi"}]
 
@@ -4171,6 +4173,41 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     # The passthrough forwards the caller's request verbatim, so counting a date it never sends
     # would overcount exactly those prompts.
     _counted_body(_count_request(thread, tools = _PASSTHROUGH_CATALOG))
+    assert all(message.get("role") != "system" for message in counted["messages"])
+
+
+def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    monkeypatch.setattr(
+        inference_route,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    async def _select(_payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    monkeypatch.setattr(
+        inference_route,
+        "_request_is_internal_workflow",
+        lambda _request: False,
+    )
+    request = types.SimpleNamespace(
+        headers = {"authorization": "Bearer sk-unsloth-test"},
+    )
+    thread = [{"role": "user", "content": "hi"}]
+
+    asyncio.run(
+        inference_route.chat_count_tokens(
+            _count_request(thread, enable_tools = True, enabled_tools = ["web_search"]),
+            "tester",
+            request,
+        )
+    )
+    assert counted["messages"][0]["content"].startswith("The current date is 2026-08-15.\n\n")
+
+    asyncio.run(inference_route.chat_count_tokens(_count_request(thread), "tester", request))
     assert all(message.get("role") != "system" for message in counted["messages"])
 
 
