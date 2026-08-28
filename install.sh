@@ -3563,6 +3563,24 @@ _amd_smi_gpu_records() {
     '
 }
 
+# `gfx|name` records to one arch per adapter, ordinals intact.
+#
+# An adapter whose arch the probe could not read keeps its slot as `unknown` rather than
+# vanishing. A visible-device mask indexes this list, so dropping the unreadable adapter
+# shifts every device after it and the arch policies land on a card the mask did not
+# select. `unknown` matches no policy, which is the right answer for an arch nobody knows.
+# Prints nothing when NO adapter has an arch, so the caller still falls through to the
+# next probe instead of stopping on a list of placeholders.
+_gfx_arch_slots() {
+    awk -F'|' '
+        NF { rec[n++] = $1; if ($1 != "") any = 1 }
+        END {
+            if (!any) exit
+            for (i = 0; i < n; i++) print (rec[i] == "" ? "unknown" : rec[i])
+        }
+    '
+}
+
 # Physical gfx arch when the ISA probe is an HSA_OVERRIDE_GFX_VERSION spoof
 # (unslothai#7331): $1 = the arch inferred from the product name, $2 = the probed gfx
 # token list. Prints the physical arch, or nothing to mean "believe the probe" (default).
@@ -4804,16 +4822,33 @@ case "$_torch_index_leaf" in
         _gfx_all=${_gfx_all%%:*}
         # which probe answered: only rocminfo is filtered by an rocr mask, so only it can pre-apply one
         _gfx_probe=""
+        # Which index space _gfx_all is in. amd-smi enumerates in discovery order, which is
+        # not HIP order on a mixed host, so an ordinal cannot be applied to it until it has
+        # been translated. `hip` once _amd_smi_hip_order has done that, or straight away for
+        # rocminfo and for an explicit UNSLOTH_ROCM_GFX_ARCH, which names one arch outright.
+        _gfx_space=hip
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_records | cut -d'|' -f1 || true)
-            [ -n "$_gfx_all" ] && _gfx_probe=rocminfo
+            _gfx_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_records | _gfx_arch_slots || true)
+            # rocminfo is an ROCr client and enumerates in ROCr order, which is the order
+            # HIP numbers from. That is the premise the mask handling below already runs
+            # on ("its output IS the runtime order"), not a new claim.
+            [ -n "$_gfx_all" ] && { _gfx_probe=rocminfo; _gfx_space=hip; }
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | _amd_smi_gpu_records | cut -d'|' -f1 || true)
+            _gfx_records=$(amd-smi list 2>/dev/null | _amd_smi_gpu_records || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
-            if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records | cut -d'|' -f1 || true)
+            [ -z "$_gfx_records" ] && \
+                _gfx_records=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records || true)
+            if [ -n "$_gfx_records" ]; then
+                # Same translation the GPU summary below does, for the same reason: HIP_ID
+                # from `amd-smi list -e` maps discovery order onto the order HIP numbers.
+                # The first output line reports which space came back.
+                _gfx_smi_out=$(amd-smi list -e 2>/dev/null | _amd_smi_hip_order "$_gfx_records" || true)
+                _gfx_space=$(printf '%s\n' "$_gfx_smi_out" | head -n 1)
+                _gfx_records=$(printf '%s\n' "$_gfx_smi_out" | tail -n +2)
+                _gfx_all=$(printf '%s\n' "$_gfx_records" | _gfx_arch_slots || true)
+                [ -n "$_gfx_all" ] && _gfx_probe=amd-smi
             fi
         fi
         # get_torch_index_url reads the arch with ROCR/HIP masks cleared, so a
@@ -4825,12 +4860,17 @@ case "$_torch_index_leaf" in
         # must trigger the re-probe too.
         if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES+x}${HIP_VISIBLE_DEVICES+x}" ]; then
             if command -v rocminfo >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | _rocminfo_gpu_records | cut -d'|' -f1 || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | _rocminfo_gpu_records | _gfx_arch_slots || true)
+                [ -n "$_gfx_all" ] && _gfx_space=hip
             fi
             if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _amd_smi_gpu_records | cut -d'|' -f1 || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
                 [ -z "$_gfx_all" ] && \
-                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _amd_smi_gpu_records | cut -d'|' -f1 || true)
+                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
+                # Deliberately left in discovery space. A single-GPU box, which is what this
+                # rescue is for, has one distinct arch and routes normally; a mixed one
+                # declines below rather than guess which card the runtime will pick.
+                [ -n "$_gfx_all" ] && _gfx_space=discovery
             fi
         fi
         # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
@@ -4873,6 +4913,22 @@ case "$_torch_index_leaf" in
                     if (idx < 0 || idx >= n) idx = 0
                     if (n > 0) print vals[idx]
                 }')
+            # No HIP_ID map, and the adapters are not alike: these records are in amd-smi
+            # discovery order, which is not the order HIP numbers devices, so ordinal 0 is
+            # already a guess and a mask ordinal doubly so. Routing on it installs wheels
+            # for a card the runtime will not use, which is worse than not routing at all.
+            # This is the call the GPU summary below already makes, on the same evidence.
+            # Interchangeable adapters are unaffected: every ordinal gives the same answer.
+            if [ "$_gfx_space" != hip ] && \
+               [ "$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')" -gt 1 ]; then
+                echo "" >&2
+                echo "  [WARN] amd-smi lists unlike adapters in discovery order and \`amd-smi list -e\`" >&2
+                echo "  [WARN] returned no HIP_ID map, so no ordinal here names a known device." >&2
+                echo "  [WARN] Skipping arch-specific torch routing. Set UNSLOTH_ROCM_GFX_ARCH to" >&2
+                echo "  [WARN] name the target explicitly." >&2
+                echo "" >&2
+                _runtime_gfx=""
+            fi
         fi
         # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
         # MI50 / Radeon VII path and must win over Strix probe-order detection on a

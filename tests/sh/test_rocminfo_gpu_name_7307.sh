@@ -17,6 +17,10 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
     echo ""
     sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_gfx_arch_slots()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_smi_hip_order()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
@@ -333,6 +337,45 @@ assert_eq "the keyed form still pairs arch with name" \
     "$(printf '%s\n' "$SMI_KEYED" | _amd_smi_gpu_records)"
 assert_eq "a header with no arch stays empty rather than borrowing the next device's" \
     "|" "$(printf 'GPU: 0\n    BDF: 0000:03:00.0\n' | _amd_smi_gpu_records)"
+
+# A visible-device mask indexes the arch list, so an adapter the probe could not read has
+# to keep its slot. Dropping it shifted every device after it and handed the next card's
+# arch to the mask, which is how a Strix or rocm6.4 policy lands on the wrong adapter.
+echo "=== arch slots ==="
+assert_eq "an unreadable adapter keeps its ordinal instead of shifting the list" \
+    "unknown gfx1151" \
+    "$(printf '%s\n' "|Unknown adapter
+gfx1151|Radeon 8060S" | _gfx_arch_slots | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "and in the last slot, where command substitution used to eat it" \
+    "gfx1151 unknown" \
+    "$(printf '%s\n' "gfx1151|Radeon 8060S
+|Unknown adapter" | _gfx_arch_slots | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "no arch anywhere prints nothing, so the caller tries the next probe" \
+    "" "$(printf '%s\n' "|A
+|B" | _gfx_arch_slots)"
+assert_eq "a fully readable list is unchanged" "gfx1100 gfx1200" \
+    "$(printf '%s\n' "gfx1100|A
+gfx1200|B" | _gfx_arch_slots | tr '\n' ' ' | sed 's/ $//')"
+
+# amd-smi enumerates in discovery order, HIP numbers in its own. The arch routing indexes
+# the list with a HIP/ROCR ordinal, so it has to translate first or say it cannot.
+HIP_MAP="GPU: 0
+    HIP_ID: 1
+GPU: 1
+    HIP_ID: 0"
+MIXED="gfx90a|AMD Instinct MI210
+gfx1200|AMD Radeon RX 9070"
+echo "=== amd-smi to HIP order ==="
+assert_eq "a full HIP_ID map reorders the records and says so" \
+    "hip gfx1200|AMD Radeon RX 9070 gfx90a|AMD Instinct MI210" \
+    "$(printf '%s\n' "$HIP_MAP" | _amd_smi_hip_order "$MIXED" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "no map at all keeps discovery order and says THAT" \
+    "discovery gfx90a|AMD Instinct MI210 gfx1200|AMD Radeon RX 9070" \
+    "$(printf '' | _amd_smi_hip_order "$MIXED" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "HIP_ID: N/A is not a map either" \
+    "discovery" \
+    "$(printf 'GPU: 0\n    HIP_ID: N/A\nGPU: 1\n    HIP_ID: N/A\n' \
+        | _amd_smi_hip_order "$MIXED" | head -n 1)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
