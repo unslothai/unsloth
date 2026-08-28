@@ -2513,7 +2513,28 @@ def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough:
     ]
     forwarded = list(passthrough)
     separator = forwarded.index("--") if "--" in forwarded else len(forwarded)
-    return ["claude", *forwarded[:separator], *local_args, *forwarded[separator:]]
+    before_separator = forwarded[:separator]
+    forwarded_settings = []
+    remaining = []
+    index = 0
+    while index < len(before_separator):
+        arg = before_separator[index]
+        if arg == "--settings" and index + 1 < len(before_separator):
+            forwarded_settings.extend(before_separator[index : index + 2])
+            index += 2
+            continue
+        if arg.startswith("--settings="):
+            forwarded_settings.append(arg)
+        else:
+            remaining.append(arg)
+        index += 1
+    return [
+        "claude",
+        *forwarded_settings,
+        *local_args,
+        *remaining,
+        *forwarded[separator:],
+    ]
 
 
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:

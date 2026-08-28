@@ -1498,6 +1498,32 @@ def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
     assert Path(command[positions[1] + 1]).name.startswith("settings-")
 
 
+@pytest.mark.parametrize(
+    "settings_arg",
+    [
+        lambda value: ["--settings", value],
+        lambda value: [f"--settings={value}"],
+    ],
+)
+def test_connect_claude_session_settings_precede_subcommand(fake_studio, settings_arg):
+    forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "mcp", "list", *settings_arg(forwarded)],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    subcommand = command.index("mcp")
+    assert command.index("--model") < subcommand
+    settings_positions = [
+        index
+        for index, arg in enumerate(command)
+        if arg == "--settings" or arg.startswith("--settings=")
+    ]
+    assert len(settings_positions) == 2
+    assert settings_positions[0] < settings_positions[1] < subcommand
+
+
 def test_connect_claude_session_settings_precede_forwarded_delimiter(fake_studio):
     forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
     result = CliRunner().invoke(
@@ -6623,7 +6649,7 @@ def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
     resume = captured["command"].index("--resume")
     assert captured["command"][resume : resume + 2] == ["--resume", "some-session-guid"]
-    assert resume < captured["command"].index("--model")
+    assert captured["command"].index("--model") < resume
     # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]
