@@ -25798,7 +25798,9 @@ class LlamaCppBackend:
                             self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
                             self._spec_fallback_reason = "runtime_error"
                     if undo_reload:
-                        logger.info("MTP-crash reload undone: the model was unloaded during reload.")
+                        logger.info(
+                            "MTP-crash reload undone: the model was unloaded during reload."
+                        )
                         self.unload_model()
                         return
                 logger.info("Reloaded without MTP after the tensor-parallel crash.")
