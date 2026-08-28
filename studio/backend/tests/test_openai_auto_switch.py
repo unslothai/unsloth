@@ -9446,6 +9446,90 @@ def test_invalid_non_gguf_images_are_rejected_before_switch(monkeypatch, image_p
     assert llama.model_identifier == "org/A-GGUF"
 
 
+def test_a_malformed_gguf_image_is_rejected_before_switch(monkeypatch):
+    llama = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(llama)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/B.gguf", "Q4_K_M", "org/B-GGUF"),
+        backend = llama,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: True)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF",
+                object(),
+                "tester",
+                require_vision = True,
+                image_preflight = {
+                    "b64": "bm90IGFuIGltYWdl",
+                    "b64s": ["bm90IGFuIGltYWdl"],
+                    "multiple": False,
+                },
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Failed to process image."
+    assert recorder.calls == []
+    assert llama.model_identifier == "org/A-GGUF"
+
+
+def test_gguf_image_preflight_allows_multiple_valid_images():
+    import base64 as _b64
+    import io
+    from PIL import Image
+
+    encoded = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(encoded, format = "PNG")
+    image_b64 = _b64.b64encode(encoded.getvalue()).decode()
+
+    asyncio.run(
+        inference_route._preflight_image_for_switch(
+            {"b64s": [image_b64, image_b64], "multiple": True},
+            True,
+        )
+    )
+
+
+def test_the_image_preflight_collects_every_local_request_image():
+    from models.inference import ChatMessage, ImageContentPart, ImageUrl
+
+    payload = _chat_request(
+        image_base64 = "legacy",
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    ImageContentPart(
+                        type = "image_url",
+                        image_url = ImageUrl(url = "data:image/png;base64,first"),
+                    ),
+                    ImageContentPart(
+                        type = "image_url",
+                        image_url = ImageUrl(url = "https://example.com/remote.png"),
+                    ),
+                    ImageContentPart(
+                        type = "image_url",
+                        image_url = ImageUrl(url = "data:image/png;base64,second"),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    assert inference_route._request_local_image_payloads(payload) == [
+        "first",
+        "second",
+        "legacy",
+    ]
+
+
 def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch):
     llama = _FakeBackend("org/A-GGUF")
 

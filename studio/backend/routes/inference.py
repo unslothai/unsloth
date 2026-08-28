@@ -6660,10 +6660,8 @@ def _validate_image_base64(encoded: str) -> None:
 
 
 async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: bool) -> None:
-    """Apply non-GGUF image checks before loading the resolved target."""
-    if target_is_gguf:
-        return
-    if image_preflight.get("multiple"):
+    """Apply target-specific image checks before loading the resolved target."""
+    if not target_is_gguf and image_preflight.get("multiple"):
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -6671,13 +6669,19 @@ async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: boo
                 " GGUF build of it, which accepts several."
             ),
         )
-    encoded = image_preflight.get("b64")
-    if not encoded:
-        return
-    try:
-        await asyncio.to_thread(_validate_image_base64, encoded)
-    except Exception:
-        raise HTTPException(status_code = 400, detail = "Failed to decode image") from None
+    encoded_images = (
+        image_preflight.get("b64s", ())
+        if target_is_gguf
+        else (image_preflight.get("b64"),)
+    )
+    for encoded in encoded_images:
+        if encoded is None:
+            continue
+        try:
+            await asyncio.to_thread(_validate_image_base64, encoded)
+        except Exception:
+            detail = "Failed to process image." if target_is_gguf else "Failed to decode image"
+            raise HTTPException(status_code = 400, detail = detail) from None
 
 
 def _messages_have_image(messages) -> bool:
@@ -7699,7 +7703,11 @@ async def _maybe_auto_switch_model(
         # resolver branch only, like the probe above: a reload-stash restore changes no format.
         if audio_preflight is not None and resolved is not None:
             await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
-        if image_preflight is not None and resolved is not None:
+        if (
+            image_preflight is not None
+            and resolved is not None
+            and (target_is_gguf or not require_audio_input)
+        ):
             await _preflight_image_for_switch(image_preflight, target_is_gguf)
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
@@ -16866,6 +16874,24 @@ def _latest_user_image_payload(messages) -> "Optional[str]":
     return None
 
 
+def _request_local_image_payloads(payload) -> list[str]:
+    """All data-URL and distinct legacy image payloads forwarded locally."""
+    encoded_images = []
+    for message in getattr(payload, "messages", None) or ():
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if getattr(part, "type", None) != "image_url":
+                continue
+            url = getattr(getattr(part, "image_url", None), "url", None)
+            if isinstance(url, str) and url.startswith("data:"):
+                encoded_images.append(url.partition(",")[2])
+    if _legacy_image_is_distinct(payload):
+        encoded_images.append(payload.image_base64)
+    return encoded_images
+
+
 # ── External provider proxy ──────────────────────────────────────
 
 
@@ -18632,11 +18658,12 @@ async def produce_openai_chat_completions(
         if _needs_audio_input
         else None
     )
-    if _needs_image and not _needs_audio_input and _pre_parsed is not None:
+    if _needs_image and _pre_parsed is not None:
         _images_on_turn = _images_in_last_user_message(payload.messages)
         _legacy_image_distinct = _legacy_image_is_distinct(payload)
         _image_preflight = {
             "b64": _pre_parsed[2] or payload.image_base64,
+            "b64s": _request_local_image_payloads(payload),
             "multiple": (
                 _images_on_turn + int(_legacy_image_distinct) > 1
                 or bool(_pre_parsed[2] and _legacy_image_distinct)
