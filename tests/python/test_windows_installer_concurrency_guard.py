@@ -854,8 +854,7 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     # backend serving out of the tree does not stop the tree being copied.
     exemption = update_source.index("fn mutates_live_environment(&self) -> bool {")
     assert (
-        "!matches!(self, UpdateKind::Staged { .. })"
-        in update_source[exemption : exemption + 200]
+        "!matches!(self, UpdateKind::Staged { .. })" in update_source[exemption : exemption + 200]
     )
     update_scan_gate = update_source.index(
         "if kind.mutates_live_environment() {",
