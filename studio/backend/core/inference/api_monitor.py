@@ -152,7 +152,7 @@ class ApiMonitorEntry:
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own
     # chunk, so agreement can only be judged across the whole request. Not serialized.
     stop_reasons_seen: set[str] = field(default_factory = set)
-    # Request-local preview state, omitted from snapshots and cleared on terminal paths.
+    # request-local preview state, omitted from snapshots and cleared on terminal paths.
     openai_stream_tool_calls: list[_OpenAIStreamToolCall] = field(default_factory = list)
     openai_stream_last_segment_was_tool: bool = False
 
