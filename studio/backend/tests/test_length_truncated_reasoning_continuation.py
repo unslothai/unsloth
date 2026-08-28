@@ -781,10 +781,20 @@ def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
     for index in range(30):
         old_turns.append({"role": "user", "content": f"Question {index}. " + "x" * 600})
         old_turns.append({"role": "assistant", "content": f"Answer {index}. " + "y" * 600})
+    latest = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Create a Flappy Bird game"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            },
+        ],
+    }
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [*old_turns, {"role": "user", "content": "Create a Flappy Bird game"}],
+            messages = [*old_turns, latest],
             tools = [_WEB_SEARCH_TOOL],
             enable_thinking = True,
             max_tool_iterations = 3,
@@ -794,6 +804,8 @@ def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
     )
 
     assert len(payloads) == 2, "the continuation was abandoned instead of making room"
+    assert payloads[1]["messages"][-3] == latest
+    assert payloads[1]["messages"][-3]["content"][1]["input_audio"]["data"] == "A" * 100_000
     assert "Done." in "".join(_texts(events, "content"))
 
 

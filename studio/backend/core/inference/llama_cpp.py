@@ -65,7 +65,6 @@ from core.inference.context_window import (
     evicted_messages,
     fit_rolling_context,
     messages_without_unpriced_media,
-    messages_have_media,
     retrieval_budget,
     tool_result_budget,
     turn_is_servable,
@@ -27398,8 +27397,6 @@ class LlamaCppBackend:
             """
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
-            if messages_have_media(candidate):
-                return None
             try:
                 _fitted, _truncation = _fit_with_instruction_pins(
                     list(candidate),
@@ -27413,7 +27410,9 @@ class LlamaCppBackend:
                     ),
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            fitted, _markup_cache, self.markup_profile
+                            messages_without_unpriced_media(fitted),
+                            _markup_cache,
+                            self.markup_profile,
                         ),
                         None,
                         tools,
@@ -27456,7 +27455,9 @@ class LlamaCppBackend:
             try:
                 _tokens = self.count_chat_tokens(
                     neutralize_control_markup_in_messages(
-                        candidate, _markup_cache, self.markup_profile
+                        messages_without_unpriced_media(candidate),
+                        _markup_cache,
+                        self.markup_profile,
                     ),
                     None,
                     tools,

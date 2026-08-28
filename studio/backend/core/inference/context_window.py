@@ -280,17 +280,6 @@ def messages_without_unpriced_media(messages: list[dict]) -> list[dict]:
     return messages if all(before is after for before, after in zip(messages, stripped)) else stripped
 
 
-def messages_have_media(messages: list[dict]) -> bool:
-    for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if isinstance(part, dict) and part.get("type") in _UNPRICED_MEDIA_TYPES:
-                return True
-    return False
-
-
 def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
     """Tokens available to the PROMPT, once room for the reply is set aside.
 
