@@ -262,6 +262,52 @@ def test_rolling_token_count_reuses_text_only_messages():
     assert messages_without_unpriced_media(messages) is messages
 
 
+def test_rolling_eviction_does_not_charge_protected_media_transport_bytes():
+    history = [
+        {"role": role, "content": marker * 10}
+        for marker in "abcde"
+        for role in ("user", "assistant")
+    ]
+
+    def count_text(candidate):
+        total = 0
+        for message in messages_without_unpriced_media(candidate):
+            content = message.get("content", "")
+            if isinstance(content, str):
+                total += len(content)
+            else:
+                total += sum(len(part.get("text", "")) for part in content)
+        return total
+
+    results = []
+    for payload_size in (4, 100_000):
+        latest = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "final"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "A" * payload_size, "format": "wav"},
+                },
+            ],
+        }
+        messages = [*history, latest]
+
+        fitted, truncation = fit_rolling_context(
+            messages,
+            context_length = 120,
+            max_tokens = 20,
+            count_tokens = count_text,
+        )
+
+        assert truncation and truncation["fits"]
+        assert fitted[-1] is latest
+        assert fitted[-1]["content"][-1]["input_audio"]["data"] == "A" * payload_size
+        results.append((truncation["dropped_messages"], len(fitted)))
+
+    assert results == [(2, 9), (2, 9)]
+
+
 def test_rolling_truncation_preserves_nonleading_system_messages():
     later_system = {"role": "system", "content": "new higher-priority instruction"}
     messages = [

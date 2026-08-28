@@ -26,9 +26,26 @@ _COMPACTION_HEADROOM_RATIO = max(
 )
 
 
+def _message_without_unpriced_media(message: dict) -> dict:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    countable = [
+        part
+        for part in content
+        if not (isinstance(part, dict) and part.get("type") in _UNPRICED_MEDIA_TYPES)
+    ]
+    if len(countable) == len(content):
+        return message
+    copy = dict(message)
+    copy["content"] = countable or ""
+    return copy
+
+
 def estimate_message_tokens(message: dict) -> int:
     try:
-        return max(1, len(json.dumps(message, ensure_ascii = False)) // 4)
+        countable = _message_without_unpriced_media(message)
+        return max(1, len(json.dumps(countable, ensure_ascii = False)) // 4)
     except Exception:
         return 1
 
@@ -54,7 +71,7 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
     total = 0
     for message in messages:
         try:
-            text = json.dumps(message, ensure_ascii = False)
+            text = json.dumps(_message_without_unpriced_media(message), ensure_ascii = False)
         except Exception:
             total += 1
             continue
@@ -105,7 +122,7 @@ def estimate_messages_tokens_conservative(
     total = 0
     for message in messages:
         try:
-            text = json.dumps(message, ensure_ascii = False)
+            text = json.dumps(_message_without_unpriced_media(message), ensure_ascii = False)
         except Exception:
             total += 1
             continue
@@ -255,28 +272,8 @@ def messages_without_unpriced_media(messages: list[dict]) -> list[dict]:
     prefill. Count a media-free shallow copy as a lower bound instead. The original
     messages, including every media part, remain the request that is ultimately sent.
     """
-    stripped: list[dict] = []
-    changed = False
-    for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            stripped.append(message)
-            continue
-        countable = [
-            part
-            for part in content
-            if not (isinstance(part, dict) and part.get("type") in _UNPRICED_MEDIA_TYPES)
-        ]
-        if len(countable) == len(content):
-            stripped.append(message)
-            continue
-        changed = True
-        copy = dict(message)
-        # A plain empty string is accepted by more strict chat templates than an
-        # empty content-part list when the user turn contains media only.
-        copy["content"] = countable or ""
-        stripped.append(copy)
-    return stripped if changed else messages
+    stripped = [_message_without_unpriced_media(message) for message in messages]
+    return messages if all(before is after for before, after in zip(messages, stripped)) else stripped
 
 
 def messages_have_media(messages: list[dict]) -> bool:
