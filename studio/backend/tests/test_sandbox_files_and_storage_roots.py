@@ -4392,6 +4392,77 @@ def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
     assert tools.list_orphaned_projects() == []
 
 
+def test_a_kept_workspace_replaced_at_the_same_path_is_not_served(tmp_path, monkeypatch):
+    """A pathname is not an identity.
+
+    The live project row carries (st_dev, st_ino) and refuses a workspace that does
+    not match it. Without the same check on the deleted-project record, a folder
+    removed and recreated at the same pathname is handed to the old session, and a
+    surviving fork's file cards start listing a directory nobody chose.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id, session_id = "proj31415", "session31415"
+    workspace = tmp_path / "chosen folder"
+    workspace.mkdir(parents = True)
+    (workspace / "mine.csv").write_text("a,b\n", encoding = "utf-8")
+
+    assert tools.record_orphaned_project(project_id, str(workspace), session_id = session_id)
+    monkeypatch.setattr(
+        studio_db, "project_id_for_workspace_session", lambda s: project_id if s == session_id else None
+    )
+    monkeypatch.setattr(studio_db, "get_chat_project", lambda p: None)
+
+    resolved = tools._recorded_project_for_session(session_id)
+    assert resolved and Path(resolved[1]) == workspace.resolve()
+
+    shutil.rmtree(workspace)
+    workspace.mkdir(parents = True)
+    (workspace / "not mine.csv").write_text("x,y\n", encoding = "utf-8")
+
+    assert tools._recorded_project_for_session(session_id) is None
+
+
+def test_a_kept_workspace_recorded_before_identity_still_resolves(tmp_path, monkeypatch):
+    """Records written before identity was stored are all managed workspaces under
+    Studio's own root. Requiring an identity they never had would make every one of
+    them unreachable on upgrade, so a record without one keeps the old behaviour."""
+    import json
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id, session_id = "proj27182", "session27182"
+    workspace = tmp_path / "legacy"
+    workspace.mkdir(parents = True)
+    assert tools.record_orphaned_project(project_id, str(workspace), session_id = session_id)
+
+    directory = tools._orphan_records_dir()
+    for name, record in tools._project_orphan_records():
+        if record.get("sessionId") == session_id:
+            record.pop("deviceId", None)
+            record.pop("fileId", None)
+            with open(os.path.join(directory, name), "w", encoding = "utf-8") as handle:
+                json.dump(record, handle)
+
+    monkeypatch.setattr(
+        studio_db, "project_id_for_workspace_session", lambda s: project_id if s == session_id else None
+    )
+    monkeypatch.setattr(studio_db, "get_chat_project", lambda p: None)
+
+    resolved = tools._recorded_project_for_session(session_id)
+    assert resolved and Path(resolved[1]) == workspace.resolve()
+
+
 def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
     """The user asked for the files on both surfaces, and nothing else would
     ever come back to that workspace."""

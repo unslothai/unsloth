@@ -2601,7 +2601,12 @@ export function AppSidebar() {
       // the one current membership gives it.
       sessionId ??=
         item.type === "single" || item.projectId
-          ? sandboxSessionIdFor(ids[0], item.projectId)
+          ? sandboxSessionIdFor(
+              ids[0],
+              item.projectId,
+              projects.find((project) => project.id === item.projectId)
+                ?.workspaceSessionId,
+            )
           : undefined;
       if (!sessionId) {
         refusal.value = { title: "This chat has no single session id" };
