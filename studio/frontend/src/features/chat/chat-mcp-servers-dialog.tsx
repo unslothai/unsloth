@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { Delete02Icon, Edit03Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -32,18 +38,31 @@ import { Switch } from "@/components/ui/switch";
 import {
   type McpServerConfig,
   createMcpServer,
+  decodeMcpStdioCommand,
   deleteMcpServer,
+  encodeMcpStdioCommand,
   importMcpServers,
   listMcpServers,
   refreshMcpServerTools,
   testMcpServer,
   updateMcpServer,
 } from "./api/mcp-servers-api";
+import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
+import {
+  type McpStdioSnapshot,
+  createMcpStdioSnapshot,
+  resolveMcpStdioUrl,
+} from "./mcp-server-form";
 type HeaderRow = { id: string; key: string; value: string };
+type ArgumentRow = { id: string; value: string };
+type FormTransport = "unknown" | "http" | "stdio";
 
 type FormState = {
   displayName: string;
   url: string;
+  transport: FormTransport;
+  arguments: ArgumentRow[];
+  stdioSnapshot: McpStdioSnapshot | null;
   headers: HeaderRow[];
   useOauth: boolean;
 };
@@ -51,6 +70,9 @@ type FormState = {
 const EMPTY_FORM: FormState = {
   displayName: "",
   url: "",
+  transport: "unknown",
+  arguments: [],
+  stdioSnapshot: null,
   headers: [],
   useOauth: false,
 };
@@ -65,6 +87,14 @@ function headersFromObject(headers: Record<string, string>): HeaderRow[] {
     key: k,
     value: v,
   }));
+}
+
+function argumentsFromStrings(arguments_: readonly string[]): ArgumentRow[] {
+  return arguments_.map((value) => ({ id: newRowId(), value }));
+}
+
+function argumentsToStrings(rows: readonly ArgumentRow[]): string[] {
+  return rows.map((row) => row.value);
 }
 
 function headersToObject(rows: HeaderRow[]): Record<string, string> | undefined {
@@ -84,6 +114,11 @@ function isHttpAddress(value: string): boolean {
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
 }
 
+function transportFromAddress(value: string): FormTransport {
+  if (!value.trim()) return "unknown";
+  return isHttpAddress(value) ? "http" : "stdio";
+}
+
 function isValidAddress(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;
@@ -95,21 +130,86 @@ function isValidAddress(value: string): boolean {
       return false;
     }
   }
-  // Otherwise it's a local command (stdio); the backend gates whether those
-  // are allowed. Reject only when the command itself is a URL; "://" is fine
-  // inside an argument (e.g. a DB connection string passed to the server).
-  return !trimmed.split(/\s+/)[0].includes("://");
+  // The backend owns stdio parsing and validation. In particular, the browser
+  // must not split an executable or duplicate platform-specific quoting rules.
+  return true;
+}
+
+function ArgumentsEditor({
+  rows,
+  onChange,
+  disabled,
+}: {
+  rows: ArgumentRow[];
+  onChange: (rows: ArgumentRow[]) => void;
+  disabled: boolean;
+}) {
+  const update = (id: string, value: string) =>
+    onChange(rows.map((row) => (row.id === id ? { ...row, value } : row)));
+  const add = () => onChange([...rows, { id: newRowId(), value: "" }]);
+  const remove = (id: string) =>
+    onChange(rows.filter((row) => row.id !== id));
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between">
+        <Label className="text-sm">Arguments</Label>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={add}
+          disabled={disabled}
+        >
+          <HugeiconsIcon icon={PlusSignIcon} size={14} />
+          Add argument
+        </Button>
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-xs text-muted-foreground">
+          Optional. Each row is one argument; row order is preserved.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map((row, index) => (
+            <div key={row.id} className="flex items-center gap-2">
+              <Input
+                data-reload-snapshot-sensitive
+                value={row.value}
+                disabled={disabled}
+                aria-label={`Argument ${index + 1}`}
+                placeholder={index === 0 ? "e.g. -y" : undefined}
+                onChange={(event) => update(row.id, event.target.value)}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => remove(row.id)}
+                disabled={disabled}
+                aria-label={`Remove argument ${index + 1}`}
+              >
+                <HugeiconsIcon icon={Delete02Icon} size={14} />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function HeadersEditor({
   rows,
   onChange,
   stdio,
+  disabled,
 }: {
   rows: HeaderRow[];
   onChange: (rows: HeaderRow[]) => void;
   // stdio servers reuse this editor for environment variables instead of headers.
   stdio: boolean;
+  disabled: boolean;
 }) {
   const update = (id: string, patch: Partial<HeaderRow>) =>
     onChange(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -138,7 +238,13 @@ function HeadersEditor({
     <>
       <div className="flex items-center justify-between">
         <Label className="text-sm">{copy.label}</Label>
-        <Button type="button" variant="ghost" size="sm" onClick={add}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={add}
+          disabled={disabled}
+        >
           <HugeiconsIcon icon={PlusSignIcon} size={14} />
           {copy.add}
         </Button>
@@ -160,12 +266,14 @@ function HeadersEditor({
             <div key={row.id} className="flex items-center gap-2">
               <Input
                 value={row.key}
+                disabled={disabled}
                 placeholder={copy.keyPlaceholder}
                 onChange={(e) => update(row.id, { key: e.target.value })}
               />
               <Input
                 data-reload-snapshot-sensitive
                 value={row.value}
+                disabled={disabled}
                 placeholder={copy.valuePlaceholder}
                 onChange={(e) => update(row.id, { value: e.target.value })}
               />
@@ -174,6 +282,7 @@ function HeadersEditor({
                 variant="ghost"
                 size="icon"
                 onClick={() => remove(row.id)}
+                disabled={disabled}
                 aria-label={copy.remove}
               >
                 <HugeiconsIcon icon={Delete02Icon} size={14} />
@@ -206,68 +315,210 @@ export function ChatMcpServersDialog({
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [codecPending, setCodecPending] = useState(false);
+  const [codecError, setCodecError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<McpServerConfig | null>(
     null,
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const formGenerationRef = useRef(0);
+  const activeEditIdRef = useRef<string | null>(null);
+  const listRefreshGenerationRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const generation = listRefreshGenerationRef.current + 1;
+    listRefreshGenerationRef.current = generation;
     setLoading(true);
     try {
       const rows = await listMcpServers();
+      if (listRefreshGenerationRef.current !== generation) return;
       setServers(rows);
     } catch (err) {
+      if (listRefreshGenerationRef.current !== generation) return;
       toast.error("Failed to load MCP servers", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setLoading(false);
+      if (listRefreshGenerationRef.current === generation) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    const unsubscribe = subscribeToMcpServerMutationSettlements(() => {
+      void refresh();
+    });
+    return () => {
+      unsubscribe();
+      listRefreshGenerationRef.current += 1;
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    formGenerationRef.current += 1;
+    activeEditIdRef.current = null;
     if (!open) return;
-    refresh();
-    // Reset to the list on each open, else a stale create/edit view persists.
-    setView({ kind: "list" });
-    setForm(EMPTY_FORM);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      void refresh();
+      // Reset to the list on each open, else a stale create/edit view persists.
+      setView({ kind: "list" });
+      setForm(EMPTY_FORM);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [open, refresh]);
 
   function startCreate() {
+    formGenerationRef.current += 1;
+    activeEditIdRef.current = null;
+    setSaving(false);
+    setTesting(false);
+    setCodecPending(false);
+    setCodecError(null);
     setView({ kind: "create" });
     setForm(EMPTY_FORM);
   }
 
-  function startEdit(server: McpServerConfig) {
+  async function startEdit(server: McpServerConfig) {
+    const generation = formGenerationRef.current + 1;
+    formGenerationRef.current = generation;
+    activeEditIdRef.current = server.id;
+    setSaving(false);
+    setTesting(false);
+    setCodecError(null);
     setView({ kind: "edit", id: server.id });
-    setForm({
+    const baseForm: FormState = {
       displayName: server.display_name,
       url: server.url,
+      transport: isHttpAddress(server.url) ? "http" : "stdio",
+      arguments: [],
+      stdioSnapshot: null,
       headers: headersFromObject(server.headers ?? {}),
       useOauth: server.use_oauth ?? false,
-    });
+    };
+
+    if (isHttpAddress(server.url)) {
+      setCodecPending(false);
+      setForm(baseForm);
+      return;
+    }
+
+    setCodecPending(true);
+    setForm({ ...baseForm, url: "" });
+    try {
+      const decoded = await decodeMcpStdioCommand(server.url);
+      if (
+        formGenerationRef.current !== generation ||
+        activeEditIdRef.current !== server.id
+      ) {
+        return;
+      }
+      setForm({
+        ...baseForm,
+        url: decoded.command,
+        arguments: argumentsFromStrings(decoded.arguments ?? []),
+        stdioSnapshot: createMcpStdioSnapshot(
+          server.url,
+          decoded.command,
+          decoded.arguments ?? [],
+        ),
+        useOauth: false,
+      });
+    } catch (err) {
+      if (
+        formGenerationRef.current !== generation ||
+        activeEditIdRef.current !== server.id
+      ) {
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      setCodecError(message);
+      toast.error("Failed to read local command", { description: message });
+    } finally {
+      if (
+        formGenerationRef.current === generation &&
+        activeEditIdRef.current === server.id
+      ) {
+        setCodecPending(false);
+      }
+    }
   }
 
   function cancelForm() {
+    formGenerationRef.current += 1;
+    activeEditIdRef.current = null;
+    setSaving(false);
+    setTesting(false);
+    setCodecPending(false);
+    setCodecError(null);
     setView({ kind: "list" });
     setForm(EMPTY_FORM);
   }
 
+  function handleOpenChange(next: boolean) {
+    // Encoding can still be cancelled; once CRUD is in flight, dismissal
+    // cannot undo it and must wait for the authoritative refresh.
+    if (!next && saving && !codecPending) return;
+    if (!next) {
+      formGenerationRef.current += 1;
+      activeEditIdRef.current = null;
+      setSaving(false);
+      setTesting(false);
+      setCodecPending(false);
+      setCodecError(null);
+    }
+    onOpenChange(next);
+  }
+
+  async function encodeStdioForGeneration(
+    generation: number,
+    command: string,
+    arguments_: string[],
+  ): Promise<string | null> {
+    setCodecPending(true);
+    try {
+      const encoded = await encodeMcpStdioCommand({
+        command,
+        arguments: arguments_,
+      });
+      if (formGenerationRef.current !== generation) return null;
+      return encoded.url;
+    } finally {
+      if (formGenerationRef.current === generation) setCodecPending(false);
+    }
+  }
+
   async function testConnection() {
-    const trimmedUrl = form.url.trim();
-    if (!isValidAddress(trimmedUrl)) {
+    if (!form.url.trim()) {
       toast.error("Enter an http(s):// URL or a local command first");
       return;
     }
+    const stdio = form.transport === "stdio";
+    if (!stdio && !isValidAddress(form.url)) {
+      toast.error("Enter an http(s):// URL or a local command first");
+      return;
+    }
+    const generation = formGenerationRef.current;
     setTesting(true);
     try {
+      const url = stdio
+        ? await encodeStdioForGeneration(
+            generation,
+            form.url,
+            argumentsToStrings(form.arguments),
+          )
+        : form.url.trim();
+      if (url === null || formGenerationRef.current !== generation) return;
       const result = await testMcpServer({
-        url: trimmedUrl,
+        url,
         headers: headersToObject(form.headers),
-        useOauth: form.useOauth,
+        useOauth: stdio ? false : form.useOauth,
       });
+      if (formGenerationRef.current !== generation) return;
       if (result.ok) {
         toast.success(
           `Connected (${result.tool_count} tool${result.tool_count === 1 ? "" : "s"})`,
@@ -278,57 +529,82 @@ export function ChatMcpServersDialog({
         });
       }
     } catch (err) {
+      if (formGenerationRef.current !== generation) return;
       toast.error("Connection test failed", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setTesting(false);
+      if (formGenerationRef.current === generation) setTesting(false);
     }
   }
 
   async function submitForm() {
     const trimmedName = form.displayName.trim();
-    const trimmedUrl = form.url.trim();
     if (!trimmedName) {
       toast.error("Display name is required");
       return;
     }
-    if (!trimmedUrl) {
+    if (!form.url.trim()) {
       toast.error("URL or command is required");
       return;
     }
-    if (!isValidAddress(trimmedUrl)) {
+    const stdio = form.transport === "stdio";
+    if (!stdio && !isValidAddress(form.url)) {
       toast.error("Enter an http(s):// URL or a local command");
       return;
     }
+    const generation = formGenerationRef.current;
     setSaving(true);
     try {
       const headers = headersToObject(form.headers);
+      let url: string;
+      if (stdio) {
+        const decision = resolveMcpStdioUrl(
+          form.url,
+          argumentsToStrings(form.arguments),
+          form.stdioSnapshot,
+        );
+        if (decision.kind === "reuse") {
+          url = decision.url;
+        } else {
+          const encodedUrl = await encodeStdioForGeneration(
+            generation,
+            decision.command,
+            decision.arguments,
+          );
+          if (encodedUrl === null) return;
+          url = encodedUrl;
+        }
+      } else {
+        url = form.url.trim();
+      }
+      if (formGenerationRef.current !== generation) return;
       if (view.kind === "edit") {
         await updateMcpServer(view.id, {
           displayName: trimmedName,
-          url: trimmedUrl,
+          url,
           headers: headers ?? null,
-          useOauth: form.useOauth,
+          useOauth: stdio ? false : form.useOauth,
         });
         toast.success("MCP server updated");
       } else {
         await createMcpServer({
           displayName: trimmedName,
-          url: trimmedUrl,
+          url,
           headers: headers,
-          useOauth: form.useOauth,
+          useOauth: stdio ? false : form.useOauth,
         });
         toast.success("MCP server added");
       }
+      if (formGenerationRef.current !== generation) return;
       cancelForm();
-      await refresh();
     } catch (err) {
+      if (formGenerationRef.current !== generation) return;
       toast.error("Save failed", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setSaving(false);
+      if (formGenerationRef.current === generation) setSaving(false);
     }
   }
 
@@ -365,7 +641,6 @@ export function ChatMcpServersDialog({
       } else {
         toast.success(summary);
       }
-      await refresh();
     } catch (err) {
       toast.error("Import failed", {
         description: err instanceof Error ? err.message : String(err),
@@ -378,7 +653,6 @@ export function ChatMcpServersDialog({
   async function removeServer(server: McpServerConfig) {
     try {
       await deleteMcpServer(server.id);
-      await refresh();
     } catch (err) {
       toast.error("Delete failed", {
         description: err instanceof Error ? err.message : String(err),
@@ -430,13 +704,16 @@ export function ChatMcpServersDialog({
   }
 
   const showForm = view.kind !== "list";
+  const formPending = codecPending || testing || saving;
   // A local stdio command uses env vars, not headers or OAuth.
-  const addressIsCommand =
-    form.url.trim() !== "" && !isHttpAddress(form.url);
+  const addressIsCommand = form.transport === "stdio";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="max-w-2xl"
+        showCloseButton={!(saving && !codecPending)}
+      >
         <DialogHeader>
           <DialogTitle>MCP Servers</DialogTitle>
           <DialogDescription>
@@ -449,6 +726,7 @@ export function ChatMcpServersDialog({
           accept="application/json,.json"
           className="hidden"
           onChange={onImportFile}
+          disabled={importing || formPending}
         />
 
         {showForm ? (
@@ -464,7 +742,7 @@ export function ChatMcpServersDialog({
                   variant="outline"
                   className="shrink-0"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={importing}
+                  disabled={importing || formPending}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
                   {importing ? <Spinner /> : <UploadIcon size={14} />}
@@ -477,6 +755,7 @@ export function ChatMcpServersDialog({
               <Input
                 id="mcp-display-name"
                 value={form.displayName}
+                disabled={formPending}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, displayName: e.target.value }))
                 }
@@ -484,20 +763,62 @@ export function ChatMcpServersDialog({
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="mcp-url">URL or command</Label>
+              <Label htmlFor="mcp-url">
+                {addressIsCommand
+                  ? "Executable"
+                  : form.transport === "http"
+                    ? "URL"
+                    : "URL or executable"}
+              </Label>
               <Input
                 id="mcp-url"
                 value={form.url}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, url: e.target.value }))
+                disabled={formPending}
+                onChange={(e) => {
+                  const url = e.target.value;
+                  setCodecError(null);
+                  setForm((prev) => ({
+                    ...prev,
+                    url,
+                    transport: transportFromAddress(url),
+                  }));
+                }}
+                placeholder={
+                  addressIsCommand
+                    ? "e.g. npx"
+                    : form.transport === "http"
+                      ? "https://example.com/mcp"
+                      : "https://example.com/mcp or npx"
                 }
-                placeholder="https://example.com/mcp or npx -y @modelcontextprotocol/server-filesystem /tmp"
               />
               <span className="text-xs text-muted-foreground">
-                An http(s) URL for a remote server, or a local command to run an
-                stdio server (local installs only).
+                {addressIsCommand
+                  ? "The executable for a local stdio server. Add each local argument in an Arguments row below."
+                  : form.transport === "http"
+                    ? "An http(s) URL for a remote server."
+                    : "An http(s) URL for a remote server, or an executable for local stdio. Add local arguments in the Arguments rows."}
               </span>
             </div>
+
+            {addressIsCommand && (
+              <ArgumentsEditor
+                rows={form.arguments}
+                disabled={formPending}
+                onChange={(arguments_) =>
+                  setForm((prev) => ({ ...prev, arguments: arguments_ }))
+                }
+              />
+            )}
+
+            {codecError && (
+              <div
+                role="alert"
+                aria-live="assertive"
+                className="text-sm text-destructive"
+              >
+                {codecError}
+              </div>
+            )}
 
             {!addressIsCommand && (
               <div className="flex items-start justify-between gap-3">
@@ -514,6 +835,7 @@ export function ChatMcpServersDialog({
                 <Switch
                   id="mcp-oauth"
                   checked={form.useOauth}
+                  disabled={formPending}
                   onCheckedChange={(useOauth) =>
                     setForm((prev) => ({ ...prev, useOauth }))
                   }
@@ -525,6 +847,7 @@ export function ChatMcpServersDialog({
               rows={form.headers}
               onChange={(headers) => setForm((prev) => ({ ...prev, headers }))}
               stdio={addressIsCommand}
+              disabled={formPending}
             />
 
             <div className="flex items-center justify-between gap-2 pt-2">
@@ -533,16 +856,29 @@ export function ChatMcpServersDialog({
                 variant="outline"
                 size="sm"
                 onClick={testConnection}
-                disabled={testing || saving || !form.url.trim()}
+                disabled={
+                  formPending ||
+                  codecError !== null ||
+                  !form.url.trim()
+                }
               >
                 {testing ? <Spinner /> : null}
                 Test connection
               </Button>
               <div className="flex gap-2">
-                <Button variant="ghost" onClick={cancelForm} disabled={saving}>
+                <Button
+                  variant="ghost"
+                  onClick={cancelForm}
+                  disabled={saving && !codecPending}
+                >
                   Cancel
                 </Button>
-                <Button onClick={submitForm} disabled={saving}>
+                <Button
+                  onClick={submitForm}
+                  disabled={
+                    formPending || codecError !== null
+                  }
+                >
                   {saving ? <Spinner /> : null}
                   {view.kind === "edit" ? "Save changes" : "Add server"}
                 </Button>
@@ -615,7 +951,7 @@ export function ChatMcpServersDialog({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        onClick={() => startEdit(server)}
+                        onClick={() => void startEdit(server)}
                         aria-label="Edit server"
                       >
                         <HugeiconsIcon icon={Edit03Icon} size={14} />

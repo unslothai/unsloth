@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import sys
 import uuid
 from typing import Annotated
 from urllib.parse import urlparse
@@ -23,6 +24,7 @@ from core.inference.mcp_client import (
     close_stdio_sessions,
     invalidate_tool_cache,
     is_stdio,
+    join_stdio_command,
     list_tools_async,
     parse_server_headers,
     parse_stdio_command,
@@ -41,6 +43,9 @@ from models.mcp_servers import (
     McpServerResponse,
     McpServerTestRequest,
     McpServerUpdate,
+    McpStdioCommand,
+    McpStdioDecodeRequest,
+    McpStdioEncodeResponse,
 )
 from storage import mcp_servers_db
 from utils.utils import safe_curated_detail, log_and_http_error
@@ -64,14 +69,21 @@ def _looks_like_command(value: str) -> bool:
 
 
 def _validate_url(url: str) -> str:
-    trimmed = (url or "").strip()
+    raw = url or ""
+    trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
     # When stdio is enabled, a non-HTTP value is a local command (reuses this
     # field so stdio servers ride existing CRUD/storage).
     if stdio_mcp_enabled() and is_stdio(trimmed):
+        # Leading whitespace is executable-field padding. At the other end,
+        # only space/tab are command-line delimiters on Windows; stripping all
+        # Unicode whitespace would corrupt a canonical final argument emitted
+        # by subprocess.list2cmdline(). POSIX shlex quoting protects those
+        # values, so retain the legacy full-strip behavior there.
+        normalized = raw.lstrip().rstrip(" \t") if sys.platform == "win32" else trimmed
         try:
-            parts = parse_stdio_command(trimmed)
+            parts = parse_stdio_command(normalized)
         except ValueError as exc:
             raise log_and_http_error(
                 exc,
@@ -90,7 +102,7 @@ def _validate_url(url: str) -> str:
                 detail = "Enter an http(s):// URL, or a local command whose "
                 "first token is an executable (not a URL).",
             )
-        return trimmed
+        return normalized
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
         if _looks_like_command(trimmed):
@@ -129,6 +141,40 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
+
+
+@router.post("/stdio/decode", response_model = McpStdioCommand)
+def decode_stdio_command(
+    payload: McpStdioDecodeRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    require_ui_session_for_local_commands(via_api_key)
+    url = _validate_url(payload.url)
+    if not is_stdio(url):
+        raise HTTPException(status_code = 400, detail = "HTTP(S) MCP servers do not have arguments")
+    parts = parse_stdio_command(url)
+    return McpStdioCommand(command = parts[0], arguments = parts[1:])
+
+
+@router.post("/stdio/encode", response_model = McpStdioEncodeResponse)
+def encode_stdio_command(
+    payload: McpStdioCommand,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    require_ui_session_for_local_commands(via_api_key)
+    command = payload.command.strip()
+    if not command:
+        raise HTTPException(status_code = 400, detail = "command must not be empty")
+    if "://" in command:
+        raise HTTPException(
+            status_code = 400,
+            detail = "command must be a local executable, not a URL",
+        )
+    url = join_stdio_command([command, *payload.arguments])
+    _validate_url(url)
+    return McpStdioEncodeResponse(url = url)
 
 
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.

@@ -72,7 +72,10 @@ def _split_windows_command_line(address: str) -> list[str]:
             backslashes = 0
             i += 1
             continue
-        if ch.isspace() and not in_quotes:
+        # subprocess.list2cmdline() implements the MS C runtime grammar: only
+        # space and tab delimit arguments. Other Unicode/control whitespace is
+        # ordinary argument data and must not be split here.
+        if ch in (" ", "\t") and not in_quotes:
             if backslashes:
                 current.extend("\\" * backslashes)
                 arg_started = True
@@ -82,7 +85,7 @@ def _split_windows_command_line(address: str) -> list[str]:
                 current = []
                 arg_started = False
             i += 1
-            while i < len(address) and address[i].isspace():
+            while i < len(address) and address[i] in (" ", "\t"):
                 i += 1
             continue
         if backslashes:

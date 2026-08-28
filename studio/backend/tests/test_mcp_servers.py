@@ -3,6 +3,7 @@
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from storage import mcp_servers_db
 
@@ -74,6 +75,17 @@ def test_validate_url_accepts_http_and_https():
     assert _validate_url("http://example.com/mcp") == "http://example.com/mcp"
     assert _validate_url("https://example.com/mcp") == "https://example.com/mcp"
     assert _validate_url("  https://example.com/mcp  ") == "https://example.com/mcp"
+    assert _validate_url("\n  https://example.com/mcp  \u2003") == "https://example.com/mcp"
+
+
+def test_validate_url_stdio_keeps_posix_outer_normalization(monkeypatch):
+    import sys
+
+    import routes.mcp_servers as routes_mcp
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    assert routes_mcp._validate_url("\n  python --flag  \u2003") == "python --flag"
 
 
 @pytest.mark.parametrize("bad", ["", "   ", "ftp://x", "http://", "noscheme.com"])
@@ -82,6 +94,224 @@ def test_validate_url_rejects_bad(bad):
     with pytest.raises(HTTPException) as exc:
         _validate_url(bad)
     assert exc.value.status_code == 400
+
+
+def test_stdio_command_codec_roundtrip_preserves_order_empty_and_url_argument(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    payload = McpStdioCommand(
+        command = "python",
+        arguments = ["-m", "mod", "--name", "a b", "", "https://example.com/value"],
+    )
+    encoded = routes_mcp.encode_stdio_command(payload, current_subject = "u")
+    decoded = routes_mcp.decode_stdio_command(
+        McpStdioDecodeRequest(url = encoded.url), current_subject = "u"
+    )
+
+    assert decoded.command == payload.command
+    assert decoded.arguments == payload.arguments
+    assert McpStdioCommand(command = "python").arguments == []
+
+
+def test_stdio_command_codec_strips_only_executable_outer_padding(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    arguments = ["  keep outer spaces  ", "\nkeep control whitespace\n", ""]
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(command = "  python  ", arguments = arguments), current_subject = "u"
+    )
+    decoded = routes_mcp.decode_stdio_command(
+        McpStdioDecodeRequest(url = encoded.url), current_subject = "u"
+    )
+
+    assert decoded.command == "python"
+    assert decoded.arguments == arguments
+
+
+@pytest.mark.parametrize(
+    "final_argument",
+    [
+        pytest.param("\n", id = "newline"),
+        pytest.param("\r", id = "carriage-return"),
+        pytest.param("\v", id = "vertical-tab"),
+        pytest.param("\f", id = "form-feed"),
+        pytest.param("\u00a0", id = "nbsp"),
+        pytest.param("\u2003", id = "em-space"),
+    ],
+)
+def test_stdio_command_codec_windows_preserves_final_whitespace_argument_end_to_end(
+    tmp_path, monkeypatch, final_argument
+):
+    import asyncio
+    import sys
+
+    import fastmcp
+    from fastmcp.client import transports
+
+    from core.inference import mcp_client
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import (
+        McpServerCreate,
+        McpServerTestRequest,
+        McpServerUpdate,
+        McpStdioCommand,
+        McpStdioDecodeRequest,
+    )
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(mcp_client, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *args: None)
+
+    probed_urls: list[str] = []
+
+    async def capture_probe(**kwargs):
+        probed_urls.append(kwargs["url"])
+        return []
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", capture_probe)
+
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(command = "python", arguments = [final_argument]),
+        current_subject = "u",
+    )
+    decoded = routes_mcp.decode_stdio_command(
+        McpStdioDecodeRequest(url = encoded.url), current_subject = "u"
+    )
+
+    assert encoded.url.endswith(final_argument)
+    assert decoded.arguments == [final_argument]
+
+    probe = asyncio.run(
+        routes_mcp.test_mcp_server(
+            McpServerTestRequest(url = encoded.url), current_subject = "u"
+        )
+    )
+    assert probe.ok is True
+    assert probed_urls == [encoded.url]
+
+    created = asyncio.run(
+        routes_mcp.create_mcp_server(
+            McpServerCreate(display_name = "created", url = encoded.url),
+            current_subject = "u",
+        )
+    )
+    assert created.url == encoded.url
+    assert mcp_servers_db.get_server(created.id)["url"] == encoded.url
+    created_decoded = routes_mcp.decode_stdio_command(
+        McpStdioDecodeRequest(url = created.url), current_subject = "u"
+    )
+    assert created_decoded.arguments == [final_argument]
+
+    seed = asyncio.run(
+        routes_mcp.create_mcp_server(
+            McpServerCreate(display_name = "updated", url = "python seed"),
+            current_subject = "u",
+        )
+    )
+    updated = asyncio.run(
+        routes_mcp.update_mcp_server(
+            seed.id,
+            McpServerUpdate(url = encoded.url),
+            current_subject = "u",
+        )
+    )
+    assert updated.url == encoded.url
+    assert mcp_servers_db.get_server(seed.id)["url"] == encoded.url
+    updated_decoded = routes_mcp.decode_stdio_command(
+        McpStdioDecodeRequest(url = updated.url), current_subject = "u"
+    )
+    assert updated_decoded.arguments == [final_argument]
+
+    captured_transport = {}
+
+    class CapturingStdioTransport:
+        def __init__(self, **kwargs):
+            captured_transport.update(kwargs)
+
+    monkeypatch.setattr(fastmcp, "Client", lambda transport: transport)
+    monkeypatch.setattr(transports, "StdioTransport", CapturingStdioTransport)
+    monkeypatch.setattr(mcp_client, "_stdio_argv", lambda parts, env: parts)
+    mcp_client._client(updated.url, None)
+    assert captured_transport["command"] == "python"
+    assert captured_transport["args"] == [final_argument]
+    assert captured_transport["keep_alive"] is False
+
+
+def test_stdio_command_codec_is_stateless_and_never_probes(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+
+    def _never(*args, **kwargs):
+        raise AssertionError("codec must not access storage or transport")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", _never)
+    monkeypatch.setattr(mcp_servers_db, "list_servers", _never)
+    monkeypatch.setattr(mcp_servers_db, "create_server", _never)
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(command = "python", arguments = ["-m", "mod"]),
+        current_subject = "u",
+    )
+    decoded = routes_mcp.decode_stdio_command(
+        McpStdioDecodeRequest(url = encoded.url), current_subject = "u"
+    )
+    assert (decoded.command, decoded.arguments) == ("python", ["-m", "mod"])
+
+
+@pytest.mark.parametrize(
+    ("operation", "detail"),
+    [
+        ("blank", "command must not be empty"),
+        ("url", "local executable"),
+        ("http_arguments", "local executable"),
+        ("remote_decode", "do not have arguments"),
+        ("malformed_decode", "Invalid command"),
+    ],
+)
+def test_stdio_command_codec_rejects_invalid_input_before_probe(monkeypatch, operation, detail):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+
+    async def _never(**kwargs):
+        raise AssertionError("invalid codec input must not be probed")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", _never)
+    with pytest.raises(HTTPException) as exc:
+        if operation == "blank":
+            routes_mcp.encode_stdio_command(McpStdioCommand(command = "   "), current_subject = "u")
+        elif operation in {"url", "http_arguments"}:
+            arguments = ["--flag"] if operation == "http_arguments" else []
+            routes_mcp.encode_stdio_command(
+                McpStdioCommand(command = "  https://example.com/mcp  ", arguments = arguments),
+                current_subject = "u",
+            )
+        elif operation == "remote_decode":
+            routes_mcp.decode_stdio_command(
+                McpStdioDecodeRequest(url = "https://example.com/mcp"), current_subject = "u"
+            )
+        else:
+            routes_mcp.decode_stdio_command(
+                McpStdioDecodeRequest(url = 'python "unterminated'), current_subject = "u"
+            )
+    assert exc.value.status_code == 400
+    assert detail in str(exc.value.detail)
+
+
+@pytest.mark.parametrize("bad", [1, True, None, {"value": "x"}])
+def test_stdio_command_codec_rejects_non_string_arguments(bad):
+    from models.mcp_servers import McpStdioCommand
+
+    with pytest.raises(ValidationError):
+        McpStdioCommand.model_validate({"command": "python", "arguments": [bad]})
 
 
 def test_normalize_headers():
@@ -941,6 +1171,70 @@ def test_update_stdio_command_change_closes_session(tmp_path, monkeypatch):
         )
     )
     assert len(closed) == 1
+
+
+def test_stdio_arguments_update_preserves_untouched_bytes_then_invalidates_once(
+    tmp_path, monkeypatch
+):
+    import asyncio
+    import json
+
+    from core.inference import mcp_client
+    from models.mcp_servers import McpServerUpdate, McpStdioCommand
+    import routes.mcp_servers as routes_mcp
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    invalidated: list[str] = []
+    closed: list[tuple] = []
+    monkeypatch.setattr(routes_mcp, "invalidate_tool_cache", invalidated.append)
+    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *args: closed.append(args))
+    cached = _one_tool()
+    monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": cached})
+
+    original_url = "python  -m mod"
+    env = {"API_KEY": "secret"}
+    mcp_servers_db.create_server(
+        id = "s1",
+        display_name = "A",
+        url = original_url,
+        headers_json = json.dumps(env),
+        is_enabled = True,
+    )
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1",
+            McpServerUpdate(display_name = "B", url = original_url, headers = env),
+            current_subject = "u",
+        )
+    )
+    assert mcp_servers_db.get_server("s1")["url"] == original_url
+    assert mcp_client.get_cached_tools("s1") == cached
+    assert invalidated == []
+    assert closed == []
+
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(
+            command = "python", arguments = ["-m", "mod", "--name", "a b", ""]
+        ),
+        current_subject = "u",
+    )
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1", McpServerUpdate(url = encoded.url), current_subject = "u"
+        )
+    )
+    assert mcp_servers_db.get_server("s1")["url"] == encoded.url
+    assert mcp_client.parse_stdio_command(encoded.url) == [
+        "python",
+        "-m",
+        "mod",
+        "--name",
+        "a b",
+        "",
+    ]
+    assert invalidated == ["s1"]
+    assert closed == [(original_url, env)]
 
 
 def test_update_disable_evicts_tool_cache(tmp_path, monkeypatch):

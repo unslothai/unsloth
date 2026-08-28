@@ -5,7 +5,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
-import { type FC, useCallback, useEffect, useState } from "react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -29,6 +29,7 @@ import {
   listMcpServers,
   updateMcpServer,
 } from "./api/mcp-servers-api";
+import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
@@ -111,25 +112,45 @@ export function McpComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const [hintKey, setHintKey] = useState<string | null>(null);
+  const listRefreshGenerationRef = useRef(0);
 
   // Grey out only when a loaded model lacks tool support; with no model yet,
   // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(async () => {
+    const generation = listRefreshGenerationRef.current + 1;
+    listRefreshGenerationRef.current = generation;
     try {
       const rows = await listMcpServers();
+      if (listRefreshGenerationRef.current !== generation) return;
       setServers(rows);
     } catch {
       // Keep prior state if the list call fails.
     }
   }, []);
 
+  useEffect(() => {
+    const unsubscribe = subscribeToMcpServerMutationSettlements(() => {
+      void refresh();
+    });
+    return () => {
+      unsubscribe();
+      listRefreshGenerationRef.current += 1;
+    };
+  }, [refresh]);
+
   // Load the server list on mount, and again when the dialog closes: it can
   // be opened from the chord as well as from this menu.
   useEffect(() => {
     if (dialogOpen) return;
-    void refresh();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refresh();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [refresh, dialogOpen]);
 
   const enabledUrls = new Set(
@@ -172,7 +193,6 @@ export function McpComposerButton({
       } else if (args.existing) {
         await updateMcpServer(args.existing.id, { isEnabled: false });
       }
-      await refresh();
     } catch (err) {
       toast.error("Failed to update MCP server", {
         description: err instanceof Error ? err.message : String(err),

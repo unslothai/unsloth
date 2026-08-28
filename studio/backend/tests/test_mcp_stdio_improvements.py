@@ -46,6 +46,39 @@ def test_client_builds_stdio_when_enabled_without_spawning(monkeypatch):
     assert client is not None
 
 
+def test_client_builds_stdio_with_encoded_arguments_without_shell(monkeypatch):
+    import fastmcp
+    from fastmcp.client import transports
+    from models.mcp_servers import McpStdioCommand
+    import routes.mcp_servers as routes_mcp
+
+    _enable(monkeypatch)
+    captured = {}
+
+    class CapturingStdioTransport:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(fastmcp, "Client", lambda transport: transport)
+    monkeypatch.setattr(transports, "StdioTransport", CapturingStdioTransport)
+    monkeypatch.setattr(mcp_client, "_stdio_argv", lambda parts, env: parts)
+
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(
+            command = "  python  ",
+            arguments = ["-m", "mod", "--name", "a b", "", "  keep padding  "],
+        ),
+        current_subject = "u",
+    )
+    mcp_client._client(encoded.url, {"API_KEY": "secret"})
+
+    assert captured["command"] == "python"
+    assert captured["args"] == ["-m", "mod", "--name", "a b", "", "  keep padding  "]
+    assert captured["env"]["API_KEY"] == "secret"
+    assert captured["keep_alive"] is False
+    assert set(captured) == {"command", "args", "env", "keep_alive"}
+
+
 def test_client_http_unaffected_by_gate(monkeypatch):
     _disable(monkeypatch)
     assert mcp_client._client("https://example.com/mcp", None) is not None
