@@ -384,9 +384,7 @@ def run_lan_address_actions(page) -> None:
     if qr_value != target:
         fail(f"LAN QR action opened {qr_value}, expected {target}")
     page.keyboard.press("Escape")
-    page.get_by_role("heading", name = "Open on your phone").wait_for(
-        state = "hidden", timeout = 15000
-    )
+    page.get_by_role("heading", name = "Open on your phone").wait_for(state = "hidden", timeout = 15000)
 
     page.evaluate(
         """() => Object.defineProperty(navigator, 'clipboard', {
@@ -395,9 +393,7 @@ def run_lan_address_actions(page) -> None:
         })"""
     )
     click_forced(page.get_by_role("button", name = f"Copy {target}", exact = True))
-    page.wait_for_function(
-        "(url) => window.__copiedLanUrl === url", arg = target, timeout = 15000
-    )
+    page.wait_for_function("(url) => window.__copiedLanUrl === url", arg = target, timeout = 15000)
     report["lan_address_actions"] = {"rows": rows, "qr": qr_value, "copied": target}
     report["steps"].append("lan-address-actions")
     log("each LAN address keeps its own QR and copy target")
