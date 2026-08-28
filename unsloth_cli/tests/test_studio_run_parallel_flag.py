@@ -547,6 +547,23 @@ def test_health_poll_brackets_an_ipv6_request_host(monkeypatch):
     assert urls == [("http://[::1]:8888/api/health", 2)]
 
 
+def test_internal_request_urls_encode_an_ipv6_scope(monkeypatch):
+    studio_mod = _load_run_command()
+    urls = []
+
+    class _Healthy(BytesIO):
+        status = 200
+
+    def _urlopen(url, timeout):
+        urls.append(url)
+        return _Healthy()
+
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", _urlopen)
+
+    assert studio_mod._wait_for_server(8888, timeout = 1, request_host = "fe80::1234%7") is True
+    assert urls == ["http://[fe80::1234%257]:8888/api/health"]
+
+
 def test_process_local_http_opener_disables_proxies_and_redirects(monkeypatch):
     studio_mod = _load_run_command()
     handlers = []

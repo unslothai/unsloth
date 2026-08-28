@@ -543,8 +543,11 @@ def _tunnel_origin_host_for(host: str) -> str:
 
 
 def _url_host(host: str) -> str:
+    url_host = host.replace("%", "%25")
     return (
-        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+        f"[{url_host}]"
+        if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
+        else url_host
     )
 
 
@@ -2012,6 +2015,23 @@ def _final_bound_port(server, requested_port: int) -> int:
     raise RuntimeError("Uvicorn did not expose its final bound port")
 
 
+def _bound_request_host(server) -> str:
+    """Return a literal address from Uvicorn's active listener sockets."""
+    for listener in getattr(server, "servers", ()):
+        for sock in getattr(listener, "sockets", ()) or ():
+            address = sock.getsockname()
+            if not isinstance(address, tuple) or not address or not isinstance(address[0], str):
+                continue
+            host = address[0]
+            loopback_host = wildcard_loopback_host(host)
+            if loopback_host is not None:
+                return loopback_host
+            if len(address) >= 4 and address[3] and ":" in host and "%" not in host:
+                return f"{host}%{address[3]}"
+            return host
+    raise RuntimeError("Uvicorn did not expose its bound address")
+
+
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
@@ -2656,6 +2676,7 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
+    app.state.server_request_host = None
     # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
     if port and port > 0:
         _direct_host = _display_host_for_bind(host)
@@ -2804,6 +2825,7 @@ def run_server(
 
     port = _final_bound_port(_server, port)
     app.state.server_port = port
+    app.state.server_request_host = _bound_request_host(_server)
     app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
     app.state.remote_access_port = port
     app.state.lan_access_port = port

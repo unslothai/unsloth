@@ -319,7 +319,7 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     assert calls == []
 
 
-def test_run_silent_uses_ipv6_loopback_for_internal_requests(monkeypatch):
+def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch):
     import types
 
     studio_mod = _studio()
@@ -348,6 +348,7 @@ def test_run_silent_uses_ipv6_loopback_for_internal_requests(monkeypatch):
     class _App:
         class state:
             server_port = 8888
+            server_request_host = "127.0.0.1"
             cloudflare_url = "https://x.trycloudflare.com"
 
     calls = []
@@ -396,15 +397,14 @@ def test_run_silent_uses_ipv6_loopback_for_internal_requests(monkeypatch):
     )(studio_mod.run)
     result = CliRunner().invoke(
         app,
-        _BASE + ["--silent", "-H", "::"],
+        _BASE + ["--silent", "-H", "localhost"],
         catch_exceptions = True,
     )
 
     assert result.exit_code == 0, result.output
-    assert ("health", 8888, {"request_host": "::1"}) in calls
-    assert next(entry[1] for entry in calls if entry[0] == "load")["request_host"] == "::1"
-    assert ("verify", "::", 8888) in calls
-    assert ("print", {"secure": False, "loopback_host": "::1"}) in calls
+    assert ("health", 8888, {"request_host": "127.0.0.1"}) in calls
+    assert next(entry[1] for entry in calls if entry[0] == "load")["request_host"] == "127.0.0.1"
+    assert all(entry[0] not in {"verify", "print"} for entry in calls)
 
 
 # ── parent-level --cloudflare/--no-cloudflare with a subcommand is rejected ─

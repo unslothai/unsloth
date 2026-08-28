@@ -132,6 +132,33 @@ def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
     )
 
 
+@pytest.mark.parametrize(
+    "address,expected",
+    [
+        (("0.0.0.0", 43123), "127.0.0.1"),
+        (("::", 43123, 0, 0), "::1"),
+        (("192.0.2.24", 43123), "192.0.2.24"),
+        (("fe80::1234", 43123, 0, 7), "fe80::1234%7"),
+    ],
+)
+def test_bound_request_host_uses_the_active_listener_address(address, expected):
+    from types import SimpleNamespace
+
+    import run
+
+    sock = SimpleNamespace(getsockname = lambda: address)
+    server = SimpleNamespace(servers = [SimpleNamespace(sockets = [sock])])
+    assert run._bound_request_host(server) == expected
+
+
+def test_bound_request_host_fails_closed_without_a_listener():
+    from types import SimpleNamespace
+
+    import run
+    with pytest.raises(RuntimeError, match = "did not expose its bound address"):
+        run._bound_request_host(SimpleNamespace(servers = []))
+
+
 def test_arg_parser_secure_polarity_and_not_secure_alias():
     # --secure/--no-secure is the documented flag; --not-secure is a hidden,
     # back-compat alias for --no-secure. Last flag wins (BooleanOptionalAction).
