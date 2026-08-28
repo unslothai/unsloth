@@ -281,7 +281,9 @@ def messages_without_unpriced_media(messages: list[dict]) -> list[dict]:
     messages, including every media part, remain the request that is ultimately sent.
     """
     stripped = [_message_without_unpriced_media(message) for message in messages]
-    return messages if all(before is after for before, after in zip(messages, stripped)) else stripped
+    return (
+        messages if all(before is after for before, after in zip(messages, stripped)) else stripped
+    )
 
 
 def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
