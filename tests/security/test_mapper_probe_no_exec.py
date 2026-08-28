@@ -92,7 +92,6 @@ def no_dynamic_execution(monkeypatch):
     return calls
 
 
-
 MARKER = "/tmp/unsloth_mapper_probe_marker"
 
 PAYLOADS = [
@@ -178,8 +177,6 @@ def test_the_cap_bounds_parse_cost_not_just_download_size():
 
 def test_the_real_mapper_is_far_below_the_cap():
     assert len(REAL_MAPPER) < _byte_cap() / 2
-
-
 
 
 def test_real_mapper_body_reproduces_the_installed_tables(monkeypatch):
