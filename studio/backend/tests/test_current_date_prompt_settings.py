@@ -288,28 +288,6 @@ class TestExternalProviderMessages:
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
         assert out[1:] == messages
 
-    def test_only_self_hosted_provider_types_are_dated(self):
-        from core.inference.providers import provider_is_self_hosted
-        for provider_type in ("vllm", "ollama", "llama_cpp", "custom"):
-            assert provider_is_self_hosted(provider_type), provider_type
-        # Hosted APIs and Codex state the date in their own context already.
-        for provider_type in (
-            "openai",
-            "openai_codex",
-            "anthropic",
-            "gemini",
-            "deepseek",
-            "mistral",
-            "kimi",
-            "qwen",
-            "huggingface",
-            "openrouter",
-            None,
-            ["vllm"],
-        ):
-            assert not provider_is_self_hosted(provider_type), provider_type
-
-
 class TestResearchSystemPrompt:
     """Every Deep Research call (planner, agent, audit, report) goes through this helper."""
 

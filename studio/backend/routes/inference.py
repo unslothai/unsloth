@@ -2889,7 +2889,6 @@ from core.inference.providers import (
     hosted_only_tools,
     LOCAL_STANDINS_FOR_HOSTED_TOOLS,
     provider_hosted_tools,
-    provider_is_self_hosted,
     provider_model_runs_local_tools,
     provider_runs_local_tools,
     validate_provider_base_url,
@@ -18119,9 +18118,7 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
-    # Self-hosted endpoints only: the hosted APIs already state the date in their own context.
-    if provider_is_self_hosted(provider_type):
-        chat_messages = _prepend_current_date_to_messages(chat_messages, request)
+    chat_messages = _prepend_current_date_to_messages(chat_messages, request)
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
