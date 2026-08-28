@@ -337,6 +337,35 @@ def test_processed_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
     assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
 
 
+def test_processed_scan_uses_the_newest_nested_artifact_mtime(
+    monkeypatch,
+    tmp_path,
+):
+    root = tmp_path / "processed"
+    cache_dir = root / "Org___Data"
+    build_dir = cache_dir / "default" / "1.0.0" / "build"
+    build_dir.mkdir(parents = True)
+    artifact = build_dir / "data.arrow"
+    artifact.write_bytes(b"payload")
+    os.utime(artifact, (1_900_000_000, 1_900_000_000))
+    os.utime(cache_dir, (1_700_000_000, 1_700_000_000))
+
+    monkeypatch.setattr(
+        cache_inventory,
+        "_hf_datasets_cache_roots",
+        lambda: [root],
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "processed_dataset_cache_has_artifacts",
+        lambda _path: True,
+    )
+
+    rows = cache_inventory._scan_processed_dataset_caches()
+
+    assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
+
+
 def test_recent_order_is_now_derivable_from_the_payload(monkeypatch):
     # The whole point: two cached datasets, and the newer one sorts first.
     _stub_hf_scan(

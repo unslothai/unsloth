@@ -427,8 +427,9 @@ def _is_processed_dataset_cache_path(repo_id: str, cache_path: str) -> bool:
     return resolved.parent.resolve(strict = False) in roots
 
 
-def _processed_dataset_cache_size(path: Path) -> int:
+def _processed_dataset_cache_stats(path: Path) -> tuple[int, float]:
     total = 0
+    last_modified = 0.0
     try:
         for directory, dirnames, filenames in os.walk(path, followlinks = False):
             base = Path(directory)
@@ -437,12 +438,17 @@ def _processed_dataset_cache_size(path: Path) -> int:
                 entry = base / filename
                 try:
                     if entry.is_file() and not entry.is_symlink():
-                        total += entry.stat().st_size
+                        stat = entry.stat()
+                        total += stat.st_size
+                        last_modified = max(
+                            last_modified,
+                            _usable_mtime(stat.st_mtime),
+                        )
                 except OSError:
                     continue
     except OSError:
-        return 0
-    return total
+        return 0, 0.0
+    return total, last_modified
 
 
 def _scan_processed_dataset_caches() -> list[dict]:
@@ -459,12 +465,12 @@ def _scan_processed_dataset_caches() -> list[dict]:
                 continue
             if not processed_dataset_cache_has_artifacts(entry):
                 continue
-            size_bytes = _processed_dataset_cache_size(entry)
+            size_bytes, payload_mtime = _processed_dataset_cache_stats(entry)
             if size_bytes <= 0:
                 continue
             key = repo_id.lower()
             existing = seen_lower.get(key)
-            processed_mtime = _dataset_last_modified(None, entry)
+            processed_mtime = _dataset_last_modified(payload_mtime, entry)
             if existing is None or size_bytes > existing["size_bytes"]:
                 processed_row = {
                     "repo_id": repo_id,
@@ -485,7 +491,8 @@ def _scan_processed_dataset_caches() -> list[dict]:
 def _scan_app_processed_dataset_caches() -> list[dict]:
     grouped: dict[tuple[str, str], dict] = {}
     for entry in iter_app_processed_dataset_caches():
-        size_bytes = _processed_dataset_cache_size(entry.path)
+        size_bytes, payload_mtime = _processed_dataset_cache_stats(entry.path)
+        app_mtime = _dataset_last_modified(payload_mtime, entry.path)
         key = (
             entry.repo_id.casefold(),
             os.path.normcase(str(entry.hub_cache)),
@@ -501,13 +508,12 @@ def _scan_app_processed_dataset_caches() -> list[dict]:
                 "app_processed_hub_cache": str(entry.hub_cache),
                 "partial": True,
             }
-            app_mtime = _dataset_last_modified(None, entry.path)
             if app_mtime > 0:
                 app_row["last_modified"] = app_mtime
             grouped[key] = app_row
         else:
             existing["size_bytes"] += size_bytes
-            _merge_last_modified(existing, {"last_modified": _dataset_last_modified(None, entry.path)})
+            _merge_last_modified(existing, {"last_modified": app_mtime})
     return sorted(
         grouped.values(),
         key = lambda row: (row["repo_id"].casefold(), row["app_processed_hub_cache"]),
