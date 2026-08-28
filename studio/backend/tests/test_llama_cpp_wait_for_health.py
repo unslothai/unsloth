@@ -445,3 +445,31 @@ class TestCancelledWaitEndsTheLoad:
             )
             is False
         )
+
+
+def test_every_failed_health_wait_in_load_model_checks_the_cancel_flag():
+    """Each health wait inside load_model has its own failure branch, and each one
+    classifies a startup error. A branch that skips the flag raises a 500 for a
+    deliberate cancel instead of returning the load."""
+    import ast
+
+    src = Path(_BACKEND_DIR, "core", "inference", "llama_cpp.py").read_text(encoding = "utf-8")
+    load_model = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "load_model"
+    )
+    waits = [
+        n.lineno for n in ast.walk(load_model)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "_wait_for_health"
+    ]
+    guards = [
+        n.lineno for n in ast.walk(load_model)
+        if isinstance(n, ast.Constant) and n.value == "_health_wait_cancelled"
+    ]
+    assert waits, "the health waits moved; re-pin this test"
+    assert len(guards) >= len(waits), (
+        f"{len(waits)} health wait(s) in load_model but only {len(guards)} cancel guard(s); "
+        "a failure branch classifies a cancelled load as a server-start failure"
+    )

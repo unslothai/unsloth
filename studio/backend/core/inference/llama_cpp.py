@@ -23017,6 +23017,11 @@ class LlamaCppBackend:
                                     self._process.poll() if self._process is not None else None
                                 )
                                 self._kill_process()
+                                if getattr(self, "_health_wait_cancelled", False):
+                                    logger.info(
+                                        "Load cancelled during the text-only retry health wait"
+                                    )
+                                    return False
                                 # A text-only signal crash is independent evidence of a GPU
                                 # startup fault. Keep a confirmed bad projector out of the
                                 # replay; a guessed one still gets a CPU try with vision.
