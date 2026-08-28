@@ -246,6 +246,14 @@ test("a decode error is announced and executable edits unlock manual recovery", 
   );
   assert.match(
     dialog,
+    /aria-busy=\{decodingCommand\}[\s\S]*role="status"\s*aria-live="polite"[\s\S]*Reading local command…/,
+  );
+  assert.match(
+    dialog,
+    /codecError && \([\s\S]*view\.kind === "edit"[\s\S]*void startEdit\(server\)[\s\S]*Retry/,
+  );
+  assert.match(
+    dialog,
     /disabled=\{\s*formPending \|\|\s*codecError !== null \|\|\s*!form\.url\.trim\(\)/,
   );
 });
@@ -380,7 +388,7 @@ test("full unmount invalidates cancellable stdio encode continuations", async ()
   );
   assert.match(
     openLifecycle,
-    /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setImporting\(false\);\s*setConfirmingDelete\(null\);[\s\S]*if \(!open\) return;/,
+    /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setCodecPending\(false\);\s*setDecodingCommand\(false\);[\s\S]*setConfirmingDelete\(null\);[\s\S]*if \(!open\) return;/,
     "route teardown must clear transient form state before a later reopen",
   );
   assert.match(

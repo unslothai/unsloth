@@ -321,6 +321,7 @@ export function ChatMcpServersDialog({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [codecPending, setCodecPending] = useState(false);
+  const [decodingCommand, setDecodingCommand] = useState(false);
   const [codecError, setCodecError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [refreshingIds, setRefreshingIds] = useState<ReadonlySet<string>>(
@@ -411,6 +412,7 @@ export function ChatMcpServersDialog({
       setSaving(false);
       setTesting(false);
       setCodecPending(false);
+      setDecodingCommand(false);
       setCodecError(null);
       setImporting(false);
       setConfirmingDelete(null);
@@ -433,6 +435,7 @@ export function ChatMcpServersDialog({
     setSaving(false);
     setTesting(false);
     setCodecPending(false);
+    setDecodingCommand(false);
     setCodecError(null);
     setView({ kind: "create" });
     setForm(EMPTY_FORM);
@@ -459,11 +462,13 @@ export function ChatMcpServersDialog({
 
     if (isHttpAddress(server.url)) {
       setCodecPending(false);
+      setDecodingCommand(false);
       setForm(baseForm);
       return;
     }
 
     setCodecPending(true);
+    setDecodingCommand(true);
     setForm(baseForm);
     try {
       const decoded = await decodeMcpStdioCommand(server.url);
@@ -500,6 +505,7 @@ export function ChatMcpServersDialog({
         activeEditIdRef.current === server.id
       ) {
         setCodecPending(false);
+        setDecodingCommand(false);
       }
     }
   }
@@ -510,6 +516,7 @@ export function ChatMcpServersDialog({
     setSaving(false);
     setTesting(false);
     setCodecPending(false);
+    setDecodingCommand(false);
     setCodecError(null);
     setView({ kind: "list" });
     setForm(EMPTY_FORM);
@@ -526,6 +533,7 @@ export function ChatMcpServersDialog({
       setSaving(false);
       setTesting(false);
       setCodecPending(false);
+      setDecodingCommand(false);
       setCodecError(null);
       setImporting(false);
       setConfirmingDelete(null);
@@ -803,6 +811,7 @@ export function ChatMcpServersDialog({
       <DialogContent
         className="max-w-2xl"
         showCloseButton={!(saving && !codecPending)}
+        aria-busy={decodingCommand}
       >
         <DialogHeader>
           <DialogTitle>MCP Servers</DialogTitle>
@@ -902,6 +911,16 @@ export function ChatMcpServersDialog({
                     ? "An http(s) URL for a remote server."
                     : "An http(s) URL for a remote server, or an executable for local stdio. Add local arguments in the Arguments rows."}
               </span>
+              {decodingCommand && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="flex items-center gap-2 text-xs text-muted-foreground"
+                >
+                  <Spinner />
+                  Reading local command…
+                </span>
+              )}
             </div>
 
             {addressIsCommand && (
@@ -915,12 +934,30 @@ export function ChatMcpServersDialog({
             )}
 
             {codecError && (
-              <div
-                role="alert"
-                aria-live="assertive"
-                className="text-sm text-destructive"
-              >
-                {codecError}
+              <div className="flex items-center justify-between gap-3">
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  className="text-sm text-destructive"
+                >
+                  {codecError}
+                </div>
+                {view.kind === "edit" && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={formPending}
+                    onClick={() => {
+                      const server = servers.find(
+                        (candidate) => candidate.id === view.id,
+                      );
+                      if (server) void startEdit(server);
+                    }}
+                  >
+                    Retry
+                  </Button>
+                )}
               </div>
             )}
 
