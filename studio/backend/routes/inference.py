@@ -5194,11 +5194,15 @@ def _monitor_stream_function_call_delta(
 
 
 def _flush_monitor_stream_tool_calls(
-    monitor_id: Optional[str], choice_index: Optional[int] = None
+    monitor_id: Optional[str],
+    choice_index: Optional[int] = None,
+    *,
+    completed_only: bool = False,
 ) -> None:
     calls, separate = api_monitor.take_openai_tool_calls(
         monitor_id,
         choice_index = choice_index,
+        completed_only = completed_only,
     )
     if not calls:
         return
@@ -5271,7 +5275,11 @@ def _monitor_openai_chunk(
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
             if streaming:
-                _flush_monitor_stream_tool_calls(monitor_id, choice_index)
+                _flush_monitor_stream_tool_calls(
+                    monitor_id,
+                    choice_index,
+                    completed_only = True,
+                )
             api_monitor.append_reply(
                 monitor_id,
                 content,

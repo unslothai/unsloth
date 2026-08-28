@@ -7345,6 +7345,58 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         assert monitor.get(monitor_id)["reply"] == "Tool call: lookup({})\nDone."
 
+    def test_streamed_tool_monitor_keeps_incomplete_call_across_content(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"query":',
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            {"choices": [{"index": 0, "delta": {"content": "Checking."}}]},
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '"weather"}'}}
+                            ]
+                        },
+                    }
+                ]
+            },
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        for chunk in chunks:
+            _monitor_openai_chunk(monitor_id, chunk, streaming = True)
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Checking.\nTool call: lookup({"query":"weather"})'
+        )
+
     def test_streamed_tool_monitor_bounds_pending_preview_state(self, monkeypatch):
         import routes.inference as inf_mod
 

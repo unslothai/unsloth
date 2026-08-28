@@ -123,6 +123,16 @@ def _merge_stream_tool_name(current: str, fragment: Any, budget: int) -> str:
     return _append_stream_tool_field(current, fragment, budget)
 
 
+def _stream_tool_call_is_complete(state: _OpenAIStreamToolCall) -> bool:
+    if not state.name or not state.arguments:
+        return False
+    try:
+        arguments = json.loads(state.arguments)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(arguments, (dict, list))
+
+
 def _stream_tool_call_id(value: Any) -> Optional[str]:
     if not isinstance(value, str) or not value:
         return None
@@ -567,6 +577,7 @@ class ApiMonitor:
         entry_id: Optional[str],
         *,
         choice_index: Optional[int] = None,
+        completed_only: bool = False,
     ) -> tuple[list[tuple[str, str]], bool]:
         """Remove and return completed preview calls in first-seen order."""
         if not entry_id:
@@ -578,7 +589,8 @@ class ApiMonitor:
             selected = [
                 state
                 for state in entry.openai_stream_tool_calls
-                if choice_index is None or state.choice_index == choice_index
+                if (choice_index is None or state.choice_index == choice_index)
+                and (not completed_only or _stream_tool_call_is_complete(state))
             ]
             if not selected:
                 return [], False
@@ -588,10 +600,18 @@ class ApiMonitor:
             entry.openai_stream_tool_calls = [
                 state for state in entry.openai_stream_tool_calls if id(state) not in selected_ids
             ]
+            remaining_indexes = {
+                state.choice_index: state.tool_index
+                for state in entry.openai_stream_tool_calls
+            }
             if choice_index is None:
-                entry.openai_stream_last_tool_indexes.clear()
-            else:
+                entry.openai_stream_last_tool_indexes = remaining_indexes
+            elif choice_index not in remaining_indexes:
                 entry.openai_stream_last_tool_indexes.pop(choice_index, None)
+            else:
+                entry.openai_stream_last_tool_indexes[choice_index] = remaining_indexes[
+                    choice_index
+                ]
             entry.updated_at = time.time()
             return [(state.name, state.arguments) for state in selected], separate
 
