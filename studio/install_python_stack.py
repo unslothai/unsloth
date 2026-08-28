@@ -1823,10 +1823,10 @@ _MIXED_HOST_UNROUTABLE: "frozenset[str]" = frozenset({"gfx906"})
 def _gfx_route_on_host(gfx: "str | None", gfx_codes: "list[str] | None" = None) -> bool:
     """Whether an index can serve ``gfx`` ON THIS HOST, not on some host.
 
-    _gfx_has_a_wheel_route asks the abstract question, and gfx906 answers it yes on the
-    generic union while its only usable route -- the rocm6.3 legacy tag -- is unlocked solely
-    when gfx906 is the one detected arch. The preflight and the repair must ask the same
-    question or one promises work the other declines, so both come through here.
+    _gfx_has_a_wheel_route asks it in the abstract, and gfx906 answers yes on the generic
+    union while its only usable route -- the rocm6.3 legacy tag -- opens solely when gfx906 is
+    the one detected arch. Preflight and repair must ask the same question or one promises
+    work the other declines, so both come through here.
     """
     return _gfx_has_a_wheel_route(gfx) and not (
         gfx in _MIXED_HOST_UNROUTABLE and len(set(gfx_codes or ())) > 1
@@ -1928,13 +1928,13 @@ def _runtime_gfx_target(
         # Nothing enumerated a device, so the #7305 precedence (a runtime-visible arch
         # outranks the product name) has nothing left to protect. Honour what the user
         # named, as _runtime_target_is_gfx906 and _detect_windows_gfx_arch already do.
-        # This is one guess about the machine, not a device list, so an ordinal past its only
-        # entry indexes nothing: the mask names a second GPU the guess cannot account for,
-        # while _pick_visible_index's out-of-range rule would answer with the guess anyway and
-        # commit a per-arch reinstall to it. Decline instead, unless the arch was named
-        # outright -- that is the user answering the question the ordinal left open.
-        # Resolved against a length nothing can exceed, so a real ordinal comes back as
-        # itself rather than folding onto 0 through the out-of-range rule this is asking about.
+        # One guess about the machine is not a device list, so an ordinal past its only
+        # entry indexes nothing: the mask names a GPU the guess cannot account for, while
+        # _pick_visible_index's out-of-range rule would answer with the guess anyway and
+        # commit a per-arch reinstall to it. Decline, unless the arch was named outright --
+        # the user answering the question the ordinal left open.
+        # Against a length nothing can exceed, so a real ordinal comes back as itself rather
+        # than folding onto 0 through the very rule this is asking about.
         if not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() and _pick_visible_index(
             _INDEX_PROBE_LEN, warn = False, masks = _HIP_LAYER_MASKS
         ):
@@ -2252,8 +2252,8 @@ _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VI
 # BENEATH and is applied separately by _rocr_visible_subset.
 _HIP_LAYER_MASKS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
-# A device count no host reaches, for asking what index a mask names rather than which of a
-# real list it selects: any ordinal below it resolves to itself instead of the 0 fallback.
+# A device count no host reaches, for asking what index a mask NAMES rather than which entry
+# of a real list it selects: any ordinal below it resolves to itself, not to the 0 fallback.
 _INDEX_PROBE_LEN = 1 << 20
 
 
@@ -3358,12 +3358,10 @@ def _rocm_torch_family_needs_repair(
     if _family is not None:
         _leaf = (_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx or "") or "").lower()
         if _family != _leaf:
-            # Only when some index can serve the target ON THIS HOST. A gfx1010 has no leaf
-            # and no generic kernels, and a mask-selected gfx906 beside another card has no
-            # reachable route either, so the mismatch is real but unfixable: _ensure_rocm_torch
-            # declines on the same question, and promising a repair it refuses buys a
-            # dependency pass on EVERY update and never a working torch. An empty leaf is not
-            # the test -- the datacentre parts have none and the generic index serves them.
+            # Only when some index can serve the target ON THIS HOST: a gfx1010, or a
+            # mask-selected gfx906 beside another card, has a real mismatch and nowhere to go,
+            # and _ensure_rocm_torch declines on the same question -- promising a repair it
+            # refuses buys a dependency pass on EVERY update and never a working torch.
             return _gfx_route_on_host(runtime_gfx, gfx_codes)
         # The family is the right SHAPE, not necessarily a working build. _already_on_leaf
         # keeps a matching family only above the 2.11 floor, since below it these leaves
@@ -3575,9 +3573,8 @@ def _ensure_rocm_torch() -> None:
         and _rocm_pin is None
         and (_gfx_override_env or not _has_rocm_gpu())
         # This branch installs for the inferred arch without asking the mask layers, so an
-        # ordinal naming a GPU that one guess cannot account for reaches the same wrong wheel
-        # the preflight already declines. An explicit arch is exempt above, and is the one
-        # reading no ordinal contradicts.
+        # ordinal the guess cannot account for reaches the wheel the preflight already
+        # declines. An explicit arch is exempt above, and no ordinal contradicts it.
         and (_gfx_override_env or _runtime_gfx_target(_inferred_linux_gfx)[0] is not None)
     ):
         index_url = _amd_arch_index_url(_inferred_linux_gfx)

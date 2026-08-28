@@ -1281,10 +1281,9 @@ def test_a_masked_gfx906_on_a_mixed_host_is_not_demoted_to_another_dead_wheel():
     ],
 )
 def test_an_ordinal_past_an_inferred_arch_resolves_nothing(env):
-    """The inferred arch is one guess about the machine, not a device list, so an ordinal
-    past its only entry indexes nothing: the mask names a GPU the guess cannot account for.
-    _pick_visible_index's out-of-range rule would answer with the guess anyway, and this
-    branch then commits a per-arch reinstall to it."""
+    """One guess about the machine is not a device list, so an ordinal past its only entry
+    indexes nothing: the mask names a GPU the guess cannot account for, and the out-of-range
+    rule would answer with the guess anyway, then reinstall per-arch wheels for it."""
     calls = _run_install(
         gfx_devices = (),
         kfd = (),
