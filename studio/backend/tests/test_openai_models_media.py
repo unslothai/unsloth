@@ -96,7 +96,7 @@ def _catalog(
     )
     monkeypatch.setattr(inf, "_resolves_to_resident", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(inf, "_resident_media_status", lambda task: (resident or {}).get(task))
-    monkeypatch.setattr(inf, "_stt_model_objects", lambda created: [])
+    monkeypatch.setattr(inf, "_stt_model_objects", lambda created, catalog_at = None: [])
     _media_index(monkeypatch, picks if picks is not None else _PICKS)
 
 
@@ -286,7 +286,7 @@ def test_the_media_scan_is_reused_across_requests_in_one_catalog_window(monkeypa
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
     monkeypatch.setattr(inf, "_resident_media_status", lambda task: None)
-    monkeypatch.setattr(inf, "_stt_model_objects", lambda created: [])
+    monkeypatch.setattr(inf, "_stt_model_objects", lambda created, catalog_at = None: [])
     inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
 
     async def _cat():
@@ -347,6 +347,7 @@ def _stt(
     monkeypatch.setattr(
         stt_mtmd_sidecar, "get_mtmd_stt_sidecar", lambda: SimpleNamespace(loaded_model = mtmd_loaded)
     )
+    monkeypatch.setattr(inf, "_downloaded_custom_stt_ids", lambda catalog_at: ())
 
 
 def test_stt_models_list_downloaded_and_loaded(monkeypatch):
@@ -370,6 +371,48 @@ def test_curated_stt_alias_reports_canonical_loaded_id(monkeypatch):
     assert [(o["id"], o["loaded"]) for o in inf._stt_model_objects(7)] == [
         ("unsloth/whisper-small", True)
     ]
+
+
+def test_downloaded_custom_whisper_model_remains_listed_after_unload(monkeypatch):
+    _stt(monkeypatch, downloaded = ())
+    monkeypatch.setattr(
+        inf, "_downloaded_custom_stt_ids", lambda catalog_at: ("org/whisper-custom",)
+    )
+    assert [(o["id"], o["loaded"]) for o in inf._stt_model_objects(7, 12.0)] == [
+        ("org/whisper-custom", False)
+    ]
+
+
+def test_custom_stt_scan_keeps_only_complete_servable_whisper_repos(monkeypatch):
+    from core.inference import stt_sidecar
+    from hub.services.models import cache_inventory
+
+    calls = []
+    rows = [
+        {"repo_id": "org/whisper-ready", "task": "automatic-speech-recognition"},
+        {
+            "repo_id": "org/whisper-partial",
+            "task": "automatic-speech-recognition",
+            "partial": True,
+        },
+        {"repo_id": "org/qwen-asr", "task": "automatic-speech-recognition"},
+        {"repo_id": "org/chat", "task": "text-generation"},
+    ]
+    monkeypatch.setattr(
+        cache_inventory,
+        "_scan_cached_models",
+        lambda: calls.append(True) or rows,
+    )
+    monkeypatch.setattr(
+        stt_sidecar,
+        "is_model_downloaded",
+        lambda model_id: model_id == "org/whisper-ready",
+    )
+    inf._CUSTOM_STT_CACHE.update(at = None, ids = ())
+
+    assert inf._downloaded_custom_stt_ids(22.0) == ("org/whisper-ready",)
+    assert inf._downloaded_custom_stt_ids(22.0) == ("org/whisper-ready",)
+    assert len(calls) == 1
 
 
 def test_a_whisper_id_cached_only_for_whisper_cpp_is_not_advertised(monkeypatch):
@@ -447,7 +490,7 @@ def test_stt_models_join_the_catalog(monkeypatch):
     monkeypatch.setattr(
         inf,
         "_stt_model_objects",
-        lambda created: [
+        lambda created, catalog_at = None: [
             {
                 "id": "unsloth/whisper-small",
                 "object": "model",
@@ -474,7 +517,7 @@ def test_stt_gguf_repository_is_not_advertised_as_chat(monkeypatch):
     monkeypatch.setattr(
         inf,
         "_stt_model_objects",
-        lambda created: [
+        lambda created, catalog_at = None: [
             {
                 "id": "qwen3-asr-0.6b",
                 "object": "model",
@@ -562,7 +605,7 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     (entry,) = inf._openai_model_objects()
     assert entry["task"] == "text-to-speech"
 
-    # the MLX worker rejects audio generation even when its model metadata is TTS.
+    # the mlx worker rejects audio generation even when its model metadata is tts.
     unsloth.models["unsloth/csm-1b"]["is_mlx"] = True
     (entry,) = inf._openai_model_objects()
     assert "task" not in entry

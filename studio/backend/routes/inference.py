@@ -23151,7 +23151,34 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
     return objects
 
 
-def _stt_model_objects(created: int) -> list[dict]:
+_CUSTOM_STT_CACHE: dict = {"at": None, "ids": ()}
+
+
+def _downloaded_custom_stt_ids(catalog_at: Optional[float]) -> tuple[str, ...]:
+    if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+        return _CUSTOM_STT_CACHE["ids"]
+    from core.inference import stt_sidecar
+    from hub.services.models.cache_inventory import _scan_cached_models
+
+    try:
+        ids = tuple(
+            sorted(
+                row["repo_id"]
+                for row in _scan_cached_models()
+                if row.get("task") == _STT_MODEL_TASK
+                and not row.get("partial")
+                and isinstance(row.get("repo_id"), str)
+                and stt_sidecar.is_model_downloaded(row["repo_id"])
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("custom stt cache scan unavailable for /v1/models: %s", exc)
+        ids = ()
+    _CUSTOM_STT_CACHE.update(at = catalog_at, ids = ids)
+    return ids
+
+
+def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list[dict]:
     """Downloaded speech-to-text models this endpoint's own route can actually serve.
 
     /v1/audio/transcriptions resolves an id to an engine by itself: only the mtmd ids are
@@ -23180,6 +23207,11 @@ def _stt_model_objects(created: int) -> list[dict]:
                 repo_id
                 for model_id, repo_id in stt_sidecar.STT_MODELS.items()
                 if stt_sidecar.is_model_downloaded(model_id)
+            )
+            ids.extend(
+                model_id
+                for model_id in _downloaded_custom_stt_ids(catalog_at)
+                if model_id not in ids
             )
         if mtmd_ready:
             ids.extend(
@@ -23314,7 +23346,7 @@ async def _openai_catalog_objects() -> list[dict]:
     media = await asyncio.to_thread(
         lambda: (
             _media_model_objects(catalog, _created, _CATALOG_CACHE["at"])
-            + _stt_model_objects(_created)
+            + _stt_model_objects(_created, _CATALOG_CACHE["at"])
         )
     )
     for obj in media:
