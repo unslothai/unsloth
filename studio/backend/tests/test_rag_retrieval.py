@@ -511,6 +511,13 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
     assert seen["min_dense_score"] == 0.8
     assert seen["mode"] == "dense"
 
-    # Explicit False disables even with the env default on.
+    # The UI's explicit Off sends both flags. autoinject=False on its own is also
+    # used by large-model Auto and must still allow thread-document grounding.
     monkeypatch.setenv("RAG_AUTOINJECT", "1")
-    assert tools.build_rag_autoinject(conv, {"thread_id": "t1", "autoinject": False}) is None
+    assert (
+        tools.build_rag_autoinject(
+            conv,
+            {"thread_id": "t1", "autoinject": False, "whole_doc": False},
+        )
+        is None
+    )

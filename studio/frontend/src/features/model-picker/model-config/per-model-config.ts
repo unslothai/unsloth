@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
@@ -9,7 +10,6 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
-import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
   SEPARATE_DRAFT_MODEL_SPEC_TYPES,
@@ -29,8 +29,8 @@ export interface PerModelConfig {
   nParallel: number | null;
   nBatch: number | null;
   nUbatch: number | null;
-  /** --load-mode; null follows llama.cpp's own `auto`, so a build that redefines
-   *  auto is followed rather than pinned. */
+  /** --load-mode; null lets the fit decide: `none` when the load fits in VRAM
+   *  (or VRAM plus host RAM), else no flag. Any value set here wins. */
   loadMode?: string | null;
   /** --ctx-checkpoints; null follows the llama.cpp default (32). */
   ctxCheckpoints?: number | null;
@@ -174,9 +174,9 @@ export const KV_CACHE_DTYPES = [
 export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
-// llama-server's --load-mode enum, in --help order. "auto" is both a real value
-// and the default, so the UI shows it while storage keeps null: emitting nothing
-// follows whatever auto means in the build that runs.
+// llama-server's --load-mode enum, in --help order. "auto" is the default: the UI
+// shows it, storage keeps null and the backend emits no flag, so the fit may pick
+// "none". Never sent verbatim; builds like b10360 reject "auto" as a value.
 export const LOAD_MODES = [
   "auto",
   "none",
@@ -206,7 +206,10 @@ export {
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 
-const STORAGE_KEY = "unsloth_model_configs";
+/** Exported so cross-tab listeners can tell this key's storage event from the
+ *  dozens of others Studio writes. */
+export const PER_MODEL_CONFIG_STORAGE_KEY = "unsloth_model_configs";
+const STORAGE_KEY = PER_MODEL_CONFIG_STORAGE_KEY;
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // v2 added nBatch / nUbatch, v3 llamaExtraArgs, v4 disableVision and v5 the
@@ -722,17 +725,28 @@ function readMap(): StoredMap {
   return readMapRaw();
 }
 
+/** Fires when any model's saved config changes, in this tab. The browser's own
+ *  `storage` event only reaches *other* tabs, so readers that need to react to
+ *  an edit made here (the picker's memory bar) have nothing else to listen to. */
+export const PER_MODEL_CONFIG_UPDATED_EVENT =
+  "unsloth-per-model-config-updated";
+
 function writeMap(map: StoredMap): boolean {
   if (!canUseStorage()) {
     return false;
   }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-    return true;
   } catch (err) {
     console.warn("Failed to persist per-model config:", err);
     return false;
   }
+  // Best-effort: the write already landed, so a host that cannot dispatch
+  // events must not make a saved config report back as unsaved.
+  if (typeof window?.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(PER_MODEL_CONFIG_UPDATED_EVENT));
+  }
+  return true;
 }
 
 function warnDroppedFields(
@@ -983,6 +997,41 @@ function loadPerModelConfig(
   return normalize(map[key]);
 }
 
+export function resolveOnlyRememberedGgufVariant(
+  modelId: string,
+): { ggufVariant: string; config: PerModelConfig } | null {
+  const map = readMap();
+  const variants = new Map<string, string>();
+  const normalizedModelId = normalizeModelIdentity(modelId);
+  for (const key of Object.keys(map)) {
+    const storedModelId = modelIdFromStorageKey(key);
+    const ggufVariant = ggufVariantFromStorageKey(key);
+    if (
+      !storedModelId ||
+      !ggufVariant ||
+      normalizeModelIdentity(storedModelId) !== normalizedModelId
+    ) {
+      continue;
+    }
+    const normalizedVariant = normalizeGgufVariantIdentity(ggufVariant);
+    if (normalizedVariant) {
+      variants.set(normalizedVariant, ggufVariant);
+    }
+  }
+  if (variants.size !== 1) {
+    return null;
+  }
+  const ggufVariant = variants.values().next().value;
+  if (!ggufVariant) {
+    return null;
+  }
+  const key = findConfigKeyForModelVariant(map, modelId, ggufVariant);
+  if (!key || storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION) {
+    return null;
+  }
+  return { ggufVariant, config: normalize(map[key]) };
+}
+
 export function isDefaultConfig(config: PerModelConfig): boolean {
   return (
     config.customContextLength == null &&
@@ -994,6 +1043,15 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.nParallel == null &&
     config.nBatch == null &&
     config.nUbatch == null &&
+    // The llama-server tuning group, for the same reason as the arguments below:
+    // savePerModelConfig deletes an entry it judges default, so a config whose only
+    // change was one of these was dropped on the way to storage while the settings
+    // page reported that defaults were kept. Compared against null, not truth: 0
+    // checkpoints and a 0 or -1 cache are values, not blanks.
+    (config.specDraftCacheDtype ?? null) === null &&
+    (config.loadMode ?? null) === null &&
+    config.ctxCheckpoints == null &&
+    config.cacheRam == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     Boolean(config.disableVision) ===
@@ -1170,10 +1228,26 @@ export function adoptLegacyConfigKey(
   return writeMap(map);
 }
 
+export interface ResolvedPerModelConfig {
+  config: PerModelConfig;
+  remembered: boolean;
+}
+
+export function perModelConfigStorageChanged(
+  atStart: ResolvedPerModelConfig,
+  current: ResolvedPerModelConfig,
+): boolean {
+  return (
+    atStart.remembered !== current.remembered ||
+    JSON.stringify(toStoredConfig(atStart.config)) !==
+      JSON.stringify(toStoredConfig(current.config))
+  );
+}
+
 export function resolveInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const saved = loadPerModelConfig(modelId, ggufVariant);
   if (saved) {
     return { config: saved, remembered: true };
@@ -1193,7 +1267,7 @@ export function resolveInitialConfig(
 export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const direct = resolveInitialConfig(modelId, ggufVariant);
   if (direct.remembered) {
     return direct;

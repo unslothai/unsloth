@@ -12,9 +12,14 @@ The ctx slider in the chat settings sheet reads
 When weights fit on some GPU subset, the threshold is the largest ctx that
 fits fully in VRAM (the binary-search cap from ``_fit_context_to_vram``).
 When weights exceed 90% of every GPU subset's free memory, the warning must
-fire as soon as the user drags above the 4096 spec default (otherwise loading
-e.g. MiniMax-M2.7 on a 97 GB GPU shows a slider up to 196608 with no hint that
-any value above 4096 triggers ``--fit on`` and degrades performance).
+fire as soon as the user drags above what Auto itself selects (otherwise
+loading e.g. MiniMax-M2.7 on a 97 GB GPU shows a slider up to 196608 with no
+hint that any larger value triggers ``--fit on`` and degrades performance).
+
+The threshold therefore tracks ``_AUTO_OFFLOAD_CTX`` and is not a literal.
+Anchoring it below that constant is worse than having no warning: Auto's own
+context then exceeds the ceiling Auto published, so every load in this branch
+warns about itself while advising the user to leave it on Auto.
 
 These tests pin both cases. No GPU probing, subprocess, or GGUF I/O.
 Cross-platform: Linux, macOS, Windows, WSL.
@@ -82,7 +87,11 @@ try:
 except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
+from core.inference.llama_cpp import (
+    _AUTO_OFFLOAD_CTX,
+    _CTX_FIT_VRAM_FRACTION,
+    LlamaCppBackend,
+)
 
 
 # Helpers
@@ -153,7 +162,7 @@ def _compute_max_available_ctx(
     if best_cap > 0:
         max_available_ctx = best_cap
     else:
-        max_available_ctx = min(4096, native_ctx_for_cap)
+        max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
     return max_available_ctx
 
@@ -162,8 +171,8 @@ def _compute_max_available_ctx(
 
 
 class TestMaxContextLengthForWeightsExceedVRAM:
-    """UI ``max_context_length`` must fall back to 4096 so the warning fires
-    as soon as the user drags above the spec default.
+    """UI ``max_context_length`` must fall back to the Auto offload context so
+    the warning fires as soon as the user drags above what Auto selects.
     """
 
     def test_minimax_like(self):
@@ -173,7 +182,7 @@ class TestMaxContextLengthForWeightsExceedVRAM:
             model_gib = 131,
             gpus = [(0, 97_000)],
         )
-        assert got == 4096
+        assert got == _AUTO_OFFLOAD_CTX
 
     def test_multi_gpu_all_subsets_fail(self):
         """400 GB weights across a 4x80 GB pool (320 GB total, still too small)."""
@@ -182,11 +191,11 @@ class TestMaxContextLengthForWeightsExceedVRAM:
             model_gib = 400,
             gpus = [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
         )
-        assert got == 4096
+        assert got == _AUTO_OFFLOAD_CTX
 
     def test_native_below_fallback_is_preserved(self):
-        """If native ctx is itself below 4096, don't advertise a larger value
-        than the model supports."""
+        """If native ctx is itself below the fallback, don't advertise a larger
+        value than the model supports."""
         got = _compute_max_available_ctx(
             native_ctx = 2048,
             model_gib = 200,
@@ -209,7 +218,7 @@ class TestMaxContextLengthForFittableModels:
             gpus = [(0, 24_000)],
             kv_per_token_bytes = 8192,
         )
-        assert got > 4096
+        assert got > _AUTO_OFFLOAD_CTX
         assert got <= 131072
 
     def test_medium_model_multi_gpu(self):
@@ -220,7 +229,7 @@ class TestMaxContextLengthForFittableModels:
             gpus = [(0, 40_000), (1, 40_000)],
             kv_per_token_bytes = 8192,
         )
-        assert got > 4096
+        assert got > _AUTO_OFFLOAD_CTX
 
     def test_tiny_model_on_huge_gpu_near_native(self):
         """2 GB model, 80 GB GPU, negligible KV: should approach native."""

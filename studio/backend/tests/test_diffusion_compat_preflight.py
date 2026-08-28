@@ -16,6 +16,7 @@ and a stubbed ``hf_hub_download`` fails the test if anything tries to fetch a wh
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 import types
@@ -1001,3 +1002,705 @@ def test_an_on_device_checkpoint_is_never_revalidated(monkeypatch, tmp_path):
 
     assert reason is not None and "klein-9B" in reason
     assert requests == []
+
+
+# ── Speech picks ───────────────────────────────────────────────────────────────
+# The variant listing drops the speech quants whose bytes are on disk, but an UNDOWNLOADED one
+# has none to read and stays offered -- and detect_family_for_pick answers from the folder name,
+# so a csm file beside a FLUX denoiser resolves to flux.1 and reaches this loader as its own.
+
+CSM_REPO = "someone/mixed-media-GGUF"
+CSM_FILE = "csm-1b-Q4_0.gguf"
+DENOISER_FILE = "flux1-dev-Q4_K_M.gguf"
+
+
+def _arch_header(architecture: str) -> bytes:
+    """A minimal GGUF prefix carrying just ``general.architecture``.
+
+    Hand-rolled rather than via ``GGUFWriter`` like the size-pairing fixtures: this probe reads a
+    single KV pair, and writing it by hand is what ``test_cached_gguf_routes.py`` does for the
+    listing-side gate, so both ends of this feature are pinned against the same bytes."""
+    import struct
+
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    return (
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + string("general.architecture")
+        + struct.pack("<I", 8)
+        + string(architecture)
+    )
+
+
+def test_an_undownloaded_speech_pick_is_refused_before_any_download(monkeypatch):
+    """The whole point: the refusal lands off one range request, so the checkpoint is never
+    pulled and the resident pipeline never torn down for a file that cannot decode."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    with pytest.raises(ValueError) as excinfo:
+        diffusion_compat.assert_pick_is_not_speech(CSM_REPO, CSM_FILE)
+
+    detail = str(excinfo.value)
+    assert CSM_FILE in detail and "llama-csm" in detail
+    assert len(requests) == 1
+    url, byte_range = requests[0]
+    assert url.endswith(f"{CSM_REPO}/resolve/main/{CSM_FILE}")
+    # Bounded: the request must name an end offset, or a mis-set header streams the checkpoint.
+    assert byte_range == f"bytes=0-{diffusion_compat._GGUF_HEADER_BYTES - 1}"
+
+
+def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
+    """The sibling this refusal exists to protect: catching it too would hide the only checkpoint
+    in the folder the media backends CAN run."""
+    _stub_range_reads(monkeypatch, {DENOISER_FILE: _arch_header("flux")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, DENOISER_FILE) is None
+    diffusion_compat.assert_pick_is_not_speech(CSM_REPO, DENOISER_FILE)
+
+
+def test_an_unreadable_speech_header_fails_open(monkeypatch):
+    """Fail-open throughout: refusing a pick that works is worse than the download this saves."""
+    _stub_range_reads(monkeypatch, {}, status = 200)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+    diffusion_compat.assert_pick_is_not_speech(CSM_REPO, CSM_FILE)
+
+
+def test_a_pick_with_no_gguf_filename_is_not_probed(monkeypatch):
+    """A pipeline or single_file pick names no GGUF, so there is no header to ask."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, None) is None
+    assert requests == []
+
+
+def test_the_speech_verdict_is_memoised_per_pick(monkeypatch):
+    """Expanding and re-picking a row must not re-spend the range request."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(requests) == 1
+
+
+def test_a_failed_probe_is_not_reused_for_a_retry_with_a_working_token(monkeypatch):
+    """A probe that failed on an expired credential memoises "no verdict". Keyed without the
+    token, the retry with a working one reads that back and the speech file reaches the download
+    this preflight exists to stop."""
+    bodies = {CSM_FILE: _arch_header("llama-csm")}
+    requests: list = []
+
+    class _Session:
+        def get(
+            self,
+            url,
+            headers = None,
+            timeout = None,
+            stream = False,
+        ):
+            header_map = headers or {}
+            requests.append(header_map.get("authorization") or header_map.get("Authorization"))
+            # The expired credential is refused; the working one is served.
+            if not any("good" in str(v) for v in header_map.values()):
+                return _FakeResponse(401)
+            body = next((b for name, b in bodies.items() if url.endswith(name)), None)
+            return _FakeResponse(206, body) if body is not None else _FakeResponse(404)
+
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, "expired") is None
+    # Same pick, different credential: it must probe again rather than answer from that miss.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, "good-token") is not None
+    assert len(requests) == 2
+
+
+def test_a_checkpoint_that_lands_after_a_miss_is_probed_again(monkeypatch, tmp_path):
+    """A file replaced under the same name is a different checkpoint; keyed without its identity
+    the verdict never revisits it."""
+    _stub_range_reads(monkeypatch, {})
+    landed = tmp_path / CSM_FILE
+    seen: dict = {"path": None}
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: seen["path"])
+
+    # Nothing on disk and nothing served: no opinion, and that miss is memoised.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+    landed.write_bytes(_arch_header("llama-csm"))
+    seen["path"] = str(landed)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def _cache_entry(tmp_path, revision, arch):
+    """A GGUF sitting in an HF cache snapshot dir, so ``_snapshot_revision`` can read its commit."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / revision
+    snapshot.mkdir(parents = True, exist_ok = True)
+    path = snapshot / CSM_FILE
+    path.write_bytes(_arch_header(arch))
+    return str(path)
+
+
+def test_a_republished_gguf_is_not_refused_from_the_stale_cached_copy(monkeypatch, tmp_path):
+    """``try_to_load_from_cache`` resolves the LOCAL refs/main, so a republished filename would
+    be refused off the csm bytes still on disk while ``hf_hub_download`` refreshes and loads the
+    new ones."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    # The Hub now serves a denoiser at the same name.
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("flux")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+
+def test_a_cached_gguf_at_the_current_revision_is_still_refused(monkeypatch, tmp_path):
+    """The revalidation must not become an escape hatch: same commit, same verdict."""
+    cached = _cache_entry(tmp_path, "samesha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "samesha")
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def test_a_revision_check_that_cannot_run_keeps_the_refusal(monkeypatch, tmp_path):
+    """An offline or erroring host leaves today's verdict alone rather than opening the gate."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: None)
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def test_an_on_device_speech_checkpoint_is_never_revalidated(monkeypatch, tmp_path):
+    """An On Device file is the one the loader opens, so there is no revision to be behind."""
+    on_device = tmp_path / CSM_FILE
+    on_device.write_bytes(_arch_header("llama-csm"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
+    asked: list = []
+
+    def _never(*a, **k):
+        asked.append(a)
+        return "newsha"
+
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", _never)
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert asked == []
+
+
+def test_a_pick_that_names_the_checkpoint_outright_is_probed_like_the_loader_opens_it(tmp_path):
+    """A file-valued ``repo_id`` is a pick the video loader accepts, so the preflight must read it.
+
+    ``VideoBackend._resolve_checkpoint_path`` answers ``if root.is_file(): return root`` and
+    ignores ``gguf_filename``, and ``VideoBackend.validate_load_request`` admits exactly that
+    pick, so ``POST /video/load`` with ``model_path`` naming a .gguf reaches the loader today.
+
+    Resolving it as a repo ROOT instead appends the filename under the file, raising
+    ``FileNotFoundError`` -- an ``OSError``, hence swallowed as "remote id". The pick then has no
+    local path: an offline preflight allows it outright, an online one range-requests a
+    filesystem path off the Hub and fails open. Either way the csm checkpoint survives the gate,
+    the resident pipeline is evicted, and the file reaches the media loader."""
+    direct = tmp_path / "wan-models" / CSM_FILE
+    direct.parent.mkdir(parents = True)
+    direct.write_bytes(_arch_header("llama-csm"))
+
+    # Offline, so a probe that found no local path has nothing left to fall back on and must let
+    # the pick through: this asserts the file was actually read, not that the network saved us.
+    reason = diffusion_compat.speech_pick_refusal(str(direct), CSM_FILE, None, False)
+    assert reason is not None and "llama-csm" in reason
+
+    # And it resolves to the very file the loader would open, rather than merely to something.
+    assert diffusion_compat._local_gguf_path(str(direct), CSM_FILE) == str(direct)
+
+    # The runnable sibling named the same way still loads: this must not refuse every direct file.
+    denoiser = direct.parent / DENOISER_FILE
+    denoiser.write_bytes(_arch_header("flux"))
+    assert diffusion_compat.speech_pick_refusal(str(denoiser), DENOISER_FILE, None, False) is None
+
+    # The folder-valued pick keeps resolving through the containment check, unchanged.
+    assert diffusion_compat._local_gguf_path(str(direct.parent), CSM_FILE) == str(direct)
+
+
+# ── Every engine and both stages ───────────────────────────────────────────────
+# The Images and Video pages stage and download BEFORE they call load, so a load-only gate
+# arrives after the bytes. And on all three engines: a mixed VIDEO repo goes through
+# VideoBackend and a CPU/MPS or sd.cpp-forced image pick through SdCppDiffusionBackend, neither
+# of which shares DiffusionBackend's preflight.
+
+
+def test_the_shared_refusal_is_wired_into_every_plan_and_load_path():
+    """Structural, deliberately: the tests above pin the verdict, but what keeps regressing is
+    where it is CALLED, and exercising each engine's plan/load needs a live backend and a Hub."""
+    import inspect
+
+    from core.inference import diffusion, sd_cpp_backend, video
+
+    # Images: folded into incompatible_reason, which the page renders instead of staging entries.
+    plan = inspect.getsource(diffusion.DiffusionBackend.download_plan)
+    assert "speech_pick_refusal" in plan
+
+    # Video: plan and worker both, since a direct begin_load reaches no plan.
+    assert "_assert_pick_is_not_speech" in inspect.getsource(video.VideoBackend.download_plan)
+    assert "_assert_pick_is_not_speech" in inspect.getsource(video.VideoBackend._run_load)
+
+    # sd.cpp: plan and worker. NOT begin_load, which is offline-only and cannot afford the bound.
+    sd_plan = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend.download_plan)
+    assert "_assert_pick_is_not_speech" in sd_plan
+    assert "_assert_pick_is_not_speech" not in inspect.getsource(
+        sd_cpp_backend.SdCppDiffusionBackend.begin_load
+    )
+
+
+def test_the_video_and_sd_cpp_helpers_delegate_to_the_one_verdict(monkeypatch):
+    """Three engines, one refusal. A second copy of the speech arch set is how they drift."""
+    from core.inference import sd_cpp_backend, video
+
+    seen: list = []
+    monkeypatch.setattr(
+        diffusion_compat,
+        "assert_pick_is_not_speech",
+        lambda *a, **k: seen.append(a),
+    )
+
+    video._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
+    sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
+
+    # The cache-only flag rides through: an offline promise must not drop at the delegation edge.
+    assert seen == [(CSM_REPO, CSM_FILE, "tok", False), (CSM_REPO, CSM_FILE, "tok", False)]
+
+
+def test_a_media_gguf_republished_as_speech_is_refused(monkeypatch, tmp_path):
+    """The direction that matters more: a stale refusal only costs a pick, but a stale ALLOW
+    hands csm bytes to a media loader after the download and the teardown. So the revalidation
+    cannot be the cheap side of an asymmetry the way the size pairing's is."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
+    snapshot.mkdir(parents = True)
+    cached = snapshot / CSM_FILE
+    # On disk this is still the runnable denoiser the row was offering.
+    cached.write_bytes(_arch_header("flux"))
+
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    # The Hub has since replaced it with a speech checkpoint at the same filename.
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+
+def test_an_uncached_pick_never_spends_a_revision_head(monkeypatch):
+    """No cached copy means no revision to be behind, so the symmetric revalidation must not cost
+    every remote pick an extra Hub round trip."""
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+    asked: list = []
+    monkeypatch.setattr(
+        diffusion_compat, "_hub_revision", lambda *a, **k: asked.append(a) or "newsha"
+    )
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert asked == []
+
+
+def test_a_cache_only_load_never_range_reads_an_uncached_pick(monkeypatch):
+    """An automatic load sets local_files_only, and that contract covers the metadata probes too:
+    an uncached pick gives up rather than spend the range request and its 15s bound."""
+    requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
+    assert requests == []
+
+    # And nothing was memoised, so the next caller that CAN wait still gets a real answer.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(requests) == 1
+
+
+def test_a_cache_only_load_still_reads_a_checkpoint_already_on_disk(monkeypatch, tmp_path):
+    """Offline does not mean blind: a copy already on disk answers with no request at all."""
+    on_device = tmp_path / CSM_FILE
+    on_device.write_bytes(_arch_header("llama-csm"))
+    requests = _stub_range_reads(monkeypatch, {})
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is not None
+    assert requests == []
+
+
+def test_a_cache_only_probe_does_not_memoise_a_skipped_revision_check(monkeypatch, tmp_path):
+    """A cached copy read WITHOUT its revision check is half an answer; memoising it would let
+    the network-allowed caller behind it read that back and never revalidate."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
+    snapshot.mkdir(parents = True)
+    cached = snapshot / CSM_FILE
+    cached.write_bytes(_arch_header("flux"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
+
+    heads: list = []
+    monkeypatch.setattr(
+        diffusion_compat, "_hub_revision", lambda *a, **k: heads.append(a) or "newsha"
+    )
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    # Offline: reads the stale local bytes, asks no revision, allows the pick.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
+    assert heads == []
+
+    # The next caller that can reach the Hub must still catch the republish.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 1
+
+
+def test_an_uncached_remote_verdict_is_not_memoised_forever(monkeypatch):
+    """An uncached remote pick keys on a local identity of None, so a republish under the same
+    filename changes nothing about the key. Without a TTL the first verdict would outlive the
+    process and keep refusing a checkpoint that is runnable now."""
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
+    bodies = {CSM_FILE: _arch_header("llama-csm")}
+    _stub_range_reads(monkeypatch, bodies)
+    # Driven, not real: the entry expires relative to whatever monotonic said when it was written.
+    clock = [1000.0]
+    monkeypatch.setattr(diffusion_compat.time, "monotonic", lambda: clock[0])
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    # Inside the window: the memo answers and the Hub is not asked again.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+    # The repo republishes it as a runnable denoiser and the window lapses.
+    bodies[CSM_FILE] = _arch_header("flux")
+    clock[0] += diffusion_compat._SPEECH_REMOTE_TTL_SECONDS + 1.0
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+
+def test_a_snapshot_backed_verdict_keeps_its_entry_across_the_window(monkeypatch, tmp_path):
+    """A cached entry needs no TTL: its key carries the file identity and the revision check asks
+    the Hub. Expiring it too would spend a range read per pick for nothing."""
+    snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "samesha"
+    snapshot.mkdir(parents = True)
+    cached = snapshot / CSM_FILE
+    cached.write_bytes(_arch_header("llama-csm"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "samesha")
+    requests = _stub_range_reads(monkeypatch, {})
+
+    clock = [1000.0]
+    monkeypatch.setattr(diffusion_compat.time, "monotonic", lambda: clock[0])
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    clock[0] += diffusion_compat._SPEECH_REMOTE_TTL_SECONDS * 10
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert requests == []
+
+
+def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
+    """The backends assert this too, but on the load worker, INSIDE acquire_for, so a refusal
+    there arrives having already evicted the chat model the gate exists to preserve -- and on the
+    image route after an engine switch unloaded the resident pipeline. Both routes must refuse
+    before they reach the arbiter."""
+    import inspect
+
+    from routes import inference as inference_route
+    from routes import video as video_route
+
+    # The CALL, not the import line at the top of each route, which names acquire_for far earlier.
+    for source, acquire, label in (
+        (inspect.getsource(video_route.load_video_model_gated), "acquire_for(VIDEO", "video"),
+        (
+            inspect.getsource(inference_route.load_diffusion_model_gated),
+            "acquire_for(DIFFUSION",
+            "images",
+        ),
+    ):
+        assert "assert_pick_is_not_speech" in source, label
+        assert acquire in source, label
+        assert source.index("assert_pick_is_not_speech") < source.index(acquire), label
+
+
+def test_an_automatic_image_load_keeps_the_pre_eviction_preflight_offline():
+    """The route's own speech check already honours user_initiated, but it then calls
+    preflight_base_access, which reaches the same assertion again. Left network-enabled that
+    second call spends a revision HEAD (or an uncached range request and its 15s bound) on the
+    one path that promised to stay off the Hub."""
+    import inspect
+
+    from core.inference import diffusion, sd_cpp_backend
+    from routes import inference as inference_route
+
+    preflight = inspect.getsource(diffusion.DiffusionBackend.preflight_base_access)
+    assert "assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)" in preflight
+
+    # The route hands its own locality flag down rather than letting the default win.
+    route = inspect.getsource(inference_route.load_diffusion_model_gated)
+    assert "allow_network = user_initiated" in route
+
+    # Both engines keep one signature, since the route preflights whichever one it picked.
+    for backend in (diffusion.DiffusionBackend, sd_cpp_backend.SdCppDiffusionBackend):
+        assert "allow_network" in inspect.signature(backend.preflight_base_access).parameters
+
+
+# The Mimi vocoder in ggml-org/sesame-csm-1b-GGUF writes a SENTENCE where the architecture
+# identifier belongs. Read off the live repo, not invented.
+_VOCODER_ARCH = "this model cannot be used as LLM, use it via --model-vocoder in TTS examples"
+
+
+# ── the HTTP client huggingface_hub actually hands us ──────────────────────────
+
+
+class _HttpxLikeClient:
+    """An httpx.Client's surface, which is what ``get_session`` returns on huggingface_hub 1.x.
+
+    Deliberately NOT a mock of the requests API: `get` rejects `stream`, there is no
+    `iter_content`, and there is no `raw`. requirements/studio.txt floors 1.23 on python >= 3.10,
+    so this is the client every supported install has."""
+
+    def __init__(self, body):
+        self.body = body
+        self.calls: list[tuple[str, str]] = []
+
+    def get(
+        self,
+        url,
+        params = None,
+        headers = None,
+        timeout = None,
+        **kwargs,
+    ):
+        if "stream" in kwargs:
+            raise TypeError("Client.get() got an unexpected keyword argument 'stream'")
+        raise AssertionError("a ranged header read must use the streaming API")
+
+    def stream(
+        self,
+        method,
+        url,
+        headers = None,
+        timeout = None,
+        follow_redirects = False,
+    ):
+        self.calls.append((method, (headers or {}).get("Range", "")))
+        assert follow_redirects, "the Hub answers a resolve URL with a 302 to the CDN"
+        return _HttpxLikeStream(self.body)
+
+
+class _HttpxLikeStream:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def status_code(self):
+        return 206
+
+    def iter_bytes(self, chunk_size = 65536):
+        for start in range(0, len(self.body), chunk_size):
+            yield self.body[start : start + chunk_size]
+
+    def close(self):
+        pass
+
+
+def test_the_ranged_read_works_on_the_httpx_client_hub_1_x_returns(monkeypatch):
+    """huggingface_hub 1.0 swapped requests for httpx, and httpx has no ``stream = True``
+    keyword. Asking for one raised TypeError inside the worker's blanket except, so the probe
+    read nothing and EVERY uncached remote pick failed open: a preflight that refused nothing."""
+    client = _HttpxLikeClient(_arch_header("llama-csm"))
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: client)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    diffusion_compat._reset_inner_dim_cache()
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    # Still one bounded ranged request, exactly as on the requests client.
+    assert client.calls == [("GET", f"bytes=0-{diffusion_compat._GGUF_HEADER_BYTES - 1}")]
+
+
+def test_the_ranged_read_still_works_on_the_requests_session_hub_0_x_returns(monkeypatch):
+    """The other half of the floor: python < 3.10 pins 0.36, whose session is requests'."""
+    requests_log = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(requests_log) == 1
+
+
+def test_a_requests_session_is_not_mistaken_for_an_httpx_client(monkeypatch):
+    """``requests.Session.stream`` is a plain bool attribute and ``httpx.Client.stream`` is a
+    method, so the branch has to test for a CALLABLE. Testing for the name alone sends a requests
+    session down the httpx path and breaks the client that works today."""
+    import requests
+
+    assert hasattr(requests.Session(), "stream")
+    assert not callable(getattr(requests.Session(), "stream", None))
+
+
+# ── verdict freshness ──────────────────────────────────────────────────────────
+
+
+def test_a_cached_snapshot_verdict_does_not_outlive_its_revision_check(monkeypatch, tmp_path):
+    """A snapshot-backed entry memoises a revision check. Holding it forever meant the Hub was
+    asked once per file per process, so a checkpoint republished later in the session kept the
+    verdict read off bytes that had since been replaced."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    heads: list = []
+
+    def _head(*a, **k):
+        heads.append(a)
+        return "oldsha"
+
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", _head)
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 1
+    # Inside the window the memo answers, as before.
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 1
+    # Past it, the Hub is asked again.
+    monkeypatch.setattr(
+        diffusion_compat.time,
+        "monotonic",
+        lambda: 1e9 + diffusion_compat._SPEECH_REMOTE_TTL_SECONDS,
+    )
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    assert len(heads) == 2
+
+
+def test_an_on_device_verdict_is_still_cached_permanently(monkeypatch, tmp_path):
+    """The other half: an On Device file has no revision to be behind, so its entry is keyed on
+    the file's identity and never needs to age out."""
+    on_device = tmp_path / CSM_FILE
+    on_device.write_bytes(_arch_header("llama-csm"))
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+    key = next(iter(diffusion_compat._SPEECH_ARCH_CACHE))
+    assert diffusion_compat._SPEECH_ARCH_CACHE[key][1] is None
+
+
+def test_a_failed_refresh_keeps_the_verdict_it_already_had(monkeypatch, tmp_path):
+    """A HEAD that reports a new revision and a re-read that then fails used to replace a known
+    llama-csm verdict with None, opening the gate on nothing worse than a dropped connection.
+    Failing open on an UNKNOWN pick is the contract; discarding a known one is not."""
+    cached = _cache_entry(tmp_path, "oldsha", "llama-csm")
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    # The re-read of the new revision returns nothing at all.
+    _stub_range_reads(monkeypatch, {})
+
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None
+
+    # A re-read that SUCCEEDS still replaces it, in both directions.
+    diffusion_compat._reset_inner_dim_cache()
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("flux")})
+    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: cached)
+    monkeypatch.setattr(diffusion_compat, "_hub_revision", lambda *a, **k: "newsha")
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
+
+
+def test_every_published_csm_spelling_is_refused_by_the_media_preflight(monkeypatch):
+    """The media half of the same set the chat gate uses: a bundle's vocoder reaches a media
+    loader exactly like its backbone does."""
+    for arch in ("llama-csm", "csm", "csm-tts", "mimi"):
+        _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(arch)})
+        assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is not None, arch
+    # The vocoder's sentence is quoted back to nobody, but it still refuses.
+    _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header(_VOCODER_ARCH)})
+    reason = diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE)
+    assert reason is not None and "--model-vocoder" not in reason
+
+
+def test_one_pick_range_reads_the_header_once_for_both_probes(monkeypatch, tmp_path):
+    """The size pairing and the speech verdict read the SAME prefix of the SAME file.
+
+    `/images/download-plan` runs them back to back on every hub pick, and `or` only skips the
+    second when the first refuses -- so the ordinary case, a flux.2 GGUF that pairs correctly,
+    made two range requests. Each carries its own _HEADER_TIMEOUT_SECONDS, so a picker the user
+    is sitting in front of could wear twice the bound this module documents. One read now.
+    """
+    requests = _stub_range_reads(monkeypatch, {KLEIN_4B_FILE: _gguf_header(3072, tmp_path)})
+
+    assert (
+        diffusion_compat.flux2_pick_mismatch(
+            FLUX2_FAMILY, KLEIN_4B_GGUF, KLEIN_4B_FILE, KLEIN_4B_BASE
+        )
+        is None
+    ), "the fixture pairs correctly, so the speech probe behind it really does run"
+    assert diffusion_compat.speech_pick_refusal(KLEIN_4B_GGUF, KLEIN_4B_FILE) is None
+
+    assert len(requests) == 1, f"one pick, one header read; got {len(requests)}"
+
+
+def test_a_revalidation_still_re_reads_rather_than_answering_from_the_shared_prefix(
+    monkeypatch, tmp_path
+):
+    """The shared read must not reach the paths whose whole job is to re-read.
+
+    A checkpoint republished at the same filename is caught by re-reading its header off the
+    Hub. Serving that from the prefix memo would hand the revalidation the very bytes it is
+    trying to get past, and a media GGUF republished as speech would load.
+    """
+    source = inspect.getsource(diffusion_compat)
+    for fn in ("_revalidated_inner_dim", "_revalidated_speech_arch"):
+        body = source.split(f"def {fn}(", 1)[1].split("\ndef ", 1)[0]
+        assert "_shared_gguf_header" not in body, f"{fn} must re-read, not consult the memo"
+        assert "_read_gguf_header" in body
+
+
+def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
+    """`core.inference.llama_cpp` must not drag the models package in at import time.
+
+    The speech verdict is shared, and reaching it through `utils.models.gguf_metadata` runs
+    `utils.models.__init__`, which imports `model_config`, which imports `yaml`. That made
+    PyYAML a hard import dependency of the chat backend and took the repo's own Source lint
+    job red, where `tests/studio/load_freeze/test_load_orchestrator.py` imports the backend
+    without PyYAML installed. The constants live in the leaf module `utils.gguf_archs`, and
+    every caller imports them from there.
+    """
+    import importlib
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(diffusion_compat.__file__).resolve().parents[2]
+    probe = (
+        "import sys\n"
+        "class Blocker:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'yaml' or name.startswith('yaml.'):\n"
+        "            raise ModuleNotFoundError(\"No module named 'yaml'\")\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Blocker())\n"
+        f"sys.path.insert(0, {str(backend)!r})\n"
+        "import core.inference.llama_cpp as m\n"
+        "from utils.gguf_archs import SPEECH_GGUF_ARCHS\n"
+        # Identity, not equality: one definition, re-exported, never copied.
+        "assert m.LlamaCppBackend._SPEECH_ARCHES is SPEECH_GGUF_ARCHS\n"
+        "print('ok')\n"
+    )
+    # A subprocess because this pytest session has already imported yaml, and a meta_path
+    # blocker cannot un-import it.
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+
+    # And nothing re-exports them from inside the heavy package: that would let an importer
+    # reach them by the very path this test exists to keep out of the chain, and
+    # scripts/verify_import_hoist.py blocks one outside a package __init__ anyway.
+    gguf_metadata = importlib.import_module("utils.models.gguf_metadata")
+    for name in ("SPEECH_GGUF_ARCHS", "is_speech_gguf_architecture"):
+        assert not hasattr(
+            gguf_metadata, name
+        ), f"{name} must be imported from utils.gguf_archs, not through utils.models"

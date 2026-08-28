@@ -20,7 +20,7 @@ Two things in these fixtures are shaped by the platform, not by convenience:
   because Linux's selector transport will never make that call;
 * ``uvicorn.protocols.http.auto.AutoHTTPProtocol`` is forced to ``H11Protocol``,
   because a dev box with httptools installed resolves to httptools while the
-  Studio requirements pin plain uvicorn, which is the h11 path the report hit.
+  Unsloth requirements pin plain uvicorn, which is the h11 path the report hit.
 
 Everything downstream of the injected read -- the h11 state machine, the
 ``RemoteProtocolError``, uvicorn's 400 path -- is the real code.
@@ -47,7 +47,7 @@ REQUEST = b"GET /api/inference/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
 
 @pytest.fixture
 def patched_protocol_class(monkeypatch):
-    """The protocol Studio installs when uvicorn would otherwise use plain h11."""
+    """The protocol Unsloth installs when uvicorn would otherwise use plain h11."""
     import uvicorn.protocols.http.auto as auto
 
     monkeypatch.setattr(auto, "AutoHTTPProtocol", H11Protocol)

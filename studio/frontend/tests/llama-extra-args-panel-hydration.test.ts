@@ -12,6 +12,24 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
+
+registerBundlerResolver();
+installLocalStorageFake();
+
+const {
+  DEFAULT_PER_MODEL_CONFIG,
+  deletePerModelConfig,
+  perModelConfigStorageChanged,
+  resolveInitialConfig,
+  savePerModelConfig,
+} = await import(
+  "../src/features/model-picker/model-config/per-model-config.ts"
+);
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PANEL = readFileSync(
   path.join(
@@ -27,8 +45,11 @@ test("a list typed while hydration was in flight is not sanitized", () => {
   // refuses. But if the user typed during the window, that value is live input:
   // rewriting it cleared the box on "--agent" instead of showing the error, and could
   // trim a long paste behind the cursor. The snapshot tells the two apart.
-  assert.match(PANEL, /const localAtStart = configRef\.current\.llamaExtraArgs;/);
-  assert.match(PANEL, /local !== null && local\.length > 0 && local === localAtStart|local != null && local\.length > 0 && local === localAtStart/);
+  assert.match(PANEL, /const localAtStart = configAtStart\.llamaExtraArgs;/);
+  assert.match(
+    PANEL,
+    /local !== null && local\.length > 0 && local === localAtStart|local != null && local\.length > 0 && local === localAtStart/,
+  );
 });
 
 test("a collapsed section is re-judged once the catalogue lands", () => {
@@ -36,7 +57,10 @@ test("a collapsed section is re-judged once the catalogue lands", () => {
   // still go out with the load. A verdict reached before the probe answered did not
   // know which flags this build documents, and collapsing froze it: a bare --threads
   // kept Load enabled and failed at llama-server startup instead.
-  assert.match(PANEL, /if \(showAdvanced \|\| !target\.isGguf \|\| resolvedIsDiffusion\) \{/);
+  assert.match(
+    PANEL,
+    /if \(showAdvanced \|\| !target\.isGguf \|\| resolvedIsDiffusion\) \{/,
+  );
   assert.match(PANEL, /loadLlamaFlagCatalog\(\)\.then\(\(catalog\) => \{/);
 });
 
@@ -119,7 +143,10 @@ test("the hidden validation re-runs when the binary changes", () => {
   // The row's own subscription cannot help here: it is unmounted whenever this
   // check is the one running, so an in-app llama.cpp update with Advanced collapsed
   // left a verdict reached against the previous binary standing.
-  assert.match(PANEL, /subscribeLlamaFlagCatalog\(\(\) =>\s*\n?\s*setHiddenCatalogEpoch/);
+  assert.match(
+    PANEL,
+    /subscribeLlamaFlagCatalog\(\(\) =>\s*\n?\s*setHiddenCatalogEpoch/,
+  );
   assert.match(PANEL, /hiddenCatalogEpoch,\n\s*\]\);/);
 });
 
@@ -144,7 +171,115 @@ test("the hidden hydration check knows the slot floor", () => {
   // reaches that 400.
   assert.match(
     PANEL,
-    /batchFloor: effectiveBatchFloor\(configRef\.current\.nParallel, managed\)/,
+    /serverConfig\?\.nParallel \?\? configRef\.current\.nParallel/,
+  );
+});
+
+test("the panel adopts a shared server config without overwriting a live edit", () => {
+  assert.match(PANEL, /fetchLoadModelOverride\(/);
+  assert.match(
+    PANEL,
+    /const serverConfig = resolvedRow\s*\n?\s*\? fromApiOverride\(resolvedRow, \{/,
+  );
+  // The panel's config is the merge base for what it SHOWS, so a field the row does
+  // not carry keeps the value this browser holds instead of coming back as an app
+  // default. It travels sanitized: a row that says nothing about arguments leaves
+  // the local list standing, and a flag this build refuses would re-enable Load for
+  // a 400.
+  assert.match(
+    PANEL,
+    /\.\.\.configAtStart,\s*\n?\s*llamaExtraArgs: sanitizedLocal,/,
+  );
+  assert.match(PANEL, /let sanitizedLocal = localAtStart;/);
+  assert.match(
+    PANEL,
+    /sanitizedLocal = cleaned\.length > 0 \? cleaned : null;/,
+  );
+  // Whitespace-tolerant: the call carries an eviction list now, so it spans lines.
+  assert.match(
+    PANEL,
+    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+  );
+  assert.match(PANEL, /configRef\.current === configAtStart/);
+  assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
+  assert.match(PANEL, /setConfig\(serverConfig\);/);
+  assert.match(PANEL, /setRemember\(true\);/);
+  assert.match(PANEL, /setSavedRemember\(true\);/);
+});
+
+test("hydration detects a newer save or forget", () => {
+  const modelId = "unsloth/Hydration-Race-GGUF";
+  const variant = "Q4_K_M";
+  assert.ok(
+    savePerModelConfig(modelId, variant, {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 2048,
+    }),
+  );
+  const atStart = resolveInitialConfig(modelId, variant);
+
+  assert.ok(
+    savePerModelConfig(modelId, variant, {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 4096,
+    }),
+  );
+  assert.equal(
+    perModelConfigStorageChanged(
+      atStart,
+      resolveInitialConfig(modelId, variant),
+    ),
+    true,
+  );
+
+  assert.ok(deletePerModelConfig(modelId, variant));
+  assert.equal(
+    perModelConfigStorageChanged(
+      atStart,
+      resolveInitialConfig(modelId, variant),
+    ),
+    true,
+  );
+  assert.equal(
+    perModelConfigStorageChanged(atStart, {
+      config: { ...atStart.config },
+      remembered: atStart.remembered,
+    }),
+    false,
+  );
+});
+
+test("the hydration write-back rejects a stale server response", () => {
+  const requestStart = PANEL.indexOf("Promise.all([");
+  const storageSnapshot = PANEL.indexOf(
+    "const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);",
+  );
+  const responseStart = PANEL.indexOf(
+    ".then(([resolvedOverride, managed]) => {",
+    requestStart,
+  );
+  const adoptionStart = PANEL.indexOf(
+    "if (\n          resolvedRow &&",
+    responseStart,
+  );
+  const writeBackEnd = PANEL.indexOf(
+    "setSavedRemember(hydrationSaved);",
+    adoptionStart,
+  );
+  assert.ok(
+    requestStart >= 0 &&
+      storageSnapshot >= 0 &&
+      storageSnapshot < requestStart &&
+      responseStart > requestStart &&
+      adoptionStart > responseStart &&
+      writeBackEnd > adoptionStart,
+    "the storage snapshot must precede the request and guard its write-back",
+  );
+
+  const writeBack = PANEL.slice(adoptionStart, writeBackEnd);
+  assert.match(
+    writeBack,
+    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\);\s*if \(perModelConfigStorageChanged\(storedAtStart, storedConfig\)\) \{\s*return;\s*\}[\s\S]*const rememberedConfig = fromApiOverride\(\s*resolvedRow,\s*storedConfig\.config,\s*\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
   );
 });
 
@@ -191,7 +326,7 @@ test("a stored empty list hydrates as a clear, not as nothing stored", () => {
   // callers left llamaExtraArgs undefined, omitted the field on /load, and the
   // route carried the resident model's arguments over, the ones just cleared.
   assert.match(OVERRIDES, /explicit: Array\.isArray\(tokens\)/);
-  assert.match(OVERRIDES, /return \{ tokens: \[\], explicit: false \};/);
+  assert.match(OVERRIDES, /\{ tokens: \[\], explicit: false \}/);
   assert.match(PANEL, /resolvedArgs\.explicit && local === undefined/);
   assert.match(ADAPTER, /\} else if \(stored\.explicit\) \{/);
   assert.match(COMPOSER, /\} else if \(resolvedArgs\.explicit\) \{/);
@@ -207,9 +342,18 @@ test("a launch that only applies the remembered config still carries its argumen
   // inherits them from the SAME resident model, so a cold launch or a switch from
   // another model ran without the arguments this model was remembered with. Both
   // paths that load through the runtime alone now pass the config itself.
-  assert.match(HUB, /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/);
-  assert.match(CHAT_PAGE, /const remembered = rememberedConfigFor\(selection\);/);
-  assert.match(CHAT_PAGE, /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/);
+  assert.match(
+    HUB,
+    /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/,
+  );
+  assert.match(
+    CHAT_PAGE,
+    /const remembered = rememberedConfigFor\(selection\);/,
+  );
+  assert.match(
+    CHAT_PAGE,
+    /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/,
+  );
   // Nothing is invented when there is no remembered config: the field stays absent,
   // which is what lets /load keep a resident model's own flags.
   assert.doesNotMatch(HUB, /config: rememberedConfig \?\? null/);
