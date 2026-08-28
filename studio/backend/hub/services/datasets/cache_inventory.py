@@ -68,18 +68,21 @@ def _repo_id_from_hub_dataset_dir(name: str) -> str | None:
     return repo_id if _is_valid_repo_id(repo_id) else None
 
 
-def _directory_size(path: Path) -> int:
+def _directory_stats(path: Path) -> tuple[int, float]:
     total = 0
+    last_modified = 0.0
     try:
         for entry in path.rglob("*"):
             try:
                 if entry.is_file() and not entry.is_symlink():
-                    total += entry.stat().st_size
+                    stat = entry.stat()
+                    total += stat.st_size
+                    last_modified = max(last_modified, _usable_mtime(stat.st_mtime))
             except OSError:
                 continue
     except OSError:
-        return 0
-    return total
+        return 0, 0.0
+    return total, last_modified
 
 
 def _usable_mtime(value) -> float:
@@ -349,9 +352,9 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
             repo_id = _repo_id_from_hub_dataset_dir(entry.name)
             if repo_id is None:
                 continue
-            size_bytes = _directory_size(entry / "blobs")
+            size_bytes, payload_mtime = _directory_stats(entry / "blobs")
             if size_bytes <= 0:
-                size_bytes = _directory_size(entry)
+                size_bytes, payload_mtime = _directory_stats(entry)
             if size_bytes <= 0:
                 continue
             key = repo_id.lower()
@@ -361,7 +364,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
                 or not _raw_dataset_cache_has_data(repo_id, entry)
             )
-            last_modified = _dataset_last_modified(None, entry / "snapshots", entry)
+            last_modified = _dataset_last_modified(payload_mtime, entry / "snapshots", entry)
             row = {
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,

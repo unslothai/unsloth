@@ -249,8 +249,8 @@ def test_fallback_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
     )
     monkeypatch.setattr(
         cache_inventory,
-        "_directory_size",
-        lambda path: 200 if "larger" in path.parts else 100,
+        "_directory_stats",
+        lambda path: (200 if "larger" in path.parts else 100, 0.0),
     )
     monkeypatch.setattr(
         cache_inventory,
@@ -267,6 +267,41 @@ def test_fallback_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
     rows = cache_inventory._scan_hub_dataset_cache_dirs()
 
     assert rows[0]["size_bytes"] == 200
+    assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
+
+
+def test_fallback_scan_uses_the_newest_payload_mtime(monkeypatch, tmp_path):
+    root = tmp_path / "hub"
+    cache_dir = root / "datasets--Org--Data"
+    snapshots = cache_dir / "snapshots"
+    blobs = cache_dir / "blobs"
+    snapshots.mkdir(parents = True)
+    blobs.mkdir()
+    payload = blobs / "sha256"
+    payload.write_bytes(b"payload")
+    os.utime(payload, (1_900_000_000, 1_900_000_000))
+    os.utime(snapshots, (1_700_000_000, 1_700_000_000))
+    os.utime(cache_dir, (1_700_000_000, 1_700_000_000))
+
+    monkeypatch.setattr(cache_inventory, "_hf_hub_cache_roots", lambda: [root])
+    monkeypatch.setattr(
+        cache_inventory,
+        "_hub_dataset_snapshot_count",
+        lambda _path: 1,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_raw_dataset_cache_has_data",
+        lambda *_args: True,
+    )
+
+    rows = cache_inventory._scan_hub_dataset_cache_dirs()
+
     assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
 
 
