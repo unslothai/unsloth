@@ -543,7 +543,7 @@ def main() -> int:
                 def handle(route):
                     path = route.request.url
                     if "/tabs/" not in path:
-                        return route.continue_()
+                        return route.fallback()
                     if CHUNK_FAIL and f"/{CHUNK_FAIL}-tab" in path:
                         return route.abort("failed")
                     if CHUNK_DELAY_MS:
