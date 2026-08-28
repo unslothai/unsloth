@@ -155,6 +155,7 @@ from startup_banner import print_studio_access_banner, print_studio_stop_hint
 from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
+    resolved_bind_address_count,
     wildcard_loopback_host,
 )
 
@@ -2349,6 +2350,11 @@ def run_server(
             host = normalize_wildcard_bind_host(host)
         except ValueError as exc:
             raise SystemExit(str(exc)) from None
+        if port == 0 and resolved_bind_address_count(host) > 1:
+            raise SystemExit(
+                "--port 0 cannot be used when --host resolves to multiple bind addresses; "
+                "choose an explicit port."
+            )
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
     # it reaches the console stream rather than the wrapper.

@@ -72,6 +72,11 @@ def wildcard_ip_versions(host: str) -> tuple[int, ...]:
     return tuple(version for version in (4, 6) if version in versions)
 
 
+def resolved_bind_address_count(host: str) -> int:
+    """Number of distinct socket addresses this host resolves to."""
+    return len(_resolved_ip_addresses(host))
+
+
 def is_wildcard_host(host: str) -> bool:
     """True when the host resolves to an unspecified bind address."""
     return bool(wildcard_ip_versions(host))

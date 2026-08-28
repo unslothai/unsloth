@@ -10,6 +10,7 @@ from utils import host_policy
 from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
+    resolved_bind_address_count,
     wildcard_ip_versions,
     wildcard_loopback_host,
 )
@@ -105,6 +106,7 @@ def test_a_dual_stack_wildcard_hostname_keeps_both_address_families(monkeypatch)
 
     assert is_wildcard_host("dual-wildcard.test") is True
     assert normalize_wildcard_bind_host("dual-wildcard.test") == "dual-wildcard.test"
+    assert resolved_bind_address_count("dual-wildcard.test") == 2
     assert wildcard_ip_versions("dual-wildcard.test") == (4, 6)
     assert wildcard_loopback_host("dual-wildcard.test") == "127.0.0.1"
 
@@ -141,3 +143,17 @@ def test_run_server_rejects_a_mixed_family_wildcard_before_startup(monkeypatch):
     from run import run_server
     with pytest.raises(SystemExit, match = "mixes wildcard and specific address families"):
         run_server(host = "mixed-wildcard.test")
+
+
+def test_run_server_rejects_an_ephemeral_multi_address_bind(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0)),
+        ],
+    )
+    from run import run_server
+    with pytest.raises(SystemExit, match = "--port 0 cannot be used"):
+        run_server(host = "dual-wildcard.test", port = 0)

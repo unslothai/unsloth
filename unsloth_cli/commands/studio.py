@@ -366,6 +366,21 @@ def _normalize_wildcard_bind_host(host: str) -> str:
         raise typer.Exit(2) from None
 
 
+def _require_unambiguous_ephemeral_bind(host: str, port: int) -> None:
+    if port != 0:
+        return
+    from unsloth_cli._tool_policy import resolved_bind_address_count
+
+    if resolved_bind_address_count(host) <= 1:
+        return
+    typer.echo(
+        "Error: --port 0 cannot be used when --host resolves to multiple bind "
+        "addresses; choose an explicit port.",
+        err = True,
+    )
+    raise typer.Exit(2)
+
+
 def _url_host(host: str) -> str:
     return (
         f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
@@ -1926,6 +1941,7 @@ def studio_default(
         host = "127.0.0.1"
 
     host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # --verbose restores the per-request access logs that are suppressed by
     # default (plain-server path; the `run` subcommand has its own --verbose).
@@ -2608,6 +2624,7 @@ def run(
         host = "127.0.0.1"
 
     host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # Tool policy does not depend on the bind: tools default on everywhere
     # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
