@@ -21,6 +21,10 @@ import ts from "typescript";
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const KEYS = path.join(SRC, "features/chat/stores/sidebar-organization-keys.ts");
 const GENERAL_TAB = path.join(SRC, "features/settings/tabs/general-tab.tsx");
+const CHAT_RUNTIME = path.join(
+  SRC,
+  "features/chat/stores/chat-runtime-store.ts",
+);
 
 const parse = (file: string, text: string) =>
   ts.createSourceFile(
@@ -149,5 +153,18 @@ test("the model memory hook imports no feature barrel", async () => {
     barrels,
     [],
     "a bare @/features/<name> import here closes the cycle and the dev server white screens again",
+  );
+});
+
+test("the chat runtime imports the Hub token store directly", async () => {
+  const text = await readFile(CHAT_RUNTIME, "utf8");
+  const specifiers = staticSpecifiers(CHAT_RUNTIME, text);
+  assert.ok(
+    specifiers.includes("@/features/hub/stores/hf-token-store"),
+    "chat-runtime-store.ts must import the token store directly",
+  );
+  assert.ok(
+    !specifiers.includes("@/features/hub"),
+    "the Hub barrel closes a module-scope cycle through the model picker",
   );
 });
