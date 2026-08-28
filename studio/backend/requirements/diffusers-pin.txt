@@ -1,19 +1,17 @@
-# The Diffusers revision Unsloth is built against. THE single source of truth for it:
+# The Diffusers release Unsloth is built against. THE single source of truth for it:
 # no other requirements file may name diffusers, and a test in
 # tests/studio/install/test_diffusers_pin.py enforces that.
 #
-# Why a git archive and not a release: MiniMax-H3 and MiniMax Music 3 need modular
-# ModularPipeline implementations that landed after 0.39.0 and are not in any published
-# wheel yet, so a released version makes Studio refuse to load either model. The archive
-# reports itself as 0.40.0.dev0. This revision is the upstream Music 3 merge (#14456)
-# and includes the earlier H3 implementation.
+# Diffusers 0.40.0 is the first release containing the MiniMax-H3 and MiniMax Music 3
+# modular pipelines. Keep the exact release pin so installs are reproducible without a
+# source build from GitHub.
 #
 # Why it is installed from its own file, in its own step: base.txt is applied near the
 # start of the dependency pass. This step runs late, after every other requirements file,
 # so nothing can re-resolve diffusers back to a release behind it.
 #
-# python < 3.10 has no candidate: diffusers dropped 3.9 in 0.38, so pinning the archive
+# python < 3.10 has no candidate: diffusers dropped 3.9 in 0.38, so pinning 0.40.0
 # outright would leave the resolver nothing at all on a 3.9 host. Those hosts get the
 # newest release they can take and the H3 guard refuses the model with a clear message.
-diffusers @ https://github.com/huggingface/diffusers/archive/2da7040be1a2e5f2fcbc8b985083342a308f5a86.zip ; python_version >= "3.10"
+diffusers==0.40.0 ; python_version >= "3.10"
 diffusers==0.36.0 ; python_version < "3.10"
