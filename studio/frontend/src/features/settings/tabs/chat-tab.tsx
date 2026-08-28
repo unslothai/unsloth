@@ -398,12 +398,16 @@ export function ChatTab() {
         >
           <div className="flex flex-col items-end gap-1">
             <Switch
+              aria-label={t("settings.chat.currentDate.label")}
               checked={currentDatePrompt?.enabled ?? false}
               disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
               onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
             />
             {currentDatePromptError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span
+                role="alert"
+                className="max-w-[260px] text-right text-xs text-destructive"
+              >
                 {currentDatePromptError}
               </span>
             ) : null}
