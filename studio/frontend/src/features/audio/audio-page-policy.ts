@@ -63,9 +63,15 @@ export function nativeAudioInstructionsKind(
 }
 
 export function minimaxMusicFramesForSeconds(seconds: number): number {
+  const exactFrames = seconds * MINIMAX_MUSIC_FRAMES_PER_SECOND;
   return Math.min(
     MINIMAX_MUSIC_MAX_FRAMES,
-    Math.max(1, Math.floor(seconds * MINIMAX_MUSIC_FRAMES_PER_SECOND)),
+    Math.max(
+      1,
+      Math.floor(
+        exactFrames + Number.EPSILON * Math.max(1, Math.abs(exactFrames)),
+      ),
+    ),
   );
 }
 

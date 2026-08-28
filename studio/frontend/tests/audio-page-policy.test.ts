@@ -79,9 +79,16 @@ test("MiniMax duration converts seconds to the official frame budget", () => {
     750,
   );
   assert.equal(minimaxMusicFramesForSeconds(1.99), 49);
+  assert.equal(minimaxMusicFramesForSeconds(1.16), 29);
   assert.equal(minimaxMusicFramesForSeconds(360), 9000);
   assert.equal(minimaxMusicFramesForSeconds(999), 9000);
   assert.equal(minimaxMusicFramesForSeconds(0), 1);
+  for (let frames = 1; frames <= MINIMAX_MUSIC_MAX_FRAMES; frames += 1) {
+    assert.equal(
+      minimaxMusicFramesForSeconds(frames / MINIMAX_MUSIC_FRAMES_PER_SECOND),
+      frames,
+    );
+  }
 });
 
 test("native audio instruction fields match the runtime payload contract", () => {
