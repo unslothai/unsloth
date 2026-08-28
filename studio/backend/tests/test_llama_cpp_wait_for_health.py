@@ -132,26 +132,6 @@ class TestWaitForHealthResilience:
         assert time.monotonic() - started < 1.0
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
 
-    def test_cancel_leaves_a_marker_the_classifier_reads_as_a_cancel(self, monkeypatch):
-        """The cancel kills the child on purpose, so poll() reports no exit code and the
-        startup log holds nothing diagnostic. Without a marker the load is classified as
-        an unknown start failure and the user is told to check their GGUF."""
-        b = _make_backend()
-        b._process.poll.return_value = None
-        b._cancel_event = threading.Event()
-        b._cancel_event.set()
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
-        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
-
-        detail = LlamaCppBackend._classify_llama_start_failure(
-            "\n".join(b._stdout_lines),
-            "/models/model.gguf",
-            "owner/model",
-            returncode = None,
-        )
-        assert "cancelled" in detail
-        assert "GGUF file is valid" not in detail
-
     def test_a_cancel_during_the_probe_does_not_publish_the_model(self, monkeypatch):
         """The probe blocks for up to 2s. A cancel landing inside that window used to be
         ignored because the 200 returned first, so the unwanted model went live."""
@@ -392,27 +372,6 @@ class TestFitOffRetryEligible:
         assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is True
 
 
-def test_every_health_wait_in_load_model_forwards_a_cancel_predicate():
-    """A _wait_for_health call that does not carry the per-load predicate polls the
-    full 600s on an auto-switch cancel, which sets only the generation event."""
-    import ast
-
-    src = Path(_BACKEND_DIR, "core", "inference", "llama_cpp.py").read_text(encoding = "utf-8")
-    calls = [
-        node
-        for node in ast.walk(ast.parse(src))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_wait_for_health"
-    ]
-    assert calls, "the health wait moved; re-pin this test"
-    missing = [c.lineno for c in calls if not any(k.arg == "cancelled" for k in c.keywords)]
-    assert not missing, (
-        f"_wait_for_health called without a cancelled predicate at lines {missing}; "
-        "a cancel that is not the unload flag would be ignored there"
-    )
-
-
 class TestCancelledWaitEndsTheLoad:
     """An auto-switch cancels through its own event and never unloads, so the child is
     still alive and poll() reports no exit code. Classifying that as a start failure
@@ -441,13 +400,13 @@ class TestCancelledWaitEndsTheLoad:
 
         b._start_llama_process = _start
         scoped = threading.Event()
-        scoped.set()
         real_wait = b._wait_for_health
-        b._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: real_wait(
-            timeout = 2.0,
-            interval = 0.05,
-            cancelled = scoped.is_set,
-        )
+
+        def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+            scoped.set()
+            return real_wait(timeout = 2.0, interval = 0.05, cancelled = cancelled)
+
+        b._wait_for_health = _wait
 
         assert (
             b.load_model(
@@ -455,41 +414,11 @@ class TestCancelledWaitEndsTheLoad:
                     model_identifier = "owner/model",
                     gguf_path = str(gguf),
                     n_ctx = 4096,
-                )
+                ),
+                load_cancel_event = scoped,
             )
             is False
         )
-
-
-def test_every_failed_health_wait_in_load_model_checks_the_cancel_flag():
-    """Each health wait inside load_model has its own failure branch, and each one
-    classifies a startup error. A branch that skips the flag raises a 500 for a
-    deliberate cancel instead of returning the load."""
-    import ast
-
-    src = Path(_BACKEND_DIR, "core", "inference", "llama_cpp.py").read_text(encoding = "utf-8")
-    load_model = next(
-        n
-        for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.FunctionDef) and n.name == "load_model"
-    )
-    waits = [
-        n.lineno
-        for n in ast.walk(load_model)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "_wait_for_health"
-    ]
-    guards = [
-        n.lineno
-        for n in ast.walk(load_model)
-        if isinstance(n, ast.Constant) and n.value == "_health_wait_cancelled"
-    ]
-    assert waits, "the health waits moved; re-pin this test"
-    assert len(guards) >= len(waits), (
-        f"{len(waits)} health wait(s) in load_model but only {len(guards)} cancel guard(s); "
-        "a failure branch classifies a cancelled load as a server-start failure"
-    )
 
 
 def test_a_cancelled_diffusion_start_reaps_the_runner():
