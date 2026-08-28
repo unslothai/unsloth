@@ -468,26 +468,42 @@ def test_disable_without_tools_does_not_depend_on_a_preservation_read(monkeypatc
     assert get_keyless_api_access_settings() == ("off", False)
 
 
-def test_post_commit_write_error_invalidates_a_permissive_cache(monkeypatch):
+def test_keyless_write_has_no_fallible_post_commit_read(monkeypatch):
     import storage.studio_db as studio_db
     import utils.keyless_api_access as keyless
 
-    set_keyless_api_access("inference", tools = True)
-    generation = keyless._settings_generation
-    real_upsert = studio_db.upsert_app_settings
+    real_get_connection = studio_db.get_connection
+    result_read_attempted = False
 
-    def commit_then_raise(settings):
-        real_upsert(settings)
-        raise RuntimeError("result read failed after commit")
+    class GuardedConnection:
+        def __init__(self, connection):
+            self.connection = connection
 
-    monkeypatch.setattr(studio_db, "upsert_app_settings", commit_then_raise)
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
 
-    with pytest.raises(RuntimeError, match = "after commit"):
-        set_keyless_api_access("off", tools = False)
+        def execute(self, sql, *args):
+            nonlocal result_read_attempted
+            if "SELECT key, value_json FROM app_settings ORDER BY key" in " ".join(sql.split()):
+                result_read_attempted = True
+                raise RuntimeError("result read failed after commit")
+            return self.connection.execute(sql, *args)
 
-    assert keyless._settings_generation == generation + 1
-    assert get_keyless_api_access_settings() == ("off", False)
-    assert asgi_request_is_keyless(asgi_scope(path = "/v1/models")) is False
+        def close(self):
+            self.connection.close()
+            raise RuntimeError("close failed after commit")
+
+    monkeypatch.setattr(
+        studio_db,
+        "get_connection",
+        lambda: GuardedConnection(real_get_connection()),
+    )
+
+    assert set_keyless_api_access("inference", tools = True) == ("inference", True)
+    assert result_read_attempted is False
+    monkeypatch.setattr(studio_db, "get_connection", real_get_connection)
+    keyless._reset_scope_cache()
+    assert get_keyless_api_access_settings() == ("inference", True)
 
 
 def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
@@ -513,8 +529,8 @@ def test_committed_disable_is_fail_closed_before_cache_publication(monkeypatch):
         assert release_refresh.wait(timeout = 10)
         return real_read()
 
-    def delayed_upsert(settings):
-        result = real_upsert(settings)
+    def delayed_upsert(settings, **kwargs):
+        result = real_upsert(settings, **kwargs)
         write_committed.set()
         assert release_writer.wait(timeout = 10)
         return result
@@ -635,8 +651,8 @@ def test_overlapping_writes_publish_in_commit_order(monkeypatch):
     second_committed = threading.Event()
     real_upsert = studio_db.upsert_app_settings
 
-    def delayed_upsert(settings):
-        result = real_upsert(settings)
+    def delayed_upsert(settings, **kwargs):
+        result = real_upsert(settings, **kwargs)
         if settings[KEYLESS_API_ACCESS_SETTING_KEY] == "full":
             first_committed.set()
             assert release_first.wait(timeout = 10)

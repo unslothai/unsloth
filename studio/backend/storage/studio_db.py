@@ -4382,10 +4382,11 @@ def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
         conn.close()
 
 
-def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+def upsert_app_settings(settings: dict[str, Any], *, read_back: bool = True) -> dict[str, Any]:
     if not settings:
         return {}
     conn = get_connection()
+    committed = False
     try:
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
@@ -4399,10 +4400,17 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
             [(key, json.dumps(value), now) for key, value in settings.items()],
         )
         conn.commit()
+        committed = True
+        if not read_back:
+            return settings
         rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            if not committed or read_back:
+                raise
 
 
 def upsert_app_setting_map_entry(

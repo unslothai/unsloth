@@ -238,7 +238,8 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
                 {
                     KEYLESS_API_ACCESS_SETTING_KEY: scope,
                     KEYLESS_API_TOOLS_SETTING_KEY: allow_tools,
-                }
+                },
+                read_back = False,
             )
             with _cache_lock:
                 _settings_generation += 1
