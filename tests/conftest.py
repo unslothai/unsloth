@@ -218,3 +218,16 @@ def _apply_upstream_import_fixes_for_tests() -> None:
 
 
 _apply_upstream_import_fixes_for_tests()
+
+
+@pytest.fixture(autouse = True)
+def _contain_environ():
+    """Mechanism: tests/_shared/environ_isolation.py.
+
+    Autouse rather than opt-in because the writer is production code, not the test:
+    whoever adds the next in-process installer driver cannot be expected to know it
+    writes os.environ, and nothing in a file sweep or `git status` would tell them.
+    """
+    from environ_isolation import contained_environ
+    with contained_environ():
+        yield
