@@ -388,12 +388,12 @@ def test_a_mask_that_selects_no_gpu_takes_no_reroute(mask, value, probe):
 
     _visible_devices_pinned and _pick_visible_index both document "" and "-1" as a
     deliberate choice of no device rather than an unset variable, and NO source here is
-    filtered the way honouring that would need: only ROCR_VISIBLE_DEVICES reaches
-    rocminfo, amd-smi reads the driver, KFD reads sysfs. So the probe answering is not
-    evidence the GPU is visible, which is why both the empty and the populated probe are
-    parametrized -- a guard keyed on an empty probe passes the first and misses the
-    second. Containers and CI commonly export an empty mask over a fully populated
-    /sys/class/kfd. The host still gets ROCm torch from the generic index."""
+    filtered the way honouring that would need: only ROCR_VISIBLE_DEVICES reaches rocminfo,
+    amd-smi reads the driver, KFD reads sysfs. A probe answering is therefore no evidence the
+    GPU is visible, which is why both the empty and the populated probe are parametrized -- a
+    guard keyed on an empty probe passes the first and misses the second, and CI commonly
+    exports an empty mask over a populated /sys/class/kfd. The host still gets generic ROCm
+    torch."""
     calls = _run_install(gfx_devices = probe, kfd = ("gfx1103",), env = {mask: value})
     assert f"{_AMD}/gfx110X-all/" not in calls, calls
     assert _GENERIC in calls, calls
@@ -854,9 +854,8 @@ def test_an_empty_rocr_mask_under_a_named_hip_mask_still_selects_no_gpu(mask):
 
 def test_keeping_the_matching_wheels_also_clears_a_confirmed_spoof():
     """Keeping the wheels is not keeping the status quo. They carry the PHYSICAL arch alone,
-    so a confirmed spoof left set has ROCr keep naming the runtime the one arch those wheels
-    have no code for (#7331) -- the first allocation fails exactly as it did before. The
-    reinstall arm clears it for that reason; the skip arm needs it just as much."""
+    so a confirmed spoof left set has ROCr keep naming the one arch they have no code for
+    (#7331). The reinstall arm clears it for that reason; the skip arm needs it as much."""
     calls = _run_install(
         gfx_devices = ("gfx1100",),
         inferred = "gfx1152",
@@ -875,10 +874,10 @@ def test_keeping_the_matching_wheels_also_clears_a_confirmed_spoof():
 
 
 def test_the_rocr_layer_is_applied_before_the_hip_index_on_an_unfiltered_list():
-    """ROCr is processed first and HIP then indexes the SURVIVORS, so HIP's index is
-    relative to what ROCr left. amd-smi reads the driver and KFD sysfs the kernel, so
-    neither is filtered by ROCr: resolving HIP against those unfiltered lists names a GPU
-    the runtime does not expose, and installs per-arch wheels that fault on first use."""
+    """ROCr is processed first and HIP indexes the SURVIVORS, so HIP's index is relative to
+    what ROCr left. Neither amd-smi (driver) nor KFD sysfs (kernel) is ROCr-filtered:
+    resolving HIP against those lists names a GPU the runtime does not expose, and installs
+    per-arch wheels that fault on first use."""
     calls = _run_install(
         gfx_devices = ("gfx1200", "gfx1103"),
         env = {"ROCR_VISIBLE_DEVICES": "1", "HIP_VISIBLE_DEVICES": "0"},
@@ -916,10 +915,10 @@ def test_a_uuid_rocr_mask_on_one_architecture_still_routes():
 
 
 def test_an_unmappable_uuid_declines_the_reroute_on_a_mixed_host():
-    """On a mixed-architecture host the UUID decides everything and can be read here by
-    nothing. The reroute installs wheels for ONE arch, so picking the first entry installs
-    them for the GPU the mask may well have hidden, leaving the selected card with no
-    kernels at all -- worse than the generic wheel it replaced."""
+    """On a mixed-architecture host the UUID decides everything and nothing here can read it.
+    The reroute installs wheels for ONE arch, so picking the first entry may install them for
+    the GPU the mask hid, leaving the selected card with no kernels at all -- worse than the
+    generic wheel it replaced."""
     calls = _run_install(
         gfx_devices = ("gfx1103", "gfx1200"),
         env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
@@ -935,9 +934,9 @@ def test_an_unmappable_uuid_declines_the_reroute_on_a_mixed_host():
 
 def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unreadable():
     """A per-arch install outlives the GPU it was made for: swap a gfx1200 card into a box
-    running gfx110X-all wheels and the generic index would serve it, so the unreadable-version
-    exit stands -- and the stale-family repair, the only thing that would notice, never runs.
-    Those wheels carry no gfx1200 kernels, so every later update preserves a torch that faults."""
+    running gfx110X-all wheels and the generic index would serve it, so the
+    unreadable-version exit stands and the stale-family repair never runs. Those wheels carry
+    no gfx1200 kernels, so every later update preserves a faulting torch."""
     calls = _run_install(
         gfx_devices = ("gfx1200",),
         inferred = None,

@@ -63,9 +63,8 @@ def _host(
 
     def _detect(dedup = True, **_kw):
         # The real probe records which tool answered; callers read it to decide whether the
-        # list is ROCr-filtered and whether it is in the order the masks index. Leaving the
-        # global at whatever ran last makes those decisions depend on test order, and on a
-        # real AMD box on the machine. KFD sysfs is the honest label for a whole-machine list.
+        # list is ROCr-filtered and in the masks' order. Leaving the global at whatever ran
+        # last makes that depend on test order, and on a real AMD box on the machine.
         stack._LAST_AMD_GFX_PROBE = probe_source if gfx else None
         return list(dict.fromkeys(gfx)) if dedup else list(gfx)
 
@@ -157,10 +156,10 @@ def test_an_unreadable_torch_keeps_the_fast_path(monkeypatch, kwargs):
 
 
 def test_a_mixed_arch_host_keeps_the_fast_path_only_while_it_is_ambiguous(monkeypatch):
-    """Being mixed is not the same as being unreadable. Unpinned, the probe order and the
-    order the masks index can disagree and nothing resolves that, so the fast path stands.
-    Pinned, _runtime_gfx_target composes both layers and names a card, and that card's
-    generic wheel can still be the one with no kernels for it."""
+    """Being mixed is not being unreadable. Unpinned, probe order and mask order can
+    disagree with nothing to resolve it, so the fast path stands. Pinned,
+    _runtime_gfx_target composes both layers and names a card whose generic wheel can
+    still be the one with no kernels for it."""
     # Ambiguous: amd-smi enumerates in discovery order and a mask indexes HIP order.
     _host(
         monkeypatch,
@@ -560,8 +559,7 @@ def _rocm_torch(
 
 def test_a_generic_wheel_without_kernels_for_this_gpu_forces_the_pass(monkeypatch):
     """The reported host on an update. Torch is a ROCm build, which used to end the probe
-    for every one of them, so the reroute this file's own repair performs was reachable on
-    a fresh install and never from `studio update`."""
+    for all of them, so the repair was reachable on a fresh install and never on update."""
     _rocm_torch(monkeypatch, family = None, gfx = ("gfx1103",))
     assert _needs_pass() is True
 
@@ -640,9 +638,9 @@ def test_a_named_arch_resolves_a_host_no_ordinal_can(monkeypatch):
 
 def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
     """A pin commits to an index regardless of the visible GPU, which is why every hardware
-    gate above it is skipped. The family question is a hardware question and belongs with
-    them: asked under a pin, it answers for whatever card the machine running the probe
-    happens to have, which is how the end-to-end CLI case began failing on an AMD box."""
+    gate above it is skipped. The family question is one of those: asked under a pin it
+    answers for whatever card the probing machine has, which is how the end-to-end CLI case
+    began failing on an AMD box."""
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",

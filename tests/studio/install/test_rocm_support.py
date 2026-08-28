@@ -605,8 +605,8 @@ def _named_arch_only():
     """_infer_linux_amd_gfx_arch with the product-name half removed.
 
     The function answers UNSLOTH_ROCM_GFX_ARCH first and infers from the board only after,
-    and it is that second half a real AMD host decides. Cases naming an arch still get it;
-    cases that named none get None instead of whatever board the runner happens to have."""
+    and a real AMD host decides that second half. Cases naming an arch still get it; the
+    rest get None instead of whatever board the runner happens to have."""
     return (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower() or None
 
 
@@ -618,16 +618,13 @@ class TestEnsureRocmTorch:
         """Describe the host by mocks alone: hide KFD topology and any ambient GPU mask.
 
         Both are read by _runtime_gfx_target and neither is covered by the per-case mocks.
-        KFD sysfs is filtered by nothing, so on a real AMD test machine it supplies a GPU no
-        case asked for; and an inherited empty HIP/ROCR/CUDA mask means "no GPU", which
-        suppresses the very reroute a case is asserting. Both are environment leaks of the
-        same family the _detect_windows_gfx_arch mocks below already guard against, and a
-        masked CI job hits both at once. The product-name inference is the third: on a Strix
-        box /proc/cpuinfo names gfx1151 and the Strix per-arch route then answers before the
-        tag these cases assert, which is what the gfx1151 AMD runner sees. Individual cases
-        have long mocked it to None one at a time; doing it here covers the ones that forgot.
-        Cases that mean to exercise any of the three set it themselves and win, since that
-        happens inside this fixture."""
+        KFD sysfs is filtered by nothing, so on a real AMD machine it supplies a GPU no case
+        asked for; an inherited empty HIP/ROCR/CUDA mask means "no GPU" and suppresses the
+        very reroute a case asserts. A masked CI job hits both at once. The product-name
+        inference is the third: on a Strix box /proc/cpuinfo names gfx1151 and the Strix
+        route then answers before the tag these cases assert, which is what the gfx1151
+        runner sees. Cases that mean to exercise any of the three set it themselves and win,
+        since that happens inside this fixture."""
         for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_mask, raising = False)
         with (
