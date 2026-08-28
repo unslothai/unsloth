@@ -392,6 +392,8 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
             if _prefer_dataset_cache_row(row, existing):
                 _adopt_newer_last_modified(row, existing)
                 seen_lower[key] = row
+            elif existing is not None:
+                _merge_last_modified(existing, row)
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 

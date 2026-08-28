@@ -32,7 +32,11 @@ def _stub_hf_scan(monkeypatch, repos):
         "is_snapshot_partial",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: True)
+    monkeypatch.setattr(
+        cache_inventory,
+        "_raw_dataset_cache_has_data",
+        lambda *_args: True,
+    )
     monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(cache_inventory, "_scan_app_processed_dataset_caches", lambda: [])
@@ -217,6 +221,50 @@ def test_hf_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(monkeypatch):
     )
 
     rows = cache_inventory._scan_hf_dataset_caches()
+
+    assert rows[0]["size_bytes"] == 200
+    assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
+
+
+def test_fallback_scan_keeps_a_newer_timestamp_from_a_smaller_duplicate(
+    monkeypatch,
+    tmp_path,
+):
+    larger_root = tmp_path / "larger"
+    newer_root = tmp_path / "newer"
+    for root, modified in (
+        (larger_root, 1_700_000_000),
+        (newer_root, 1_900_000_000),
+    ):
+        cache_dir = root / "datasets--Org--Data"
+        snapshots = cache_dir / "snapshots"
+        snapshots.mkdir(parents = True)
+        os.utime(cache_dir, (modified, modified))
+        os.utime(snapshots, (modified, modified))
+
+    monkeypatch.setattr(
+        cache_inventory,
+        "_hf_hub_cache_roots",
+        lambda: [larger_root, newer_root],
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_directory_size",
+        lambda path: 200 if "larger" in path.parts else 100,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_hub_dataset_snapshot_count",
+        lambda _path: 1,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: True)
+
+    rows = cache_inventory._scan_hub_dataset_cache_dirs()
 
     assert rows[0]["size_bytes"] == 200
     assert rows[0]["last_modified"] == pytest.approx(1_900_000_000.0)
