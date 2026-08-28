@@ -26,6 +26,7 @@ test("rehydrated CPT provenance survives the next method switch", () => {
       learningRateManuallySet: true,
       modelAdapterLearningRate: 0.00001,
       datasetFormatBeforeCpt: "sharegpt",
+      targetModulesBeforeCpt: null,
     },
   });
   const rehydrated = mergeTrainingConfig(
@@ -52,6 +53,7 @@ test("rehydrated model learning rate is restored for adapter methods", () => {
       learningRateManuallySet: false,
       modelAdapterLearningRate: 0.00001,
       datasetFormatBeforeCpt: null,
+      targetModulesBeforeCpt: null,
     },
   });
   const rehydrated = mergeTrainingConfig(
@@ -64,4 +66,41 @@ test("rehydrated model learning rate is restored for adapter methods", () => {
   };
 
   assert.equal(state.learningRate, 0.00001);
+});
+
+test("CPT preserves all-linear model defaults instead of Llama target names", () => {
+  const state = {
+    ...initialTrainingConfigState,
+    trainingMethod: "qlora" as const,
+    targetModules: ["all-linear"],
+    datasetFormat: "chatml" as const,
+  };
+  const patch = buildTrainingMethodPatch(state, "cpt");
+
+  assert.deepEqual(patch.targetModules, [
+    "all-linear",
+    "embed_tokens",
+    "lm_head",
+  ]);
+  assert.equal(patch.trainingMethodProvenance?.targetModulesBeforeCpt?.[0], "all-linear");
+});
+
+test("switching away from CPT restores pre-CPT target modules", () => {
+  const state = {
+    ...initialTrainingConfigState,
+    trainingMethod: "cpt" as const,
+    targetModules: ["all-linear", "embed_tokens", "lm_head"],
+    datasetFormat: "raw" as const,
+    trainingMethodProvenance: {
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: null,
+      datasetFormatBeforeCpt: "chatml" as const,
+      targetModulesBeforeCpt: ["all-linear"],
+    },
+  };
+  const patch = buildTrainingMethodPatch(state, "qlora");
+
+  assert.deepEqual(patch.targetModules, ["all-linear"]);
+  assert.equal(patch.datasetFormat, "chatml");
+  assert.equal(patch.trainingMethodProvenance?.targetModulesBeforeCpt, null);
 });
