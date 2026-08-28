@@ -3277,6 +3277,13 @@ class AnthropicMessagesRequest(BaseModel):
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
         if self.reasoning_effort is not None or not isinstance(self.output_config, dict):
             return self
+        # Only once thinking is already on. `reasoning_effort` is the x-unsloth
+        # override that deliberately outranks `thinking` (a named level means
+        # "think"), but Claude Code sends output_config.effort on EVERY request,
+        # including with thinking off -- adopting it there would re-enable
+        # thinking the caller switched off and pin the level the user never set.
+        if self.resolved_enable_thinking() is not True:
+            return self
         effort = self.output_config.get("effort")
         if isinstance(effort, str) and effort in _ANTHROPIC_EFFORT_LEVELS:
             self.reasoning_effort = effort
