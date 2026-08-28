@@ -16914,9 +16914,7 @@ def _local_image_payloads_from_messages(messages) -> list[str]:
 
 def _request_local_image_payloads(payload) -> list[str]:
     """All data-URL and distinct legacy image payloads forwarded locally."""
-    encoded_images = _local_image_payloads_from_messages(
-        getattr(payload, "messages", None) or ()
-    )
+    encoded_images = _local_image_payloads_from_messages(getattr(payload, "messages", None) or ())
     if _legacy_image_is_distinct(payload):
         encoded_images.append(payload.image_base64)
     return encoded_images
