@@ -17883,6 +17883,11 @@ async def _proxy_to_external_provider(
                 chat_messages = _append_to_codex_instructions(
                     chat_messages, _codex_full_access_nudge
                 )
+        chat_messages = _prepend_current_date_to_messages(
+            chat_messages,
+            request,
+            include_api_key = bool(studio_tool_payloads),
+        )
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
@@ -18139,11 +18144,6 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
-    chat_messages = _prepend_current_date_to_messages(
-        chat_messages,
-        request,
-        include_api_key = studio_tool_loop,
-    )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -18181,6 +18181,11 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    chat_messages = _prepend_current_date_to_messages(
+        chat_messages,
+        request,
+        include_api_key = run_studio_tool_loop,
+    )
     if run_studio_tool_loop and payload.bypass_permissions:
         # Full access disables the sandbox at execution time, so the schemas must
         # say so too rather than describing a sandbox the model will not get.
