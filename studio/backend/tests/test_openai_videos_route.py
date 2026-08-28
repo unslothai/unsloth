@@ -176,7 +176,7 @@ def _wait_terminal(
     raise AssertionError(f"job never reached a terminal state: {video}")
 
 
-def _reference_image_bytes(fmt: str) -> bytes:
+def _reference_image_bytes(fmt: str, size: tuple[int, int] = (8, 8)) -> bytes:
     """A real, decodable image. The route decodes the reference before any model
     switch, so a magic-byte stub is refused before it can reach begin_generate."""
     import io
@@ -184,7 +184,7 @@ def _reference_image_bytes(fmt: str) -> bytes:
     from PIL import Image
 
     buf = io.BytesIO()
-    Image.new("RGB", (8, 8), (10, 20, 30)).save(buf, format = fmt)
+    Image.new("RGB", size, (10, 20, 30)).save(buf, format = fmt)
     return buf.getvalue()
 
 
@@ -812,7 +812,10 @@ def test_a_reference_only_checkpoint_is_refused_before_the_model_switch(
     assert switched["completed"] is False, "the model was switched before the refusal"
 
 
-def test_ref2va_routes_the_input_image_as_a_reference(client, backend, monkeypatch):
+@pytest.mark.parametrize("reference_size", [(8, 8), (5000, 1000)])
+def test_ref2va_routes_the_input_image_as_a_reference(
+    client, backend, monkeypatch, reference_size
+):
     import types
 
     from core.inference import media_auto_switch
@@ -854,7 +857,13 @@ def test_ref2va_routes_the_input_image_as_a_reference(client, backend, monkeypat
     resp = _create(
         client,
         {"prompt": "follow this subject", "model": "MiniMax-H3-Ref2VA"},
-        {"input_reference": ("subject.png", _reference_image_bytes("PNG"), "image/png")},
+        {
+            "input_reference": (
+                "subject.png",
+                _reference_image_bytes("PNG", reference_size),
+                "image/png",
+            )
+        },
     )
     assert resp.status_code == 200, resp.json()
     assert switched["completed"] is True

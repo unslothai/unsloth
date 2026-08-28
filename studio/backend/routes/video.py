@@ -1319,12 +1319,21 @@ async def _create_openai_video(
         raise _openai_video_error(400, str(exc), param = "seconds")
     width, height = size if size is not None else (None, None)
     if reference is not None:
-        # Decode here, not at _resolve_keyframes inside begin_generate. That runs after
-        # maybe_auto_switch_media_model, so malformed bytes would evict the resident
-        # pipeline and spend minutes loading the target before returning the 400.
+        # Check readability before a model switch. The conditioning path applies its own
+        # keyframe or Ref2VA limit later, so this uses the broadest bounded source policy.
         from core.inference.diffusion import decode_b64_image
+        from core.inference.video_minimax_h3 import (
+            H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+            H3_REF_IMAGE_SOURCE_MAX_SIDE,
+        )
         try:
-            await asyncio.to_thread(decode_b64_image, reference, mode = "RGB")
+            await asyncio.to_thread(
+                decode_b64_image,
+                reference,
+                mode = "RGB",
+                max_side = H3_REF_IMAGE_SOURCE_MAX_SIDE,
+                max_pixels = H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+            )
         except Exception:  # noqa: BLE001 -- any decode failure is client input feedback
             raise _openai_video_error(
                 400, "input_reference is not a readable image.", param = "input_reference"
