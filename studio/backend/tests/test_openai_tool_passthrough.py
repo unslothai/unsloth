@@ -130,10 +130,21 @@ class TestFriendlyUpstreamError:
         raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
         msg = _friendly_upstream_error(raw)
         assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
-        assert "tool-calling grammar" in msg and "Update Unsloth" in msg
+        assert "compile a grammar" in msg and "Update Unsloth" in msg
 
-    def test_failed_to_initialize_samplers_alone_matches(self):
-        assert "tool-calling grammar" in _friendly_upstream_error("Failed to initialize samplers")
+    def test_sampler_failure_without_a_grammar_keeps_its_own_text(self):
+        # llama-server prefixes every sampler failure the same way, so a bad penalty
+        # would otherwise be reported as an uncompilable schema.
+        detail = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
+        msg = _friendly_upstream_error(detail)
+        assert "compile a grammar" not in msg
+        assert "penalty_repeat" in msg
+
+    def test_message_does_not_blame_the_model(self):
+        # The request's schemas decide the failure; swapping the GGUF changes nothing.
+        msg = _friendly_upstream_error("failed to parse grammar")
+        assert "schema" in msg
+        assert "GGUF" not in msg and "quant and tool-schema" not in msg
 
     def test_unrelated_error_passes_through(self):
         assert _friendly_upstream_error("out of memory") == "llama-server error: out of memory"
@@ -146,7 +157,7 @@ class TestFriendlyUpstreamError:
         exc = _openai_passthrough_error(
             400, '{"error":{"message":"Failed to initialize samplers: failed to parse grammar"}}'
         )
-        assert "tool-calling grammar" in exc.detail
+        assert "compile a grammar" in exc.detail
         # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
@@ -2308,8 +2319,35 @@ class TestBuildPassthroughPayloadToolChoice:
                 },
             },
             "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
-            "boundedScript": {"type": "string", "maxLength": 2000},
+            # Each keyword's highest compilable bound survives; the first one that reaches
+            # llama.cpp's rule budget does not.
+            "keptScript": {"type": "string", "maxLength": 1999, "minLength": 1999},
+            "budgetScript": {"type": "string", "maxLength": 2000},
+            "budgetFloor": {"type": "string", "minLength": 2000},
+            "keptList": {"type": "array", "items": {"type": "string"}, "maxItems": 1998},
+            "budgetList": {"type": "array", "items": {"type": "string"}, "maxItems": 1999},
+            "keptFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2000},
+            "budgetFloorList": {"type": "array", "items": {"type": "string"}, "minItems": 2001},
+            # An integral bound can decode to float, and llama.cpp reads one either way.
+            "floatList": {"type": "array", "items": {"type": "string"}, "minItems": 2001.0},
+            # draft-07 tuple form, which llama.cpp visits member by member.
+            "tupleList": {
+                "type": "array",
+                "items": [{"type": "string", "maxLength": 2000}],
+            },
+            # Unsatisfiable pairs, small enough to pass every limit above: they reach the
+            # parser as a descending repetition, which exhausts memory.
+            "impossibleList": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 5,
+                "maxItems": 2,
+            },
+            "impossibleScript": {"type": "string", "minLength": 5, "maxLength": 2},
+            "referenced": {"$ref": "#/$defs/Bounded"},
         }
+        # llama.cpp resolves the reference, so its target has to be filtered too.
+        schema["$defs"] = {"Bounded": {"type": "string", "maxLength": 2000}}
 
         body = _build_passthrough_payload(**args)
         forwarded = body["tools"][0]["function"]["parameters"]["properties"]
@@ -2321,10 +2359,59 @@ class TestBuildPassthroughPayloadToolChoice:
         assert nested["anyOf"][1]["pattern"] == "^fixed$"
         assert nested["default"] == {"pattern": "annotation data"}
         assert forwarded["largeScript"] == {"type": "string", "minLength": 1}
-        assert forwarded["boundedScript"]["maxLength"] == 2000
+        assert forwarded["keptScript"] == {"type": "string", "maxLength": 1999, "minLength": 1999}
+        assert forwarded["budgetScript"] == {"type": "string"}
+        assert forwarded["budgetFloor"] == {"type": "string"}
+        assert forwarded["keptList"]["maxItems"] == 1998
+        assert forwarded["budgetList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["keptFloorList"]["minItems"] == 2000
+        assert forwarded["budgetFloorList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["floatList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["tupleList"]["items"] == [{"type": "string"}]
+        assert schema["properties"]["budgetScript"]["maxLength"] == 2000
+        assert schema["properties"]["budgetList"]["maxItems"] == 1999
+        assert forwarded["impossibleList"] == {"type": "array", "items": {"type": "string"}}
+        assert forwarded["impossibleScript"] == {"type": "string"}
+        assert schema["properties"]["tupleList"]["items"][0]["maxLength"] == 2000
+        assert schema["properties"]["impossibleList"]["minItems"] == 5
+        assert body["tools"][0]["function"]["parameters"]["$defs"] == {
+            "Bounded": {"type": "string"}
+        }
+        assert schema["$defs"]["Bounded"]["maxLength"] == 2000
         assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
         assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
         assert schema["properties"]["largeScript"]["maxLength"] == 65536
+
+    def test_response_format_schema_drops_incompatible_constraints(self):
+        # Guided decoding reaches the same grammar engine tool schemas do.
+        rf = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "report",
+                "schema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string", "maxLength": 2000}},
+                },
+            },
+        }
+        body = _build_passthrough_payload(**self._args(), response_format = rf)
+        forwarded = body["response_format"]["json_schema"]["schema"]["properties"]["summary"]
+        assert forwarded == {"type": "string"}
+        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"]["json_schema"]["name"] == "report"
+        assert rf["json_schema"]["schema"]["properties"]["summary"]["maxLength"] == 2000
+
+    def test_response_format_json_object_schema_is_filtered_too(self):
+        # An array bound only reaches the grammar when the items schema does too.
+        rf = {
+            "type": "json_object",
+            "schema": {"type": "array", "items": {"type": "string"}, "maxItems": 1999},
+        }
+        body = _build_passthrough_payload(**self._args(), response_format = rf)
+        assert body["response_format"] == {
+            "type": "json_object",
+            "schema": {"type": "array", "items": {"type": "string"}},
+        }
 
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
