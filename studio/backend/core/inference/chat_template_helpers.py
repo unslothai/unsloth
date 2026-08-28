@@ -187,6 +187,10 @@ _TURN_BOUNDARY_MARKUP = re.compile(
 # closer truncates or garbles the audio. Per codec, and deliberately NOT the chat sweep: this
 # text is meant to be SPOKEN, so "please say <s>hello</s>" must reach the tokenizer as typed
 # (#7066).
+_MOSS_TTS_MARKUP = re.compile(
+    r"<(?=/?user_inst>|\|(?:im_(?:start|end)|audio(?:_start|_end|_pad)?"
+    r"|vision_pad|video_pad)\|>)"
+)
 _TTS_MARKUP_BY_CODEC = {
     # <custom_token_3>{text}<|eot_id|><custom_token_4>, stop <custom_token_2>. Those three
     # only, not any number: the transformers path spells the same ones as bare ids
@@ -219,6 +223,10 @@ _TTS_MARKUP_BY_CODEC = {
     ),
     # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
     "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
+    # MOSS Local and Nano wrap client text in a user_inst block inside a ChatML turn.
+    # The remaining sentinels are codec placeholders accepted by their processors.
+    "moss_tts_local": _MOSS_TTS_MARKUP,
+    "moss_tts_nano": _MOSS_TTS_MARKUP,
 }
 # An unrecognised codec gets the union: still far narrower than the chat sweep, but it does
 # not assume a prompt shape this module has not seen.

@@ -2397,6 +2397,35 @@ def test_param_alias_xml_delimiters_are_neutralized(marker):
                 "<|audio_eos|>",
             ],
         ),
+        (
+            "moss_tts_local",
+            [
+                "<user_inst>",
+                "</user_inst>",
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|audio|>",
+                "<|audio_start|>",
+                "<|audio_end|>",
+                "<|audio_pad|>",
+                "<|vision_pad|>",
+                "<|video_pad|>",
+            ],
+        ),
+        (
+            "moss_tts_nano",
+            [
+                "<user_inst>",
+                "</user_inst>",
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|audio_start|>",
+                "<|audio_end|>",
+                "<|audio_pad|>",
+                "<|vision_pad|>",
+                "<|video_pad|>",
+            ],
+        ),
     ],
 )
 def test_tts_breaks_the_active_codec_delimiters(codec, delimiters):
