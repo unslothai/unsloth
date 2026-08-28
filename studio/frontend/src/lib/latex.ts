@@ -604,38 +604,41 @@ function isEscapedDollar(content: string, offset: number): boolean {
   return slashes % 2 === 1;
 }
 
-/**
- * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. Non-greedy so
- * the first closer wins; dotall so display spans can wrap lines. `(?<!\\)` on
- * each opener leaves an escaped literal `\\[` (a real backslash then bracket)
- * alone. The body is length-capped so an unclosed opener can't scan to
- * end-of-input: without the cap, many unclosed `\(`/`\[` make matching O(n^2),
- * and this runs per animation frame while streaming. Real spans are far shorter
- * than the cap; a longer one just stays literal.
- */
-const LATEX_DELIM_RE =
-  /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
-
 /** Find existing bracket-delimited math outside code and link destinations. */
 function findBracketMathRegions(
   content: string,
   skipRegions: Array<[number, number]>,
 ): Array<[number, number]> {
   const regions: Array<[number, number]> = [];
-  let match: RegExpExecArray | null;
-  LATEX_DELIM_RE.lastIndex = 0;
-  while ((match = LATEX_DELIM_RE.exec(content)) !== null) {
-    const end = match.index + match[0].length;
-    if (
-      isInRegion(match.index, skipRegions) ||
-      isInRegion(end - 1, skipRegions)
-    ) {
-      LATEX_DELIM_RE.lastIndex = match.index + 1;
-      continue;
+  for (const [opener, closer] of [
+    ["\\(", "\\)"],
+    ["\\[", "\\]"],
+  ] as const) {
+    let opening = -1;
+    for (let i = 0; i < content.length - 1; i += 1) {
+      if (content[i] !== "\\") continue;
+      const token = content.slice(i, i + 2);
+      if (isInRegion(i, skipRegions)) {
+        if (opening >= 0 && token === closer) opening = -1;
+        if (token === opener || token === closer) i += 1;
+        continue;
+      }
+      if (opening < 0) {
+        if (token === opener && content[i - 1] !== "\\") opening = i;
+      } else if (token === closer) {
+        regions.push([opening, i + 2]);
+        opening = -1;
+      }
+      if (token === opener || token === closer) i += 1;
     }
-    regions.push([match.index, end]);
   }
-  return regions;
+  const sorted = regions.sort((a, b) => a[0] - b[0]);
+  const nonOverlapping: Array<[number, number]> = [];
+  for (const region of sorted) {
+    const previous = nonOverlapping[nonOverlapping.length - 1];
+    if (!previous || region[0] >= previous[1]) nonOverlapping.push(region);
+  }
+  return nonOverlapping;
 }
 
 /** Find existing `$...$` and `$$...$$` regions outside code and links. */
@@ -643,54 +646,65 @@ function findDollarMathRegions(
   content: string,
   skipRegions: Array<[number, number]>,
 ): Array<[number, number]> {
-  const regions: Array<[number, number]> = [];
-  for (let opening = 0; opening < content.length; opening += 1) {
+  const displayRegions: Array<[number, number]> = [];
+  let displayOpening = -1;
+  for (let i = 0; i < content.length - 1; i += 1) {
     if (
-      content[opening] !== "$" ||
-      isEscapedDollar(content, opening) ||
-      isInRegion(opening, skipRegions)
+      content[i] !== "$" ||
+      content[i + 1] !== "$" ||
+      isEscapedDollar(content, i) ||
+      isInRegion(i, skipRegions)
     ) {
       continue;
     }
-    const display = content[opening + 1] === "$";
-    const bodyStart = opening + (display ? 2 : 1);
-    const limit = Math.min(
-      content.length,
-      bodyStart + (display ? 4096 : 200) + 1,
-    );
-    for (let closing = bodyStart; closing < limit; closing += 1) {
-      if (!display && /[\r\n]/.test(content[closing])) break;
-      if (
-        content[closing] !== "$" ||
-        isEscapedDollar(content, closing) ||
-        isInRegion(closing, skipRegions)
-      ) {
-        continue;
-      }
-      if (display !== (content[closing + 1] === "$")) continue;
-      if (
-        !display &&
-        (content[closing - 1] === "$" || content[closing + 1] === "$")
-      ) {
-        break;
-      }
-      if (!display && /\d/.test(content[closing + 1] ?? "")) continue;
-      if (!display && !looksLikeMathBody(content.slice(bodyStart, closing))) {
-        break;
-      }
-      const end = closing + (display ? 2 : 1);
-      regions.push([opening, end]);
-      opening = end - 1;
-      break;
+    if (displayOpening < 0) {
+      displayOpening = i;
+    } else {
+      displayRegions.push([displayOpening, i + 2]);
+      displayOpening = -1;
+    }
+    i += 1;
+  }
+
+  const inlineRegions: Array<[number, number]> = [];
+  const allSkipRegions = mergeRegions(skipRegions, displayRegions);
+  let inlineOpening = -1;
+  for (let i = 0; i < content.length; i += 1) {
+    if (content[i] === "\n" || content[i] === "\r") {
+      inlineOpening = -1;
+      continue;
+    }
+    if (
+      content[i] !== "$" ||
+      isEscapedDollar(content, i) ||
+      content[i - 1] === "$" ||
+      content[i + 1] === "$" ||
+      isInRegion(i, allSkipRegions)
+    ) {
+      continue;
+    }
+    if (inlineOpening < 0) {
+      inlineOpening = i;
+      continue;
+    }
+    if (/\d/.test(content[i + 1] ?? "")) continue;
+    if (looksLikeMathBody(content.slice(inlineOpening + 1, i))) {
+      inlineRegions.push([inlineOpening, i + 1]);
+      inlineOpening = -1;
+    } else {
+      inlineOpening = i;
     }
   }
-  return regions;
+  return [...displayRegions, ...inlineRegions].sort((a, b) => a[0] - b[0]);
 }
 
+const CONVERT_LATEX_DELIM_RE =
+  /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
+
 /**
- * Recover math-looking `\$...\$` spans emitted by local models. Existing
+ * recover math-looking `\$...\$` spans emitted by local models. existing
  * math, currency, code, links, even-backslash runs, and incomplete spans stay
- * literal. Same-line pairs are consumed once and bodies are capped.
+ * literal. same-line pairs are consumed once.
  */
 function normalizeEscapedInlineMath(content: string): string {
   if (!content.includes("\\$")) return content;
@@ -823,8 +837,8 @@ function convertLatexDelimiters(content: string): {
     return start;
   };
   let match: RegExpExecArray | null;
-  LATEX_DELIM_RE.lastIndex = 0;
-  while ((match = LATEX_DELIM_RE.exec(content)) !== null) {
+  CONVERT_LATEX_DELIM_RE.lastIndex = 0;
+  while ((match = CONVERT_LATEX_DELIM_RE.exec(content)) !== null) {
     const matchEnd = match.index + match[0].length;
     // Skip if either delimiter is inside code or a link destination: an opener
     // outside such a zone must not consume a closer inside one and rewrite
@@ -832,7 +846,7 @@ function convertLatexDelimiters(content: string): {
     // match) so a valid span that this match spanned across (a stray code `\(`
     // paired with a real closer) is still found on the next pass, not swallowed.
     if (inSkipZone(match.index) || inSkipZone(matchEnd - 1)) {
-      LATEX_DELIM_RE.lastIndex = match.index + 1;
+      CONVERT_LATEX_DELIM_RE.lastIndex = match.index + 1;
       continue;
     }
     const isDisplay = match[1] !== undefined;

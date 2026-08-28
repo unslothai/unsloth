@@ -154,6 +154,16 @@ test("raw HTML and autolinks keep literal escaped dollars", () => {
   }
 });
 
+test("long existing math protects escaped dollars without length caps", () => {
+  const inline = `$${"x+".repeat(101)}\\$y\\$$`;
+  const display = `$$\n${"x+".repeat(2050)}\\$y\\$\n$$`;
+  const bracket = `\\[${"x+".repeat(2050)}\\$y\\$\\]`;
+
+  assert.equal(preprocessLaTeX(inline), inline);
+  assert.equal(preprocessLaTeX(display), display);
+  assert.equal(preprocessLaTeX(bracket), bracket);
+});
+
 test("escaped inline math from local models is recovered inside lists", () => {
   const input = [
     String.raw`- \$v_s\$ is the velocity of the bubble,`,
