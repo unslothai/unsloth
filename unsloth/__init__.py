@@ -356,6 +356,19 @@ if _IS_MLX:
         if clear_cache is None and hasattr(mx, "metal"):
             clear_cache = getattr(mx.metal, "clear_cache", None)
         if callable(clear_cache):
+            # MLX pins buffers a live command buffer reads, but not a dropped output array.
+            # mlx-lm and mlx-vlm generate on their own thread-local streams, which a
+            # no-argument mx.synchronize() would not wait on.
+            for _module in (
+                "mlx_lm.generate",
+                "mlx_vlm.generate",
+                "mlx_vlm.generate.dispatch",
+                "mlx_vlm.generate.ar",
+            ):
+                _stream = getattr(sys.modules.get(_module), "generation_stream", None)
+                if _stream is not None:
+                    mx.synchronize(_stream)
+            mx.synchronize()
             clear_cache()
 
     def _patch_mlx_torch_cuda_compat_api():

@@ -7,6 +7,7 @@ instead of torch/transformers for model loading and generation.
 
 import json
 import os
+import sys
 import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
@@ -651,6 +652,25 @@ def _kv_quant_probe(language_model, entries, bits):
         _restore_mlx_rng_key(rng_key)
 
 
+# mlx-lm and mlx-vlm both run generation on their own thread-local stream, so a
+# no-argument mx.synchronize() -- which waits on the default stream -- drains none of it.
+# mlx-vlm moves generation_stream between release layouts, so every candidate is tried.
+_GENERATION_STREAM_MODULES = (
+    "mlx_lm.generate",
+    "mlx_vlm.generate",
+    "mlx_vlm.generate.dispatch",
+    "mlx_vlm.generate.ar",
+)
+
+
+def _drain_generation_streams(mx):
+    for name in _GENERATION_STREAM_MODULES:
+        stream = getattr(sys.modules.get(name), "generation_stream", None)
+        if stream is not None:
+            mx.synchronize(stream)
+    mx.synchronize()
+
+
 def _kv_quant_eligibility(
     model,
     is_vlm,
@@ -685,6 +705,7 @@ def _kv_quant_eligibility(
 
     entries.clear()
     del entries
+    _drain_generation_streams(mx)
     mx.clear_cache()
     if failure is not None:
         return "refused", f"this model's KV cache cannot be quantized: {failure}", True
@@ -1727,6 +1748,7 @@ class MLXInferenceBackend:
             self.active_model_name = None
         self._clear_prompt_cache()
         gc.collect()
+        _drain_generation_streams(mx)
         mx.clear_cache()
 
         if mx.metal.is_available() and self._memory_limits_applied and not self.models:
@@ -2481,4 +2503,5 @@ class MLXInferenceBackend:
         import gc
 
         gc.collect()
+        _drain_generation_streams(mx)
         mx.clear_cache()

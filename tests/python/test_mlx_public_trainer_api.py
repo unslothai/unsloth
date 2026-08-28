@@ -190,6 +190,97 @@ def test_mlx_clear_gpu_memory_uses_metal_fallback(monkeypatch):
     assert called == ["metal"]
 
 
+_GENERATION_STREAM_MODULES = (
+    "mlx_lm.generate",
+    "mlx_vlm.generate",
+    "mlx_vlm.generate.dispatch",
+    "mlx_vlm.generate.ar",
+)
+
+
+def _stub_generation_streams(monkeypatch, *names):
+    """Generation runs on mlx-lm's / mlx-vlm's own thread-local stream, not the default."""
+    for name in _GENERATION_STREAM_MODULES:
+        if name in names:
+            monkeypatch.setitem(
+                sys.modules,
+                name,
+                types.SimpleNamespace(generation_stream = name),
+            )
+        else:
+            monkeypatch.delitem(sys.modules, name, raising = False)
+
+
+@pytest.mark.parametrize("shape", ["core", "metal"])
+def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape):
+    """MLX does not pin a dropped output array, so drain before clearing."""
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    monkeypatch.setattr(
+        mx,
+        "synchronize",
+        lambda stream = None: events.append(f"synchronize:{stream if stream else 'default'}"),
+    )
+    clear = lambda: events.append("clear_cache")
+    if shape == "core":
+        monkeypatch.setattr(mx, "clear_cache", clear)
+    else:
+        # Older MLX releases expose cache clearing under mx.metal.clear_cache.
+        monkeypatch.delattr(mx, "clear_cache", raising = False)
+        metal = getattr(mx, "metal", None) or type("Metal", (), {})()
+        monkeypatch.setattr(mx, "metal", metal, raising = False)
+        monkeypatch.setattr(metal, "clear_cache", clear, raising = False)
+    # mlx-vlm moves this symbol between release layouts, so every candidate counts.
+    _stub_generation_streams(
+        monkeypatch,
+        "mlx_lm.generate",
+        "mlx_vlm.generate.dispatch",
+    )
+
+    unsloth.clear_gpu_memory()
+
+    assert events == [
+        "synchronize:mlx_lm.generate",
+        "synchronize:mlx_vlm.generate.dispatch",
+        "synchronize:default",
+        "clear_cache",
+    ]
+
+
+def test_mlx_clear_gpu_memory_drains_only_the_streams_that_exist(monkeypatch):
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    monkeypatch.setattr(
+        mx,
+        "synchronize",
+        lambda stream = None: events.append(f"synchronize:{stream if stream else 'default'}"),
+    )
+    monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
+    _stub_generation_streams(monkeypatch, "mlx_lm.generate")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["synchronize:mlx_lm.generate", "synchronize:default", "clear_cache"]
+
+
+def test_mlx_clear_gpu_memory_is_a_noop_without_cache_clearing(monkeypatch):
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    monkeypatch.setattr(mx, "synchronize", lambda *a, **k: events.append("synchronize"))
+    monkeypatch.delattr(mx, "clear_cache", raising = False)
+    monkeypatch.setattr(mx, "metal", type("Metal", (), {})(), raising = False)
+
+    unsloth.clear_gpu_memory()
+
+    assert events == []
+
+
 def test_mlx_training_arguments_preserve_explicit_epoch_training():
     """Epoch-based configs should not inherit the MLX max_steps default."""
     unsloth = _import_mlx_unsloth()
