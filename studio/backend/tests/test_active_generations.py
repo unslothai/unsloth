@@ -1193,7 +1193,7 @@ def _install_completions_stream_mock(monkeypatch, events):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1315,7 +1315,7 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1388,7 +1388,7 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
