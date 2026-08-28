@@ -818,9 +818,7 @@ def test_a_quarantined_away_launcher_with_a_broken_package_still_fails(
         _update(studio)
 
 
-def test_a_failed_recovery_reports_the_verdict_it_acted_on(
-    monkeypatch, studio, tmp_path, capsys
-):
+def test_a_failed_recovery_reports_the_verdict_it_acted_on(monkeypatch, studio, tmp_path, capsys):
     """Absence is what started the search, never what decided it.
 
     With the launcher gone _launcher_health_error answers _LAUNCHER_ABSENT
