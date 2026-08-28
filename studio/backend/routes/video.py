@@ -975,15 +975,11 @@ def _remember_job(job: _VideoJob) -> None:
     with _jobs_lock:
         _jobs[job.id] = job
         excess = len(_jobs) - _MAX_REMEMBERED_JOBS
-        forgotten = []
         if excess > 0:
             for stale in [j for j in _jobs.values() if j.terminal][:excess]:
                 _jobs.pop(stale.id, None)
-                forgotten.append(stale.id)
     try:
         video_gallery.save_job(job.id, asdict(job))
-        for video_id in forgotten:
-            video_gallery.forget_job(video_id)
     except OSError as exc:
         logger.warning("openai_videos.persist_job_failed: %s", exc)
 
@@ -1140,6 +1136,9 @@ def _all_videos() -> list[VideoJob]:
     with _jobs_lock:
         jobs = dict(_jobs)
     records = video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record)
+    records.extend(
+        video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record, archived = True)
+    )
     listed = [_record_to_job(record, jobs.get(record["id"])) for record in records]
     seen = {video.id for video in listed}
     listed.extend(
@@ -1480,7 +1479,7 @@ async def openai_download_video_content(
             raise _openai_video_error(
                 400,
                 video.error.message if video.error else "Video generation failed.",
-                code = _VIDEO_FAILED_CODE,
+                code = video.error.code if video.error else _VIDEO_FAILED_CODE,
             )
         raise _openai_video_error(
             400,

@@ -388,7 +388,7 @@ def test_unpolled_terminal_jobs_still_obey_the_memory_cap(client, backend, monke
             raise AssertionError(f"{prompt} never completed")
     assert len(video_routes._jobs) == 2
     assert ids[0] not in video_routes._jobs
-    assert gallery_module.get_job(ids[0]) is None
+    assert gallery_module.get_job(ids[0]) is not None
 
 
 def test_a_worker_outcome_that_arrives_before_the_job_record_is_not_overwritten(client, backend):
@@ -464,6 +464,19 @@ def test_deleting_a_running_job_cancels_it(client, backend):
     backend.gate.set()
 
 
+def test_cancelled_content_keeps_the_cancelled_error_code(client, backend):
+    backend.gate.clear()
+    job = _create(client, {"prompt": "cancel through Studio"}).json()
+    cancelled = client.post("/api/inference/video/generate/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["cancelled"] is True
+    failed = _wait_terminal(client, job["id"])
+    assert failed["error"]["code"] == "cancelled"
+    content = client.get(f"/v1/videos/{job['id']}/content")
+    assert content.status_code == 400
+    assert content.json()["error"]["code"] == "cancelled"
+    backend.gate.set()
+
+
 def test_deleting_a_stale_job_does_not_cancel_its_successor(client, backend, monkeypatch):
     successor_cancel = threading.Event()
     with backend._lock:
@@ -505,6 +518,17 @@ def test_clips_made_before_this_process_list_and_retrieve_as_completed(client, b
     assert unknown.status_code == 400 and unknown.json()["error"]["param"] == "after"
 
     assert client.get(f"/v1/videos/{older['id']}/content").content == b"OLD-MP4"
+
+
+def test_archived_clips_remain_in_the_openai_listing(client, backend):
+    clip = _save_clip("archived", "2026-01-01T00:00:00Z")
+    archived = client.patch(
+        f"/api/inference/video/gallery/{clip['id']}", json = {"archived": True}
+    )
+    assert archived.status_code == 200, archived.json()
+    listed = client.get("/v1/videos").json()["data"]
+    assert [video["id"] for video in listed] == [clip["id"]]
+    assert client.get(f"/v1/videos/{clip['id']}").status_code == 200
 
 
 def test_completed_delete_does_not_confirm_when_the_clip_remains(client, backend, monkeypatch):
