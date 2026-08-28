@@ -34,6 +34,7 @@ from hub.services.models.common import (
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
+    _is_mtp_drafter_path,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
     _local_path_can_chat,
@@ -171,7 +172,11 @@ def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
         for f in cached_repo_files(revision):
-            if _is_main_gguf_filename(_cached_repo_file_name(f)):
+            name = _cached_repo_file_name(f)
+            if _is_main_gguf_filename(name) or (
+                _is_gguf_filename(name)
+                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name))
+            ):
                 latest = max(latest, _blob_mtime(f))
     return latest
 

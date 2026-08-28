@@ -82,6 +82,29 @@ def _sibling(name: str, size: int, sha: str):
     return SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": sha})
 
 
+def test_gguf_inventory_dates_rows_from_managed_companions(tmp_path):
+    repo = _repo(
+        "Org/Vision-GGUF",
+        [
+            SimpleNamespace(
+                file_name = "model-Q4_K_M.gguf",
+                size_on_disk = 100,
+                blob_path = None,
+                blob_last_modified = 10.0,
+            ),
+            SimpleNamespace(
+                file_name = "mmproj-F16.gguf",
+                size_on_disk = 20,
+                blob_path = None,
+                blob_last_modified = 30.0,
+            ),
+        ],
+        tmp_path,
+    )
+
+    assert cache_inventory._repo_gguf_last_modified(repo) == 30.0
+
+
 class TestExtractQuantToken:
     def test_trailing_precision_is_kept(self):
         assert gguf.extract_quant_token("model-it-F16.gguf") == "F16"
