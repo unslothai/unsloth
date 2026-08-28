@@ -4019,6 +4019,85 @@ def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
     assert payloads[0]["messages"] == [audio_turn]
 
 
+@pytest.mark.parametrize("with_tools", [False, True])
+def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, with_tools):
+    from core.inference import llama_cpp
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [[_sse({"content": "OK"}), _done()]], payloads)
+    backend._effective_context_length = 100
+    counted: list[list[dict]] = []
+    recall_recounts: list[list[dict]] = []
+
+    def count_tokens(candidate, *_args, **_kwargs):
+        counted.append(copy.deepcopy(candidate))
+        total = 0
+        for message in candidate:
+            content = message.get("content", "")
+            if isinstance(content, str):
+                total += len(content)
+            else:
+                total += sum(len(part.get("text", "")) for part in content)
+        return total
+
+    def fake_archive(conversation, _before, **kwargs):
+        before_count = len(counted)
+        kwargs["count_tokens"](conversation)
+        assert len(counted) == before_count + 1
+        recall_recounts.append(counted[-1])
+        return {
+            "conversation": conversation,
+            "events": [],
+            "counts": {},
+            "recalled": False,
+            "anchored": [],
+        }
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count_tokens)
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "latest"},
+            {
+                "type": "input_audio",
+                "input_audio": {"data": "A" * 100_000, "format": "wav"},
+            },
+        ],
+    }
+    kwargs = {
+        "messages": [
+            {"role": "user", "content": "u" * 40},
+            {"role": "assistant", "content": "a" * 40},
+            audio_turn,
+        ],
+        "max_tokens": 20,
+        "context_overflow": "truncate_oldest",
+        "thread_id": "media-recall",
+    }
+
+    if with_tools:
+        list(
+            backend.generate_chat_completion_with_tools(
+                **kwargs,
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = 1,
+            )
+        )
+    else:
+        list(backend.generate_chat_completion(**kwargs))
+
+    assert recall_recounts
+    assert all(
+        part.get("type") != "input_audio"
+        for candidate in recall_recounts
+        for message in candidate
+        for part in message.get("content", [])
+        if isinstance(part, dict)
+    )
+    assert payloads[0]["messages"][-1] == audio_turn
+
+
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
     """A rescued respawn refit archives its evictions and emits metadata."""
     import httpx
