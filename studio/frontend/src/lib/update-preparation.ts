@@ -126,3 +126,28 @@ export async function waitForBackendIdle(deps: {
   }
   return "cancelled";
 }
+
+export const HEALTH_PROBE_TIMEOUT_MS = 10_000;
+
+/// Resolves with `fallback` when `run` has not settled in time, whether or not it
+/// honours the abort. A backend that accepts the connection and then answers
+/// nothing parks a bare fetch forever, and the idle wait below only reaches its
+/// deadline between probes, so an unbounded probe defeats that deadline entirely.
+export function settleWithin<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  fallback: T,
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      resolve(fallback);
+    }, timeoutMs);
+    const settle = (value: T) => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    run(controller.signal).then(settle, () => settle(fallback));
+  });
+}

@@ -24,6 +24,7 @@ import {
   backendIdle,
   preparationStatus,
   restartPlan,
+  settleWithin,
   stagingDecision,
   waitForBackendIdle,
   type UpdatePreparation,
@@ -126,13 +127,11 @@ function manualReleasePageUrl(
 }
 
 async function fetchHealth(): Promise<{ inference_active?: boolean } | null> {
-  try {
-    const res = await fetch(apiUrl("/api/health"));
+  return settleWithin(async (signal) => {
+    const res = await fetch(apiUrl("/api/health"), { signal });
     if (!res.ok) return null;
     return (await res.json()) as { inference_active?: boolean };
-  } catch {
-    return null;
-  }
+  }, null);
 }
 
 function wait(ms: number): Promise<void> {

@@ -9,6 +9,7 @@ import {
   downloadPercent,
   preparationStatus,
   restartPlan,
+  settleWithin,
   stagingDecision,
   waitForBackendIdle,
   type StagedUpdateStatus,
@@ -141,4 +142,56 @@ test("a newer offer cancels the wait", async () => {
     now: c.now,
   });
   assert.equal(outcome, "cancelled");
+});
+
+test("a probe that never answers still settles, and aborts what it started", async () => {
+  let aborted = false;
+  // The wedged backend: the connection is accepted, the response never comes.
+  const value = await settleWithin<string | null>(
+    (signal) =>
+      new Promise(() => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+      }),
+    null,
+    20,
+  );
+  assert.equal(value, null);
+  assert.equal(aborted, true);
+});
+
+test("a probe that answers keeps its answer", async () => {
+  const value = await settleWithin(async () => "ok", null, 1_000);
+  assert.equal(value, "ok");
+});
+
+test("a probe that throws falls back", async () => {
+  const value = await settleWithin(async () => {
+    throw new Error("connection refused");
+  }, null, 1_000);
+  assert.equal(value, null);
+});
+
+test("an unanswerable backend still reaches the idle deadline", async () => {
+  // The end-to-end shape of the P1: bounded probes let the wait's own deadline fire.
+  let now = 0;
+  let probes = 0;
+  const outcome = await waitForBackendIdle({
+    cancelled: () => false,
+    probe: async () => {
+      probes += 1;
+      // Every probe burns its full timeout and answers "not idle".
+      now += 10_000;
+      return false;
+    },
+    sleep: async (ms: number) => {
+      now += ms;
+    },
+    now: () => now,
+    pollMs: 20_000,
+    timeoutMs: 60_000,
+  });
+  assert.equal(outcome, "timeout");
+  assert.ok(probes <= 4, `expected the deadline to stop the loop, ran ${probes} probes`);
 });

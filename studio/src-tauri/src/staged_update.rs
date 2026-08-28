@@ -115,6 +115,10 @@ pub(crate) fn confirm_activated(home: &Path) {
 }
 
 fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
+    roll_back_unconfirmed_with(home, live_tree_in_use(home))
+}
+
+fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     let prev = home.join(PREV_DIR);
     let Some(versions) = read_versions(&prev.join(PENDING_MARKER)) else {
         if prev.is_dir() {
@@ -122,8 +126,12 @@ fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
         }
         return Ok(());
     };
-    if live_tree_in_use(home) {
-        confirm_activated(home);
+    if in_use {
+        // Renaming the tree under a live process is unsafe, but a process that never
+        // reached validate_candidate_port is not healthy either. Confirming here
+        // would drop the only way back. Leave the marker: validate_candidate_port
+        // still confirms on a healthy port, and a later launch can still roll back.
+        info!("[staged-update] runtime still in use, deferring the rollback decision");
         return Ok(());
     }
     info!(
@@ -503,6 +511,31 @@ mod tests {
             // The restored backend must not find the unconfirmed update's sidecars.
             assert!(!home.join(name).exists(), "{name}");
         }
+        assert_eq!(status(&home).state, "failed");
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_runtime_still_in_use_defers_instead_of_confirming() {
+        let home = temp_home("defer");
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(None));
+        reconcile_at_launch(&home, "0.1.900-beta");
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
+
+        // Force-closed after activation: a backend is alive on the new tree but it
+        // never reached validate_candidate_port, so nothing has vouched for it.
+        roll_back_unconfirmed_with(&home, true).unwrap();
+
+        // Neither confirmed nor rolled back -- the way back has to survive.
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
+
+        // Once nothing holds the tree, the rollback it was owed still happens.
+        roll_back_unconfirmed_with(&home, false).unwrap();
+
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert_eq!(status(&home).state, "failed");
         cleanup(home);
     }
