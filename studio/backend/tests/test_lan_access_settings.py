@@ -653,6 +653,93 @@ def test_wsl_mirrored_networking_keeps_reachable_addresses(monkeypatch):
     assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
 
 
+def test_wsl_mode_is_cached_while_interface_addresses_still_refresh(monkeypatch):
+    class _NoRouteSocket:
+        def connect(self, _address):
+            raise OSError("network is unreachable")
+
+        def close(self):
+            pass
+
+    mode_calls = []
+    interface_addresses = iter([["192.168.1.20"], ["192.168.1.21"]])
+    monkeypatch.setattr(lan_access.sys, "platform", "linux")
+    monkeypatch.setattr(lan_access.platform, "release", lambda: "6.6.87.2-microsoft-standard-WSL2")
+    monkeypatch.setattr(lan_access, "_wsl_mode_cache", None)
+    monkeypatch.setattr(lan_access.socket, "socket", lambda *_args, **_kwargs: _NoRouteSocket())
+    monkeypatch.setattr(
+        lan_access,
+        "_interface_addresses",
+        lambda _ip_version = 4: next(interface_addresses),
+    )
+    monkeypatch.setattr(
+        lan_access.subprocess,
+        "run",
+        lambda *_args, **_kwargs: mode_calls.append(True) or SimpleNamespace(stdout = "mirrored\n"),
+    )
+
+    assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
+    assert lan_access.detect_lan_addresses() == ["192.168.1.21"]
+    assert len(mode_calls) == 1
+
+
+def test_wsl_mode_cache_retries_a_timeout_after_expiry(monkeypatch):
+    now = [100.0]
+    mode_calls = []
+
+    def _run(*_args, **_kwargs):
+        mode_calls.append(True)
+        if len(mode_calls) == 1:
+            raise lan_access.subprocess.TimeoutExpired(["wslinfo"], 1)
+        return SimpleNamespace(stdout = "mirrored\n")
+
+    monkeypatch.setattr(lan_access.sys, "platform", "linux")
+    monkeypatch.setattr(lan_access.platform, "release", lambda: "microsoft-standard-WSL2")
+    monkeypatch.setattr(lan_access, "_wsl_mode_cache", None)
+    monkeypatch.setattr(lan_access.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(lan_access.subprocess, "run", _run)
+
+    assert lan_access._wsl_networking_mode() == "unknown"
+    now[0] += lan_access._WSL_MODE_CACHE_TTL - 1
+    assert lan_access._wsl_networking_mode() == "unknown"
+    assert len(mode_calls) == 1
+    now[0] += 2
+    assert lan_access._wsl_networking_mode() == "mirrored"
+    assert len(mode_calls) == 2
+
+
+def test_concurrent_wsl_mode_checks_share_one_probe(monkeypatch):
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    mode_calls = []
+    results = []
+
+    def _run(*_args, **_kwargs):
+        mode_calls.append(True)
+        probe_started.set()
+        assert release_probe.wait(2)
+        return SimpleNamespace(stdout = "mirrored\n")
+
+    monkeypatch.setattr(lan_access.sys, "platform", "linux")
+    monkeypatch.setattr(lan_access.platform, "release", lambda: "microsoft-standard-WSL2")
+    monkeypatch.setattr(lan_access, "_wsl_mode_cache", None)
+    monkeypatch.setattr(lan_access.subprocess, "run", _run)
+    threads = [
+        threading.Thread(target = lambda: results.append(lan_access._wsl_networking_mode()))
+        for _ in range(2)
+    ]
+
+    threads[0].start()
+    assert probe_started.wait(2)
+    threads[1].start()
+    release_probe.set()
+    for thread in threads:
+        thread.join(2)
+
+    assert results == ["mirrored", "mirrored"]
+    assert len(mode_calls) == 1
+
+
 # ── live listener ──
 
 

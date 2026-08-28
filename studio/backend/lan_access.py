@@ -48,10 +48,15 @@ _STOP_TIMEOUT = 3.0
 # for all of them; on expiry the trust flag is left active rather than downgraded
 _DRAIN_TIMEOUT = 300.0
 
+# networking mode rarely changes, but a failed wslinfo probe must eventually recover
+_WSL_MODE_CACHE_TTL = 60.0
+
 # uvicorn's own default, so a burst queues on the LAN socket as it does on loopback
 _LISTEN_BACKLOG = 2048
 
 _lock = threading.RLock()
+_wsl_mode_lock = threading.Lock()
+_wsl_mode_cache: Optional[tuple[float, str]] = None
 _server: Any = None
 _serve_loop: Any = None
 _sockets: tuple[socket.socket, ...] = ()
@@ -132,21 +137,30 @@ def _wsl_networking_mode() -> Optional[str]:
     advertised. Older releases use NAT, so failing closed avoids handing a phone
     an address that only the Windows host can route to.
     """
+    global _wsl_mode_cache
+
     if sys.platform != "linux" or "microsoft" not in platform.release().casefold():
         return None
-    try:
-        result = subprocess.run(
-            ["wslinfo", "--networking-mode"],
-            capture_output = True,
-            check = False,
-            text = True,
-            encoding = "utf-8",
-            timeout = 1,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
-    mode = result.stdout.strip().casefold()
-    return mode or "unknown"
+    with _wsl_mode_lock:
+        now = time.monotonic()
+        cached = _wsl_mode_cache
+        if cached is not None and now - cached[0] < _WSL_MODE_CACHE_TTL:
+            return cached[1]
+        try:
+            result = subprocess.run(
+                ["wslinfo", "--networking-mode"],
+                capture_output = True,
+                check = False,
+                text = True,
+                encoding = "utf-8",
+                timeout = 1,
+            )
+        except (OSError, subprocess.SubprocessError):
+            mode = "unknown"
+        else:
+            mode = result.stdout.strip().casefold() or "unknown"
+        _wsl_mode_cache = (time.monotonic(), mode)
+        return mode
 
 
 def _is_host_only_interface(name: str) -> bool:
