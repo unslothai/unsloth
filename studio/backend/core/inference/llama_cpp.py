@@ -25778,26 +25778,29 @@ class LlamaCppBackend:
                     if not started:
                         logger.info("MTP-crash reload stopped before the replacement was ready.")
                         return
-                    if self._unload_epoch != unload_epoch:
-                        logger.info(
-                            "MTP-crash reload undone: the model was unloaded during reload."
-                        )
+                    undo_reload = False
+                    with self._lock:
+                        if self._cancel_event.is_set() or self._unload_epoch != unload_epoch:
+                            undo_reload = True
+                        else:
+                            # Same reason the mode is restored below: the replay launched a
+                            # stripped list but the caller keeps sending the original, so a
+                            # comparator seeing only the stripped one would reload the very MTP
+                            # configuration that just crashed.
+                            if fallback_extra_args is not snapshot.extra_args:
+                                self._requested_extra_args = (
+                                    self._strip_device_extra_args(_ea)
+                                    if snapshot.gpu_ids is not None
+                                    else list(_ea)
+                                )
+                            # Restore the requested mode + reason load_model("off") cleared,
+                            # so /status shows the user's mode + note (like the startup fallback).
+                            self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
+                            self._spec_fallback_reason = "runtime_error"
+                    if undo_reload:
+                        logger.info("MTP-crash reload undone: the model was unloaded during reload.")
                         self.unload_model()
                         return
-                    # Same reason the mode is restored below: the replay launched a
-                    # stripped list but the caller keeps sending the original, so a
-                    # comparator seeing only the stripped one would reload the very MTP
-                    # configuration that just crashed.
-                    if fallback_extra_args is not snapshot.extra_args:
-                        self._requested_extra_args = (
-                            self._strip_device_extra_args(_ea)
-                            if snapshot.gpu_ids is not None
-                            else list(_ea)
-                        )
-                    # Restore the requested mode + reason load_model("off") cleared,
-                    # so /status shows the user's mode + note (like the startup fallback).
-                    self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
-                    self._spec_fallback_reason = "runtime_error"
                 logger.info("Reloaded without MTP after the tensor-parallel crash.")
             except Exception as e:
                 logger.error(f"Reload without MTP failed: {e}")
