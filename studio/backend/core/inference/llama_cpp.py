@@ -21923,6 +21923,8 @@ class LlamaCppBackend:
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
                             return True
+                        if getattr(self, "_health_wait_cancelled", False):
+                            return False
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
@@ -22126,6 +22128,18 @@ class LlamaCppBackend:
                     self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
+                def _cleanup_cancelled_load(message: str) -> None:
+                    logger.info(message)
+                    self._cleanup_failed_cpu_fallback()
+                    self._healthy = False
+                    self._vram_fraction_pending = None
+
+                def _finish_cancelled_health_wait(message: str) -> bool:
+                    if not getattr(self, "_health_wait_cancelled", False):
+                        return False
+                    _cleanup_cancelled_load(message)
+                    return True
+
                 def _try_auto_vulkan_cpu_fallback(
                     failed_cmd: list[str],
                     failed_rc: Optional[int],
@@ -22166,7 +22180,7 @@ class LlamaCppBackend:
                         # Staging copies a whole runtime, so an /unload can land after
                         # the gate above with no runtime yet for unload_model() to
                         # remove; take it back here.
-                        self._cleanup_cpu_fallback_runtime()
+                        _cleanup_cancelled_load("Load cancelled while staging the CPU fallback")
                         return False
                     replay, _spawn_cwd, _cpu_pageable_note = prepared
                     # The rewrite mutates the SHARED env in place, so it happens once
@@ -22184,25 +22198,15 @@ class LlamaCppBackend:
                         "startup; retrying once with llama.cpp devices disabled."
                     )
                     if not _spawn_and_wait(replay, label = "-cpu"):
-                        if getattr(self, "_health_wait_cancelled", False):
-                            # Cancelled during the staged replay. The caller abandons its
-                            # next argv too, so nothing later reclaims the copied runtime.
-                            self._kill_process()
-                            self._cleanup_failed_cpu_fallback()
-                            self._vram_fraction_pending = None
+                        if _finish_cancelled_health_wait(
+                            "Load cancelled during the staged CPU replay health wait"
+                        ):
                             return False
                         if not terminal:
                             # This argv's drafter may be why it cannot start at all,
                             # which the GPU crash says nothing about. Reap the child
                             # and keep the staged runtime for the caller's next argv.
                             self._kill_process()
-                            return False
-                        if getattr(self, "_health_wait_cancelled", False):
-                            # Cancelled during the staged replay's wait. Reap the child
-                            # and report no replay; load_model turns that into a return.
-                            self._kill_process()
-                            self._cleanup_failed_cpu_fallback()
-                            self._vram_fraction_pending = None
                             return False
                         cpu_rc = self._process.poll() if self._process is not None else None
                         detail = self._classify_llama_start_failure(
@@ -22339,7 +22343,10 @@ class LlamaCppBackend:
                             avail_mib = _preflight_avail_mib,
                         )
                         if prepared is None:
-                            if getattr(self, "_health_wait_cancelled", False):
+                            if _load_cancelled():
+                                _cleanup_cancelled_load(
+                                    "Load cancelled while reconstructing the CPU fallback"
+                                )
                                 return False
                             _raise_terminal_load_failure(
                                 "The prior Vulkan CPU fallback could not be reconstructed; run "
@@ -22407,6 +22414,10 @@ class LlamaCppBackend:
                     healthy = _spawn_and_wait(cmd)
                 finally:
                     self._memory_launch_pending = False
+                if not healthy and _finish_cancelled_health_wait(
+                    "Load cancelled during the llama-server health wait"
+                ):
+                    return False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -22447,7 +22458,7 @@ class LlamaCppBackend:
                 # narrowed set. Auto selection only; an explicit pick keeps its error.
                 if (
                     not healthy
-                    and not self._cancel_event.is_set()
+                    and not _load_cancelled()
                     and not gpu_ids
                     and not is_vulkan_backend
                     and gpu_indices
@@ -22954,8 +22965,9 @@ class LlamaCppBackend:
                     # Only when the WAIT itself was cancelled. A cancel that lands later,
                     # while a crashed launch is staging its CPU fallback, must still run
                     # that recovery, so _load_cancelled() alone is the wrong test here.
-                    if getattr(self, "_health_wait_cancelled", False):
-                        logger.info("Load cancelled during the llama-server health wait")
+                    if _finish_cancelled_health_wait(
+                        "Load cancelled during the llama-server health wait"
+                    ):
                         return False
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
@@ -23021,15 +23033,20 @@ class LlamaCppBackend:
                                     self._process.poll() if self._process is not None else None
                                 )
                                 self._kill_process()
+                                if _finish_cancelled_health_wait(
+                                    "Load cancelled during the CPU-projector health wait"
+                                ):
+                                    return False
                                 if _load_cancelled():
+                                    _cleanup_cancelled_load(
+                                        "Load cancelled after the CPU-projector health wait"
+                                    )
                                     return False
                                 if self._is_projector_incompatibility(_cpu_projector_out):
                                     _projector_msg = True
                                 elif self._is_gpu_memory_start_failure(_cpu_projector_out):
                                     # The projector was already off the GPU, so removing it
                                     # cannot repair this allocation failure; keep the real error.
-                                    if getattr(self, "_health_wait_cancelled", False):
-                                        return False
                                     _raise_terminal_load_failure(
                                         self._classify_llama_start_failure(
                                             _cpu_projector_out,
@@ -23045,8 +23062,6 @@ class LlamaCppBackend:
                         elif _projector_memory and _paravirtual_mmproj_pinnable(server_caps):
                             # An env/argv pin already put mmproj on CPU. Text-only
                             # cannot free additional GPU memory, so surface the OOM.
-                            if getattr(self, "_health_wait_cancelled", False):
-                                return False
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(
                                     out,
@@ -23109,10 +23124,9 @@ class LlamaCppBackend:
                                     self._process.poll() if self._process is not None else None
                                 )
                                 self._kill_process()
-                                if getattr(self, "_health_wait_cancelled", False):
-                                    logger.info(
-                                        "Load cancelled during the text-only retry health wait"
-                                    )
+                                if _finish_cancelled_health_wait(
+                                    "Load cancelled during the text-only retry health wait"
+                                ):
                                     return False
                                 # A text-only signal crash is independent evidence of a GPU
                                 # startup fault. Keep a confirmed bad projector out of the
@@ -23131,7 +23145,9 @@ class LlamaCppBackend:
                                         if not _projector_msg:
                                             self._mmproj_fallback_reason = None
                                     else:
-                                        if getattr(self, "_health_wait_cancelled", False):
+                                        if _finish_cancelled_health_wait(
+                                            "Load cancelled during the CPU replay health wait"
+                                        ):
                                             return False
                                         _raise_terminal_load_failure(
                                             self._gpu_init_crash_message(binary)
@@ -23147,7 +23163,9 @@ class LlamaCppBackend:
                                         (self._api_key,),
                                         self._extra_args,
                                     )
-                                    if getattr(self, "_health_wait_cancelled", False):
+                                    if _finish_cancelled_health_wait(
+                                        "Load cancelled during the text-only recovery"
+                                    ):
                                         return False
                                     _raise_terminal_load_failure(
                                         self._mmproj_retry_failure_message(
@@ -23175,7 +23193,9 @@ class LlamaCppBackend:
                         if _replayed:
                             healthy = True
                         else:
-                            if getattr(self, "_health_wait_cancelled", False):
+                            if _finish_cancelled_health_wait(
+                                "Load cancelled during the CPU replay health wait"
+                            ):
                                 return False
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(
@@ -23396,9 +23416,9 @@ class LlamaCppBackend:
             if _load_cancelled():
                 # Cancelled during the post-health setup or the audio probe. Publishing
                 # now leaves the child resident while the cancel route sees is_loaded.
-                logger.info("Load cancelled after llama-server became healthy; unwinding")
-                self._kill_process()
-                self._healthy = False
+                _cleanup_cancelled_load(
+                    "Load cancelled after llama-server became healthy; unwinding"
+                )
                 return False
             # Snapshot the files the server actually loaded. If a GGUF shard or a
             # LoRA/control-vector sidecar is swapped on disk afterwards while the

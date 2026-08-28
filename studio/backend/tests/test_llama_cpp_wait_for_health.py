@@ -659,12 +659,50 @@ def test_a_stale_cancel_marker_does_not_abort_the_next_load(tmp_path):
         )
 
 
+def test_cancelled_health_wait_removes_the_staged_cpu_runtime(tmp_path):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    kills = []
+    cleaned = []
+    waits = []
+    b, gguf = _cancel_scaffold(tmp_path, kills)
+    scoped = threading.Event()
+
+    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+        waits.append(1)
+        b._process = mock.Mock(returncode = -9)
+        b._process.poll.return_value = -9
+        b._cpu_fallback_runtime = _types.SimpleNamespace(
+            tempdir = _types.SimpleNamespace(cleanup = lambda: cleaned.append(1))
+        )
+        scoped.set()
+        b._health_wait_cancelled = True
+        return False
+
+    b._wait_for_health = _wait
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            ),
+            load_cancel_event = scoped,
+        )
+        is False
+    )
+    assert waits == [1]
+    assert b._cpu_fallback_runtime is None
+    assert cleaned == [1]
+
+
 def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
     """Cancelling during the post-health setup used to leave the child resident while
     the cancel route saw is_loaded and skipped teardown."""
     from core.inference.llama_cpp import GgufLoadIntent
 
     kills = []
+    cleaned = []
     b, gguf = _cancel_scaffold(tmp_path, kills)
 
     def _wait(
@@ -672,6 +710,9 @@ def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
         interval = 0.5,
         cancelled = None,
     ):
+        b._cpu_fallback_runtime = _types.SimpleNamespace(
+            tempdir = _types.SimpleNamespace(cleanup = lambda: cleaned.append(1))
+        )
         b._cancel_event.set()  # the user cancels while the load finishes publishing
         return True
 
@@ -687,3 +728,5 @@ def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
         is False
     )
     assert kills, "the healthy-but-cancelled child was left resident"
+    assert b._cpu_fallback_runtime is None
+    assert cleaned == [1]
