@@ -25,6 +25,7 @@ const sourceFile = (relative: string): ts.SourceFile => {
 
 const SURFACE = "../src/features/chat/artifacts/artifact-surface.tsx";
 const FRAME = "../src/features/chat/artifacts/html-frame.tsx";
+const ALERT = "../src/components/ui/alert.tsx";
 
 /** Every `<ArtifactHtmlFrame>` opening tag in the artifact surface. */
 function readFrameOpeningTags(): string[] {
@@ -483,6 +484,17 @@ test("the named iframe is the visible focus fallback", () => {
     /focus-visible:outline/,
     "the restored focus target needs a visible focus treatment",
   );
+});
+
+test("the shared alert uses logical alignment and action spacing", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL(ALERT, import.meta.url)),
+    "utf8",
+  );
+  assert.match(source, /text-start/);
+  assert.match(source, /has-data-\[slot=alert-action\]:pe-18/);
+  assert.match(source, /absolute top-2\.5 end-3/);
+  assert.doesNotMatch(source, /\btext-left\b|\bpr-18\b|\bright-3\b/);
 });
 
 test("the climbing blocked count stays outside the assertive live region", () => {
