@@ -27,12 +27,14 @@ def _state(
     intent = "unset",
     is_colab = False,
     launch_managed = False,
+    origin_host = "localhost",
 ):
     return SimpleNamespace(
         remote_access_intent = intent,
         remote_access_is_colab = is_colab,
         remote_access_launch_managed = launch_managed,
         remote_access_port = 8888,
+        remote_access_origin_host = origin_host,
         remote_access_ready = True,
     )
 
@@ -211,7 +213,8 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
         "block_reason": None,
     }
 
-    def _start(*_args, **_kwargs):
+    def _start(*_args, **kwargs):
+        assert kwargs["origin_host"] == "::1"
         ready.set()
         return "https://example.trycloudflare.com"
 
@@ -227,9 +230,9 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
     )
 
     if trigger == "auto":
-        assert remote_access.maybe_auto_start_remote_access(_state())
+        assert remote_access.maybe_auto_start_remote_access(_state(origin_host = "::1"))
     else:
-        remote_access.start_remote_access(_state())
+        remote_access.start_remote_access(_state(origin_host = "::1"))
     assert ready.wait(1)
     remote_access._start_worker.join(1)
     assert messages == ["Secure link access via Cloudflare: https://example.trycloudflare.com"]

@@ -98,6 +98,19 @@ def test_run_server_accepts_secure_kwarg():
     assert inspect.signature(run.run_server).parameters["secure"].default is False
 
 
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("0.0.0.0", "127.0.0.1"),
+        ("::0", "::1"),
+        ("192.168.1.24", "192.168.1.24"),
+    ],
+)
+def test_tunnel_origin_matches_the_effective_bind(host, expected):
+    import run
+    assert run._tunnel_origin_host_for(host) == expected
+
+
 def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
     from types import SimpleNamespace
 
@@ -114,7 +127,7 @@ def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
         for consumer in (
             "app.state.remote_access_port",
             "TAURI_PORT={port}",
-            "start_studio_tunnel(port",
+            "start_studio_tunnel(",
         )
     )
 

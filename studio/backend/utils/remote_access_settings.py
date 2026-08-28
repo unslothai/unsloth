@@ -147,10 +147,11 @@ def _admin_password_ready() -> bool:
 
 
 def configure_remote_access(
-    app_state, *, port: int, intent: str, is_colab: bool, launch_managed: bool
+    app_state, *, port: int, origin_host: str, intent: str, is_colab: bool, launch_managed: bool
 ) -> None:
     """Publish immutable launch policy used by every settings request."""
     app_state.remote_access_port = port
+    app_state.remote_access_origin_host = origin_host
     app_state.remote_access_intent = intent
     app_state.remote_access_is_colab = bool(is_colab)
     app_state.remote_access_launch_managed = bool(launch_managed)
@@ -269,12 +270,18 @@ def start_remote_access(app_state) -> dict:
     port = getattr(app_state, "remote_access_port", None)
     if not isinstance(port, int) or port <= 0:
         raise RuntimeError("server_port_unavailable")
+    origin_host = getattr(app_state, "remote_access_origin_host", "localhost")
     if get_studio_tunnel_control_token() != admission:
         raise RuntimeError("server_lifecycle_changed")
 
     def _start() -> None:
         from cloudflare_tunnel import start_studio_tunnel
-        url = start_studio_tunnel(port, managed_by = "settings", admission = admission)
+        url = start_studio_tunnel(
+            port,
+            managed_by = "settings",
+            admission = admission,
+            origin_host = origin_host,
+        )
         if url:
             logger.info("Secure link access via Cloudflare: %s", url)
 
