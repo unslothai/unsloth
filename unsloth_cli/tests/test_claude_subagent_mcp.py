@@ -265,6 +265,7 @@ def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", "http://127.0.0.1:8888")
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_API_KEY", "sk-unsloth-test")
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
+    monkeypatch.setenv("ANTHROPIC_UNIX_SOCKET", "/tmp/remote-claude.sock")
     monkeypatch.setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
     monkeypatch.setenv("ANTHROPIC_FOUNDRY_BASE_URL", "https://gateway.azure-api.net/anthropic")
     monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "corp-foundry")
@@ -296,6 +297,7 @@ def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
     child_env = captured["env"]
     assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
     for name in (
+        "ANTHROPIC_UNIX_SOCKET",
         "CLAUDE_CODE_USE_FOUNDRY",
         "ANTHROPIC_FOUNDRY_BASE_URL",
         "ANTHROPIC_FOUNDRY_RESOURCE",
