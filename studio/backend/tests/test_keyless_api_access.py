@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import secrets
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -141,7 +143,7 @@ def test_settings_are_immediate_and_fail_closed(monkeypatch):
     assert get_keyless_api_tools_enabled() is False
 
     set_keyless_api_access("full", tools = True)
-    monkeypatch.setattr(studio_db, "get_app_setting",
+    monkeypatch.setattr(studio_db, "get_app_settings",
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError("db unavailable")))
     _reset_scope_cache()
     assert (get_keyless_api_access_scope(), get_keyless_api_tools_enabled()) == ("off", False)
@@ -172,6 +174,110 @@ def test_stale_refresh_cannot_reopen_a_closed_scope(monkeypatch):
         write_done.set()
         reader.join(timeout = 10)
     assert observed == [("off", False)]
+
+
+def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch):
+    """Regression for #9901.
+
+    KeylessToolPolicyMiddleware runs this check on every HTTP request, including
+    GET /v1/models, ahead of routing. Before the fix, every concurrent caller that
+    saw a stale cache independently opened its own sqlite3 connection: a py-spy
+    dump under sustained concurrent inference showed many AnyIO worker threads
+    piled up inside sqlite3 connection open/close for this exact path, starving
+    the shared threadpool every other request -- lightweight ones included --
+    also needed just to get past this gate. A burst of concurrent callers landing
+    in the same stale window must now trigger exactly one real read.
+    """
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("inference", tools = False)
+    _reset_scope_cache()
+
+    real_read = keyless._read_settings
+    call_count = 0
+    count_lock = threading.Lock()
+    release = threading.Event()
+    n_threads = 25
+    entered = threading.Barrier(n_threads + 1)
+
+    def counted_read():
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+        # Held open long enough that, if coalescing were broken, every other
+        # thread would already have raced in and called this too.
+        assert release.wait(timeout = 10)
+        return real_read()
+
+    monkeypatch.setattr(keyless, "_read_settings", counted_read)
+
+    results = [None] * n_threads
+
+    def worker(i):
+        entered.wait(timeout = 10)
+        results[i] = keyless._settings()
+
+    threads = [threading.Thread(target = worker, args = (i,)) for i in range(n_threads)]
+    for t in threads:
+        t.start()
+    entered.wait(timeout = 10)  # release every worker into _settings() together
+    time.sleep(0.2)  # let the followers reach the inflight Event before unblocking the owner
+    release.set()
+    for t in threads:
+        t.join(timeout = 10)
+
+    assert call_count == 1
+    assert results == [("inference", False)] * n_threads
+
+
+def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
+    """Regression for #9901, through the actual production call chain.
+
+    ``KeylessToolPolicyMiddleware`` dispatches ``asgi_request_is_keyless`` to
+    AnyIO's shared, finite threadpool for every request -- including a plain
+    GET /v1/models -- ahead of routing. This drives that exact function, through
+    a small worker pool standing in for AnyIO's shared limiter, and includes one
+    request submitted only after the burst is already running: a stand-in for a
+    lightweight request that arrives mid-storm and must not be left waiting on
+    a duplicate sqlite3 connection open of its own.
+    """
+    import utils.keyless_api_access as keyless
+    from utils.keyless_api_access import asgi_request_is_keyless
+
+    set_keyless_api_access("inference", tools = False)
+    _reset_scope_cache()
+
+    real_read = keyless._read_settings
+    call_count = 0
+    count_lock = threading.Lock()
+    release = threading.Event()
+
+    def counted_read():
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+        assert release.wait(timeout = 10)
+        return real_read()
+
+    monkeypatch.setattr(keyless, "_read_settings", counted_read)
+
+    scope = asgi_scope(path = "/v1/models")
+    n_requests = 20
+    pool_workers = 4  # a small stand-in for AnyIO's shared, finite thread limiter
+
+    with ThreadPoolExecutor(max_workers = pool_workers) as pool:
+        futures = [pool.submit(asgi_request_is_keyless, scope) for _ in range(n_requests)]
+        time.sleep(0.2)  # let the pool drain into the inflight Event before releasing
+        # A lightweight request landing mid-burst -- this is what must not be
+        # starved by the others contending on the settings read.
+        late_future = pool.submit(asgi_request_is_keyless, scope)
+        release.set()
+        results = [f.result(timeout = 10) for f in futures]
+        late_result = late_future.result(timeout = 10)
+
+    assert call_count == 1
+    assert results == [True] * n_requests
+    assert late_result is True
 
 
 def test_overlapping_writes_publish_in_commit_order(monkeypatch):
