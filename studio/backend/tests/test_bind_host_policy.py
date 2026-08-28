@@ -58,6 +58,7 @@ def test_wildcard_loopback_matches_the_effective_address_family(host, expected):
         ("0", "0.0.0.0"),
         ("::0", "::"),
         ("::ffff:0.0.0.0", "0.0.0.0"),
+        ("::ffff:127.0.0.1", "127.0.0.1"),
         ("192.168.1.24", "192.168.1.24"),
     ],
 )
@@ -70,6 +71,22 @@ def test_a_mapped_wildcard_is_bindable_through_asyncio_after_normalization():
         server = await asyncio.start_server(
             lambda _reader, _writer: None,
             host = normalize_wildcard_bind_host("::ffff:0.0.0.0"),
+            port = 0,
+        )
+        try:
+            return server.sockets[0].family
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    assert asyncio.run(bind()) == socket.AF_INET
+
+
+def test_a_mapped_specific_bind_is_bindable_through_asyncio_after_normalization():
+    async def bind():
+        server = await asyncio.start_server(
+            lambda _reader, _writer: None,
+            host = normalize_wildcard_bind_host("::ffff:127.0.0.1"),
             port = 0,
         )
         try:

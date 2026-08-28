@@ -97,6 +97,17 @@ def is_wildcard_host(host: str) -> bool:
 
 def normalize_wildcard_bind_host(host: str) -> str:
     """Return a safe canonical bind for an effective wildcard host."""
+    if isinstance(host, str):
+        try:
+            parsed_literal = ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            if (
+                isinstance(parsed_literal, ipaddress.IPv6Address)
+                and parsed_literal.ipv4_mapped is not None
+            ):
+                return str(parsed_literal.ipv4_mapped)
     literal = _literal_ip_address(host)
     if literal is not None:
         if not literal.is_unspecified:
