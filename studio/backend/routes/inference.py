@@ -6710,7 +6710,7 @@ def _anthropic_request_has_image(payload) -> bool:
 
 
 def _anthropic_local_image_payloads(payload) -> list[str]:
-    """Nonempty base64 image sources translated by the Anthropic endpoint."""
+    """Base64 image sources translated by the Anthropic endpoint."""
     encoded_images = []
     for msg in getattr(payload, "messages", None) or ():
         content = msg.get("content") if isinstance(msg, dict) else msg.content
@@ -6723,7 +6723,7 @@ def _anthropic_local_image_payloads(payload) -> list[str]:
             source = block.get("source") if isinstance(block, dict) else block.source
             source_type = source.get("type") if isinstance(source, dict) else source.type
             data = source.get("data") if isinstance(source, dict) else source.data
-            if source_type == "base64" and isinstance(data, str) and data:
+            if source_type == "base64" and isinstance(data, str):
                 encoded_images.append(data)
             url = source.get("url") if isinstance(source, dict) else source.url
             if source_type == "url" and isinstance(url, str) and url.startswith("data:"):

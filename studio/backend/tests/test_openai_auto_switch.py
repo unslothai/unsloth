@@ -9673,8 +9673,13 @@ def test_nonstreaming_responses_defers_malformed_gguf_preflight_to_chat(monkeypa
             "type": "url",
             "url": "data:image/png;base64,bm90IGFuIGltYWdl",
         },
+        {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "",
+        },
     ],
-    ids = ["base64 source", "data url source"],
+    ids = ["base64 source", "data url source", "empty base64 source"],
 )
 def test_anthropic_rejects_a_malformed_gguf_image_before_switch(monkeypatch, source):
     from models.inference import AnthropicMessage, AnthropicMessagesRequest
