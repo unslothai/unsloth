@@ -634,6 +634,10 @@ jobs:
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
 
+      - name: Tool activity collapse regression (Playwright)
+        if: matrix.shard == 'extra'
+        run: python tests/studio/playwright_tool_activity.py --json
+
       # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
       # each other: the suppression sets in loggers/handlers.py and the poll cadences in
       # session.py. A pull request that adds a polling call site in the frontend edits
