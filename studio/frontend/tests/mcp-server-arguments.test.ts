@@ -140,7 +140,10 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
   );
   assert.match(dialog, /!addressIsCommand && \([\s\S]*Use OAuth sign-in/);
   assert.match(dialog, /const decision = resolveMcpStdioUrl\(/);
-  assert.match(dialog, /decision\.kind === "reuse"[\s\S]*url = decision\.url/);
+  assert.match(
+    dialog,
+    /decision\.kind === "reuse"[\s\S]*url = view\.kind === "edit" \? undefined : decision\.url/,
+  );
   assert.match(
     dialog,
     /const url = stdio\s*\? await encodeStdioForGeneration\([\s\S]*testMcpServer\(\{\s*url,/,

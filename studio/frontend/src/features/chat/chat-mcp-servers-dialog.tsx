@@ -425,7 +425,7 @@ export function ChatMcpServersDialog({
     }
 
     setCodecPending(true);
-    setForm({ ...baseForm, url: "" });
+    setForm(baseForm);
     try {
       const decoded = await decodeMcpStdioCommand(server.url);
       if (
@@ -574,7 +574,7 @@ export function ChatMcpServersDialog({
     setSaving(true);
     try {
       const headers = headersToObject(form.headers);
-      let url: string;
+      let url: string | undefined;
       if (stdio) {
         const decision = resolveMcpStdioUrl(
           form.url,
@@ -582,7 +582,7 @@ export function ChatMcpServersDialog({
           form.stdioSnapshot,
         );
         if (decision.kind === "reuse") {
-          url = decision.url;
+          url = view.kind === "edit" ? undefined : decision.url;
         } else {
           const encodedUrl = await encodeStdioForGeneration(
             generation,

@@ -265,6 +265,22 @@ def test_stdio_command_codec_is_stateless_and_never_probes(monkeypatch):
     assert (decoded.command, decoded.arguments) == ("python", ["-m", "mod"])
 
 
+def test_stdio_command_codec_remains_available_when_execution_is_disabled(monkeypatch):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
+
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: False)
+    encoded = routes_mcp.encode_stdio_command(
+        McpStdioCommand(command = "python", arguments = ["a b", ""]),
+        current_subject = "u",
+    )
+    decoded = routes_mcp.decode_stdio_command(
+        McpStdioDecodeRequest(url = encoded.url), current_subject = "u"
+    )
+
+    assert (decoded.command, decoded.arguments) == ("python", ["a b", ""])
+
+
 @pytest.mark.parametrize(
     ("operation", "detail"),
     [

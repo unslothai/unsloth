@@ -68,49 +68,49 @@ def _looks_like_command(value: str) -> bool:
     return any(ch.isspace() for ch in value)
 
 
+def _normalize_stdio_command(url: str) -> str:
+    raw = url or ""
+    trimmed = raw.strip()
+    if not trimmed:
+        raise HTTPException(status_code = 400, detail = "command must not be empty")
+    # Leading whitespace is executable-field padding. At the other end, only
+    # space/tab delimit arguments on Windows. POSIX quoting protects whitespace.
+    normalized = raw.lstrip().rstrip(" \t") if sys.platform == "win32" else trimmed
+    try:
+        parts = parse_stdio_command(normalized)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            "Invalid command. Check quoting and try again.",
+            event = "mcp_servers.invalid_command",
+            log = logger,
+        )
+    if not parts or not parts[0].strip():
+        raise HTTPException(status_code = 400, detail = "command must not be empty")
+    if any("\x00" in part for part in parts):
+        raise HTTPException(
+            status_code = 400,
+            detail = "command and arguments must not contain NUL characters",
+        )
+    if "://" in parts[0]:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Enter an http(s):// URL, or a local command whose "
+            "first token is an executable (not a URL).",
+        )
+    return normalized
+
+
 def _validate_url(url: str) -> str:
     raw = url or ""
     trimmed = raw.strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
-    # When stdio is enabled, a non-HTTP value is a local command (reuses this
-    # field so stdio servers ride existing CRUD/storage).
+    # Non-HTTP values reuse the URL field for local commands. Syntax validation
+    # is policy-free, but persistence and execution stay behind the stdio gate.
     if stdio_mcp_enabled() and is_stdio(trimmed):
-        # Leading whitespace is executable-field padding. At the other end,
-        # only space/tab are command-line delimiters on Windows; stripping all
-        # Unicode whitespace would corrupt a canonical final argument emitted
-        # by subprocess.list2cmdline(). POSIX shlex quoting protects those
-        # values, so retain the legacy full-strip behavior there.
-        normalized = raw.lstrip().rstrip(" \t") if sys.platform == "win32" else trimmed
-        try:
-            parts = parse_stdio_command(normalized)
-        except ValueError as exc:
-            raise log_and_http_error(
-                exc,
-                400,
-                "Invalid command. Check quoting and try again.",
-                event = "mcp_servers.invalid_command",
-                log = logger,
-            )
-        if not parts or not parts[0].strip():
-            raise HTTPException(status_code = 400, detail = "command must not be empty")
-        if any("\x00" in part for part in parts):
-            # Python and the OS process boundary reject embedded NUL in every
-            # argv element. Refuse it here so encode, decode, CRUD, import and
-            # test cannot persist or probe a command that can never launch.
-            raise HTTPException(
-                status_code = 400,
-                detail = "command and arguments must not contain NUL characters",
-            )
-        if "://" in parts[0]:
-            # A URL-scheme first token is a mistyped URL, not a command. Reject
-            # cleanly instead of exec-ing it (mirrors the frontend check).
-            raise HTTPException(
-                status_code = 400,
-                detail = "Enter an http(s):// URL, or a local command whose "
-                "first token is an executable (not a URL).",
-            )
-        return normalized
+        return _normalize_stdio_command(raw)
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
         if _looks_like_command(trimmed):
@@ -158,9 +158,9 @@ def decode_stdio_command(
     via_api_key: ViaApiKey = False,
 ):
     require_ui_session_for_local_commands(via_api_key)
-    url = _validate_url(payload.url)
-    if not is_stdio(url):
+    if not is_stdio(payload.url.strip()):
         raise HTTPException(status_code = 400, detail = "HTTP(S) MCP servers do not have arguments")
+    url = _normalize_stdio_command(payload.url)
     parts = parse_stdio_command(url)
     return McpStdioCommand(command = parts[0], arguments = parts[1:])
 
@@ -181,7 +181,7 @@ def encode_stdio_command(
             detail = "command must be a local executable, not a URL",
         )
     url = join_stdio_command([command, *payload.arguments])
-    _validate_url(url)
+    _normalize_stdio_command(url)
     return McpStdioEncodeResponse(url = url)
 
 
