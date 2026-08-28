@@ -1025,7 +1025,6 @@ def _job_from_record(record: dict) -> Optional[_VideoJob]:
 
 def _hydrate_job(video_id: str) -> None:
     from core.inference import video_gallery
-
     with _jobs_lock:
         if video_id in _jobs:
             return
@@ -1036,7 +1035,6 @@ def _hydrate_job(video_id: str) -> None:
 
 def _hydrate_jobs() -> list[_VideoJob]:
     from core.inference import video_gallery
-
     with _jobs_lock:
         jobs = [
             job for raw in video_gallery.list_jobs() if (job := _job_from_record(raw)) is not None

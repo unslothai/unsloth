@@ -883,9 +883,7 @@ def test_a_stale_poller_cannot_recreate_a_deleted_job(client, backend, monkeypat
     monkeypatch.setattr(
         video_routes,
         "_lookup_video",
-        lambda requested_id: video_routes._job_to_openai(job)
-        if requested_id == video_id
-        else None,
+        lambda requested_id: video_routes._job_to_openai(job) if requested_id == video_id else None,
     )
     monkeypatch.setattr(video_routes, "_await_generate_settled", lambda _video_id: True)
 
