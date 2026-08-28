@@ -171,6 +171,16 @@ def test_parse_stdio_entry():
     assert mcp_client.parse_stdio_command(entry.url) == ["npx", "-y", "server", "/tmp"]
 
 
+@pytest.mark.parametrize("args", [None, "", 0, False, {}])
+def test_parse_rejects_explicit_non_list_args(args):
+    entries, errors = parse_mcp_config(
+        {"mcpServers": {"bad": {"command": "python", "args": args}}}
+    )
+
+    assert entries == []
+    assert errors == ["bad: 'args' must be a list of strings."]
+
+
 def test_parse_remote_entry():
     cfg = {
         "mcpServers": {
