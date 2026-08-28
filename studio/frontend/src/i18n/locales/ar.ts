@@ -1401,6 +1401,11 @@ export const ar = {
         blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
         blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
         blockedBannerAction: "السماح لهذا الـ Canvas",
+        blockedTitle: "الوصول إلى الشبكة لـ Canvas معطّل",
+        blockedHint:
+          "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
+        blockedSettingsAction: "فتح الإعدادات",
+        blockedDismiss: "تجاهل",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",

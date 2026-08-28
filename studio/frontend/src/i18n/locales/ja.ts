@@ -1387,6 +1387,11 @@ export const ja = {
         blockedBanner: "{hosts} からの外部リソース {count} 件をブロックしました。",
         blockedBannerPlural: "{hosts} からの外部リソース {count} 件をブロックしました。",
         blockedBannerAction: "この Canvas で許可",
+        blockedTitle: "Canvas のネットワークアクセスはオフです",
+        blockedHint:
+          "設定 → チャットで「{setting}」をオンにすると Canvas が外部リソースを読み込めます。この Canvas だけ許可することもできます。",
+        blockedSettingsAction: "設定を開く",
+        blockedDismiss: "閉じる",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",

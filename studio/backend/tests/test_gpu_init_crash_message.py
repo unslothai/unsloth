@@ -206,7 +206,7 @@ def _run_cpu_fallback_load(
         )
         if not available:
             return None
-        return ["/staged/llama-server", "--device", "none"], None
+        return ["/staged/llama-server", "--device", "none"], None, None
 
     backend._wait_for_health = _wait_for_health
     backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
@@ -614,7 +614,7 @@ class TestCpuIsolatedReplay:
 
         prepared = backend._prepare_cpu_fallback_launch("/original/server", ["original"], env, {})
 
-        assert prepared == (["/staged/server", "--device", "none"], None)
+        assert prepared == (["/staged/server", "--device", "none"], None, None)
         assert env[loader_path] == "/staged/libs"
         assert env["KEEP"] == "1"
 
