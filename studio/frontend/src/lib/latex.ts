@@ -19,7 +19,8 @@ import {
   quoteDepth,
   quoteState,
 } from "./markdown-list-columns.ts";
-import { codeSpans } from "./markdown-code-spans.ts";
+import { parseMarkdownIntoBlocks } from "streamdown";
+import { codeSpans, codeSpansWithOpenTail } from "./markdown-code-spans.ts";
 
 /**
  * Matches a single $ followed by a number pattern (currency), e.g.:
@@ -68,6 +69,9 @@ const INDENTED_CODE_CANDIDATE_RE =
 const BLOCK_LINE_RE =
   /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
 const LINK_DEFINITION_RE = /^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:/;
+const CODE_SPAN_BLOCK_BOUNDARY_RE =
+  /(?:\r?\n[ \t]*\r?\n|(?:^|[\r\n]) {0,3}(?:#{1,6}(?:[ \t]|$)|>|[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|`{3,}|~{3,}))/;
+const NON_LINE_ENDING_RE = /[^\r\n]/g;
 
 /** `line` with up to `columns` columns of leading whitespace removed. */
 function stripIndent(line: string, columns: number): string {
@@ -95,7 +99,75 @@ function columnWidth(prefix: string): number {
  * Find code regions (fenced, indented, and inline) to skip.
  * Returns a sorted, non-overlapping array of [start, end] index pairs.
  */
-export function findCodeBlockRegions(content: string): Array<[number, number]> {
+function normalizedMarkdownOffsets(content: string): {
+  text: string;
+  offsets: number[];
+} {
+  let text = "";
+  const offsets = [0];
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "\r") {
+      if (content[index + 1] === "\n") {
+        index += 1;
+      }
+      text += "\n";
+    } else {
+      text += content[index];
+    }
+    offsets.push(index + 1);
+  }
+  return { text, offsets };
+}
+
+function findInlineCodeRegions(
+  content: string,
+  includeOpenTail: boolean,
+  blockRegions: Array<[number, number]>,
+): Array<[number, number]> {
+  let masked = content;
+  if (blockRegions.length > 0) {
+    const parts: string[] = [];
+    let cursor = 0;
+    for (const [start, end] of blockRegions) {
+      parts.push(content.slice(cursor, start));
+      parts.push(content.slice(start, end).replace(NON_LINE_ENDING_RE, " "));
+      cursor = end;
+    }
+    parts.push(content.slice(cursor));
+    masked = parts.join("");
+  }
+
+  const spans = codeSpans(masked);
+  const crossesBlock = spans.some(({ start, end }) =>
+    CODE_SPAN_BLOCK_BOUNDARY_RE.test(masked.slice(start, end)),
+  );
+  if (!includeOpenTail && !crossesBlock) {
+    return spans.map(({ start, end }) => [start, end]);
+  }
+
+  const normalized = normalizedMarkdownOffsets(masked);
+  const blocks = parseMarkdownIntoBlocks(normalized.text);
+  const regions: Array<[number, number]> = [];
+  let blockStart = 0;
+  for (const block of blocks) {
+    const blockSpans = includeOpenTail
+      ? codeSpansWithOpenTail(block)
+      : codeSpans(block);
+    for (const span of blockSpans) {
+      regions.push([
+        normalized.offsets[blockStart + span.start] ?? content.length,
+        normalized.offsets[blockStart + span.end] ?? content.length,
+      ]);
+    }
+    blockStart += block.length;
+  }
+  return regions;
+}
+
+export function findCodeBlockRegions(
+  content: string,
+  includeOpenInlineTail = false,
+): Array<[number, number]> {
   const fenced: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
   const indented: Array<[number, number]> = [];
@@ -221,10 +293,7 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
   }
 
   const blocks = mergeRegions(fenced, indented);
-  const inline = codeSpans(content).map(({ start, end }): [number, number] => [
-    start,
-    end,
-  ]);
+  const inline = findInlineCodeRegions(content, includeOpenInlineTail, blocks);
 
   // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
   // the binary search land on the inner span and miss the outer one.
@@ -491,7 +560,7 @@ function normalizeEscapedInlineMath(content: string): string {
   if (!content.includes("\\$")) return content;
 
   let skipRegions = mergeRegions(
-    findCodeBlockRegions(content),
+    findCodeBlockRegions(content, true),
     findLinkDestinationRegions(content),
   );
   skipRegions = mergeRegions(

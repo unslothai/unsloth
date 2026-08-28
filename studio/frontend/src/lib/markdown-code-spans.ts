@@ -44,8 +44,7 @@ function stripPadding(content: string): string {
   return content;
 }
 
-/** Every code span in `text`, in order. Unclosed runs are ordinary text. */
-export function codeSpans(text: string): CodeSpan[] {
+function scanCodeSpans(text: string, includeOpenTail: boolean): CodeSpan[] {
   const spans: CodeSpan[] = [];
   let index = 0;
 
@@ -79,11 +78,29 @@ export function codeSpans(text: string): CodeSpan[] {
       cursor += candidate;
     }
     if (!closed) {
+      if (includeOpenTail && ticks < 3) {
+        spans.push({
+          start: index,
+          end: text.length,
+          content: stripPadding(text.slice(contentStart)),
+        });
+        break;
+      }
       // Nothing closes this run: it is literal text, carry on after it.
       index = contentStart;
     }
   }
   return spans;
+}
+
+/** Every code span in `text`, in order. Unclosed runs are ordinary text. */
+export function codeSpans(text: string): CodeSpan[] {
+  return scanCodeSpans(text, false);
+}
+
+/** closed spans plus the unmatched tail that incomplete-Markdown repair makes code. */
+export function codeSpansWithOpenTail(text: string): CodeSpan[] {
+  return scanCodeSpans(text, true);
 }
 
 /** Replaces every code span with `park(content)`, leaving the rest as is. */

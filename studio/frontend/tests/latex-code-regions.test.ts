@@ -111,6 +111,20 @@ test("fences stop at their Markdown container boundary", () => {
   }
 });
 
+test("incomplete code spans stay literal without crossing block boundaries", () => {
+  const cases: [string, string][] = [
+    ["Use `code \\$x\\$", "Use `code \\$x\\$"],
+    ["Use `code\n\\$x\\$", "Use `code\n\\$x\\$"],
+    ["`open\n\n\\$x\\$\n\nclose`", "`open\n\n$x$\n\nclose`"],
+    ["`open\n# heading\n\\$x\\$\nclose`", "`open\n# heading\n$x$\nclose`"],
+    ["`open\nsoft \\$x\\$ close`", "`open\nsoft \\$x\\$ close`"],
+  ];
+
+  for (const [input, expected] of cases) {
+    assert.equal(preprocessLaTeX(input), expected, input);
+  }
+});
+
 test("escaped inline math from local models is recovered inside lists", () => {
   const input = [
     String.raw`- \$v_s\$ is the velocity of the bubble,`,
