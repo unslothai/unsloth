@@ -29,6 +29,7 @@ import textwrap
 import urllib.request
 from pathlib import Path
 
+
 _STUDIO_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _STUDIO_DIR / "backend"
 for _dir in (_BACKEND_DIR, _STUDIO_DIR):
@@ -2678,6 +2679,26 @@ def _ensure_xpu_triton() -> None:
         )
         return
 
+    if _respect_pm_policy():
+        # The swap uninstalls generic triton and installs a wheel fetched from the pinned
+        # index, and there is no expected hash to check that wheel against: deriving one
+        # from the artifact itself would approve whatever the index returned. The swap is
+        # an optimisation -- torch.compile using the XPU -- so under the opt-out it is
+        # skipped BEFORE the download, leaving the venv exactly as it was rather than
+        # without triton at all, which no rerun could repair.
+        # Worded without naming a control the operator may not have set: the swap is
+        # skipped for the opt-out itself, not for a hash policy specifically.
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and the XPU triton swap would have to "
+                f"remove generic triton {generic} before installing a wheel your policy "
+                f"may refuse, which no rerun could repair; leaving it in place -- "
+                f"torch.compile will not use the XPU. Unset {_POLICY_OPT_OUT_ENV} for "
+                f"one run to take the swap."
+            )
+        )
+        return
+
     # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the shared
     # paths live in generic triton's OWN record, so removing it afterwards deletes what the XPU
     # build just wrote. Pre-fetching stops a dead mirror stranding the venv between the two
@@ -3731,6 +3752,20 @@ NO_TORCH_SKIP_PACKAGES = {
     "librosa",
 }
 
+# The installer relaxes a hardened pip/uv policy for its OWN dependency installs: every
+# requirements file we ship is unhashed and a few have no wheel at any version (#8530).
+# That is still the operator's control being set aside, so it is announced once, and this
+# variable turns every part of it off -- the install then fails on the first step the
+# policy forbids, which is the right answer for an operator who means it.
+_POLICY_OPT_OUT_ENV = "UNSLOTH_RESPECT_PM_POLICY"
+
+
+def _respect_pm_policy() -> bool:
+    """True when the operator asked for their pip/uv policy to be left in force."""
+    value = os.environ.get(_POLICY_OPT_OUT_ENV, "").strip().lower()
+    return value not in ("", "0", "false", "no")
+
+
 # Requirements with NO wheel on PyPI at any version, so the installer has always built
 # them from source. antlr4-python3-runtime arrives transitively: omegaconf==2.3.1 pins it
 # below the 4.13.2 wheel.
@@ -3756,7 +3791,12 @@ def _sdist_only_build_args(*names: str) -> list[str]:
 
     Naming a package that the resolution never reaches is harmless (verified), so this
     is safe next to the NO_TORCH / Windows requirement filtering.
+
+    Empty under UNSLOTH_RESPECT_PM_POLICY: the exemption exists only to override a
+    user-level no-build/only-binary, so declining to override it is the whole opt-out.
     """
+    if _respect_pm_policy():
+        return []
     args: list[str] = []
     for name in names:
         args += ["--no-binary", name]
@@ -4168,7 +4208,7 @@ def _restore_from_staged(
     """
     if not (removed_any and staged):
         return
-    if pip_install_try(
+    restored_here = pip_install_try(
         f"Restoring {name} after an incomplete metadata repair",
         "--no-cache-dir",
         "--no-deps",
@@ -4179,9 +4219,11 @@ def _restore_from_staged(
         name,
         # pip, not uv: the wheel is already built and sitting in staged, and uv would
         # reject the unpinned name under UV_REQUIRE_HASHES with the package records
-        # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES relaxation.
+        # already gone. The repair never starts under the opt-out, so this cannot be
+        # the step that a hash policy refuses.
         force_pip = True,
-    ):
+    )
+    if restored_here:
         # The wheel just wrote its own valid metadata at the same path the rewritten
         # record occupied, so the unwinding below must not put the original back over
         # it. See _QuarantinedMetadata.forget_copies.
@@ -4236,6 +4278,22 @@ def _stage_replacement(name: str):
         # leaves the installation intact.
         build_options = ["--no-build-isolation"]
         overrides = {"PIP_NO_INDEX": "1"}
+    if _respect_pm_policy():
+        # The repair deletes every metadata record and then reinstalls from the staged
+        # wheel, and that reinstall cannot be made to satisfy require-hashes honestly:
+        # hashing the artifact we just fetched and handing that digest back to the
+        # protected install approves it with itself, which is not what a hash policy is
+        # for. There is no expected hash to check against, so the repair does not start.
+        # Duplicate metadata is untidy; a venv with the core package uninstalled is not.
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and repairing {name} would have to "
+                "install a replacement your hash policy cannot verify; leaving the "
+                "install alone."
+            ),
+            file = sys.stderr,
+        )
+        return None
     if USE_UV and _uv_is_offline() and not _is_local_source(name):
         # A checkout on disk needs no network, so offline has nothing to say about it.
         _safe_print(
@@ -4338,6 +4396,24 @@ def _repair_duplicate_core_metadata(
             versions
         ) or install_manifest.pip_backup_metadata_paths(name):
             duplicates.append((name, record_count))
+
+    # Decline here, not inside _stage_replacement(). By the time staging is reached this
+    # has already rewritten METADATA and moved pip's leftover backups aside, and while
+    # the finally below puts them back on a normal return, a SIGKILL or a power loss
+    # cannot run a finally. Under the opt-out the reinstall was never going to be
+    # permitted, so the whole repair is skipped before the first byte is touched and the
+    # tree is left exactly as found for a later run to see.
+    if duplicates and _respect_pm_policy():
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and repairing duplicate metadata for "
+                + ", ".join(name for name, _ in duplicates)
+                + " would have to reinstall it from a source your policy may refuse; "
+                "leaving it as found. Unset the variable for one run to repair it."
+            ),
+            file = sys.stderr,
+        )
+        return False
 
     repaired: list[str] = []
     staging_dirs: list[str] = []
@@ -4626,31 +4702,365 @@ _PM_POLICY_ENV_VARS = (
     "UV_NO_BINARY_PACKAGE",
     "UV_REQUIRE_HASHES",
     "UV_EXCLUDE_NEWER",
+    "UV_ONLY_BINARY",
+    "UV_ONLY_BINARY_PACKAGE",
+    "PIP_ONLY_BINARY",
+    "PIP_NO_BINARY",
+    "PIP_REQUIRE_HASHES",
+    "PIP_UPLOADED_PRIOR_TO",
+    # Reported as well as scrubbed: the pinned branch removes it by default through
+    # _UV_INDEX_ENV_VARS, and `pip config list` shows it as `:env:.no-index`, which
+    # this scan skips.
+    "PIP_NO_INDEX",
+)
+
+
+# What the DEFAULT pinned branch removes, which is not the same list. The tuple above
+# grew as the notice learned to report more controls, and reporting a control is not a
+# reason to start overriding it: sharing one tuple silently widened the default bypass
+# to UV_ONLY_BINARY, UV_ONLY_BINARY_PACKAGE and PIP_UPLOADED_PRIOR_TO, none of which
+# this installer touched before. The whole change rests on the default path being
+# indistinguishable from before, so this stays exactly as it was and the notice reports
+# the wider set without acting on it. PIP_NO_INDEX is absent because the pinned branch
+# already drops it as an index variable.
+_PM_POLICY_SCRUB_ENV_VARS = (
+    "UV_NO_BUILD",
+    "UV_NO_BUILD_PACKAGE",
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+    "UV_REQUIRE_HASHES",
+    "UV_EXCLUDE_NEWER",
     "PIP_ONLY_BINARY",
     "PIP_NO_BINARY",
     "PIP_REQUIRE_HASHES",
 )
 
 
+# Of the uv variables above, the ones uv actually reads. Measured on the pinned uv
+# 0.12.1: only these two change the outcome; UV_NO_BUILD, UV_NO_BUILD_PACKAGE,
+# UV_ONLY_BINARY and UV_NO_BINARY are ignored, and `uv help pip install` documents no
+# `[env:]` spelling for them. They stay in the strip list, which costs nothing, but must
+# not be REPORTED, or the notice names policy uv does not apply.
+_UV_ENFORCED_ENV_VARS = ("UV_REQUIRE_HASHES", "UV_EXCLUDE_NEWER")
+
+
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     """Overrides that stop a hardened user pip config failing the installer's own pip.
 
-    Empty for anything that is not a `pip install` / `pip download` / `pip wheel` this
-    module drives, every `uv` command included, so the "non-pinned installs inherit the
-    caller env unchanged" contract holds on a machine with no hostile pip config.
-    `wheel` is in that set because the duplicate-metadata repair stages its replacement
-    with `pip wheel`, where require-hashes applies exactly as it does to install: an
-    unpinned name is rejected before anything is built, so the repair would abort on a
-    hardened machine and leave the conflict it exists to remove.
+    Empty for anything that is not a `pip install` / `download` / `wheel` this module
+    drives, `uv` included, so non-pinned installs inherit the caller env unchanged.
+    `wheel` is in the set because the duplicate-metadata repair stages its replacement
+    with it, and require-hashes rejects an unpinned name there before anything is built.
 
-    `require-hashes = true` makes pip reject any requirement without a --hash, which is
-    every requirements file we ship; that is what took the pip FALLBACK down in #8530
-    once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
-    overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
+    `require-hashes = true` rejects any requirement without a --hash, which is every
+    requirements file we ship; that took the pip FALLBACK down in #8530 once uv had
+    failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0 overrides
+    it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
+
+    Empty under UNSLOTH_RESPECT_PM_POLICY: an operator who would rather the install stop
+    than proceed unhashed gets exactly that.
     """
+    if _respect_pm_policy():
+        return {}
     if cmd[:1] == ["uv"] or not any(arg in ("install", "download", "wheel") for arg in cmd):
         return {}
     return {"PIP_REQUIRE_HASHES": "0"}
+
+
+# Hardening, as opposed to a mirror, which is merely configuration. Named in the notice so
+# the operator sees which control is being set aside. `exclude-newer` is here for the same
+# reason UV_EXCLUDE_NEWER is in _PM_POLICY_ENV_VARS: an upload cutoff is a reproducibility
+# control, and relaxing one silently is what this notice exists to stop.
+# The keys pip itself has an option for. Measured with pip 26.2.1:
+# `pip install --help` exposes --require-hashes, --only-binary, --no-binary and
+# --uploaded-prior-to, and nothing for no-build, either -package form or exclude-newer.
+# A pip.conf carrying one of those is an inert entry pip ignores, so reading it as pip
+# policy invents hardening the host does not have -- which under the opt-out made the
+# first uv step refuse over a cross-manager gap that was not one.
+# `no-index` is here for the same reason it is kept under the opt-out: it REMOVES every
+# remote source, and the pinned branch discards it along with the rest of pip.conf, which
+# is exactly the kind of silent override this notice exists to disclose.
+_PIP_CONFIG_KEYS = (
+    "require-hashes",
+    "only-binary",
+    "no-binary",
+    "uploaded-prior-to",
+    "no-index",
+)
+
+
+# pip's own strtobool false set, verbatim, plus the empty and ":none:" spellings that mean
+# "no packages selected". `off`, `n` and `f` were missing and read as ENABLED, which both
+# printed a notice about a policy pip does not enforce and, under the opt-out, translated
+# the disabled setting into a uv control that failed the install.
+_OFF_VALUES = ("n", "no", "f", "false", "off", "0")
+
+
+# The only two controls whose value is a BOOLEAN. The rest take a package list, a scoped
+# map or a date, where pip documents `:none:` as the way to clear the set and every other
+# value names something real: `PIP_ONLY_BINARY=no` restricts a distribution called "no",
+# and reading it as a disabled flag dropped an artifact rule that was fully in force.
+_BOOLEAN_POLICY_KEYS = ("require-hashes", "no-build", "no-index")
+
+# What clears a control of either kind.
+_EMPTY_POLICY_VALUES = ("", ":none:")
+
+# The upload cutoff is a date, but uv accepts `false` for it as "no cutoff": measured on
+# the pinned uv 0.12.1, UV_EXCLUDE_NEWER=false installs the current release while a date
+# filters it, and UV_EXCLUDE_NEWER=garbage is rejected outright, so `false` is a spelling
+# uv understands rather than a value it tolerates. Reading `false` as a cutoff put a
+# security notice in front of an operator who had switched the control off.
+#
+# uv's spellings ONLY. pip has no off value for its cutoff: measured on pip 26.2.1, both
+# `--uploaded-prior-to false` and PIP_UPLOADED_PRIOR_TO=false exit with "Expected an ISO
+# 8601 datetime string". Treating that as a disable let an unusable value cancel a real
+# pip.conf cutoff, so the notice went quiet about a control the pinned path still drops.
+_FALSE_DISABLES_KEYS = ("exclude-newer", "exclude-newer-package")
+
+
+def _policy_key_spelling(key: str) -> str:
+    """A policy key as its config-file spelling, whichever form it arrived in."""
+    return _env_policy_key(key) if key.isupper() else key.lower()
+
+
+def _config_value_is_on(value: str, key: "str | None" = None) -> bool:
+    """A config/env value that turns a policy ON rather than off or empty.
+
+    `key` selects the reading: without one the value is treated as a boolean, which is
+    right for the plain flags this also parses (UV_NO_CONFIG and friends).
+
+    `:none:` empties a package LIST (`--no-binary :none:`), and means nothing to a
+    boolean. Measured on pip 26.2.1, PIP_NO_INDEX=:none: exits with ":none: is not a
+    valid value for no-index option, please specify a boolean value", so reading it as
+    off let the opt-out drop a variable that would otherwise have stopped the command,
+    turning an install pip refuses into one that can reach the network.
+    """
+    text = value.strip().lower()
+    spelling = _policy_key_spelling(key) if key is not None else None
+    is_boolean = spelling is not None and spelling in _BOOLEAN_POLICY_KEYS
+    if not text:
+        return False
+    if text in _EMPTY_POLICY_VALUES and not is_boolean:
+        return False
+    if spelling is not None and not is_boolean:
+        return not (text == "false" and spelling in _FALSE_DISABLES_KEYS)
+    return text not in _OFF_VALUES
+
+
+# The same control under each manager's name, so an explicitly disabled variable can
+# cancel a config entry that enables the same thing.
+_POLICY_KEY_ALIASES = {
+    "uploaded-prior-to": "exclude-newer",
+    "exclude-newer-package": "exclude-newer",
+    "only-binary": "no-build",
+    "no-build-package": "no-build",
+    "no-binary-package": "no-binary",
+}
+
+
+def _canonical_policy_key(key: str) -> str:
+    """One name per control, whatever spelling it arrived in."""
+    return _POLICY_KEY_ALIASES.get(_policy_key_spelling(key), _policy_key_spelling(key))
+
+
+def _env_policy_key(name: str) -> str:
+    """The config-file spelling of a policy environment variable.
+
+    PIP_REQUIRE_HASHES and a pip.conf `require-hashes` are the same control, which is what
+    lets an explicitly disabled variable cancel a config file that enables it.
+    """
+    return name.split("_", 1)[1].lower().replace("_", "-")
+
+
+# The pip subcommands this module drives.
+_PIP_COMMANDS = ("install", "download", "wheel")
+
+
+def _pip_config_settings() -> "dict[tuple[str, str], str]":
+    """`pip config list`, parsed into {(section, option): value}.
+
+    Memoised, but ONLY once the probe has actually reached pip. A fresh uv venv has no
+    pip when the notice runs, and caching that emptiness meant a later step still saw
+    "nothing configured" after pip had been bootstrapped, which scrubbed PIP_FIND_LINKS
+    out of a pinned command whose only source it was. A probe that cannot import pip
+    fails immediately rather than sitting out the timeout, so retrying is cheap.
+    """
+    cached = getattr(_pip_config_settings, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            # Bounded because this runs BEFORE the pip upgrade, against a venv that may
+            # have no pip at all. A notice must never be able to hang an install.
+            timeout = 30,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    if result is None or result.returncode != 0:
+        return {}
+    settings: "dict[tuple[str, str], str]" = {}
+    for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+        name, separator, raw = line.partition("=")
+        # `:env:` entries restate the environment, which callers read directly.
+        if not separator or name.strip().startswith(":env:"):
+            continue
+        # Section verbatim, option normalised: that is the split pip itself makes,
+        # so `[INSTALL]` is a section it never selects.
+        section, _, option = name.strip().rpartition(".")
+        option = option.strip().lower().replace("_", "-")
+        if section not in ("global",) + _PIP_COMMANDS or option not in _PIP_CONFIG_KEYS:
+            continue
+        # Printed in load order, so the last definition of a given entry wins.
+        settings[(section, option)] = raw.strip().strip("'\"")
+    _pip_config_settings._cache = settings
+    return settings
+
+
+_pip_config_settings._cache = None
+
+
+def _pip_setting_is_on(settings: "dict[tuple[str, str], str]", command: str, option: str) -> bool:
+    """Is `option` on for `command`, with the command's own section beating [global]?
+
+    A command-prefixed key affects only the named command, so these must not be pooled:
+    a `[download] no-index = true` says nothing about `pip install`, and collapsing the
+    two let an install keep a find-links location that is additive for it.
+    """
+    value = settings.get((command, option), settings.get(("global", option)))
+    return value is not None and _config_value_is_on(value, option)
+
+
+def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
+    """(tool, source, key) for each hardening this host has configured.
+
+    ADVISORY, and deliberately narrow: it reports what the managers can be ASKED about,
+    the policy environment variables and pip's own `pip config list`, and does not read
+    their config files. Doing that means reimplementing pip's and uv's configuration
+    resolution -- discovery order, per-subcommand sections, precedence, XDG against
+    Darwin paths, uv workspace roots, UV_PROJECT / UV_WORKING_DIR / UV_CONFIG_FILE, and
+    a TOML parser for the interpreters with no tomllib. It was built here and removed:
+    an unbounded surface that nothing in the fix depends on.
+
+    So a pip.conf-only policy is invisible while the venv has no pip yet, which is how
+    uv leaves a fresh one. A miss costs a line in a notice, never an install: the
+    opt-out withholds the relaxations whether or not anything was detected.
+    """
+    on: "list[tuple[str, str, str]]" = []
+    cancelled: "set[str]" = set()
+
+    for name in _PM_POLICY_ENV_VARS:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            # pip drops empty values before applying precedence, so an empty variable
+            # neither enables a control nor cancels a file that does.
+            continue
+        if name.startswith("UV_") and name not in _UV_ENFORCED_ENV_VARS:
+            # uv ignores it, so it is not policy. See _UV_ENFORCED_ENV_VARS.
+            continue
+        if _config_value_is_on(raw, name):
+            on.append(("pip" if name.startswith("PIP_") else "uv", "env", name))
+        elif name.startswith("PIP_"):
+            # pip's environment beats its config files, so an explicitly disabled
+            # variable cancels a config entry enabling the same control.
+            cancelled.add(_canonical_policy_key(name))
+
+    settings = _pip_config_settings()
+    # pip applies `[global]` and then the command's own section, so a control the
+    # operator enabled globally and disabled for install, download AND wheel is not
+    # hardening any command this module runs. Reporting it there put the notice in
+    # front of someone whose policy was not being relaxed at all.
+    for option in _PIP_CONFIG_KEYS:
+        if _canonical_policy_key(option) in cancelled:
+            continue
+        for command in _PIP_COMMANDS:
+            if _pip_setting_is_on(settings, command, option):
+                on.append(("pip", "pip.conf", option))
+                break
+
+    return tuple(dict.fromkeys(on))
+
+
+def _clear_detected_policy_cache() -> None:
+    """Drop the memoised `pip config list`. Kept under the name the callers already use."""
+    _pip_config_settings._cache = None
+
+
+_detected_policy.cache_clear = _clear_detected_policy_cache
+
+
+def _pip_no_index_in_force(command: str = "install") -> bool:
+    """Is pip's no-index effectively ON, counting the config file as well as the env?
+
+    `--no-index` means "ignore the indexes and look only at find-links", so whether
+    PIP_FIND_LINKS is the sole remaining source or merely an extra one depends on this.
+    Reading only the environment got it wrong for an operator whose `no-index = true`
+    sits in pip.conf, which the opt-out keeps readable: find-links was scrubbed as
+    additive and the fallback was left with no sources at all.
+
+    Only reached under the opt-out, so the default path adds no probe and stays exactly
+    as it was. When the environment speaks it decides, in either direction, because pip
+    reads it ahead of its files. Otherwise this falls back to the advisory scan, which
+    for PIP keys is complete: `pip config list` reports every file pip would load.
+
+    An unavailable scan reads as off, and that cannot cost an install: the scan only
+    fails when the venv has no pip, and PIP_FIND_LINKS is inert without pip, since uv
+    reads UV_FIND_LINKS instead.
+    """
+    raw = os.environ.get("PIP_NO_INDEX")
+    if raw is not None and raw.strip():
+        return _config_value_is_on(raw, "no-index")
+    # For the COMMAND being run. A command-prefixed key affects only the command it
+    # names, so a `[download] no-index = true` says nothing about `pip install`, and
+    # answering from the pooled reading let an install keep a find-links location that
+    # is purely additive for it.
+    return _pip_setting_is_on(_pip_config_settings(), command, "no-index")
+
+
+def _hardened_pm_policy_names() -> "tuple[str, ...]":
+    """The detected policy, as the notice prints it."""
+    return tuple(
+        dict.fromkeys(
+            key if source == "env" else f"{source} {key}"
+            for _tool, source, key in _detected_policy()
+        )
+    )
+
+
+def _announce_pm_policy() -> None:
+    """Say once, up front, what the installer is doing with a hardened host's policy.
+
+    Silent when nothing is hardened, which is every ordinary machine.
+    """
+    names = _hardened_pm_policy_names()
+    if not names:
+        return
+    listed = ", ".join(names)
+    if _respect_pm_policy():
+        _note(
+            f"{_POLICY_OPT_OUT_ENV} is set: keeping {listed} in force for Unsloth's own "
+            "dependency installs, which will now fail where your policy forbids them "
+            "rather than be relaxed. Each manager applies its own settings, exactly as "
+            "it would for you and including where it chooses not to: pip does not apply "
+            "only-binary to an explicitly supplied source archive, and neither reads the "
+            "other's configuration, so a step that runs uv is bound by your uv settings "
+            "and a step that runs pip by your pip ones.",
+            _cyan,
+        )
+        return
+    _note(
+        f"Package manager hardening detected ({listed}). Unsloth relaxes it for its own "
+        "dependency installs only -- the shipped requirements are unhashed and a few have "
+        "no wheel at any version -- and never for your other pip commands. On the steps "
+        "that pin an index it is set aside in full; on the few that do not, pip's "
+        "require-hashes is relaxed and the handful of packages with no wheel are allowed "
+        "to build from source, while an upload cutoff or a uv setting still applies. Set "
+        f"{_POLICY_OPT_OUT_ENV}=1 to keep your policy in force everywhere instead.",
+        _cyan,
+    )
 
 
 def _uv_is_offline() -> bool:
@@ -4940,28 +5350,79 @@ def _pip_supports_upload_cutoff() -> bool:
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
-    None (inherit env) when the command does NOT pin an index, so ordinary installs honour
-    the user's mirror. For pinned commands, the uv index/backend vars are removed,
+    None (inherit env) when the command does NOT pin an index, so ordinary installs
+    honour the user's mirror. For pinned commands the uv index/backend vars are removed,
     UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin), and PIP_CONFIG_FILE
     pointed at os.devnull for the pip fallback. Mirrors install.sh's gate (#6898).
 
     A non-pinned `pip` command also gets hash-required mode switched off, the one
     relaxation with no command-line equivalent; the wheel-less requirements go through
     the package-scoped --no-binary in _sdist_only_build_args() instead.
+
+    Under UNSLOTH_RESPECT_PM_POLICY the pinned branch still scrubs the INDEX variables --
+    the pin is itself a provenance control -- but the policy variables survive, pip.conf
+    stays readable and uv's config discovery stays on, so the operator's controls apply
+    to pinned installs too. Discovery has to stay on: measured on the pinned uv 0.12.1, a
+    user uv.toml `[pip] require-hashes = true` fails a pinned install and UV_NO_CONFIG=1
+    makes it succeed, so setting it would discard the control the opt-out promises. The
+    cost is symmetric: an `extra-index-url` in pip.conf, or an `[[index]]` in that
+    uv.toml, can still add a candidate source. That is the price of reading the same
+    files' security settings, and why the default is the opposite.
     """
     if not _is_pinned_index_cmd(cmd):
-        relaxed = _relaxed_pip_policy_env(cmd)
-        if not relaxed:
+        overrides = _relaxed_pip_policy_env(cmd)
+        if not overrides:
             return None
         env = os.environ.copy()
-        env.update(relaxed)
+        env.update(overrides)
         return env
     env = os.environ.copy()
+    respect = _respect_pm_policy()
+    # PIP_NO_INDEX is a POLICY variable, not an additive one, and it is kept under the
+    # opt-out whichever way it points. Keeping it only when ON was wrong in the other
+    # direction: pip reads the environment ahead of pip.conf, so PIP_NO_INDEX=0 is how an
+    # operator lifts a `no-index = true` in their own config for one run. Measured on pip
+    # 26.2.1, pip.conf `no-index = true` alone fails with "No matching distribution
+    # found", and the same command with PIP_NO_INDEX=0 resolves. Dropping the variable
+    # while leaving pip.conf readable therefore reimposed a restriction the operator had
+    # lifted, and failed an install they had permitted.
+    #
+    # Read as the BOOLEAN it is: without the key this fell through to the generic
+    # reading, where `:none:` counts as empty and the variable was dropped even though
+    # pip rejects that value outright.
+    # Computed only under the opt-out: the default branch scrubs everything regardless,
+    # so it never pays for the scan behind this.
+    no_index_on = respect and _pip_no_index_in_force()
     for name in _UV_INDEX_ENV_VARS:
+        # UV_CONFIG_FILE is an index variable only incidentally: measured, a file named
+        # by it carrying `[pip] require-hashes = true` fails a pinned install, and
+        # dropping it lets the same install through. Under the opt-out it is the
+        # operator's policy file, so it stays.
+        # UV_FIND_LINKS is kept unconditionally under the opt-out, where PIP_FIND_LINKS
+        # is kept only while no-index is in force. The asymmetry follows from what each
+        # manager can be ASKED. pip prints its resolved configuration, so the effective
+        # no-index is knowable; uv has no such command, `--no-index` has no environment
+        # spelling at all, and the setting therefore lives only in a uv.toml this module
+        # deliberately does not parse. Measured on the pinned uv 0.12.1, a uv.toml
+        # `[pip] no-index = true` plus UV_FIND_LINKS installs from the wheelhouse, and
+        # the same command without it fails with "index lookups were disabled and no
+        # additional package locations were provided". Guessing wrong in that direction
+        # breaks every offline uv install; the opt-out already accepts that sources
+        # reachable through the retained uv.toml survive, so keeping the operator's own
+        # wheelhouse is the same cost they already agreed to.
+        if respect and name in ("UV_CONFIG_FILE", "PIP_NO_INDEX", "UV_FIND_LINKS"):
+            continue
+        # PIP_FIND_LINKS genuinely IS additive, so it survives only while no-index is in
+        # force and it is the sole remaining source. With no-index off it would add a
+        # location alongside the pinned index, which is what this loop exists to stop.
+        if respect and name == "PIP_FIND_LINKS" and no_index_on:
+            continue
         env.pop(name, None)
-    for name in _PM_POLICY_ENV_VARS:
-        env.pop(name, None)
+    if _respect_pm_policy():
+        return env
     env["UV_NO_CONFIG"] = "1"
+    for name in _PM_POLICY_SCRUB_ENV_VARS:
+        env.pop(name, None)
     env["PIP_CONFIG_FILE"] = os.devnull
     return env
 
@@ -5068,7 +5529,13 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
-            _safe_print(_red(f"   uv failed, falling back to pip..."))
+            # The fallback runs under the opt-out too. pip applies whatever pip is
+            # configured with, and uv's settings were never pip's to read: that is a
+            # property of the two tools, not something this installer introduces, and
+            # bridging it needs a model of both managers' configuration that is not
+            # worth the ways it can be wrong. What the opt-out promises is that the
+            # relaxations below are withheld, and they are, on both paths.
+            _safe_print(_red("   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
 
@@ -5228,6 +5695,14 @@ def install_python_stack() -> int:
     # pass killed part-way. Otherwise the next update sees neither, reads the
     # absent torch as a stale venv, and tries to delete the running environment.
     install_manifest.set_no_torch_marker(NO_TORCH)
+
+    # Before the bar starts, so the line cannot land mid-progress. Silent on an ordinary
+    # machine. Guarded because this is a message, not a step: it probes pip and reads
+    # files the install never touches, and no failure of that is worth aborting over.
+    try:
+        _announce_pm_policy()
+    except Exception:
+        pass
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).

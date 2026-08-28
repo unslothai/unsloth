@@ -1639,6 +1639,15 @@ public static class UnslothStudioFinalPathV2
         return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
     }
 
+    # True when the operator asked for their pip/uv policy to be left in force. Mirrors
+    # _respect_pm_policy() in install_python_stack.py, including its false set, so the same
+    # variable means the same thing on both sides of the hand-off.
+    function Test-RespectPmPolicy {
+        $value = [Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
+        if ($null -eq $value) { return $false }
+        return @('', '0', 'false', 'no') -notcontains $value.Trim().ToLowerInvariant()
+    }
+
     # Run native commands quietly by default to match install.sh behavior.
     # Full command output is shown only when --verbose / UNSLOTH_VERBOSE=1.
     function Invoke-InstallCommand {
@@ -1649,14 +1658,28 @@ public static class UnslothStudioFinalPathV2
         # Installer-pinned index installs (torch) must beat an inherited uv mirror (#6898):
         # for --default-index, clear the uv index env vars (restore in finally) and set
         # UV_NO_CONFIG=1 so a uv.toml/pyproject index can't outrank the CLI pin (uv 0.10).
+        # This runs before install_python_stack.py, so the Python side's opt-out cannot
+        # cover it: under UNSLOTH_RESPECT_PM_POLICY keep UV_CONFIG_FILE and uv's config
+        # discovery, so the operator's uv.toml binds the pinned torch install too. The
+        # ADDITIVE index variables still go, since the pin is itself a provenance control.
+        $respectPolicy = Test-RespectPmPolicy
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
-            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG') {
+            $scrub = @('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG')
+            if ($respectPolicy) {
+                # UV_FIND_LINKS rides along: a uv.toml `[pip] no-index = true` makes it
+                # the only source uv is allowed, `--no-index` has no environment spelling
+                # to detect, and uv prints no resolved configuration to ask.
+                $scrub = @($scrub | Where-Object {
+                    @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'UV_FIND_LINKS') -notcontains $_
+                })
+            }
+            foreach ($n in $scrub) {
                 $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)
                 Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }
-            $env:UV_NO_CONFIG = '1'
+            if (-not $respectPolicy) { $env:UV_NO_CONFIG = '1' }
         }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -1698,7 +1721,10 @@ public static class UnslothStudioFinalPathV2
         } finally {
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
-                Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
+                # Only clear what this function SET: under the opt-out UV_NO_CONFIG was
+                # neither saved nor overwritten, so removing it would destroy the
+                # operator's own value for the rest of the run.
+                if (-not $respectPolicy) { Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue }
                 foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
             }
         }

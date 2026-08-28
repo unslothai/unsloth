@@ -712,12 +712,20 @@ class TestPinnedIndexClearsUvEnvParity:
         fallback (pip honours PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS in addition to
         --index-url); restoring the vars before the fallback reopens the hole."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        fi = text[text.find("function Fast-Install") :][:2500]
+        start = text.find("function Fast-Install")
+        assert start != -1, "setup.ps1 no longer defines Fast-Install"
+        # Bounded by the next top-level function, not by a character count: a fixed
+        # window silently truncates when the body grows, and both anchors then come
+        # back -1, which compares equal and passes the assertion below vacuously.
+        end = text.find("\nfunction ", start + 1)
+        fi = text[start : end if end != -1 else len(text)]
         assert "'PIP_EXTRA_INDEX_URL'" in fi and "'PIP_FIND_LINKS'" in fi
+        fallback = fi.find("python -m pip install")
+        restore = fi.find("finally")
+        assert fallback != -1, "Fast-Install no longer has a pip fallback"
+        assert restore != -1, "Fast-Install no longer restores the scrub in a finally"
         # the pip fallback must sit INSIDE the try whose finally restores the vars
-        assert fi.find("python -m pip install") < fi.find(
-            "finally"
-        ), "pip fallback must run before the scrub is restored"
+        assert fallback < restore, "pip fallback must run before the scrub is restored"
 
     def test_windows_installers_probe_uv_before_replacing_an_incumbent(self):
         """A host can have a working older uv while AppLocker, WDAC or endpoint

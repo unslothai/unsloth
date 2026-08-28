@@ -23,6 +23,39 @@ sys.path.insert(0, str(STUDIO_DIR))
 import install_python_stack as ips
 
 
+@pytest.fixture(autouse = True)
+def _neutral_policy_environment(monkeypatch):
+    """Run as an ordinary machine unless a test says otherwise.
+
+    UNSLOTH_RESPECT_PM_POLICY changes what several of these code paths do, so inheriting
+    it from the developer's shell rewrites the suite's subject: with it set, the metadata
+    repair and the XPU swap both decline to start and dozens of unrelated assertions
+    fail. Tests that want the opt-out set it themselves.
+    """
+    monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+
+
+@pytest.fixture(autouse = True)
+def _clear_policy_cache():
+    """_policy_scan is cached for the life of the process, which is right in an installer
+    and wrong across tests: without this a scan taken under one environment answers for
+    the next one."""
+    ips._detected_policy.cache_clear()
+    yield
+    ips._detected_policy.cache_clear()
+
+
+def _posix_home(path: str = "/home/u"):
+    """Make os.path.expanduser deterministic regardless of the RUNNER's platform.
+
+    ntpath.expanduser reads USERPROFILE, not HOME, so on windows-latest a test that only
+    sets HOME gets a literal "~" back and the POSIX branch it is exercising cannot be
+    asserted at all. Patching the function is the honest fix: these tests are about which
+    locations the installer searches, not about how a platform spells a home directory.
+    """
+    return mock.patch.object(os.path, "expanduser", lambda p: p.replace("~", path, 1))
+
+
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
 
@@ -514,6 +547,521 @@ class TestHardenedPipConfigRelaxation:
         assert seen["env"]["PIP_REQUIRE_HASHES"] == "0"
         for name in ips.SDIST_ONLY_PACKAGES:
             assert name in seen["cmd"], "the fallback lost the source-build exemptions"
+
+
+class TestOperatorCanKeepTheirPolicy:
+    """UNSLOTH_RESPECT_PM_POLICY=1 turns every relaxation above off.
+
+    The relaxations exist because the shipped requirements cannot satisfy a
+    require-hashes / only-binary policy at all, so enforcing one means the install
+    FAILS. That is a legitimate answer for an operator who set the policy deliberately,
+    but only they can make the call, so it is an explicit opt-in rather than the default.
+    """
+
+    HOSTILE = TestHardenedPipConfigRelaxation.HOSTILE
+    # One manager at a time: a mix of pip and uv controls now (correctly) stops the step
+    # to report the gap, which is TestNeitherManagerIsLetOffTheOthersPolicy's subject.
+    PIP_ONLY = {"PIP_REQUIRE_HASHES": "1", "PIP_ONLY_BINARY": ":all:"}
+    UV_ONLY = {"UV_REQUIRE_HASHES": "1", "UV_NO_BUILD": "1"}
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes"])
+    def test_the_pip_fallback_keeps_hash_mode(self, value):
+        """The relaxation is withdrawn. Scoped to pip's own controls, because a mix of
+        pip and uv policy is now a reported gap, which is a different test's subject."""
+        with mock.patch.dict(
+            os.environ, dict(self.PIP_ONLY, UNSLOTH_RESPECT_PM_POLICY = value), clear = True
+        ):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+        assert env is None or env.get("PIP_REQUIRE_HASHES") != "0"
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no"])
+    def test_off_and_unset_spellings_keep_the_default(self, value):
+        with mock.patch.dict(os.environ, dict(self.HOSTILE, UNSLOTH_RESPECT_PM_POLICY = value)):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+        assert env is not None and env["PIP_REQUIRE_HASHES"] == "0"
+
+    def test_source_build_exemptions_are_withdrawn(self):
+        """The --no-binary exemptions exist ONLY to override a user no-build, so under
+        the opt-out there is nothing left for them to do."""
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}):
+            assert ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES) == []
+
+    def test_pinned_installs_keep_policy_but_still_scrub_the_index(self):
+        """The pin is itself a provenance control: honouring a hash policy must not be
+        read as permission to let an inherited mirror answer a pinned torch repair."""
+        with mock.patch.dict(
+            os.environ,
+            dict(
+                self.UV_ONLY,
+                UNSLOTH_RESPECT_PM_POLICY = "1",
+                PIP_EXTRA_INDEX_URL = "https://mirror.corp/simple",
+                UV_INDEX_URL = "https://mirror.corp/simple",
+            ),
+            clear = True,
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        for name, value in self.UV_ONLY.items():
+            assert env[name] == value, f"{name} must survive the opt-out"
+        assert "PIP_CONFIG_FILE" not in env, "pip.conf carries the policy; it must be read"
+        for name in ("PIP_EXTRA_INDEX_URL", "UV_INDEX_URL"):
+            assert name not in env, f"{name} must still be scrubbed from a pinned install"
+
+    def test_the_parent_environment_is_never_mutated(self):
+        with mock.patch.dict(
+            os.environ, dict(self.PIP_ONLY, UNSLOTH_RESPECT_PM_POLICY = "1"), clear = True
+        ):
+            ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
+            ips._sdist_only_build_args("openai-whisper")
+            assert os.environ["UNSLOTH_RESPECT_PM_POLICY"] == "1"
+            assert os.environ["PIP_REQUIRE_HASHES"] == "1"
+
+
+class TestDestructiveRepairsDoNotStartUnderTheOptOut:
+    """Two paths uninstall something and can only finish by installing a replacement:
+    the duplicate-metadata repair and the Intel XPU triton swap. Under a hash policy
+    that replacement cannot be verified -- there is no expected digest to check it
+    against, and deriving one from the artifact just fetched would approve it with
+    itself. So neither starts, and the venv is left exactly as it was.
+    """
+
+    def test_the_metadata_repair_declines_before_staging(self, capsys):
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
+            assert ips._stage_replacement("unsloth-zoo") is None
+        out = capsys.readouterr().err
+        assert "UNSLOTH_RESPECT_PM_POLICY" in out and "leaving the install alone" in out
+
+    def test_the_default_path_still_stages(self):
+        """Nothing is skipped on an ordinary machine: the bail is opt-out only."""
+        with (
+            mock.patch.dict(os.environ, {}, clear = True),
+            mock.patch.object(ips, "USE_UV", False),
+            mock.patch.object(ips, "tempfile") as fake_tempfile,
+            mock.patch.object(ips, "pip_install_try", lambda *a, **k: False),
+        ):
+            fake_tempfile.mkdtemp.return_value = "/tmp/staging"
+            # It gets far enough to try, which is all this asserts; the staging itself
+            # is covered by TestDuplicateCoreMetadataRepair.
+            ips._stage_replacement("unsloth-zoo")
+            assert fake_tempfile.mkdtemp.called
+
+    def test_no_self_approving_hash_helper_survives(self):
+        """The approach this replaced hashed the wheel it had just downloaded and handed
+        that digest to the protected install, which is not what a hash policy is for."""
+        assert not hasattr(ips, "_hashed_requirement_file")
+        assert not hasattr(ips, "_staged_restore_args")
+
+
+class TestTheOptOutKeepsRestrictiveIndexSettings:
+    """The pinned branch scrubs the index variables so a stale mirror cannot answer a
+    torch repair (#6898), and that survives the opt-out on purpose. PIP_NO_INDEX is the
+    exception: it only ever REMOVES sources, so scrubbing it let a pinned command reach
+    the network on a host that had said not to.
+    """
+
+    CMD = ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+
+    def _env(self, extra):
+        with mock.patch.dict(os.environ, dict(extra, PATH = "/usr/bin"), clear = True):
+            return ips._install_env_for_cmd(list(self.CMD))
+
+    def test_the_default_path_still_scrubs_everything(self):
+        env = self._env({"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": "/wheels"})
+        assert "PIP_NO_INDEX" not in env and "PIP_FIND_LINKS" not in env
+
+    def test_the_opt_out_keeps_no_index_and_its_find_links(self):
+        """Kept as a pair: PIP_FIND_LINKS is the only source left once PIP_NO_INDEX is
+        honoured, so dropping it would leave the step with nowhere to resolve from."""
+        env = self._env(
+            {
+                "UNSLOTH_RESPECT_PM_POLICY": "1",
+                "PIP_NO_INDEX": "1",
+                "PIP_FIND_LINKS": "/wheels",
+                "PIP_INDEX_URL": "https://mirror/simple",
+            }
+        )
+        assert env["PIP_NO_INDEX"] == "1"
+        assert env["PIP_FIND_LINKS"] == "/wheels"
+        # The ADDITIVE mirror is still scrubbed: that is the provenance control.
+        assert "PIP_INDEX_URL" not in env
+
+    def test_find_links_alone_is_still_scrubbed_under_the_opt_out(self):
+        """Without PIP_NO_INDEX it merely ADDS a source, which is what the scrub is for."""
+        env = self._env({"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_FIND_LINKS": "/wheels"})
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_a_disabled_no_index_is_carried_through_but_keeps_no_find_links(self):
+        """An explicit off is the operator lifting their own pip.conf, not an absence.
+
+        pip reads the environment ahead of pip.conf, so PIP_NO_INDEX=0 is how a
+        `no-index = true` in config is lifted for one run. Dropping the variable while
+        leaving pip.conf readable put the restriction back and failed an install the
+        operator had permitted. find-links is a different case: with no-index off it
+        ADDS a location beside the pinned index, so it is still scrubbed.
+        """
+        env = self._env(
+            {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_NO_INDEX": "0", "PIP_FIND_LINKS": "/w"}
+        )
+        assert env["PIP_NO_INDEX"] == "0"
+        assert "PIP_FIND_LINKS" not in env
+
+
+class TestHardenedPolicyIsAnnounced:
+    """The relaxation is defensible; doing it silently is not.
+
+    An operator who configured require-hashes and watched the install succeed anyway had
+    no way to learn that their control had been set aside. The notice names the settings
+    it found and the variable that keeps them.
+    """
+
+    def _names(
+        self,
+        env: dict,
+        pip_config: str = "",
+    ):
+        ips._detected_policy.cache_clear()
+        result = mock.Mock(returncode = 0, stdout = pip_config.encode())
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            try:
+                return ips._hardened_pm_policy_names()
+            finally:
+                ips._detected_policy.cache_clear()
+
+    def test_an_ordinary_machine_says_nothing(self):
+        assert self._names({}) == ()
+
+    def test_a_policy_env_var_is_reported(self):
+        assert "PIP_REQUIRE_HASHES" in self._names({"PIP_REQUIRE_HASHES": "1"})
+
+    def test_a_disabled_policy_is_not_reported(self):
+        """PIP_REQUIRE_HASHES=0 is the absence of the policy, not the presence of it."""
+        assert self._names({"PIP_REQUIRE_HASHES": "0", "PIP_NO_BINARY": ""}) == ()
+
+    def test_pip_config_hardening_is_reported(self):
+        names = self._names({}, "global.require-hashes='true'\nglobal.index-url='https://m/s'\n")
+        assert "pip.conf require-hashes" in names
+        assert not any("index-url" in name for name in names), "a mirror is not hardening"
+
+    def test_env_restatements_from_pip_config_are_not_double_counted(self):
+        names = self._names({"PIP_REQUIRE_HASHES": "1"}, ":env:.require-hashes='true'\n")
+        assert names == ("PIP_REQUIRE_HASHES",)
+
+    def test_false_disables_the_upload_cutoff(self):
+        """The cutoff is a date, but uv takes `false` for it as "no cutoff": measured on
+        the pinned uv 0.12.1, UV_EXCLUDE_NEWER=false installs the current release while
+        a date filters it. Reading `false` as a cutoff put a security notice in front of
+        an operator who had switched the control off."""
+        assert self._names({"UV_EXCLUDE_NEWER": "false"}) == ()
+        assert self._names({"UV_EXCLUDE_NEWER": "2005-01-01T00:00:00Z"}) == ("UV_EXCLUDE_NEWER",)
+        # Still not a boolean elsewhere: a package list keeps package names.
+        assert self._names({"PIP_ONLY_BINARY": "false"}) == ("PIP_ONLY_BINARY",)
+
+    def test_a_control_disabled_for_every_command_is_not_reported(self):
+        """pip applies [global] then the command's own section, so a control enabled
+        globally and disabled for install, download AND wheel hardens nothing this
+        module runs. Reporting it put the notice in front of someone whose policy was
+        not being relaxed at all."""
+        listing = (
+            "global.require-hashes='true'\ninstall.require-hashes='false'\n"
+            "download.require-hashes='false'\nwheel.require-hashes='false'\n"
+        )
+        assert self._names({}, listing) == ()
+        # Disabled for only ONE of them still leaves the other two hardened.
+        partial = "global.require-hashes='true'\ninstall.require-hashes='false'\n"
+        assert self._names({}, partial) == ("pip.conf require-hashes",)
+
+    def test_an_explicit_no_index_is_reported(self):
+        """no-index REMOVES every remote source, and the pinned branch discards it with
+        the rest of pip.conf, which is exactly what this notice exists to disclose."""
+        assert self._names({}, "global.no-index='true'\n") == ("pip.conf no-index",)
+        assert self._names({}, "global.no-index='false'\n") == ()
+
+    def test_uv_policy_is_reported_from_the_variables_uv_reads(self):
+        """uv has no command that prints its resolved configuration, so the notice
+        reports the two variables uv genuinely honours and does not go looking through
+        uv.toml. Measured on the pinned uv 0.12.1: UV_REQUIRE_HASHES and
+        UV_EXCLUDE_NEWER change the outcome, UV_NO_BUILD and the other artifact
+        spellings are ignored, so reporting one would name policy uv does not apply."""
+        assert self._names({"UV_REQUIRE_HASHES": "1"}) == ("UV_REQUIRE_HASHES",)
+        assert self._names({"UV_NO_BUILD": "1"}) == ()
+
+    def test_an_undetected_setting_costs_a_line_not_an_install(self):
+        """The point of keeping detection advisory: with nothing detected the notice is
+        silent, and the opt-out still withholds every relaxation."""
+        assert self._names({}) == ()
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
+            assert ips._relaxed_pip_policy_env(["python", "-m", "pip", "install", "x"]) == {}
+            assert ips._sdist_only_build_args("diffusers") == []
+
+    def test_the_notice_names_the_opt_out(self, capsys):
+        with (
+            mock.patch.object(ips, "_hardened_pm_policy_names", lambda: ("PIP_REQUIRE_HASHES",)),
+            mock.patch.dict(os.environ, {}, clear = True),
+        ):
+            ips._announce_pm_policy()
+        out = capsys.readouterr().out
+        assert "PIP_REQUIRE_HASHES" in out and "UNSLOTH_RESPECT_PM_POLICY" in out
+
+    def test_the_opt_out_notice_warns_that_steps_will_fail(self, capsys):
+        with (
+            mock.patch.object(ips, "_hardened_pm_policy_names", lambda: ("PIP_REQUIRE_HASHES",)),
+            mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True),
+        ):
+            ips._announce_pm_policy()
+        # Normalised: _note() wraps to the terminal, so the phrase spans lines.
+        text = " ".join(capsys.readouterr().out.split())
+        assert "will now fail where your policy forbids them" in text
+
+    def test_nothing_is_printed_on_an_ordinary_machine(self, capsys):
+        with (
+            mock.patch.object(ips, "_hardened_pm_policy_names", lambda: ()),
+            mock.patch.dict(os.environ, {}, clear = True),
+        ):
+            ips._announce_pm_policy()
+        assert capsys.readouterr().out == ""
+
+
+class TestTheOptOutIsNotDefeatedByOurOwnEscapeHatches:
+    """Three ways the opt-out let policy through anyway, each measured, each closed.
+
+    The flag promises the operator's policy is left in force. Anything the installer does
+    that quietly restores the relaxed behaviour makes that promise false, which is worse
+    than not offering the flag.
+    """
+
+    def test_pinned_installs_keep_uv_config_discovery(self):
+        """UV_NO_CONFIG=1 discards a USER uv.toml, which is where a require-hashes lives.
+
+        Measured on the pinned uv 0.12.1: `~/.config/uv/uv.toml` with
+        `[pip] require-hashes = true` fails a `uv pip install --no-index --find-links`,
+        and the identical command with UV_NO_CONFIG=1 succeeds. Setting it under the
+        opt-out therefore discarded exactly the control being promised.
+        """
+        with mock.patch.dict(
+            os.environ,
+            {"UV_REQUIRE_HASHES": "1", "UNSLOTH_RESPECT_PM_POLICY": "1"},
+            clear = True,
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        assert "UV_NO_CONFIG" not in env, "the opt-out must leave uv config discovery on"
+
+    def test_the_default_path_still_disables_uv_config_discovery(self):
+        """Unchanged where it matters: a discovered uv.toml outranks the CLI pin."""
+        with mock.patch.dict(os.environ, {}, clear = True):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None and env["UV_NO_CONFIG"] == "1"
+        assert env["PIP_CONFIG_FILE"] == os.devnull
+
+    def _fallback_calls(self, environment: dict) -> "tuple[list, object]":
+        calls: list = []
+        raised = None
+        with (
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "subprocess") as sp,
+            mock.patch.object(ips, "run", lambda *a, **k: calls.append(a)),
+            mock.patch.object(ips, "_invalidate_torch_runtime_probe", lambda: None),
+            mock.patch.dict(os.environ, environment, clear = True),
+        ):
+            sp.run.return_value = mock.Mock(returncode = 2, stdout = "")
+            sp.PIPE, sp.STDOUT = -1, -2
+            try:
+                ips.pip_install("deps", "somepackage")
+            except SystemExit as exit_info:
+                raised = exit_info
+        return calls, raised
+
+    def test_the_fallback_runs_under_the_opt_out_without_relaxing_anything(self):
+        """uv failing must not end the install, opt-out or not. pip then applies whatever
+        pip is configured with: uv's settings were never pip's to read, which is a
+        property of the two tools rather than something this installer introduces.
+        What the opt-out promises is that OUR relaxations are withheld, and they are."""
+        calls, raised = self._fallback_calls(
+            {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_REQUIRE_HASHES": "1"}
+        )
+        assert raised is None
+        assert calls, "the pip fallback must still run"
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
+            assert ips._relaxed_pip_policy_env(["python", "-m", "pip", "install", "x"]) == {}
+
+    def test_the_fallback_still_runs_when_the_opt_out_drops_nothing(self):
+        """The flag alone is not a reason to refuse. An operator who sets it
+        pre-emptively on a host with no uv-only policy would otherwise have every
+        ordinary uv failure, a resolver hiccup included, turned into a fatal one."""
+        calls, raised = self._fallback_calls({"UNSLOTH_RESPECT_PM_POLICY": "1"})
+        assert raised is None, "nothing is being discarded, so nothing to refuse"
+        assert calls, "the pip fallback must still run"
+
+    def test_the_fallback_runs_when_pip_can_enforce_the_same_control(self):
+        """Both managers configured is not a gap: pip applies its own require-hashes to
+        the fallback, so the operator's policy survives it."""
+        calls, raised = self._fallback_calls(
+            {
+                "UNSLOTH_RESPECT_PM_POLICY": "1",
+                "UV_REQUIRE_HASHES": "1",
+                "PIP_REQUIRE_HASHES": "1",
+            }
+        )
+        assert raised is None
+        assert calls, "the pip fallback must still run"
+
+    def test_the_pip_fallback_still_runs_by_default(self):
+        """The whole point of #8530's fix: uv failing must not end the install."""
+        calls: list = []
+
+        with (
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "subprocess") as sp,
+            mock.patch.object(ips, "run", lambda *a, **k: calls.append(a)),
+            mock.patch.object(ips, "_invalidate_torch_runtime_probe", lambda: None),
+            mock.patch.dict(os.environ, {}, clear = True),
+        ):
+            sp.run.return_value = mock.Mock(returncode = 2, stdout = "")
+            sp.PIPE, sp.STDOUT = -1, -2
+            ips.pip_install("deps", "somepackage")
+        assert len(calls) == 1, "uv failing must still fall back to pip by default"
+
+    def test_uv_only_binary_counts_as_policy(self):
+        """_uv_staging_plan already treats UV_ONLY_BINARY as uv's artifact policy, so the
+        policy set that drives detection and the pinned scrub must agree with it."""
+        assert "UV_ONLY_BINARY" in ips._PM_POLICY_ENV_VARS
+        assert "UV_ONLY_BINARY_PACKAGE" in ips._PM_POLICY_ENV_VARS
+
+
+class TestPolicyEnvIsPlatformAndHardwareInvariant:
+    """The env this helper builds must not depend on the platform or the accelerator.
+
+    It reads no hardware state and it should stay that way: an installer change that
+    quietly behaves differently on one of [Windows, Linux, WSL, macOS] x [NVIDIA, AMD,
+    CPU] is the failure mode that costs a release. Asserted by construction rather than
+    trusted, and the accelerator variables are checked to PASS THROUGH untouched, since
+    the torch repair steps downstream read them.
+    """
+
+    PLATFORMS = {
+        "Linux": {"IS_WINDOWS": False, "IS_MACOS": False, "IS_MAC_ARM": False},
+        # WSL is Linux to this module; the markers are carried to prove they are inert.
+        "WSL": {"IS_WINDOWS": False, "IS_MACOS": False, "IS_MAC_ARM": False},
+        "Windows": {"IS_WINDOWS": True, "IS_MACOS": False, "IS_MAC_ARM": False},
+        "macOS": {"IS_WINDOWS": False, "IS_MACOS": True, "IS_MAC_ARM": True},
+    }
+    ACCELERATORS = {
+        "nvidia": {"CUDA_VISIBLE_DEVICES": "0", "UNSLOTH_TORCH_BACKEND": "cuda"},
+        "amd": {"HIP_VISIBLE_DEVICES": "0", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+        "cpu": {"UNSLOTH_TORCH_BACKEND": "cpu"},
+    }
+    COMMANDS = [
+        ["python", "-m", "pip", "install", "-r", "extras.txt"],
+        ["python", "-m", "pip", "download", "pytorch-triton-xpu==3.5.0"],
+        ["python", "-m", "pip", "check"],
+        ["uv", "pip", "install", "-r", "base.txt"],
+        ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"],
+        ["python", "-m", "pip", "install", "torch", "--default-index", "https://x/rocm6.4"],
+    ]
+
+    @pytest.mark.parametrize("opt_out", ["", "1"])
+    @pytest.mark.parametrize("hardened", [False, True])
+    def test_identical_on_every_platform_and_accelerator(self, opt_out, hardened):
+        # One manager's controls: a cross-manager gap refuses under the opt-out, and a
+        # refusal is not an environment to compare across platforms.
+        # Both managers configured, so no cross-manager gap: a refusal is not an
+        # environment, and this sweep is about environment construction.
+        # require-hashes on both sides, and only that: it is the one artifact-policy
+        # control with an environment spelling uv actually reads, so it is the only way
+        # to configure both managers without writing config files. UV_NO_BUILD would not
+        # do, since uv ignores it and detection no longer pretends otherwise.
+        policy = {"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "1"} if hardened else {}
+        for command in self.COMMANDS:
+            answers = set()
+            for platform, settings in self.PLATFORMS.items():
+                for accelerator, markers in self.ACCELERATORS.items():
+                    env = dict(policy, **markers)
+                    if opt_out:
+                        env["UNSLOTH_RESPECT_PM_POLICY"] = opt_out
+                    if platform == "WSL":
+                        env["WSL_DISTRO_NAME"] = "Ubuntu"
+                    with (
+                        mock.patch.dict(os.environ, env, clear = True),
+                        mock.patch.multiple(ips, **settings),
+                    ):
+                        result = ips._install_env_for_cmd(list(command))
+                    # Only the keys this helper owns; the markers themselves differ.
+                    answers.add(
+                        None
+                        if result is None
+                        else repr(
+                            sorted(
+                                (k, v) for k, v in result.items() if k.startswith(("PIP_", "UV_"))
+                            )
+                        )
+                    )
+                    if result is not None:
+                        for name, value in markers.items():
+                            assert (
+                                result[name] == value
+                            ), f"{accelerator} marker {name} was dropped on {platform}"
+            assert (
+                len(answers) == 1
+            ), f"{command} produced different environments across platforms: {answers}"
+
+
+class TestTheNoticeCannotTakeAnInstallDown:
+    """It is a message, not a step. Every way the probe can go wrong ends in a missing
+    line, never a failed install: it runs before the pip upgrade, against a venv uv
+    created without pip at all.
+    """
+
+    def test_the_pip_probe_is_bounded(self):
+        """No timeout here means an install that hangs forever on a wedged pip."""
+        # The probe lives in _pip_config_settings, which _detected_policy calls.
+        source = inspect.getsource(ips._pip_config_settings)
+        assert "timeout = 30" in source, "the pip config probe must be bounded"
+        assert "subprocess.run" in source, (
+            "this test is checking the function that actually runs pip; if the probe "
+            "moved again, follow it rather than leaving the assertion looking at nothing"
+        )
+
+    def test_a_hanging_pip_still_yields_the_environment_half(self):
+        ips._detected_policy.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {"PIP_REQUIRE_HASHES": "1"}, clear = True),
+            mock.patch.object(
+                ips.subprocess,
+                "run",
+                side_effect = ips.subprocess.TimeoutExpired(cmd = "pip", timeout = 30),
+            ),
+        ):
+            assert ips._hardened_pm_policy_names() == ("PIP_REQUIRE_HASHES",)
+        ips._detected_policy.cache_clear()
+
+    def test_a_broken_pip_is_not_an_error(self):
+        for failure in (OSError("no pip"), ips.subprocess.SubprocessError("boom")):
+            ips._detected_policy.cache_clear()
+            with (
+                mock.patch.dict(os.environ, {}, clear = True),
+                mock.patch.object(ips.subprocess, "run", side_effect = failure),
+            ):
+                assert ips._hardened_pm_policy_names() == ()
+            ips._detected_policy.cache_clear()
+
+    def test_undecodable_probe_output_is_not_an_error(self):
+        ips._detected_policy.cache_clear()
+        result = mock.Mock(returncode = 0, stdout = b"\xff\xfe not utf-8 \x00\n")
+        with (
+            mock.patch.dict(os.environ, {}, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            assert ips._hardened_pm_policy_names() == ()
+        ips._detected_policy.cache_clear()
 
 
 class TestProgressLineNotes:
@@ -2243,3 +2791,444 @@ class TestDesktopBackendVersionConstraint:
                 else package_name
             )
             assert unsloth_spec == "unsloth"
+
+
+class TestAFalseCutoffOnlyDisablesTheManagerThatAcceptsIt:
+    """`false` is an off spelling for uv's exclude-newer and an ERROR for pip's cutoff.
+
+    Measured, not assumed. On the pinned uv 0.12.1, UV_EXCLUDE_NEWER=false resolves
+    normally while UV_EXCLUDE_NEWER=garbage is rejected, so uv understands `false` as
+    "no cutoff" rather than merely tolerating it. On pip 26.2.1 both
+    `--uploaded-prior-to false` and PIP_UPLOADED_PRIOR_TO=false exit with "Expected an
+    ISO 8601 datetime string". Treating pip's spelling as a disable let an unusable
+    environment value cancel a real pip.conf cutoff, which took the notice quiet about
+    a control the pinned path still drops.
+    """
+
+    def test_uv_cutoff_spellings_are_disabled_by_false(self):
+        for key in ("exclude-newer", "exclude-newer-package"):
+            assert ips._config_value_is_on("false", key) is False, key
+            assert ips._config_value_is_on("2026-01-01", key) is True, key
+
+    def test_pips_cutoff_is_not_disabled_by_a_value_pip_rejects(self):
+        # pip errors on this value, so it can neither be a cutoff nor an off switch.
+        # Reporting it keeps the notice honest about a setting that is still there.
+        assert ips._config_value_is_on("false", "uploaded-prior-to") is True
+        assert ips._config_value_is_on("false", "PIP_UPLOADED_PRIOR_TO") is True
+
+    def test_the_false_disables_set_holds_only_uv_spellings(self):
+        assert "uploaded-prior-to" not in ips._FALSE_DISABLES_KEYS
+        assert set(ips._FALSE_DISABLES_KEYS) == {"exclude-newer", "exclude-newer-package"}
+
+    def test_an_empty_cutoff_is_still_off_for_both(self):
+        for key in ("exclude-newer", "uploaded-prior-to"):
+            assert ips._config_value_is_on("", key) is False, key
+            assert ips._config_value_is_on("   ", key) is False, key
+
+
+class TestNoneIsAListSentinelNotABoolean:
+    """`:none:` empties a package list; to a boolean it is a value pip rejects.
+
+    Measured on pip 26.2.1: `PIP_NO_INDEX=:none:` exits with ":none: is not a valid
+    value for no-index option, please specify a boolean value like yes/no, true/false
+    or 1/0 instead". Reading it as off let the opt-out drop a variable that would
+    otherwise have stopped the command, which turns an install pip refuses into one
+    that can reach the network.
+    """
+
+    def test_none_does_not_switch_off_a_boolean_control(self):
+        for key in ips._BOOLEAN_POLICY_KEYS:
+            assert ips._config_value_is_on(":none:", key) is True, key
+
+    def test_none_still_empties_a_package_list(self):
+        for key in ("no-binary", "only-binary"):
+            assert ips._config_value_is_on(":none:", key) is False, key
+
+    def test_an_empty_value_is_off_for_every_kind_of_key(self):
+        for key in (None, "no-index", "no-binary", "exclude-newer"):
+            assert ips._config_value_is_on("", key) is False, key
+            assert ips._config_value_is_on("   ", key) is False, key
+
+    def test_the_opt_out_keeps_a_no_index_pip_would_reject(self, monkeypatch):
+        # The value is unusable, so the pinned step fails -- which is exactly what the
+        # opt-out promises. Dropping it would have let the same step succeed instead.
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", ":none:")
+        monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == ":none:"
+        assert env.get("PIP_FIND_LINKS") == "/op/wheels"
+
+    def test_the_default_path_still_scrubs_it(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        monkeypatch.setenv("PIP_NO_INDEX", ":none:")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert "PIP_NO_INDEX" not in env
+
+
+class TestAnExplicitNoIndexOverrideSurvivesTheOptOut:
+    """pip reads the environment ahead of pip.conf, so PIP_NO_INDEX=0 lifts a config
+    `no-index = true` for one run. Measured on pip 26.2.1 against a clean venv: with
+    pip.conf `no-index = true` the install fails with "No matching distribution found",
+    and the same command with PIP_NO_INDEX=0 resolves. Dropping the variable while
+    leaving pip.conf readable reimposed a restriction the operator had lifted.
+    """
+
+    PINNED = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+
+    def test_an_explicit_off_is_carried_through(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", "0")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == "0"
+
+    def test_an_explicit_on_is_carried_through_with_its_find_links(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", "1")
+        monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == "1"
+        assert env.get("PIP_FIND_LINKS") == "/op/wheels"
+
+    def test_find_links_is_still_additive_when_no_index_is_off(self, monkeypatch):
+        # With no-index off, find-links adds a location alongside the pinned index,
+        # which is the whole reason the pinned branch scrubs the mirror variables.
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", "0")
+        monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_the_default_path_scrubs_both_regardless(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        for value in ("0", "1"):
+            monkeypatch.setenv("PIP_NO_INDEX", value)
+            monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+            env = ips._install_env_for_cmd(list(self.PINNED))
+            assert env is not None
+            assert "PIP_NO_INDEX" not in env, value
+            assert "PIP_FIND_LINKS" not in env, value
+
+
+class TestNoIndexCountsTheConfigFileNotJustTheEnvironment:
+    """`--no-index` means "ignore indexes, look only at find-links", so whether
+    PIP_FIND_LINKS is the sole source or an extra one depends on the EFFECTIVE state.
+    The opt-out keeps pip.conf readable, so a `no-index = true` living there counts;
+    reading only the environment scrubbed find-links as additive and left the pip
+    fallback with no sources at all.
+    """
+
+    PINNED = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+
+    @pytest.fixture
+    def no_index_conf(self, tmp_path):
+        path = tmp_path / "pip.conf"
+        path.write_text("[global]\nno-index = true\n", encoding = "utf-8")
+        return str(path)
+
+    def _env(self, monkeypatch, **environ):
+        for key in ("PIP_NO_INDEX", "PIP_FIND_LINKS", "PIP_CONFIG_FILE"):
+            monkeypatch.delenv(key, raising = False)
+        for key, value in environ.items():
+            monkeypatch.setenv(key, value)
+        ips._detected_policy.cache_clear()
+        try:
+            return ips._install_env_for_cmd(list(self.PINNED))
+        finally:
+            ips._detected_policy.cache_clear()
+
+    def test_find_links_survives_a_config_only_no_index(self, monkeypatch, no_index_conf):
+        env = self._env(
+            monkeypatch,
+            UNSLOTH_RESPECT_PM_POLICY = "1",
+            PIP_CONFIG_FILE = no_index_conf,
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert env.get("PIP_FIND_LINKS") == "/op/wheels"
+
+    def test_find_links_is_still_scrubbed_with_no_no_index_anywhere(self, monkeypatch):
+        env = self._env(
+            monkeypatch,
+            UNSLOTH_RESPECT_PM_POLICY = "1",
+            PIP_CONFIG_FILE = os.devnull,
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_the_environment_overrides_the_config_in_both_directions(
+        self, monkeypatch, no_index_conf
+    ):
+        # pip reads the environment ahead of its files, so an explicit off wins and
+        # find-links goes back to being merely additive.
+        env = self._env(
+            monkeypatch,
+            UNSLOTH_RESPECT_PM_POLICY = "1",
+            PIP_CONFIG_FILE = no_index_conf,
+            PIP_NO_INDEX = "0",
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == "0"
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_the_default_path_scrubs_both_and_asks_pip_nothing(self, monkeypatch, no_index_conf):
+        # The scan must not be reached without the opt-out: the default path is the one
+        # that has to stay exactly as it was.
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        called = []
+        original = ips._detected_policy
+
+        def _spy():
+            called.append(True)
+            return original()
+
+        _spy.cache_clear = original.cache_clear
+        monkeypatch.setattr(ips, "_detected_policy", _spy)
+        env = self._env(
+            monkeypatch,
+            PIP_CONFIG_FILE = no_index_conf,
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert "PIP_FIND_LINKS" not in env and "PIP_NO_INDEX" not in env
+        assert called == []
+
+
+class TestNoIndexIsReadForTheCommandBeingRun:
+    """A command-prefixed pip.conf key affects only the command it names.
+
+    Pooling `[global]`, `[install]`, `[download]` and `[wheel]` into one answer let a
+    `[download] no-index = true` hold PIP_FIND_LINKS through a pinned INSTALL, where it
+    is purely additive and could satisfy torch from an unpinned location.
+    """
+
+    def test_the_commands_own_section_beats_global(self):
+        settings = {("global", "no-index"): "true", ("install", "no-index"): "false"}
+        assert ips._pip_setting_is_on(settings, "install", "no-index") is False
+        assert ips._pip_setting_is_on(settings, "download", "no-index") is True
+
+    def test_another_commands_section_does_not_apply(self):
+        settings = {("download", "no-index"): "true"}
+        assert ips._pip_setting_is_on(settings, "install", "no-index") is False
+        assert ips._pip_setting_is_on(settings, "download", "no-index") is True
+
+    def test_global_applies_where_no_command_section_exists(self):
+        settings = {("global", "no-index"): "true"}
+        for command in ips._PIP_COMMANDS:
+            assert ips._pip_setting_is_on(settings, command, "no-index") is True
+
+
+class TestAFailedPipProbeIsNotMemoisedForTheRun:
+    """A fresh uv venv has no pip when the notice runs.
+
+    Caching that emptiness meant a later step still saw "nothing configured" after pip
+    had been bootstrapped, which scrubbed PIP_FIND_LINKS out of a pinned command whose
+    only source it was. Only a reading that reached pip is kept.
+    """
+
+    def test_an_unreachable_pip_leaves_the_cache_empty(self, monkeypatch, tmp_path):
+        ips._detected_policy.cache_clear()
+        monkeypatch.setattr(ips.sys, "executable", str(tmp_path / "no-such-python"))
+        assert ips._pip_config_settings() == {}
+        assert ips._pip_config_settings._cache is None, (
+            "a probe that never reached pip must not be memoised: pip can be "
+            "bootstrapped later in the same run"
+        )
+        ips._detected_policy.cache_clear()
+
+    def test_a_successful_probe_is_memoised(self, monkeypatch, tmp_path):
+        ips._detected_policy.cache_clear()
+        conf = tmp_path / "pip.conf"
+        conf.write_text("[global]\nno-index = true\n", encoding = "utf-8")
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        try:
+            first = ips._pip_config_settings()
+            assert first.get(("global", "no-index")) == "true"
+            assert ips._pip_config_settings._cache is not None
+            # Second call must not re-probe: point the interpreter at nothing and the
+            # memoised answer should still come back.
+            monkeypatch.setattr(ips.sys, "executable", str(tmp_path / "gone"))
+            assert ips._pip_config_settings() == first
+        finally:
+            ips._detected_policy.cache_clear()
+
+    def test_the_answer_changes_once_pip_appears(self, monkeypatch, tmp_path):
+        ips._detected_policy.cache_clear()
+        conf = tmp_path / "pip.conf"
+        conf.write_text("[global]\nno-index = true\n", encoding = "utf-8")
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.delenv("PIP_NO_INDEX", raising = False)
+        real = ips.sys.executable
+        try:
+            monkeypatch.setattr(ips.sys, "executable", str(tmp_path / "no-such-python"))
+            assert ips._pip_no_index_in_force() is False
+            monkeypatch.setattr(ips.sys, "executable", real)
+            assert ips._pip_no_index_in_force() is True
+        finally:
+            ips._detected_policy.cache_clear()
+
+
+class TestUvFindLinksSurvivesTheOptOut:
+    """uv's no-index is undetectable, so its wheelhouse cannot be treated as additive.
+
+    Measured on the pinned uv 0.12.1: a uv.toml `[pip] no-index = true` plus
+    UV_FIND_LINKS installs from the wheelhouse, and the same pinned command without it
+    fails with "index lookups were disabled and no additional package locations were
+    provided". `--no-index` has no environment spelling and uv prints no resolved
+    configuration, so unlike pip there is nothing to ask; guessing wrong in that
+    direction breaks every offline uv install.
+    """
+
+    PINNED = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+
+    def test_the_wheelhouse_reaches_uv_under_the_opt_out(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("UV_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert env.get("UV_FIND_LINKS") == "/op/wheels"
+
+    def test_the_additive_mirrors_are_still_scrubbed_alongside_it(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("UV_FIND_LINKS", "/op/wheels")
+        for name in ("UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX"):
+            monkeypatch.setenv(name, "https://mirror.corp")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        for name in ("UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX"):
+            assert name not in env, name
+
+    def test_the_default_path_still_scrubs_it(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        monkeypatch.setenv("UV_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert "UV_FIND_LINKS" not in env
+
+
+class TestReportingAControlIsNotPermissionToOverrideIt:
+    """The notice's list and the default path's scrub list are separate on purpose.
+
+    `_PM_POLICY_ENV_VARS` grew as the notice learned to report more controls. It is
+    also what the default pinned branch used to remove, so widening it silently
+    widened the default bypass to UV_ONLY_BINARY, UV_ONLY_BINARY_PACKAGE and
+    PIP_UPLOADED_PRIOR_TO, none of which this installer touched before. The whole
+    change rests on the default path being indistinguishable from before.
+    """
+
+    # Exactly what the installer removed before this change. Do not add to this
+    # without deciding, separately and deliberately, to override one more control.
+    BASELINE = {
+        "UV_NO_BUILD",
+        "UV_NO_BUILD_PACKAGE",
+        "UV_NO_BINARY",
+        "UV_NO_BINARY_PACKAGE",
+        "UV_REQUIRE_HASHES",
+        "UV_EXCLUDE_NEWER",
+        "PIP_ONLY_BINARY",
+        "PIP_NO_BINARY",
+        "PIP_REQUIRE_HASHES",
+    }
+
+    def test_the_default_scrub_set_has_not_grown(self):
+        assert set(ips._PM_POLICY_SCRUB_ENV_VARS) == self.BASELINE
+
+    def test_the_notice_reports_more_than_the_default_path_overrides(self):
+        reported = set(ips._PM_POLICY_ENV_VARS)
+        assert self.BASELINE < reported, "the notice should report at least the scrubbed set"
+        assert {"UV_ONLY_BINARY", "PIP_UPLOADED_PRIOR_TO"} <= reported
+
+    @pytest.mark.parametrize(
+        "name", ["UV_ONLY_BINARY", "UV_ONLY_BINARY_PACKAGE", "PIP_UPLOADED_PRIOR_TO"]
+    )
+    def test_a_reported_only_control_survives_the_default_path(self, name, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        monkeypatch.setenv(name, ":all:" if "BINARY" in name else "2026-01-01")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert name in env, (
+            f"{name} is reported by the notice but was never overridden before this "
+            f"change; the default path must still leave it alone"
+        )
+
+    def test_the_scrubbed_controls_are_still_scrubbed_by_default(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        for name in self.BASELINE:
+            monkeypatch.setenv(name, "1")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        for name in self.BASELINE:
+            assert name not in env, name
+
+    def test_the_opt_out_still_keeps_everything(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        for name in set(ips._PM_POLICY_ENV_VARS) | self.BASELINE:
+            monkeypatch.setenv(name, "1")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        for name in self.BASELINE:
+            assert env.get(name) == "1", name
+
+
+class TestTheMetadataRepairDeclinesBeforeTouchingAnything:
+    """The guard sits at the top of the repair, not inside _stage_replacement().
+
+    By the time staging is reached the repair has already rewritten METADATA and moved
+    pip's leftover backups aside. A normal return puts them back through the finally,
+    but a SIGKILL or a power loss cannot run a finally, so under the opt-out the repair
+    is declined before the first byte is touched.
+    """
+
+    def test_no_filesystem_call_is_reached_under_the_opt_out(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        touched: "list[str]" = []
+
+        # Anything that could mutate the tree records itself instead of running.
+        for name in ("_rewrite_minimal_metadata",):
+            if hasattr(ips, name):
+                monkeypatch.setattr(
+                    ips,
+                    name,
+                    lambda *a, _n = name, **k: touched.append(_n) or True,
+                )
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata,
+            "back_up",
+            lambda self, *a, **k: touched.append("back_up") or True,
+        )
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata,
+            "take",
+            lambda self, *a, **k: touched.append("take") or True,
+        )
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda name: ["1.0", "2.0"],
+        )
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "invalid_metadata_paths",
+            lambda name: ["/x/a.dist-info"],
+        )
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "pip_backup_metadata_paths",
+            lambda name: ["/x/~pkg"],
+        )
+
+        result = ips._repair_duplicate_core_metadata(("unsloth",))
+        assert result is False
+        assert touched == [], f"the repair mutated the tree before declining: {touched}"

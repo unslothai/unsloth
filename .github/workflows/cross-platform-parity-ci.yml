@@ -76,6 +76,7 @@ on:
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
+      - 'tests/studio/test_pm_policy_optout_installers.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
       - 'studio/src-tauri/src/process.rs'
@@ -133,6 +134,7 @@ on:
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
+      - 'tests/studio/test_pm_policy_optout_installers.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
       - 'studio/src-tauri/src/process.rs'
@@ -229,6 +231,12 @@ jobs:
       - name: XPU arm64 torchaudio tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
+      # Same shape: the extracted install helpers run against a recorder standing in for
+      # uv, so what is measured is the environment they hand the manager. No venv needed,
+      # and the pinned-install gate is identical on all three, so it runs on all three.
+      - name: Package-manager policy opt-out tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_pm_policy_optout_installers.ps1
       # Same again: mocked filesystem reads and one `python -c` child, so no venv, no AMD GPU and
       # no Windows needed. Read the file header before adding cases -- pwsh 7 cannot reproduce the
       # 5.1 half of #8335, so the checks covering it are deliberately source shapes.

@@ -34,23 +34,51 @@ REPO = Path(__file__).resolve().parents[2]
 STACK = REPO / "studio/install_python_stack.py"
 
 
+@pytest.fixture(autouse = True)
+def _neutral_policy_environment(monkeypatch):
+    """Run as an ordinary machine unless a test says otherwise.
+
+    UNSLOTH_RESPECT_PM_POLICY changes what several of these code paths do, so inheriting
+    it from the developer's shell rewrites the suite's subject: with it set, the metadata
+    repair and the XPU swap both decline to start and dozens of unrelated assertions
+    fail. Tests that want the opt-out set it themselves.
+    """
+    monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+
+
 def _load_real_index_env_scrub():
     """The module's OWN _install_env_for_cmd, so the scrub is executed, not re-implemented.
 
     It is defined below the slice the swap comes from, so it is pulled in separately rather
     than stubbed -- a hand-written copy here would agree with a broken original forever.
     """
+    import functools as _functools
     import os as _os
 
     src = STACK.read_text(encoding = "utf-8")
-    ns: dict = {"os": _os}
+    ns: dict = {"os": _os, "functools": _functools}
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
         # _install_env_for_cmd calls both of these, and they resolve from this namespace
         # at CALL time, so omitting either only shows up as a NameError once a test
         # actually invokes the scrub.
         ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
+        # The opt-out gate both of the functions below consult.
+        ('_POLICY_OPT_OUT_ENV = "', "\n\n", 0),
+        ("def _respect_pm_policy(", "\n\n\n", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
+        # _install_env_for_cmd calls _config_value_is_on to decide whether an explicit
+        # no-index survives the opt-out, and that helper needs its own tables. Without
+        # them the slice raises NameError the moment this module is run with
+        # UNSLOTH_RESPECT_PM_POLICY set, so the opt-out path could not be exercised here
+        # at all -- and a hardened developer environment would fail rather than test it.
+        ("_OFF_VALUES = (", "\n", 0),
+        ("_BOOLEAN_POLICY_KEYS = (", "\n", 0),
+        ("_EMPTY_POLICY_VALUES = (", "\n", 0),
+        ("_FALSE_DISABLES_KEYS = (", "\n", 0),
+        ("def _env_policy_key(", "\n\ndef ", 0),
+        ("def _policy_key_spelling(", "\n\ndef ", 0),
+        ("def _config_value_is_on(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):
@@ -58,10 +86,12 @@ def _load_real_index_env_scrub():
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
     assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
-    return ns["_install_env_for_cmd"]
+    return ns
 
 
-_real_install_env_for_cmd = _load_real_index_env_scrub()
+_real_module_slices = _load_real_index_env_scrub()
+_real_install_env_for_cmd = _real_module_slices["_install_env_for_cmd"]
+_real_respect_pm_policy = _real_module_slices["_respect_pm_policy"]
 
 
 def _load(
@@ -199,6 +229,11 @@ def _load(
         "_safe_print": (
             lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None
         ),
+        # The swap now asks whether the operator kept their policy, and hashes the
+        # downloaded wheel when they did. Extracted from the module rather than stubbed,
+        # for the same reason as the scrub: a hand-written copy would agree with a broken
+        # original forever.
+        "_respect_pm_policy": _real_respect_pm_policy,
     }
     exec(compile(body, str(STACK), "exec"), ns)
     mod.__dict__.update(ns)
