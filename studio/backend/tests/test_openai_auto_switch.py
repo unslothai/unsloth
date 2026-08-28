@@ -460,6 +460,7 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
         ("POST", "/messages/count_tokens"): "anthropic_count_tokens",
         ("POST", "/audio/generate"): "generate_audio",
         ("GET", "/models"): "openai_list_models",
+        ("GET", "/models/"): "openai_list_models",
         ("GET", "/models/{model_id:path}"): "openai_retrieve_model",
     }
     seen = {}
