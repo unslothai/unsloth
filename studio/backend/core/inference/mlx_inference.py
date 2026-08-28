@@ -1362,6 +1362,14 @@ def _make_mlx_presence_penalty_processor(penalty: float):
     return _processor
 
 
+def _row_logits_processors(processors, prompt_len):
+    """Show a row's processors the history the single-reply path shows them."""
+    if not processors:
+        return []
+    offset = max(prompt_len - 1, 0)
+    return [(lambda tokens, logits, _fn = fn: _fn(tokens[offset:], logits)) for fn in processors]
+
+
 def _make_mlx_frequency_penalty_processor(penalty: float):
     """Frequency penalty as an mlx_lm/mlx_vlm logits processor.
 
@@ -1536,6 +1544,45 @@ class _RowStream:
         return [self._output]
 
 
+def _messages_with_system_prompt(messages, system_prompt):
+    full = [{"role": "system", "content": system_prompt}] if system_prompt else []
+    full.extend(messages)
+    return full
+
+
+class _TextRowPlan:
+    """One text reply's inputs, resolved before any model runs."""
+
+    __slots__ = (
+        "prompt",
+        "think_prefix",
+        "stream",
+        "sampler",
+        "processors",
+        "max_tokens",
+        "detokenizes",
+    )
+
+    def __init__(
+        self,
+        *,
+        prompt,
+        think_prefix,
+        stream,
+        sampler,
+        processors,
+        max_tokens,
+        detokenizes = False,
+    ):
+        self.prompt = prompt
+        self.think_prefix = think_prefix
+        self.stream = stream
+        self.detokenizes = detokenizes
+        self.sampler = sampler
+        self.processors = processors
+        self.max_tokens = max_tokens
+
+
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -1547,6 +1594,7 @@ class MLXInferenceBackend:
         # usage, timings and terminal reason of the latest generation,
         # shipped on gen_done.
         self.last_generation_stats = None
+        self.last_batch_generation_stats = []
 
         self._model = None
         self._tokenizer = None
@@ -1598,6 +1646,17 @@ class MLXInferenceBackend:
     def _clear_prompt_cache(self):
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+
+    def _encode_prompt(self, prompt):
+        """Tokenize a rendered prompt the way mlx-lm would tokenize it itself."""
+        tokenizer = self._tokenizer
+        bos = getattr(tokenizer, "bos_token", None)
+        return list(
+            tokenizer.encode(
+                prompt,
+                add_special_tokens = bos is None or not prompt.startswith(bos),
+            )
+        )
 
     def _prepare_prompt_cache(self, prompt, adapter_state):
         history = self._prompt_cache()
@@ -2328,72 +2387,28 @@ class MLXInferenceBackend:
         stop = None,
     ):
         from mlx_lm import stream_generate
-        from mlx_lm.sample_utils import make_sampler
 
-        from core.inference.chat_template_helpers import detect_think_prefill
-
-        render_result = self._render_text_prompt(
+        plan = self._plan_text_row(
             messages,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            max_new_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
-        )
-        prompt = render_result.prompt
-        reasoning_channel_markers = render_result.reasoning_channel_markers
-        # Not the request flag: a later tool-loop pass keeps it but renders an
-        # ordinary post-tool prompt.
-        _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
-
-        # An open <think> prefilled by the template lives in the prompt, not
-        # the generated tokens; re-emit it so the frontend renders the block.
-        think_prefix = detect_think_prefill(
-            prompt, getattr(self._tokenizer, "all_special_tokens", None)
-        )
-        if seed is None:
-            sampler = make_sampler(
-                temp = temperature,
-                top_p = top_p,
-                top_k = int(top_k or 0),
-                min_p = float(min_p or 0.0),
-                min_tokens_to_keep = 1,
-            )
-        else:
-            sampler = _make_seeded_mlx_sampler(
-                seed,
-                temp = temperature,
-                top_p = top_p,
-                top_k = int(top_k or 0),
-                min_p = float(min_p or 0.0),
-            )
-        logits_processors = _mlx_sampling_processors(
-            repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
+            seed = seed,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            stop = stop,
         )
-
-        normalizer = (
-            make_reasoning_normalizer(
-                reasoning_channel_markers,
-                in_reasoning = prompt_opens_reasoning_channel(
-                    prompt, reasoning_channel_markers, _resumed_partial
-                ),
-            )
-            if reasoning_channel_markers is not None
-            else None
-        )
-        row = _RowStream(
-            prefix = think_prefix,
-            sequences = _mlx_stop_sequences(stop),
-            normalizer = normalizer,
-            decode = (
-                None
-                if normalizer is not None
-                else lambda ids: self._tokenizer.decode(ids, skip_special_tokens = True)
-            ),
-        )
+        prompt, think_prefix, row = plan.prompt, plan.think_prefix, plan.stream
+        sampler, logits_processors = plan.sampler, plan.processors
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
             (
                 gen_prompt,
@@ -2472,6 +2487,104 @@ class MLXInferenceBackend:
         )
         if row.stopped:
             self._mark_stopped()
+
+    def _plan_text_row(
+        self,
+        messages,
+        *,
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        max_new_tokens,
+        repetition_penalty,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+        presence_penalty = 0.0,
+        seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
+        stop = None,
+    ) -> "_TextRowPlan":
+        """Resolve one text reply: rendered prompt, sampler, processors, snapshots."""
+        from mlx_lm.sample_utils import make_sampler
+
+        from core.inference.chat_template_helpers import detect_think_prefill
+
+        render_result = self._render_text_prompt(
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+        )
+        prompt = render_result.prompt
+        reasoning_channel_markers = render_result.reasoning_channel_markers
+        # Not the request flag: a later tool-loop pass keeps it but renders an
+        # ordinary post-tool prompt.
+        _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
+
+        # An open <think> prefilled by the template lives in the prompt, not
+        # the generated tokens; re-emit it so the frontend renders the block.
+        think_prefix = detect_think_prefill(
+            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+        )
+        if seed is None:
+            sampler = make_sampler(
+                temp = temperature,
+                top_p = top_p,
+                top_k = int(top_k or 0),
+                min_p = float(min_p or 0.0),
+                min_tokens_to_keep = 1,
+            )
+        else:
+            sampler = _make_seeded_mlx_sampler(
+                seed,
+                temp = temperature,
+                top_p = top_p,
+                top_k = int(top_k or 0),
+                min_p = float(min_p or 0.0),
+            )
+        logits_processors = _mlx_sampling_processors(
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+        )
+
+        normalizer = (
+            make_reasoning_normalizer(
+                reasoning_channel_markers,
+                in_reasoning = prompt_opens_reasoning_channel(
+                    prompt, reasoning_channel_markers, _resumed_partial
+                ),
+            )
+            if reasoning_channel_markers is not None
+            else None
+        )
+        row = _RowStream(
+            prefix = think_prefix,
+            sequences = _mlx_stop_sequences(stop),
+            normalizer = normalizer,
+            decode = (
+                None
+                if normalizer is not None
+                else lambda ids: self._tokenizer.decode(ids, skip_special_tokens = True)
+            ),
+        )
+        return _TextRowPlan(
+            prompt = prompt,
+            think_prefix = think_prefix,
+            stream = row,
+            detokenizes = normalizer is not None,
+            sampler = sampler,
+            processors = logits_processors,
+            max_tokens = max_new_tokens,
+        )
 
     def _render_vlm_prompt(
         self,
@@ -2724,6 +2837,284 @@ class MLXInferenceBackend:
         )
         if row.stopped:
             self._mark_stopped()
+
+
+    def batch_unavailable_reason(self, requests):
+        """Why these replies cannot share one decode, or None if they can.
+
+        The caller falls back to running them one at a time. Kept as a question
+        the caller asks rather than an exception it catches, so a fallback is a
+        decision with a reason attached and never a swallowed error.
+        """
+        if self._model is None:
+            return "no model is loaded"
+        if self._is_vlm:
+            return "the loaded model is a vision model"
+        if self._kv_quant_generate_kwargs():
+            # mlx-lm's BatchGenerator builds its own caches and takes no kv_bits,
+            # so a batched run would silently decode at full precision against a
+            # setting the user asked for.
+            return "quantized KV cache is enabled"
+        if len(requests) < 2:
+            return "fewer than two replies were requested"
+        return None
+
+    def generate_chat_batch(
+        self,
+        requests,
+        *,
+        cancel_event = None,
+        _adapter_state = None,
+    ):
+        """Run several chat replies through one batched decode."""
+        import time
+
+        from mlx_lm.generate import BatchGenerator
+
+        reason = self.batch_unavailable_reason(requests)
+        if reason is not None:
+            raise RuntimeError(f"MLX batched generation is unavailable: {reason}")
+
+        self.last_batch_generation_stats = [None] * len(requests)
+        self.last_generation_stats = None
+
+        plans = [
+            self._plan_text_row(
+                _messages_with_system_prompt(
+                    request.get("messages") or [],
+                    request.get("system_prompt", ""),
+                ),
+                temperature = request.get("temperature", 0.7),
+                top_p = request.get("top_p", 0.9),
+                top_k = request.get("top_k", 40),
+                min_p = request.get("min_p", 0.0),
+                max_new_tokens = request.get("max_new_tokens", 256),
+                repetition_penalty = request.get("repetition_penalty", 1.0),
+                tools = request.get("tools"),
+                enable_thinking = request.get("enable_thinking"),
+                reasoning_effort = request.get("reasoning_effort"),
+                preserve_thinking = request.get("preserve_thinking"),
+                continue_final_message = request.get("continue_final_message", False),
+                presence_penalty = request.get("presence_penalty", 0.0),
+                seed = request.get("seed"),
+                frequency_penalty = request.get("frequency_penalty", 0.0),
+                logit_bias = request.get("logit_bias"),
+                stop = request.get("stop"),
+            )
+            for request in requests
+        ]
+
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            prefixes, remainders, caches, cache_keys, full_tokens = self._batch_prompt_caches(
+                [plan.prompt for plan in plans],
+                _adapter_state,
+            )
+            # insert() takes ownership of these lists and appends every prompt and
+            # sampled token to them, so their reused length has to be read now.
+            cached_lengths = [len(prefix) for prefix in prefixes]
+            logger.info(
+                "Generating %d replies as one batch: cached=%s, max_tokens=%s, model=%s",
+                len(plans),
+                cached_lengths,
+                [plan.max_tokens for plan in plans],
+                type(self._model).__name__,
+            )
+            generator = BatchGenerator(
+                self._model,
+                max_tokens = max(plan.max_tokens for plan in plans),
+                stop_tokens = [
+                    [token] for token in _mlx_stop_token_ids(self._tokenizer, self._model)
+                ],
+                completion_batch_size = len(plans),
+                prefill_batch_size = len(plans),
+            )
+            try:
+                for row, plan in enumerate(plans):
+                    if plan.think_prefix:
+                        yield row, plan.think_prefix
+                uids = generator.insert(
+                    remainders,
+                    max_tokens = [plan.max_tokens for plan in plans],
+                    caches = caches,
+                    all_tokens = prefixes,
+                    samplers = [plan.sampler for plan in plans],
+                    logits_processors = [
+                        _row_logits_processors(plan.processors, len(tokens))
+                        for plan, tokens in zip(plans, full_tokens)
+                    ],
+                    # Per-row grammar state machines belong here once constrained
+                    # decoding moves onto this path. Unset, upstream supplies the
+                    # stop-token machine built above.
+                    state_machines = None,
+                )
+                row_of = {uid: row for row, uid in enumerate(uids)}
+                pending = set(uids)
+                generated = [0] * len(plans)
+                reasons: list[str | None] = [None] * len(plans)
+                # A batch reports one token at a time, so a row whose reply is
+                # assembled from text deltas needs a detokenizer of its own; the
+                # rest re-decode their ids and ignore it.
+                detokenizers = [
+                    self._tokenizer.detokenizer if plan.detokenizes else None for plan in plans
+                ]
+                started = time.perf_counter()
+                # Per row: a batch splits a prompt too long for one prefill step,
+                # so a short row starts decoding while a long one is still being
+                # read. One shared marker would bill that wait to the long row as
+                # decode, and report a prefill it never finished as complete.
+                prefilled_at: list[float | None] = [None] * len(plans)
+
+                def _retire(row, *, cancelled):
+                    """Close a row out where it ends, rather than with the batch.
+
+                    Its neighbours may run for thousands more tokens; holding this
+                    row's settled text and its completion until they finish would
+                    make every reply as slow as the slowest, and would report a
+                    reply that ended on its own as one the cancel caught.
+                    """
+                    stream = plans[row].stream
+                    yield from ((row, snap) for snap in stream.settle())
+                    yield from ((row, snap) for snap in stream.drain(cancelled = cancelled))
+                    ready_at = prefilled_at[row] or time.perf_counter()
+                    decoded = time.perf_counter() - ready_at
+                    prefill_s = ready_at - started
+                    self.last_batch_generation_stats[row] = _build_generation_stats(
+                        len(remainders[row]),
+                        (len(remainders[row]) / prefill_s) if prefill_s > 0 else 0.0,
+                        generated[row],
+                        # This row's own decode span: it left the batch when it
+                        # finished, so a neighbour running longer is not its cost.
+                        generated[row] / max(decoded, 1e-9),
+                        cached_lengths[row],
+                        finish_reason = reasons[row],
+                    )
+                    yield row, None
+
+                while pending:
+                    _prompt_events, events = generator.next()
+                    now = time.perf_counter() if events else None
+                    for event in events:
+                        row = row_of.get(event.uid)
+                        if row is None or event.uid not in pending:
+                            continue
+                        if prefilled_at[row] is None:
+                            prefilled_at[row] = now
+                        stream = plans[row].stream
+                        detokenizer = detokenizers[row]
+                        text = None
+                        if event.finish_reason is None:
+                            if detokenizer is not None:
+                                detokenizer.add_token(event.token)
+                                text = detokenizer.last_segment
+                        else:
+                            # Upstream's terminal event, mirroring what the
+                            # single-reply runtime does with its own: a stop token
+                            # is counted but never rendered, a budget cut-off ends
+                            # on a real token and is, and either way the
+                            # detokenizer is finalized -- which is what releases a
+                            # partial character it was still holding back.
+                            text = ""
+                            if detokenizer is not None:
+                                if event.finish_reason == "length":
+                                    detokenizer.add_token(event.token)
+                                detokenizer.finalize()
+                                text = detokenizer.last_segment
+                        generated[row] += 1
+                        yield from (
+                            (row, snapshot)
+                            for snapshot in stream.feed(
+                                token = event.token,
+                                text = text,
+                            )
+                        )
+                        done = stream.stopped or event.finish_reason is not None
+                        if not done:
+                            continue
+                        # A stop sequence is this loop's own doing; anything else
+                        # is the reason upstream retired the row for.
+                        reasons[row] = "stop" if stream.stopped else event.finish_reason
+                        # A row upstream is still decoding has to be withdrawn, or
+                        # it keeps occupying the batch after its stop sequence hit.
+                        banked = generator.remove(
+                            [event.uid],
+                            return_prompt_caches = event.finish_reason is None,
+                        )
+                        self._bank_row_cache(
+                            cache_keys[row],
+                            event,
+                            banked.get(event.uid),
+                            full_tokens[row],
+                            stream,
+                        )
+                        pending.discard(event.uid)
+                        yield from _retire(row, cancelled = False)
+                    if cancel_event is not None and cancel_event.is_set():
+                        # The KV a cancelled row built is as reusable as any other,
+                        # and the single-reply path banks it too.
+                        stopping = sorted(pending, key = row_of.__getitem__)
+                        withdrawn = generator.remove(
+                            list(stopping),
+                            return_prompt_caches = True,
+                        )
+                        pending.clear()
+                        for uid in stopping:
+                            row = row_of[uid]
+                            reasons[row] = "stop"
+                            self._bank_row_cache(
+                                cache_keys[row],
+                                None,
+                                withdrawn.get(uid),
+                                full_tokens[row],
+                                plans[row].stream,
+                            )
+                            yield from _retire(row, cancelled = True)
+            finally:
+                generator.close()
+
+    def _batch_prompt_caches(self, prompts, adapter_state):
+        """Per-row KV for a batch, from the same history a single reply reads.
+
+        Rows sharing a prompt are handed the same entry, which is safe: the batch
+        copies each row's KV into a tensor of its own, and the rows diverge from
+        their first generated token.
+        """
+        prefixes, remainders, caches, cache_keys, full_tokens = [], [], [], [], []
+        for prompt in prompts:
+            rest, cache, key, tokens, cached_n = self._prepare_prompt_cache(prompt, adapter_state)
+            if cache is None or tokens is None:
+                # No usable history: tokenize here, since the batch takes ids and
+                # the single-reply path would have handed the string to mlx-lm.
+                tokens = self._encode_prompt(prompt)
+                rest, cached_n, key = tokens, 0, None
+                cache = self._make_row_cache()
+            prefixes.append(list(tokens[:cached_n]))
+            remainders.append(list(rest))
+            caches.append(cache)
+            cache_keys.append(key)
+            full_tokens.append(list(tokens))
+        return prefixes, remainders, caches, cache_keys, full_tokens
+
+    def _make_row_cache(self):
+        from mlx_lm.models.cache import make_prompt_cache
+        return make_prompt_cache(self._model)
+
+    def _bank_row_cache(self, cache_key, event, withdrawn, prompt_tokens, stream):
+        """Offer a finished reply's KV to the history, so the next turn reuses it."""
+        history = self._prompt_cache_history
+        if history is None or cache_key is None:
+            return
+        cache = getattr(event, "prompt_cache", None)
+        tokens = getattr(event, "all_tokens", None)
+        if cache is None and withdrawn is not None:
+            cache, tokens = withdrawn
+        if cache is None:
+            return
+        if not tokens:
+            tokens = prompt_tokens + stream.token_ids
+        try:
+            history.insert(cache_key, list(tokens), cache)
+        except Exception as exc:
+            logger.debug("MLX prompt cache insert failed: %s", exc)
 
     def generate_audio_input_response(
         self,
