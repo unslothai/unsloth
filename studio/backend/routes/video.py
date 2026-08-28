@@ -1307,6 +1307,7 @@ async def _create_openai_video(
         from core.inference.video import _detect_load_family
         from core.inference.video_families import (
             validate_video_keyframe_conditioning,
+            validate_video_reference_conditioning,
             validate_video_request_shape,
         )
 
@@ -1329,8 +1330,14 @@ async def _create_openai_video(
             else None
         )
         validate_video_request_shape(fam, width, height, want_frames)
+        h3_task = expected_partition(pick)
         validate_video_keyframe_conditioning(
-            fam, expected_partition(pick), has_keyframes = reference is not None
+            fam, h3_task, has_keyframes = reference is not None
+        )
+        validate_video_reference_conditioning(
+            fam,
+            h3_task,
+            has_references = False,
         )
 
     try:

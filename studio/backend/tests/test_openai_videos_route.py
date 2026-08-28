@@ -742,6 +742,33 @@ def test_an_unservable_duration_is_refused_before_the_model_switch(client, backe
     assert switched["completed"] is False, "the model was switched before the refusal"
 
 
+def test_a_reference_only_checkpoint_is_refused_before_the_model_switch(
+    client, backend, monkeypatch
+):
+    import types
+
+    from core.inference import media_auto_switch
+
+    switched = {"completed": False}
+
+    async def _fake_switch(model, *, before_switch = None, **_kwargs):
+        pick = types.SimpleNamespace(
+            model_path = "MiniMaxAI/MiniMax-H3",
+            gguf_filename = "minimax_h3_ref2va-Q4_K_M.gguf",
+            model_kind = "gguf",
+        )
+        if before_switch is not None:
+            before_switch(pick)
+        switched["completed"] = True
+
+    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _fake_switch)
+    resp = _create(client, {"prompt": "text only", "model": "MiniMax-H3-Ref2VA"})
+    assert resp.status_code == 400, resp.json()
+    assert resp.json()["error"]["param"] == "input_reference"
+    assert "Ref2VA partition" in resp.json()["error"]["message"]
+    assert switched["completed"] is False, "the model was switched before the refusal"
+
+
 def test_the_created_job_reports_the_canvas_the_backend_resolved(client, backend, monkeypatch):
     """With a reference image and no size the canvas follows the source aspect.
 
