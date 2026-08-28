@@ -60,10 +60,7 @@ def _literal_ip_address(host: str):
         return None
 
 
-def _resolved_ip_addresses(host: str):
-    literal = _literal_ip_address(host)
-    if literal is not None:
-        return (literal,)
+def _resolved_host_ip_addresses(host: str):
     if not isinstance(host, str) or not host:
         return ()
     try:
@@ -73,10 +70,23 @@ def _resolved_ip_addresses(host: str):
     resolved = []
     for _family, _kind, _protocol, _name, sockaddr in addresses:
         try:
-            parsed = _normalized_ip(sockaddr[0])
-        except IndexError:
+            parsed = ipaddress.ip_address(sockaddr[0])
+        except (IndexError, ValueError):
             continue
-        if parsed is not None and parsed not in resolved:
+        if parsed not in resolved:
+            resolved.append(parsed)
+    return tuple(resolved)
+
+
+def _resolved_ip_addresses(host: str):
+    literal = _literal_ip_address(host)
+    if literal is not None:
+        return (literal,)
+    resolved = []
+    for parsed in _resolved_host_ip_addresses(host):
+        if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+            parsed = parsed.ipv4_mapped
+        if parsed not in resolved:
             resolved.append(parsed)
     return tuple(resolved)
 
@@ -131,7 +141,22 @@ def normalize_wildcard_bind_host(host: str) -> str:
             return host
         return "::" if literal.version == 6 else "0.0.0.0"
 
-    addresses = _resolved_ip_addresses(host)
+    raw_addresses = _resolved_host_ip_addresses(host)
+    addresses = []
+    has_mapped_address = False
+    for address in raw_addresses:
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+            has_mapped_address = True
+        if address not in addresses:
+            addresses.append(address)
+    if has_mapped_address:
+        if len(addresses) == 1:
+            return str(addresses[0])
+        raise ValueError(
+            f"--host {host!r} resolves to ambiguous IPv4-mapped addresses; "
+            "use an explicit bind address."
+        )
     wildcard_versions = {address.version for address in addresses if address.is_unspecified}
     if not wildcard_versions:
         return host

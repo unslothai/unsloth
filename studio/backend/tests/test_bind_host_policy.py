@@ -98,6 +98,47 @@ def test_a_mapped_specific_bind_is_bindable_through_asyncio_after_normalization(
     assert asyncio.run(bind()) == socket.AF_INET
 
 
+def test_a_resolved_mapped_bind_is_bindable_through_asyncio_after_normalization(monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            host_policy.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:127.0.0.1", 0, 0, 0))
+            ],
+        )
+        normalized_host = normalize_wildcard_bind_host("mapped.test")
+
+    async def bind():
+        server = await asyncio.start_server(
+            lambda _reader, _writer: None,
+            host = normalized_host,
+            port = 0,
+        )
+        try:
+            return server.sockets[0].family
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    assert normalized_host == "127.0.0.1"
+    assert asyncio.run(bind()) == socket.AF_INET
+
+
+def test_ambiguous_resolved_mapped_binds_are_rejected(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:127.0.0.1", 0, 0, 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:192.168.1.24", 0, 0, 0)),
+        ],
+    )
+
+    with pytest.raises(ValueError, match = "resolves to ambiguous IPv4-mapped addresses"):
+        normalize_wildcard_bind_host("ambiguous-mapped.test")
+
+
 def test_a_resolved_ipv6_wildcard_uses_ipv6_loopback(monkeypatch):
     monkeypatch.setattr(
         host_policy.socket,
