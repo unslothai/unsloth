@@ -323,7 +323,12 @@ export function ChatMcpServersDialog({
   const [codecPending, setCodecPending] = useState(false);
   const [codecError, setCodecError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
-  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [refreshingIds, setRefreshingIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [togglingIds, setTogglingIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [confirmingDelete, setConfirmingDelete] =
     useState<McpServerConfig | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -332,6 +337,8 @@ export function ChatMcpServersDialog({
   const activeEditIdRef = useRef<string | null>(null);
   const listRefreshGenerationRef = useRef(0);
   const openRef = useRef(open);
+  const refreshingIdsRef = useRef(new Set<string>());
+  const togglingIdsRef = useRef(new Set<string>());
   openRef.current = open;
 
   useEffect(() => {
@@ -355,7 +362,17 @@ export function ChatMcpServersDialog({
         });
         if (listRefreshGenerationRef.current !== generation || !openRef.current)
           return;
-        setServers(rows);
+        setServers((current) =>
+          rows.map((row) => {
+            if (!togglingIdsRef.current.has(row.id)) return row;
+            const optimistic = current.find(
+              (candidate) => candidate.id === row.id,
+            );
+            return optimistic
+              ? { ...row, is_enabled: optimistic.is_enabled }
+              : row;
+          }),
+        );
       } catch (err) {
         if (listRefreshGenerationRef.current !== generation || !openRef.current)
           return;
@@ -397,6 +414,8 @@ export function ChatMcpServersDialog({
       setCodecError(null);
       setImporting(false);
       setConfirmingDelete(null);
+      setRefreshingIds(new Set(refreshingIdsRef.current));
+      setTogglingIds(new Set(togglingIdsRef.current));
       if (!open) return;
       void refresh();
       // Reset to the list on each open, else a stale create/edit view persists.
@@ -715,7 +734,10 @@ export function ChatMcpServersDialog({
   }
 
   async function toggleEnabled(server: McpServerConfig, next: boolean) {
+    if (togglingIdsRef.current.has(server.id)) return;
     const generation = actionGenerationRef.current;
+    togglingIdsRef.current.add(server.id);
+    setTogglingIds(new Set(togglingIdsRef.current));
     // Optimistic update so the switch doesn't snap back during the round-trip.
     setServers((rows) =>
       rows.map((row) =>
@@ -735,12 +757,17 @@ export function ChatMcpServersDialog({
       toast.error("Update failed", {
         description: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      togglingIdsRef.current.delete(server.id);
+      if (openRef.current) setTogglingIds(new Set(togglingIdsRef.current));
     }
   }
 
   async function refreshTools(server: McpServerConfig) {
+    if (refreshingIdsRef.current.has(server.id)) return;
     const generation = actionGenerationRef.current;
-    setRefreshingId(server.id);
+    refreshingIdsRef.current.add(server.id);
+    setRefreshingIds(new Set(refreshingIdsRef.current));
     try {
       const result = await refreshMcpServerTools(server.id);
       if (actionGenerationRef.current !== generation || !openRef.current)
@@ -761,7 +788,8 @@ export function ChatMcpServersDialog({
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      if (actionGenerationRef.current === generation) setRefreshingId(null);
+      refreshingIdsRef.current.delete(server.id);
+      if (openRef.current) setRefreshingIds(new Set(refreshingIdsRef.current));
     }
   }
 
@@ -1007,7 +1035,7 @@ export function ChatMcpServersDialog({
                         checked={server.is_enabled}
                         onCheckedChange={(next) => toggleEnabled(server, next)}
                         aria-label="Enable server"
-                        disabled={importing}
+                        disabled={importing || togglingIds.has(server.id)}
                       />
                       <Button
                         type="button"
@@ -1016,9 +1044,9 @@ export function ChatMcpServersDialog({
                         onClick={() => refreshTools(server)}
                         aria-label="Refresh tools"
                         title="Refresh tools from this server"
-                        disabled={importing || refreshingId === server.id}
+                        disabled={importing || refreshingIds.has(server.id)}
                       >
-                        {refreshingId === server.id ? (
+                        {refreshingIds.has(server.id) ? (
                           <Spinner />
                         ) : (
                           <RefreshCwIcon size={14} />
@@ -1030,7 +1058,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => void startEdit(server)}
                         aria-label="Edit server"
-                        disabled={importing}
+                        disabled={importing || togglingIds.has(server.id)}
                       >
                         <HugeiconsIcon icon={Edit03Icon} size={14} />
                       </Button>
@@ -1040,7 +1068,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => setConfirmingDelete(server)}
                         aria-label="Delete server"
-                        disabled={importing}
+                        disabled={importing || togglingIds.has(server.id)}
                       >
                         <HugeiconsIcon icon={Delete02Icon} size={14} />
                       </Button>

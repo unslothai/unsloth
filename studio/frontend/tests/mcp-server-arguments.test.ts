@@ -274,6 +274,35 @@ test("dialog actions and reconciliation stop when the dialog closes", () => {
   );
 });
 
+test("pending MCP actions remain keyed to their own server", () => {
+  const dialog = readFileSync(
+    new URL(
+      "../src/features/chat/chat-mcp-servers-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const composer = readFileSync(
+    new URL(
+      "../src/features/chat/mcp-composer-button.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(composer, /pendingUrlsRef = useRef\(new Set<string>\(\)\)/);
+  assert.match(
+    composer,
+    /pendingUrlsRef\.current\.delete\(norm\);\s*setPendingUrls\(new Set\(pendingUrlsRef\.current\)\)/,
+  );
+  assert.match(dialog, /refreshingIdsRef = useRef\(new Set<string>\(\)\)/);
+  assert.match(dialog, /togglingIdsRef = useRef\(new Set<string>\(\)\)/);
+  assert.match(
+    dialog,
+    /if \(!togglingIdsRef\.current\.has\(row\.id\)\) return row;[\s\S]*is_enabled: optimistic\.is_enabled/,
+  );
+});
+
 test("dialog closure is blocked only after a save mutation starts", () => {
   const dialog = readFileSync(
     new URL(
@@ -351,7 +380,7 @@ test("full unmount invalidates cancellable stdio encode continuations", async ()
   );
   assert.match(
     openLifecycle,
-    /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setImporting\(false\);\s*setConfirmingDelete\(null\);\s*if \(!open\) return;/,
+    /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setImporting\(false\);\s*setConfirmingDelete\(null\);[\s\S]*if \(!open\) return;/,
     "route teardown must clear transient form state before a later reopen",
   );
   assert.match(

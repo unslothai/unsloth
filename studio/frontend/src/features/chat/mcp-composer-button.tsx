@@ -23,17 +23,17 @@ import {
 } from "@/components/ui/tooltip";
 import { useShortcut } from "@/features/settings";
 
+import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
   type McpServerConfig,
   createMcpServer,
   listMcpServers,
   updateMcpServer,
 } from "./api/mcp-servers-api";
-import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
-import { useChatActive } from "./runtime-provider";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
@@ -110,7 +110,10 @@ export function McpComposerButton({
   const dialogOpen = useMcpServersDialogStore((s) => s.open);
   const setDialogOpen = useMcpServersDialogStore((s) => s.setOpen);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+  const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const pendingUrlsRef = useRef(new Set<string>());
   const [hintKey, setHintKey] = useState<string | null>(null);
   const listRefreshGenerationRef = useRef(0);
 
@@ -177,8 +180,9 @@ export function McpComposerButton({
     disablesWebSearch?: boolean;
   }) {
     const norm = normalizeMcpUrl(args.url);
-    if (pendingUrl === norm) return; // guard rapid double-clicks
-    setPendingUrl(norm);
+    if (pendingUrlsRef.current.has(norm)) return; // guard rapid double-clicks
+    pendingUrlsRef.current.add(norm);
+    setPendingUrls(new Set(pendingUrlsRef.current));
     try {
       if (args.checked) {
         // Reuse the already-loaded row, else create one.
@@ -204,7 +208,8 @@ export function McpComposerButton({
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setPendingUrl(null);
+      pendingUrlsRef.current.delete(norm);
+      setPendingUrls(new Set(pendingUrlsRef.current));
     }
   }
 
@@ -223,7 +228,7 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      disabled={pendingUrl === normalizeMcpUrl(opts.url)}
+      disabled={pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
         void toggleServer({
