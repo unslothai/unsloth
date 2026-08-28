@@ -6896,6 +6896,34 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         assert monitor.get(monitor_id)["reply"] == 'Tool call: terminal({"command":"echo"})'
 
+    def test_streamed_legacy_function_monitor_joins_name_and_arguments(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for function_call in [
+            {"name": "look", "arguments": '{"query":'},
+            {"name": "up", "arguments": '"weather"}'},
+        ]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"function_call": function_call}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "function_call"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == 'Tool call: lookup({"query":"weather"})'
+
     def test_streamed_tool_monitor_keeps_interleaved_indexes_separate(self, monkeypatch):
         import routes.inference as inf_mod
 
