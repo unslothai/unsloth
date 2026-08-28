@@ -2699,8 +2699,8 @@ class TestInstallShStructure:
                     + family_fn
                     + "\n"
                     + sole_fn
-                + "\n"
-                + sole_fn
+                    + "\n"
+                    + sole_fn
                     + "\n"
                     + fn
                     + "\n"
@@ -2914,7 +2914,11 @@ class TestInstallShStructure:
                     f"_has_amd_rocm_gpu() {{ {gpu_stub}; }}\n"
                     f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
                     "_infer_linux_amd_gfx_arch() { echo gfx1100; }\n"
-                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n" + family_fn + "\n" + sole_fn + "\n"
+                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n"
+                    + family_fn
+                    + "\n"
+                    + sole_fn
+                    + "\n"
                     "_torch_index_pinned=false\nSKIP_TORCH=false\n_ARCH=x86_64\n"
                     "TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu\n"
                     + block.group(0)
@@ -2998,7 +3002,11 @@ class TestInstallShStructure:
                     f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
                     # lspci names the discrete card; the probe named the APU.
                     "_infer_linux_amd_gfx_arch() { echo gfx1100; }\n"
-                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n" + family_fn + "\n" + sole_fn + "\n"
+                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n"
+                    + family_fn
+                    + "\n"
+                    + sole_fn
+                    + "\n"
                     "_torch_index_pinned=false\nSKIP_TORCH=false\n_ARCH=x86_64\n"
                     f"_amd_no_rocm_version_reroute={no_version_state}\n"
                     f'_amd_probed_gfx_first="{probed_first}"\n'
