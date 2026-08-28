@@ -78,6 +78,7 @@ def _make_venv(
     exit_code: int = 0,
     sleep_seconds: float = 0.0,
     torch_on_disk: bool = True,
+    torch_local_label: str = '+rocm6.4',
 ) -> Path:
     """A venv whose `python` prints exactly what the test wants, when it wants."""
     venv = tmp_path / "venv"
@@ -93,7 +94,7 @@ def _make_venv(
     if torch_on_disk:
         (venv / "lib" / "python3.11" / "site-packages" / "torch").mkdir(parents = True)
         (venv / "lib" / "python3.11" / "site-packages" / "torch" / "version.py").write_text(
-            "__version__ = '2.9.0+rocm6.4'\n", encoding = "utf-8"
+            f"__version__ = '2.9.0{torch_local_label}'\n", encoding = "utf-8"
         )
     return venv
 
@@ -455,7 +456,8 @@ def test_a_padded_cpu_pin_is_still_a_request_not_a_fault(block, tmp_path, env):
 def test_a_whitespace_only_pin_is_not_a_gpu_pin(block, tmp_path, env):
     """A whitespace-only override is unset to install.sh (install.sh:3952). Untrimmed it leaves a
     non-empty leaf, which reads as a GPU pin below and overrides the arch gate."""
-    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    # a whitespace pin is not a GPU pin, so this host is CPU-routed.
+    venv = _make_venv(tmp_path, stdout = _answer("0"), torch_local_label = "+cpu")
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1010", env = env)
     assert result["calls"] == ""
     assert "gpu check" not in result["stdout"]
@@ -867,8 +869,13 @@ def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):
     ],
 )
 def test_an_arch_with_no_gpu_wheels_is_not_accused(block, tmp_path, gfx, marketing):
-    """CPU torch is the CORRECT outcome on these hosts, and the report repeats on every update."""
-    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    """CPU torch is the CORRECT outcome on these hosts, and the report repeats on every update.
+
+    The venv must hold a CPU wheel to be that host. A +rocm wheel on an unmapped arch is a
+    different host entirely, covered below: install.sh routes any readable arch with a readable
+    ROCm version to a generic rocmX.Y index, so gfx1010 really can end up on a ROCm build.
+    """
+    venv = _make_venv(tmp_path, stdout = _answer("0"), torch_local_label = "+cpu")
     result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx, marketing = marketing)
     assert "gpu check" not in result["stdout"]
     assert "unsloth/issues" not in result["stdout"]
@@ -878,11 +885,26 @@ def test_an_arch_with_no_gpu_wheels_is_not_accused(block, tmp_path, gfx, marketi
     assert result["returncode"] == 0
 
 
+@pytest.mark.parametrize("gfx", ["gfx1010", "gfx1012", "gfx803"])
+def test_an_unmapped_arch_on_a_real_rocm_wheel_is_still_reported(block, tmp_path, gfx):
+    """The arch table is not install.sh's routing, so it cannot excuse this host.
+
+    get_torch_index_url consults _amd_arch_index_family_for_gfx only in its unreadable-arch and
+    no-ROCm-version fallbacks. With both readable it routes to a generic $_base/rocmX.Y, so an
+    arch absent from the per-arch table still receives a ROCm build. Dismissing it as a CPU route
+    silenced exactly the mismatch #8473 exists to report.
+    """
+    venv = _make_venv(tmp_path, stdout = _answer("0"), torch_local_label = "+rocm6.4")
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+    assert result["calls"] != "", "the probe never ran, so the wheel was never reconciled"
+
+
 def test_an_unreadable_arch_is_not_accused(block, tmp_path):
     """The KFD-sysfs path: /dev/kfd names an AMD vendor_id but no gfx arch is readable.
     get_torch_index_url cannot route GPU wheels without an arch (install.sh:3330 warns and
     returns the cpu index), and this is EVERY such host, not a named arch."""
-    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    venv = _make_venv(tmp_path, stdout = _answer("0"), torch_local_label = "+cpu")
     result = _run_block(block, venv, tmp_path, amd = True, gfx = "", marketing = "")
     assert "gpu check" not in result["stdout"]
     assert result["calls"] == ""
@@ -954,7 +976,8 @@ def test_a_cpu_pin_still_wins_over_a_wheeled_arch(block, tmp_path):
 def test_the_arch_is_normalised_before_the_membership_test(block, tmp_path, gfx, reported):
     """$_setup_gfx takes UNSLOTH_ROCM_GFX_ARCH verbatim (setup.sh:1837), so an unnormalised
     comparison hands every accused host a one-variable bypass."""
-    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    # normalisation is the subject; the wheel must match the arch verdict.
+    venv = _make_venv(tmp_path, stdout = _answer("0"), torch_local_label = "+cpu")
     result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
     assert ("PyTorch cannot see the AMD GPU reported above" in result["stdout"]) is reported
 
@@ -1033,26 +1056,34 @@ def test_windows_demotes_a_non_x86_host_too():
         "check, which then expects cpu, wipes a working +rocm venv, and exits."
     )
 
-    reach = next((ln for ln in text.splitlines() if ln.startswith("$AmdWheelsReachThisHost =")), "")
-    assert "Get-HostMachineArch" in reach and '-ne "arm64"' in reach, (
+    gate = next((ln for ln in text.splitlines() if ln.startswith("$_gpuCheckArm64Amd =")), "")
+    assert "Get-HostMachineArch" in gate and '-eq "arm64"' in gate, (
         "nothing demotes an ARM64 host any more, so a Windows-on-ARM box whose arch is in "
         "$_rocmWheelArches would be accused of a fault that is the documented routing."
     )
-    assert "$AmdHasGpuWheels" in reach, "the host-arch flag must still require a wheeled arch."
 
 
-def test_the_arm64_demotion_reaches_only_the_report():
-    """One consumer, and it is the reconciliation gate."""
+def test_the_arm64_demotion_asks_the_machine_not_a_proxy():
+    """It must test the host arch, not the inverse of "do wheels reach this host".
+
+    That proxy is false for two unrelated reasons, ARM64 and an arch with no wheels, and only the
+    first is excusable. An x64 host on an unmapped arch with an explicit non-CPU pin is announced
+    as AMD, so the inverted form called it an ARM64 candidate; if the pinned index then served a
+    wheel with no HIP build, the post-probe excuse silenced a genuine mismatch.
+    """
     text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
-    users = [
-        ln.strip()
-        for ln in text.splitlines()
-        if "$AmdWheelsReachThisHost" in ln and not ln.strip().startswith("#")
-    ]
-    assert len(users) == 2, f"expected the assignment plus one reader, got {users}"
-    assert any(
-        ln.startswith("$_gpuCheckArm64Amd =") for ln in users
-    ), "the ARM64 demotion is read somewhere other than the GPU visibility gate."
+    code = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("#"))
+    gate = next((ln for ln in code.splitlines() if ln.startswith("$_gpuCheckArm64Amd =")), "")
+    assert gate, "the ARM64 candidate flag is gone"
+    assert "-not $AmdWheelsReachThisHost" not in gate, (
+        "the gate infers ARM64 from wheel reachability again, so an x64 unmapped-arch host with "
+        "a GPU pin is treated as ARM64 and can be excused into silence."
+    )
+    assert "(Get-HostMachineArch) -eq \"arm64\"" in gate
+
+    # And the proxy is gone entirely rather than left sitting unread.
+    users = [ln for ln in code.splitlines() if "$AmdWheelsReachThisHost" in ln]
+    assert not users, f"$AmdWheelsReachThisHost is dead but still present: {users}"
 
 
 def test_the_arm64_excuse_is_decided_on_the_wheel_not_the_host():
@@ -1082,6 +1113,38 @@ def test_the_arm64_excuse_is_decided_on_the_wheel_not_the_host():
         "the excuse is computed before the probe, so $_gpuVisibility.Hip is always empty and "
         "every ARM64 AMD host is excused regardless of its wheel."
     )
+
+
+def test_the_posix_cpu_route_excuse_reads_the_wheel_not_only_the_arch_table():
+    """The arch table is not install.sh's routing, so it cannot decide this alone.
+
+    get_torch_index_url consults _amd_arch_index_family_for_gfx only in its unreadable-arch and
+    no-ROCm-version fallbacks. Once both the gfx arch and a ROCm version are readable it routes to
+    a generic $_base/rocmX.Y, so a Linux x86_64 host on gfx1010 or gfx803 with ROCm 6.0+ gets a
+    real ROCm build and is announced as AMD, while the table calls it a deliberate CPU route.
+    torch.version.hip is a build constant, so it names that wheel even with a dead runtime.
+    """
+    text = SETUP_SH.read_text(encoding = "utf-8")
+
+    assert "_setup_torch_is_rocm=false" in text
+    assert "grep -q \"^__version__ = '[^']*+rocm\"" in text, (
+        "the POSIX gate no longer reads the installed wheel, so an unmapped arch routed to a "
+        "generic ROCm index is dismissed as a CPU route and never probed."
+    )
+
+    entry = text[text.index('if { [ "$_setup_nvidia_usable" = true ]'):]
+    entry = entry[: entry.index("then")]
+    assert '[ "$_setup_torch_is_rocm" = true ]' in entry, (
+        "the entry gate decides on the arch table alone again, so gfx1010 or gfx803 on a real "
+        "ROCm wheel stays silent when that wheel cannot see the device."
+    )
+    # Read off disk, not by importing torch: a genuinely CPU-routed host must not pay for it.
+    assert "$VENV_DIR" in text[text.index("_setup_torch_is_rocm=false"): text.index(entry[:60])]
+
+    # The read has to happen before the gate, or the flag is always false.
+    assert text.index("_setup_torch_is_rocm=false") < text.index(
+        'if { [ "$_setup_nvidia_usable" = true ]'
+    ), "the wheel is read after the gate consults it, so it is always false."
 
 
 def test_a_local_cpu_fallback_is_not_a_mismatch():
@@ -1173,7 +1236,8 @@ def test_the_probe_answer_is_split_without_a_subprocess(block):
 def test_a_non_x86_amd_host_is_not_accused(block, tmp_path):
     """aarch64 + a wheeled arch is CPU torch by install.sh's own routing, so reporting it accuses
     a host behaving exactly as designed -- the same failure the arch table prevents for RDNA 1."""
-    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    # aarch64 is CPU torch by install.sh's routing.
+    venv = _make_venv(tmp_path, stdout = _answer("0"), torch_local_label = "+cpu")
     for machine in ("aarch64", "arm64", "ppc64le", "riscv64"):
         work = tmp_path / machine
         work.mkdir()

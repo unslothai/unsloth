@@ -491,10 +491,16 @@ $wheelsExpr = if ($setupText -match $wheelsPat) { $Matches[0] } else { "" }
 Check "the wheels flag was found"       ($wheelsExpr -ne "")
 Check "it does not read host arch"      (-not ($wheelsExpr -match 'Get-HostMachineArch'))
 Check "the arch list still gates it"    ($wheelsExpr -match '_rocmWheelArches')
-$reachPat = '(?m)^\$AmdWheelsReachThisHost = .*$'
-$reachExpr = if ($setupText -match $reachPat) { $Matches[0] } else { "" }
-Check "the host-arch flag exists"       ($reachExpr -ne "")
-Check "and it is the one reading arch"  ($reachExpr -match 'Get-HostMachineArch.*arm64')
+# The gate asks the machine itself. A "do wheels reach this host" proxy is false for two
+# unrelated reasons, ARM64 and an unwheeled arch, and only the first is excusable: an x64 host on
+# an unmapped arch with a GPU pin is announced as AMD, so the inverted form called it ARM64 and,
+# once the excuse below reads the wheel, silenced a real mismatch.
+$armPat = '(?m)^\$_gpuCheckArm64Amd = .*$'
+$armExpr = if ($setupText -match $armPat) { $Matches[0] } else { "" }
+Check "the ARM64 candidate flag exists" ($armExpr -ne "")
+Check "and it asks the machine itself"  ($armExpr -match 'Get-HostMachineArch\) -eq "arm64"')
+Check "not a wheel-reachability proxy"  (-not ($armExpr -match 'AmdWheelsReachThisHost'))
+Check "and the proxy is gone entirely"  (-not ($reportCode -match 'AmdWheelsReachThisHost'))
 Check "scoped to the AMD arm"           ($reportCode -match '\$_gpuCheckArm64Amd = \(\$_gpuCheckAnnounced -like "AMD\*"\)')
 
 # ...and the ARM64 excuse is decided on the WHEEL, not on the host. Excusing ARM64 outright

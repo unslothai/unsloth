@@ -2752,7 +2752,12 @@ $AmdHasGpuWheels = [bool](
 # one of them. Demoting it there expects "cpu", sees the +rocm wheel the ROCm override at :5167
 # installs with no host-arch gate of its own, and deletes a working venv, after which setup exits
 # because the venv is gone. So the demotion lives here, on the diagnostic only.
-$AmdWheelsReachThisHost = [bool]($AmdHasGpuWheels -and ((Get-HostMachineArch) -ne "arm64"))
+# The ARM64 demotion deliberately does NOT live here, and must not be folded into
+# $AmdHasGpuWheels above. That flag has seven consumers and the stale-venv check is one of them:
+# demoting it there expects "cpu", meets the +rocm wheel the ROCm override installs with no
+# host-arch gate of its own, deletes the venv, and setup exits because only install.ps1 creates
+# venvs. The one place that wants the host machine is the reconciliation gate, and it asks
+# Get-HostMachineArch directly rather than reading a flag that means two things at once.
 
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after
 # install.ps1 reported a usable Arc GPU. Self-contained, because `studio update` runs setup.ps1
@@ -5680,7 +5685,13 @@ $_gpuCheckMasked = if ($_gpuCheckAnnounced -like "NVIDIA*") {
 # pin routes the same way. Excusing the host outright would then silence the one report #8473
 # exists to make. So this only marks the host as a CANDIDATE; whether it is excused is decided
 # below against the wheel the probe actually found.
-$_gpuCheckArm64Amd = ($_gpuCheckAnnounced -like "AMD*") -and -not $AmdWheelsReachThisHost
+#
+# The machine is asked DIRECTLY. Inferring it from a "do wheels reach this host" flag conflates
+# two unrelated reasons for being false, ARM64 and an arch with no wheels, and only the first is
+# what this excuses. An x64 host on an unmapped arch with an explicit non-CPU pin is announced as
+# AMD (the pin routes it to a GPU index), so the inverted form marked it an ARM64 candidate and,
+# if the pinned index served a wheel with no HIP build, excused it into silence.
+$_gpuCheckArm64Amd = ($_gpuCheckAnnounced -like "AMD*") -and ((Get-HostMachineArch) -eq "arm64")
 # This run already told the user the GPU wheel would not install and fell back to CPU on purpose
 # ($ROCmCpuFallback / $XpuCpuFallback, set at the two force-reinstall arms below the index
 # selection). $InstallerTorchTag does not carry either, so without these terms the failure the

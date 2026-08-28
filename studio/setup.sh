@@ -2635,9 +2635,29 @@ _setup_gpucheck_pin_is_gpu=false
 if [ -n "$_setup_gpucheck_pin_leaf" ]; then
     _setup_gpucheck_pin_is_gpu=true
 fi
+# The arch table is NOT install.sh's routing, and treating it as the whole answer is why an
+# unmapped arch went unprobed. get_torch_index_url (install.sh:3765) consults
+# _amd_arch_index_family_for_gfx only in its unreadable-arch and no-ROCm-version fallbacks; once
+# BOTH the gfx arch and a ROCm version are readable it routes straight to a generic
+# $_base/rocmX.Y. So a Linux x86_64 host on gfx1010 or gfx803 with ROCm 6.0+ installed gets a real
+# ROCm build, is announced as AMD ROCm (<arch>), and was dismissed here as a deliberate CPU route.
+#
+# Re-deriving that ladder here would duplicate install.sh's arch and version logic in a second
+# place, which is the divergence this PR exists to remove. The installed wheel is the routing's
+# own answer, so read it: the local label off version.py, the same disk-first trick the +xpu
+# check at :2194 uses and for the same reason, so a genuinely CPU-routed host still never pays
+# for an `import torch`.
+_setup_torch_is_rocm=false
+for _setup_rv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+    [ -f "$_setup_rv" ] || continue
+    grep -q "^__version__ = '[^']*+rocm" "$_setup_rv" 2>/dev/null || continue
+    _setup_torch_is_rocm=true
+    break
+done
 if { [ "$_setup_nvidia_usable" = true ] \
      || { [ "$_setup_amd_detected" = true ] \
-          && { [ "$_setup_amd_has_gpu_wheels" = true ] || [ "$_setup_gpucheck_pin_is_gpu" = true ]; }; }; } \
+          && { [ "$_setup_amd_has_gpu_wheels" = true ] || [ "$_setup_gpucheck_pin_is_gpu" = true ] \
+               || [ "$_setup_torch_is_rocm" = true ]; }; }; } \
     && [ "$_setup_gpucheck_pin_leaf" != "cpu" ] \
     && [ "$_setup_gpucheck_backend" != "cpu" ] \
     && [ "$_setup_gpucheck_masked" = false ] \
