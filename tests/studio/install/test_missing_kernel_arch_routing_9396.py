@@ -1035,9 +1035,8 @@ def test_amd_smi_discovery_order_is_not_indexed_as_hip_order():
 
 def test_kfd_order_resolves_a_mask_amd_smi_order_cannot():
     """KFD nodes ARE the order the masks index, which is why the fallback above reads them
-    when no userland probe answers. A mask over an amd-smi list has an ordering problem the
-    same file already solves, so declining leaves a Ryzen APU-plus-dGPU box -- the reported
-    shape -- on a wheel with no kernels for the card it selected."""
+    when no userland probe answers. Declining an ordering this file already solves leaves a
+    Ryzen APU-plus-dGPU box -- the reported shape -- on a wheel it has no kernels for."""
     assert (
         _target(
             ["gfx1200", "gfx1103"],
@@ -1072,10 +1071,9 @@ def test_kfd_order_resolves_a_mask_amd_smi_order_cannot():
 
 def test_an_explicit_arch_is_authoritative_for_the_repair_gate_too():
     """Stacked masks can leave a device list the override is not in: ROCr keeps the gfx1200,
-    the user names the gfx1103 the message told them to name. The caller reads the returned
-    code set to decide whether any detected arch lacks generic kernels, so a target missing
-    from it is selected and then never repaired -- the override authoritative for the
-    target and ignored for the gate."""
+    the user names the gfx1103. The caller reads the returned set to decide which arch lacks
+    generic kernels, so a target missing from it is selected and then never repaired -- the
+    override authoritative for the target and ignored for the gate."""
     calls = _run_install(
         gfx_devices = ("gfx1200", "gfx1103"),
         probe_source = "amd-smi",
@@ -1090,9 +1088,8 @@ def test_an_explicit_arch_is_authoritative_for_the_repair_gate_too():
 
 def test_a_generic_wheel_is_judged_by_its_own_rocm_tag():
     """Which arches a generic wheel carries belongs to THAT wheel. Pin rocm6.3 once, or
-    upgrade /opt/rocm afterwards, and a gfx1200 box runs a 2.9.1+rocm6.3 build with no
-    kernels for it while the host reads 7.2 -- judged by the host, the install looks healthy
-    and survives every update."""
+    upgrade /opt/rocm afterwards, and a gfx1200 box runs a 2.9.1+rocm6.3 build with no kernels
+    for it while the host reads 7.2 -- judged by the host, it looks healthy forever."""
     calls = _run_install(
         gfx_devices = ("gfx1200",),
         rocm_version = (7, 2),

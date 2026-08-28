@@ -1837,11 +1837,10 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
 # gfx1200/gfx1201 at ROCm 6.4, rocm6.3 and below predating RDNA 4 codegen.
 # Only arches with an AMD leaf to reroute TO belong here: gfx950 is missing from the older
 # wheels too but has no _GFX_TO_AMD_INDEX_ARCH entry, so an entry could never fire.
-# The Strix reroute cannot cover gfx1150/gfx1151 on its own, because it is gated on a ROCm
-# VERSION and an unreadable one reads as 0.0, below every tag, which leaves the arm inactive
-# on exactly the bundled-runtime host that cannot report a version. rocm7.0 is the oldest tag
-# measured to carry them; the rocm6.3 wheel does not, and AMD's own images date gfx1150/1151
-# support to ROCm 7.1.
+# gfx1150/gfx1151 need an entry despite the Strix reroute: that arm is gated on a ROCm
+# VERSION, and an unreadable one reads as 0.0, leaving it inactive on the bundled-runtime host
+# that cannot report one. rocm7.0 is the oldest tag measured to carry them; rocm6.3 does not,
+# and AMD's images date the support to 7.1.
 _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
     "gfx1150": (7, 0),
     "gfx1151": (7, 0),
@@ -1940,14 +1939,13 @@ def _runtime_gfx_target(
             _m in os.environ for _m in _VISIBLE_DEVICE_MASKS
         )
         if _discovery_ordered and _unlike_adapters:
-            # Discovery order is unusable, but the kernel's own topology is not: KFD nodes
-            # ARE the order HIP and ROCr index, which is why the branch above reads them
-            # whenever no userland probe answered. Reading them here too replaces an ordering
-            # no ordinal can be applied to with one that can, rather than declining a repair
-            # this host needs -- a Ryzen box with an APU beside a dGPU and amd-smi installed
-            # is the reported shape (#9396), not an exotic one. Only when the two sources see
-            # the same number of devices: a KFD list of another length is a different view of
-            # the machine, and indexing it would answer for a device set amd-smi never saw.
+            # Discovery order is unusable, but the kernel's topology is not: KFD nodes ARE the
+            # order HIP and ROCr index, which is why the branch above reads them when no
+            # userland probe answered. Reading them here swaps an ordering no ordinal fits for
+            # one that does, rather than declining a repair the reported shape needs (#9396: a
+            # Ryzen APU beside a dGPU, with amd-smi installed). Only when the two sources see
+            # the same device count: a KFD list of another length is a different view of the
+            # machine, and indexing it would answer for devices amd-smi never saw.
             _kfd_ordered = _kfd_gfx_targets()
             if len(_kfd_ordered) == len(gfx_devices):
                 gfx_devices = _kfd_ordered
@@ -1966,11 +1964,9 @@ def _runtime_gfx_target(
             _named_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
             if _named_gfx:
                 # The named arch leads the returned set. Stacked masks can leave a list the
-                # override is not even in (ROCr keeps the gfx1200, the user names the
-                # gfx1103), and the caller reads that set to decide whether any detected arch
-                # lacks generic kernels -- so a target absent from it is selected and then
-                # never repaired, which is the arch being authoritative for one of the two
-                # answers only.
+                # override is not in (ROCr keeps the gfx1200, the user names the gfx1103), and
+                # the caller reads that set to decide which arch lacks generic kernels -- so a
+                # target absent from it is selected and then never repaired.
                 return (
                     _named_gfx,
                     list(dict.fromkeys([_named_gfx, *gfx_devices])),
@@ -3325,11 +3321,10 @@ def _rocm_torch_family_needs_repair(
         _leaf = (_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx or "") or "").lower()
         if _family != _leaf:
             # Only when some index can serve the target. A gfx1010 has no leaf and no generic
-            # kernels either, so the mismatch is real but unfixable: _ensure_rocm_torch
-            # declines the reinstall on the same question, and promising a repair it refuses
-            # buys a full dependency pass on EVERY update and never a working torch. An empty
-            # leaf is not the test -- gfx942 and the other datacentre parts have none, and are
-            # served by the generic index.
+            # kernels, so the mismatch is real but unfixable: _ensure_rocm_torch declines on
+            # the same question, and promising a repair it refuses buys a dependency pass on
+            # EVERY update and never a working torch. An empty leaf is not the test -- the
+            # datacentre parts have none and the generic index serves them.
             return _gfx_has_a_wheel_route(runtime_gfx)
         # The family is the right SHAPE, not necessarily a working build. _already_on_leaf
         # keeps a matching family only above the 2.11 floor, since below it these leaves
@@ -3345,11 +3340,10 @@ def _rocm_torch_family_needs_repair(
         # once the fast path stops hiding it. Leave it alone.
         return False
     # Which arches a generic wheel carries belongs to THAT wheel, so read the tag off the
-    # installed torch when it states one. ``ver`` describes the host's ROCm, and the two part
-    # company on ordinary hosts: pin rocm6.3 once, or upgrade /opt/rocm afterwards, and a
-    # gfx1200 box carries a 2.9.1+rocm6.3 build with no kernels for it while the host reads
-    # 7.2 -- judged by the host, that install looks healthy and survives every update. The
-    # host version stays the fallback, for a wheel whose own tag will not read back.
+    # installed torch when it states one. ``ver`` is the host's ROCm, and the two part company
+    # on ordinary hosts: pin rocm6.3 once, or upgrade /opt/rocm afterwards, and a gfx1200 box
+    # runs a 2.9.1+rocm6.3 build with no kernels for it while the host reads 7.2 -- judged by
+    # the host, that install looks healthy forever. ``ver`` stays the fallback.
     return _generic_rocm_wheel_lacks_kernels(runtime_gfx, _installed_generic_rocm_tag() or ver)
 
 
@@ -3636,10 +3630,9 @@ def _ensure_rocm_torch() -> None:
         # No ROCm-version floor here: whichever generic index a host's ROCm version picks,
         # its wheel carries no kernels for these targets (see _GENERIC_ROCM_WHEEL_GFX).
         if _arch_index_url is None:
-            # Judged by the wheel already installed, when it is a generic build naming its own
-            # rocm tag; ``ver`` is the HOST's ROCm and the two part company whenever an index
-            # was pinned once or /opt/rocm was upgraded afterwards. ``ver`` still chooses the
-            # tag for any generic reinstall below -- that IS a question about the host.
+            # Judged by the installed wheel when it is a generic build naming its own rocm
+            # tag, since ``ver`` is the HOST's. ``ver`` still chooses the tag for a generic
+            # reinstall below -- that one IS a question about the host.
             _kernel_ver = (
                 has_hip_torch and not _torch_requires_rocm_sdk() and _installed_generic_rocm_tag()
             ) or ver
@@ -3748,10 +3741,9 @@ def _ensure_rocm_torch() -> None:
             # cannot carry kernels for it either. Demote only when there is somewhere to go --
             # and ask that of THIS host, not of the arch in the abstract: gfx906's only route
             # is the rocm6.3 legacy tag, which _runtime_target_is_gfx906 unlocks solely when
-            # gfx906 is the one detected arch. On a mixed host the mask can still select the
-            # MI50, and every generic tag above rocm6.3 dropped its BLAS kernels, so demoting
-            # here downloads a second unusable torch. _MIXED_HOST_UNROUTABLE already names
-            # the arches whose route a second GPU closes.
+            # gfx906 is the one detected arch. A mixed host can still mask-select the MI50,
+            # and every tag above rocm6.3 dropped its BLAS kernels, so demoting here downloads
+            # a second unusable torch. _MIXED_HOST_UNROUTABLE already names these arches.
             if (
                 _have is not None
                 and _have != _want
