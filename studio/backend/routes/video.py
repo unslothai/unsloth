@@ -1060,7 +1060,8 @@ def _sync_jobs() -> None:
         persisted_job = _job_from_record(video_gallery.get_job(job.id) or {})
         if persisted_job is not None and persisted_job.terminal:
             with _jobs_lock:
-                _jobs[job.id] = persisted_job
+                if _jobs.get(job.id) is job:
+                    _jobs[job.id] = persisted_job
             continue
         status: Optional[str] = None
         progress = 0

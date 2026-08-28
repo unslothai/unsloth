@@ -911,6 +911,57 @@ def test_a_stale_poller_cannot_recreate_a_deleted_job(client, backend, monkeypat
     assert video_id not in video_routes._jobs
 
 
+def test_terminal_hydration_cannot_restore_a_deleted_job(client, backend, monkeypatch):
+    video_id = "video_delete_hydration_race"
+    job = video_routes._VideoJob(
+        id = video_id,
+        created_at = 1,
+        prompt = "racy hydration",
+        model = "model",
+        size = "768x512",
+        seconds = "5",
+    )
+    video_routes._jobs[video_id] = job
+    gallery_module.save_job(
+        video_id,
+        {
+            **vars(job),
+            "status": "failed",
+            "error": {"code": "video_generation_failed", "message": "failed"},
+        },
+    )
+
+    terminal_read = threading.Event()
+    release_read = threading.Event()
+    real_get = gallery_module.get_job
+
+    def _delayed_get(requested_id):
+        record = real_get(requested_id)
+        terminal_read.set()
+        assert release_read.wait(timeout = 5.0)
+        return record
+
+    monkeypatch.setattr(gallery_module, "get_job", _delayed_get)
+    monkeypatch.setattr(
+        video_routes,
+        "_lookup_video",
+        lambda requested_id: video_routes._job_to_openai(job) if requested_id == video_id else None,
+    )
+    monkeypatch.setattr(video_routes, "_await_generate_settled", lambda _video_id: True)
+
+    poller = threading.Thread(target = video_routes._sync_jobs)
+    poller.start()
+    assert terminal_read.wait(timeout = 5.0)
+    deleted = client.delete(f"/v1/videos/{video_id}")
+    assert deleted.status_code == 200, deleted.json()
+    release_read.set()
+    poller.join(timeout = 5.0)
+
+    assert not poller.is_alive()
+    assert real_get(video_id) is None
+    assert video_id not in video_routes._jobs
+
+
 def test_an_undecodable_reference_is_refused_before_the_model_switch(client, backend, monkeypatch):
     """A well-formed content type is not a readable image.
 
