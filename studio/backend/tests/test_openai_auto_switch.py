@@ -9565,9 +9565,7 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
         backend = backend,
         recorder = recorder,
     )
-    monkeypatch.setattr(
-        resolver, "local_target_is_gguf", lambda *_a, **_kw: target_is_gguf
-    )
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: target_is_gguf)
     monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
     if not target_is_gguf:
         orchestrator = types.SimpleNamespace(active_model_name = None, models = {})
@@ -9578,7 +9576,6 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
 
 def _responses_image_payload(*images, stream):
     from models.inference import ResponsesRequest
-
     return ResponsesRequest(
         model = "org/B-GGUF",
         stream = stream,
