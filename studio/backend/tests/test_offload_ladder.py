@@ -685,3 +685,56 @@ def test_a_short_kv_head_list_pads_with_its_last_value():
     from core.inference import offload_layout as OL
 
     assert OL._kv_heads_total([8, 2], 4) == 8 + 2 + 2 + 2
+
+
+def test_no_ladder_rung_can_reach_a_unified_memory_host():
+    """Every granularity must abstain identically on a unified pool.
+
+    On Strix Halo (gfx1151) and Apple silicon the device and the host are the
+    same chips, so moving a tensor "to RAM" renames bytes and frees nothing. The
+    abstain that says so is the SECOND check in plan_placement, ahead of the
+    budget, the context and all rung selection, which is what makes the whole
+    ladder unreachable there.
+
+    Verified on real hardware before the ladder existed: the AMD CI GPU
+    measurement job declined on the gfx1151 unified pool while spilling 51
+    blocks for the identical layout and budget with the flag off. This test is
+    what keeps that true as rungs are added, since a rung wired in above the
+    abstain would start spilling on an APU and nobody would see it in a CUDA
+    matrix.
+    """
+    from dataclasses import replace
+
+    from core.inference.offload_planner import (
+        FfnGranularity,
+        PlanOptions,
+        plan_placement,
+    )
+
+    layout = graded_moe()
+    gib = 1024 ** 3
+    base = PlanOptions()
+
+    reasons = set()
+    for granularity in FfnGranularity:
+        unified = replace(
+            base,
+            ffn_granularity = granularity,
+            host = replace(base.host, unified_memory = True),
+        )
+        discrete = replace(
+            base,
+            ffn_granularity = granularity,
+            host = replace(base.host, unified_memory = False),
+        )
+        on_apu = plan_placement(layout, [8 * gib], 64 * gib, 8192, opts = unified)
+        on_gpu = plan_placement(layout, [8 * gib], 64 * gib, 8192, opts = discrete)
+
+        assert not on_apu.ot_patterns, granularity
+        assert "unified memory" in on_apu.reason, granularity
+        reasons.add(on_apu.reason)
+        # The same budget on a discrete card must actually spill, otherwise this
+        # test would pass on a layout that simply fits and prove nothing.
+        assert on_gpu.ot_patterns, granularity
+
+    assert len(reasons) == 1, f"granularity leaked into the abstain: {reasons}"
