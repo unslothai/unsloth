@@ -1465,9 +1465,7 @@ def test_connect_claude_no_launch(fake_studio):
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
     # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
     # window into [100k, that], so the real window has to be pinned as well.
-    _assert_env_set(
-        result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"])
-    )
+    _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
