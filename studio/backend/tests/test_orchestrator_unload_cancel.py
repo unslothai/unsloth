@@ -1079,6 +1079,16 @@ def test_standard_load_honors_scoped_cancel_before_worker_start():
     assert orchestrator.loading_models == set()
 
 
+def test_gguf_load_cancellation_includes_the_backend_unload_event():
+    import routes.inference as inference_route
+
+    class _Llama:
+        def load_cancelled(self):
+            return True
+
+    assert inference_route._gguf_load_cancelled(_Llama(), threading.Event()) is True
+
+
 # ----------------------------------------------------------------------------
 # A dispatched (compare-mode) request that races an unload must not orphan its
 # mailbox after _wait_dispatcher_idle stops the dispatcher.

@@ -11941,6 +11941,12 @@ async def load_model_gated(
         _finish_load_attempt(attempt)
 
 
+def _gguf_load_cancelled(llama_backend, load_cancel_event: Optional[threading.Event]) -> bool:
+    return llama_backend.load_cancelled() or bool(
+        load_cancel_event is not None and load_cancel_event.is_set()
+    )
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -12548,9 +12554,8 @@ async def _load_model_impl(
                     requested_tensor = request.tensor_parallel,
                     extra_args = extra_llama_args,
                     label = config.identifier,
-                    cancelled = lambda: (
-                        llama_backend.load_cancelled()
-                        or bool(load_cancel_event and load_cancel_event.is_set())
+                    cancelled = lambda: _gguf_load_cancelled(
+                        llama_backend, load_cancel_event
                     ),
                 )
             except Exception:
@@ -12566,7 +12571,7 @@ async def _load_model_impl(
                 # A cancelled load is not a failed one. An automatic switch cancels
                 # through its own event without unloading, and the 500 built here
                 # would land before the caller reaches _raise_if_generation_cancelled.
-                if load_cancel_event is not None and load_cancel_event.is_set():
+                if _gguf_load_cancelled(llama_backend, load_cancel_event):
                     raise HTTPException(status_code = 409, detail = "Model load cancelled")
                 raise HTTPException(
                     status_code = 500,
