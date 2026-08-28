@@ -23240,9 +23240,12 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
     from disk. Module scope, and always called through ``asyncio.to_thread``: the file
     checks stat many files and the residency check reads the inference singleton."""
     from core.inference.local_model_resolver import local_load_dir, local_servable_model
+    from hub.services.models.catalog_classification import _UNSUPPORTED_DIFFUSION_TASK
 
     rows = []
     for info in catalog:
+        if getattr(info, "task", None) in (*_MEDIA_MODEL_TASKS, _UNSUPPORTED_DIFFUSION_TASK):
+            continue
         servable = local_servable_model(info)
         if servable is None:
             continue
