@@ -17,9 +17,7 @@ one frame after they had painted (#9823).
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-CHAT_PAGE = (REPO / "studio/frontend/src/features/chat/chat-page.tsx").read_text(
-    encoding = "utf-8"
-)
+CHAT_PAGE = (REPO / "studio/frontend/src/features/chat/chat-page.tsx").read_text(encoding = "utf-8")
 
 
 def test_the_lora_compare_resolver_accepts_a_generalized_pair():
