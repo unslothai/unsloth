@@ -640,8 +640,9 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         def raise_for_status(self):
             return None
 
-    async def _post(url, **_kwargs):
+    async def _post(url, **kwargs):
         sent["url"] = url
+        sent["json"] = kwargs.get("json")
         return _Response()
 
     monkeypatch.setattr(provider_module._http_client, "post", _post)
@@ -652,6 +653,7 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
     )
     asyncio.run(client.create_speech(text = "hi", model = "kokoro"))
     assert sent["url"] == ("http://127.0.0.1:8880/v1/audio/speech?api-version=2026-08-24")
+    assert sent["json"]["stream"] is False
 
 
 def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):

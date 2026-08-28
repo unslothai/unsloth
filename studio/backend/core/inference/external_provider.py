@@ -6365,6 +6365,9 @@ class ExternalProviderClient:
             "model": model,
             "input": text,
             "response_format": response_format,
+            # Kokoro and other gateways default stream=true; blob playback needs a
+            # complete file, not a chunked stream the browser cannot decode.
+            "stream": False,
         }
         if voice:
             body["voice"] = voice
