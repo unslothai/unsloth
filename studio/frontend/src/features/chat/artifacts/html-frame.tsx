@@ -16,7 +16,14 @@ import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { ShieldAlertIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { hashArtifactCode } from "./types";
 
@@ -103,11 +110,13 @@ export function ArtifactHtmlFrame({
   title = "HTML canvas preview",
   className,
   fill = false,
+  actionFocusTargetRef,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
+  actionFocusTargetRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -216,6 +225,11 @@ export function ArtifactHtmlFrame({
     blockedForCanvas.hosts.length > BLOCKED_HOSTS_SHOWN
       ? `${shownHosts}…`
       : shownHosts;
+  const focusAfterAction = () => {
+    (actionFocusTargetRef?.current ?? iframeRef.current)?.focus({
+      preventScroll: true,
+    });
+  };
 
   return (
     <div
@@ -248,7 +262,7 @@ export function ArtifactHtmlFrame({
                 variant="ghost"
                 aria-label={t("settings.chat.artifacts.blockedDismiss")}
                 onClick={() => {
-                  iframeRef.current?.focus({ preventScroll: true });
+                  focusAfterAction();
                   setDismissedCode(code);
                 }}
               >
@@ -280,7 +294,7 @@ export function ArtifactHtmlFrame({
                 <Button
                   size="sm"
                   onClick={() => {
-                    iframeRef.current?.focus({ preventScroll: true });
+                    focusAfterAction();
                     setGrantedCode(code);
                   }}
                 >
@@ -292,7 +306,8 @@ export function ArtifactHtmlFrame({
                   onClick={() => {
                     useSettingsDialogStore.getState().openDialog("chat", {
                       scrollTarget: "chat-canvas-network",
-                      focusFallback: iframeRef.current,
+                      focusFallback:
+                        actionFocusTargetRef?.current ?? iframeRef.current,
                     });
                   }}
                 >

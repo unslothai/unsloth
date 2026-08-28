@@ -454,7 +454,7 @@ function readHandlerCalling(needle: string): string {
 
 test("dismissing the banner leaves focus on the canvas", () => {
   const handler = readHandlerCalling("setDismissedCode");
-  const focusAt = handler.indexOf("iframeRef.current?.focus");
+  const focusAt = handler.indexOf("focusAfterAction");
   const dismissAt = handler.indexOf("setDismissedCode");
   assert.ok(focusAt >= 0, "the dismissal must hand focus to the canvas");
   assert.ok(focusAt < dismissAt, "focus must move before the button unmounts");
@@ -462,7 +462,7 @@ test("dismissing the banner leaves focus on the canvas", () => {
 
 test("granting network access leaves focus on the canvas", () => {
   const handler = readHandlerCalling("setGrantedCode");
-  const focusAt = handler.indexOf("iframeRef.current?.focus");
+  const focusAt = handler.indexOf("focusAfterAction");
   const grantAt = handler.indexOf("setGrantedCode");
   assert.ok(focusAt >= 0, "the grant must hand focus to the canvas");
   assert.ok(focusAt < grantAt, "focus must move before the button unmounts");
@@ -472,8 +472,32 @@ test("the settings deep link keeps the invoking button as its opener", () => {
   const handler = readHandlerCalling(
     "useSettingsDialogStore.getState().openDialog",
   );
-  assert.match(handler, /focusFallback:\s*iframeRef\.current/);
+  assert.match(
+    handler,
+    /focusFallback:\s*actionFocusTargetRef\?\.current \?\? iframeRef\.current/,
+  );
   assert.doesNotMatch(handler, /iframeRef\.current\?\.focus/);
+});
+
+test("fullscreen canvas actions return focus inside the dialog", () => {
+  const tags = readFrameOpeningTags();
+  assert.equal(tags.length, 1);
+  assert.match(
+    tags[0],
+    /actionFocusTargetRef=\{\s*variant === "overlay" \? closeButtonRef : undefined\s*\}/,
+  );
+  const surface = readFileSync(
+    fileURLToPath(new URL(SURFACE, import.meta.url)),
+    "utf8",
+  );
+  assert.match(
+    surface,
+    /ref=\{closeButtonRef\}[\s\S]*?aria-label="Close canvas"/,
+  );
+  assert.match(
+    readConst("focusAfterAction"),
+    /\(actionFocusTargetRef\?\.current \?\? iframeRef\.current\)\?\.focus/,
+  );
 });
 
 test("the named iframe is the visible focus fallback", () => {
