@@ -6670,9 +6670,7 @@ async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: boo
             ),
         )
     encoded_images = (
-        image_preflight.get("b64s", ())
-        if target_is_gguf
-        else (image_preflight.get("b64"),)
+        image_preflight.get("b64s", ()) if target_is_gguf else (image_preflight.get("b64"),)
     )
     for encoded in encoded_images:
         if encoded is None:

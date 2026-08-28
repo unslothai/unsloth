@@ -9499,7 +9499,6 @@ def test_gguf_image_preflight_allows_multiple_valid_images():
 
 def test_the_image_preflight_collects_every_local_request_image():
     from models.inference import ChatMessage, ImageContentPart, ImageUrl
-
     payload = _chat_request(
         image_base64 = "legacy",
         messages = [
