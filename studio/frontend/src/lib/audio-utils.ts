@@ -25,7 +25,10 @@ export const AUDIO_ATTACHMENT_ACCEPT = `${AUDIO_ACCEPT},audio/x-m4a,${AUDIO_ACCE
 export const AUDIO_PICKER_ACCEPT = `${AUDIO_ATTACHMENT_ACCEPT},.3gp`;
 
 /** Whether a dropped or pasted file is audio, by MIME or, failing that, name. */
-export function isAudioAttachmentFile(file: File): boolean {
+export function isAudioAttachmentFile(file: {
+  name: string;
+  type: string;
+}): boolean {
   if (/^audio\//i.test(file.type)) {
     return true;
   }

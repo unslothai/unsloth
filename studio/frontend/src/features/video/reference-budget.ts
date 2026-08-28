@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AUDIO_ATTACHMENT_ACCEPT, isAudioAttachmentFile } from "../../lib/audio-utils.ts";
+import { VIDEO_ACCEPT, isVideoFile } from "../../lib/video-utils.ts";
+
 /** MiniMax-H3's combined budget across picture, video and standalone-audio references. */
 export const MAX_H3_REFERENCES = 12;
 
@@ -42,12 +45,25 @@ export const MAX_REFERENCE_BYTES: Record<ReferenceKind, number> = {
   audio: rawLimitFor(32 * 1024 * 1024),
 };
 
+/** What a reference file dialog should offer, per kind. Extensions ride along
+ *  with the MIME types: a browser answers "" for wma, amr, caf and several
+ *  others, and `${kind}/*` alone greys those out of the dialog. */
+export const REFERENCE_PICKER_ACCEPT: Record<ReferenceKind, string> = {
+  video: VIDEO_ACCEPT,
+  audio: AUDIO_ATTACHMENT_ACCEPT,
+};
+
 /** Why this file cannot be staged as a reference, or null when it can. */
 export function referenceFileRejection(
   kind: ReferenceKind,
-  file: { type: string; size: number },
+  file: { type: string; size: number; name?: string },
 ): string | null {
-  if (!file.type.startsWith(`${kind}/`)) {
+  // Name as well as MIME, matching the accept list above and the native drop:
+  // the same recording chosen through the button used to be refused for the
+  // empty type the browser gave it.
+  const named = { type: file.type, name: file.name ?? "" };
+  const matches = kind === "video" ? isVideoFile(named) : isAudioAttachmentFile(named);
+  if (!matches) {
     return `Please choose ${kind === "video" ? "a video" : "an audio"} file`;
   }
   if (file.size > MAX_REFERENCE_BYTES[kind]) {

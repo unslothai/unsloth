@@ -1718,3 +1718,127 @@ test("a dropped batch is inspected one container at a time", async () => {
     [...order].sort((left, right) => left.localeCompare(right)),
   );
 });
+
+test("a vCard charset decides before UTF-8, like the other declarations", async () => {
+  // C3 A9 is valid UTF-8 for "é" and two windows-1252 characters. The card says
+  // which it holds, so decoding as UTF-8 delivered characters it never named.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xc3,
+    0xa9,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  assert.match(
+    await readTextAttachment(new File([vcf], "contact.vcf")),
+    /CafÃ©/,
+  );
+  // A card that names UTF-8 still reads as UTF-8, so nothing regresses there.
+  const utf8 = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:3.0\r\nFN;CHARSET=UTF-8:Caf"),
+    0xc3,
+    0xa9,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  assert.match(await readTextAttachment(new File([utf8], "modern.vcf")), /Café/);
+  // A card with no charset parameter at all is untouched by this.
+  const plain = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Caf"),
+    0xc3,
+    0xa9,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  assert.match(await readTextAttachment(new File([plain], "v4.vcf")), /Café/);
+});
+
+test("a mail Content-Type stays a fallback, unlike the vCard parameter", async () => {
+  // Clients mislabel 8-bit mail constantly, so valid UTF-8 outranks the header.
+  const enc = new TextEncoder();
+  const eml = new Uint8Array([
+    ...enc.encode("Content-Type: text/plain; charset=windows-1252\r\n\r\nCaf"),
+    0xc3,
+    0xa9,
+  ]);
+  assert.match(await readTextAttachment(new File([eml], "message.eml")), /Café/);
+});
+
+test("a boundary does not carry into the next message of an archive", async () => {
+  // Each message declares its own. A later body line repeating an earlier one
+  // reopened the headers there, and the next header-shaped line counted.
+  const enc = new TextEncoder();
+  const mbox = new Uint8Array([
+    ...enc.encode(
+      "From sender@example.com Thu Aug 27 00:00:00 2026\r\n" +
+        "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+    ...enc.encode(
+      "\r\nFrom other@example.com Thu Aug 27 01:00:00 2026\r\n" +
+        "Subject: a plain message\r\n\r\n" +
+        "The separator line below is body text here:\r\n--b\r\n" +
+        "Content-Type: text/plain; charset=windows-1251\r\n",
+    ),
+  ]);
+  assert.match(await readTextAttachment(new File([mbox], "thread.mbox")), /Café/);
+});
+
+test("a gettext header past the prefix is still read", async () => {
+  // A catalog with more than 64 KiB of translator comments above its header was
+  // refused for carrying exactly the bytes that header describes.
+  const enc = new TextEncoder();
+  const comments = "# a translator comment line\n".repeat(4_000);
+  assert.ok(comments.length > 64 * 1024);
+  const po = new Uint8Array([
+    ...enc.encode(
+      `${comments}msgid ""\nmsgstr ""\n` +
+        '"Content-Type: text/plain; charset=windows-1251\\n"\n\n' +
+        'msgid "hi"\nmsgstr "',
+    ),
+    0xcf,
+    0xf0,
+    ...enc.encode('"\n'),
+  ]);
+  assert.match(await readTextAttachment(new File([po], "ru.po")), /Пр/);
+});
+
+test("the reference picker takes the formats its drop path does", async () => {
+  const { REFERENCE_PICKER_ACCEPT, referenceFileRejection } = await import(
+    "../src/features/video/reference-budget.ts"
+  );
+  // A browser answers "" for these, so `audio/*` alone hid and then refused them.
+  for (const name of ["voice.amr", "clip.wma", "note.caf", "take.aiff"]) {
+    assert.equal(
+      referenceFileRejection("audio", { type: "", size: 10, name }),
+      null,
+      name,
+    );
+    assert.ok(REFERENCE_PICKER_ACCEPT.audio.includes(name.slice(name.indexOf("."))));
+  }
+  assert.equal(
+    referenceFileRejection("video", { type: "", size: 10, name: "take.mkv" }),
+    null,
+  );
+  // The kind check still holds, by name as well as by type.
+  assert.equal(
+    referenceFileRejection("audio", { type: "", size: 10, name: "clip.mkv" }),
+    "Please choose an audio file",
+  );
+  assert.equal(
+    referenceFileRejection("video", { type: "image/png", size: 10 }),
+    "Please choose a video file",
+  );
+  // Every extension the native drop accepts is offered by the dialog too.
+  for (const ext of CHAT_AUDIO_DROP_ACCEPT.split(",")) {
+    assert.ok(REFERENCE_PICKER_ACCEPT.audio.split(",").includes(ext), ext);
+  }
+  for (const ext of CHAT_VIDEO_DROP_ACCEPT.split(",")) {
+    assert.ok(REFERENCE_PICKER_ACCEPT.video.split(",").includes(ext), ext);
+  }
+
+  const picker = readFileSync(
+    new URL("../src/features/video/reference-picker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(picker, /accept=\{REFERENCE_PICKER_ACCEPT\[kind\]\}/);
+});

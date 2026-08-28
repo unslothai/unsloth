@@ -61,7 +61,7 @@ export function videoMimeForFile(file: File): string {
 
 /** Whether a picked file is a video. mkv and some mov files arrive with an
  * empty MIME type, hence the extension fallback. */
-export function isVideoFile(file: File): boolean {
+export function isVideoFile(file: { name: string; type: string }): boolean {
   if (VIDEO_MIME_RE.test(file.type)) {
     return true;
   }

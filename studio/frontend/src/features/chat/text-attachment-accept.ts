@@ -588,6 +588,16 @@ const GETTEXT_HEADER_ENTRY_RE =
 const GETTEXT_CHARSET_RE =
   /Content-Type:[^"\r\n]*?charset[ \t]*=[ \t]*([A-Za-z0-9._-]+)/i;
 
+/**
+ * The charset a gettext catalog's header entry declares.
+ *
+ * The entry is the first one in the file by convention, so the prefix settles
+ * it without decoding a catalog that can run to megabytes. A cutoff can still
+ * miss it, though: a project with more than 64 KiB of translator comments above
+ * the entry pushes it past the prefix, and the catalog was then refused for
+ * carrying exactly the bytes its header describes. So when the prefix holds no
+ * entry, read the rest, which the attachment cap already bounds.
+ */
 function declaredGettextCharset(
   bytes: Uint8Array,
   fileName: string,
@@ -595,11 +605,23 @@ function declaredGettextCharset(
   if (!/\.(?:po|pot)$/i.test(fileName)) {
     return null;
   }
-  const prefix = new TextDecoder("windows-1252").decode(
-    bytes.subarray(0, GETTEXT_HEADER_SCAN_BYTES),
+  const decoder = new TextDecoder("windows-1252");
+  const fromPrefix = gettextHeaderCharset(
+    decoder.decode(bytes.subarray(0, GETTEXT_HEADER_SCAN_BYTES)),
   );
-  const headerEntry = prefix.match(GETTEXT_HEADER_ENTRY_RE)?.[1];
+  if (fromPrefix || bytes.length <= GETTEXT_HEADER_SCAN_BYTES) {
+    return fromPrefix;
+  }
+  // A cutoff can also split the entry itself, leaving a match that holds the
+  // first continuation lines but not the Content-Type one, so retry on the
+  // charset rather than on the entry.
+  return gettextHeaderCharset(decoder.decode(bytes));
+}
+
+function gettextHeaderCharset(text: string): string | null {
+  const headerEntry = text.match(GETTEXT_HEADER_ENTRY_RE)?.[1];
   const charset = headerEntry?.match(GETTEXT_CHARSET_RE)?.[1];
+  // A .pot template ships the literal placeholder rather than a charset.
   return charset && charset.toUpperCase() !== "CHARSET" ? charset : null;
 }
 
@@ -668,7 +690,12 @@ function emailHeaderBlocks(text: string, mbox: boolean): string[] {
     } else if (!isBlank) {
       // An mbox separator, or a delimiter one of the headers above declared.
       let resumes = mbox && text.startsWith("From ", position);
-      if (!resumes && boundaries.size > 0 && text.startsWith("--", position)) {
+      if (resumes) {
+        // A boundary belongs to the message that named it. Carrying one into
+        // the next message lets a body line that happens to repeat it reopen
+        // the headers there.
+        boundaries.clear();
+      } else if (boundaries.size > 0 && text.startsWith("--", position)) {
         // Trailing whitespace is allowed on a delimiter line and is not part of
         // the boundary token. A closing delimiter carries the extra "--" into
         // the token, so it does not match and does not reopen the headers.
@@ -754,40 +781,51 @@ function declaredXmlEncoding(bytes: Uint8Array): string | null {
   return prolog.match(XML_PROLOG_ENCODING_RE)?.[1] ?? null;
 }
 
-/** Distinct charsets a container declares about itself, in encounter order. */
-function declaredContainerCharsets(
-  bytes: Uint8Array,
-  fileName: string,
-): string[] {
-  const isMbox = /\.mbox$/i.test(fileName);
-  const isEmail = isMbox || /\.eml$/i.test(fileName);
-  const isVCard = /\.vcf$/i.test(fileName);
-  if (!isEmail && !isVCard) {
+/** Collects distinct charsets in encounter order, case-insensitively. */
+function charsetCollector(): { found: string[]; add: (c?: string) => void } {
+  const found: string[] = [];
+  return {
+    found,
+    add(charset?: string) {
+      if (!charset) return;
+      if (!found.some((seen) => seen.toUpperCase() === charset.toUpperCase())) {
+        found.push(charset);
+      }
+    },
+  };
+}
+
+// Headers and property parameters are ASCII, so these scans cannot fail on the
+// body's own encoding. They read the whole file rather than a prefix: a
+// declaration further in is the one a cutoff would miss, leaving those messages
+// decoded as the first. The attachment cap already bounds the work.
+
+/** Charsets a `.vcf` declares, one per property parameter. */
+function declaredVCardCharsets(bytes: Uint8Array, fileName: string): string[] {
+  if (!/\.vcf$/i.test(fileName)) {
     return [];
   }
-  // Headers are ASCII, so this scan cannot fail on the body's own encoding. It
-  // reads the whole file rather than a prefix: a declaration further in is the
-  // one a cutoff would miss, leaving those messages decoded as the first. The
-  // attachment is already capped, and this only runs once UTF-8 has failed.
-  const prefix = new TextDecoder("windows-1252").decode(bytes);
-  const found: string[] = [];
-  const add = (charset: string | undefined) => {
-    if (!charset) return;
-    if (!found.some((seen) => seen.toUpperCase() === charset.toUpperCase())) {
-      found.push(charset);
+  const text = new TextDecoder("windows-1252").decode(bytes);
+  const { found, add } = charsetCollector();
+  for (const section of vCardParameterSections(text)) {
+    for (const property of section.matchAll(VCARD_CHARSET_RE)) {
+      add(property[1]);
     }
-  };
-  if (isEmail) {
-    for (const block of emailHeaderBlocks(prefix, isMbox)) {
-      for (const header of block.matchAll(EMAIL_CONTENT_TYPE_RE)) {
-        add(header[1]?.match(EMAIL_CHARSET_RE)?.[1]);
-      }
-    }
-  } else {
-    for (const section of vCardParameterSections(prefix)) {
-      for (const property of section.matchAll(VCARD_CHARSET_RE)) {
-        add(property[1]);
-      }
+  }
+  return found;
+}
+
+/** Charsets an `.eml` or `.mbox` declares, one per message or part header. */
+function declaredEmailCharsets(bytes: Uint8Array, fileName: string): string[] {
+  const isMbox = /\.mbox$/i.test(fileName);
+  if (!isMbox && !/\.eml$/i.test(fileName)) {
+    return [];
+  }
+  const text = new TextDecoder("windows-1252").decode(bytes);
+  const { found, add } = charsetCollector();
+  for (const block of emailHeaderBlocks(text, isMbox)) {
+    for (const header of block.matchAll(EMAIL_CONTENT_TYPE_RE)) {
+      add(header[1]?.match(EMAIL_CHARSET_RE)?.[1]);
     }
   }
   return found;
@@ -842,11 +880,15 @@ export function decodeTextAttachmentBytes(
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     return decodeWithCharset(bytes.subarray(2), "utf-16be", fileName, truncated);
   }
-  // An XML document's encoding is its prolog, by specification, so it decides
-  // before UTF-8 is tried: bytes that happen to be valid UTF-8 would otherwise
-  // decode into different characters than the document says it holds. Mail and
-  // vCard declarations stay a fallback instead, because mislabelled 8-bit mail
-  // is common and its bytes being valid UTF-8 is the better evidence.
+  // A document that states its own encoding decides before UTF-8 is tried:
+  // bytes that happen to be valid UTF-8 would otherwise decode into different
+  // characters than the file says it holds. An XML prolog is that statement by
+  // specification, a gettext header and a vCard property parameter by format,
+  // and all three are written by the exporter rather than typed by a person.
+  //
+  // A mail Content-Type is the exception and stays a fallback below: clients
+  // mislabel 8-bit mail constantly, so the bytes being valid UTF-8 is the
+  // better evidence there.
   const xmlEncoding = declaredXmlEncoding(bytes);
   if (xmlEncoding) {
     return decodeWithCharset(bytes, xmlEncoding, fileName, truncated);
@@ -854,6 +896,13 @@ export function decodeTextAttachmentBytes(
   const gettextCharset = declaredGettextCharset(bytes, fileName);
   if (gettextCharset) {
     return decodeWithCharset(bytes, gettextCharset, fileName, truncated);
+  }
+  // Only when the card names one charset. Several is the ambiguous case, and it
+  // keeps its existing path: valid UTF-8 wins, and anything else is refused
+  // below with all of them named.
+  const vCardCharsets = declaredVCardCharsets(bytes, fileName);
+  if (vCardCharsets.length === 1) {
+    return decodeWithCharset(bytes, vCardCharsets[0]!, fileName, truncated);
   }
   try {
     // A truncated read decodes with stream:true so the character the slice cut
@@ -863,13 +912,13 @@ export function decodeTextAttachmentBytes(
       stream: truncated,
     });
   } catch {
-    // An XML document states its encoding in the prolog, which is as explicit as
-    // a declaration gets. Tried only after UTF-8 fails, so `encoding="UTF-8"`
-    // costs nothing.
-    // An 8-bit mail or vCard says which charset it is, so honour it rather than
-    // refusing a standards-valid file. Tried only after UTF-8 fails, so a modern
-    // one is never remapped by a stale declaration.
-    const declared = declaredContainerCharsets(bytes, fileName);
+    // An 8-bit mail says which charset it is, so honour it rather than refusing
+    // a standards-valid message. Tried only here, so a modern one is never
+    // remapped by a stale declaration. A vCard was tried above and only reaches
+    // this line when it named more than one charset.
+    const declared = vCardCharsets.length
+      ? vCardCharsets
+      : declaredEmailCharsets(bytes, fileName);
     if (declared.length === 1) {
       return decodeWithCharset(bytes, declared[0]!, fileName, truncated);
     }

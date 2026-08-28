@@ -19,7 +19,11 @@ import { useNativeFileDrop } from "@/features/native-intents";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-import { createReferenceSelectionGate, readReferenceFile } from "./reference-budget";
+import {
+  REFERENCE_PICKER_ACCEPT,
+  createReferenceSelectionGate,
+  readReferenceFile,
+} from "./reference-budget";
 
 /** One staged reference file: the data URL the request carries, plus its name for the chip. */
 export interface ReferenceMedia {
@@ -184,7 +188,7 @@ export function ReferenceMediaPicker({
       <input
         ref={inputRef}
         type="file"
-        accept={`${kind}/*`}
+        accept={REFERENCE_PICKER_ACCEPT[kind]}
         className="hidden"
         onChange={(e) => readFile(e.target.files?.[0])}
       />
