@@ -660,9 +660,7 @@ def main() -> int:
     stuck = [
         c["case"]
         for c in result["cases"]
-        if "menuClosed" in c
-        and not c["menuClosed"]
-        and "menuClosedBeforeSpace" not in c
+        if "menuClosed" in c and not c["menuClosed"] and "menuClosedBeforeSpace" not in c
     ]
     not_dismissed = [
         c["case"]
