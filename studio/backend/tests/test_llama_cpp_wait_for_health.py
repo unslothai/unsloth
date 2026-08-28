@@ -138,6 +138,23 @@ class TestWaitForHealthResilience:
         assert "cancelled" in detail
         assert "GGUF file is valid" not in detail
 
+    def test_a_cancel_during_the_probe_does_not_publish_the_model(self, monkeypatch):
+        """The probe blocks for up to 2s. A cancel landing inside that window used to be
+        ignored because the 200 returned first, so the unwanted model went live."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        scoped = threading.Event()
+
+        def probe(*a, **kw):
+            scoped.set()  # the user cancels while this request is in flight
+            return mock.Mock(status_code = 200)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(
+            timeout = 30.0, interval = 0.01, cancelled = scoped.is_set
+        ) is False
+
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()
@@ -361,3 +378,63 @@ class TestFitOffRetryEligible:
     def test_fit_tuning_flags_do_not_block_retry(self, tuning_args):
         cmd = ["llama-server", "-m", "x.gguf", *tuning_args]
         assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is True
+
+
+def test_every_health_wait_in_load_model_forwards_a_cancel_predicate():
+    """A _wait_for_health call that does not carry the per-load predicate polls the
+    full 600s on an auto-switch cancel, which sets only the generation event."""
+    import ast
+
+    src = Path(_BACKEND_DIR, "core", "inference", "llama_cpp.py").read_text(encoding = "utf-8")
+    calls = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_wait_for_health"
+    ]
+    assert calls, "the health wait moved; re-pin this test"
+    missing = [c.lineno for c in calls if not any(k.arg == "cancelled" for k in c.keywords)]
+    assert not missing, (
+        f"_wait_for_health called without a cancelled predicate at lines {missing}; "
+        "a cancel that is not the unload flag would be ignored there"
+    )
+
+
+class TestCancelledWaitEndsTheLoad:
+    """An auto-switch cancels through its own event and never unloads, so the child is
+    still alive and poll() reports no exit code. Classifying that as a start failure
+    raises a 500 at the caller before it can run its own cancellation handling."""
+
+    def test_a_cancelled_health_wait_returns_false_instead_of_raising(self, tmp_path):
+        from core.inference.llama_cpp import GgufLoadIntent
+
+        gguf = tmp_path / "model.gguf"
+        gguf.write_bytes(b"GGUF" + b"\0" * 4096)
+
+        b = LlamaCppBackend()
+        b._find_llama_server_binary = lambda *a, **kw: "/usr/bin/true"
+        # The header refusals read a real GGUF; this fixture stands in for a chat model.
+        b._non_chat_gguf_refusal_for_path = lambda *a, **kw: None
+        b._non_chat_gguf_refusal = lambda *a, **kw: None
+        b._kill_process = lambda *a, **kw: None
+
+        def _start(cmd, env, **kw):
+            proc = mock.Mock()
+            proc.poll.return_value = None  # alive: the cancel kills it, not a crash
+            proc.pid = 424242
+            b._process = proc
+            b._stdout_lines = ["build: 6543", "main: loading model"]
+            return proc
+
+        b._start_llama_process = _start
+        scoped = threading.Event()
+        scoped.set()
+        real_wait = b._wait_for_health
+        b._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: real_wait(
+            timeout = 2.0, interval = 0.05, cancelled = scoped.is_set,
+        )
+
+        assert b.load_model(GgufLoadIntent(
+            model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096,
+        )) is False
