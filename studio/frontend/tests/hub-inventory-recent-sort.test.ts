@@ -190,7 +190,7 @@ test("a stale aggregate row cannot consume a newer variant hint", () => {
       {
         repo_id: "Org/Existing",
         size_bytes: 500,
-        last_modified: 1_700_000_000,
+        last_modified: (startedAt - 1_000) / 1000,
       },
     ],
     previouslyObserved: new Set<string>(),
@@ -205,7 +205,7 @@ test("a stale aggregate row cannot consume a newer variant hint", () => {
     rows: [
       {
         repo_id: "Org/Existing",
-        size_bytes: 700,
+        size_bytes: 100,
         last_modified: startedAt / 1000,
       },
     ],

@@ -201,16 +201,12 @@ function serverRowSatisfiesHint(
   if (row.partial) {
     return false;
   }
-  if (hint.bytes && rowSizeBytes(row) < hint.bytes) {
-    return false;
-  }
   const hintTimestamp = normalizeTimestamp(hint.startedAt ?? hint.createdAt);
-  if (hintTimestamp == null) {
-    return true;
+  if (hintTimestamp != null) {
+    const rowTimestamp = normalizeTimestamp(row.last_modified);
+    return rowTimestamp != null && rowTimestamp >= hintTimestamp;
   }
-  const rowTimestamp = normalizeTimestamp(row.last_modified);
-  // tolerate filesystems with two-second mtime granularity
-  return rowTimestamp != null && rowTimestamp + 2_000 >= hintTimestamp;
+  return !hint.bytes || rowSizeBytes(row) >= hint.bytes;
 }
 
 export function reconcileInventoryHints<T extends InventoryHintRow>({
