@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import hashlib
-import math
+import json
 import logging
+import math
 import os
 import threading
 import time
@@ -88,13 +89,38 @@ class _OpenAIStreamToolCall:
     arguments: str = ""
 
 
-def _append_stream_tool_field(current: str, fragment: Any, budget: int) -> str:
+def _stream_tool_fragment(fragment: Any, *, serialize_json: bool = False) -> Optional[str]:
+    if fragment is None:
+        return None
+    if isinstance(fragment, str):
+        return fragment
+    return json.dumps(fragment, default = str) if serialize_json else str(fragment)
+
+
+def _append_stream_tool_field(
+    current: str,
+    fragment: Any,
+    budget: int,
+    *,
+    serialize_json: bool = False,
+) -> str:
     if fragment is None or budget <= 0 or len(current) >= _MAX_STREAM_TOOL_FIELD_CHARS:
         return current
-    if not isinstance(fragment, str):
-        fragment = str(fragment)
+    fragment = _stream_tool_fragment(fragment, serialize_json = serialize_json)
+    if fragment is None:
+        return current
     remaining = min(_MAX_STREAM_TOOL_FIELD_CHARS - len(current), budget)
     return current + fragment[:remaining]
+
+
+def _merge_stream_tool_name(current: str, fragment: Any, budget: int) -> str:
+    fragment = _stream_tool_fragment(fragment)
+    if fragment is None:
+        return current
+    if fragment.startswith(current):
+        limit = min(_MAX_STREAM_TOOL_FIELD_CHARS, len(current) + max(0, budget))
+        return fragment[:limit]
+    return _append_stream_tool_field(current, fragment, budget)
 
 
 def _stream_tool_call_id(value: Any) -> Optional[str]:
@@ -154,6 +180,7 @@ class ApiMonitorEntry:
     stop_reasons_seen: set[str] = field(default_factory = set)
     # request-local preview state, omitted from snapshots and cleared on terminal paths.
     openai_stream_tool_calls: list[_OpenAIStreamToolCall] = field(default_factory = list)
+    openai_stream_last_tool_indexes: dict[int, int] = field(default_factory = dict)
     openai_stream_last_segment_was_tool: bool = False
 
     def snapshot(
@@ -450,7 +477,7 @@ class ApiMonitor:
         entry_id: Optional[str],
         *,
         choice_index: int,
-        tool_index: int,
+        tool_index: Optional[int],
         call_id: Optional[str],
         name_fragment: Any,
         arguments_fragment: Any,
@@ -468,6 +495,8 @@ class ApiMonitor:
                 for state in entry.openai_stream_tool_calls
                 if state.choice_index == choice_index
             ]
+            if tool_index is None:
+                tool_index = entry.openai_stream_last_tool_indexes.get(choice_index, 0)
             state = None
             if call_id is not None:
                 state = next(
@@ -511,18 +540,20 @@ class ApiMonitor:
                 entry.openai_stream_tool_calls.append(state)
             elif call_id is not None and state.call_id is None:
                 state.call_id = call_id
+            entry.openai_stream_last_tool_indexes[choice_index] = tool_index
             pending_chars = sum(
                 len(candidate.name) + len(candidate.arguments)
                 for candidate in entry.openai_stream_tool_calls
             )
             budget = _MAX_REPLY_CHARS - pending_chars
             previous_name_length = len(state.name)
-            state.name = _append_stream_tool_field(state.name, name_fragment, budget)
+            state.name = _merge_stream_tool_name(state.name, name_fragment, budget)
             budget -= len(state.name) - previous_name_length
             state.arguments = _append_stream_tool_field(
                 state.arguments,
                 arguments_fragment,
                 budget,
+                serialize_json = True,
             )
             now = time.monotonic()
             if entry.first_token_monotonic is None:
@@ -557,6 +588,10 @@ class ApiMonitor:
             entry.openai_stream_tool_calls = [
                 state for state in entry.openai_stream_tool_calls if id(state) not in selected_ids
             ]
+            if choice_index is None:
+                entry.openai_stream_last_tool_indexes.clear()
+            else:
+                entry.openai_stream_last_tool_indexes.pop(choice_index, None)
             entry.updated_at = time.time()
             return [(state.name, state.arguments) for state in selected], separate
 
@@ -715,6 +750,7 @@ class ApiMonitor:
             if entry.finished_at is not None:
                 return
             entry.openai_stream_tool_calls.clear()
+            entry.openai_stream_last_tool_indexes.clear()
             entry.openai_stream_last_segment_was_tool = False
             self._settle_stop_reason_locked(entry, status == "completed")
             now = time.time()
@@ -762,6 +798,7 @@ class ApiMonitor:
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
         entry.openai_stream_tool_calls.clear()
+        entry.openai_stream_last_tool_indexes.clear()
         entry.openai_stream_last_segment_was_tool = False
         self._settle_stop_reason_locked(entry, False)
         now = time.time()

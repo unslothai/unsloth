@@ -5157,8 +5157,8 @@ def _monitor_stream_tool_call_deltas(
         if not isinstance(function, dict):
             function = {}
         tool_index = tool_call.get("index")
-        if not isinstance(tool_index, int):
-            tool_index = position
+        if not isinstance(tool_index, int) or isinstance(tool_index, bool):
+            tool_index = position if len(tool_calls) > 1 else None
         name = function.get("name")
         if name is None:
             name = tool_call.get("name")

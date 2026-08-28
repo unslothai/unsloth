@@ -6896,6 +6896,88 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         assert monitor.get(monitor_id)["reply"] == 'Tool call: terminal({"command":"echo"})'
 
+    def test_streamed_tool_monitor_replaces_cumulative_names(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        for name, arguments in [("web", None), ("web_search", "{}")]:
+            _monitor_openai_chunk(
+                monitor_id,
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"name": name, "arguments": arguments},
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == "Tool call: web_search({})"
+
+    def test_streamed_tool_monitor_serializes_structured_arguments(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": {"query": "weather", "active": True},
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            streaming = True,
+        )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: lookup({"query": "weather", "active": true})'
+        )
+
     def test_streamed_legacy_function_monitor_joins_name_and_arguments(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -6940,6 +7022,40 @@ class TestApiMonitorProviderAndCompletionStreams:
             {"index": 1, "id": "call-b", "function": {"name": "beta", "arguments": '{"b":'}},
             {"index": 0, "function": {"arguments": "1}"}},
             {"index": 1, "function": {"arguments": "2}"}},
+        ]
+        for tool_call in deltas:
+            _monitor_openai_chunk(
+                monitor_id,
+                {"choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}}]},
+                streaming = True,
+            )
+        _monitor_openai_chunk(
+            monitor_id,
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            streaming = True,
+        )
+
+        assert monitor.get(monitor_id)["reply"] == (
+            'Tool call: alpha({"a":1})\nTool call: beta({"b":2})'
+        )
+
+    def test_streamed_tool_monitor_routes_bare_fragments_to_latest_call(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        deltas = [
+            {"index": 0, "function": {"name": "alpha", "arguments": '{"a":'}},
+            {"index": 1, "function": {"name": "beta", "arguments": '{"b":'}},
+            {"function": {"arguments": "2}"}},
+            {"index": 0, "function": {"arguments": "1"}},
+            {"function": {"arguments": "}"}},
         ]
         for tool_call in deltas:
             _monitor_openai_chunk(
@@ -7279,6 +7395,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         )
         monitor.finish(monitor_id, "cancelled")
         assert entry.openai_stream_tool_calls == []
+        assert entry.openai_stream_last_tool_indexes == {}
 
     def test_embeddings_request_is_counted_active_and_completed(self, monkeypatch):
         async def _run():
