@@ -173,6 +173,7 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
     monkeypatch.setattr(start, "_npm_executable", lambda: "/usr/local/bin/npm")
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
     ran = []
     monkeypatch.setattr(
         start.subprocess,
