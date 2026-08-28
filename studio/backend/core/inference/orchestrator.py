@@ -74,6 +74,7 @@ _AUDIO_GENERATION_TIMEOUT = 900.0
 _AUDIO_GENERATION_BASE_TOKENS = 2048
 AUDIO_GENERATION_MAX_TOKENS = 8192
 MOSS_TTS_MAX_FRAMES = 32768
+MINIMAX_MUSIC_MAX_FRAMES = 9000
 _AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
 # Before audio_started there is nobody to receive the cancel, and a prefill pass (a 3B TTS
 # model on CPU, or OuteTTS's per-token Python repetition penalty) routinely outlasts the
@@ -2516,6 +2517,8 @@ class InferenceOrchestrator:
                     except (TypeError, ValueError):
                         detected_context = 0
                     max_token_ceiling = detected_context or MOSS_TTS_MAX_FRAMES
+                elif audio_type == "minimax_music3":
+                    max_token_ceiling = MINIMAX_MUSIC_MAX_FRAMES
                 max_new_tokens = min(
                     max_token_ceiling,
                     max(1, int(max_new_tokens)),
