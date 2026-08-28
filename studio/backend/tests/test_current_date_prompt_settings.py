@@ -189,12 +189,29 @@ class TestExternalProviderMessages:
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
         assert out[1] == {"role": "user", "content": "hi"}
 
-    def test_multimodal_system_content_gets_its_own_turn(self):
-        out = self._prepend(
-            [{"role": "system", "content": [{"type": "text", "text": "Be terse."}]}]
-        )
-        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
-        assert out[1]["content"] == [{"type": "text", "text": "Be terse."}]
+    def test_date_prefixes_text_inside_structured_system_content(self):
+        messages = [{"role": "system", "content": [{"type": "text", "text": "Be terse."}]}]
+        out = self._prepend(messages)
+        assert len(out) == 1
+        assert out[0]["content"] == [
+            {"type": "text", "text": "The current date is 2026-08-15.\n\nBe terse."}
+        ]
+        assert messages[0]["content"] == [{"type": "text", "text": "Be terse."}]
+
+    def test_date_becomes_a_text_part_when_structured_content_has_none(self):
+        messages = [
+            {
+                "role": "system",
+                "content": [{"type": "image_url", "image_url": {"url": "data:image/png,x"}}],
+            }
+        ]
+        out = self._prepend(messages)
+        assert len(out) == 1
+        assert out[0]["content"][0] == {
+            "type": "text",
+            "text": "The current date is 2026-08-15.",
+        }
+        assert out[0]["content"][1] == messages[0]["content"][0]
 
     def test_developer_turn_is_used_when_there_is_no_system_turn(self):
         out = self._prepend([{"role": "developer", "content": "Be terse."}])
@@ -285,8 +302,9 @@ class TestExternalProviderMessages:
             {"role": "user", "content": "hi"},
         ]
         out = self._prepend(messages)
-        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
-        assert out[1:] == messages
+        assert len(out) == len(messages)
+        assert out[0]["content"][0]["text"].startswith("The current date is 2026-08-15.\n\n")
+        assert out[1:] == messages[1:]
 
 class TestResearchSystemPrompt:
     """Every Deep Research call (planner, agent, audit, report) goes through this helper."""

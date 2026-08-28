@@ -4798,11 +4798,10 @@ def _apply_current_date_prompt(system_prompt: str, request: Any = None) -> str:
 
 
 def _prepend_current_date_to_messages(messages: list[dict], request: Any = None) -> list[dict]:
-    """Apply the date to an already-built message list, for self-hosted providers Studio proxies to.
+    """Apply the date to an already-built message list for a provider Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
-    assembled first, so the date goes onto its leading system turn instead. A non-string content
-    (multimodal) turn is skipped, matching _append_to_system_message.
+    assembled first, so the date goes onto its leading system turn instead.
     """
     if request is not None and not _wants_current_date(request):
         return messages
@@ -4830,6 +4829,16 @@ def _prepend_current_date_to_messages(messages: list[dict], request: Any = None)
         content = msg.get("content", "")
         if isinstance(content, str):
             msg["content"] = date_line + "\n\n" + content.lstrip()
+            return copied
+        if isinstance(content, list):
+            copied_parts = [dict(part) if isinstance(part, dict) else part for part in content]
+            for part in copied_parts:
+                if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+                    continue
+                part["text"] = date_line + "\n\n" + part["text"].lstrip()
+                msg["content"] = copied_parts
+                return copied
+            msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
     return [{"role": "system", "content": date_line}, *copied]
 
