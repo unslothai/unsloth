@@ -399,3 +399,23 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
         '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
     )
+
+
+def test_a_declared_type_nested_in_a_container_is_read_too():
+    """`edit_file` declares replace_all inside `edits.items`, so the top level is not enough
+    and text that spells a boolean must survive as text."""
+    edits = (
+        '[{"old_string":"a","new_string":"b","replace_all":"false"},'
+        '{"old_string":"false","new_string":"null","replace_all":"true"}]'
+    )
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    props = edit_file["function"]["parameters"]["properties"]
+    typed = [
+        {"old_string": "a", "new_string": "b", "replace_all": False},
+        {"old_string": "false", "new_string": "null", "replace_all": True},
+    ]
+    call = {"path": "app.py", "edits": edits}
+    assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
+    # An already-typed container is descended into too: its elements can still be text.
+    call = {"path": "app.py", "edits": json.loads(edits)}
+    assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}

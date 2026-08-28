@@ -510,6 +510,10 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     return chosen, rest[0] if rest else None, "null" in named
 
 
+# A schema is model-facing data, so its nesting is not trusted to be shallow.
+_MAX_SCHEMA_DEPTH = 8
+
+
 def _coerce_declared_value(text: str, declared: str, repair: bool) -> Any:
     stripped = text.strip()
     if declared == "boolean":
@@ -573,18 +577,45 @@ def _coerce_container(text: str, want: type, repair: bool) -> Any:
     return repaired if _usable_container(repaired, want) else text
 
 
-def _coerce_one_property(value: Any, spec: Any, repair: bool) -> Any:
-    """One value read against its property schema."""
+def _coerce_by_property(value: Any, spec: Any, depth: int, repair: bool) -> Any:
+    if depth >= _MAX_SCHEMA_DEPTH:
+        return value
     spec, declared, nullable = _read_schema(spec)
-    if spec is None or not isinstance(value, str):
+    if spec is None:
         return value
-    if declared == "string":
-        return value
-    if nullable and value.strip().lower() == "null":
-        return None
-    if declared is None:
-        return value
-    return _coerce_declared_value(value, declared, repair)
+    if isinstance(value, str):
+        if declared == "string":
+            return value
+        if nullable and value.strip().lower() == "null":
+            return None
+        if declared is None:
+            return value
+        value = _coerce_declared_value(value, declared, repair)
+    # Descent needs the SAME declaration the conversion needs: without one a text value is
+    # not decoded, so descending into an already-decoded one would make the syntaxes disagree.
+    if declared == "object" and isinstance(value, Mapping):
+        nested = spec.get("properties")
+        nested = nested if isinstance(nested, Mapping) else {}
+        extra = spec.get("additionalProperties")
+        extra = extra if isinstance(extra, Mapping) else None
+        if nested or extra:
+            return {
+                k: _coerce_by_property(v, nested.get(k, extra), depth + 1, repair)
+                for k, v in value.items()
+            }
+    elif declared == "array" and isinstance(value, list):
+        items = spec.get("items")
+        prefix = items if isinstance(items, list) else spec.get("prefixItems")
+        if isinstance(prefix, list):
+            # A schema per position: draft-07 tuple `items`, 2020-12 `prefixItems`.
+            rest = spec.get("additionalItems") if isinstance(items, list) else items
+            return [
+                _coerce_by_property(v, prefix[i] if i < len(prefix) else rest, depth + 1, repair)
+                for i, v in enumerate(value)
+            ]
+        if isinstance(items, Mapping):
+            return [_coerce_by_property(v, items, depth + 1, repair) for v in value]
+    return value
 
 
 def coerce_arguments_by_schema(
@@ -597,18 +628,12 @@ def coerce_arguments_by_schema(
 
     A tool-call parser is given tool NAMES, never schemas, so an XML-form parameter is stored
     as raw text: ``replace_all`` reaches the tool as ``"false"``, and ``bool("false")`` is
-    True. A declared string is returned untouched, as is any value no single type resolves
-    for -- a schema composing, referencing or branching where this does not read, or a
-    genuine either/or. An already-typed value is untouched. A value that will not convert
-    keeps its raw string, leaving the tool to report what is
-    wrong rather than ending here.
-
-    A scalar's text carries no type, so it is read only where its spelling names the declared
-    type and nothing else could have been meant.
+    True. A container's text IS its JSON; a scalar's carries no type, so it is read only
+    where its spelling names the declared type. Anything else keeps its text.
     """
     if not isinstance(properties, Mapping) or not properties:
         return dict(arguments)
-    return {k: _coerce_one_property(v, properties.get(k), repair) for k, v in arguments.items()}
+    return {k: _coerce_by_property(v, properties.get(k), 0, repair) for k, v in arguments.items()}
 
 
 def _declared_properties(tool_name: str, tool_schemas) -> Any:
