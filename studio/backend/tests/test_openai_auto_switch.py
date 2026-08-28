@@ -9128,10 +9128,30 @@ def test_a_whisper_checkpoint_is_switchable(tmp_path):
         '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}'
     )
     assert resolver.local_servable_model(info) == (False, ())
-    # the model_type is read from transformers' own audio tables, not a table restated here.
     assert resolver._model_type_is_audio("whisper") is True
+    assert resolver._model_type_is_audio("csm") is True
     assert resolver._model_type_is_audio("t5") is False
     assert resolver._model_type_is_audio(None) is False
+
+
+@pytest.mark.parametrize(
+    ("architecture", "model_type"),
+    [
+        ("Speech2TextForConditionalGeneration", "speech_to_text"),
+        ("MusicgenForConditionalGeneration", "musicgen"),
+    ],
+)
+def test_unsupported_conditional_audio_checkpoints_are_not_switchable(
+    tmp_path, architecture, model_type
+):
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, model_type)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps({"architectures": [architecture], "model_type": model_type})
+    )
+    assert resolver.local_servable_model(info) is None
 
 
 def test_an_mlx_host_does_not_advertise_an_asr_checkpoint(tmp_path, monkeypatch):

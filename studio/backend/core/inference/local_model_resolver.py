@@ -165,6 +165,7 @@ _MULTIMODAL_CONFIG_KEYS = (
     "projector_config",
     "audio_config",
 )
+_SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 
 
 def _read_json(path):
@@ -260,15 +261,8 @@ def _is_generative_chat_config(config: dict) -> bool:
 
 
 def _model_type_is_audio(model_type) -> bool:
-    """Whether *model_type* names an audio architecture, per transformers' own tables."""
-    if not isinstance(model_type, str) or not model_type:
-        return False
-    try:
-        from utils.models.model_config import _detection_sets
-        return model_type in _detection_sets()[2]
-    except Exception as exc:
-        logger.debug("auto-switch: audio model_type lookup failed for %r: %s", model_type, exc)
-        return False
+    """Whether *model_type* has a supported conditional audio serving path."""
+    return isinstance(model_type, str) and model_type in _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES
 
 
 def _weights_are_servable(load_dir) -> bool:
