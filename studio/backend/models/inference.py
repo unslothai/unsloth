@@ -4247,6 +4247,62 @@ class AudioGalleryListResponse(BaseModel):
     next_before_id: Optional[str] = None
 
 
+# ── OpenAI-compatible videos API (/v1/videos) ──
+
+
+class VideoJobCreateRequest(BaseModel):
+    prompt: str = Field(..., min_length = 1)
+    model: Optional[str] = None
+    seconds: Optional[str] = Field(
+        None, description = "Clip duration in seconds, snapped to the loaded family's frame lattice."
+    )
+    size: Optional[str] = Field(
+        None, description = "'<width>x<height>', a resolution preset of the loaded family."
+    )
+
+    @field_validator("model", "seconds", "size", mode = "before")
+    @classmethod
+    def _blank_means_default(cls, value):
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+
+class VideoJobError(BaseModel):
+    code: str
+    message: str
+
+
+class VideoJob(BaseModel):
+    id: str
+    object: Literal["video"] = "video"
+    model: str
+    status: Literal["queued", "in_progress", "completed", "failed"]
+    progress: int = Field(0, ge = 0, le = 100)
+    created_at: int
+    completed_at: Optional[int] = None
+    expires_at: Optional[int] = None
+    prompt: Optional[str] = None
+    size: str
+    seconds: str
+    error: Optional[VideoJobError] = None
+    remixed_from_video_id: Optional[str] = None
+
+
+class VideoJobListResponse(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[VideoJob] = Field(default_factory = list)
+    first_id: Optional[str] = None
+    last_id: Optional[str] = None
+    has_more: bool = False
+
+
+class VideoJobDeleteResponse(BaseModel):
+    id: str
+    object: Literal["video.deleted"] = "video.deleted"
+    deleted: bool = True
+
+
 # ── Video (local text-to-video) ──
 
 
