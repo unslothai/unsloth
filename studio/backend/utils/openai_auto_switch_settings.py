@@ -5,8 +5,10 @@
 
 All off by default so existing API behavior is unchanged:
 - ``openai_api_auto_switch_model``: when on, a ``/v1`` request whose ``model``
-  names a downloaded local GGUF different from the loaded one transparently
-  loads it before serving (llama-swap-style). Unknown names pass through.
+  names a downloaded local model different from the loaded one transparently
+  loads it before serving (llama-swap-style). Covers GGUF through llama.cpp and
+  non-GGUF weights (safetensors, MLX) through the inference orchestrator.
+  Unknown names pass through.
 - ``openai_api_auto_download_model``: when on, a ``/v1`` request naming an
   undownloaded GGUF repo starts a background download instead of failing.
   Gated on auto-switch, which is what serves the model once it lands.
@@ -14,6 +16,11 @@ All off by default so existing API behavior is unchanged:
   unloaded after this many idle seconds to free VRAM. Enabled values have a
   60s floor (0 stays "off"): a tiny TTL tears the model down between turns of
   an active chat, forcing a full weight reload + prompt re-prefill per turn.
+- ``media_api_auto_switch_model``: the image/video twin of the first setting.
+  A media request naming a downloaded image or video model loads it before
+  generating, unloading the resident one once the work in flight has drained.
+  Its own setting for the same reason the media TTL is: the chat toggle says
+  nothing about pipelines the user loaded on the Image or Video page.
 - ``media_auto_unload_idle_seconds``: the same for the image and video
   pipelines. Its own setting, not a share of the chat one: this section is
   about the OpenAI API and nothing here says it frees a model the user loaded
@@ -41,6 +48,7 @@ from typing import Any, Optional
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
+MEDIA_AUTO_SWITCH_SETTING_KEY = "media_api_auto_switch_model"
 MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY = "media_auto_unload_idle_seconds"
 AUTO_UNLOAD_KEEP_KV_SETTING_KEY = "openai_api_auto_unload_keep_kv"
 AUTO_UNLOAD_API_ONLY_SETTING_KEY = "openai_api_auto_unload_api_only"
@@ -50,6 +58,7 @@ MEDIA_IDLE_TTL_ENV_VAR = "UNSLOTH_MEDIA_IDLE_TTL"
 
 DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
 DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED = False
+DEFAULT_MEDIA_AUTO_SWITCH_ENABLED = False
 DEFAULT_AUTO_UNLOAD_IDLE_SECONDS = 0
 DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS = 0
 DEFAULT_AUTO_UNLOAD_KEEP_KV = True
@@ -110,6 +119,12 @@ def _invalidate(key: str) -> None:
 def get_openai_auto_switch_enabled() -> bool:
     parsed = _coerce_bool(_cached_setting(OPENAI_AUTO_SWITCH_SETTING_KEY, None))
     return parsed if parsed is not None else DEFAULT_OPENAI_AUTO_SWITCH_ENABLED
+
+
+def get_media_auto_switch_enabled() -> bool:
+    """Whether a media request may load the image or video model it names."""
+    parsed = _coerce_bool(_cached_setting(MEDIA_AUTO_SWITCH_SETTING_KEY, None))
+    return parsed if parsed is not None else DEFAULT_MEDIA_AUTO_SWITCH_ENABLED
 
 
 def get_stored_openai_auto_download_enabled() -> bool:
@@ -240,14 +255,14 @@ def get_media_auto_unload_idle_seconds() -> int:
     UNSLOTH_MEDIA_IDLE_TTL is the startup default when nothing is stored, exactly
     as UNSLOTH_MODEL_IDLE_TTL is for chat.
 
-    Residency vetoes it like the chat reader, and so does "only unload models
-    loaded by the API": /images/load and /video/load are the only way a pipeline
-    is ever loaded (the OpenAI images route 503s instead of loading one), so every
-    resident image or video model is one the user loaded from Studio and the
-    setting promises to leave it alone. Chat can tell its two origins apart per
-    model and still frees the API-loaded ones; here there is nothing to free.
+    Residency vetoes it like the chat reader. "Only unload models loaded by the
+    API" does not veto it here: media auto-switch gives a request its own way to
+    load a pipeline, so the two origins now have to be told apart per model, which
+    media_keepwarm does with the provenance the load routes record. With
+    auto-switch off nothing but the user ever loads one, so that per-model rule
+    spares every resident model and the outcome is unchanged.
     """
-    if get_auto_unload_api_only() or _residency_vetoes_unload():
+    if _residency_vetoes_unload():
         return 0
     return get_stored_media_auto_unload_idle_seconds()
 
@@ -284,7 +299,8 @@ def set_openai_auto_switch(
     auto_download: Any = None,
     api_only: Any = None,
     media_idle_seconds: Any = None,
-) -> tuple[bool, int, bool, bool, bool, int]:
+    media_auto_switch: Any = None,
+) -> tuple[bool, int, bool, bool, bool, int, bool]:
     """One-transaction write; ``None`` leaves a stored value untouched."""
     parsed_enabled = _coerce_bool(enabled)
     if parsed_enabled is None:
@@ -324,6 +340,11 @@ def set_openai_auto_switch(
         parsed_api_only = _coerce_bool(api_only)
         if parsed_api_only is None:
             raise ValueError("Auto-unload API-loaded only must be true or false.")
+    parsed_media_auto_switch = None
+    if media_auto_switch is not None:
+        parsed_media_auto_switch = _coerce_bool(media_auto_switch)
+        if parsed_media_auto_switch is None:
+            raise ValueError("Media auto-switch must be true or false.")
     from storage.studio_db import upsert_app_settings
 
     updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
@@ -337,6 +358,8 @@ def set_openai_auto_switch(
         updates[OPENAI_AUTO_DOWNLOAD_SETTING_KEY] = parsed_auto_download
     if parsed_api_only is not None:
         updates[AUTO_UNLOAD_API_ONLY_SETTING_KEY] = parsed_api_only
+    if parsed_media_auto_switch is not None:
+        updates[MEDIA_AUTO_SWITCH_SETTING_KEY] = parsed_media_auto_switch
     upsert_app_settings(updates)
     _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     if parsed_idle is not None:
@@ -349,6 +372,8 @@ def set_openai_auto_switch(
         _invalidate(OPENAI_AUTO_DOWNLOAD_SETTING_KEY)
     if parsed_api_only is not None:
         _invalidate(AUTO_UNLOAD_API_ONLY_SETTING_KEY)
+    if parsed_media_auto_switch is not None:
+        _invalidate(MEDIA_AUTO_SWITCH_SETTING_KEY)
     return (
         parsed_enabled,
         parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
@@ -363,6 +388,11 @@ def set_openai_auto_switch(
             parsed_media_idle
             if parsed_media_idle is not None
             else get_stored_media_auto_unload_idle_seconds()
+        ),
+        (
+            parsed_media_auto_switch
+            if parsed_media_auto_switch is not None
+            else get_media_auto_switch_enabled()
         ),
     )
 
@@ -402,6 +432,16 @@ VALID_SPECULATIVE_TYPES = frozenset(
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
 )
+# Only these load a separate draft model, and so a draft context for the dtype to
+# apply to (mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI).
+SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
+# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp
+# default and is not stored: an entry holding it would pin what a build may redefine.
+VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
+# Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
+CTX_CHECKPOINTS_MAX = 256
+CACHE_RAM_MIN_MIB = -1
+CACHE_RAM_MAX_MIB = 1024 * 1024
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 # Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
 VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
@@ -495,6 +535,14 @@ def normalize_model_override(
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
+        # Same rule, narrower set: the dtype needs a separate draft model, and only
+        # the sidecar modes always load one.
+        if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
+            spec_draft_cache_type = _clean_str(
+                payload.get("spec_draft_cache_type"), VALID_KV_CACHE_DTYPES
+            )
+            if spec_draft_cache_type:
+                entry["spec_draft_cache_type"] = spec_draft_cache_type
 
     # Blank or out of range means "follow the server-wide --parallel default".
     n_parallel = _bounded_int(
@@ -509,8 +557,31 @@ def normalize_model_override(
         if parsed:
             entry[key] = parsed
 
+    load_mode = _clean_str(payload.get("load_mode"), VALID_LOAD_MODES)
+    if load_mode:
+        entry["load_mode"] = load_mode
+
+    # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on
+    # "is not None" rather than on truth, unlike the batch sizes above.
+    ctx_checkpoints = _bounded_int(
+        payload.get("ctx_checkpoints"), minimum = 0, maximum = CTX_CHECKPOINTS_MAX
+    )
+    if ctx_checkpoints is not None:
+        entry["ctx_checkpoints"] = ctx_checkpoints
+
+    cache_ram = _bounded_int(
+        payload.get("cache_ram"), minimum = CACHE_RAM_MIN_MIB, maximum = CACHE_RAM_MAX_MIB
+    )
+    if cache_ram is not None:
+        entry["cache_ram"] = cache_ram
+
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
+
+    # Stored only when set, like tensor_parallel: absent means the default, so an
+    # override that never touched the switch does not pin it off for a later load.
+    if _coerce_bool(payload.get("disable_vision")):
+        entry["disable_vision"] = True
 
     template = payload.get("chat_template_override")
     if isinstance(template, str) and template.strip():
@@ -613,6 +684,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("tensor_parallel", "tensor_parallel"),
+        ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
     ):
         if override.get(source) is not None:
@@ -627,6 +699,10 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
             kwargs["n_ubatch"] = override["n_ubatch"]
+        # llama-server flags too, so GGUF-only like the rest of this block
+        for key in ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram"):
+            if override.get(key) is not None:
+                kwargs[key] = override[key]
         if override.get("gpu_memory_mode") is not None:
             kwargs["gpu_memory_mode"] = override["gpu_memory_mode"]
         if override.get("gpu_layers") is not None:
@@ -647,13 +723,26 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # (_resolve_inherited_extra_args); the stripper is imported rather than mirrored so
         # the two paths cannot drift over which flag belongs to which group -- the allow-list
         # this module stays out of is validate_extra_args, which remains the caller's job.
-        from core.inference.llama_server_args import strip_shadowing_flags
+        from core.inference.llama_server_args import (
+            matches_explicit_ctx_override,
+            strip_shadowing_flags,
+        )
+
+        # Context's load-time value is a VRAM-fit target, not an allocation, so a
+        # MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold
+        # and survives; /props then publishes what was really allocated. Stale and
+        # malformed flags are still stripped. The test lives beside the stripper
+        # because /load's inheritance path asks it too and must not drift.
+        matching_explicit_ctx = matches_explicit_ctx_override(
+            kwargs["llama_extra_args"], kwargs.get("max_seq_length")
+        )
+
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],
             # Only the groups this override actually supplies, as the route gates on its
             # request's set fields: a flag with no first-class field behind it is the user's
             # only way to set that knob and still passes through.
-            strip_context = "max_seq_length" in kwargs,
+            strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
@@ -662,6 +751,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,
             strip_ubatch = "n_ubatch" in kwargs,
+            strip_ctx_checkpoints = "ctx_checkpoints" in kwargs,
+            strip_cache_ram = "cache_ram" in kwargs,
+            strip_spec_draft_cache = "spec_draft_cache_type" in kwargs,
         )
     return kwargs
 
@@ -918,6 +1010,26 @@ def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
             return None
         repo = base
     return repo.strip().casefold(), quant.strip().casefold()
+
+
+def is_cache_load_path_key(model_id: str) -> bool:
+    """True when ``model_id`` spells a cached quant as the path a load actually opens.
+
+    The two spellings of one cached repo are not interchangeable in a lookup:
+    ``override_lookup_candidates`` tries the load path before the advertised repo id,
+    so of a pair only the path row is ever read and the repo-id row sits dormant. A
+    caller choosing between stored rows has to know which side it is holding, and
+    ``cached_repo_alias_keys`` deliberately does not say, since it answers "the other
+    spelling" in either direction.
+
+    Lives here for the reason the rest of the resolution does: the ordering rule is
+    this module's, and a second copy of it would drift.
+    """
+    from core.inference.model_ids import hf_cache_repo_id
+
+    split = split_quant_suffix(model_id)
+    base = split[0] if split else model_id
+    return hf_cache_repo_id(base) is not None
 
 
 def cached_repo_alias_keys(model_id: str) -> list[str]:

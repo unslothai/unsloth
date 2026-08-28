@@ -257,7 +257,9 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"CodeLlama-",
 			"Llama-",
 			"llama-",
-			"meta-"
+			"meta-",
+			// Carries no Llama token, so the re-upload needs its own stem.
+			"Muse-Glimmer"
 		],
 		// "Meta Inc." / "Meta Llama" / "AI at Meta". Not facebookresearch, which is
 		// an unrelated account despite the name.

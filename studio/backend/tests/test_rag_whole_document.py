@@ -263,6 +263,275 @@ def test_build_rag_autoinject_falls_back_over_budget(rag_conn, monkeypatch):
     assert _injected_text(result) == "TOPK_FALLBACK_TEXT"
 
 
+def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, monkeypatch):
+    # The frontend resolves Auto to autoinject=False for models over 9B. Thread
+    # attachments still request whole-doc context, so an oversized document must
+    # fall back to top-K instead of disappearing from the model request.
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000])
+
+    sentinel = (
+        "TOPK_LARGE_MODEL_FALLBACK",
+        [{"citationId": 1, "filename": "big.pdf", "text": "x"}],
+    )
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
+
+    result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
+    assert result is not None
+    assert _injected_text(result) == "TOPK_LARGE_MODEL_FALLBACK"
+
+
+def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
+    monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
+    calls = []
+
+    def fake_search(**kw):
+        calls.append(kw)
+        if kw.get("scope_thread_id"):
+            if kw.get("scope_project_id") or kw.get("min_dense_score") is not None:
+                return None
+            sources = [
+                {"citationId": i, "filename": "thread.txt", "text": "x" * 1600}
+                for i in range(1, kw["top_k"] + 1)
+            ]
+        else:
+            sources = [{"citationId": 1, "filename": "project.txt", "text": "project"}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("summarize the attached document"),
+        {
+            "thread_id": "t1",
+            "project_id": "p1",
+            "autoinject": False,
+            "context_length": 3000,
+            "response_headroom": 1024,
+        },
+    )
+
+    injected = _injected_text(result)
+    assert "x" * 1600 in injected and "project" in injected
+    # The thread is searched alone and ungated, then the project once: one query
+    # embedding per scope, with the over-budget passages trimmed from the result
+    # rather than re-searched at a smaller top_k.
+    assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in calls] == [
+        ("t1", None),
+        (None, "p1"),
+    ]
+    assert calls[0]["min_dense_score"] is None
+    assert calls[0]["top_k"] == 4
+    # 3000 context - 1024 headroom - prompt - 512 overhead leaves room for one
+    # 1600-char passage plus the project hit, not for all four.
+    assert injected.count("x" * 1600) == 1
+
+
+def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
+    # With auto-injection ON the fallback is unbudgeted, so a context too small
+    # to leave any whole-doc budget must not silently drop the attachment.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+    sentinel = ("TOPK_ZERO_BUDGET", [{"citationId": 1, "filename": "big.pdf", "text": "x"}])
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
+
+    for scope in (
+        # A context smaller than headroom + overhead.
+        {"thread_id": "t1", "autoinject": True, "context_length": 1200},
+        {"thread_id": "t1", "autoinject": True, "context_length": 512},
+        # Headroom at or above the whole context: same zero budget.
+        {"thread_id": "t1", "autoinject": True, "context_length": 8192, "response_headroom": 8192},
+        {
+            "thread_id": "t1",
+            "autoinject": True,
+            "context_length": 2048,
+            "response_headroom": 999_999,
+        },
+        # A sidebar top-K of 0 must not be read as "already at the minimum".
+        {"thread_id": "t1", "autoinject": True, "context_length": 2048, "default_top_k": 0},
+    ):
+        result = inf_tools.build_rag_autoinject(_convo(), scope)
+        assert result is not None, scope
+        assert _injected_text(result) == "TOPK_ZERO_BUDGET", scope
+
+
+def test_build_rag_autoinject_refuses_when_not_even_one_passage_fits(rag_conn, monkeypatch):
+    # The block joins the current turn, which the rolling window may not evict, so
+    # admitting a passage that does not fit fails the whole request instead of
+    # degrading the answer. When nothing fits, inject nothing, which is what main
+    # does on this path anyway.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def fake_search(**kw):
+        sources = [
+            {"citationId": 0, "filename": "thread.txt", "text": "T" * 2000}
+            for _ in range(kw["top_k"] or 4)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    scope = {"thread_id": "t1", "autoinject": False, "context_length": 1200}
+    assert inf_tools._whole_doc_budget(scope, _convo()) == 0
+    assert inf_tools.build_rag_autoinject(_convo(), scope) is None
+    # Auto-injection ON is the pre-existing unbudgeted path and is unaffected.
+    assert (
+        inf_tools.build_rag_autoinject(
+            _convo(), {"thread_id": "t1", "autoinject": True, "context_length": 1200}
+        )
+        is not None
+    )
+
+
+def test_build_rag_autoinject_enabled_path_stays_unbudgeted(rag_conn, monkeypatch):
+    # With auto-injection ON the fallback is the pre-existing one: a single
+    # combined search, no whole-doc budget clamp. A long thread or a small
+    # context must not shrink or cancel it.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+    calls = []
+
+    def fake_search(**kw):
+        calls.append(kw)
+        sources = [
+            {"citationId": i, "filename": "thread.txt", "text": "y" * 6000}
+            for i in range(1, (kw["top_k"] or 4) + 1)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    long_thread = [
+        {"role": "user", "content": "x " * 6000},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "summarize the attached document"},
+    ]
+    result = inf_tools.build_rag_autoinject(
+        long_thread, {"thread_id": "t1", "autoinject": True, "context_length": 8192}
+    )
+    assert result is not None
+    assert _injected_text(result).count("y" * 6000) == 4
+    assert len(calls) == 1
+    assert calls[0]["min_dense_score"] == inf_tools._autoinject_floor()
+
+
+def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkeypatch):
+    # The fallback exists to rescue the thread attachment. With auto-injection
+    # off and nothing found in the thread, project context is not a substitute:
+    # injecting it would be grounding the user never asked for.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def fake_search(**kw):
+        if kw.get("scope_thread_id"):
+            return None
+        sources = [{"citationId": 1, "filename": "project.txt", "text": "project"}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    assert (
+        inf_tools.build_rag_autoinject(
+            _convo(), {"thread_id": "t1", "project_id": "p1", "autoinject": False}
+        )
+        is None
+    )
+
+
+def test_build_rag_autoinject_keeps_thread_hits_when_project_retrieval_raises(
+    rag_conn, monkeypatch
+):
+    # The project lookup is an optional companion. An unavailable project index
+    # must not discard the thread grounding already in hand, which would put the
+    # attachment right back where this fallback found it.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def fake_search(**kw):
+        if kw.get("scope_project_id"):
+            raise RuntimeError("project index unavailable")
+        sources = [{"citationId": 1, "filename": "thread.txt", "text": "THREAD_GROUNDING"}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo(), {"thread_id": "t1", "project_id": "p1", "autoinject": False}
+    )
+    assert result is not None
+    assert "THREAD_GROUNDING" in _injected_text(result)
+
+
+def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypatch):
+    # Trimming the combination, not the project alone: when thread plus all of the
+    # project overflows, the passages that do fit beside the thread result are kept
+    # instead of every project passage being dropped.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def fake_search(**kw):
+        if kw.get("scope_project_id"):
+            sources = [
+                {"citationId": 0, "filename": "project.txt", "text": "P" * 2000} for _ in range(4)
+            ]
+        else:
+            sources = [{"citationId": 0, "filename": "thread.txt", "text": "T" * 8000}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    injected = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(),
+            {
+                "thread_id": "t1",
+                "project_id": "p1",
+                "autoinject": False,
+                "context_length": 8192,
+                "response_headroom": 1024,
+            },
+        )
+    )
+    assert "T" * 8000 in injected
+    # Some project passages survive beside the thread result, but not all four.
+    assert 1 <= injected.count("P" * 2000) < 4
+
+
+def test_build_rag_autoinject_budget_charges_multibyte_text_more(rag_conn, monkeypatch):
+    # A CJK character is about one token where ASCII runs four to one, so the same
+    # character count costs several times more and far less of it fits.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def make_search(body):
+        def fake_search(**kw):
+            sources = [{"citationId": 0, "filename": "thread.txt", "text": body} for _ in range(4)]
+            return tool.render_sources(sources), sources
+
+        return fake_search
+
+    scope = {
+        "thread_id": "t1",
+        "autoinject": False,
+        "context_length": 4096,
+        "response_headroom": 1024,
+    }
+
+    # Same character count either way; only the per-character token cost differs.
+    def _chunks(body):
+        monkeypatch.setattr(tool, "search_for_autoinject", make_search(body))
+        result = inf_tools.build_rag_autoinject(_convo(), scope)
+        # None means not even one passage fit, which is zero chunks admitted.
+        return _injected_text(result).count('<chunk id="') if result else 0
+
+    ascii_chunks = _chunks("a" * 2000)
+    cjk_chunks = _chunks("漢" * 2000)
+    assert ascii_chunks >= 1
+    assert cjk_chunks < ascii_chunks
+
+
 def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
     # Runtime context can be smaller than RAG_WHOLE_DOC_MAX_TOKENS; cap whole-doc to
     # the active context and fall back to retrieval when it would overflow.

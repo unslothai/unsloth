@@ -129,6 +129,11 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
         == 401
     )
 
+    from auth.authentication import request_admitted_without_credential
+
+    app.dependency_overrides[request_admitted_without_credential] = lambda: True
+    assert c.get(f"/api/rag/documents/{doc_id}/file-url").status_code == 403
+
 
 def test_norm_token_decomposes_ligatures():
     # NFKC folds ligature glyphs to ASCII so anchors match (search_for misses these).

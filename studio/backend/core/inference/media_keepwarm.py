@@ -3,13 +3,13 @@
 
 """Opt-in idle auto-unload for the diffusion image and video backends.
 
-The image and video pipelines are the largest thing Studio holds in VRAM, and until now only
+The image and video pipelines are the largest thing Unsloth holds in VRAM, and until now only
 the chat GGUF was freed when the user walked away: one generation and a navigate-away left
 several GB resident forever. This is the same mechanism rather than a second one -- the same
 in-flight bookkeeping (``LlamaKeepWarmMiddleware`` already tracks the generate routes) and one
 step per tick of ``llama_keepwarm.idle_unload_loop``. The TTL is its own setting, off by
 default, so nothing here runs until the user asks for it: the tick returns before it resolves
-a backend, which is also what keeps torch out of a Studio that never opened these pages.
+a backend, which is also what keeps torch out of an Unsloth that never opened these pages.
 
 Each backend owns its teardown barrier, so this decides only WHEN: it calls the same
 ``unload()`` the arbiter's evictor calls, resolved through ``get_active_diffusion_engine()``
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
 import threading
 import time
@@ -77,6 +78,10 @@ class _Tracker:
         with self._lock:
             self._last_active = time.monotonic()
 
+    def outstanding(self, *, count_pending: bool = True) -> int:
+        with self._lock:
+            return self._inflight + (self._pending if count_pending else 0)
+
     def is_idle(self, ttl_seconds: float) -> bool:
         with self._lock:
             return (
@@ -87,6 +92,95 @@ class _Tracker:
 
 
 _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
+
+# Per backend, not per engine object: a diffusers <-> sd.cpp switch replaces that object.
+# Keyed by the target a load was started for, since a load route records this the moment the
+# background load is accepted and that load can still fail with the previous model resident.
+_LOAD_ORIGINS: dict[str, tuple[tuple[str, str, str], bool]] = {}
+_LOAD_ORIGINS_GUARD = threading.Lock()
+
+
+def _origin_key(
+    target: Optional[str],
+    variant: Optional[str],
+    partition: Optional[str] = None,
+) -> tuple[str, str, str]:
+    """The build a provenance record answers for: the repo/path AND its GGUF variant.
+
+    The path alone is not the build: a user-loaded Q4 and an API load of Q8 from the same repo
+    share it, so a failed API load would mark the resident Q4 as API-loaded and free it.
+
+    The variant is the token ``status()`` publishes, not a fuller filename label. Two builds the
+    token cannot separate therefore share a key, which errs toward reporting a model as
+    user-loaded and sparing it. Keying on more would never match what the resident model
+    publishes, and would spare everything.
+    """
+    text = str(target or "").strip()
+    # A repo id folds case; a path does not, or /models/Foo and /models/foo share an origin.
+    key = os.path.normcase(text) if os.path.isabs(text) else text.lower()
+    return (key, str(variant or "").strip().lower(), str(partition or "").strip().lower())
+
+
+def note_load_origin(
+    owner: str,
+    target: Optional[str],
+    variant: Optional[str] = None,
+    partition: Optional[str] = None,
+    *,
+    user_action: bool,
+) -> None:
+    """Record who asked for the model a load route is bringing up.
+
+    An API load over a user-loaded build with the same key keeps the user's mark: the two are
+    indistinguishable to ``status()`` (sibling GGUFs can share a quant token), and a load that
+    is accepted and then fails leaves the user's model resident, which this must not reclassify.
+    """
+    key = _origin_key(target, variant, partition)
+    with _LOAD_ORIGINS_GUARD:
+        previous = _LOAD_ORIGINS.get(owner)
+        if not user_action and previous is not None and previous[0] == key and previous[1]:
+            return
+        _LOAD_ORIGINS[owner] = (key, user_action)
+
+
+def loaded_by_user_action(
+    owner: str,
+    resident: Optional[str] = None,
+    variant: Optional[str] = None,
+    partition: Optional[str] = None,
+) -> bool:
+    """Whether the RESIDENT model was loaded from Unsloth rather than by an API request.
+
+    The record only answers for the build it was written against: a load that was accepted and
+    then failed leaves the previous model resident, and reading its origin off the failed
+    load would let the idle unload free a model the user had pinned. Anything unrecognised
+    reads as user-loaded, which is the direction that spares a model.
+    """
+    with _LOAD_ORIGINS_GUARD:
+        entry = _LOAD_ORIGINS.get(owner)
+    if entry is None:
+        return True
+    key, user_action = entry
+    if resident is not None and key[0] and key != _origin_key(resident, variant, partition):
+        return True
+    return user_action
+
+
+def other_request_count(
+    owner: str,
+    *,
+    current_request_counted: bool = False,
+    count_pending: bool = True,
+) -> int:
+    """Tracked media requests in flight on *owner*, excluding this one when it is counted.
+
+    The auto-switch drain reads this from inside a tracked request, so its own entry must
+    not make the backend look permanently busy. ``count_pending`` False drops requests that
+    have registered but are still blocked on the gate, which a gate holder must not wait for.
+    """
+    total = _TRACKERS[owner].outstanding(count_pending = count_pending)
+    return max(0, total - 1) if current_request_counted else total
+
 
 # The concrete mounted paths, not any path that ends in one of them: FastAPI answers
 # /v1/anything/images/generations with a 404 without ever running an endpoint, and stamping
@@ -110,12 +204,27 @@ _TRACKED_PATHS = {
     # The OpenAI-compatible route is on inference_router, mounted at both prefixes.
     "/api/inference/images/generations": DIFFUSION,
     "/v1/images/generations": DIFFUSION,
+    "/api/inference/videos": VIDEO,
+    "/v1/videos": VIDEO,
 }
 
 
 def owner_for_path(path: str) -> Optional[str]:
     """Which media backend a tracked inference path generates or loads on, if any."""
     return _TRACKED_PATHS.get(path)
+
+
+@contextlib.asynccontextmanager
+async def admission_gate(owner: str):
+    """Hold new tracked media requests off *owner* for the duration of the block.
+
+    The media auto-switch keeps this closed from its final drain check through registering
+    the load: the load path cancels active work as it tears the pipeline down, so a
+    generation admitted in that gap would be cut short by a swap that just waited for the
+    queue to clear. Requests arriving meanwhile park in ``begin_request`` until it reopens.
+    """
+    async with _gate(_TRACKERS[owner]):
+        yield
 
 
 @contextlib.asynccontextmanager
@@ -265,10 +374,22 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             return
         # Re-read the effective setting immediately before the teardown. One step covers both
         # backends and an unload frees several GB, so a residency veto applied while it runs
-        # (Model Memory, API-only, or the TTL itself moved) would otherwise be ignored by
-        # every teardown left in the step, freeing a model the settings page now calls pinned.
-        ttl = _effective_ttl()
+        # (Model Memory, or the TTL itself moved) would otherwise be ignored by every teardown
+        # left in the step, freeing a model the settings page now calls pinned.
+        ttl = await asyncio.to_thread(_effective_ttl)
         if ttl <= 0 or not tracker.is_idle(ttl):
+            return
+        if await asyncio.to_thread(
+            _user_pinned,
+            tracker.owner,
+            status.get("repo_id"),
+            status.get("gguf_variant"),
+            status.get("h3_task"),
+        ):
+            return
+        # A request may register _pending during an off-loop setting read.
+        # Recheck idleness before unloading.
+        if not tracker.is_idle(ttl):
             return
         await asyncio.to_thread(backend.unload)
         # Drop ownership only if nothing came back meanwhile, and check it under the arbiter
@@ -283,14 +404,27 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
 
 
 def _effective_ttl() -> float:
-    """The media TTL with the residency vetoes applied: 0 means nothing is unloaded."""
+    """The media TTL with the residency veto applied: 0 means nothing is unloaded."""
     from utils.openai_auto_switch_settings import get_media_auto_unload_idle_seconds
     return float(get_media_auto_unload_idle_seconds())
 
 
+def _user_pinned(
+    owner: str, resident: Optional[str], variant: Optional[str], partition: Optional[str]
+) -> bool:
+    """Whether "only unload models loaded by the API" spares this backend's model.
+
+    Read immediately before the teardown, like the TTL: the setting can be turned on
+    while a step is running, and a model it now pins must not be freed by the rest of it.
+    """
+    from utils.openai_auto_switch_settings import get_auto_unload_api_only
+    return get_auto_unload_api_only() and loaded_by_user_action(owner, resident, variant, partition)
+
+
 async def idle_unload_step() -> None:
     """The media half of one idle_unload_loop tick. Inert when the TTL is off."""
-    ttl = _effective_ttl()
+    # Keep this SQLite-backed setting read off the event loop.
+    ttl = await asyncio.to_thread(_effective_ttl)
     if ttl <= 0:
         return
     for tracker in _TRACKERS.values():

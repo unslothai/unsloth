@@ -29,6 +29,7 @@ from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
+    move_xformers_attention_bias,
 )
 
 flash_attn_func = None
@@ -95,6 +96,98 @@ SDPA = "sdpa"
 
 
 XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
+
+
+# ---- flash-attn 2 varlen backward int32 overflow guard -------------------------------------
+# The varlen BACKWARD kernel (used by flash-attn 2 directly and by the flash-2 op xFormers
+# dispatches a BlockDiagonal* bias to) allocates
+#
+#     dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32), dtype = fp32)
+#
+# and indexes it with int32, so once that element count reaches 2**31 the kernel faults with
+# "CUDA error: an illegal memory access was encountered". That poisons the CUDA context, so the
+# run dies hours in, far from the cause.
+#
+# Measured on a B200 (bf16, one flattened row, forward + backward) by bisecting the document
+# count in a packed row: the last working count and the count at which
+# (total_q + 128 * n_seqs) * n_heads * round_up(head_dim, 32) crosses 2**31 agree to within one
+# document across every shape tried:
+#
+#   heads  head_dim  doc_len   predicted   last OK
+#      16       128        1        8128      8129
+#      16        96        1       10837     10838
+#      16        64        1       16257     16257
+#       8       128        1       16257     >= 16257, fails by 16400
+#      16       128        2        8065     8060 OK, 8200 fails
+#      16       128        4        7944      7944
+#       4       128        1       32518     no failure up to 20000 (below the bound)
+#
+# Forward-only never allocates dq_accum and never faults (20000 documents ran clean), so the
+# guard requires a backward to be possible. Plain SDPA is unaffected.
+_INT32_ELEMENTS = 2**31
+_VARLEN_INT32_GUARD_DISABLED = os.environ.get(
+    "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
+).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_VARLEN_INT32_WARNED = [False]
+
+
+def _varlen_backward_dq_accum_elements(
+    n_seqs: int, total_q: int, n_heads: int, head_dim: int
+) -> int:
+    """Element count of flash-attn 2's varlen-backward ``dq_accum`` for these shapes."""
+    head_dim_rounded = ((head_dim + 31) // 32) * 32
+    return (total_q + 128 * n_seqs) * n_heads * head_dim_rounded
+
+
+def _varlen_backward_overflows_int32(
+    n_seqs: int, total_q: int, n_heads: int, head_dim: int
+) -> bool:
+    if n_seqs <= 0:
+        return False
+    return _varlen_backward_dq_accum_elements(n_seqs, total_q, n_heads, head_dim) >= _INT32_ELEMENTS
+
+
+def _configured_softcap(config) -> Optional[float]:
+    """The attention logit softcap this layer asked the fast kernels for, if any.
+
+    Only flash and the xformers ops take a `softcap`; the SDPA branch below has no way to
+    apply one. Gemma 2 passes it exclusively through these kwargs
+    (`unsloth/models/gemma2.py`), so a backend swap that ignores them would train on
+    uncapped logits.
+    """
+    for kwargs in (
+        config.flash_varlen_kwargs,
+        config.flash_dense_kwargs,
+        config.xformers_kwargs,
+    ):
+        if not kwargs:
+            continue
+        softcap = kwargs.get("softcap")
+        if softcap:
+            return softcap
+    return None
+
+
+def _warn_varlen_int32_overflow_once(backend: str, n_seqs: int, total_q: int, elements: int):
+    if _VARLEN_INT32_WARNED[0]:
+        return
+    _VARLEN_INT32_WARNED[0] = True
+    print(
+        f"Unsloth: A packed row holds {n_seqs} documents over {total_q} tokens. The "
+        f"{backend} backward kernel would index a {elements:,}-element buffer with int32 "
+        f"(limit {_INT32_ELEMENTS:,}), which faults with 'CUDA error: an illegal memory "
+        "access was encountered' and poisons the CUDA context for the rest of the process.\n"
+        "Unsloth has fallen back to SDPA for these batches, which is CORRECT but far slower "
+        "and far heavier: SDPA's packed path materialises a dense mask and can use ~10x the "
+        "memory, so it may OOM instead.\n"
+        "To keep the fast kernel, pack fewer documents per row -- lower the packing length, or "
+        "filter out very short documents so one row cannot collect thousands of them."
+    )
 
 
 @dataclass
@@ -249,6 +342,51 @@ def run_attention(
     ):
         backend = SDPA
 
+    # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both
+    # before the int32 overflow aborts the process. Integer arithmetic only, no device sync.
+    if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
+        # Both terms are needed. Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v
+        # still yields a Q that requires grad, which context.requires_grad alone would miss.
+        # context.requires_grad: gradient checkpointing runs its FIRST forward under no_grad
+        # and recomputes with grad on, so keying only on the tensors would pick a different
+        # backend per pass and the backward would see activations the loss never came from.
+        # The hidden state keeps requires_grad = True across both passes; inference has it False.
+        will_backward = context.requires_grad or (
+            torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
+        )
+        if will_backward:
+            seq_info = context.seq_info
+            # seq_info[0] is the per-document length tensor; .numel() needs no D2H copy.
+            n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
+            total_q = context.bsz * context.q_len
+            if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
+                # SDPA cannot apply logit softcapping, so rerouting a softcapped model (Gemma 2)
+                # would keep it training on wrong logits and gradients -- worse than the fault
+                # this guard avoids. Stop and name the ways out instead.
+                softcap = _configured_softcap(config)
+                if softcap:
+                    raise RuntimeError(
+                        f"Unsloth: A packed row holds {n_seqs} documents over {total_q} "
+                        f"tokens, so the {backend} backward kernel would index a "
+                        f"{_varlen_backward_dq_accum_elements(n_seqs, total_q, context.n_heads, context.head_dim):,}"
+                        f"-element buffer with int32 (limit {_INT32_ELEMENTS:,}) and fault "
+                        "with 'CUDA error: an illegal memory access was encountered'.\n"
+                        f"This model softcaps attention logits (softcap={softcap}), and the "
+                        "SDPA fallback cannot reproduce that, so falling back would silently "
+                        "train on wrong logits.\n"
+                        "Pack fewer documents per row: lower the packing length, or filter "
+                        "out very short documents so one row cannot collect thousands of them."
+                    )
+                _warn_varlen_int32_overflow_once(
+                    backend,
+                    n_seqs,
+                    total_q,
+                    _varlen_backward_dq_accum_elements(
+                        n_seqs, total_q, context.n_heads, context.head_dim
+                    ),
+                )
+                backend = SDPA
+
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
@@ -320,6 +458,7 @@ def run_attention(
             sliding_window = sliding_window,
             base_mask = context.causal_mask,
         )
+        attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
         Q_t = Q.transpose(1, 2)
         K_t = K.transpose(1, 2)

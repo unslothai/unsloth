@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
@@ -9,8 +10,10 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
-import type { GpuIndexKind } from "@/hooks/use-gpu-info";
-import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
+import {
+  DRAFT_N_MAX_SPEC_TYPES,
+  SEPARATE_DRAFT_MODEL_SPEC_TYPES,
+} from "@/lib/speculative-modes";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -20,10 +23,22 @@ export interface PerModelConfig {
   mlxKvBits?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
+  /** KV cache dtype for the DRAFT context (--spec-draft-type-k/-v), sized and
+   *  quantized independently of kvCacheDtype. Optional so older blobs parse. */
+  specDraftCacheDtype?: string | null;
   nParallel: number | null;
   nBatch: number | null;
   nUbatch: number | null;
+  /** --load-mode; null lets the fit decide: `none` when the load fits in VRAM
+   *  (or VRAM plus host RAM), else no flag. Any value set here wins. */
+  loadMode?: string | null;
+  /** --ctx-checkpoints; null follows the llama.cpp default (32). */
+  ctxCheckpoints?: number | null;
+  /** --cache-ram in MiB; null follows the llama.cpp default (8192). */
+  cacheRam?: number | null;
   tensorParallel: boolean;
+  /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
+  disableVision: boolean;
   chatTemplateOverride: string | null;
   /**
    * Pass-through llama-server args, one argv token per entry, appended after
@@ -53,10 +68,15 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   mlxKvBits: null,
   speculativeType: null,
   specDraftNMax: null,
+  specDraftCacheDtype: null,
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  loadMode: null,
+  ctxCheckpoints: null,
+  cacheRam: null,
   tensorParallel: false,
+  disableVision: false,
   chatTemplateOverride: null,
 };
 
@@ -154,17 +174,51 @@ export const KV_CACHE_DTYPES = [
 export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
+// llama-server's --load-mode enum, in --help order. "auto" is the default: the UI
+// shows it, storage keeps null and the backend emits no flag, so the fit may pick
+// "none". Never sent verbatim; builds like b10360 reject "auto" as a value.
+export const LOAD_MODES = [
+  "auto",
+  "none",
+  "mmap",
+  "mlock",
+  "mmap+mlock",
+  "dio",
+] as const;
+export const LOAD_MODE_DEFAULT = "auto";
+const VALID_LOAD_MODES = new Set<string>(LOAD_MODES);
+
+// --ctx-checkpoints: per-slot snapshots of the sliding-window cache, so the count
+// is small. 0 disables them; the ceiling is a sanity bound, not an upstream one.
+export const CTX_CHECKPOINTS_MIN = 0;
+export const CTX_CHECKPOINTS_MAX = 256;
+export const CTX_CHECKPOINTS_LLAMA_DEFAULT = 32;
+
+// --cache-ram in MiB: -1 is "no limit" and 0 disables the host prompt cache, so
+// the floor is -1. The 1 TiB ceiling fails a stray keystroke before the child does.
+export const CACHE_RAM_MIN = -1;
+export const CACHE_RAM_MAX = 1024 * 1024;
+export const CACHE_RAM_LLAMA_DEFAULT = 8192;
+
 export {
   DRAFT_N_MAX_SPEC_TYPES,
+  SEPARATE_DRAFT_MODEL_SPEC_TYPES,
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 
-const STORAGE_KEY = "unsloth_model_configs";
+/** Exported so cross-tab listeners can tell this key's storage event from the
+ *  dozens of others Studio writes. */
+export const PER_MODEL_CONFIG_STORAGE_KEY = "unsloth_model_configs";
+const STORAGE_KEY = PER_MODEL_CONFIG_STORAGE_KEY;
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-// v2 added nBatch / nUbatch and v3 llamaExtraArgs; a client from before either
-// would normalize the field it does not know straight back out of the record.
-const STORAGE_SCHEMA_VERSION = 3;
+// v2 added nBatch / nUbatch, v3 llamaExtraArgs, v4 disableVision and v5 the
+// llama-server tuning group (loadMode / specDraftCacheDtype / ctxCheckpoints /
+// cacheRam); a client from before any of them would normalize the field it does
+// not know straight back out of the record.
+const STORAGE_SCHEMA_VERSION = 5;
+const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
+const PRE_VISION_SCHEMA_VERSION = 3;
 const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
 const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
@@ -185,10 +239,15 @@ const STORED_CONFIG_FIELDS = new Set([
   "mlxKvBits",
   "speculativeType",
   "specDraftNMax",
+  "specDraftCacheDtype",
   "nParallel",
   "nBatch",
   "nUbatch",
+  "loadMode",
+  "ctxCheckpoints",
+  "cacheRam",
   "tensorParallel",
+  "disableVision",
   "chatTemplateOverride",
   "llamaExtraArgs",
   "gpuMemoryMode",
@@ -295,6 +354,44 @@ function canonicalizeSpeculativeType(value: string): string | null {
     return "mtp+ngram";
   }
   return null;
+}
+
+/**
+ * Canonicalize a stored --load-mode, or null to follow the llama.cpp default.
+ *
+ * "auto" folds to null like Speculative Decoding's: it IS the default, so storing
+ * it would pin a value the build may redefine and read as an override everywhere.
+ */
+export function canonicalizeLoadMode(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  // Whitespace and case only: "mmap + mlock" is not a spelling llama-server
+  // accepts, so it is refused rather than repaired.
+  const mode = value.trim().toLowerCase();
+  if (!mode || mode === LOAD_MODE_DEFAULT) {
+    return null;
+  }
+  return VALID_LOAD_MODES.has(mode) ? mode : null;
+}
+
+function normalizeIntegerInRange(
+  value: unknown,
+  min: number,
+  max: number,
+): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+export function normalizeCtxCheckpoints(value: unknown): number | null {
+  return normalizeIntegerInRange(value, CTX_CHECKPOINTS_MIN, CTX_CHECKPOINTS_MAX);
+}
+
+export function normalizeCacheRam(value: unknown): number | null {
+  return normalizeIntegerInRange(value, CACHE_RAM_MIN, CACHE_RAM_MAX);
 }
 
 export function normalizeMaxSeqLength(value: unknown): number | null {
@@ -515,6 +612,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
     nParallel: null,
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
+    disableVision:
+      typeof raw.disableVision === "boolean" ? raw.disableVision : false,
     chatTemplateOverride: null,
     // Absent, not null: a legacy blob predates the editor, and the server may well
     // hold flags set from the CLI. Reading that as "cleared" would wipe them on the
@@ -626,17 +725,28 @@ function readMap(): StoredMap {
   return readMapRaw();
 }
 
+/** Fires when any model's saved config changes, in this tab. The browser's own
+ *  `storage` event only reaches *other* tabs, so readers that need to react to
+ *  an edit made here (the picker's memory bar) have nothing else to listen to. */
+export const PER_MODEL_CONFIG_UPDATED_EVENT =
+  "unsloth-per-model-config-updated";
+
 function writeMap(map: StoredMap): boolean {
   if (!canUseStorage()) {
     return false;
   }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-    return true;
   } catch (err) {
     console.warn("Failed to persist per-model config:", err);
     return false;
   }
+  // Best-effort: the write already landed, so a host that cannot dispatch
+  // events must not make a saved config report back as unsaved.
+  if (typeof window?.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(PER_MODEL_CONFIG_UPDATED_EVENT));
+  }
+  return true;
 }
 
 function warnDroppedFields(
@@ -671,6 +781,15 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     Number.isFinite(partial.specDraftNMax)
       ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))
       : null;
+  // Tied to the mode like specDraftNMax: a dtype stored under a mode with no
+  // separate drafter shows a row for a context that never exists.
+  const specDraftCacheDtype =
+    speculativeType != null &&
+    SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(speculativeType) &&
+    typeof partial.specDraftCacheDtype === "string" &&
+    VALID_KV_CACHE_DTYPES.has(partial.specDraftCacheDtype)
+      ? partial.specDraftCacheDtype
+      : null;
   return {
     customContextLength:
       typeof partial.customContextLength === "number" &&
@@ -691,6 +810,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     speculativeType,
     specDraftNMax,
+    specDraftCacheDtype,
+    loadMode: canonicalizeLoadMode(partial.loadMode),
+    ctxCheckpoints: normalizeCtxCheckpoints(partial.ctxCheckpoints),
+    cacheRam: normalizeCacheRam(partial.cacheRam),
     nParallel:
       typeof partial.nParallel === "number" &&
       Number.isFinite(partial.nParallel)
@@ -711,6 +834,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
         : DEFAULT_PER_MODEL_CONFIG.tensorParallel,
+    disableVision:
+      typeof partial.disableVision === "boolean"
+        ? partial.disableVision
+        : DEFAULT_PER_MODEL_CONFIG.disableVision,
     chatTemplateOverride:
       typeof partial.chatTemplateOverride === "string" &&
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
@@ -746,12 +873,26 @@ function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
   // Stamped with the OLDEST version that still understands every field present, so
   // a record an older client can safely rewrite is not needlessly locked away from
   // it. Only a record carrying a newer field is put out of that client's reach.
-  const version =
-    normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
-      ? STORAGE_SCHEMA_VERSION
-      : normalized.nBatch != null || normalized.nUbatch != null
-        ? PRE_EXTRA_ARGS_SCHEMA_VERSION
-        : PRE_BATCH_SCHEMA_VERSION;
+  // Only a TRUE disableVision needs the v4 stamp. The default is false, which
+  // is what a pre-vision client reconstructs anyway, so a record that merely
+  // carries the key at its default loses nothing by staying in that client's
+  // reach -- and stamping every record v4 would put the whole store out of it.
+  // The tuning group above it follows the same rule: only a record that actually
+  // sets one of the four is put out of a pre-v5 client's reach.
+  const hasServerTuning =
+    normalized.loadMode != null ||
+    normalized.specDraftCacheDtype != null ||
+    normalized.ctxCheckpoints != null ||
+    normalized.cacheRam != null;
+  const version = hasServerTuning
+    ? STORAGE_SCHEMA_VERSION
+    : normalized.disableVision
+      ? PRE_SERVER_TUNING_SCHEMA_VERSION
+      : normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
+        ? PRE_VISION_SCHEMA_VERSION
+        : normalized.nBatch != null || normalized.nUbatch != null
+          ? PRE_EXTRA_ARGS_SCHEMA_VERSION
+          : PRE_BATCH_SCHEMA_VERSION;
   return {
     version,
     ...normalized,
@@ -856,6 +997,41 @@ function loadPerModelConfig(
   return normalize(map[key]);
 }
 
+export function resolveOnlyRememberedGgufVariant(
+  modelId: string,
+): { ggufVariant: string; config: PerModelConfig } | null {
+  const map = readMap();
+  const variants = new Map<string, string>();
+  const normalizedModelId = normalizeModelIdentity(modelId);
+  for (const key of Object.keys(map)) {
+    const storedModelId = modelIdFromStorageKey(key);
+    const ggufVariant = ggufVariantFromStorageKey(key);
+    if (
+      !storedModelId ||
+      !ggufVariant ||
+      normalizeModelIdentity(storedModelId) !== normalizedModelId
+    ) {
+      continue;
+    }
+    const normalizedVariant = normalizeGgufVariantIdentity(ggufVariant);
+    if (normalizedVariant) {
+      variants.set(normalizedVariant, ggufVariant);
+    }
+  }
+  if (variants.size !== 1) {
+    return null;
+  }
+  const ggufVariant = variants.values().next().value;
+  if (!ggufVariant) {
+    return null;
+  }
+  const key = findConfigKeyForModelVariant(map, modelId, ggufVariant);
+  if (!key || storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION) {
+    return null;
+  }
+  return { ggufVariant, config: normalize(map[key]) };
+}
+
 export function isDefaultConfig(config: PerModelConfig): boolean {
   return (
     config.customContextLength == null &&
@@ -867,8 +1043,19 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.nParallel == null &&
     config.nBatch == null &&
     config.nUbatch == null &&
+    // The llama-server tuning group, for the same reason as the arguments below:
+    // savePerModelConfig deletes an entry it judges default, so a config whose only
+    // change was one of these was dropped on the way to storage while the settings
+    // page reported that defaults were kept. Compared against null, not truth: 0
+    // checkpoints and a 0 or -1 cache are values, not blanks.
+    (config.specDraftCacheDtype ?? null) === null &&
+    (config.loadMode ?? null) === null &&
+    config.ctxCheckpoints == null &&
+    config.cacheRam == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
+    Boolean(config.disableVision) ===
+      Boolean(DEFAULT_PER_MODEL_CONFIG.disableVision) &&
     (config.chatTemplateOverride ?? null) === null &&
     // Or a config whose only change is Extra Arguments reads as default, and
     // savePerModelConfig deletes the entry it was asked to remember.
@@ -1041,10 +1228,26 @@ export function adoptLegacyConfigKey(
   return writeMap(map);
 }
 
+export interface ResolvedPerModelConfig {
+  config: PerModelConfig;
+  remembered: boolean;
+}
+
+export function perModelConfigStorageChanged(
+  atStart: ResolvedPerModelConfig,
+  current: ResolvedPerModelConfig,
+): boolean {
+  return (
+    atStart.remembered !== current.remembered ||
+    JSON.stringify(toStoredConfig(atStart.config)) !==
+      JSON.stringify(toStoredConfig(current.config))
+  );
+}
+
 export function resolveInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const saved = loadPerModelConfig(modelId, ggufVariant);
   if (saved) {
     return { config: saved, remembered: true };
@@ -1064,7 +1267,7 @@ export function resolveInitialConfig(
 export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const direct = resolveInitialConfig(modelId, ggufVariant);
   if (direct.remembered) {
     return direct;

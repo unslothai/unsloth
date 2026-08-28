@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure helpers for model-row presentation: owner/name split, format pills,
-// param chip, tabular size. No React/DOM deps so they stay easy to test.
+// Pure helpers for model-row presentation: owner/name split, lora trigger
+// label, format pills, param chip, tabular size. No React/DOM deps so they
+// stay easy to test.
+
+import type { LoraModelOption } from "./types";
 
 export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";
 
@@ -38,6 +41,18 @@ export function splitRepoLabel(label: string): {
 export function isUnslothOwner(owner: string | null | undefined): boolean {
   const normalized = owner?.toLowerCase();
   return normalized === "unsloth" || normalized === "unslothai";
+}
+
+/** Selector trigger label. Training and exported runs are named "<run>/<model>"
+ *  ("foo_123/foo"), so the run is the label; local inventory rows keep theirs,
+ *  since an Ollama repo name carries real slashes ("hf.co/unsloth/...:Q4_K_M"). */
+export function loraOptionLabel(
+  option: Pick<LoraModelOption, "name" | "source">,
+): string {
+  if (option.source === "local" || !option.name.includes("/")) {
+    return option.name;
+  }
+  return option.name.split("/")[0].trim();
 }
 
 export type MetaToken =
