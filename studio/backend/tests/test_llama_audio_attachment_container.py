@@ -527,3 +527,65 @@ def test_an_unprobeable_rate_is_refused_rather_than_read_unbounded(monkeypatch):
         assert "sample rate" in str(error)
     else:
         raise AssertionError("expected an unprobeable rate to be refused")
+
+
+def test_the_block_size_counts_channels_not_only_frames(monkeypatch):
+    """blocks() sizes its buffer as frames * channels and yields a copy, so a
+    frame-only budget let a 255-channel container reach 49 MB twice over from an
+    upload capped at 25."""
+    sizes = []
+
+    class FakeSoundFile:
+        samplerate = 48_000
+        channels = 255
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def blocks(self, **kwargs):
+            sizes.append(kwargs["blocksize"])
+            yield np.zeros((kwargs["blocksize"], self.channels), dtype = np.float32)
+
+    monkeypatch.setitem(sys.modules, "soundfile", types.SimpleNamespace(SoundFile = FakeSoundFile))
+    samples, rate = inference_route._decode_audio_mono_with_soundfile(b"many channels")
+    assert rate == 48_000
+    assert samples.ndim == 1
+    block = sizes[0]
+    assert block * FakeSoundFile.channels <= inference_route._MAX_DECODE_BLOCK_SAMPLES
+    assert block >= 1
+
+
+def test_ordinary_audio_keeps_its_block_size(monkeypatch):
+    """The divisor only bites past about 20 channels, so nothing common moves."""
+    sizes = []
+
+    class FakeSoundFile:
+        samplerate = 48_000
+        channels = 1
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def blocks(self, **kwargs):
+            sizes.append(kwargs["blocksize"])
+            yield np.zeros(kwargs["blocksize"], dtype = np.float32)
+
+    for channels in (1, 2, 6, 8):
+        FakeSoundFile.channels = channels
+        monkeypatch.setitem(
+            sys.modules, "soundfile", types.SimpleNamespace(SoundFile = FakeSoundFile)
+        )
+        inference_route._decode_audio_mono_with_soundfile(b"ordinary audio")
+    assert sizes == [48_000, 48_000, 48_000, 48_000]

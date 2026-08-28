@@ -1237,10 +1237,48 @@ test("a vCard charset in a value is not a property parameter", async () => {
   assert.match(await readTextAttachment(new File([vcf], "contact.vcf")), /Caf\u00e9/);
 });
 
-test("a vCard that really declares two charsets is still refused", async () => {
+test("each vCard property is read under its own declared charset", async () => {
+  // CHARSET is a property parameter, so a card naming two of them says plainly
+  // what each value holds. Reading it as one unit corrupted all but one.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nORG;CHARSET=windows-1251:"),
+    0xcf,
+    0xf0,
+    ...enc.encode("\r\nTEL:+15551234\r\nEND:VCARD\r\n"),
+  ]);
+  const text = await readTextAttachment(new File([vcf], "contact.vcf"));
+  assert.match(text, /FN;CHARSET=windows-1252:Café/);
+  assert.match(text, /ORG;CHARSET=windows-1251:Пр/);
+  // Names, parameters, undeclared properties and line endings survive intact.
+  assert.match(text, /TEL:\+15551234/);
+  assert.ok(text.startsWith("BEGIN:VCARD\r\nVERSION:2.1\r\n"));
+  assert.ok(text.endsWith("END:VCARD\r\n"));
+});
+
+test("a folded value keeps the charset of the property above it", async () => {
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nNOTE;CHARSET=windows-1251:"),
+    0xcf,
+    ...enc.encode("\r\n "),
+    0xf0,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  const text = await readTextAttachment(new File([vcf], "contact.vcf"));
+  assert.match(text, /NOTE;CHARSET=windows-1251:П\r\n р/);
+});
+
+test("a vCard naming a charset it does not hold is still refused", async () => {
+  // The per-property read only replaces the refusal when it can account for
+  // every value; a property whose bytes break its own declaration is not that.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=utf-8:Caf"),
     0xe9,
     ...enc.encode("\r\nORG;CHARSET=windows-1251:"),
     0xcf,
@@ -1250,7 +1288,29 @@ test("a vCard that really declares two charsets is still refused", async () => {
   await assert.rejects(
     readTextAttachment(new File([vcf], "contact.vcf")),
     (error: Error) => {
-      assert.match(error.message, /windows-1252, windows-1251/);
+      assert.match(error.message, /utf-8, windows-1251/);
+      return true;
+    },
+  );
+});
+
+test("a multipart mail declaring two charsets is still refused", async () => {
+  // Only the vCard reading changed: a MIME container needs a parser this is not.
+  const enc = new TextEncoder();
+  const mixed = new Uint8Array([
+    ...enc.encode(
+      "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+    ...enc.encode("\r\n--b\r\nContent-Type: text/plain; charset=windows-1251\r\n\r\n"),
+    0xcf,
+    0xf0,
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([mixed], "message.eml")),
+    (error: Error) => {
+      assert.match(error.message, /declares more than one charset/);
       return true;
     },
   );

@@ -863,6 +863,112 @@ function decodeWithCharset(
   }
 }
 
+/** A strict decoder for a declared charset, or null when it is not supported. */
+function strictDecoder(charset: string): TextDecoder | null {
+  const label = GETTEXT_CHARSET_ALIASES[charset.toUpperCase()] ?? charset;
+  try {
+    return new TextDecoder(label, { fatal: true });
+  } catch {
+    return null;
+  }
+}
+
+// vCard names its properties and parameters in ASCII, so only the value after
+// the delimiter carries the declared charset.
+const ASCII_DECODER_LABEL = "windows-1252";
+
+/**
+ * A vCard decoded one property at a time, or null if it cannot be.
+ *
+ * `CHARSET` is a property parameter, so a 2.1 card may legitimately put
+ * windows-1252 on `FN` and windows-1251 on `NOTE`. Reading the file as one unit
+ * corrupts every property but one, which is why more than one declaration is
+ * refused there; this honours each of them instead.
+ *
+ * Only the value is decoded under the property's own charset. The name and
+ * parameters ahead of the delimiter are ASCII by the grammar, and a folded line,
+ * which begins with a space or tab, continues the property above under the same
+ * charset. A property that declares nothing is UTF-8, strictly: this is not the
+ * place to guess a code page for it.
+ *
+ * Returns null on anything it cannot account for, so the caller falls back to
+ * the whole-file reading rather than emitting a partly guessed one.
+ */
+function decodeVCardPerProperty(bytes: Uint8Array): string | null {
+  const ascii = new TextDecoder(ASCII_DECODER_LABEL);
+  const utf8 = new TextDecoder("utf-8", { fatal: true });
+  const decoders = new Map<string, TextDecoder | null>();
+  const decoderFor = (charset: string | null): TextDecoder | null => {
+    if (charset === null) return utf8;
+    const seen = decoders.get(charset);
+    if (seen !== undefined) return seen;
+    const made = strictDecoder(charset);
+    decoders.set(charset, made);
+    return made;
+  };
+
+  const out: string[] = [];
+  let valueDecoder: TextDecoder | null = utf8;
+  let position = 0;
+  while (position < bytes.length) {
+    let lineBreak = bytes.indexOf(0x0a, position);
+    if (lineBreak === -1) lineBreak = bytes.length;
+    const contentEnd =
+      lineBreak > position && bytes[lineBreak - 1] === 0x0d
+        ? lineBreak - 1
+        : lineBreak;
+    const folded = bytes[position] === 0x20 || bytes[position] === 0x09;
+    try {
+      if (folded) {
+        // A continuation of the value above, so it keeps that charset.
+        if (!valueDecoder) return null;
+        out.push(valueDecoder.decode(bytes.subarray(position, contentEnd)));
+      } else {
+        const delimiter = vCardValueDelimiter(bytes, position, contentEnd);
+        if (delimiter === -1) {
+          // Not a property line. Only ASCII can be read without a declaration.
+          out.push(utf8.decode(bytes.subarray(position, contentEnd)));
+          valueDecoder = utf8;
+        } else {
+          const parameters = ascii.decode(bytes.subarray(position, delimiter));
+          const charsets: string[] = [];
+          for (const match of parameters.matchAll(VCARD_CHARSET_RE)) {
+            if (match[1]) charsets.push(match[1]);
+          }
+          // Two on one property is the container's problem, not this reading's.
+          if (charsets.length > 1) return null;
+          valueDecoder = decoderFor(charsets[0] ?? null);
+          if (!valueDecoder) return null;
+          out.push(parameters, ":");
+          out.push(valueDecoder.decode(bytes.subarray(delimiter + 1, contentEnd)));
+        }
+      }
+    } catch {
+      return null;
+    }
+    out.push(contentEnd === lineBreak ? "" : "\r");
+    if (lineBreak === bytes.length) break;
+    out.push("\n");
+    position = lineBreak + 1;
+  }
+  return out.join("");
+}
+
+/** The first colon outside a quoted parameter value, or -1 if there is none. */
+function vCardValueDelimiter(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+): number {
+  let quoted = false;
+  for (let index = start; index < end; index += 1) {
+    const byte = bytes[index];
+    if (byte === 0x22) quoted = !quoted;
+    else if (byte === 0x3a && !quoted) return index;
+  }
+  return -1;
+}
+
 /**
  * @param truncated Whether `bytes` is a prefix of the file, in which case a
  * partial character at the end is a cut rather than a bad encoding.
@@ -897,12 +1003,19 @@ export function decodeTextAttachmentBytes(
   if (gettextCharset) {
     return decodeWithCharset(bytes, gettextCharset, fileName, truncated);
   }
-  // Only when the card names one charset. Several is the ambiguous case, and it
-  // keeps its existing path: valid UTF-8 wins, and anything else is refused
-  // below with all of them named.
   const vCardCharsets = declaredVCardCharsets(bytes, fileName);
   if (vCardCharsets.length === 1) {
     return decodeWithCharset(bytes, vCardCharsets[0]!, fileName, truncated);
+  }
+  if (vCardCharsets.length > 1 && !truncated) {
+    // CHARSET is a property parameter, so several of them is a card that says
+    // plainly what each of its values holds, not an ambiguous one. Read every
+    // property under its own. A prefix is excluded: the property the read cut
+    // in half has no charset that would make it whole.
+    const perProperty = decodeVCardPerProperty(bytes);
+    if (perProperty !== null) {
+      return perProperty;
+    }
   }
   try {
     // A truncated read decodes with stream:true so the character the slice cut

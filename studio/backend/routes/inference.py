@@ -17438,6 +17438,10 @@ _MAX_AUDIO_SECONDS = 30 * 60
 # and np.concatenate doubles it. 48 kHz covers ordinary uploads, so this ceiling
 # only refuses rates above it, and never before the duration cap bites.
 _MAX_DECODED_SAMPLES = 48_000 * _MAX_AUDIO_SECONDS
+# One streamed block, every channel counted. 4 MB of float32, and the reader
+# holds a second copy of it, so this is the transient a decode may reach for
+# regardless of how many channels the container declares.
+_MAX_DECODE_BLOCK_SAMPLES = 1 << 20
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
 
@@ -17558,7 +17562,15 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
         sample_rate = int(source.samplerate)
         if sample_rate <= 0:
             raise ValueError("decoded audio has an invalid sample rate")
-        block_frames = max(1, min(sample_rate, 65_536))
+        # blocks() sizes its buffer as frames * channels and yields a copy of
+        # it, so a frame budget alone lets a many-channel container hold far
+        # more than the mono case it was chosen for: 48k frames of 255-channel
+        # Vorbis is 49 MB twice over, from an upload capped at 25. The samples
+        # kept are mono, since each block is downmixed below; this bounds the
+        # transient. Ordinary audio is unaffected, the divisor only biting past
+        # about 20 channels.
+        channels = max(1, int(getattr(source, "channels", 1) or 1))
+        block_frames = max(1, min(sample_rate, 65_536, _MAX_DECODE_BLOCK_SAMPLES // channels))
         for block in source.blocks(
             blocksize = block_frames,
             dtype = "float32",
