@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
@@ -345,6 +346,198 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     return f"{tool_name}:{canonical_args}"
 
 
+# `_edit_file_replace_all`'s words, minus the empty string, which is an absent value rather
+# than a boolean one. That tool still reads its own "" as false.
+# "0" and "1" are deliberately absent: they are the only spellings with a JSON scalar
+# counterpart, and a native `0` for the same parameter arrives already typed and is left
+# alone, so reading them would make one argument mean different things in the two call
+# syntaxes. `edit_file` still reads them, for its own parameter, where no such pair exists.
+_SCHEMA_TRUE_WORDS = frozenset({"true", "yes"})
+_SCHEMA_FALSE_WORDS = frozenset({"false", "no"})
+# What this walk follows to find a declaration. `nullable` is OpenAPI 3.0's spelling of a
+# type union, which several MCP servers still generate.
+_READ_KEYWORDS = frozenset(
+    {
+        "type",
+        "nullable",
+        "properties",
+        "items",
+        "prefixItems",
+        "additionalItems",
+        "additionalProperties",
+    }
+)
+# Cannot move a declaration out of reach: annotations, and constraints that only reject.
+_INERT_KEYWORDS = frozenset(
+    {
+        "title",
+        "description",
+        "default",
+        "examples",
+        "example",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "format",
+        "$comment",
+        "$schema",
+        "$id",
+        "$anchor",
+        "$defs",
+        "definitions",
+        "enum",
+        "const",
+        "required",
+        "dependentRequired",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minContains",
+        "maxContains",
+        "minProperties",
+        "maxProperties",
+    }
+)
+_UNION_KEYWORDS = frozenset({"anyOf", "oneOf"})
+# Matched exactly: an unknown type name is as unreadable as an unknown keyword.
+_JSON_SCHEMA_TYPES = frozenset(
+    {
+        "array",
+        "boolean",
+        "integer",
+        "null",
+        "number",
+        "object",
+        "string",
+    }
+)
+_KNOWN_KEYWORDS = _READ_KEYWORDS | _INERT_KEYWORDS | _UNION_KEYWORDS
+
+
+def _readable(spec: Any) -> bool:
+    """An allowlist, because composition, reference and a later draft's keywords can all move
+    a declaration out of this walk's reach."""
+    return isinstance(spec, Mapping) and spec.keys() <= _KNOWN_KEYWORDS
+
+
+def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
+    """The subschema to read against, its one declared type, and whether it admits null;
+    ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
+    every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
+    would turn ``"001"`` into 1."""
+    if not _readable(spec):
+        return None, None, False
+    union = _UNION_KEYWORDS & spec.keys()
+    if union and (len(union) > 1 or not _READ_KEYWORDS.isdisjoint(spec)):
+        return None, None, False
+    kind = spec.get("type")
+    chosen = spec
+    if isinstance(kind, str):
+        named = [kind]
+    elif isinstance(kind, list):
+        named = list(kind)
+    elif union:
+        branches = spec.get("anyOf") or spec.get("oneOf")
+        if not isinstance(branches, list) or not branches:
+            return None, None, False
+        named = []
+        for branch in branches:
+            name = branch.get("type") if _readable(branch) else None
+            if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
+                return None, None, False
+            named.append(name)
+            if named[-1] != "null":
+                chosen = branch
+    elif kind is None:
+        return spec, None, False
+    else:
+        return None, None, False
+    if not named or not all(isinstance(name, str) and name in _JSON_SCHEMA_TYPES for name in named):
+        return None, None, False
+    if chosen.get("nullable") is True:
+        named.append("null")
+    rest = [k for k in named if k != "null"]
+    if len(rest) > 1 or (not rest and "null" not in named):
+        return None, None, False
+    return chosen, rest[0] if rest else None, "null" in named
+
+
+def _coerce_declared_value(text: str, declared: str) -> Any:
+    stripped = text.strip()
+    if declared == "boolean":
+        lowered = stripped.lower()
+        if lowered in _SCHEMA_TRUE_WORDS:
+            return True
+        if lowered in _SCHEMA_FALSE_WORDS:
+            return False
+    elif declared in ("integer", "number"):
+        try:
+            # float() would round 9007199254740993, which an already-numeric argument keeps.
+            return int(stripped)
+        except ValueError:
+            pass
+        try:
+            number = float(stripped)
+        except (ValueError, OverflowError):
+            return text
+        # "nan"/"inf" parse, but json.dumps writes them bare and the client rejects that.
+        # Exactness is unguarded: float64 IS JSON's number type, so a JSON call agrees.
+        if math.isfinite(number) and (declared == "number" or number.is_integer()):
+            return number
+    return text
+
+
+def _coerce_one_property(value: Any, spec: Any) -> Any:
+    """One value read against its property schema."""
+    spec, declared, nullable = _read_schema(spec)
+    if spec is None or not isinstance(value, str):
+        return value
+    if declared == "string":
+        return value
+    if nullable and value.strip().lower() == "null":
+        return None
+    if declared is None:
+        return value
+    return _coerce_declared_value(value, declared)
+
+
+def coerce_arguments_by_schema(arguments: Mapping[str, Any], properties: Any) -> dict:
+    """Arguments with each string value that declares a non-string type read as that type.
+
+    A tool-call parser is given tool NAMES, never schemas, so an XML-form parameter is stored
+    as raw text: ``replace_all`` reaches the tool as ``"false"``, and ``bool("false")`` is
+    True. A declared string is returned untouched, as is any value no single type resolves
+    for -- a schema composing, referencing or branching where this does not read, or a
+    genuine either/or. An already-typed value is untouched. A value that will not convert
+    keeps its raw string, leaving the tool to report what is
+    wrong rather than ending here.
+
+    A scalar's text carries no type, so it is read only where its spelling names the declared
+    type and nothing else could have been meant.
+    """
+    if not isinstance(properties, Mapping) or not properties:
+        return dict(arguments)
+    return {k: _coerce_one_property(v, properties.get(k)) for k, v in arguments.items()}
+
+
+def _declared_properties(tool_name: str, tool_schemas) -> Any:
+    for tool in tool_schemas or []:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        if not isinstance(function, Mapping) or function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters")
+        return parameters.get("properties") if isinstance(parameters, Mapping) else None
+    return None
+
+
 def coerce_tool_arguments(
     raw_args: Any,
     *,
@@ -352,14 +545,20 @@ def coerce_tool_arguments(
     tool_name: str = "",
     tool_schemas = None,
 ) -> CoercedArguments:
-    """Normalize model-emitted ``function.arguments`` to a dictionary."""
+    """Normalize model-emitted ``function.arguments`` to a dictionary.
+
+    Typing against ``tool_schemas`` is not gated on ``heal``: healing invents structure the
+    model never sent, while reading a value as its own schema declares it is the tool's
+    contract, and gating it would return `bool("false")` to auto-heal-off users.
+    """
+    properties = _declared_properties(tool_name, tool_schemas) if tool_name else None
     if isinstance(raw_args, Mapping):
-        return CoercedArguments(dict(raw_args), False)
+        return CoercedArguments(coerce_arguments_by_schema(raw_args, properties), False)
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
             if isinstance(parsed, Mapping):
-                return CoercedArguments(dict(parsed), False)
+                return CoercedArguments(coerce_arguments_by_schema(parsed, properties), False)
         except (json.JSONDecodeError, ValueError):
             pass
         if heal:

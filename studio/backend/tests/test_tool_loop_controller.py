@@ -17,11 +17,14 @@ from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
     canonical_tool_call_key,
+    coerce_arguments_by_schema,
     coerce_tool_arguments,
     status_for_tool,
     strip_result_for_model,
     tool_event_provenance,
 )
+from core.inference.tool_call_parser import parse_tool_calls_from_text
+from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
@@ -278,3 +281,72 @@ def test_strip_result_for_model_removes_frontend_image_sentinel():
     assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == "text"
     assert strip_result_for_model("text __IMAGES__:payload") == "text"
     assert strip_result_for_model("plain text") == "plain text"
+
+
+# --- schema-aware argument typing -------------------------------------------------------
+
+_MCP_SERVER = {"id": "notes", "display_name": "Notes"}
+_MCP_TOOL = {
+    "name": "search",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+            "fuzzy": {"type": "boolean"},
+            "depth": {"type": ["integer", "null"]},
+        },
+    },
+}
+_MCP_PROPS = _MCP_TOOL["inputSchema"]["properties"]
+_UNCHANGED = object()
+
+
+def _mcp_tool_schemas():
+    return _mcp_specs_for_server(_MCP_SERVER, [_MCP_TOOL])
+
+
+def _coerce_one(key, value, props):
+    return coerce_arguments_by_schema({key: value}, props)[key]
+
+
+@pytest.mark.parametrize(
+    "key, text, expected",
+    [
+        ("fuzzy", " False ", False),
+        ("limit", "25", 25),
+        ("limit", "9007199254740993", 9007199254740993),  # float() would round this
+        ("depth", "null", None),
+        ("fuzzy", "null", _UNCHANGED),  # null is not a boolean; None would mean False
+    ],
+)
+def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
+    got = _coerce_one(key, text, _MCP_PROPS)
+    want = text if expected is _UNCHANGED else expected
+    # Types too: `False == 0` and `25 == 25.0`, so equality alone would miss a swap.
+    assert got == want and type(got) is type(want)
+    seam = coerce_tool_arguments(
+        json.dumps({key: text}),
+        heal = False,
+        tool_name = "mcp__notes__search",
+        tool_schemas = _mcp_tool_schemas(),
+    )
+    assert seam.arguments[key] == want and seam.healed is False
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        # The walk stops on any keyword it does not follow, whichever one it is.
+        {"type": "boolean", "$ref": "#/$defs/Flag"},
+        # Collapsing a union discards the rest, so it is read only where it is all there is.
+        {"anyOf": [{"type": "boolean"}], "properties": {"x": {"type": "boolean"}}},
+    ],
+)
+def test_a_schema_this_walk_cannot_read_is_left_alone(spec):
+    assert _coerce_one("f", "false", {"f": spec}) == "false"
+    assert _coerce_one("f", "null", {"f": {"anyOf": [spec, {"type": "null"}]}}) == "null"
+    # Falsified so the refusal cannot swallow real schemas: `nullable` spells a type union.
+    annotated = {"type": "boolean", "title": "F", "enum": [False]}
+    assert _coerce_one("f", "false", {"f": annotated}) is False
+    assert _coerce_one("f", "null", {"f": {"type": "boolean", "nullable": True}}) is None
