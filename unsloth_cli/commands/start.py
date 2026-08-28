@@ -2495,6 +2495,18 @@ def _claude_flags(model_id: str, settings: Optional[str] = None) -> list:
     return [_DYNAMIC_SECTIONS_FLAG, *settings_flags]
 
 
+def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough: list) -> list:
+    local_args = [
+        "--model",
+        model_id,
+        *_claude_flags(model_id, settings),
+        *_yolo_command_flags("claude", yolo),
+    ]
+    forwarded = list(passthrough)
+    separator = forwarded.index("--") if "--" in forwarded else len(forwarded)
+    return ["claude", *forwarded[:separator], *local_args, *forwarded[separator:]]
+
+
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:
     """Build the local endpoint, cache, display, and compaction environment."""
     model_id = entry["id"]
@@ -4539,14 +4551,12 @@ def claude(
     with _session_config("claude", launch, persist = persist) as config:
         settings = config / "settings.json"
         _write_private_text(settings, _claude_settings_overlay(model_id, env))
-        command = [
-            "claude",
-            "--model",
+        command = _claude_local_command(
             model_id,
-            *_claude_flags(model_id, _agent_config_path(settings, ["claude"])),
-            *_yolo_command_flags("claude", yolo),
-            *ctx.args,
-        ]
+            _agent_config_path(settings, ["claude"]),
+            yolo,
+            ctx.args,
+        )
         _run(
             base,
             entry,

@@ -1473,6 +1473,34 @@ def test_connect_claude_no_launch(fake_studio):
     assert ".claude/settings.json" not in result.output
 
 
+def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
+    forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--settings", forwarded],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    positions = [index for index, arg in enumerate(command) if arg == "--settings"]
+    assert len(positions) == 2
+    assert command[positions[0] + 1] == forwarded
+    assert Path(command[positions[1] + 1]).name == "settings.json"
+
+
+def test_connect_claude_session_settings_precede_forwarded_delimiter(fake_studio):
+    forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--", "--settings", forwarded],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    positions = [index for index, arg in enumerate(command) if arg == "--settings"]
+    assert len(positions) == 2
+    assert positions[0] < command.index("--") < positions[1]
+    assert Path(command[positions[0] + 1]).name == "settings.json"
+
+
 def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
     result = CliRunner().invoke(
         start.start_app,
