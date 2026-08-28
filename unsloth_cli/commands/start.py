@@ -162,7 +162,20 @@ class _PassthroughCommand(TyperCommand):
         return remaining
 
 
-_CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+_CLAUDE_ENV_UNSET = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    # Gateway/provider routing outranks ANTHROPIC_BASE_URL in Claude Code, so
+    # an inherited Foundry/Bedrock/Vertex setup silently sends local-agent
+    # traffic to the remote gateway, which 404s the local model id (#9864).
+    # With the toggles unset, the companion *_BASE_URL vars are inert; the
+    # Foundry pair is stripped anyway since it is provider-specific.
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
@@ -3532,14 +3545,7 @@ def _wsl_shim_env(
 
 
 _NPM_CMD_SHIM_HEAD = (
-    "@ECHO off\n"
-    "GOTO start\n"
-    ":find_dp0\n"
-    "SET dp0=%~dp0\n"
-    "EXIT /b\n"
-    ":start\n"
-    "SETLOCAL\n"
-    "CALL :find_dp0\n"
+    "@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\n"
 )
 _NPM_NODE_CMD_SHIM_PREFIX = (
     re.escape(_NPM_CMD_SHIM_HEAD)

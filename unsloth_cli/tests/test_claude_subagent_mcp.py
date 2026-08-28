@@ -259,6 +259,51 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
 
 
+def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
+    # Claude Code's Foundry/Bedrock/Vertex routing outranks ANTHROPIC_BASE_URL,
+    # so an inherited gateway setup silently sends "local agent" traffic to the
+    # remote gateway, which then 404s the local model id (#9864).
+    captured = {}
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", "http://127.0.0.1:8888")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_API_KEY", "sk-unsloth-test")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
+    monkeypatch.setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_BASE_URL", "https://gateway.azure-api.net/anthropic")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "corp-foundry")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
+
+    class Process:
+        pid = 1234
+        returncode = 0
+
+        def communicate(self, timeout):
+            return json.dumps({"is_error": False, "result": "LOCAL_OK"}), ""
+
+        def poll(self):
+            return self.returncode
+
+    def popen(command, **kwargs):
+        captured.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", popen)
+    assert bridge.run_local_agent("reply exactly LOCAL_OK") == "LOCAL_OK"
+    child_env = captured["env"]
+    assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
+    for name in (
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "ANTHROPIC_FOUNDRY_RESOURCE",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+    ):
+        assert child_env.get(name, "") == "", name
+
+
 def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", "http://127.0.0.1:8888")
@@ -394,8 +439,7 @@ def test_stop_child_kills_survivors_after_leader_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, "_CANCEL_GRACE_SECONDS", 0.2)
     marker = tmp_path / "grandchild-survived"
     grandchild = (
-        "import pathlib, sys, time; time.sleep(1.0); "
-        "pathlib.Path(sys.argv[1]).write_text('alive')"
+        "import pathlib, sys, time; time.sleep(1.0); pathlib.Path(sys.argv[1]).write_text('alive')"
     )
     process = subprocess.Popen(
         [
