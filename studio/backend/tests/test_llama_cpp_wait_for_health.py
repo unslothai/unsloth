@@ -554,9 +554,13 @@ def test_a_stale_cancel_marker_does_not_abort_the_next_load(tmp_path):
     b._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: False
 
     with pytest.raises(RuntimeError):
-        b.load_model(GgufLoadIntent(
-            model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096,
-        ))
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            )
+        )
 
 
 def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
@@ -567,12 +571,23 @@ def test_a_cancel_after_the_server_is_healthy_does_not_publish_it(tmp_path):
     kills = []
     b, gguf = _cancel_scaffold(tmp_path, kills)
 
-    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
         b._cancel_event.set()  # the user cancels while the load finishes publishing
         return True
 
     b._wait_for_health = _wait
-    assert b.load_model(GgufLoadIntent(
-        model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096,
-    )) is False
+    assert (
+        b.load_model(
+            GgufLoadIntent(
+                model_identifier = "owner/model",
+                gguf_path = str(gguf),
+                n_ctx = 4096,
+            )
+        )
+        is False
+    )
     assert kills, "the healthy-but-cancelled child was left resident"
