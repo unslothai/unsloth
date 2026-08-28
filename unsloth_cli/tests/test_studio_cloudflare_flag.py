@@ -308,9 +308,7 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     ]
 
     calls.clear()
-    studio_mod._emit_run_cloudflare_notice(
-        run_mod, "::ffff:0.0.0.0", "198.51.100.7", 8888, False
-    )
+    studio_mod._emit_run_cloudflare_notice(run_mod, "::ffff:0.0.0.0", "198.51.100.7", 8888, False)
     assert calls == [
         ("verify", "198.51.100.7", 8888),
         ("print", {"secure": False, "loopback_host": "127.0.0.1"}),

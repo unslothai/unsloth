@@ -237,9 +237,7 @@ def _launch_urls(app_state) -> list[str]:
     """
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
-        return _listener_urls(
-            detect_lan_addresses(), getattr(app_state, "lan_access_port", None)
-        )
+        return _listener_urls(detect_lan_addresses(), getattr(app_state, "lan_access_port", None))
     url = getattr(app_state, "server_url", None)
     return [url] if url else []
 
