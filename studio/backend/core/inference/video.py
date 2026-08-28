@@ -6146,9 +6146,11 @@ class VideoBackend:
             self._gen = {"active": False}
             return True
 
-    def cancel_generate(self) -> bool:
+    def cancel_generate(self, expected_video_id: Optional[str] = None) -> bool:
         """Signal the in-flight generation to stop at its next step callback."""
         with self._lock:
+            if expected_video_id is not None and self._gen_video_id != expected_video_id:
+                return False
             cancel = self._active_generate_cancel
             if cancel is None:
                 return False

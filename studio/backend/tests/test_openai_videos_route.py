@@ -338,11 +338,19 @@ def test_a_failed_job_reports_its_error_and_keeps_it_after_the_next_job(client, 
     assert gallery_module.owned_video_path(job["id"]) is None
     assert [v["status"] for v in client.get("/v1/videos").json()["data"]] == ["failed"]
 
+    # Polling can cross a Studio restart. Replacing the process-local cache must rehydrate
+    # the terminal error instead of turning the ID into a 404.
+    video_routes._jobs = {}
+    reloaded = client.get(f"/v1/videos/{job['id']}")
+    assert reloaded.status_code == 200
+    assert reloaded.json()["status"] == "failed" and reloaded.json()["error"] == failed["error"]
+
     backend.fail_with = None
     later = _create(client, {"prompt": "good"}).json()
     assert _wait_terminal(client, later["id"])["status"] == "completed"
     assert client.get(f"/v1/videos/{job['id']}").json()["status"] == "failed"
     assert client.delete(f"/v1/videos/{job['id']}").json()["deleted"] is True
+    assert gallery_module.get_job(job["id"]) is None
     assert client.get(f"/v1/videos/{job['id']}").status_code == 404
 
 
@@ -362,6 +370,24 @@ def test_deleting_a_running_job_cancels_it(client, backend):
     assert progress["phase"] == "failed" and progress["error"] == VIDEO_CANCELLED_MSG
     assert gallery_module.owned_video_path(job["id"]) is None
     backend.gate.set()
+
+
+def test_deleting_a_stale_job_does_not_cancel_its_successor(client, backend, monkeypatch):
+    successor_cancel = threading.Event()
+    with backend._lock:
+        backend._gen_video_id = "video_successor"
+        backend._active_generate_cancel = successor_cancel
+    monkeypatch.setattr(
+        video_routes,
+        "_lookup_video",
+        lambda video_id: type("Video", (), {"status": "queued"})()
+        if video_id == "video_target"
+        else None,
+    )
+
+    resp = client.delete("/v1/videos/video_target")
+    assert resp.status_code == 200, resp.json()
+    assert successor_cancel.is_set() is False
 
 
 def test_clips_made_before_this_process_list_and_retrieve_as_completed(client, backend):
@@ -387,6 +413,16 @@ def test_clips_made_before_this_process_list_and_retrieve_as_completed(client, b
     assert unknown.status_code == 400 and unknown.json()["error"]["param"] == "after"
 
     assert client.get(f"/v1/videos/{older['id']}/content").content == b"OLD-MP4"
+
+
+def test_completed_delete_does_not_confirm_when_the_clip_remains(client, backend, monkeypatch):
+    clip = _save_clip("kept", "2026-01-01T00:00:00Z")
+    monkeypatch.setattr(gallery_module, "delete", lambda _video_id: False)
+
+    resp = client.delete(f"/v1/videos/{clip['id']}")
+    assert resp.status_code == 500
+    assert gallery_module.get_record(clip["id"]) is not None
+    assert client.get(f"/v1/videos/{clip['id']}").status_code == 200
 
 
 def test_missing_prompt_is_a_400_naming_the_param(client, backend):
@@ -473,6 +509,8 @@ def test_input_reference_refusals(client, backend):
     resp = client.post(
         "/v1/videos", json = {"prompt": "x", "input_reference": {"file_id": "file_123"}}
     )
+    assert resp.status_code == 400 and resp.json()["error"]["param"] == "input_reference"
+    resp = _create(client, {"prompt": "x", "input_reference[file_id]": "file_123"})
     assert resp.status_code == 400 and resp.json()["error"]["param"] == "input_reference"
     resp = _create(client, {"prompt": "x"}, {"input_reference": ("a.txt", b"hello", "text/plain")})
     assert resp.status_code == 400 and "must be an image" in resp.json()["error"]["message"]
@@ -618,7 +656,8 @@ def test_deleting_a_job_that_finishes_mid_cancel_removes_the_clip(client, backen
     job = _create(client, {"prompt": "racy"}).json()
     assert client.get(f"/v1/videos/{job['id']}").json()["status"] in ("queued", "in_progress")
 
-    def _cancel_after_it_finishes():
+    def _cancel_after_it_finishes(expected_video_id):
+        assert expected_video_id == job["id"]
         backend.gate.set()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
@@ -691,7 +730,7 @@ def test_a_delete_that_cannot_observe_the_settle_does_not_confirm(client, backen
             "queued",
             "in_progress",
         )
-        monkeypatch.setattr(backend, "cancel_generate", lambda: False)
+        monkeypatch.setattr(backend, "cancel_generate", lambda expected_video_id: False)
         resp = client.delete(f"/v1/videos/{job['id']}")
         assert resp.status_code == 409, resp.json()
         assert resp.json()["error"]["code"] == "video_not_ready"
@@ -708,19 +747,27 @@ def test_the_create_call_opens_an_api_monitor_row(client, backend, monkeypatch):
     from core.inference.api_monitor import api_monitor
 
     started: list[dict] = []
+    relabeled: list[str] = []
     real_start = api_monitor.start
+    real_relabel = api_monitor.relabel
 
     def _spy(**kwargs):
         started.append(kwargs)
         return real_start(**kwargs)
 
+    def _relabel(entry_id, model):
+        relabeled.append(model)
+        return real_relabel(entry_id, model)
+
     monkeypatch.setattr(api_monitor, "start", _spy)
+    monkeypatch.setattr(api_monitor, "relabel", _relabel)
     resp = _create(client, {"prompt": "a monitored clip"})
     assert resp.status_code == 200, resp.json()
     rows = [r for r in started if r.get("endpoint") == "/v1/videos"]
     assert rows, started
     assert rows[0]["prompt"] == "a monitored clip"
     assert rows[0]["method"] == "POST"
+    assert relabeled == [resp.json()["model"]]
 
 
 def test_the_job_describes_the_run_the_backend_reserved(client, backend, monkeypatch):

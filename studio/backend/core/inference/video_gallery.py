@@ -32,6 +32,66 @@ def gallery_dir() -> Path:
     return ensure_dir(studio_root() / "videos")
 
 
+def _job_dir() -> Path:
+    return ensure_dir(gallery_dir() / ".jobs")
+
+
+def _job_path(video_id: str) -> Optional[Path]:
+    if not _ID_RE.match(video_id):
+        return None
+    return _job_dir() / f"{video_id}.json"
+
+
+def save_job(video_id: str, job: dict[str, Any]) -> None:
+    """Atomically persist an OpenAI job that does not yet have a committed MP4."""
+    path = _job_path(video_id)
+    if path is None:
+        raise ValueError("Invalid video id.")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(job), encoding = "utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok = True)
+
+
+def get_job(video_id: str) -> Optional[dict[str, Any]]:
+    path = _job_path(video_id)
+    if path is None:
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    return raw if isinstance(raw, dict) and raw.get("id") == video_id else None
+
+
+def list_jobs() -> list[dict[str, Any]]:
+    try:
+        paths = list(_job_dir().glob("*.json"))
+    except OSError:
+        return []
+    jobs = []
+    for path in paths:
+        job = get_job(path.stem)
+        if job is not None:
+            jobs.append(job)
+    return jobs
+
+
+def forget_job(video_id: str) -> bool:
+    """Remove a persisted OpenAI job; missing state already satisfies the request."""
+    path = _job_path(video_id)
+    if path is None:
+        return False
+    try:
+        path.unlink(missing_ok = True)
+    except OSError as exc:
+        logger.warning("video_gallery.forget_job_failed: %s", exc)
+        return False
+    return True
+
+
 def save(
     mp4_bytes: bytes,
     meta: dict[str, Any],

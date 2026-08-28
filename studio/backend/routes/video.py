@@ -26,7 +26,7 @@ import secrets as _secrets
 import threading
 import time as _time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
@@ -951,12 +951,55 @@ def _job_to_openai(job: _VideoJob) -> VideoJob:
 
 
 def _remember_job(job: _VideoJob) -> None:
+    from core.inference import video_gallery
+
     with _jobs_lock:
         _jobs[job.id] = job
         excess = len(_jobs) - _MAX_REMEMBERED_JOBS
+        forgotten = []
         if excess > 0:
             for stale in [j for j in _jobs.values() if j.terminal][:excess]:
                 _jobs.pop(stale.id, None)
+                forgotten.append(stale.id)
+    try:
+        video_gallery.save_job(job.id, asdict(job))
+        for video_id in forgotten:
+            video_gallery.forget_job(video_id)
+    except OSError as exc:
+        logger.warning("openai_videos.persist_job_failed: %s", exc)
+
+
+def _job_from_record(record: dict) -> Optional[_VideoJob]:
+    try:
+        job = _VideoJob(**record)
+        if job.status not in ("queued", "in_progress", "failed"):
+            return None
+        _job_to_openai(job)
+    except (TypeError, ValueError, ValidationError):
+        return None
+    return job
+
+
+def _hydrate_job(video_id: str) -> None:
+    from core.inference import video_gallery
+
+    with _jobs_lock:
+        if video_id in _jobs:
+            return
+    job = _job_from_record(video_gallery.get_job(video_id) or {})
+    if job is not None:
+        with _jobs_lock:
+            _jobs.setdefault(job.id, job)
+
+
+def _hydrate_jobs() -> None:
+    from core.inference import video_gallery
+
+    jobs = [job for raw in video_gallery.list_jobs() if (job := _job_from_record(raw)) is not None]
+    jobs.sort(key = lambda job: job.created_at, reverse = True)
+    with _jobs_lock:
+        for job in jobs[:_MAX_REMEMBERED_JOBS]:
+            _jobs.setdefault(job.id, job)
 
 
 def _sync_jobs() -> None:
@@ -1008,6 +1051,14 @@ def _sync_jobs() -> None:
                 job.completed_at = completed_at
             if error is not None:
                 job.error = error
+            persisted = asdict(job)
+        try:
+            if status == "completed":
+                video_gallery.forget_job(job.id)
+            else:
+                video_gallery.save_job(job.id, persisted)
+        except OSError as exc:
+            logger.warning("openai_videos.persist_job_failed: %s", exc)
 
 
 def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEOUT_S) -> bool:
@@ -1033,6 +1084,7 @@ def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEO
 def _lookup_video(video_id: str) -> Optional[VideoJob]:
     from core.inference import video_gallery
 
+    _hydrate_job(video_id)
     _sync_jobs()
     with _jobs_lock:
         job = _jobs.get(video_id)
@@ -1047,6 +1099,7 @@ def _lookup_video(video_id: str) -> Optional[VideoJob]:
 def _all_videos() -> list[VideoJob]:
     from core.inference import video_gallery
 
+    _hydrate_jobs()
     _sync_jobs()
     with _jobs_lock:
         jobs = dict(_jobs)
@@ -1071,7 +1124,12 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
         fields = {key: form.get(key) for key in _VIDEO_CREATE_FIELDS if key in form}
         reference = form.get("input_reference")
         if reference is None:
-            reference = form.get("input_reference[image_url]")
+            nested_reference = {
+                key: form.get(f"input_reference[{key}]")
+                for key in ("image_url", "file_id")
+                if f"input_reference[{key}]" in form
+            }
+            reference = nested_reference or None
         return fields, reference
     try:
         data = await request.json()
@@ -1158,13 +1216,17 @@ async def openai_create_video(
     fields, raw_reference = await _read_video_create_body(request)
     body = _validate_create_fields(fields)
     reference = await _reference_to_data_url(raw_reference)
+    from core.inference.api_monitor import api_monitor
+
     async with _monitored_media_request(
         request,
         model = public_model_id(body.model) or body.model or "",
         prompt = body.prompt,
         subject = current_subject,
-    ):
-        return await _create_openai_video(body, reference, current_subject, hf_token)
+    ) as monitor_id:
+        job = await _create_openai_video(body, reference, current_subject, hf_token)
+        api_monitor.relabel(monitor_id, job.model)
+        return job
 
 
 # Split out so the API monitor row can wrap the whole handler without reindenting it,
@@ -1408,7 +1470,7 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     if video is None:
         raise _not_found(video_id)
     if video.status in ("queued", "in_progress"):
-        await asyncio.to_thread(get_video_backend().cancel_generate)
+        await asyncio.to_thread(get_video_backend().cancel_generate, video_id)
         # The run can reach its terminal state between the lookup and the cancel, so a
         # refused cancellation is not proof that nothing was written. Let the worker
         # settle, then fall through to the same delete the completed branch performs --
@@ -1420,8 +1482,13 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
                 "The video is still being written; retry the delete once it is no longer generating.",
                 code = "video_not_ready",
             )
-    if await asyncio.to_thread(video_gallery.delete, video_id):
+    deleted = await asyncio.to_thread(video_gallery.delete, video_id)
+    if deleted:
         _forget_terminal_video(video_id)
+    elif await asyncio.to_thread(video_gallery.get_record, video_id) is not None:
+        raise _openai_video_error(500, "Could not delete the video; retry the request.")
+    if not await asyncio.to_thread(video_gallery.forget_job, video_id):
+        raise _openai_video_error(500, "Could not delete the video job; retry the request.")
     with _jobs_lock:
         _jobs.pop(video_id, None)
     return VideoJobDeleteResponse(id = video_id)
