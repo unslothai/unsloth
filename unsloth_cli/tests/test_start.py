@@ -3934,10 +3934,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     # Own process group, expressed per-platform.
     if os.name == "nt":
-        assert (
-            captured["kwargs"].get("creationflags")
-            == start.subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        assert captured["kwargs"].get("creationflags") == start.subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         assert captured["kwargs"].get("start_new_session") is True
     assert server.pid == 4321
