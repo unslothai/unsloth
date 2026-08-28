@@ -489,7 +489,11 @@ def test_a_cancelled_diffusion_start_reaps_the_runner():
     b._find_diffusion_assets = lambda *a, **kw: (["/bin/true"], "/bin/true", None)
     b._find_free_port = lambda *a, **kw: 45999
 
-    def _wait(timeout = 600.0, interval = 0.5, cancelled = None):
+    def _wait(
+        timeout = 600.0,
+        interval = 0.5,
+        cancelled = None,
+    ):
         b._health_wait_cancelled = True
         return False
 
@@ -498,10 +502,18 @@ def test_a_cancelled_diffusion_start_reaps_the_runner():
     proc.poll.return_value = None
     proc.pid = 999
     with mock.patch.object(subprocess, "Popen", return_value = proc):
-        assert b._start_diffusion_server(
-            model_path = "/m/x.gguf", gguf_path = "/m/x.gguf", hf_repo = None,
-            hf_variant = None, model_identifier = "o/m", n_ctx = 4096,
-            extra_args = None, cancelled = lambda: True,
-        ) is False
+        assert (
+            b._start_diffusion_server(
+                model_path = "/m/x.gguf",
+                gguf_path = "/m/x.gguf",
+                hf_repo = None,
+                hf_variant = None,
+                model_identifier = "o/m",
+                n_ctx = 4096,
+                extra_args = None,
+                cancelled = lambda: True,
+            )
+            is False
+        )
     # One teardown before the launch, one for the cancelled runner.
     assert len(kills) == 2, f"the cancelled runner was left running (kills={len(kills)})"
