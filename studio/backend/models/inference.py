@@ -3207,9 +3207,7 @@ class AnthropicThinkingConfig(BaseModel):
     model_config = {"extra": "allow"}
 
 
-_ANTHROPIC_EFFORT_LEVELS = frozenset(
-    {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
-)
+_ANTHROPIC_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
 
 
 class AnthropicMessagesRequest(BaseModel):

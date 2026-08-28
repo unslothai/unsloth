@@ -4531,15 +4531,19 @@ class TestPreserveThinkingHonoursTheBackendDefault:
 
 def test_effort_resolved_from_output_config():
     # Claude Code sends the tier as output_config.effort, never as reasoning_effort.
-    assert _basic_payload(
-        output_config = {"effort": "high"}, thinking = {"type": "adaptive"}
-    ).reasoning_effort == "high"
+    assert (
+        _basic_payload(
+            output_config = {"effort": "high"}, thinking = {"type": "adaptive"}
+        ).reasoning_effort
+        == "high"
+    )
 
 
 def test_explicit_reasoning_effort_outranks_output_config():
-    assert _basic_payload(
-        output_config = {"effort": "low"}, reasoning_effort = "max"
-    ).reasoning_effort == "max"
+    assert (
+        _basic_payload(output_config = {"effort": "low"}, reasoning_effort = "max").reasoning_effort
+        == "max"
+    )
 
 
 def test_unknown_output_config_effort_is_ignored():
