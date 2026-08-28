@@ -669,8 +669,9 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # the same meta and so has to carry the pin. Counted rather than matched
     # loosely, so a new row that forgets it is a failure here rather than a load
     # that silently follows the default ref. #7736 added the third: the collapsed
-    # single-quant GGUF row, which is a load site like the other two.
-    assert picker.count("loadId: c.load_id") == 3, (
+    # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
+    # has to price the pinned snapshot rather than the default ref.
+    assert picker.count("loadId: c.load_id") == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
     )

@@ -673,7 +673,7 @@ export const zhCN = {
         sectionTitle: "模型自动切换（OpenAI API）",
         enable: "按请求切换模型",
         enableDescription:
-          "在提供服务前，加载 API 请求中指定的已下载 GGUF。默认关闭。",
+          "在提供服务前，加载 API 请求中指定的已下载模型。默认关闭。",
         idleUnload: "空闲自动卸载",
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
@@ -1331,10 +1331,29 @@ export const zhCN = {
       rememberParamsPerModel: "按模型记住设置",
       rememberParamsPerModelDescription:
         "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
+      autoCompact: "自动压缩长聊天",
+      autoCompactDescription:
+        "当本地 GGUF 聊天达到你设置的上下文长度时，丢弃较早的轮次而不是返回错误。此设置与可用显存无关。",
+      compactionStyle: "上下文已满时",
+      compactionStyleDescription:
+        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
+      compactionStyleInherit: "使用服务器默认值",
+      compactionStyleCheckpoint: "重置对话",
+      compactionStyleRollingDefault: "丢弃最早的轮次（约 25% 额外空间）",
+      compactionStyleRolling10: "丢弃最早的轮次（约 10% 额外空间）",
+      compactionStyleRolling5: "丢弃最早的轮次（约 5% 额外空间）",
+      compactionStyleRollingNone: "丢弃最早的轮次（不额外裁剪）",
+      autoCompactKeywords:
+        "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
+      tools: {
+        collapseByDefault: "默认折叠工具活动",
+        collapseByDefaultDescription:
+          "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
       },
       webSearch: {
         title: "网页搜索",
@@ -1353,6 +1372,11 @@ export const zhCN = {
         blockedBanner: "已阻止来自 {hosts} 的 {count} 个外部资源。",
         blockedBannerPlural: "已阻止来自 {hosts} 的 {count} 个外部资源。",
         blockedBannerAction: "允许此 Canvas",
+        blockedTitle: "Canvas 网络访问已关闭",
+        blockedHint:
+          "在“设置 → 聊天”中开启“{setting}”以允许 Canvas 加载外部资源，或仅对此 Canvas 允许。",
+        blockedSettingsAction: "打开设置",
+        blockedDismiss: "关闭",
       },
       data: "数据",
       exportHistory: "导出聊天记录",

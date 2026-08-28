@@ -14,7 +14,11 @@
  * the fit badge on a row can't contradict each other.
  */
 
-import { VRAM_HEADROOM_RATIO } from "@/lib/gguf-fit";
+import {
+  DEFAULT_VRAM_BUDGET_FRACTION,
+  PRESSURE_CRITICAL_PCT,
+  PRESSURE_HIGH_PCT,
+} from "./memory/thresholds.ts";
 
 const BYTES_PER_GB = 1024 ** 3;
 
@@ -82,10 +86,12 @@ export interface ModelMemoryInput {
  */
 export type ModelMemoryPressure = "normal" | "high" | "critical";
 
-/** Fill fraction (%) at which the bar leaves the accent colour. */
-export const PRESSURE_HIGH_PCT = 80;
-/** Fill fraction (%) at which the bar turns destructive. */
-export const PRESSURE_CRITICAL_PCT = 90;
+// Shared with the Load Model panel's thresholds so the two surfaces colour one
+// load the same way. See src/lib/memory/thresholds.ts.
+export {
+  PRESSURE_HIGH_PCT,
+  PRESSURE_CRITICAL_PCT,
+} from "./memory/thresholds.ts";
 
 export type ModelMemoryStatus =
   /** Not enough information to draw anything. */
@@ -146,6 +152,33 @@ function toGb(bytes?: number | null): number {
 export function computeModelMemory(
   input: ModelMemoryInput,
 ): ModelMemorySegments {
+  // A figure that is not a number cannot produce a verdict, only a confident
+  // looking one. `toGb` passes Infinity straight through, so an infinite
+  // weightsBytes reached the status ladder and came out "model-exceeds": a full
+  // red bar reading "Larger than VRAM" beside a weights figure of "0 GiB",
+  // because the formatter clamps what the verdict did not. JSON.parse turns
+  // 1e999 into Infinity, so a malformed response gets there without trying.
+  //
+  // `classifyMemoryFit` on the panel already answers "unknown" for exactly these
+  // inputs, so this was also the two surfaces disagreeing about the same bytes.
+  // Null and undefined are NOT covered here: those mean "has not arrived yet",
+  // which is an ordinary state the segments below already handle.
+  if (
+    [
+      input.weightsBytes,
+      input.kvBytes,
+      input.specBytes,
+      input.computeBytes,
+      input.gpuTotalBytes,
+      input.gpuFloorBytes,
+      input.specFixedBytes,
+      input.gpuGb,
+      input.nCtx,
+      input.budgetFraction,
+    ].some((value) => typeof value === "number" && !Number.isFinite(value))
+  ) {
+    return EMPTY;
+  }
   const gpuGb = input.gpuGb ?? 0;
   const modelGb = toGb(input.weightsBytes);
   if (gpuGb <= 0 || modelGb <= 0) return EMPTY;
@@ -155,13 +188,18 @@ export function computeModelMemory(
   if (input.gpuTotalBytes === 0) return EMPTY;
 
   // The loader's own budget when the caller knows it, so the bar warns at the
-  // line admission actually draws. VRAM_HEADROOM_RATIO stays the fallback: it
-  // is what the fit badge on the same row judges against, and it is the only
-  // answer available before the settings request lands.
+  // line admission actually draws.
+  //
+  // The fallback is DEFAULT_VRAM_BUDGET_FRACTION (0.97), matching the loader's
+  // _CTX_FIT_VRAM_FRACTION and the Load Model panel. It used to be
+  // VRAM_HEADROOM_RATIO (0.90), which is not a safer guess but a measured wrong
+  // one: llama_cpp.py records "0.90 dropped 91-94% fits to CPU offload, #5106".
+  // Warning at a line admission does not draw is the same class of wrong answer
+  // as a false "fits", pointing the other way.
   const fraction =
     input.budgetFraction && input.budgetFraction > 0
       ? input.budgetFraction
-      : VRAM_HEADROOM_RATIO;
+      : DEFAULT_VRAM_BUDGET_FRACTION;
   const budgetGb = gpuGb * fraction;
   const kvGb = toGb(input.kvBytes) + toGb(input.computeBytes);
   const specGb = toGb(input.specBytes);
@@ -516,24 +554,23 @@ export function estimateIsUnsized(estimate: {
   );
 }
 
-/** Compact label for a per-token KV rate, which lands in KB or MB. */
-export function formatKvRate(bytes: number): string {
-  if (bytes <= 0) return "0 KB";
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
-  const mb = kb / 1024;
-  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
-}
+// The unit formatting now lives in src/lib/memory/format.ts, shared with the
+// Load Model panel. Re-exported here because this module is the bar's entry
+// point and its call sites are unchanged.
+//
+// formatKvRate's labels have changed from KB/MB to KiB/MiB: the divide was
+// always by 1024, so the readout was printing kibibytes labelled as kilobytes,
+// the same mislabel #9570 fixed one scale up.
+export { formatKvRate } from "./memory/format.ts";
 
 /**
  * Compact label for the bar's readout ("7.2 GiB").
  *
- * GiB, not GB: every figure here is a binary divide. Weights and KV come from
- * bytes / 1024**3, and gpuGb arrives from the backend as
- * props.total_memory / 1024**3 with nothing subtracting a budget on the way, so
- * calling any of them GB overstates each by 7.4% (#9570).
+ * @deprecated Prefer `formatGiB` from `@/lib/memory/format`, whose name says
+ * which unit it takes. This alias exists because there used to be a SECOND
+ * exported `formatMemoryGb`, in `model-config/memory-fit.ts`, which took BYTES
+ * rather than gigabytes -- the same name and the same `(number) => string`
+ * signature for two incompatible things, so importing the wrong one was off by
+ * 1024^3 and still typechecked.
  */
-export function formatMemoryGb(gb: number): string {
-  if (gb <= 0) return "0 GiB";
-  return `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GiB`;
-}
+export { formatGiB as formatMemoryGb } from "./memory/format.ts";

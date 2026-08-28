@@ -41,6 +41,17 @@ def _cfg(base_model = _FLUX_DENSE, **kw) -> DiffusionLoraConfig:
     return DiffusionLoraConfig(base_model = base_model, data_dir = "d", output_dir = "o", **kw)
 
 
+@pytest.fixture(autouse = True)
+def _not_rocm(monkeypatch):
+    """Pin the ROCm gate off: every case here describes an NVIDIA capability tier.
+
+    They simulate a card via get_device_capability, but the gate reads the INSTALLED torch, so on
+    an AMD box it short-circuits and the answers are about the real machine -- an environment
+    leak. test_dense_quant_rocm_gate_9396.py pins it the other way to exercise the gate."""
+    for _mod in (common, dit):
+        monkeypatch.setattr(_mod, "torch_is_rocm", lambda: False)
+
+
 # ── base_precision validation ─────────────────────────────────────────────────
 def test_base_precision_validation():
     # Default normalizes to the nf4 memory floor.

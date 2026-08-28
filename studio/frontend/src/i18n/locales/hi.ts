@@ -692,7 +692,7 @@ export const hi = {
         sectionTitle: "मॉडल ऑटो-स्विच (OpenAI API)",
         enable: "अनुरोध के अनुसार मॉडल बदलें",
         enableDescription:
-          "API अनुरोध में दिए गए डाउनलोड किए गए GGUF को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
+          "API अनुरोध में दिए गए डाउनलोड किए गए मॉडल को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
         idleUnload: "निष्क्रिय ऑटो-अनलोड",
         idleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद VRAM खाली करें। 0 पर मॉडल लोड रहता है; न्यूनतम 60 सेकंड।",
@@ -1366,10 +1366,29 @@ export const hi = {
       rememberParamsPerModel: "हर मॉडल के लिए सेटिंग्स याद रखें",
       rememberParamsPerModelDescription:
         "मॉडल बदलने पर उस मॉडल के साथ आपने आखिरी बार जो तापमान, प्रॉम्प्ट और अन्य सेटिंग्स इस्तेमाल की थीं, वे वापस आ जाती हैं। बंद होने पर सभी मॉडलों के लिए एक ही सेट रहता है।",
+      autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
+      autoCompactDescription:
+        "जब लोकल GGUF चैट सेट की गई कॉन्टेक्स्ट लंबाई तक पहुँच जाए, तो त्रुटि लौटाने के बजाय पुराने टर्न हटा दें। यह खाली VRAM पर आधारित नहीं है।",
+      compactionStyle: "कॉन्टेक्स्ट भरने पर",
+      compactionStyleDescription:
+        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
+      compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
+      compactionStyleCheckpoint: "बातचीत रीसेट करें",
+      compactionStyleRollingDefault: "पुराने टर्न हटाएँ (~25% अतिरिक्त जगह)",
+      compactionStyleRolling10: "पुराने टर्न हटाएँ (~10% अतिरिक्त जगह)",
+      compactionStyleRolling5: "पुराने टर्न हटाएँ (~5% अतिरिक्त जगह)",
+      compactionStyleRollingNone: "पुराने टर्न हटाएँ (कोई अतिरिक्त कटौती नहीं)",
+      autoCompactKeywords:
+        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
           "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+      },
+      tools: {
+        collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
+        collapseByDefaultDescription:
+          "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
       },
       webSearch: {
         title: "वेब खोज",
@@ -1388,6 +1407,11 @@ export const hi = {
         blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
         blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
         blockedBannerAction: "इस Canvas के लिए अनुमति दें",
+        blockedTitle: "Canvas नेटवर्क एक्सेस बंद है",
+        blockedHint:
+          "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
+        blockedSettingsAction: "सेटिंग्स खोलें",
+        blockedDismiss: "खारिज करें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",

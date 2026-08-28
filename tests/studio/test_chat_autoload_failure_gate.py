@@ -351,7 +351,12 @@ function resolveInitialConfig(_id: string, _variant: any) {
 }
 function resolveLoadMaxSeqLength(args: any) { return args.maxSeqLength ?? 0; }
 function resolveFitMaxSeqLength(..._a: any[]) { return 0; }
-function resolveManualAutoCtxPin(..._a: any[]) { return null; }
+// Mirrors the real predicate rather than returning a constant: the sliced region
+// stores its result as the load's context pin, so a stub that always answered null
+// would make every autoload scenario here agree with a bug in it. It takes the
+// user's own Context Length (config.customContextLength above), never the n_ctx
+// that went on the wire, which is Auto-resolved on a same-model reload.
+function resolveExplicitCtxPin(n: any) { return n && n > 0 ? n : null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
 function saveSpeculativeType(_x: any) {}

@@ -1247,11 +1247,123 @@ class TestArchCrashRetryEnv:
             capture = capture,
         )
 
-        assert launches, "the first launch was refused, so the retry is not what was tested"
-        assert not [
-            env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"
-        ], "the respawn on the narrowed pool was not refused"
-        assert "does not fit in GPU memory" in str(capture.get("error"))
+        assert launches, "the first launch never ran, so the retry is not what was tested"
+        # The repricing is the point, not a block: the respawn goes ahead and carries
+        # the advisory the narrowed pool produced.
+        assert "does not fit in GPU memory" in (
+            capture["backend"].last_load_warning or ""
+        ), "the retry did not reprice the spill against the narrowed pool"
+
+    def _arch_retry_launches(self, tmp_path, monkeypatch, capture, **kwargs):
+        """The narrowed-pool retry above, plus whatever the caller asks the load for.
+
+        Returns ``(first_argv, retry_argv)``: the crashed launch and the respawn, told
+        apart by the mask, since the unrelated --fit off retry spawns each twice."""
+        torch = self._big_then_small_discrete(monkeypatch)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            host_offload_stub = LlamaCppBackend._host_offload_shortfall_message,
+            capture = capture,
+            **kwargs,
+        )
+        assert launches, "the first launch never ran, so the retry is not what was tested"
+        _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        return launches[0][0], _retry[0]
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["--no-mmap"], ["--load-mode", "none"], ["--load-mode=none"], ["--no-direct-io"]],
+        ids = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
+    )
+    def test_the_narrowed_retry_pages_an_unmapped_respawn(
+        self, tmp_path, monkeypatch, probe_env, extra_args
+    ):
+        """The shortfall the retry discovers is its FIRST one, so nothing upstream
+        remapped the load: the original placement held the model in VRAM and the
+        discrete guard abstained. "none" and "mlock" do not mmap, so respawning that
+        argv unchanged allocates the whole 30 GB in a 20 GB host and is OOM-killed
+        rather than paged. The override belongs to the condition, so it runs here too,
+        before the respawn."""
+        capture = {}
+        first, retry = self._arch_retry_launches(
+            tmp_path,
+            monkeypatch,
+            capture,
+            model_bytes = 30 * 1024**3,
+            intent_kwargs = {"extra_args": list(extra_args)},
+        )
+
+        # The first launch fit the card it pinned, so it is left exactly as asked --
+        # which is what makes the retry the first place the shortfall can be found.
+        assert _unmapped_tokens(first) == list(extra_args), f"the fitting launch changed: {first}"
+        assert not _unmapped_tokens(retry), f"the respawn still loads unmapped: {retry}"
+        assert "memory mapping instead" in (capture["backend"].last_load_warning or "")
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["--no-mmap"], ["--load-mode", "none"], ["--load-mode=none"], ["--no-direct-io"]],
+        ids = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
+    )
+    def test_a_narrowed_retry_that_fits_keeps_the_mode_it_was_given(
+        self, tmp_path, monkeypatch, probe_env, extra_args
+    ):
+        """The control. Same crash and same narrowing, on a model the 4000 MiB survivor
+        plus a 20 GB host holds comfortably: no shortfall, so both argvs keep the
+        unmapped mode the user chose."""
+        capture = {}
+        first, retry = self._arch_retry_launches(
+            tmp_path,
+            monkeypatch,
+            capture,
+            model_bytes = 2 * 1024**3,
+            intent_kwargs = {"extra_args": list(extra_args)},
+        )
+
+        assert _unmapped_tokens(first) == list(extra_args), f"the first launch changed: {first}"
+        assert _unmapped_tokens(retry) == list(extra_args), f"the respawn changed: {retry}"
+        assert capture["backend"].last_load_warning is None
+
+    def test_the_retry_pages_an_unmapped_respawn_the_opt_out_silenced(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """UNSLOTH_ALLOW_HOST_OFFLOAD hides the retry's warning. It must not also hand
+        the respawn back the load mode that cannot complete."""
+        monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+        capture = {}
+        _first, retry = self._arch_retry_launches(
+            tmp_path,
+            monkeypatch,
+            capture,
+            model_bytes = 30 * 1024**3,
+            intent_kwargs = {"extra_args": ["--no-mmap"]},
+        )
+
+        assert not _unmapped_tokens(retry), f"the silenced respawn still loads unmapped: {retry}"
+        assert capture["backend"].last_load_warning is None
+
+
+def _unmapped_tokens(cmd):
+    """The tokens in ``cmd`` that select a mode llama.cpp does not mmap.
+
+    Copied from test_llama_cpp_placement.py rather than imported: these two files are
+    separate harnesses and neither imports the other."""
+    out = []
+    for i, token in enumerate(cmd):
+        if token in ("--no-mmap", "-no-mmap", "--no-direct-io", "-ndio"):
+            out.append(token)
+        elif token in ("--load-mode", "-lm") and i + 1 < len(cmd):
+            if cmd[i + 1].strip().lower() in ("none", "mlock"):
+                out.extend([token, cmd[i + 1]])
+        elif token.split("=", 1)[0] in ("--load-mode", "-lm") and "=" in token:
+            if token.split("=", 1)[1].strip().lower() in ("none", "mlock"):
+                out.append(token)
+    return out
 
 
 class TestManualSplitLaunchesRespectTheGate:
@@ -1737,9 +1849,9 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
 
-    def test_a_surviving_apu_still_refuses(self, tmp_path, monkeypatch, probe_env):
+    def test_a_surviving_apu_still_warns(self, tmp_path, monkeypatch, probe_env):
         """The waiver is scoped to survivors that are all discrete. A build
-        covering both cards leaves the APU in play, so the refusal stands."""
+        covering both cards leaves the APU in play, so the warning stands."""
         torch = self._apu_and_dgpu(monkeypatch)
         calls: list = []
         capture: dict = {}
@@ -1754,12 +1866,12 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
             apu_ram_stub = self._shortfall_stub(calls),
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
-        assert launches == [], "an oversized APU load reached the child"
-        assert "only about 8 GB" in str(capture.get("error"))
+        assert launches, "the oversized APU load never reached the child"
+        assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
 
-    def test_the_forced_cpu_host_still_refuses(self, tmp_path, monkeypatch, probe_env):
-        """Every card gated out means the weights load into system RAM after all,
-        so the guard the gate has no survivor to answer with keeps its refusal."""
+    def test_the_forced_cpu_host_still_warns(self, tmp_path, monkeypatch, probe_env):
+        """Every card gated out means the weights load into system RAM after all, so
+        the guard the gate has no survivor to answer with still prices it."""
         torch = self._apu_and_dgpu(monkeypatch)
         calls: list = []
         capture: dict = {}
@@ -1774,8 +1886,8 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
             apu_ram_stub = self._shortfall_stub(calls),
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
-        assert launches == [], "an oversized CPU-bound load reached the child"
-        assert "only about 8 GB" in str(capture.get("error"))
+        assert launches, "the oversized CPU-bound load never reached the child"
+        assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
 
 
 class TestArchCrashRetryOntoAnApu:
@@ -2023,9 +2135,7 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
             vendor = "amd",
         )
 
-    def test_an_oversized_model_is_refused_instead_of_respawned(
-        self, tmp_path, monkeypatch, probe_env
-    ):
+    def test_an_oversized_model_is_respawned_with_a_warning(self, tmp_path, monkeypatch, probe_env):
         torch = self._dgpu_then_apu(monkeypatch)
         # Counted, not raised: this runs inside the launch path's own
         # except-Exception arms, which would swallow an AssertionError and leave
@@ -2051,15 +2161,16 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         # The dGPU is pinned first, so the pre-launch guard never asks (it is
         # gated on the selection wanting unified memory) and the crash happens.
         assert launches, "the first spawn never ran"
-        assert all(
-            env.get("ROCR_VISIBLE_DEVICES") != "1" for _c, env in launches
-        ), "the retry respawned onto the APU without the RAM preflight"
+        # The preflight still runs against the APU the retry lands on and still prices
+        # the projector with the weights; it just no longer stops the respawn.
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         assert calls[0][0] == 20 * 1024**3
-        assert "only about 8 GB" in str(capture.get("error"))
+        assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
+        # capture["error"] is now the simulated HIP crash, not the RAM guard, so
+        # asserting the guard's text there would only re-test the mock.
 
     def test_a_model_that_fits_still_retries_onto_the_apu(self, tmp_path, monkeypatch, probe_env):
-        """The guard refuses a shortfall, it does not block the fallback. With
+        """The guard warns on a shortfall, it does not block the fallback. With
         room to spare the retry runs exactly as before."""
         torch = self._dgpu_then_apu(monkeypatch)
         calls: list = []
@@ -2082,6 +2193,176 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the arch-crash retry did not fire"
         assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
+
+    @staticmethod
+    def _override_log(monkeypatch):
+        """Collect the pageable-override log line. structlog, so caplog cannot see it."""
+        lines: list = []
+        monkeypatch.setattr(
+            llama_cpp.logger,
+            "warning",
+            lambda msg, *a, **kw: lines.append(msg % a if a else msg),
+        )
+        return lines
+
+    def _respawn_unmapped_and_oversized(self, tmp_path, monkeypatch, capture):
+        """The respawn lands on the APU, is oversized there, and was asked to load
+        without mmap -- the one shape where the override is what lets it finish."""
+        torch = self._dgpu_then_apu(monkeypatch)
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = lambda *_a, **_kw: (
+                "This model needs about 20 GB but only about 8 GB of memory is available."
+            ),
+            intent_kwargs = {"extra_args": ["--no-mmap"]},
+        )
+
+    def test_the_opt_out_silences_the_retrys_apu_advisory_and_keeps_the_override(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """UNSLOTH_ALLOW_HOST_OFFLOAD is documented as silencing the warning and
+        nothing else, but this site recorded the APU advisory without consulting it, so
+        a user who opted out still got a memory_warning back. The verdict stays: the
+        respawn is still remapped, or "none" would allocate the whole model in the RAM
+        that cannot hold it."""
+        monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+        capture: dict = {}
+        logged = self._override_log(monkeypatch)
+
+        launches = self._respawn_unmapped_and_oversized(tmp_path, monkeypatch, capture)
+
+        _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all("--no-mmap" not in cmd for cmd in _retry), _retry
+        assert capture["backend"].last_load_warning is None, (
+            "the opt-out left the retry's APU advisory in memory_warning: "
+            f"{capture['backend'].last_load_warning}"
+        )
+        assert [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+    def test_without_the_opt_out_the_retrys_advisory_still_names_the_override(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The control. Nothing silenced, so the same respawn warns as before and the
+        override is named in the text the route hands back."""
+        monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+        capture: dict = {}
+
+        launches = self._respawn_unmapped_and_oversized(tmp_path, monkeypatch, capture)
+
+        _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all("--no-mmap" not in cmd for cmd in _retry), _retry
+        warning = capture["backend"].last_load_warning or ""
+        assert "only about 8 GB" in warning, warning
+        assert "memory mapping instead" in warning, warning
+
+
+class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
+    """The canonical #7624 shape, priced. The APU's shared-pool "free memory"
+    outranks the dGPU, so auto pins it; the APU RAM guard warns that system RAM
+    cannot hold the weights; the child then dies with a kernel-image error and the
+    retry respawns on the discrete sibling, which holds the model in VRAM.
+
+    ``_record_load_warning`` keeps the FIRST notice, so the crashed selection's
+    verdict outlived the placement it described: the served response told the user
+    the OS might stop a load running entirely on a discrete card. The retry prices
+    the set it actually reaches, so that answer -- not the dead one -- is the load's.
+    """
+
+    def _apu_then_dgpu(self, monkeypatch, *, dgpu_free_mib):
+        # Device 0 is the APU and outranks the dGPU on free memory, so auto pins it and
+        # the pre-launch APU guard DOES ask (the mirror of
+        # TestArchCrashRetryRechecksTheApuRamGuard, where the dGPU is pinned first and
+        # the guard never asks). The APU's usable figure is its shared pool capped by
+        # available system RAM minus a host reserve, so the RAM stub has to stay high
+        # enough to leave the APU on top; the shortfall itself is the stubbed verdict,
+        # which is how every APU-guard cell in this file drives it -- the arithmetic
+        # belongs to test_host_offload_ram_guard.py, the plumbing is what is at stake.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1151", free_mib = 47000, is_integrated = 1),
+                _device("gfx1030", free_mib = dgpu_free_mib),
+            ],
+            vendor = "amd",
+        )
+
+    @staticmethod
+    def _apu_stub(calls):
+        # Counted, not raised: this runs inside the launch path's own
+        # except-Exception arms, which would swallow an AssertionError.
+        def _shortfall(model_size_bytes, avail_mib, *_a, **_kw):
+            calls.append((model_size_bytes, avail_mib))
+            return "This model needs about 20 GB but only about 8 GB of memory is available."
+
+        return _shortfall
+
+    def test_a_comfortable_retry_clears_the_dead_selections_warning(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        # 30000MiB free holds the 20GB model outright, so the respawn spills nothing.
+        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 30000)
+        calls: list = []
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = self._apu_stub(calls),
+        )
+        assert calls, "the pre-launch APU RAM guard never ran, so nothing was warned"
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert capture["backend"].last_load_warning is None, (
+            "the response still carries the crashed APU's shortfall for a child that "
+            "runs on the discrete card"
+        )
+
+    def test_a_shortfall_that_still_stands_survives_the_retry(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Scoped: clearing the dead verdict must not silence a live one. The respawn
+        prices the same weights against a NARROWER pool, so a real spill is re-warned.
+        """
+        # 4000MiB free leaves most of the 20GB model in host RAM on the respawn.
+        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 4000)
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = self._apu_stub([]),
+            host_offload_stub = (
+                lambda *_a, **_kw: "About 16 GB of this model does not fit in GPU memory."
+            ),
+        )
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert "does not fit in GPU memory" in (capture["backend"].last_load_warning or "")
 
 
 class TestHsaOverrideGfxVersion:
