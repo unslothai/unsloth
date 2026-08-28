@@ -51,6 +51,13 @@ export type BackendStatus =
   | "stopped"
   | "error";
 
+function syncTrayStatus(status: BackendStatus) {
+  if (!isTauri) return;
+  import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("set_tray_server_status", { status }))
+    .catch(() => {});
+}
+
 type DesktopPreflightDisposition =
   | "not_installed"
   | "managed_ready"
@@ -166,6 +173,7 @@ export function useTauriBackend() {
     if (authFailureRef.current) return;
     statusRef.current = nextStatus;
     setStatus(nextStatus);
+    syncTrayStatus(nextStatus);
   }
 
   function setBackendError(
@@ -176,6 +184,7 @@ export function useTauriBackend() {
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     setError(nextError);
+    syncTrayStatus(nextStatus);
   }
 
   function clearBackendError() {
@@ -192,6 +201,7 @@ export function useTauriBackend() {
     statusRef.current = "error";
     setStatus("error");
     setError(detail);
+    syncTrayStatus("error");
   }
 
   function clearAuthFailure() {

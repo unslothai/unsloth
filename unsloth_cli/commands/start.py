@@ -7,6 +7,7 @@ import atexit
 import base64
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import re
@@ -48,6 +49,25 @@ start_app = typer.Typer(
 
 _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
+# Codex treats an SSE stream with no bytes for this long as lost, cancels it, and
+# reconnects. Its default is 300000 (5 minutes), which is measured against the WHOLE
+# quiet period -- and llama-server sends nothing at all while it processes the prompt.
+#
+# That is not a corner case on the hardware Unsloth is for. A local CPU host chews
+# through a prompt at low tens of tokens a second, and Codex's own preamble is several
+# thousand tokens before the user has typed anything: 16.1 tok/s measured on a 2-core
+# box means ~460s of silence for a ~7300-token first turn, so the default trips before
+# the first token exists. The reconnect is worse than the wait, because llama-server
+# hands the retry a different parallel slot whose KV cache shares no prefix, so each
+# attempt restarts prompt processing from zero and the five retries can never converge.
+# Observed as a request completing in exactly 300056ms with `Reconnecting... 1/5` and
+# no turn ever finishing.
+#
+# 20 minutes. Sized to be longer than a slow local first turn rather than to any
+# server-side budget: nothing here bounds generation, and a genuinely dead stream is
+# still caught, just later. Same reason the Codex docs' own local-model example raises
+# it for Ollama.
+_CODEX_STREAM_IDLE_TIMEOUT_MS = 1_200_000
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
 # Skip the installer's interactive setup wizard: `unsloth start hermes` runs
@@ -98,6 +118,7 @@ _SUBAGENT_PLAN_INSTRUCTIONS = (
     "to the parent agent. Do not modify files."
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_SETTINGS_ENV = "UNSLOTH_CLAUDE_SUBAGENT_SETTINGS"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
@@ -143,7 +164,20 @@ class _PassthroughCommand(TyperCommand):
         return remaining
 
 
-_CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+# provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
+_CLAUDE_ENV_UNSET = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_UNIX_SOCKET",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
+)
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
@@ -236,8 +270,18 @@ _REASONING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = (
         "llama-server reasoning mode for an auto-started coding-agent server. "
-        "Defaults to off so tool calls stay in the structured tool channel; use "
-        "'auto' or 'on' to opt back into model reasoning."
+        "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
+        "to override it."
+    ),
+)
+_REASONING_EFFORT_OPTION = typer.Option(
+    None,
+    "--reasoning-effort",
+    rich_help_panel = _PANEL_SERVER,
+    help = (
+        "Reasoning effort for an auto-started coding-agent server, e.g. 'medium'. The "
+        "levels are the model's own, so pass one its chat template accepts. Default: "
+        "unset, which keeps the template's level."
     ),
 )
 # Sampling overrides pin a value on the auto-started server (winning over the client and the
@@ -366,17 +410,30 @@ _OPENCODE_NON_AUTO_SUBCOMMANDS = frozenset(
     "completion acp mcp attach debug providers auth agent upgrade uninstall serve web "
     "models stats export import github pr session plugin plug db console generate".split()
 )
+_OPENCODE_V2_SUBCOMMANDS = frozenset(
+    "acp api debug console auth mcp plugin models export import mini run service pair serve".split()
+)
+_OPENCODE_V2_STANDALONE_SUBCOMMANDS = frozenset("api models export import mini run".split())
 _OPENCODE_GLOBAL_BOOLEAN_OPTIONS = frozenset(
-    "-h --help -v --version --print-logs --pure --mdns".split()
+    "-h --help -v --version --print-logs --pure --mdns --standalone --wizard".split()
 )
 _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
-    "--log-level --port --hostname --mdns-domain --cors".split()
+    "--log-level --port --hostname --mdns-domain --cors --server --completions --cpu-profile".split()
 )
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_supports_native_auto() -> bool:
-    executable = _which_with_install_dirs("opencode")
+def _opencode_command() -> tuple[str, bool]:
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
+    return "opencode", False
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if Path(command).stem.lower() == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
     if executable is None:
         # No local binary: a --no-launch recipe may run elsewhere, and _run installs the
         # current release on launch -- either way assume native --auto is available.
@@ -397,13 +454,13 @@ def _opencode_supports_native_auto() -> bool:
     )
 
 
-def _opencode_subcommand(args: list[str]) -> Optional[str]:
-    """Return an explicit OpenCode subcommand after supported global options."""
+def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
+    """Return an explicit OpenCode subcommand and its index after global options."""
     index = 0
     while index < len(args):
         arg = args[index]
         if arg == "--":
-            return None
+            return None, None
         if arg in _OPENCODE_GLOBAL_BOOLEAN_OPTIONS:
             index += 1
             continue
@@ -416,17 +473,25 @@ def _opencode_subcommand(args: list[str]) -> Optional[str]:
         # A non-global option (e.g. --session) is a TUI flag; stop before its value is
         # mistaken for a subcommand.
         if arg.startswith("-"):
-            return None
-        return arg
-    return None
+            return None, None
+        return arg, index
+    return None, None
 
 
-def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], bool]:
+def _opencode_native_auto_args(
+    args: list[str],
+    yolo: bool,
+    *,
+    v2: bool = False,
+) -> tuple[list[str], bool]:
     """Add OpenCode's native --auto when the selected command supports it."""
     routed = list(args)
     if not yolo:
         return routed, False
-    if _opencode_subcommand(routed) in _OPENCODE_NON_AUTO_SUBCOMMANDS:
+    subcommand, _ = _opencode_subcommand(routed)
+    if v2 and subcommand in _OPENCODE_V2_SUBCOMMANDS and subcommand != "run":
+        return routed, False
+    if not v2 and subcommand in _OPENCODE_NON_AUTO_SUBCOMMANDS:
         return routed, False
     separator = routed.index("--") if "--" in routed else len(routed)
     # --mini's runMini TUI forces auto=false and never forwards --auto, so appending it is
@@ -436,6 +501,30 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
     if "--auto" not in routed[:separator]:
         routed.insert(separator, "--auto")
     return routed, True
+
+
+def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
+    """Keep session-only config on the V2 server that consumes it."""
+    routed = list(args)
+    separator = routed.index("--") if "--" in routed else len(routed)
+    head = routed[:separator]
+    if (
+        "--standalone" in head
+        or "--server" in head
+        or any(arg.startswith("--server=") for arg in head)
+    ):
+        return routed
+    subcommand, subcommand_index = _opencode_subcommand(routed)
+    if (
+        subcommand in _OPENCODE_V2_SUBCOMMANDS
+        and subcommand not in _OPENCODE_V2_STANDALONE_SUBCOMMANDS
+    ):
+        return routed
+    insert_at = (
+        subcommand_index + 1 if subcommand in _OPENCODE_V2_STANDALONE_SUBCOMMANDS else separator
+    )
+    routed.insert(insert_at, "--standalone")
+    return routed
 
 
 def _hermes_install_hint() -> str:
@@ -520,6 +609,7 @@ class ServerOptions(NamedTuple):
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
     reasoning: Optional[Literal["on", "off", "auto"]] = None
+    reasoning_effort: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
@@ -633,7 +723,7 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
@@ -1083,13 +1173,17 @@ def _start_studio_server(
     child_env = os.environ.copy()
     # Current llama-server versions read this documented env equivalent of --reasoning.
     # Older managed versions ignore an unknown env variable instead of failing startup on
-    # an unknown passthrough CLI flag. An omitted start option still defaults to off.
-    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
+    # an unknown passthrough CLI flag. An omitted start option follows the model template.
+    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "auto"
+    # Always written, like the line above: an inherited value would otherwise pin
+    # a level the omitted flag promises to leave alone. 'default' is llama.cpp's
+    # own sentinel for "keep the chat template's level".
+    child_env["LLAMA_ARG_REASONING_EFFORT"] = server.reasoning_effort or "default"
     # Pass the marker via env so an older launcher ignores it instead of treating an
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
     # Convey healing/nudging through the env; `unsloth run` reads these when its own
-    # flags are omitted, so this works even if run re-execs into an older Studio venv.
+    # flags are omitted, so this works even if run re-execs into an older Unsloth venv.
     # Only write when the operator set the flag explicitly; otherwise keep whatever they
     # already exported (child_env is a copy of os.environ), falling back to the start
     # defaults (healing on, nudging on) when nothing was inherited.
@@ -1224,10 +1318,18 @@ def _require_studio(
                 "and re-run to apply them.",
                 err = True,
             )
-        if server_options.reasoning is not None:
+        _reasoning_pins = [
+            f"{_flag} {_value}"
+            for _flag, _value in (
+                ("--reasoning", server_options.reasoning),
+                ("--reasoning-effort", server_options.reasoning_effort),
+            )
+            if _value is not None
+        ]
+        if _reasoning_pins:
             typer.echo(
                 f"Warning: an Unsloth server is already running at {base}; "
-                f"--reasoning {server_options.reasoning} applies only when this command starts "
+                f"{', '.join(_reasoning_pins)} takes effect only when this command starts "
                 "the server, so the running server keeps its current reasoning mode. Stop it "
                 "with `unsloth studio stop` and re-run to apply the override.",
                 err = True,
@@ -2344,21 +2446,30 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 
-def _claude_settings_overlay(model_id: str) -> str:
-    # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, keep every subagent on the served model (a user
-    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
-    # endpoint), and pin availableModels to the served model so a user allowlist can't
-    # reject it. The pin must be non-empty; [] is ignored.
+def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) -> str:
+    # Command-tier pins beat user/project settings, which Claude applies after the process env.
+    settings_env = {name: "" for name in _CLAUDE_ENV_UNSET}
+    settings_env.update(local_env or {})
+    settings_env.update(
+        {
+            "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+        }
+    )
     return json.dumps(
         {
-            "env": {
-                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
-            },
+            "env": settings_env,
             "availableModels": [model_id],
         }
     )
+
+
+def _write_claude_settings(path: Path, model_id: str, local_env: dict) -> Path:
+    overlay = _claude_settings_overlay(model_id, local_env)
+    digest = hashlib.sha256(overlay.encode("utf-8")).hexdigest()[:16]
+    settings = path / f"settings-{digest}.json"
+    _write_private_text(settings, overlay)
+    return settings
 
 
 def _claude_version() -> Optional[tuple]:
@@ -2381,14 +2492,49 @@ def _claude_version() -> Optional[tuple]:
         return (0,)
 
 
-def _claude_flags(model_id: str) -> list:
+def _claude_flags(model_id: str, settings: Optional[str] = None) -> list:
     # KV-cache-preserving flags: move per-session context out of the system prompt and pass
-    # the session overlay. claude < 2.1.98 rejects unknown flags; no local binary means a
-    # printout for another machine, so assume a current build.
+    # the session overlay. claude < 2.1.98 rejects the dynamic-sections flag but already
+    # supports --settings; no local binary means a printout for another machine, so assume
+    # a current build.
     version = _claude_version()
+    settings_flags = ["--settings", settings or _claude_settings_overlay(model_id)]
     if version is not None and version < (2, 1, 98):
-        return []
-    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
+        return settings_flags
+    return [_DYNAMIC_SECTIONS_FLAG, *settings_flags]
+
+
+def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough: list) -> list:
+    local_args = [
+        "--model",
+        model_id,
+        *_claude_flags(model_id, settings),
+        *_yolo_command_flags("claude", yolo),
+    ]
+    forwarded = list(passthrough)
+    separator = forwarded.index("--") if "--" in forwarded else len(forwarded)
+    before_separator = forwarded[:separator]
+    forwarded_settings = []
+    remaining = []
+    index = 0
+    while index < len(before_separator):
+        arg = before_separator[index]
+        if arg == "--settings" and index + 1 < len(before_separator):
+            forwarded_settings.extend(before_separator[index : index + 2])
+            index += 2
+            continue
+        if arg.startswith("--settings="):
+            forwarded_settings.append(arg)
+        else:
+            remaining.append(arg)
+        index += 1
+    return [
+        "claude",
+        *forwarded_settings,
+        *local_args,
+        *remaining,
+        *forwarded[separator:],
+    ]
 
 
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:
@@ -2405,6 +2551,9 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
     }
     window = entry.get("context_length") or entry.get("max_context_length")
     if window:
+        # claude assumes 200k for a model id it does not recognize, and clamps
+        # AUTO_COMPACT_WINDOW to [100k, that]. MAX_CONTEXT_TOKENS sets the window itself.
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
     return env
@@ -2430,6 +2579,7 @@ def _merge_codex_config(existing: str, base: str) -> str:
         f'env_key = "{_CODEX_ENV_KEY}"\n'
         'wire_api = "responses"\n'
         "requires_openai_auth = false\n"
+        f"stream_idle_timeout_ms = {_CODEX_STREAM_IDLE_TIMEOUT_MS}\n"
     )
 
 
@@ -2726,7 +2876,12 @@ def _agent_config_path(path: Path, command: list) -> str:
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
 
 
-def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
+def _opencode_subagent_inline_config(
+    path: Path,
+    permission: dict,
+    command: str = "opencode",
+    v2: bool = False,
+) -> dict:
     """Keep the local provider visible without hiding the parent's allowed providers."""
     inline: dict = {}
     inherited = os.environ.get("OPENCODE_CONFIG_CONTENT")
@@ -2757,20 +2912,33 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
                 provider for provider in disabled if provider != _OPENCODE_PROVIDER
             ]
 
-    # The inherited inline layer is already highest priority. Merge it even when
-    # OpenCode is not installed yet, as in fresh-install and --no-launch flows.
+    # Keep an inherited inline allowlist usable by the local provider. V2 turns these
+    # filters into policies where global/project rules still intentionally outrank this
+    # content; the message at launch makes that boundary explicit.
     merge_provider_filters(inline)
     effective = inline
 
-    executable = _which_with_install_dirs("opencode")
-    if executable is None:
+    executable = None if v2 else _which_with_install_dirs(command)
+    if v2:
+        legacy_depth = inline.pop("subagent_depth", None)
+        if (
+            isinstance(legacy_depth, int)
+            and not isinstance(legacy_depth, bool)
+            and legacy_depth > 0
+        ):
+            experimental = inline.get("experimental")
+            if not isinstance(experimental, dict):
+                experimental = {}
+            experimental.setdefault("subagent_depth", legacy_depth)
+            inline["experimental"] = experimental
+    elif executable is None:
         typer.echo(
             f"Warning: OpenCode is not installed, so provider filters could not be checked. "
             f"The target configuration must allow '{_OPENCODE_PROVIDER}'.",
             err = True,
         )
     else:
-        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, ["opencode"]))
+        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, [command]))
         try:
             resolved = subprocess.run(
                 [executable, "debug", "config"],
@@ -2793,10 +2961,11 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
 
         merge_provider_filters(effective)
 
-    depth = effective.get("subagent_depth")
-    inline["subagent_depth"] = (
-        depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
-    )
+    if not v2:
+        depth = effective.get("subagent_depth")
+        inline["subagent_depth"] = (
+            depth if isinstance(depth, int) and not isinstance(depth, bool) and depth > 0 else 1
+        )
     if permission:
         inline["permission"] = permission
     return inline
@@ -2834,6 +3003,18 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     command = sys.executable
     args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
     mcp_env = dict(server_env)
+    base = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
+    key = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
+    model_id = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
+    if base and key and model_id:
+        entry = {
+            "id": model_id,
+            "context_length": int(
+                server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0
+            ),
+        }
+        settings = _write_claude_settings(plugin, model_id, _claude_local_env(base, key, entry))
+        mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
         args = [
@@ -2846,7 +3027,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         ]
         mcp_env["WSLENV"] = _merge_wslenv(
             os.environ.get("WSLENV", ""),
-            _wsl_bridge_names(server_env, ()),
+            (
+                *_wsl_bridge_names(server_env, ()),
+                *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if base and key and model_id else []),
+            ),
         )
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
@@ -3149,7 +3333,7 @@ def _augment_path_with_install_dirs() -> None:
         home = Path.home()
     except (RuntimeError, OSError):
         home = None
-    candidates = [home / ".local" / "bin"] if home is not None else []
+    candidates = [home / ".local" / "bin", home / ".opencode" / "bin"] if home is not None else []
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:
@@ -3188,7 +3372,7 @@ def _augment_path_with_install_dirs() -> None:
 def _probe_env(**extra: str) -> dict:
     """Environment for probes that RUN a resolved shim.
 
-    _which_with_install_dirs restores PATH before returning, so a shim backed by Studio's
+    _which_with_install_dirs restores PATH before returning, so a shim backed by Unsloth's
     managed Node would not find that node when executed.
     """
     original = os.environ.get("PATH")
@@ -3202,6 +3386,32 @@ def _probe_env(**extra: str) -> dict:
     return env
 
 
+def _prefer_windows_cmd_sibling(executable: Optional[str]) -> Optional[str]:
+    """Prefer the sibling .cmd when Windows resolved an extensionless npm/pnpm shim.
+
+    cmd-shim writes ``to``, ``to.cmd`` and ``to.ps1``, and shutil.which can return
+    the extensionless POSIX shim, which CreateProcess rejects with WinError 193.
+    Measured on windows-latest: 3.12.0 probes the bare name before PATHEXT
+    (gh-109590), and 3.12.1 onwards do not. A PATHEXT holding "." reaches the same
+    place on any version. Substituted only when the file opens with a shebang, so a
+    real PE keeps priority over a stale wrapper beside it; matched on
+    not-a-Windows-suffix so a dotted bin name is caught too.
+    """
+    if executable is None or os.name != "nt":
+        return executable
+    if Path(executable).suffix.lower() in {".exe", ".com", ".cmd", ".bat", ".ps1"}:
+        return executable
+    with contextlib.suppress(OSError):
+        with open(executable, "rb") as resolved_file:
+            if resolved_file.read(2) == b"#!":
+                # .CMD only matters on case-sensitive volumes; no writer emits .bat.
+                for extension in (".cmd", ".CMD"):
+                    sibling = Path(executable + extension)
+                    if sibling.is_file():
+                        return str(sibling)
+    return executable
+
+
 def _which_with_install_dirs(name: str) -> Optional[str]:
     # shutil.which(name), but searching the known agent install dirs too, so a version probe
     # resolves the same binary _launch() will (it augments PATH before it runs). Without this an
@@ -3211,7 +3421,9 @@ def _which_with_install_dirs(name: str) -> Optional[str]:
     original = os.environ.get("PATH")
     _augment_path_with_install_dirs()
     try:
-        return shutil.which(name)
+        # Callers spawn this result directly, so the shim rescue is needed here
+        # too, not only in _resolved_launch_command.
+        return _prefer_windows_cmd_sibling(shutil.which(name))
     finally:
         if original is None:
             os.environ.pop("PATH", None)
@@ -3238,13 +3450,13 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
 def _npm_executable() -> Optional[str]:
     managed_node = _managed_node_tools()
     if not (managed_node and managed_node[2]):
-        executable = shutil.which("npm")
+        executable = _prefer_windows_cmd_sibling(shutil.which("npm"))
         if executable and not _wsl_windows_executable([executable]):
             return executable
         if executable:
             # WSL inherits the Windows PATH, so the rejected shim may shadow a native npm.
             for directory in os.get_exec_path():
-                candidate = shutil.which("npm", path = directory)
+                candidate = _prefer_windows_cmd_sibling(shutil.which("npm", path = directory))
                 if candidate and not _wsl_windows_executable([candidate]):
                     return candidate
 
@@ -3518,6 +3730,9 @@ def _resolved_launch_command(
     environment: Optional[dict] = None,
 ) -> list:
     """Return an argv that preserves arguments through standard Windows npm shims."""
+    # _launch resolves with raw shutil.which, so rescue here too; the sibling
+    # then enters the parser below.
+    executable = _prefer_windows_cmd_sibling(executable)
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
         # PowerShell's native-command bridge also rewrites embedded quotes. Match
@@ -3711,7 +3926,7 @@ def _agents_config_root() -> Path:
 
 @contextlib.contextmanager
 def _temporary_agent_config(prefix: str):
-    # Nothing else prunes Studio's auth tree, so reuse the locked session helper: the next
+    # Nothing else prunes Unsloth's auth tree, so reuse the locked session helper: the next
     # launch reclaims homes left by a killed wrapper, and the lock spares live sessions.
     temp_root = _agents_config_root() / ".tmp"
     with contextlib.ExitStack() as stack:
@@ -3719,7 +3934,7 @@ def _temporary_agent_config(prefix: str):
             temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
             path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
         except OSError:
-            # Attaching to a remote or running Studio needs no local auth tree, so it may be
+            # Attaching to a remote or running Unsloth needs no local auth tree, so it may be
             # absent or unwritable. Fall back to the system temp dir, as before: no
             # reclamation there, but the OS prunes it.
             path = Path(tempfile.mkdtemp(prefix = prefix))
@@ -3889,7 +4104,7 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Studio's root.
+        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Unsloth's root.
         parent = _ephemeral_session_parent(agent)
         prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:
@@ -4278,6 +4493,7 @@ def claude(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4309,6 +4525,7 @@ def claude(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4365,23 +4582,23 @@ def claude(
     # claude keeps its history in ~/.claude/projects, which --settings/env never
     # relocate, so a session already survives exit; resume it with `claude --continue`
     # or `--resume <id>` passed through.
-    command = [
-        "claude",
-        "--model",
-        model_id,
-        *_claude_flags(model_id),
-        *_yolo_command_flags("claude", yolo),
-        *ctx.args,
-    ]
-    _run(
-        base,
-        entry,
-        env,
-        command,
-        launch = launch,
-        install_hint = install_hint,
-        unset_env = _CLAUDE_ENV_UNSET,
-    )
+    with _session_config("claude", launch, persist = persist) as config:
+        settings = _write_claude_settings(config, model_id, env)
+        command = _claude_local_command(
+            model_id,
+            _agent_config_path(settings, ["claude"]),
+            yolo,
+            ctx.args,
+        )
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            unset_env = _CLAUDE_ENV_UNSET,
+        )
 
 
 @start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -4399,6 +4616,7 @@ def codex(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4428,6 +4646,7 @@ def codex(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4504,6 +4723,7 @@ def openclaw(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4535,6 +4755,7 @@ def openclaw(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4595,6 +4816,7 @@ def opencode(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4609,8 +4831,9 @@ def opencode(
     """Point OpenCode at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
-    install_hint = _npm_install_hint("opencode-ai")
-    _require_agent_for_launch("opencode", install_hint, launch)
+    command_name, opencode_v2 = _opencode_command()
+    install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
+    _require_agent_for_launch(command_name, install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -4622,6 +4845,7 @@ def opencode(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4630,14 +4854,26 @@ def opencode(
             presence_penalty = presence_penalty,
         ),
     )
+    if opencode_v2:
+        typer.echo(
+            f"OpenCode V2 provider policies must allow '{_OPENCODE_PROVIDER}'.",
+            err = True,
+        )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make
         # `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
-        route_native_auto = yolo and _opencode_supports_native_auto() and (launch or bool(ctx.args))
-        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
-        command = ["opencode", *opencode_args]
+        route_native_auto = (
+            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
+        )
+        opencode_args = list(ctx.args)
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args, native_auto = _opencode_native_auto_args(
+            opencode_args, route_native_auto, v2 = opencode_v2
+        )
+        command = [command_name, *opencode_args]
         with _session_config("opencode-subagent", launch, persist = persist) as cfg:
             config_path = cfg / "opencode.json"
             session_permission = write_opencode_config(
@@ -4649,7 +4885,12 @@ def opencode(
                 as_subagent = True,
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
-            inline_config = _opencode_subagent_inline_config(config_path, session_permission)
+            inline_config = _opencode_subagent_inline_config(
+                config_path,
+                session_permission,
+                command = command_name,
+                v2 = opencode_v2,
+            )
             # A project opencode.json outranks the session file and could field-merge its
             # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
             inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
@@ -4678,20 +4919,30 @@ def opencode(
     # subcommand such as `run <prompt>`; a leading --model would land before that
     # subcommand and break it. Those paths rely on the inline pin instead.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto()
+    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
     if ctx.args:
-        opencode_args, native_auto = _opencode_native_auto_args(list(ctx.args), route_native_auto)
-        command = ["opencode", *opencode_args]
-    elif launch:
+        opencode_args = list(ctx.args)
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
         opencode_args, native_auto = _opencode_native_auto_args(
-            ["--model", opencode_model],
-            route_native_auto,
+            opencode_args, route_native_auto, v2 = opencode_v2
         )
-        command = ["opencode", *opencode_args]
+        command = [command_name, *opencode_args]
+    elif launch:
+        opencode_args = [] if opencode_v2 else ["--model", opencode_model]
+        if opencode_v2:
+            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args, native_auto = _opencode_native_auto_args(
+            opencode_args,
+            route_native_auto,
+            v2 = opencode_v2,
+        )
+        command = [command_name, *opencode_args]
     else:
         # Append-safe base: `opencode --auto run ...` parses as the TUI with a project
         # "run", not the run subcommand. Command unknown here, so keep the config fallback.
-        command = ["opencode"]
+        opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
+        command = [command_name, *opencode_args]
     # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
     # already survives exit; reopen the last one by passing `opencode --continue` through.
     with _session_config("opencode", launch, persist = persist) as cfg:
@@ -4711,16 +4962,9 @@ def opencode(
         # outranks project config; the API key stays in the private file, never the env.
         # Only the config fallback carries a permission. Native --auto omits it (auto-approve
         # asks, keep explicit denies); a non-yolo session omits it too, honoring project rules.
-        # opencode filters every provider (a config-defined custom one included) through
-        # its enabled_providers allowlist and disabled_providers denylist, and a model pin
-        # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.
-        # To guarantee the session model loads without reading or modifying the user's real
-        # config, scope THIS session to our provider alone: allowlist _OPENCODE_PROVIDER and
-        # clear the denylist. These arrays are replaced (not merged) by higher layers, so
-        # setting them in the highest-priority inline overlay neutralizes any user allowlist
-        # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
-        # for this invocation and never touches the user's config files, so their normal
-        # `opencode` is unchanged; only this session is limited to the Unsloth provider.
+        # V1 filters are ordinary overlays, so scope that session to our provider. V2 turns
+        # filters into security policies where global/project rules intentionally win; keep
+        # those policies intact and tell the user above that they must allow our provider.
         # small_model is opencode's separate model for lightweight tasks; pin it to the
         # session model too, or a user/project small_model on another (now filtered)
         # provider would resolve a not-found error mid-session. The session serves one
@@ -4728,9 +4972,10 @@ def opencode(
         inline_config: dict = {
             "model": opencode_model,
             "small_model": opencode_model,
-            "enabled_providers": [_OPENCODE_PROVIDER],
-            "disabled_providers": [],
         }
+        if not opencode_v2:
+            inline_config["enabled_providers"] = [_OPENCODE_PROVIDER]
+            inline_config["disabled_providers"] = []
         if session_permission:
             inline_config["permission"] = session_permission
         env = {
@@ -4755,6 +5000,7 @@ def hermes(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4784,6 +5030,7 @@ def hermes(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -4815,6 +5062,7 @@ def pi(
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -4847,6 +5095,7 @@ def pi(
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
             reasoning = reasoning,
+            reasoning_effort = reasoning_effort,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,

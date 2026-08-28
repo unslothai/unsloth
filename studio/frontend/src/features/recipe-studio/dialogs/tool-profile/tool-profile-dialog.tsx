@@ -271,6 +271,7 @@ function McpServerCard({
                     />
                     <Input
                       className="nodrag"
+                      data-reload-snapshot-sensitive
                       value={item.value}
                       placeholder="value"
                       onChange={(event) =>
@@ -329,6 +330,7 @@ function McpServerCard({
                   />
                   <Input
                     className="nodrag"
+                    data-reload-snapshot-sensitive
                     value={provider.api_key ?? ""}
                     placeholder="token"
                     onChange={(event) =>
