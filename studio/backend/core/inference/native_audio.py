@@ -325,7 +325,6 @@ def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str,
 def _repair_moss_nano_rotary_buffers(model) -> None:
     """Rebuild buffers that Transformers 5 leaves uninitialized after meta loading."""
     import torch
-
     for decoder_name in ("transformer", "local_transformer"):
         decoder = getattr(model, decoder_name, None)
         config = getattr(decoder, "config", None)
@@ -1104,7 +1103,6 @@ class NativeAudioBackend:
         cancel_event,
     ) -> Tuple[bytes, int]:
         from core.inference.chat_template_helpers import neutralize_tts_prompt_text
-
         text = neutralize_tts_prompt_text(text, "moss_tts_nano")
         with tempfile.TemporaryDirectory(prefix = "unsloth-moss-nano-") as temp_dir:
             output_path = Path(temp_dir) / "speech.wav"

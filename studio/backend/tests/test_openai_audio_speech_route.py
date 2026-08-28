@@ -644,9 +644,7 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         "http://127.0.0.1:8880/v1?api-version=2026-08-24",
         "sk-test",
     )
-    asyncio.run(
-        client.create_speech(text = "hi", model = "kokoro", instructions = "Speak warmly.")
-    )
+    asyncio.run(client.create_speech(text = "hi", model = "kokoro", instructions = "Speak warmly."))
     assert sent["url"] == ("http://127.0.0.1:8880/v1/audio/speech?api-version=2026-08-24")
     assert sent["json"]["instructions"] == "Speak warmly."
 

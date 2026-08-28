@@ -426,9 +426,7 @@ _MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
 # A 24 GB-class card reports slightly less than 24.0 GiB through free-VRAM
 # telemetry even when idle. Keep the admission floor below that value.
 _MINIMAX_MUSIC3_RESIDENT_GB = 23.0
-_MINIMAX_PROMPT_OVERFLOW = _re.compile(
-    r"The assembled prompt has \d+ tokens; the maximum is \d+"
-)
+_MINIMAX_PROMPT_OVERFLOW = _re.compile(r"The assembled prompt has \d+ tokens; the maximum is \d+")
 
 
 def _tts_max_new_tokens(

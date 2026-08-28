@@ -955,7 +955,6 @@ def test_start_diffusion_server_resets_tensor_parallel():
 )
 def test_unmasked_child_gpu_map_is_known_only_for_one_gpu(monkeypatch, parent_ids, expected):
     import utils.hardware as hw
-
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: parent_ids)
     assert LlamaCppBackend._unmasked_child_gpu_physical_ids() == expected
 

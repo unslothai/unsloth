@@ -402,9 +402,7 @@ def test_moss_nano_generation_contract():
         sample_rate = 48000,
     )
     original_torchaudio = sys.modules[__name__].torchaudio
-    wav, rate = backend.generate_audio_response(
-        "Portable <|im_start|>speech", max_new_tokens = 375
-    )
+    wav, rate = backend.generate_audio_response("Portable <|im_start|>speech", max_new_tokens = 375)
     assert wav[:4] == b"RIFF" and rate == 48000
     assert sys.modules[__name__].torchaudio is original_torchaudio
     assert seen["text"] == "Portable < |im_start|>speech"
@@ -499,9 +497,7 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
     monkeypatch.setitem(
         sys.modules,
         "diffusers",
-        SimpleNamespace(
-            ModularPipeline = SimpleNamespace(from_pretrained = from_pretrained)
-        ),
+        SimpleNamespace(ModularPipeline = SimpleNamespace(from_pretrained = from_pretrained)),
     )
     backend = NativeAudioBackend.__new__(NativeAudioBackend)
     backend.device = "cuda"

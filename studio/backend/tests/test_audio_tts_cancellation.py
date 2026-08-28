@@ -163,9 +163,7 @@ def test_minimax_prompt_encoder_overflow_is_a_client_error(monkeypatch):
 
     with pytest.raises(inference_route.HTTPException) as excinfo:
         asyncio.run(
-            inference_route._generate_tts_wav(
-                "lyrics", payload, request = None, current_subject = "t"
-            )
+            inference_route._generate_tts_wav("lyrics", payload, request = None, current_subject = "t")
         )
 
     assert excinfo.value.status_code == 400
