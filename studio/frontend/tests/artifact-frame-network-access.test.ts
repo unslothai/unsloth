@@ -467,46 +467,20 @@ test("granting network access leaves focus on the canvas", () => {
   assert.ok(focusAt < grantAt, "focus must move before the button unmounts");
 });
 
-// Turning the setting on unmounts the button that opened the dialog, and the
-// settings dialog only restores an opener that is still connected. Without a
-// target that outlives the banner, closing the dialog drops focus on <body>.
-test("the settings deep link parks focus somewhere that outlives the banner", () => {
-  const source = sourceFile(FRAME);
-  const handlers: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.getText().endsWith(".openDialog")
-    ) {
-      for (let at: ts.Node = node; at.parent; at = at.parent) {
-        if (ts.isJsxAttribute(at.parent)) {
-          handlers.push(at.getText());
-          break;
-        }
-      }
-    }
-    node.forEachChild(visit);
-  };
-  source.forEachChild(visit);
-  assert.equal(handlers.length, 1, "the deep link is not in one JSX handler");
-  const handler = handlers[0];
-  const focusAt = handler.indexOf("frameRef.current?.focus");
-  const openAt = handler.indexOf(".openDialog");
-  assert.ok(focusAt >= 0, "the handler must hand the frame focus");
-  assert.ok(
-    focusAt < openAt,
-    "the frame must take focus BEFORE the dialog captures its opener",
+test("the settings deep link keeps the invoking button as its opener", () => {
+  const handler = readHandlerCalling(
+    "useSettingsDialogStore.getState().openDialog",
   );
+  assert.match(handler, /focusFallback:\s*iframeRef\.current/);
+  assert.doesNotMatch(handler, /iframeRef\.current\?\.focus/);
 });
 
-test("the frame itself can hold that focus, and shows it", () => {
-  const tag = readTagWithRef("frameRef");
-  assert.match(tag, /tabIndex=\{-1\}/);
-  // outline-none suppresses the ring the tabIndex would otherwise paint, so
-  // without a replacement the keyboard user lands on an unmarked canvas.
+test("the named iframe is the visible focus fallback", () => {
+  const tag = readTagWithRef("iframeRef");
+  assert.match(tag, /title=\{title\}/);
   assert.match(
     tag,
-    /focus-visible:ring/,
+    /focus-visible:outline/,
     "the restored focus target needs a visible focus treatment",
   );
 });

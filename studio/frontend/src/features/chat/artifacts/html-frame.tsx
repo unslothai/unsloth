@@ -111,10 +111,6 @@ export function ArtifactHtmlFrame({
 }) {
   const t = useT();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // Focus target the settings deep link hands off to. The banner button that
-  // opens the dialog unmounts as soon as the setting goes on, and the dialog
-  // only restores an opener that is still connected.
-  const frameRef = useRef<HTMLDivElement>(null);
   // Every canvas honors this, fence or tool. Off by default; the standing half
   // of the gate, alongside the per-canvas grant below.
   const networkAccessEnabled = useChatRuntimeStore(
@@ -223,15 +219,7 @@ export function ArtifactHtmlFrame({
 
   return (
     <div
-      ref={frameRef}
-      tabIndex={-1}
-      className={cn(
-        // outline-none drops the UA ring the tabIndex above would otherwise
-        // paint; the focus-visible ring puts one back for the keyboard user
-        // this element exists to catch, inset so it sits over the canvas.
-        "relative outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-        fill ? "h-full" : undefined,
-      )}
+      className={cn("relative", fill ? "h-full" : undefined)}
     >
       <iframe
         ref={iframeRef}
@@ -239,7 +227,10 @@ export function ArtifactHtmlFrame({
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         onLoad={postArtifactHtml}
-        className={cn("block w-full border-0 bg-background", className)}
+        className={cn(
+          "block w-full border-0 bg-background outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+          className,
+        )}
         style={{ height: fill ? "100%" : height }}
         title={title}
       />
@@ -294,12 +285,9 @@ export function ArtifactHtmlFrame({
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    // Focus the canvas before the dialog captures its opener:
-                    // this button is gone by the time the dialog closes, and an
-                    // opener that unmounted leaves focus on <body>.
-                    frameRef.current?.focus({ preventScroll: true });
                     useSettingsDialogStore.getState().openDialog("chat", {
                       scrollTarget: "chat-canvas-network",
+                      focusFallback: iframeRef.current,
                     });
                   }}
                 >

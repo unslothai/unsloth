@@ -36,6 +36,7 @@ export type ArchivedShelf = "chats" | "images" | "videos";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
+  focusFallback?: HTMLElement | null;
 }
 
 interface SettingsDialogState {
@@ -47,6 +48,7 @@ interface SettingsDialogState {
   // previous-focus capture, leaving focus on <body> after close. We restore
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
+  openerFallback: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
   // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
   // for how long it lives unconsumed.
@@ -114,6 +116,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   activeTab: loadInitialTab(),
   scrollTarget: null,
   opener: null,
+  openerFallback: null,
   archivedRequested: null,
   openDialog: (tab, options) =>
     set((state) => {
@@ -126,6 +129,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
         opener: captureOpener(),
+        openerFallback: options?.focusFallback ?? null,
       };
     }),
   openArchivedChats: () =>
@@ -135,6 +139,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       scrollTarget: null,
       archivedRequested: "chats",
       opener: captureOpener(),
+      openerFallback: null,
     }),
   openArchivedMedia: (shelf) =>
     set({
@@ -143,6 +148,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       scrollTarget: null,
       archivedRequested: shelf,
       opener: captureOpener(),
+      openerFallback: null,
     }),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
   consumeScrollTarget: (target) =>
