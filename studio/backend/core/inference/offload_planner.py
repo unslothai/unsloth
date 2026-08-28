@@ -120,6 +120,13 @@ class PlanOptions:
     # to CPU and stalls). Off by default; matched pairs only when enabled.
     allow_kv_quant: bool = False
     kv_quant_type: str = "q8_0"
+    # The caller passed -nkvo (or a false LLAMA_ARG_KV_OFFLOAD), so llama.cpp puts
+    # the WHOLE cache on the host: offload is one scalar and the buffer type falls
+    # back to the CPU one for every layer (llama-kv-cache.cpp:210-219), same branch
+    # in the recurrent and DSV4 caches. The cache and the recurrent state move out
+    # of the VRAM footprint and into the host one; charging them to VRAM anyway
+    # would spill FFN blocks for a deficit the child never has.
+    kv_on_host: bool = False
 
 
 @dataclass(frozen = True)
@@ -257,6 +264,7 @@ def resident_floor_bytes(
     *,
     kv_quantised: bool = False,
     kv_bytes_floor: int = 0,
+    kv_on_host: bool = False,
 ) -> int:
     """VRAM needed with EVERY spillable tensor already on the host.
 
@@ -264,6 +272,9 @@ def resident_floor_bytes(
     cache and lm_head. Below this, ``-ot`` has nothing left to give and only a
     smaller quant or less context can help.
     """
+    if kv_on_host:
+        # Both caches follow the same scalar, so neither is VRAM here.
+        return layout.block_resident_bytes + layout.lm_head_bytes + layout.other_resident_bytes
     return (
         layout.block_resident_bytes
         + layout.lm_head_bytes
@@ -279,12 +290,17 @@ def all_resident_bytes(
     *,
     kv_quantised: bool = False,
     kv_bytes_floor: int = 0,
+    kv_on_host: bool = False,
 ) -> int:
     """VRAM needed with nothing spilled. token_embd is excluded: it is never
     GPU-resident (llama-model.cpp pins dev_input to the CPU unconditionally)."""
     return (
         resident_floor_bytes(
-            layout, n_ctx, kv_quantised = kv_quantised, kv_bytes_floor = kv_bytes_floor
+            layout,
+            n_ctx,
+            kv_quantised = kv_quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            kv_on_host = kv_on_host,
         )
         + layout.spillable_bytes
     )
@@ -331,6 +347,7 @@ def plan_placement(
     opts: Optional[PlanOptions] = None,
     kv_bytes_floor: int = 0,
     split_weights_per_device: Sequence[int] = (),
+    kv_layer_weights: Sequence[int] = (),
 ) -> Plan:
     """Decide the placement for one launch.
 
@@ -340,6 +357,10 @@ def plan_placement(
     per-card reserve -- so the two must not be conflated when modelling the
     split. Empty falls back to the budget, which is right whenever the caller has
     applied no per-card adjustment at all.
+
+    ``kv_layer_weights`` is each layer's RELATIVE cache size, scaled to the total
+    the planner already trusts: it PLACES the cache, never re-sizes it. Empty
+    means the caller cannot say, and the per-device check then abstains.
 
     ``kv_bytes_floor`` is an attention-cache size the caller has already computed
     byte-accurately for this launch. The planner never reserves less than it; see
@@ -381,7 +402,10 @@ def plan_placement(
     # context outruns a larger spilled one, when the caller allows it to move.
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
-        and all_resident_bytes(layout, n_ctx, kv_bytes_floor = kv_bytes_floor) > budget
+        and all_resident_bytes(
+            layout, n_ctx, kv_bytes_floor = kv_bytes_floor, kv_on_host = opts.kv_on_host
+        )
+        > budget
     ):
         shrunk = max_context_for(layout, vram_bytes_per_device, opts = opts)
         if shrunk >= opts.min_ctx:
@@ -409,6 +433,7 @@ def plan_placement(
             kv_bytes_floor,
             vram_bytes_per_device,
             split_weights_per_device or vram_bytes_per_device,
+            kv_layer_weights,
         )
         if plan is not None:
             return plan
@@ -436,11 +461,14 @@ def plan_placement(
                     kv_bytes_floor,
                     vram_bytes_per_device,
                     split_weights_per_device or vram_bytes_per_device,
+                    kv_layer_weights,
                 )
                 if plan is not None:
                     return plan
 
-    floor = resident_floor_bytes(layout, n_ctx, kv_bytes_floor = kv_bytes_floor)
+    floor = resident_floor_bytes(
+        layout, n_ctx, kv_bytes_floor = kv_bytes_floor, kv_on_host = opts.kv_on_host
+    )
     return Plan(
         changed = False,
         n_ctx = n_ctx,
@@ -498,6 +526,7 @@ def _per_device_shortfall(
     quantised: bool,
     kv_bytes_floor: int,
     split_weights_per_device: Sequence[int] = (),
+    kv_layer_weights: Sequence[int] = (),
 ) -> Optional[str]:
     """``None`` when every device provably fits, else why it cannot be shown to.
 
@@ -514,29 +543,46 @@ def _per_device_shortfall(
     """
     if len(vram_bytes_per_device) <= 1:
         return None
-    # These three make the per-row byte split unknowable from the layout, so
-    # there is nothing to validate against and the honest answer is to abstain.
-    if layout.recurrent_bytes > 0:
-        return "the recurrent state's per-layer split is not visible in the layout"
-    if layout.n_attention_layers != layout.n_layers:
+    # These three shapes -- recurrent hybrid, n_attention_layers short of
+    # n_layers, sliding window -- are only a problem when the cache has to be
+    # spread evenly for want of anything better. A vector removes that guess;
+    # without one they still abstain.
+    uneven_cache = (
+        layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
+    )
+    weights = [max(0, int(w)) for w in kv_layer_weights]
+    if len(weights) != layout.n_layers or not any(weights):
+        weights = []
+    if uneven_cache and not weights:
+        if layout.recurrent_bytes > 0:
+            return "the recurrent state's per-layer split is not visible in the layout"
+        if layout.n_attention_layers != layout.n_layers:
+            return (
+                f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
+                "and the layout does not say which"
+            )
         return (
-            f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
-            "and the layout does not say which"
+            "the cache is per-layer uneven (sliding-window attention) and no per-layer "
+            "vector was supplied to say which layers are full-context"
         )
-    if layout.has_swa:
-        # The check above passes (every layer IS attention), but a window layer's
-        # cache is a fraction of a full-context one (Gemma3 interleaves 5:1) and
-        # the layout does not say which rows are which. An even spread under-books
-        # whichever card drew the full-context rows.
-        return "the cache is per-layer uneven (sliding-window attention) and the layout does not say which layers are full-context"
     if layout.has_excluded_blocks:
         return "the GGUF carries trailing blocks that shift llama.cpp's row count"
 
     n_slots = layout.n_layers + 1
     if n_slots <= 1:
         return None
-    cache = cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
-    kv_per_layer = cache // layout.n_layers if layout.n_layers else 0
+    cache = (
+        0
+        if opts.kv_on_host
+        else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+    )
+    # Scaled to the total the caller already priced. Uniform when unsupplied.
+    total_weight = sum(weights)
+    if weights and total_weight > 0:
+        kv_by_layer = [cache * w // total_weight for w in weights]
+    else:
+        per = cache // layout.n_layers if layout.n_layers else 0
+        kv_by_layer = [per] * layout.n_layers
     by_index = {b.index: b for b in layout.blocks}
     output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
 
@@ -550,7 +596,9 @@ def _per_device_shortfall(
             block = by_index.get(row)
             if block is None:
                 continue
-            used += block.resident_bytes + kv_per_layer
+            used += block.resident_bytes
+            if row < len(kv_by_layer):
+                used += kv_by_layer[row]
             if row not in spilled_indices:
                 used += block.spillable_bytes
         # Everything outside the layout sits on the main device, which is
@@ -576,10 +624,15 @@ def _plan_at(
     kv_bytes_floor: int = 0,
     vram_bytes_per_device: Sequence[int] = (),
     split_weights_per_device: Sequence[int] = (),
+    kv_layer_weights: Sequence[int] = (),
 ) -> Optional[Plan]:
     """One pass of the ladder at a fixed context and cache dtype."""
     needed = all_resident_bytes(
-        layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
+        layout,
+        n_ctx,
+        kv_quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        kv_on_host = opts.kv_on_host,
     )
     if needed <= budget:
         return _finish(
@@ -638,6 +691,7 @@ def _plan_at(
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
             split_weights_per_device = split_weights_per_device,
+            kv_layer_weights = kv_layer_weights,
         )
         if uneven is not None:
             return Plan(
@@ -678,6 +732,7 @@ def _plan_at(
                 quantised = quantised,
                 kv_bytes_floor = kv_bytes_floor,
                 split_weights_per_device = split_weights_per_device,
+                kv_layer_weights = kv_layer_weights,
             )
             if uneven is not None:
                 return Plan(
@@ -739,8 +794,22 @@ def _finish(
     # token_embd is host-resident on every launch, so it is host RAM this plan
     # has to be able to pay for even when nothing is spilled.
     host_bytes = layout.token_embd_bytes + spilled_bytes
+    if opts.kv_on_host:
+        # -nkvo moved the cache and the recurrent state out of VRAM, not out of
+        # existence: they are host RAM now, and the mmap decision below has to see
+        # them or it answers against a footprint short by the whole cache.
+        host_bytes += (
+            cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+            + layout.recurrent_bytes
+        )
     vram_bytes = (
-        all_resident_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+        all_resident_bytes(
+            layout,
+            n_ctx,
+            kv_quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            kv_on_host = opts.kv_on_host,
+        )
         - spilled_bytes
     )
 
@@ -784,13 +853,33 @@ def plan_to_args(plan: Plan) -> list[str]:
     return args
 
 
-def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the launch path may emit a spill plan.
+_SMART_OFFLOAD_ON = ("1", "true", "yes", "on", "enabled")
 
-    Off by default. The planner changes how a model is placed, and the failure
-    mode of getting it wrong is a load that OOMs where llama.cpp's own default
-    would have paged, so it opts in rather than out until it has run on more
-    than one machine.
+
+def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the launch path may plan a spill. OFF unless explicitly enabled.
+
+    This was briefly opt-OUT, on 118 paired runs across T4, L4, RTX PRO 6000,
+    A100, B200 and a gfx1151 APU. Every one of those hosts is a large one, and
+    that turned out to be the whole of the calibration set: #9861 measured 76
+    paired cells on a 6-core desktop and the planner was slower in 40 of the 43
+    it planned, by up to 8x on generation.
+
+    The mechanism is not the host size alone. ``rank`` in offload_cost_model
+    scores a placement as prefill PLUS generation, but the planner only ever
+    calls ``generation_penalty_ms``, so prefill is not priced at all -- which is
+    why #9861 measured prefill slower in 43 of 43 planned cells, without one
+    exception. A gate that does not count half the request cannot be trusted to
+    fire by default, so it goes back behind the flag until it does.
+
+    Off does not mean the load is unplaced: every path that would have consulted
+    the planner falls through to ``--fit on``, which is what the same report
+    measured at 0.93x to 1.16x across all 33 cells where the planner declined.
+
+    An UNRECOGNISED value disables, same as before, and now agrees with the
+    default rather than reversing it.
     """
-    raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD", "")
-    return str(raw).strip().lower() in ("1", "true", "yes", "on", "enabled")
+    raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in _SMART_OFFLOAD_ON

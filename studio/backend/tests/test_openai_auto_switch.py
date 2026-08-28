@@ -460,6 +460,7 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
         ("POST", "/messages/count_tokens"): "anthropic_count_tokens",
         ("POST", "/audio/generate"): "generate_audio",
         ("GET", "/models"): "openai_list_models",
+        ("GET", "/models/"): "openai_list_models",
         ("GET", "/models/{model_id:path}"): "openai_retrieve_model",
     }
     seen = {}
@@ -2216,7 +2217,7 @@ def test_chat_validates_non_system_message_before_auto_switch():
     # A system-only chat must be rejected before the hook so an invalid request
     # never swaps the resident model. Asserted on source order.
     import inspect
-    src = inspect.getsource(inference_route.openai_chat_completions)
+    src = inspect.getsource(inference_route.produce_openai_chat_completions)
     assert src.index("At least one non-system message is required.") < src.index(
         "_maybe_auto_switch_model"
     )
@@ -2226,7 +2227,7 @@ def test_chat_untracks_external_provider_before_proxy():
     # The external-provider branch must untrack the request before proxying so its
     # stream can't block a concurrent local auto-switch.
     import inspect
-    src = inspect.getsource(inference_route.openai_chat_completions)
+    src = inspect.getsource(inference_route.produce_openai_chat_completions)
     assert src.index("untrack_current_request") < src.index("_proxy_to_external_provider")
 
 
@@ -3557,7 +3558,7 @@ def test_chat_validates_confirm_and_modality_before_switch():
     # the hook rejects a non-vision target before the load.
     import inspect
 
-    src = inspect.getsource(inference_route.openai_chat_completions)
+    src = inspect.getsource(inference_route.produce_openai_chat_completions)
     assert src.index("confirm_tool_calls requires stream=true") < src.index(
         "_maybe_auto_switch_model"
     )
@@ -4469,7 +4470,7 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     payload = _count_request(
         [
             {"role": "system", "content": "Runtime rules."},
-            {"role": "system", "content": "Studio prompt."},
+            {"role": "system", "content": "Unsloth prompt."},
             {"role": "user", "content": "hello"},
         ]
     )
@@ -4478,7 +4479,7 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     systems = [m for m in messages if m.get("role") in ("system", "developer")]
     assert len(systems) == 1, messages
     assert "Runtime rules." in systems[0].get("content", "")
-    assert "Studio prompt." in systems[0].get("content", "")
+    assert "Unsloth prompt." in systems[0].get("content", "")
 
 
 @pytest.mark.parametrize(
@@ -6016,6 +6017,78 @@ def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
     assert request.max_seq_length == 32768
     # The shadowing flag goes; the sampling flag beside it is nobody's first-class field.
     assert request.llama_extra_args == ["--top-k", "40"]
+
+
+def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
+    """A matching stored flag is the opt-in that bypasses the VRAM-fit ceiling."""
+    _mock_override_store(monkeypatch)
+    _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--ctx-size", "100352", "--spec-draft-n-max", "3"],
+        custom_context_length = 100352,
+        speculative_type = "mtp",
+        spec_draft_n_max = 3,
+    )
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 100352
+    # The matching context opt-in survives. The redundant speculative flag is
+    # still stripped because its first-class fields are unconditional.
+    assert request.llama_extra_args == ["--ctx-size", "100352"]
+
+
+@pytest.mark.parametrize(
+    "stored_max_seq_length",
+    ["100352", "not-a-number", 100352.0, True, [100352], {"v": 100352}],
+)
+def test_a_legacy_override_row_cannot_break_the_loader(stored_max_seq_length):
+    """Rows are coerced on write but returned verbatim on read (get_model_overrides),
+    so an entry written by an older build, by hand or through the API can hold any
+    JSON type. Comparing the context against one must degrade, never raise: a raise
+    here fails every auto-switch load of that model with a 500 the user cannot clear.
+    A value that is not a plain positive int cannot be confirmed as matching, so the
+    shadowing flag is stripped exactly as it was before the opt-in existed.
+    """
+    from utils.openai_auto_switch_settings import model_override_load_kwargs
+
+    out = model_override_load_kwargs(
+        {
+            "llama_extra_args": ["--ctx-size", "100352", "--top-k", "40"],
+            "max_seq_length": stored_max_seq_length,
+        },
+        is_gguf = True,
+    )
+    assert "--ctx-size" not in out["llama_extra_args"]
+    assert "--top-k" in out["llama_extra_args"]
+
+
+@pytest.mark.parametrize("stored_max_seq_length", ["", False, None, 0])
+def test_a_falsy_legacy_context_leaves_the_flag_as_the_only_control(stored_max_seq_length):
+    """These resolve to "no context field sent", so there is nothing to shadow and
+    the pass-through flag stays the user's only way to set the knob -- the same
+    answer this path gave before the opt-in existed.
+    """
+    from utils.openai_auto_switch_settings import model_override_load_kwargs
+
+    out = model_override_load_kwargs(
+        {
+            "llama_extra_args": ["--ctx-size", "100352", "--top-k", "40"],
+            "max_seq_length": stored_max_seq_length,
+        },
+        is_gguf = True,
+    )
+    assert out["llama_extra_args"] == ["--ctx-size", "100352", "--top-k", "40"]
 
 
 def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():

@@ -177,12 +177,29 @@ class TestTheRefitDoesNotSpendTheReserve:
         self, tmp_path, checkpoints
     ):
         """Unpriced, the two stay identical however large --ctx-checkpoints gets,
-        while the child allocates it anyway."""
+        while the child allocates it anyway.
+
+        The claim is that the reserve is CHARGED, not that context specifically is
+        what pays. There are three ways to pay, and which one applies depends on how
+        big the reserve is relative to the budget: give up context at the same slot
+        count, give up a slot, or give up residency and offload. At 16 and 32
+        checkpoints this fixture already takes the third -- `--fit on` at the offload
+        fallback -- and `charged["ctx"] < free["ctx"]` only held there by arithmetic
+        coincidence, because the fallback happens to be shorter than the resident
+        plan's context. Naming the three keeps a real regression (nothing was
+        charged: same slots, same context, same residency) distinguishable from the
+        planner picking a different axis, which a raised fit floor can do on its own.
+        """
         free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
         charged = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints)
         assert charged["reserve_bytes"] > 0
         assert charged["checkpoints"] == str(checkpoints)
-        assert charged["ctx"] < free["ctx"], (free, charged)
+        if charged["fit"] != free["fit"]:
+            assert charged["fit"] == "on", (free, charged)
+        elif charged["slots"] != free["slots"]:
+            assert charged["slots"] < free["slots"], (free, charged)
+        else:
+            assert charged["ctx"] < free["ctx"], (free, charged)
 
     def test_a_plan_with_room_for_it_still_stays_on_gpu(self, tmp_path):
         """The reserve costs context, not the GPU pin, while there is room."""

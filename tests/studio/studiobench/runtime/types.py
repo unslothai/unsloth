@@ -339,7 +339,7 @@ class OutDirLock:
 
     SEPARATE FROM THE `Recorder` BECAUSE OF WHEN IT HAS TO BE TAKEN. The guard used to be taken
     where the payload is opened, which is after `prepare_payload` has archived whatever was in the
-    directory and after both Studios have been cloned, built and launched. A second launcher
+    directory and after both Unsloth instances have been cloned, built and launched. A second launcher
     pointed at a busy `--out` without `--resume` therefore did all of that before being refused,
     and both halves of it hurt the run it was refused in favour of:
 
@@ -351,7 +351,7 @@ class OutDirLock:
         exactly the rule `prepare_payload` states for itself: a refusal has to leave the payload it
         refused exactly as it found it.
       * A clone, a build and a launch are not free. The first run is MEASURING, and the refusal
-        that arrives after all of that has already put a compiler and a second Studio on the
+        that arrives after all of that has already put a compiler and a second Unsloth on the
         machine the first run thought it had. Contention between two runs sharing one `--out` is
         the whole reason this guard exists; it must not be the guard's own cost of saying no.
 
@@ -661,7 +661,7 @@ class Recorder:
         #
         # TAKEN BEFORE THIS POINT WHEN THE CALLER HAS ONE, AND THAT IS THE NORMAL PATH. `run()`
         # holds the directory from its first millisecond, because by the time the payload is opened
-        # a duplicate has already archived the live payload and installed two Studios on top of the
+        # a duplicate has already archived the live payload and installed two Unsloth instances on top of the
         # run it is about to be refused in favour of. See `OutDirLock`. A `Recorder` built without
         # one -- the tests, and any caller that only wants a payload -- still takes its own, so the
         # guard cannot be switched off by forgetting to pass it.

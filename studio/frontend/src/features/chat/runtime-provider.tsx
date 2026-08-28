@@ -43,6 +43,12 @@ import {
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { getResearchThreadState } from "./api/research-api";
 import {
+  cancelChatGenerationRun,
+  type ChatGenerationRun,
+  getActiveChatGenerationRuns,
+  followChatGenerationRun,
+} from "./api/chat-generation-api";
+import {
   TEXT_ATTACHMENT_ACCEPT,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
@@ -79,6 +85,30 @@ import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import type { OpenAIChatChunk } from "./types/api";
+import {
+  budgetImpliesTruncation,
+  restoredAssistantStatus,
+} from "./utils/continuation";
+import {
+  generationChunkCountsTowardTiming,
+  generationChunkHasSubstantiveDelta,
+  generationNeedsRecovery,
+  isLiveGenerationRun,
+  generationRawContent,
+  loadGenerationOverlaySnapshot,
+  recoveredContentToImport,
+  recoveredReasoningSummaryMetadata,
+  recoveredGenerationFinalMetadata,
+  generationRecoveryMetadata,
+  shouldPreserveGenerationMetadata,
+  subscribeGenerationRecoveryTriggers,
+} from "./utils/chat-generation-recovery";
+import { mergeContextTruncation } from "./utils/context-truncation";
+import {
+  extractDeltaText,
+  parseAssistantContent,
+} from "./utils/parse-assistant-content";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
@@ -671,6 +701,14 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
     | undefined;
+  const restoredStatus = restoredAssistantStatus({ custom });
+  const generationStatus = custom.generationStatus;
+  const needsGenerationRecovery =
+    typeof custom.generationRunId === "string" &&
+    (generationStatus === "queued" ||
+      generationStatus === "running" ||
+      generationStatus === "cancelling" ||
+      (generationStatus === "completed" && custom.generationSettled !== true));
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -679,7 +717,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       ThreadMessage,
       { role: "assistant" }
     >["content"],
-    status: { type: "complete" as const, reason: "unknown" as const },
+    status: needsGenerationRecovery ? { type: "running" } : restoredStatus,
     metadata: {
       custom,
       ...(savedTiming ? { timing: savedTiming } : {}),
@@ -691,13 +729,284 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   };
 }
 
+type GenerationRecovery = {
+  promise: Promise<void>;
+  views: Set<ReturnType<typeof useAui>>;
+};
+
+const generationRecoveries = new Map<string, GenerationRecovery>();
+
+function scheduleGenerationRecovery(
+  threadId: string,
+  storedMessage: MessageRecord,
+  aui: ReturnType<typeof useAui>,
+): void {
+  const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
+  const runId = metadata.generationRunId;
+  if (typeof runId !== "string" || !generationNeedsRecovery(metadata)) return;
+  // This tab is streaming the run itself. Following it from storage as well gives the reply
+  // two writers, and the follower is always behind, so it imports a lagging prefix over the
+  // live text. It also costs a PUT and a full re-parse per chunk against the same backend the
+  // model is saturating.
+  if (isLiveGenerationRun(runId)) return;
+  const existingRecovery = generationRecoveries.get(runId);
+  if (existingRecovery) {
+    existingRecovery.views.add(aui);
+    return;
+  }
+  const views = new Set([aui]);
+
+  const recovery = (async () => {
+    let cursor = Number(metadata.generationSeq ?? 0);
+    if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
+    let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
+    let completionTokens: number | undefined;
+    let recoveryUsage:
+      | {
+          prompt_tokens?: unknown;
+          completion_tokens?: unknown;
+          total_tokens?: unknown;
+          prompt_tokens_details?: { cached_tokens?: unknown };
+          cache_creation_input_tokens?: unknown;
+          cache_read_input_tokens?: unknown;
+        }
+      | undefined = (metadata.generationRecoveryUsage as typeof recoveryUsage) ?? undefined;
+    let recoveryTimings: Record<string, unknown> | undefined =
+      (metadata.generationRecoveryTimings as Record<string, unknown>) ?? undefined;
+    let firstChunkAt =
+      typeof metadata.generationFirstChunkAt === "number" &&
+      Number.isFinite(metadata.generationFirstChunkAt)
+        ? metadata.generationFirstChunkAt
+        : undefined;
+    let totalChunks = Number(metadata.generationChunkCount ?? 0);
+    if (!Number.isSafeInteger(totalChunks) || totalChunks < 0) totalChunks = 0;
+    let currentMetadata = { ...metadata };
+    const serverCancel = () => {
+      void cancelChatGenerationRun(runId).catch(() => {});
+    };
+    const runtime = useChatRuntimeStore.getState();
+    runtime.registerThreadServerCancel(threadId, serverCancel);
+    runtime.setThreadRunning(threadId, true, {
+      local: true,
+      owner: serverCancel,
+    });
+
+    const publish = async (run: ChatGenerationRun) => {
+      const status = run.status;
+      const runModel = useChatRuntimeStore
+        .getState()
+        .models.find((model) => model.id === run.requestPayload.model);
+      const lengthLimited =
+        run.finishReason === "length" ||
+        budgetImpliesTruncation({
+          isMlx: runModel?.isMlx === true,
+          maxTokens: run.requestPayload.max_tokens,
+          completionTokens,
+        });
+      let nextMetadata = generationRecoveryMetadata({
+        current: currentMetadata,
+        runId,
+        status,
+        cursor,
+        lastEventSeq: run.lastEventSeq,
+        lengthLimited,
+        firstChunkAt,
+        totalChunks,
+        usage: recoveryUsage,
+        timings: recoveryTimings,
+      });
+      if (nextMetadata.generationSettled === true) {
+        nextMetadata = recoveredGenerationFinalMetadata({
+          current: nextMetadata,
+          run,
+          usage: recoveryUsage,
+          timings: recoveryTimings,
+          firstChunkAt,
+          totalChunks,
+        });
+      }
+      currentMetadata = nextMetadata;
+      const content = parseAssistantContent(
+        reasoningOpen ? `${raw}</think>` : raw,
+      ) as MessageRecord["content"];
+      await saveStoredChatMessage({
+        id: storedMessage.id,
+        threadId,
+        parentId: storedMessage.parentId ?? null,
+        role: "assistant",
+        content,
+        metadata: nextMetadata,
+        createdAt: storedMessage.createdAt,
+      }).catch(() => {
+        // The producer may have committed a newer status between the event and
+        // this write. Keep following; the terminal publish carries all content.
+      });
+
+      for (const view of views) {
+        if (view.threadListItem().getState().remoteId !== threadId) continue;
+        try {
+          const exported = view.thread().export();
+          const messages = exported.messages.map((item) =>
+            item.message.id === storedMessage.id
+              ? {
+                  ...item,
+                  message: {
+                    ...item.message,
+                    // The status and the metadata are always this publish's:
+                    // they are what the recovery is following the run FOR. The
+                    // body is not, because a run this tab is also streaming is
+                    // replayed hundreds of characters behind the live reply.
+                    content: recoveredContentToImport(
+                      item.message.content,
+                      content,
+                    ),
+                    status: generationNeedsRecovery(nextMetadata)
+                      ? { type: "running" as const }
+                      : restoredAssistantStatus({ custom: nextMetadata }),
+                    metadata: {
+                      ...item.message.metadata,
+                      custom: nextMetadata,
+                    },
+                  } as ThreadMessage,
+                }
+              : item,
+          );
+          view.thread().import({ ...exported, messages });
+        } catch {
+          // Storage remains authoritative if the thread unmounted between awaits.
+        }
+      }
+    };
+
+    try {
+      let lastPublishedStatus = "";
+      let identityValidated = false;
+      for await (const update of followChatGenerationRun(runId, {
+        replayFrom: cursor,
+      })) {
+        if (!identityValidated) {
+          if (
+            update.run.threadId !== threadId ||
+            update.run.assistantMessageId !== storedMessage.id
+          ) {
+            return;
+          }
+          if (cursor === 0 && raw.length === 0) {
+            const requestMessages = update.run.requestPayload.messages;
+            const lastRequestMessage = Array.isArray(requestMessages)
+              ? requestMessages.at(-1)
+              : undefined;
+            if (
+              lastRequestMessage?.role === "assistant" &&
+              typeof lastRequestMessage.content === "string"
+            ) {
+              // Continue sends the old partial as an assistant prefill. The
+              // server-owned placeholder is empty until the first client save,
+              // so a reload before that save must seed replay from the request.
+              raw = lastRequestMessage.content;
+            }
+          }
+          identityValidated = true;
+        }
+        if (update.event && update.event.seq > cursor) {
+          cursor = update.event.seq;
+          if (update.event.type === "chunk") {
+            const chunk = update.event.payload as {
+              _reasoningDurationMs?: unknown;
+              usage?: {
+                prompt_tokens?: unknown;
+                completion_tokens?: unknown;
+                total_tokens?: unknown;
+                prompt_tokens_details?: { cached_tokens?: unknown };
+                cache_creation_input_tokens?: unknown;
+                cache_read_input_tokens?: unknown;
+              };
+              timings?: Record<string, unknown>;
+              choices?: Array<{
+                delta?: {
+                  content?: unknown;
+                  reasoning_content?: unknown;
+                };
+              }>;
+              context_truncated?: OpenAIChatChunk["context_truncated"];
+            };
+            if ("_reasoningDurationMs" in chunk) {
+              currentMetadata = recoveredReasoningSummaryMetadata(
+                currentMetadata,
+                chunk._reasoningDurationMs,
+              );
+              lastPublishedStatus = update.run.status;
+              await publish(update.run);
+              continue;
+            }
+            if (generationChunkCountsTowardTiming(chunk)) {
+              totalChunks += 1;
+            }
+            if (generationChunkHasSubstantiveDelta(chunk)) {
+              firstChunkAt ??= update.event.createdAt;
+            }
+            if (chunk.context_truncated) {
+              currentMetadata = {
+                ...currentMetadata,
+                contextTruncation: mergeContextTruncation(
+                  currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+                  chunk.context_truncated,
+                ),
+              };
+            }
+            if (chunk.usage) recoveryUsage = chunk.usage;
+            if (chunk.timings) recoveryTimings = chunk.timings;
+            if (typeof chunk.usage?.completion_tokens === "number") {
+              completionTokens = chunk.usage.completion_tokens;
+            }
+            const deltaRecord = chunk.choices?.[0]?.delta;
+            const reasoning =
+              typeof deltaRecord?.reasoning_content === "string"
+                ? deltaRecord.reasoning_content
+                : "";
+            const delta = extractDeltaText(deltaRecord?.content).text;
+            if (reasoning) {
+              if (!reasoningOpen) raw += "<think>";
+              raw += reasoning;
+              reasoningOpen = true;
+            }
+            if (delta) {
+              if (reasoningOpen) raw += "</think>";
+              raw += delta;
+              reasoningOpen = false;
+            }
+          }
+        }
+        const shouldPublish =
+          update.event?.type === "chunk" ||
+          update.run.status !== lastPublishedStatus ||
+          (["cancelled", "completed", "failed"].includes(update.run.status) &&
+            cursor >= update.run.lastEventSeq);
+        if (shouldPublish) {
+          lastPublishedStatus = update.run.status;
+          await publish(update.run);
+        }
+      }
+    } finally {
+      const store = useChatRuntimeStore.getState();
+      store.setThreadRunning(threadId, false, { owner: serverCancel });
+      store.clearThreadServerCancel(threadId, serverCancel);
+    }
+  })()
+    .catch(() => {})
+    .finally(() => generationRecoveries.delete(runId));
+  generationRecoveries.set(runId, { promise: recovery, views });
+}
+
 export async function ensureThreadRecord({
   threadId,
   modelType,
   pairId,
   projectId,
   incognito,
+  neverSent,
   modelId,
+  modelGgufVariant,
   createdAt,
 }: {
   threadId: string;
@@ -706,8 +1015,11 @@ export async function ensureThreadRecord({
   projectId?: string | null;
   /** Snapshot from the send this row belongs to, so a retry cannot read a since-flipped toggle. */
   incognito?: boolean;
+  /** True only from initialize(), which runs once for a thread that has never been sent to. */
+  neverSent?: boolean;
   /** Snapshot from the send this row belongs to, so retries cannot adopt a later checkpoint. */
   modelId?: string;
+  modelGgufVariant?: string | null;
   /** Snapshot from the send this row belongs to, so retries retain its original creation time. */
   createdAt?: number;
 }): Promise<void> {
@@ -720,10 +1032,16 @@ export async function ensureThreadRecord({
   const runtimeStateAtInit = useChatRuntimeStore.getState();
   const incognitoAtInit = incognito ?? runtimeStateAtInit.incognito;
   const modelIdAtInit = modelId ?? runtimeStateAtInit.params.checkpoint ?? "";
+  const modelGgufVariantAtInit =
+    modelGgufVariant !== undefined
+      ? modelGgufVariant
+      : runtimeStateAtInit.activeGgufVariant;
   const createdAtInit = createdAt ?? Date.now();
-  // Fresh assistant-ui threads are local ids. Temporary chats can skip the
-  // history list entirely so a storage outage cannot block the first send.
-  if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
+  // A temporary chat skips the history list so a storage outage cannot block its first send.
+  // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
+  // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats
+  // incognito whenever a caller passed the open chat's id with the toggle on.
+  if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
     return;
   }
@@ -732,9 +1050,8 @@ export async function ensureThreadRecord({
   if (existing) {
     return;
   }
-  // For non-local ids, keep the existing check first so an already-persisted
-  // thread is never tagged -- that's what keeps a real thread saving normally
-  // even if the toggle flips on while its run is still streaming.
+  // After the row check, so an already-persisted thread is never tagged: that is what keeps
+  // a real chat saving normally when the toggle flips on mid-stream.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
     return;
@@ -745,6 +1062,7 @@ export async function ensureThreadRecord({
     title: "New Chat",
     modelType,
     modelId: modelIdAtInit,
+    modelGgufVariant: modelGgufVariantAtInit,
     pairId,
     projectId: projectId ?? null,
     archived: false,
@@ -831,6 +1149,9 @@ function createStudioDbAdapter(
       const modelIdAtInit = claim
         ? claim.modelId
         : (runtimeStateAtInit.params.checkpoint ?? "");
+      const modelGgufVariantAtInit = claim
+        ? claim.modelGgufVariant
+        : runtimeStateAtInit.activeGgufVariant;
       const createdAtInit = claim ? claim.createdAt : Date.now();
       const projectIdAtInit = claim ? claim.projectId : projectId;
       trackStoredChatThreadRecord(threadId, () =>
@@ -840,7 +1161,11 @@ function createStudioDbAdapter(
           pairId,
           projectId: projectIdAtInit,
           incognito: incognitoAtInit,
+          // The one caller that can promise this: assistant-ui runs initialize() once, for
+          // the id it just minted. Others hand in whatever chat is open.
+          neverSent: true,
           modelId: modelIdAtInit,
+          modelGgufVariant: modelGgufVariantAtInit,
           createdAt: createdAtInit,
         }),
       );
@@ -918,7 +1243,9 @@ function createStudioDbAdapter(
       const firstAssistant =
         firstUserIndex === -1
           ? undefined
-          : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
+          : messages.find(
+              (m, i) => m.role === "assistant" && i > firstUserIndex,
+            );
       const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
@@ -1159,6 +1486,31 @@ function useStudioRuntimeAdapters(
 ): StudioRuntimeAdapters {
   const aui = useAui();
 
+  useEffect(() => {
+    const recoverCurrentThread = () => {
+      const remoteId = aui.threadListItem().getState().remoteId;
+      if (!remoteId) return;
+      void listStoredChatMessages(remoteId)
+        .then((messages) => {
+          for (const message of messages) {
+            if (
+              message.role === "assistant" &&
+              typeof (message.metadata as Record<string, unknown> | undefined)
+                ?.generationRunId === "string"
+            ) {
+              scheduleGenerationRecovery(remoteId, message, aui);
+            }
+          }
+        })
+        .catch(() => {});
+    };
+    return subscribeGenerationRecoveryTriggers(
+      globalThis,
+      document,
+      recoverCurrentThread,
+    );
+  }, [aui]);
+
   // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
   // repository otherwise keeps the attachment, and a later repo-to-storage sync
   // (e.g. deleting a message in the thread) would write it back.
@@ -1347,19 +1699,40 @@ function useStudioRuntimeAdapters(
           assistant: 2,
         };
         let msgs: MessageRecord[];
+        let activeGenerationRuns: ChatGenerationRun[];
         try {
-          msgs = await listStoredChatMessages(remoteId);
+          const snapshot = await loadGenerationOverlaySnapshot(
+            remoteId,
+            getActiveChatGenerationRuns,
+            listStoredChatMessages,
+          );
+          msgs = snapshot.messages;
+          activeGenerationRuns = snapshot.activeRuns;
         } catch (error) {
           if (!isExpectedBackgroundChatStorageError(error)) {
             throw error;
           }
           msgs = [];
+          activeGenerationRuns = [];
+        }
+        for (const run of activeGenerationRuns) {
+          const assistant = msgs.find(
+            (message) => message.id === run.assistantMessageId,
+          );
+          if (!assistant) continue;
+          assistant.metadata = {
+            ...(assistant.metadata ?? {}),
+            generationRunId: run.id,
+            generationStatus: run.status,
+            generationSettled: false,
+            serverManaged: true,
+          };
         }
         // Durable research can outlive this runtime. Reattach its server-owned
         // assistant message to the inline card after navigation or refresh.
-        const researchThreadState = await getResearchThreadState(remoteId).catch(
-          () => null,
-        );
+        const researchThreadState = await getResearchThreadState(
+          remoteId,
+        ).catch(() => null);
         if (researchThreadState) {
           useResearchRunStore
             .getState()
@@ -1388,6 +1761,23 @@ function useStudioRuntimeAdapters(
           if (aOrder !== bOrder) return aOrder - bOrder;
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
+        for (const message of msgs) {
+          if (
+            message.role === "assistant" &&
+            typeof (message.metadata as Record<string, unknown> | undefined)
+              ?.generationRunId === "string"
+          ) {
+            scheduleGenerationRecovery(
+              remoteId,
+              {
+                ...message,
+                content: cloneContent(message.content),
+                metadata: { ...(message.metadata ?? {}) },
+              },
+              aui,
+            );
+          }
+        }
 
         // Restore context usage from last assistant message if model matches.
         const lastAssistant = [...msgs]
@@ -1562,26 +1952,40 @@ function useStudioRuntimeAdapters(
           const sameResearchRun =
             typeof existingMetadata?.researchRunId === "string" &&
             existingMetadata.researchRunId === incomingMetadata?.researchRunId;
+          const sameGenerationRun =
+            typeof existingMetadata?.generationRunId === "string" &&
+            existingMetadata.generationRunId ===
+              incomingMetadata?.generationRunId;
+          const preserveGeneration = shouldPreserveGenerationMetadata(
+            existingMetadata,
+            incomingMetadata,
+          );
           const preserveServerManaged =
             existingMetadata?.serverManaged === true &&
-            (sameResearchRun ||
+            (preserveGeneration ||
+              sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // Echo the backend's stored metadata verbatim on autosave: merging
-          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
-          // server never persisted, so _research_message_would_change sees a diff and
-          // rejects every streamed/snapshot update with 409.
-          const metadata = preserveServerManaged
-            ? existingMetadata
-            : incomingMetadata;
+          // The backend owns this message and refuses client edits, and every field the save
+          // would send was just read back from it, so the request is answered 409 every time.
+          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs
+          // from the `ensureStoredChatThread` inside `saveStoredChatMessage`. Returning here
+          // drops both.
+          //
+          // `parentId` is the one field not echoed back, so a reparent could differ. It is
+          // dropped either way: the server rejects the whole request, so it never landed here.
+          if (preserveServerManaged) {
+            await throwIfHistoryWasCleared(remoteId);
+            return;
+          }
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content: preserveServerManaged ? existingMessage!.content : content,
+            content,
             ...(attachments.length > 0 && { attachments }),
-            ...(metadata && { metadata }),
+            ...(incomingMetadata && { metadata: incomingMetadata }),
             createdAt,
           });
           await throwIfHistoryWasCleared(remoteId);
@@ -1872,7 +2276,7 @@ function ThreadNewChatSwitch({
     // Guarded, unlike the reads elsewhere that pass an id the runtime just handed back: this
     // one is REMEMBERED, in a ref that outlives every view switch. getItemById() THROWS
     // "Entry not available in the store" for a dropped id rather than returning undefined, so
-    // the optional chain would not catch it and the effect would take the app down. Studio
+    // the optional chain would not catch it and the effect would take the app down. Unsloth
     // deletes through tombstones today; the point is not to depend on that.
     let recordedRemoteId: string | undefined;
     if (recorded) {
@@ -2136,7 +2540,7 @@ function NonceThreadResumeRestore({
     if (!remoteId) {
       return;
     }
-    // ...and neither must a chat the user deleted while they were away. Studio deletes by
+    // ...and neither must a chat the user deleted while they were away. Unsloth deletes by
     // tombstoning storage rather than calling runtime.threads.delete(), so the runtime item
     // and its remoteId both survive and every check above still passes. On remoteId, which
     // is the id storage and the sidebar delete agree on. Restoring here would undo
@@ -2161,17 +2565,18 @@ function ThreadScopedSettingsSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const pendingNewThreadId = useAuiState(({ threads }) => threads.newThreadId);
   const settingsHydrated = useChatRuntimeStore(
     (state) => state.settingsHydrated,
   );
 
   useEffect(() => {
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
-    // An unsaved chat carries a runtime-made id that no row can exist for, so its read
-    // can only 404. Opening a pairing window for it holds every edit behind a round
-    // trip that is certain to say "no snapshot", which is how an edit made on a fresh
-    // /chat stopped reaching the installation defaults straight away.
-    if (isAssistantLocalThreadId(activeThreadId)) {
+    // A chat not yet sent to has no row, so pairing it holds every edit behind a read certain
+    // to 404 -- which is how an edit on a fresh /chat stopped reaching the installation
+    // defaults. The `__LOCALID_` prefix stays on the id for good, so only the runtime's
+    // pending-new-thread id tells the two apart.
+    if (activeThreadId !== null && activeThreadId === pendingNewThreadId) {
       applyThreadScopedSettings(null, null);
       return;
     }
@@ -2242,27 +2647,36 @@ function ThreadScopedSettingsSync({
       // over the values the user set and is written out again by the next edit.
       const read = new AbortController();
       reads.add(read);
-      void awaitThreadScopedSettingsWrite(activeThreadId)
-        .then(() =>
-          // Bounded, because this read is what holds sends back: an unbounded GET that
-          // never settles would park every send in the chat behind "Loading this chat's
-          // settings" with nothing to release it, and leave the request open besides.
-          // The fetch carries THIS attempt's deadline and its controller, so a stall ends
-          // the request rather than leaving it running while the retry opens the next one;
-          // the race is the backstop for the rest of the read.
-          Promise.race([
-            getStoredChatThreadReadResult(activeThreadId, {
-              timeoutMs: THREAD_READ_TIMEOUT_MS,
-              signal: read.signal,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error("thread settings read timed out")),
-                THREAD_READ_TIMEOUT_MS,
-              ),
-            ),
-          ]),
-        )
+      // The deadline covers the WAITS as well as the read: neither is bounded on its own (the
+      // settings chain is a PATCH, and awaitStoredChatThreadWrites settles a row write opening
+      // with an unbounded getStoredChatThread). In front of it their time went uncounted, so
+      // the chain could outlast THREAD_PAIRING_WAIT_MS with the gate shut and the send refused.
+      // Inside it, a stall is one failed attempt, which retryThreadRead handles.
+      void Promise.race([
+        Promise.all([
+          // This chat's own PATCH first: a read that overtakes it returns the pre-edit
+          // snapshot, which then goes back over the values the user just set.
+          awaitThreadScopedSettingsWrite(activeThreadId),
+          // And its row, which may not exist yet: initialize() resolves as soon as the id is
+          // minted and leaves the POST tracked, so on a first send a read can overtake it, find
+          // no row, and release this chat's held edits into the installation defaults. Settles
+          // at once when nothing is tracked, so an existing chat waits for nothing.
+          awaitStoredChatThreadWrites(activeThreadId),
+        ]).then(() =>
+          getStoredChatThreadReadResult(activeThreadId, {
+            timeoutMs: THREAD_READ_TIMEOUT_MS,
+            signal: read.signal,
+          }),
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => {
+            // The waits can expire before the fetch is issued; the controller is the only
+            // thing stopping one issued a moment later from outliving them.
+            read.abort();
+            reject(new Error("thread settings read timed out"));
+          }, THREAD_READ_TIMEOUT_MS),
+        ),
+      ])
         .finally(() => {
           reads.delete(read);
         })
@@ -2349,7 +2763,7 @@ function ThreadScopedSettingsSync({
       commitHeldThreadScopedEditsToTheirThread();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };
-  }, [activeThreadId, enabled, settingsHydrated]);
+  }, [activeThreadId, enabled, pendingNewThreadId, settingsHydrated]);
 
   return null;
 }

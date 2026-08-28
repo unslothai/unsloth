@@ -712,6 +712,269 @@ class ValidateModelResponse(BaseModel):
     )
 
 
+class EstimateMemoryRequest(BaseModel):
+    """Settings a Load-Model panel is about to submit, priced before it submits them.
+
+    Every field mirrors the load request it previews, so the estimate answers for the
+    command that would actually run. Header-only: nothing is read, touched or loaded.
+    """
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization to price (e.g. Q4_K_M); the picked variant."
+    )
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+    native_path_lease: Optional[str] = Field(
+        None,
+        description = "Lease for a picked / drag-dropped .gguf, as /validate takes one.",
+    )
+    n_ctx: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Context length to price (--ctx-size). 0 or omitted prices the "
+        "model's native context, which is what an Auto load asks for.",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache dtype to price. The biggest lever on this estimate at "
+        "long contexts, so omitting it prices a load nobody asked for.",
+    )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = "Serving slots (--parallel); scales both the cache and the buffers.",
+    )
+    n_batch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    n_ubatch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    speculative_type: Optional[str] = Field(
+        None, description = "Speculative mode; decides which drafter's weights are charged."
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = "Draft depth. Sizes the drafter's rollback state, so it moves the "
+        "estimate for every mode that loads a separate drafter.",
+    )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = "Draft KV cache dtype. The drafter keeps its own cache, and at a "
+        "long context that is GB, not a rounding error.",
+    )
+    tensor_parallel: bool = Field(False, description = "Whether tensor mode is requested")
+    disable_vision: bool = Field(
+        False, description = "Vision off, so an image projector's bytes are not charged."
+    )
+    gpu_memory_mode: Optional[str] = Field(
+        None, description = "'auto' or 'manual'; manual splits the weights by gpu_layers."
+    )
+    gpu_layers: Optional[int] = Field(
+        None, ge = 0, description = "Layers pinned to the GPU under manual placement."
+    )
+    n_cpu_moe: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Expert layers held on the CPU (--n-cpu-moe). Not priced; echoed "
+        "back so the panel can say the GPU figure reads high.",
+    )
+    selected_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "GPUs the load is pinned to. Tensor mode replicates its compute "
+        "buffers per device, so the pinned count changes the footprint.",
+    )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = "Pass-through llama-server flags. Read, not just carried: -c, "
+        "-nkvo, --swa-full and the cache-type flags all move this estimate.",
+    )
+
+    _no_booleans = field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
+    )(LoadRequest._no_booleans.__func__)
+
+
+class EstimateMemoryResponse(BaseModel):
+    """Itemized memory an inference load would occupy, or why it could not be sized."""
+
+    available: bool = Field(..., description = "Whether a breakdown could be produced at all.")
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
+        "'unsupported_source' or 'unsizable'.",
+    )
+    weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
+    kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    drafter_runtime_bytes: int = Field(
+        0,
+        description = "A separate drafter's own KV cache and rollback state, on top of "
+        "its file in weights_bytes. Included in total_bytes, and in gpu_bytes unless the "
+        "drafter is CPU-pinned. Reported separately so the itemization accounts for it.",
+    )
+    drafter_runtime_gpu_bytes: int = Field(
+        0,
+        description = "The share of drafter_runtime_bytes that lands on the GPU. Not a "
+        "placement flag, because the term is not placed as one piece: under MTP the "
+        "target-side verification state follows the TARGET cache (so --no-kv-offload "
+        "moves it) while the draft cache follows the drafter (so --spec-draft-ngl 0 "
+        "moves that instead), and the two can go different ways in the same load.",
+    )
+    projector_runtime_bytes: int = Field(
+        0,
+        description = "The vision encoder's buffers, about 0.4x the projector file on top "
+        "of it. Included in total_bytes, and in gpu_bytes unless --no-mmproj-offload "
+        "keeps the projector in host RAM.",
+    )
+    drafter_kv_unsized: bool = Field(
+        False,
+        description = "True when a drafter is charged whose cache could not be sized: "
+        "--spec-draft-hf names a repository whose header is not on this disk. Its weights "
+        "are in weights_bytes but its context-scaled cache is missing, so total_bytes is a "
+        "lower bound.",
+    )
+    adapters_unsized: bool = Field(
+        False,
+        description = "True when a pass-through --lora / --lora-scaled / --control-vector / "
+        "--control-vector-scaled names a file that could not be stat'd. llama.cpp loads every "
+        "one of them into resident tensors on top of the base model, so those bytes are "
+        "missing from total_bytes and it is a lower bound.",
+    )
+    total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
+    gpu_bytes: int = Field(
+        0, description = "The share of total_bytes that lands on the GPU under this offload"
+    )
+    kv_estimable: bool = Field(
+        True,
+        description = "False when the GGUF header lacks the attention dims needed to "
+        "size the cache. kv_bytes is then 0 meaning UNKNOWN and total_bytes is a lower "
+        "bound; rendering it as a confident total is what this flag exists to prevent.",
+    )
+    kv_on_gpu: bool = Field(
+        True, description = "False under --no-kv-offload, which moves the cache to host RAM"
+    )
+    n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    cache_type_kv: Optional[str] = Field(
+        None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
+    )
+    n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
+    layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
+    gpu_layers: Optional[int] = Field(
+        None, description = "Layers charged to the GPU; null under automatic placement"
+    )
+    moe_offload_unmodelled: bool = Field(
+        False,
+        description = "True when --n-cpu-moe is set: experts move per-tensor, not "
+        "per-block, so the GPU/host split above ignores it and reads high.",
+    )
+
+
+class MemoryEstimate(BaseModel):
+    """The canonical answer to "what would this load occupy".
+
+    Studio grew two routes that answer this -- ``POST /inference/estimate-memory``
+    for the Load Model panel and ``GET /models/kv-cache-estimate`` for the Hub
+    memory bar. They share the ``_gguf_memory_breakdown`` planner, so their
+    arithmetic already agrees; this is the shared CONTRACT, so their vocabulary
+    agrees too. Both legacy routes are projections of this model and keep their
+    own shapes exactly.
+
+    The one thing this model deliberately does not have is a field called
+    ``weights_bytes``. That name means different things on the two legacy routes
+    -- every resident file on one, the quant file alone on the other -- and it is
+    the same type on both, so nothing catches a caller reading the wrong one.
+    It is replaced here by two fields that each say which they are, and it is
+    absent rather than redefined so that no future reader can pick it up and
+    guess. See ``core/inference/memory_contract.py`` for the projections.
+    """
+
+    available: bool = Field(..., description = "Whether a breakdown could be produced at all.")
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
+        "'unsupported_source' or 'unsizable'.",
+    )
+
+    # --- the two meanings that used to collide under `weights_bytes` ---
+    quant_file_bytes: int = Field(
+        0,
+        description = "The selected GGUF quant file ALONE, as it sits on disk. This is "
+        "the figure a download size or a weights segment should be drawn from, because "
+        "it is the number the user already saw beside the model.",
+    )
+    resident_files_bytes: int = Field(
+        0,
+        description = "Every file this launch makes resident: the quant file PLUS "
+        "whichever projector and drafter it opens. Always >= quant_file_bytes. This is "
+        "the figure an itemized footprint should be drawn from.",
+    )
+
+    kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    drafter_runtime_bytes: int = Field(
+        0, description = "A separate drafter's own KV cache and rollback state"
+    )
+    drafter_runtime_gpu_bytes: int = Field(
+        0, description = "The share of drafter_runtime_bytes that lands on the GPU"
+    )
+    projector_runtime_bytes: int = Field(
+        0, description = "The vision encoder's buffers, on top of the projector file"
+    )
+    drafter_kv_unsized: bool = Field(
+        False, description = "A charged drafter's cache could not be sized, so totals are a floor"
+    )
+    adapters_unsized: bool = Field(
+        False, description = "A pass-through adapter could not be stat'd, so totals are a floor"
+    )
+
+    total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
+    gpu_bytes: Optional[int] = Field(
+        None,
+        description = "The share of total_bytes that lands on the GPU. Optional because "
+        "None and 0 are DIFFERENT answers here: None is 'the planner did not run', while "
+        "0 is 'this launch puts nothing on the card', which inherited placement such as "
+        "LLAMA_ARG_DEVICE=none really does produce. Collapsing the two sends a caller "
+        "back to summing segments and drawing VRAM pressure for a load that touches no "
+        "card at all.",
+    )
+    gpu_floor_bytes: Optional[int] = Field(
+        None,
+        description = "What still lands on the GPU at the SHORTEST context: drafter "
+        "weights, flat compute buffers, recurrent rollback state. None of it shrinks "
+        "when the context does, so it separates an overage a shorter context fixes from "
+        "one it cannot. None when it was not computed.",
+    )
+
+    kv_estimable: bool = Field(True, description = "False when the header could not size the cache")
+    kv_on_gpu: bool = Field(True, description = "Whether the target cache sits on the GPU")
+    n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    native_context: Optional[int] = Field(
+        None, description = "The model's own trained context length, when readable"
+    )
+    cache_type_kv: Optional[str] = Field(None, description = "KV cache dtype the estimate priced")
+    n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
+    layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
+    gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
+    moe_offload_unmodelled: bool = Field(
+        False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    context_is_pinned: bool = Field(
+        True,
+        description = "False only when the loader is free to shrink the context. A caller "
+        "that softens its verdict for an auto-fitted row has to stop softening here.",
+    )
+    inherited_device_pin: bool = Field(
+        False,
+        description = "An inherited LLAMA_ARG_DEVICE confines the launch to the cards it "
+        "names, so a budget aggregated over the visible inventory describes a pool the "
+        "launch will not open.",
+    )
+    spec_unpriced: bool = Field(
+        False, description = "A speculative term was charged that could not be sized"
+    )
+
+
 class InstallLatestTransformersRequest(BaseModel):
     """Consented request to install the latest transformers release into a sidecar."""
 
@@ -1066,6 +1329,12 @@ class LoadResponse(_InferenceRuntimeFields):
     )
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
+    )
+    memory_warning: Optional[str] = Field(
+        None,
+        description = "Non-blocking advisory about this load, or null. Set when the "
+        "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
+        "them in from disk and generation will be slow. The model still loaded.",
     )
 
 
@@ -1747,6 +2016,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool for this turn. Set when the "
+            "composer has Deep Research armed; the model decides whether to use it."
+        ),
+    )
     confirm_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
@@ -1790,8 +2066,35 @@ class ChatCompletionRequest(BaseModel):
             "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
             "limited to client-tool or response_format passthrough and retries after "
             "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
-            "window for plain and Studio-tool chats by dropping complete oldest turns. "
+            "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
             "Both truncation policies preserve system messages and tool-call groups."
+        ),
+    )
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
+            "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
+            "instructions (Studio default). 'rolling' drops oldest complete turns. "
+            "Unset uses UNSLOTH_CONTEXT_POLICY."
+        ),
+    )
+    compaction_headroom_ratio: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 0.9,
+        description = (
+            "[x-unsloth] Extra share of the prompt budget to drop when a rolling "
+            "compaction fires, so the boundary can stay put for a stretch of turns. "
+            "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
+            "for checkpoint compaction. Unset keeps the process default."
+        ),
+    )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] The replayed tool calls were produced by Studio's local "
+            "tool loop rather than by an OpenAI-compatible client tool contract."
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
@@ -1807,12 +2110,12 @@ class ChatCompletionRequest(BaseModel):
     run_tools_locally: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "[x-unsloth] Execute the selected tools on the Unsloth host instead of "
             "asking the provider to run its own hosted builtins. Only meaningful "
             "for providers that ship hosted tools of the same name (OpenAI, "
             "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
             "the same request means hosted search to a client written before "
-            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "Unsloth ran tools for external providers. Omitted keeps the hosted "
             "behaviour, so an older client is unaffected."
         ),
     )
@@ -2191,6 +2494,13 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Append tools from every enabled MCP server",
     )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool. Its schema is in the prompt "
+            "whenever the composer armed research, so the count carries it too."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
@@ -2198,6 +2508,15 @@ class ChatCountTokensRequest(BaseModel):
     auto_heal_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
+    )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Mirrors ChatCompletionRequest: the replayed tool calls came from "
+            "Studio's local tool loop, so _takes_tool_passthrough routes the count the way "
+            "it routes the completion. Declared rather than left to extra='allow', which "
+            "coerces nothing and would read the string 'false' as a claim of ownership."
+        ),
     )
     permission_mode: Optional[str] = Field(
         None,

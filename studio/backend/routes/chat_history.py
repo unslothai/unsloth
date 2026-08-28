@@ -13,7 +13,15 @@ import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
@@ -37,7 +45,7 @@ from storage.studio_db import (
     count_forks_for_message,
     delete_chat_attachment,
     delete_chat_project,
-    delete_chat_threads,
+    delete_chat_threads_with_active_runs,
     ensure_chat_project_workspace,
     fork_chat_thread,
     fork_counts_for_thread,
@@ -66,6 +74,22 @@ from storage.studio_db import (
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+def _reject_boolean(value: Any) -> Any:
+    """bool subclasses int, so lax mode would take `true` for a number the user never set."""
+    if isinstance(value, bool):
+        raise ValueError("Expected a number, got a boolean.")
+    return value
+
+
+NotABoolean = Annotated[Optional[int], BeforeValidator(_reject_boolean)]
+
+# llama.cpp spends 0xFFFFFFFF on its "draw one" sentinel, so a pin stops one below it.
+MAX_SAMPLING_SEED = 2**32 - 2
+SamplingSeed = Optional[
+    Annotated[int, Field(ge = 0, le = MAX_SAMPLING_SEED), BeforeValidator(_reject_boolean)]
+]
 
 
 class ChatRagThreadSource(BaseModel):
@@ -121,6 +145,7 @@ class ChatThreadSettings(BaseModel):
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    seed: SamplingSeed = None
     # Not length-capped, like the installation-wide copy: truncating here would
     # silently change what the chat runs with.
     systemPrompt: Optional[str] = None
@@ -132,6 +157,7 @@ class ChatThread(BaseModel):
     title: str = "New Chat"
     modelType: Literal["base", "lora", "model1", "model2"]
     modelId: str = ""
+    modelGgufVariant: Optional[str] = None
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: bool = False
@@ -143,13 +169,28 @@ class ChatThread(BaseModel):
     forkedFromMessageId: Optional[str] = None
     settings: Optional[ChatThreadSettings] = None
 
+    @field_serializer("settings")
+    def _only_the_keys_the_snapshot_stored(
+        self, settings: Optional[ChatThreadSettings]
+    ) -> Optional[dict]:
+        """Report a key the snapshot never held as absent rather than as null.
+
+        `seed` is the one setting whose null is a value: it means this chat draws its own
+        rather than taking the pinned one. Spelling every unset field as null, which is
+        what the default dump does, would make a snapshot written before the field existed
+        read as a chat that had cleared it.
+        """
+        if settings is None:
+            return None
+        return settings.model_dump(exclude_unset = True)
+
 
 def thread_from_row(row: dict) -> ChatThread:
     """Build a ChatThread from a DATABASE row, tolerating a snapshot it cannot read.
 
-    `settings` is the first strictly validated nested model Studio builds out of the
+    `settings` is the first strictly validated nested model Unsloth builds out of the
     database rather than off the wire, and a stored snapshot outlives the build that
-    wrote it: a newer Studio adding a seventeenth setting, widening an enum or
+    wrote it: a newer Unsloth adding a seventeenth setting, widening an enum or
     raising a bound writes a blob this one rejects. Refusing it here 500s the chat on
     open and takes the entire history export with it, since the export validates
     every thread. `_json_loads` already shrugs off JSON that will not parse; JSON
@@ -187,7 +228,7 @@ def readable_thread_settings(settings: dict) -> Optional[dict]:
 def _unreadable_thread_settings(stored: dict) -> dict:
     """The part of a stored snapshot this build cannot validate, and so must not delete.
 
-    An older Studio opening a database a newer one wrote drops the fields it cannot read.
+    An older Unsloth opening a database a newer one wrote drops the fields it cannot read.
     A blind replacement would make that loss permanent instead of temporary, so a write
     carries forward everything the writer could not have known about: unknown keys, and
     known keys holding values this build rejects.
@@ -241,6 +282,7 @@ class ChatThreadPatch(BaseModel):
     expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None
+    modelGgufVariant: Optional[str] = None
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: Optional[bool] = None
@@ -311,6 +353,7 @@ class ChatMessageListResponse(BaseModel):
 class ChatMessageSyncRequest(BaseModel):
     messages: list[ChatMessage]
     pruneMissing: bool = False
+    deletedMessageIds: list[str] = Field(default_factory = list)
 
 
 class ChatDeleteRequest(BaseModel):
@@ -362,6 +405,7 @@ class ChatInferenceSettings(BaseModel):
     systemVariables: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
+    seed: SamplingSeed = None
 
 
 class ChatPresetLoadConfig(BaseModel):
@@ -377,21 +421,12 @@ class ChatPresetLoadConfig(BaseModel):
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
-    nBatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
-    nUbatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
-
-    @field_validator("nBatch", "nUbatch", mode = "before")
-    @classmethod
-    def _no_booleans(cls, value: Any) -> Any:
-        # Same contract as LoadRequest: bool subclasses int, so lax mode would store
-        # `true` as 1 here while /load 422s it.
-        if isinstance(value, bool):
-            raise ValueError("Expected a number, got a boolean.")
-        return value
 
 
 class ChatPreset(BaseModel):
@@ -477,6 +512,13 @@ class ChatSettingsPayload(BaseModel):
     expandQuantizations: Optional[bool] = None
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
+    # Local GGUF auto-compaction. Off omits context_overflow so a full window
+    # errors instead of silently dropping history. contextPolicy/headroom are
+    # the per-request overrides for UNSLOTH_CONTEXT_POLICY and
+    # ROLLING_COMPACTION_HEADROOM_RATIO.
+    autoCompactEnabled: Optional[bool] = None
+    contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
+    compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
 
     @field_validator("researchModelTimeoutSeconds", mode = "before")
     @classmethod
@@ -705,6 +747,25 @@ def _cancel_active_generations(thread_ids: list[str]) -> None:
             continue
 
 
+def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
+    """Cancel durable producers whose rows were captured before thread cascade."""
+    if not run_ids:
+        return
+    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
+    for run_id in run_ids:
+        try:
+            if supervisor is not None:
+                supervisor.cancel(run_id)
+            else:
+                from routes.inference import _cancel_by_cancel_id_or_stash
+                from state import active_generations
+
+                active_generations.cancel_run(run_id)
+                _cancel_by_cancel_id_or_stash(run_id)
+        except Exception:  # noqa: BLE001 - deletion must still complete
+            logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)
+
+
 @router.delete("/threads")
 async def delete_threads(
     payload: ChatDeleteRequest,
@@ -715,8 +776,12 @@ async def delete_threads(
 
     # Before the rows go, so a thread id that comes back in the gap is cut here.
     cutoff = _archive_cutoff()
-    deleted_research_run_ids = await run_in_threadpool(delete_chat_threads, payload.ids)
+    deleted_research_run_ids, deleted_chat_run_ids = await run_in_threadpool(
+        delete_chat_threads_with_active_runs,
+        payload.ids,
+    )
     _cancel_research_runs(request, deleted_research_run_ids)
+    _cancel_chat_generation_runs(request, deleted_chat_run_ids)
     _cancel_active_generations(payload.ids)
     # Keyed by thread id, so nothing can reference the folder once the thread
     # is gone. Clean it up rather than leaking one per chat.
@@ -974,7 +1039,7 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
     try:
         return ChatProject(**upsert_chat_project(payload.model_dump()))
     except ProjectWorkspaceError as exc:
-        # A project is the only thing Studio writes to Documents, so a folder it
+        # A project is the only thing Unsloth writes to Documents, so a folder it
         # cannot create there fails here and nowhere else. Only this error, and
         # only its own path: the same upsert also opens the database, which
         # lives somewhere else entirely.
@@ -1071,19 +1136,21 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    # The transaction is authoritative about membership and captured the worker ids before its
+    # cascades. Signal them before any potentially slow RAG or workspace cleanup.
+    member_ids = list(project.get("memberIds") or [])
+    _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
+    _cancel_chat_generation_runs(
+        request,
+        list(project.get("activeChatGenerationRunIds") or []),
+    )
+    _cancel_active_generations(member_ids)
     # before any workspace work: the row is already gone, so a later failure must not
     # leave the scope owned by nothing
     try:
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    # The transaction is the only authority on membership and it runs first, so
-    # a chat moved in just before is deleted and one moved out survives. An
-    # earlier listing would stop a chat that is still there.
-    member_ids = list(project.get("memberIds") or [])
-    # By run id: the rows are gone by now, so there is nothing left to look up.
-    _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
-    _cancel_active_generations(member_ids)
     # The project's chats go with it, so their archives have to as well.
     await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
     if project.get("sandboxPath"):
@@ -1247,6 +1314,7 @@ def save_thread_message(
     thread_id: str,
     message_id: str,
     payload: ChatMessage,
+    allow_generation_edit: Annotated[bool, Query(alias = "allowGenerationEdit")] = False,
     current_subject: str = Depends(get_current_subject),
 ):
     if thread_id != payload.threadId or message_id != payload.id:
@@ -1254,7 +1322,9 @@ def save_thread_message(
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        return ChatMessage(**upsert_chat_message(payload.model_dump()))
+        return ChatMessage(
+            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
+        )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
             raise _missing_thread_error(thread_id) from exc
@@ -1294,6 +1364,7 @@ def replace_thread_messages(
                     thread_id,
                     messages,
                     prune_missing = payload.pruneMissing,
+                    deleted_message_ids = payload.deletedMessageIds,
                 )
             ]
         )
@@ -1352,7 +1423,7 @@ async def clear_history(
         else [thread["id"] for thread in await run_in_threadpool(list_chat_threads)]
     )
 
-    def _clear_rows() -> tuple[list[str], list[str], bool, Optional[set]]:
+    def _clear_rows() -> tuple[list[str], list[str], list[str], bool, Optional[set]]:
         """The clear, and the image snapshot the reap will be bounded to.
 
         Both in ONE threadpool call, so there is no await between them. Split across two,
@@ -1371,15 +1442,24 @@ async def clear_history(
         from core.inference.search_images import snapshot_and_fence_registrations
 
         if payload is None:
-            cleared, cleared_runs = clear_chat_history()
-            return cleared, cleared_runs, False, snapshot_and_fence_registrations()
+            cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
+                include_chat_generation_runs = True
+            )
+            return (
+                cleared,
+                cleared_runs,
+                cleared_chat_runs,
+                False,
+                snapshot_and_fence_registrations(),
+            )
         # Answered by the transaction itself. Read separately beforehand it is a guess:
         # a concurrent retry of the same operation id sees the same unrecorded ledger,
         # and the one BEGIN IMMEDIATE puts second replays while still believing it
         # cleared. `replayed` here is whichever the transaction actually did.
-        cleared, cleared_runs, replayed = clear_chat_history_with_replay_status(
+        cleared, cleared_runs, cleared_chat_runs, replayed = clear_chat_history_with_replay_status(
             payload.ids,
             operation_id = payload.operationId,
+            include_chat_generation_runs = True,
         )
         if replayed:
             # A replay takes no snapshot of its own -- the chats created since the original
@@ -1388,6 +1468,7 @@ async def clear_history(
             return (
                 cleared,
                 cleared_runs,
+                cleared_chat_runs,
                 True,
                 unreaped_clear_operation_image_ids(payload.operationId),
             )
@@ -1395,12 +1476,18 @@ async def clear_history(
         # Recorded before the reap runs, so a crash in the seconds of cleanup that follow
         # leaves a retry able to finish exactly this set and nothing wider.
         record_clear_operation_reap_scope(payload.operationId, snapshot)
-        return cleared, cleared_runs, False, snapshot
+        return cleared, cleared_runs, cleared_chat_runs, False, snapshot
 
     # The clear reports what it deleted, which is what gets cleaned up: a thread
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
-    cleared, cleared_runs, replayed, reapable_image_ids = await run_in_threadpool(_clear_rows)
+    (
+        cleared,
+        cleared_runs,
+        cleared_chat_runs,
+        replayed,
+        reapable_image_ids,
+    ) = await run_in_threadpool(_clear_rows)
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
@@ -1411,6 +1498,7 @@ async def clear_history(
         _cancel_active_generations(late)
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
+    _cancel_chat_generation_runs(request, cleared_chat_runs)
     # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
     # conversation searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(
@@ -1423,7 +1511,7 @@ async def clear_history(
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
     # Search thumbnails are keyed by id, not thread, so this is the one place they
     # can be reaped; they reveal what was searched for. Runs for both _clear_rows
-    # branches -- each calls clear_chat_history(), which drops every thread -- so this
+    # branches -- each drops every thread -- so this
     # is NOT gated on `payload is None`, which the frontend never sends and which
     # therefore meant the reap never ran.
     #

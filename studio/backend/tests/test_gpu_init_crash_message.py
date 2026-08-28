@@ -272,7 +272,7 @@ class TestGpuInitCrashMessage:
 
 
 class TestPlatformMatrix:
-    """Every OS and runtime flavour Studio ships, so the recovery cannot leak
+    """Every OS and runtime flavour Unsloth ships, so the recovery cannot leak
     into a path that already worked."""
 
     # (platform, library prefix, library suffix, binary name)
@@ -800,7 +800,7 @@ class TestCpuIsolatedReplay:
 
         assert staged is not None
         assert not dead.exists()
-        # No owner stamp means an older Studio wrote it; leave it alone.
+        # No owner stamp means an older Unsloth wrote it; leave it alone.
         assert legacy.exists()
 
     def test_a_live_owner_keeps_its_runtime(self, monkeypatch, tmp_path):

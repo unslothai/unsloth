@@ -9,7 +9,7 @@ this capability existed, and a third-party client can send the documented
 hosted-tool body forever:
 
 * ``enable_tools: true`` + ``enabled_tools: ["web_search", "code_execution"]``
-  has always meant "the provider runs its own server tools". Studio's loop must
+  has always meant "the provider runs its own server tools". Unsloth's loop must
   not read those same bytes as a request to run *its* web_search and drop
   ``code_execution`` on the floor (it has no local implementation of it).
 * an omitted ``permission_mode`` must resolve exactly as it does on the Codex
@@ -133,7 +133,7 @@ def _run(inf, payload):
 
 
 # The gate as it stood at merge base b3376300: only the Codex subscription ran
-# Studio's tools on an external provider. Every other provider took the plain
+# Unsloth's tools on an external provider. Every other provider took the plain
 # passthrough, whatever the request said about tools. Kept as executable code so
 # the expectations below are derived from the old behaviour, not restated.
 def _merge_base_takes_studio_loop(payload, provider_type: str) -> bool:
@@ -171,7 +171,7 @@ def test_a_hosted_tool_request_still_reaches_the_provider(monkeypatch, provider_
 
     chunks = _run(inf, payload)
     passthrough = FakeExternalClient.last["passthrough"]
-    assert passthrough is not None, "the Studio loop stole a hosted-tool request"
+    assert passthrough is not None, "the Unsloth loop stole a hosted-tool request"
     # Forwarded verbatim: dropping a name here is the provider losing a tool.
     assert passthrough["enabled_tools"] == selection
     assert passthrough["stream"] is True
@@ -190,7 +190,7 @@ def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
 def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(monkeypatch):
     """`run_tools_locally` must not smuggle a hosted-only turn past the 400.
 
-    Studio has no `code_execution`, so the local catalog is empty whatever the
+    Unsloth has no `code_execution`, so the local catalog is empty whatever the
     flag says and the route falls back to the provider. The confirmation
     rejection keys on the request NOT having taken the loop, so a "local"
     reading here answers a confirm-me request with an unconfirmed sandbox run.
@@ -230,7 +230,7 @@ def test_a_code_execution_with_run_tools_locally_still_reaches_the_provider(monk
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
 def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, provider_type):
     """Shape 2, the PR's primary use case: a self-hosted server has no hosted
-    tools at all, so the same body can only mean Studio's local loop."""
+    tools at all, so the same body can only mean Unsloth's local loop."""
     assert provider_hosted_tools(provider_type) == frozenset()
     inf = _install(monkeypatch, provider_type)
     with pytest.raises(LoopEntered):
@@ -248,7 +248,7 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
     ],
 )
 def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch, overrides):
-    """Shape 3: one Studio-only name (or MCP) is unambiguous, so the feature
+    """Shape 3: one Unsloth-only name (or MCP) is unambiguous, so the feature
     works on hosted providers too."""
     # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function
     # body, so it is never an attribute of ``routes.inference``: patching the route set a dead
@@ -285,7 +285,7 @@ def test_a_malformed_enabled_tools_is_not_a_hosted_request(bad):
 
 
 def test_a_codex_declares_no_hosted_tools():
-    """Codex's `web_search` is Studio's own tool run by the Codex loop, so the
+    """Codex's `web_search` is Unsloth's own tool run by the Codex loop, so the
     hosted check must never fire there."""
     assert provider_hosted_tools("openai_codex") == frozenset()
 
@@ -312,7 +312,7 @@ def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
     "nudge_tool_calls", [None, False, True], ids = ["omitted", "disabled", "enabled"]
 )
 def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudge_tool_calls):
-    """The external Studio loop must receive the request-level nudge policy."""
+    """The external Unsloth loop must receive the request-level nudge policy."""
     monkeypatch.setattr(
         "core.inference.tools.get_enabled_mcp_tools",
         lambda: _noop_mcp(),
