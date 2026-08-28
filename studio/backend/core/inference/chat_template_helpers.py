@@ -1635,6 +1635,36 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
+_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])\.(\d+)")
+
+
+def repair_numeric_member_access(template) -> Optional[str]:
+    """Rewrite ``x.0`` as ``x[0]`` in evaluated code, or None when nothing needs it.
+
+    llama.cpp's Jinja rejects a numeric member property. The throw lands inside its
+    capability probe, which swallows it, so ``supports_object_arguments`` stays false and a
+    replayed tool call's arguments are never decoded back into an object -- the template's
+    own ``arguments.items()`` then dies on the JSON string (GLM-5.3).
+
+    Only the ranges Jinja evaluates are rewritten, never prompt text or a quoted literal.
+    """
+    if not isinstance(template, str) or not template:
+        return None
+    spans = _jinja_expression_spans(template)
+    out: list = []
+    cursor = 0
+    for match in _NUMERIC_MEMBER.finditer(template):
+        if not _within(spans, match.start()):
+            continue
+        out.append(template[cursor : match.start()])
+        out.append(f"{match.group(1)}[{match.group(2)}]")
+        cursor = match.end()
+    if not out:
+        return None
+    out.append(template[cursor:])
+    return "".join(out)
+
+
 def _reads_tools_variable(body: str) -> bool:
     """True when *body* evaluates the ``tools`` variable, rather than printing the word."""
     return any(_TOOLS_VARIABLE.search(_JINJA_STRING.sub("", code)) for code in _jinja_code(body))
