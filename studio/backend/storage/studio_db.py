@@ -359,13 +359,19 @@ def _workspace_overlaps_chat_sandbox_root(workspace_path: str) -> bool:
     folder: concurrent calls overwrite each other. Normally unreachable, since the
     sandboxes live under the studio home, but UNSLOTH_STUDIO_SANDBOX_HOME can put
     them somewhere the folder picker will happily offer.
+
+    Descendants too, matching the other overlap checks: a bind mount inside the
+    picked folder is an ordinary directory carrying the sandbox root's identity,
+    so nothing about its pathname says what it is.
     """
     try:
         from core.inference.tools import sandbox_root
         root = sandbox_root()
     except Exception:  # noqa: BLE001 - an unanswerable check must not block a pick
         return False
-    return project_workspace_overlaps_managed_root(workspace_path, root)
+    return project_workspace_overlaps_managed_root(
+        workspace_path, root, check_descendants = True
+    )
 
 
 def _workspace_overlaps_live_project_path(
@@ -3286,6 +3292,31 @@ def set_chat_project_workspace(
         )
 
 
+def _record_retired_project_workspace(project: dict) -> None:
+    """Write down the folder a working-directory change is about to rotate away.
+
+    The session id is the only key back to it, and the row is about to stop
+    carrying it. Without this the files stay on disk with nothing naming them, so
+    a later delete of the project cannot offer or collect them. Recorded, not
+    pending: the user asked to change folders, not to lose one.
+    """
+    retired_session = project.get("workspaceSessionId")
+    retired_workspace = project.get("workspacePath")
+    if not retired_session or not retired_workspace or not os.path.isdir(retired_workspace):
+        return
+    from core.inference.tools import record_orphaned_project
+
+    record_orphaned_project(
+        str(project["id"]),
+        str(retired_workspace),
+        False,
+        # Only a managed workspace owns the folder above it. The user's own is
+        # theirs, and a record naming its parent would offer a delete of that.
+        str(project.get("rootPath")) if project.get("workspaceKind") == "managed" else None,
+        str(retired_session),
+    )
+
+
 def _set_chat_project_workspace(
     id: str,
     external_workspace_path: Optional[str],
@@ -3319,6 +3350,7 @@ def _set_chat_project_workspace(
         ):
             return project
     workspace_session_id = _new_project_workspace_session_id(id)
+    _record_retired_project_workspace(project)
     conn = get_connection()
     try:
         conn.execute(

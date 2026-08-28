@@ -5410,6 +5410,71 @@ def test_a_chat_sandbox_cannot_be_adopted_as_a_project_workspace(tmp_path, monke
         assert "sandbox" in str(caught.value.cause), f"{label} was accepted"
 
 
+def test_the_chat_sandbox_check_scans_descendants(tmp_path, monkeypatch):
+    """A bind mount inside the picked folder is an ordinary directory carrying the
+    sandbox root's identity, so only the identity scan can see it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from storage import studio_db
+
+    asked = []
+    real = studio_db.project_workspace_overlaps_managed_root
+    monkeypatch.setattr(
+        studio_db,
+        "project_workspace_overlaps_managed_root",
+        lambda workspace, root, check_descendants = False: (
+            asked.append(check_descendants) or real(workspace, root, check_descendants)
+        ),
+    )
+
+    studio_db._workspace_overlaps_chat_sandbox_root(str(tmp_path / "picked"))
+
+    assert asked == [True], asked
+
+
+def test_changing_a_working_directory_records_the_folder_it_retires(tmp_path, monkeypatch):
+    """The session id is the only key back to the old folder and the row is about
+    to stop carrying it, so a later delete could neither offer nor collect it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    studio_db._schema_ready = False
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "switcher",
+            "name": "Switcher",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        },
+        external_workspace_path = str(first),
+        external_workspace_identity = studio_db._directory_identity(str(first)),
+    )
+    retired_session = project["workspaceSessionId"]
+    (first / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    studio_db.set_chat_project_workspace(
+        "switcher", str(second), studio_db._directory_identity(str(second))
+    )
+
+    assert studio_db.get_chat_project("switcher")["workspaceSessionId"] != retired_session
+    assert (first / "report.csv").exists()
+    recorded = tools._recorded_project_workdir("switcher", retired_session)
+    assert recorded == str(first.resolve()), recorded
+    # Kept, not queued for deletion: the user asked to change folders, not lose one.
+    assert [
+        (path, pending) for _, path, _, pending, _ in tools.list_orphaned_projects()
+    ] == [(str(first.resolve()), False)]
+
+
 def test_corrupt_workspace_overlap_is_never_deleted(tmp_path, monkeypatch):
     import asyncio
 
