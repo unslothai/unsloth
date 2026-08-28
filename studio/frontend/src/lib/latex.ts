@@ -13,6 +13,7 @@ import {
   EMPTY_LIST_STATE,
   containerContent,
   indentWidth,
+  itemContent,
   openLists,
   quoteDepth,
 } from "./markdown-list-columns.ts";
@@ -57,10 +58,33 @@ function mergeRegions(
   return merged;
 }
 
-const FENCE_LINE_RE =
-  /(^|\r\n|\n|\r)(?:(?:[ \t]*>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*(`{3,}|~{3,})([^\r\n]*)/g;
+const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/;
+const FENCE_CANDIDATE_RE =
+  /(^|\r\n|\n|\r)((?:(?: {0,3}>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*)(`{3,}|~{3,})([^\r\n]*)/g;
 const INDENTED_CODE_CANDIDATE_RE =
-  /(^|\r\n|\n|\r)(?: {0,3}>[ \t]?)*(?: {4}|\t)/g;
+  /(^|\r\n|\n|\r)(?: {0,3}>[ \t]?)*(?:(?: {4}|\t)| {0,3}(?:[-+*]|\d{1,9}[.)])(?: {5,}|[ \t]*\t[ \t]*))/g;
+
+/** `line` with up to `columns` columns of leading whitespace removed. */
+function stripIndent(line: string, columns: number): string {
+  let width = 0;
+  let index = 0;
+  while (index < line.length && width < columns) {
+    const char = line[index];
+    if (char !== " " && char !== "\t") break;
+    width += char === " " ? 1 : 4 - (width % 4);
+    index += 1;
+  }
+  return line.slice(index);
+}
+
+/** Display columns occupied by a Markdown container prefix. */
+function columnWidth(prefix: string): number {
+  let width = 0;
+  for (const char of prefix) {
+    width += char === "\t" ? 4 - (width % 4) : 1;
+  }
+  return width;
+}
 
 /**
  * Find code regions (fenced, indented, and inline) to skip.
@@ -70,25 +94,53 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
   // Fenced blocks, including the open tail present on a streaming frame.
   const fenced: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
-  let openFence: { start: number; marker: string } | null = null;
-  FENCE_LINE_RE.lastIndex = 0;
-  while ((match = FENCE_LINE_RE.exec(content)) !== null) {
-    const start = match.index + match[0].indexOf(match[2]);
-    const marker = match[2];
-    const tail = match[3];
-    if (openFence === null) {
-      if (marker[0] === "`" && tail.includes("`")) continue;
-      openFence = { start, marker };
+  let openFence: {
+    start: number;
+    marker: string;
+    column: number;
+    quotes: number;
+  } | null = null;
+  FENCE_CANDIDATE_RE.lastIndex = 0;
+  while ((match = FENCE_CANDIDATE_RE.exec(content)) !== null) {
+    const lineStart = match.index + (match[1]?.length ?? 0);
+    const line = `${match[2] ?? ""}${match[3] ?? ""}${match[4] ?? ""}`;
+    if (openFence !== null) {
+      if (quoteDepth(line) !== openFence.quotes) continue;
+      const quoted = containerContent(line, EMPTY_LIST_STATE, openFence.quotes);
+      const fence = FENCE_LINE_RE.exec(stripIndent(quoted, openFence.column));
+      if (!fence) continue;
+      const marker = fence[1] ?? "";
+      const tail = fence[2] ?? "";
+      if (
+        marker[0] === openFence.marker[0] &&
+        marker.length >= openFence.marker.length &&
+        !tail.trim()
+      ) {
+        fenced.push([openFence.start, lineStart + line.length]);
+        openFence = null;
+      }
       continue;
     }
-    if (
-      marker[0] === openFence.marker[0] &&
-      marker.length >= openFence.marker.length &&
-      !tail.trim()
-    ) {
-      fenced.push([openFence.start, match.index + match[0].length]);
-      openFence = null;
+
+    const quotes = quoteDepth(line);
+    const quoted = containerContent(line, EMPTY_LIST_STATE, quotes);
+    let source = quoted;
+    let item = itemContent(source, false);
+    while (item !== source) {
+      source = item;
+      item = itemContent(source, false);
     }
+    const fence = FENCE_LINE_RE.exec(source);
+    if (!fence) continue;
+    const marker = fence[1] ?? "";
+    const tail = fence[2] ?? "";
+    if (marker[0] === "`" && tail.includes("`")) continue;
+    openFence = {
+      start: lineStart + line.length - source.length + (fence.index ?? 0),
+      marker,
+      column: columnWidth(quoted.slice(0, quoted.length - source.length)),
+      quotes,
+    };
   }
   if (openFence !== null) fenced.push([openFence.start, content.length]);
 
@@ -115,7 +167,10 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
       const start = lineMatch.index;
       const text = line.replace(/(?:\r\n|\n|\r)$/, "");
       lists = openLists(text, lists, !previousBlank);
-      const inner = containerContent(text, lists, quoteDepth(text));
+      const inner = itemContent(
+        containerContent(text, lists, quoteDepth(text)),
+        !previousBlank,
+      );
       const blank = /^\s*$/.test(inner);
       const code = indentWidth(inner) >= 4;
       if (blockStart >= 0) {
@@ -452,6 +507,14 @@ function normalizeEscapedInlineMath(content: string): string {
 
       const body = content.slice(opener + 1, closing - 1);
       const trimmed = body.trim();
+      if (
+        body.length <= 200 &&
+        /^[a-zA-Z]+$/.test(trimmed) &&
+        trimmed.length > 1
+      ) {
+        opening = closing - 1;
+        break;
+      }
       if (body.length > 200 || !looksLikeMathBody(trimmed)) {
         break;
       }

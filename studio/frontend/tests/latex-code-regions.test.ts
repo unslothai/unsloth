@@ -69,6 +69,10 @@ test("ordinary code spans and fences are unchanged", () => {
     ["costs $5 outside\n\n`x`", "costs \\$5 outside\n\n`x`"],
     ["```\n`inner`\n```", "```\n`inner`\n```"],
     ["```tex\n\\$x\\$\n", "```tex\n\\$x\\$\n"],
+    ["```\n    ```\n\\$x\\$\n```", "```\n    ```\n\\$x\\$\n```"],
+    ["- ```\n  \\$x\\$\n  ```", "- ```\n  \\$x\\$\n  ```"],
+    ["> ```\n> \\$x\\$\n> ```", "> ```\n> \\$x\\$\n> ```"],
+    ["```\n- ```\n\\$x\\$\n```", "```\n- ```\n\\$x\\$\n```"],
     ["`\\(x\\)` and \\(y\\)", "`\\(x\\)` and $y$"],
     ["```\n\\(x\\)\n```\n\nthen \\(y\\)", "```\n\\(x\\)\n```\n\nthen $y$"],
   ];
@@ -118,6 +122,7 @@ test("escaped math recovery preserves literal and non-math dollars", () => {
     ["`\\$v_s\\$` is code", "`\\$v_s\\$` is code"],
     [String.raw`    \$v_s\$`, String.raw`    \$v_s\$`],
     [String.raw`>     \$v_s\$`, String.raw`>     \$v_s\$`],
+    [String.raw`-     \$v_s\$`, String.raw`-     \$v_s\$`],
     [
       String.raw`- item
     \$v_s\$`,
@@ -164,6 +169,7 @@ $$`,
     ],
     [String.raw`\$${longBody}\$ + \$x\$`, String.raw`\$${longBody}\$ + $x$`],
     [String.raw`\$v_s is incomplete`, String.raw`\$v_s is incomplete`],
+    [String.raw`literal \$ then \$v_s\$`, String.raw`literal \$ then $v_s$`],
     ["\\$a\nb\\$ crosses a line", "\\$a\nb\\$ crosses a line"],
   ];
 
