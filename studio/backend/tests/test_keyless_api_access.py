@@ -219,7 +219,8 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
         t.join(timeout = 10)
 
     assert call_count == 1
-    assert results == [("inference", False)] * n_threads
+    assert results.count(("inference", False)) == 1
+    assert results.count(("off", False)) == n_threads - 1
 
 
 def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
@@ -258,8 +259,108 @@ def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monk
         late_result = late_future.result(timeout = 10)
 
     assert call_count == 1
-    assert results == [True] * n_requests
-    assert late_result is True
+    assert results.count(True) == 1
+    assert results.count(False) == n_requests - 1
+    assert isinstance(late_result, bool)
+
+
+def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
+    """Followers fail closed without occupying every shared worker token (#9901)."""
+    import anyio.to_thread
+    import utils.keyless_api_access as keyless
+    from starlette.concurrency import run_in_threadpool
+
+    set_keyless_api_access("inference", tools = False)
+    _reset_scope_cache()
+
+    owner_started = threading.Event()
+    release_owner = threading.Event()
+    all_requests_entered = threading.Event()
+    entered_count = 0
+    entered_lock = threading.Lock()
+    real_read = keyless._read_settings
+    real_check = keyless.asgi_request_is_keyless
+
+    def delayed_read():
+        owner_started.set()
+        assert release_owner.wait(timeout = 10)
+        return real_read()
+
+    def counted_check(scope):
+        nonlocal entered_count
+        with entered_lock:
+            entered_count += 1
+            if entered_count == 4:
+                all_requests_entered.set()
+        return real_check(scope)
+
+    monkeypatch.setattr(keyless, "_read_settings", delayed_read)
+    monkeypatch.setattr(keyless, "asgi_request_is_keyless", counted_check)
+
+    async def exercise():
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        original_tokens = limiter.total_tokens
+        limiter.total_tokens = 4
+
+        async def downstream(*_args):
+            return None
+
+        middleware = KeylessToolPolicyMiddleware(downstream)
+        requests = [
+            asyncio.create_task(middleware(asgi_scope(), lambda: None, lambda _message: None))
+            for _ in range(4)
+        ]
+        try:
+            for _ in range(100):
+                if owner_started.is_set() and all_requests_entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert owner_started.is_set() and all_requests_entered.is_set()
+
+            unrelated = asyncio.create_task(run_in_threadpool(lambda: "available"))
+            assert await asyncio.wait_for(unrelated, timeout = 1) == "available"
+        finally:
+            release_owner.set()
+            await asyncio.gather(*requests)
+            limiter.total_tokens = original_tokens
+
+    asyncio.run(exercise())
+
+
+def test_scope_write_preserves_tools_during_an_inflight_refresh(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("full", tools = True)
+    _reset_scope_cache()
+
+    owner_started = threading.Event()
+    release_owner = threading.Event()
+    real_read = keyless._read_settings
+    read_count = 0
+    count_lock = threading.Lock()
+
+    def delayed_first_read():
+        nonlocal read_count
+        with count_lock:
+            read_count += 1
+            first = read_count == 1
+        if first:
+            owner_started.set()
+            assert release_owner.wait(timeout = 10)
+        return real_read()
+
+    monkeypatch.setattr(keyless, "_read_settings", delayed_first_read)
+    reader = threading.Thread(target = keyless._settings)
+    reader.start()
+    try:
+        assert owner_started.wait(timeout = 10)
+        set_keyless_api_access("inference")
+    finally:
+        release_owner.set()
+        reader.join(timeout = 10)
+
+    assert not reader.is_alive()
+    assert get_keyless_api_access_settings() == ("inference", True)
 
 
 def test_overlapping_writes_publish_in_commit_order(monkeypatch):

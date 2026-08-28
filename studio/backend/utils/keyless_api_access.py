@@ -83,8 +83,7 @@ _settings_generation = 0
 _cache_lock = threading.Lock()
 _write_lock = threading.Lock()
 # Coalesces concurrent cache misses; see _settings().
-_settings_refresh_inflight: Optional[threading.Event] = None
-_SETTINGS_INFLIGHT_WAIT_SECONDS = 30.0
+_settings_refresh_inflight: Optional[object] = None
 
 
 def _reset_scope_cache() -> None:
@@ -120,26 +119,21 @@ def _settings() -> tuple[str, bool]:
     keep the server open for the rest of the TTL. The generation counter dates each
     read against the writes, so only a read that still describes the DB is published.
 
-    Only one stale-cache caller reads SQLite. Others wait for its Event, avoiding a
-    burst of connection opens on AnyIO's shared worker pool (#9901).
+    Only one stale-cache caller reads SQLite. Followers fail closed instead of
+    waiting, so a slow refresh cannot occupy AnyIO's shared worker pool (#9901).
     """
     global _cached_settings, _settings_refresh_inflight
-    owner_event: Optional[threading.Event] = None
+    owner_marker: Optional[object] = None
     try:
-        while True:
-            now = time.monotonic()
-            with _cache_lock:
-                cached = _cached_settings
-                if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
-                    return cached[1], cached[2]
-                waiting = _settings_refresh_inflight
-                if waiting is None:
-                    owner_event = _settings_refresh_inflight = threading.Event()
-                    generation = _settings_generation
-                    break
-            if not waiting.wait(_SETTINGS_INFLIGHT_WAIT_SECONDS):
-                # Retry after the owner's SQLite busy timeout should have elapsed.
-                continue
+        now = time.monotonic()
+        with _cache_lock:
+            cached = _cached_settings
+            if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
+                return cached[1], cached[2]
+            if _settings_refresh_inflight is not None:
+                return KEYLESS_SCOPE_OFF, False
+            owner_marker = _settings_refresh_inflight = object()
+            generation = _settings_generation
 
         scope, tools = _read_settings()
         with _cache_lock:
@@ -148,11 +142,10 @@ def _settings() -> tuple[str, bool]:
             published = _cached_settings
         return (published[1], published[2]) if published is not None else (scope, tools)
     finally:
-        if owner_event is not None:
+        if owner_marker is not None:
             with _cache_lock:
-                if _settings_refresh_inflight is owner_event:
+                if _settings_refresh_inflight is owner_marker:
                     _settings_refresh_inflight = None
-            owner_event.set()
 
 
 def get_keyless_api_access_scope() -> str:
@@ -176,7 +169,7 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
     if scope is None:
         raise ValueError(f"Keyless API access scope must be one of: {', '.join(KEYLESS_SCOPES)}.")
     with _write_lock:
-        allow_tools = get_keyless_api_tools_enabled() if tools is None else _coerce_bool(tools)
+        allow_tools = _read_settings()[1] if tools is None else _coerce_bool(tools)
         if allow_tools is None:
             raise ValueError("Keyless tool access must be true or false.")
         # tools are meaningless without a scope, and leaving them ticked would surprise
