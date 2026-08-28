@@ -1425,6 +1425,7 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -1481,6 +1482,7 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufDownloadCancelled,
         GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -2907,7 +2909,12 @@ from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_h
 
 import io
 import base64
-from datetime import date as _date
+
+from utils.current_date_prompt_settings import (
+    contains_current_date_prompt_line,
+    current_date_prompt_line,
+    replace_current_date_prompt_lines,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -4173,10 +4180,9 @@ def _build_tool_action_nudge(
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
-    date_line = f"The current date is {_date.today().isoformat()}. "
     if not (has_web or has_code or has_artifact):
         # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
-        return date_line + _TOOL_RESEARCH_TIP
+        return _TOOL_RESEARCH_TIP
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -4193,7 +4199,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
-    return date_line + _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
+    # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
+    return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
 
 # Nudge appended when the RAG knowledge-base tool is active: ground answers in
@@ -4731,17 +4738,123 @@ def _apply_compaction_nudge(
 
 async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
-    is active (search_knowledge_base present and a retrieval scope is set). The
-    date is prefixed when the tool nudge is empty (RAG-only tool set). Returns
-    ``nudge`` unchanged when RAG isn't active."""
+    is active (search_knowledge_base present and a retrieval scope is set).
+    Returns ``nudge`` unchanged when RAG isn't active."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
     grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
     if not nudge:
-        date_line = f"The current date is {_date.today().isoformat()}."
-        return date_line + " " + grounding
+        return grounding
     return nudge + " " + grounding
+
+
+def _refresh_stated_date(content: Any, date_line: str) -> tuple[Any, bool, bool]:
+    if isinstance(content, str):
+        stated = contains_current_date_prompt_line(content)
+        refreshed = replace_current_date_prompt_lines(content, date_line)
+        return refreshed, stated, refreshed != content
+    if not isinstance(content, list):
+        return content, False, False
+    refreshed_parts = list(content)
+    stated = False
+    changed = False
+    for index, part in enumerate(content):
+        if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+            continue
+        stated = stated or contains_current_date_prompt_line(part["text"])
+        refreshed_text = replace_current_date_prompt_lines(part["text"], date_line)
+        if refreshed_text == part["text"]:
+            continue
+        refreshed_parts[index] = {**part, "text": refreshed_text}
+        changed = True
+    return refreshed_parts, stated, changed
+
+
+def _wants_current_date(request: Any) -> bool:
+    """Whether this caller's prompt is Studio's to compose: an interactive session, nothing else.
+
+    The router is also mounted at /v1, so a third party's sk-unsloth key reaches the same
+    handlers, and their request is theirs verbatim. Studio's own workflow keys are excluded too:
+    a data recipe generates a dataset, and Deep Research decides once at run creation and stamps
+    the answer into its config, so injecting here would override the state the run started in.
+    """
+    return not _request_has_api_key(request)
+
+
+def _apply_current_date_prompt(
+    system_prompt: str,
+    request: Any = None,
+    *,
+    include_api_key: bool = False,
+) -> str:
+    """Prefix the user's system prompt with today's date when the setting is on.
+
+    Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
+    as the last word to the model.
+    """
+    if request is not None and not _wants_current_date(request):
+        if not include_api_key or _request_is_internal_workflow(request):
+            return system_prompt
+    date_line = current_date_prompt_line(request = request)
+    if not date_line:
+        return system_prompt
+    refreshed_prompt, stated, _ = _refresh_stated_date(system_prompt, date_line)
+    if stated:
+        return refreshed_prompt
+    return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
+
+
+def _prepend_current_date_to_messages(
+    messages: list[dict],
+    request: Any = None,
+    *,
+    include_api_key: bool = False,
+) -> list[dict]:
+    """Apply the date to an already-built message list for a provider Studio proxies to.
+
+    The local path prefixes ``system_prompt`` before the messages exist; an external payload is
+    assembled first, so the date goes onto its leading system turn instead.
+    """
+    if request is not None and not _wants_current_date(request):
+        if not include_api_key or _request_is_internal_workflow(request):
+            return messages
+    date_line = current_date_prompt_line(request = request)
+    if not date_line:
+        return messages
+    copied = [dict(msg) for msg in messages]
+    stated = False
+    refreshed = False
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content, content_stated, changed = _refresh_stated_date(msg.get("content"), date_line)
+        stated = stated or content_stated
+        if changed:
+            msg["content"] = content
+            refreshed = True
+    if stated:
+        if not refreshed:
+            return messages
+        return copied
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            msg["content"] = date_line + "\n\n" + content.lstrip()
+            return copied
+        if isinstance(content, list):
+            copied_parts = [dict(part) if isinstance(part, dict) else part for part in content]
+            for part in copied_parts:
+                if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+                    continue
+                part["text"] = date_line + "\n\n" + part["text"].lstrip()
+                msg["content"] = copied_parts
+                return copied
+            msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
+            return copied
+    return [{"role": "system", "content": date_line}, *copied]
 
 
 # Strip leaked tool-call markup: every shared-parser format plus the leak shapes
@@ -12407,6 +12520,23 @@ def _restore_alias_if_failed_load_left_the_prior_model(
     backend._openai_advertised_id = prior_alias
 
 
+def _gguf_load_cancelled(llama_backend, load_cancel_event: Optional[threading.Event]) -> bool:
+    return llama_backend.load_cancelled() or bool(
+        load_cancel_event is not None and load_cancel_event.is_set()
+    )
+
+
+async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bool:
+    try:
+        return await asyncio.to_thread(
+            llama_backend.load_model,
+            intent = intent,
+            load_cancel_event = load_cancel_event,
+        )
+    except GgufDownloadCancelled:
+        return False
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -12997,10 +13127,10 @@ async def _load_model_impl(
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
                 )
-                return await asyncio.to_thread(
-                    llama_backend.load_model,
-                    intent = attempt,
-                    load_cancel_event = load_cancel_event,
+                return await _run_gguf_load_attempt(
+                    llama_backend,
+                    attempt,
+                    load_cancel_event,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -13014,10 +13144,7 @@ async def _load_model_impl(
                     requested_tensor = request.tensor_parallel,
                     extra_args = extra_llama_args,
                     label = config.identifier,
-                    cancelled = lambda: (
-                        llama_backend.load_cancelled()
-                        or bool(load_cancel_event and load_cancel_event.is_set())
-                    ),
+                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
                 )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
@@ -13029,6 +13156,11 @@ async def _load_model_impl(
 
             if not success:
                 _restore_marker_if_prior_preview_still_resident()
+                # A cancelled load is not a failed one. An automatic switch cancels
+                # through its own event without unloading, and the 500 built here
+                # would land before the caller reaches _raise_if_generation_cancelled.
+                if _gguf_load_cancelled(llama_backend, load_cancel_event):
+                    raise HTTPException(status_code = 409, detail = "Model load cancelled")
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
@@ -17772,6 +17904,11 @@ async def _proxy_to_external_provider(
                 chat_messages = _append_to_codex_instructions(
                     chat_messages, _codex_full_access_nudge
                 )
+        chat_messages = _prepend_current_date_to_messages(
+            chat_messages,
+            request,
+            include_api_key = bool(studio_tool_payloads),
+        )
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
@@ -18065,6 +18202,11 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    chat_messages = _prepend_current_date_to_messages(
+        chat_messages,
+        request,
+        include_api_key = run_studio_tool_loop,
+    )
     if run_studio_tool_loop and payload.bypass_permissions:
         # Full access disables the sandbox at execution time, so the schemas must
         # say so too rather than describing a sandbox the model will not get.
@@ -19028,6 +19170,7 @@ async def produce_openai_chat_completions(
                     else _decode_audio_base64(payload.audio_base64)
                 )
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+                system_prompt = _apply_current_date_prompt(system_prompt, request)
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
@@ -19443,6 +19586,8 @@ async def produce_openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
     else:
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+    # applied once so both backends inherit it, with or without tools, and never state it twice.
+    system_prompt = _apply_current_date_prompt(system_prompt, request)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -19633,6 +19778,12 @@ async def produce_openai_chat_completions(
                 )
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
+            system_prompt = _apply_current_date_prompt(
+                system_prompt,
+                request,
+                include_api_key = True,
+            )
+            gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
@@ -21323,7 +21474,11 @@ async def produce_openai_chat_completions(
         # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
-        _sf_system_prompt = system_prompt
+        _sf_system_prompt = _apply_current_date_prompt(
+            system_prompt,
+            request,
+            include_api_key = True,
+        )
         if _sf_nudge:
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
@@ -25643,7 +25798,9 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
 
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
-    payload: ChatCountTokensRequest, current_subject: str = Depends(get_current_subject)
+    payload: ChatCountTokensRequest,
+    current_subject: str = Depends(get_current_subject),
+    request: Request = None,
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
@@ -25699,6 +25856,9 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
+    # the verbatim passthrough carries no date line, so counting one here would overcount it.
+    if not _takes_passthrough:
+        _system_prompt = _apply_current_date_prompt(_system_prompt, request)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
@@ -25759,6 +25919,11 @@ async def chat_count_tokens(
         tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
+            openai_messages = _prepend_current_date_to_messages(
+                openai_messages,
+                request,
+                include_api_key = True,
+            )
             _count_nudge = await _apply_rag_nudge(
                 _build_tool_action_nudge(
                     tools = tools_to_use,
@@ -25905,6 +26070,34 @@ async def anthropic_count_tokens(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
+    # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
+    # routing rather than "any tools": a Studio server-tool alias, or a template without
+    # passthrough support, falls through to plain generation there and does carry the date.
+    _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    _count_has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(t) is not None
+        for t in payload.tools or []
+    )
+    _count_server_tools = (
+        _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
+        and llama_backend.supports_tools
+        and not _anthropic_request_has_image(payload)
+    )
+    _count_client_tools = (
+        not _count_server_tools
+        and any(
+            tool.get("function", {}).get("name") not in _count_studio_tools
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+        )
+        and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
+    )
+    if not _count_client_tools:
+        openai_messages = _prepend_current_date_to_messages(
+            openai_messages,
+            request,
+            include_api_key = _count_server_tools,
+        )
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the
@@ -26199,6 +26392,15 @@ async def anthropic_messages(
         and len(openai_client_tools) > 0
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
+
+    # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
+    # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
+    if not client_tools:
+        openai_messages = _prepend_current_date_to_messages(
+            openai_messages,
+            request,
+            include_api_key = server_tools,
+        )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
     # single tool_use block. Computed here so BOTH the client-tool passthrough

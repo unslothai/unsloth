@@ -102,7 +102,7 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: vulkan
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda timeout, **_kw: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
     return backend, gguf
@@ -3001,7 +3001,7 @@ def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
             },
         )()
 
-    def fake_health(timeout = None):
+    def fake_health(timeout = None, **_kw):
         launched = captured["cmds"][-1] if captured["cmds"] else []
         if "--mmproj" in launched:
             backend._stdout_lines = _PROJECTOR_ABORT_OUT.splitlines()
@@ -3229,7 +3229,7 @@ def _launch_with_vulkan_cpu_replay(
             },
         )()
 
-    def fake_health(timeout = None):
+    def fake_health(timeout = None, **_kw):
         if crash and not _is_cpu_replay(captured["cmds"][-1] if captured["cmds"] else []):
             backend._stdout_lines = ["ggml_vulkan: Device memory allocation failed"]
             return False

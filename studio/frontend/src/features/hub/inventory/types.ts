@@ -30,6 +30,7 @@ export interface InventoryHint {
   kind: InventoryHintKind;
   repoId: string;
   bytes?: number;
+  startedAt?: number;
   createdAt?: number;
 }
 
@@ -48,6 +49,7 @@ export interface CachedInventoryRow {
   bytes: number;
   cachePath?: string | null;
   loadCachePath?: string | null;
+  /** last changed time as epoch milliseconds. */
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
@@ -96,6 +98,7 @@ export interface LocalInventoryRow {
   trainingMethod?: string | null;
   task?: string | null;
   audioType?: string | null;
+  /** last changed time as epoch milliseconds. */
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;
