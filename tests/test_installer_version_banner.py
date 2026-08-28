@@ -35,7 +35,7 @@ def _ps_literal(value: object) -> str:
 
 
 _RESOLVER_PATTERN = (
-    r'    function Get-StudioVersionProbe \{.*?\n    \} catch \{\n'
+    r"    function Get-StudioVersionProbe \{.*?\n    \} catch \{\n"
     r'        \$CurrentVersionDisplay = "unknown"\n    \}\n'
 )
 
@@ -56,9 +56,9 @@ def test_new_version_is_never_hardcoded_independently_of_the_install_spec():
     # #9910 explicitly forbids a second literal: the banner's floor and the one uv
     # actually installs must come from the same $_unslothReleaseInstallSpec.
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    assert source.count('"unsloth>=2026.8.22"') == 1, (
-        "the install floor must be defined exactly once and reused for the banner"
-    )
+    assert (
+        source.count('"unsloth>=2026.8.22"') == 1
+    ), "the install floor must be defined exactly once and reused for the banner"
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
@@ -68,7 +68,10 @@ def test_fresh_install_reports_not_installed_and_the_pinned_floor(tmp_path):
     venv_dir = tmp_path / "studio-venv"  # never created: no Scripts\python.exe on disk
     result = run_pwsh(
         [
-            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             (
                 f"$VenvDir = {_ps_literal(venv_dir)}; $PackageName = 'unsloth'; "
                 f"{resolver} "
@@ -92,7 +95,10 @@ def test_desktop_backend_override_is_reflected_in_the_new_version(tmp_path):
     venv_dir = tmp_path / "studio-venv"
     result = run_pwsh(
         [
-            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             (
                 f"$VenvDir = {_ps_literal(venv_dir)}; $PackageName = 'unsloth'; "
                 "$env:UNSLOTH_DESKTOP_BACKEND_VERSION = '9.9.9'; "
@@ -121,7 +127,10 @@ def test_an_existing_install_is_reported_by_querying_its_own_venv(tmp_path):
     shutil.copy(sys.executable, venv_python)
     result = run_pwsh(
         [
-            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             (
                 f"$VenvDir = {_ps_literal(tmp_path / 'studio-venv')}; $PackageName = 'pytest'; "
                 f"{resolver} "
@@ -149,7 +158,10 @@ def test_a_broken_interpreter_reports_unknown_instead_of_failing(tmp_path):
     venv_python.chmod(0o755)
     result = run_pwsh(
         [
-            "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
             (
                 f"$VenvDir = {_ps_literal(tmp_path / 'studio-venv')}; $PackageName = 'unsloth'; "
                 f"{resolver} "
