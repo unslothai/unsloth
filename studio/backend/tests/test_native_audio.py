@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import torchaudio
 
 from core.inference.native_audio import (
     HIGGS_TTS2_CODEC_REPO,
@@ -20,6 +21,7 @@ from core.inference.native_audio import (
     MOSS_NANO_CODEC_REPO,
     NativeAudioBackend,
     _moss_transformers5_config_compat,
+    _repair_moss_nano_rotary_buffers,
     is_native_audio_model,
     native_audio_download_plan,
     native_audio_kv_memory_gb,
@@ -317,6 +319,37 @@ def test_moss_nano_overrides_flash_attention_on_cpu(monkeypatch):
     assert seen["local_transformer_attn_implementation"] == "eager"
 
 
+def test_moss_nano_repairs_transformers5_rotary_buffers():
+    class Rotary(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("inv_freq", torch.full((4,), float("nan")), persistent = False)
+
+    class Attention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rotary_emb = Rotary()
+
+    class Decoder(torch.nn.Module):
+        def __init__(self, base):
+            super().__init__()
+            self.config = SimpleNamespace(rope_base = base)
+            self.attention = Attention()
+
+    model = SimpleNamespace(transformer = Decoder(10000.0), local_transformer = Decoder(100.0))
+    _repair_moss_nano_rotary_buffers(model)
+
+    assert torch.equal(
+        model.transformer.attention.rotary_emb.inv_freq,
+        torch.tensor([1.0, 0.1, 0.01, 0.001]),
+    )
+    assert torch.allclose(
+        model.local_transformer.attention.rotary_emb.inv_freq,
+        torch.tensor([1.0, 100**-0.25, 0.1, 100**-0.75]),
+    )
+    assert "inv_freq" in model.transformer.attention.rotary_emb._non_persistent_buffers_set
+
+
 def test_moss_local_generation_contract():
     seen = {}
 
@@ -337,33 +370,66 @@ def test_moss_local_generation_contract():
     )
     backend = _backend("moss_tts_local", model = model, processor = Processor(), sample_rate = 48000)
     wav, rate = backend.generate_audio_response(
-        "Bonjour", instructions = "Warm", language = "French", max_new_tokens = 400
+        "Bonjour <|im_end|>",
+        instructions = "Warm </user_inst>",
+        language = "<|audio|>French",
+        max_new_tokens = 400,
     )
     assert wav[:4] == b"RIFF" and rate == 48000
-    assert seen["message"] == {"text": "Bonjour", "instruction": "Warm", "language": "French"}
+    assert seen["message"] == {
+        "text": "Bonjour < |im_end|>",
+        "instruction": "Warm < /user_inst>",
+        "language": "< |audio|>French",
+    }
     assert seen["mode"] == "generation" and seen["generate"]["audio_top_k"] == 50
 
 
-def test_moss_nano_generation_contract(tmp_path):
+def test_moss_nano_generation_contract():
     seen = {}
 
-    def inference(**kwargs):
-        seen.update(kwargs)
-        kwargs["output_audio_path"].write_bytes(b"RIFFnano")
-        return {"sample_rate": 48000}
+    class Model:
+        def inference(self, **kwargs):
+            seen.update(kwargs)
+            torchaudio.save(kwargs["output_audio_path"], torch.zeros((2, 480)), 48000)
+            return {"sample_rate": 48000}
 
     codec, tokenizer = object(), object()
     backend = _backend(
         "moss_tts_nano",
-        model = SimpleNamespace(inference = inference),
+        model = Model(),
         processor = tokenizer,
         audio_codec = codec,
         sample_rate = 48000,
     )
-    wav, rate = backend.generate_audio_response("Portable speech", max_new_tokens = 375)
-    assert wav == b"RIFFnano" and rate == 48000
+    original_torchaudio = sys.modules[__name__].torchaudio
+    wav, rate = backend.generate_audio_response(
+        "Portable <|im_start|>speech", max_new_tokens = 375
+    )
+    assert wav[:4] == b"RIFF" and rate == 48000
+    assert sys.modules[__name__].torchaudio is original_torchaudio
+    assert seen["text"] == "Portable < |im_start|>speech"
     assert seen["audio_tokenizer"] is codec and seen["text_tokenizer"] is tokenizer
     assert seen["max_new_frames"] == 375
+
+
+def test_native_speech_seed_is_reproducible_and_restores_global_rng():
+    class Model:
+        def generate_speech(self, *_args, **_kwargs):
+            return torch.rand(240)
+
+    backend = _backend("higgs_tts3", model = Model(), processor = object())
+    torch.manual_seed(91)
+    expected_next = torch.rand(8)
+    torch.manual_seed(91)
+
+    first, _ = backend.generate_audio_response("seeded", seed = 7)
+    actual_next = torch.rand(8)
+    second, _ = backend.generate_audio_response("seeded", seed = 7)
+    different, _ = backend.generate_audio_response("seeded", seed = 8)
+
+    assert torch.equal(actual_next, expected_next)
+    assert first == second
+    assert first != different
 
 
 def test_minimax_generation_and_cancellation_contract():

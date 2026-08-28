@@ -32,6 +32,7 @@ import re
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -102,6 +103,7 @@ _MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
     )
 )
 _MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
+_MOSS_NANO_SAVE_LOCK = threading.Lock()
 
 
 def _read_local_audio_metadata(path: Path, filename: str) -> dict[str, Any]:
@@ -318,6 +320,89 @@ def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str,
             )
         finally:
             setattr(base_config, "__init_subclass__", original)
+
+
+def _repair_moss_nano_rotary_buffers(model) -> None:
+    """Rebuild buffers that Transformers 5 leaves uninitialized after meta loading."""
+    import torch
+
+    for decoder_name in ("transformer", "local_transformer"):
+        decoder = getattr(model, decoder_name, None)
+        config = getattr(decoder, "config", None)
+        if decoder is None or config is None:
+            continue
+        base = float(getattr(config, "rope_base", 10000.0))
+        for module in decoder.modules():
+            rotary = getattr(module, "rotary_emb", None)
+            inv_freq = getattr(rotary, "inv_freq", None)
+            if inv_freq is None:
+                continue
+            dimension = int(inv_freq.numel()) * 2
+            rotary.inv_freq = 1.0 / (
+                base
+                ** (
+                    torch.arange(
+                        0,
+                        dimension,
+                        2,
+                        dtype = torch.float32,
+                        device = inv_freq.device,
+                    )
+                    / dimension
+                )
+            )
+
+
+@contextmanager
+def _seeded_torch_rng(seed: Optional[int], device: str):
+    """Seed one request and restore the process RNG states afterward."""
+    import torch
+
+    if seed is None:
+        yield
+        return
+
+    device_type = torch.device(device).type
+    accelerator = getattr(torch, device_type, None) if device_type != "cpu" else None
+    devices = list(range(accelerator.device_count())) if accelerator is not None else []
+    fork_device_type = device_type if accelerator is not None else "cuda"
+    with torch.random.fork_rng(devices = devices, device_type = fork_device_type):
+        torch.random.default_generator.manual_seed(int(seed))
+        if accelerator is not None:
+            manual_seed_all = getattr(accelerator, "manual_seed_all", None)
+            if manual_seed_all is not None:
+                manual_seed_all(int(seed))
+            else:
+                accelerator.manual_seed(int(seed))
+        yield
+
+
+@contextmanager
+def _moss_nano_soundfile_save(model):
+    """Route the publisher's unconditional torchaudio save through soundfile."""
+    remote_module = sys.modules.get(model.__class__.__module__)
+    original_torchaudio = getattr(remote_module, "torchaudio", None)
+    if remote_module is None or original_torchaudio is None:
+        raise RuntimeError("MOSS TTS Nano remote module does not expose torchaudio")
+
+    class SoundfileSaveProxy:
+        def __getattr__(self, name):
+            return getattr(original_torchaudio, name)
+
+        @staticmethod
+        def save(uri, source, sample_rate, *_args, **_kwargs):
+            payload = _as_wav_bytes(source, sample_rate)
+            if hasattr(uri, "write"):
+                uri.write(payload)
+            else:
+                Path(uri).write_bytes(payload)
+
+    with _MOSS_NANO_SAVE_LOCK:
+        remote_module.torchaudio = SoundfileSaveProxy()
+        try:
+            yield
+        finally:
+            remote_module.torchaudio = original_torchaudio
 
 
 def _native_audio_file_size(sibling: Any) -> int:
@@ -759,6 +844,7 @@ class NativeAudioBackend:
             torch_dtype = self._dtype(),
             **token_kwargs,
         )
+        _repair_moss_nano_rotary_buffers(model)
         codec = AutoModel.from_pretrained(
             MOSS_NANO_CODEC_REPO,
             trust_remote_code = trust_remote_code,
@@ -830,62 +916,64 @@ class NativeAudioBackend:
         audio_type = entry["audio_type"]
         top_k = max(0, int(top_k))
 
-        if audio_type == "higgs_tts2":
-            audio, sample_rate = self._generate_higgs_tts2(
-                entry,
-                text,
-                instructions,
-                temperature,
-                top_p,
-                top_k,
-                max_new_tokens,
-                cancel_event,
-            )
-        elif audio_type == "moss_tts_local":
-            audio, sample_rate = self._generate_moss_local(
-                entry,
-                text,
-                instructions,
-                language,
-                temperature,
-                top_p,
-                top_k,
-                max_new_tokens,
-                repetition_penalty,
-                cancel_event,
-            )
-        elif audio_type == "moss_tts_nano":
-            return self._generate_moss_nano(
-                entry,
-                text,
-                temperature,
-                top_p,
-                top_k,
-                max_new_tokens,
-                repetition_penalty,
-                cancel_event,
-            )
-        elif audio_type == "higgs_tts3":
-            audio, sample_rate = self._generate_higgs_tts3(
-                entry,
-                text,
-                temperature,
-                top_p,
-                top_k,
-                max_new_tokens,
-                cancel_event,
-            )
-        elif audio_type == "minimax_music3":
-            audio, sample_rate = self._generate_minimax_music3(
-                entry,
-                text,
-                instructions,
-                max_new_tokens,
-                seed,
-                cancel_event,
-            )
-        else:
-            raise RuntimeError(f"Unsupported native audio architecture: {audio_type}")
+        request_seed = None if audio_type == "minimax_music3" else seed
+        with _seeded_torch_rng(request_seed, self.device):
+            if audio_type == "higgs_tts2":
+                audio, sample_rate = self._generate_higgs_tts2(
+                    entry,
+                    text,
+                    instructions,
+                    temperature,
+                    top_p,
+                    top_k,
+                    max_new_tokens,
+                    cancel_event,
+                )
+            elif audio_type == "moss_tts_local":
+                audio, sample_rate = self._generate_moss_local(
+                    entry,
+                    text,
+                    instructions,
+                    language,
+                    temperature,
+                    top_p,
+                    top_k,
+                    max_new_tokens,
+                    repetition_penalty,
+                    cancel_event,
+                )
+            elif audio_type == "moss_tts_nano":
+                return self._generate_moss_nano(
+                    entry,
+                    text,
+                    temperature,
+                    top_p,
+                    top_k,
+                    max_new_tokens,
+                    repetition_penalty,
+                    cancel_event,
+                )
+            elif audio_type == "higgs_tts3":
+                audio, sample_rate = self._generate_higgs_tts3(
+                    entry,
+                    text,
+                    temperature,
+                    top_p,
+                    top_k,
+                    max_new_tokens,
+                    cancel_event,
+                )
+            elif audio_type == "minimax_music3":
+                audio, sample_rate = self._generate_minimax_music3(
+                    entry,
+                    text,
+                    instructions,
+                    max_new_tokens,
+                    seed,
+                    cancel_event,
+                )
+            else:
+                raise RuntimeError(f"Unsupported native audio architecture: {audio_type}")
 
         _raise_if_cancelled(cancel_event)
         return _as_wav_bytes(audio, sample_rate), sample_rate
@@ -951,6 +1039,13 @@ class NativeAudioBackend:
         repetition_penalty,
         cancel_event,
     ):
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+
+        text = neutralize_tts_prompt_text(text, "moss_tts_local")
+        if instructions is not None:
+            instructions = neutralize_tts_prompt_text(instructions, "moss_tts_local")
+        if language is not None:
+            language = neutralize_tts_prompt_text(language, "moss_tts_local")
         processor = entry["processor"]
         batch = processor(
             [
@@ -1008,6 +1103,9 @@ class NativeAudioBackend:
         repetition_penalty,
         cancel_event,
     ) -> Tuple[bytes, int]:
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+
+        text = neutralize_tts_prompt_text(text, "moss_tts_nano")
         with tempfile.TemporaryDirectory(prefix = "unsloth-moss-nano-") as temp_dir:
             output_path = Path(temp_dir) / "speech.wav"
             model = entry["model"]
@@ -1031,24 +1129,25 @@ class NativeAudioBackend:
                         )
                     )
             try:
-                result = model.inference(
-                    text = text,
-                    output_audio_path = output_path,
-                    mode = "continuation",
-                    text_tokenizer = entry["processor"],
-                    audio_tokenizer = entry["audio_codec"],
-                    device = self.device,
-                    max_new_frames = int(max_new_tokens),
-                    do_sample = float(temperature) > 0,
-                    text_temperature = MOSS_NANO_TEXT_TEMPERATURE,
-                    text_top_p = MOSS_NANO_TEXT_TOP_P,
-                    text_top_k = MOSS_NANO_TEXT_TOP_K,
-                    audio_temperature = max(0.0, float(temperature)),
-                    audio_top_p = float(top_p),
-                    audio_top_k = int(top_k),
-                    audio_repetition_penalty = float(repetition_penalty),
-                    use_kv_cache = True,
-                )
+                with _moss_nano_soundfile_save(model):
+                    result = model.inference(
+                        text = text,
+                        output_audio_path = output_path,
+                        mode = "continuation",
+                        text_tokenizer = entry["processor"],
+                        audio_tokenizer = entry["audio_codec"],
+                        device = self.device,
+                        max_new_frames = int(max_new_tokens),
+                        do_sample = float(temperature) > 0,
+                        text_temperature = MOSS_NANO_TEXT_TEMPERATURE,
+                        text_top_p = MOSS_NANO_TEXT_TOP_P,
+                        text_top_k = MOSS_NANO_TEXT_TOP_K,
+                        audio_temperature = max(0.0, float(temperature)),
+                        audio_top_p = float(top_p),
+                        audio_top_k = int(top_k),
+                        audio_repetition_penalty = float(repetition_penalty),
+                        use_kv_cache = True,
+                    )
             finally:
                 for cancel_hook in cancel_hooks:
                     cancel_hook.remove()
