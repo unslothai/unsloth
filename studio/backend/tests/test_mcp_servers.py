@@ -190,9 +190,7 @@ def test_stdio_command_codec_windows_preserves_final_whitespace_argument_end_to_
     assert decoded.arguments == [final_argument]
 
     probe = asyncio.run(
-        routes_mcp.test_mcp_server(
-            McpServerTestRequest(url = encoded.url), current_subject = "u"
-        )
+        routes_mcp.test_mcp_server(McpServerTestRequest(url = encoded.url), current_subject = "u")
     )
     assert probe.ok is True
     assert probed_urls == [encoded.url]
@@ -311,7 +309,6 @@ def test_stdio_command_codec_rejects_invalid_input_before_probe(monkeypatch, ope
 @pytest.mark.parametrize("bad", [1, True, None, {"value": "x"}])
 def test_stdio_command_codec_rejects_non_string_arguments(bad):
     from models.mcp_servers import McpStdioCommand
-
     with pytest.raises(ValidationError):
         McpStdioCommand.model_validate({"command": "python", "arguments": [bad]})
 
@@ -379,16 +376,12 @@ def test_stdio_raw_nul_is_rejected_before_route_side_effects(tmp_path, monkeypat
     mcp_servers_db.create_server(id = "seed", display_name = "seed", url = "python ok")
     with pytest.raises(HTTPException):
         asyncio.run(
-            routes_mcp.update_mcp_server(
-                "seed", McpServerUpdate(url = raw), current_subject = "u"
-            )
+            routes_mcp.update_mcp_server("seed", McpServerUpdate(url = raw), current_subject = "u")
         )
     assert mcp_servers_db.get_server("seed")["url"] == "python ok"
 
     with pytest.raises(HTTPException):
-        asyncio.run(
-            routes_mcp.test_mcp_server(McpServerTestRequest(url = raw), current_subject = "u")
-        )
+        asyncio.run(routes_mcp.test_mcp_server(McpServerTestRequest(url = raw), current_subject = "u"))
 
     imported = asyncio.run(
         routes_mcp.import_mcp_servers(
@@ -1305,15 +1298,11 @@ def test_stdio_arguments_update_preserves_untouched_bytes_then_invalidates_once(
     assert closed == []
 
     encoded = routes_mcp.encode_stdio_command(
-        McpStdioCommand(
-            command = "python", arguments = ["-m", "mod", "--name", "a b", ""]
-        ),
+        McpStdioCommand(command = "python", arguments = ["-m", "mod", "--name", "a b", ""]),
         current_subject = "u",
     )
     asyncio.run(
-        routes_mcp.update_mcp_server(
-            "s1", McpServerUpdate(url = encoded.url), current_subject = "u"
-        )
+        routes_mcp.update_mcp_server("s1", McpServerUpdate(url = encoded.url), current_subject = "u")
     )
     assert mcp_servers_db.get_server("s1")["url"] == encoded.url
     assert mcp_client.parse_stdio_command(encoded.url) == [

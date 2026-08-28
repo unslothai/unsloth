@@ -63,7 +63,9 @@ STDIO_CMD = "/bin/sh -c id"
 
 
 @pytest.mark.parametrize("operation", ["encode", "decode"])
-def test_stdio_command_codec_refuses_api_key_before_work(monkeypatch, stdio_on, no_probe, operation):
+def test_stdio_command_codec_refuses_api_key_before_work(
+    monkeypatch, stdio_on, no_probe, operation
+):
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpStdioCommand, McpStdioDecodeRequest
 
