@@ -68,7 +68,37 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
+// Tracks Marked's `def` rule, whose label is `[^\]]+`: any run up to the
+// closing bracket, line endings included. Missing a definition is a false
+// NEGATIVE, the one direction that costs correctness -- it is not held in the
+// live tail, so it can be committed into an independently parsed block while a
+// twin is still live, and Marked, which emits no token for a label it has
+// already seen, lexes the two apart. A false positive only costs retention.
+//
+// Hence no `\n` in the class: Marked normalises a label's whitespace, so
+// `[foo\nbar]` registers as `foo bar`, and a label that soft-wraps has to be
+// held like any other.
+//
+// The length bound stays, even though Marked has none. Every `[` is a start
+// position and each scans until it can decide, so a bound of B costs O(n*B)
+// while no bound costs O(n^2). Measured on one long line dense with `[` that
+// never reaches `]:`, the worst case for the scan:
+//
+//   line     200      999   unbounded
+//    10k    0.73ms   2.82ms    17.07ms
+//    50k    3.01ms  14.56ms   360.44ms
+//   100k    6.51ms  27.72ms  1257.36ms
+//
+// 999 stays linear, unbounded does not. 999 is also CommonMark's label limit,
+// so the whole valid range is covered; a label past it is outside the spec and
+// stays mis-lexed, which is the trade against that quadratic scan.
+//
+// Admitting `\n` does raise the isolated scan on bracket-dense prose, since a
+// start position no longer stops at the line end. It does not reach the cache:
+// the live tail is capped at STALLED_TAIL_CHARACTERS, a fenced block returns
+// above before this runs, and the full-document path never gets here. Measured
+// per chunk over a bracket-dense balanced reply, the difference is 0%.
+const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\\]){1,999}\]:/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;

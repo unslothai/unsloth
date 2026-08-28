@@ -97,6 +97,16 @@ const MARKDOWN_CASES = [
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
+  // A label longer than the old 200-character bound. Marked registers every
+  // label up to CommonMark's 999, so one past 200 has to be held in the live
+  // tail like any other; committing it away lexes it apart from its twin.
+  `[${"x".repeat(250)}]: /url\n\n${paragraphs(12)}[${"x".repeat(250)}]: /url\n\nq\n\n`,
+  `[${"x".repeat(999)}]: /url\n\n${paragraphs(12)}[${"x".repeat(999)}]: /url\n\nq\n\n`,
+  // Marked's label class admits a line ending and normalises the label's
+  // whitespace, so `[foo\nbar]` registers as `foo bar`. A label that soft-wraps
+  // has to be held like any other.
+  `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
+  `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
   // precedes the first bold marker.
