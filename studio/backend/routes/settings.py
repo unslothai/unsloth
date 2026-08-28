@@ -3006,6 +3006,8 @@ class LanAccessResponse(BaseModel):
     can_start: bool
     can_stop: bool
     block_reason: Optional[str] = None
+    bind_host: Optional[str] = None
+    wildcard_bind: bool = False
     serves_web_ui: bool = True
     keyless_lan_eligible: bool = False
     keyless_scope: Literal["off", "inference", "full"] = "off"
