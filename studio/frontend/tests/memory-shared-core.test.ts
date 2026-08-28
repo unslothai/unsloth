@@ -297,12 +297,20 @@ test("the offload band credits the budget, not the whole card", async () => {
     const required = requiredGgufMemoryGb(bytes);
     // Beyond what budget plus offloadable RAM can hold: 19.2 + 8 = 27.2.
     assert.ok(required > 27.2, `fixture ${sizeGb} must exceed the real ceiling`);
-    assert.equal(
-      classifyGgufFit(bytes, input),
-      "oom",
+    const fit = classifyGgufFit(bytes, input);
+    // The guard this test was written for: NOT `partial`. Crediting the raw card
+    // instead of the budget put these four sizes in the offload band, where the
+    // loader has no way to admit them.
+    assert.notEqual(
+      fit,
+      "partial",
       `a ${sizeGb} GiB quant needs ${required.toFixed(2)} GiB, and 0.80 of a ` +
         "24 GiB card plus half of 16 GiB of RAM cannot hold it",
     );
+    // Past the ceiling is `disk`, not `oom`: it does not fit in memory, and it
+    // still loads, mmapped and paged from the file. Held here so the band above
+    // cannot quietly widen into it.
+    assert.equal(fit, "disk");
   }
 });
 

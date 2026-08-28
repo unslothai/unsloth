@@ -127,9 +127,16 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
       "No GPU VRAM detected. This GGUF may run with system RAM and CPU offload. Inference will be slower.",
     iconClassName: "text-sky-600 dark:text-sky-400",
   },
+  disk: {
+    label: "Runs from disk",
+    tooltip:
+      "Larger than your VRAM and system RAM combined. It still loads: the weights are "
+      + "memory-mapped and paged from the file, so expect a few tokens per second.",
+    iconClassName: "text-amber-600 dark:text-amber-400",
+  },
   oom: {
     label: "Won't fit",
-    tooltip: "Exceeds combined VRAM and system RAM budget.",
+    tooltip: "No memory budget was detected for this machine.",
     iconClassName: "text-rose-600 dark:text-rose-400",
   },
 };

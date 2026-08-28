@@ -17,6 +17,7 @@ import {
   classifyGgufVariantFit,
   ggufFitIsAutoSelectable,
 } from "../src/features/model-picker/components/model-selector/gguf-variant-fit.ts";
+import { classifyGgufFit as hubFit } from "../src/lib/gguf-fit.ts";
 
 const GB = 1024 ** 3;
 
@@ -51,12 +52,13 @@ test("disk is not auto-selected, so nobody is handed a 169 GB quant", () => {
   assert.equal(ggufFitIsAutoSelectable("oom"), false);
 });
 
-test("one memory pool has no disk tier: past it is a real refusal", () => {
+test("one memory pool still pages from disk rather than refusing", () => {
   // Unified memory (Mac, and Vulkan hosts reporting no separate GPU pool). There is
-  // nothing to offload to, so the tier collapses to fit-or-not against RAM.
+  // nothing to OFFLOAD to, which is not the same as nothing to page from: the file
+  // is still on the disk and mmap still works.
   const unified = { gpuBudgetGb: 0, totalBudgetGb: 44.8, budgetKnown: true };
   assert.equal(classifyGgufVariantFit(30 * GB, unified), "fits");
-  assert.equal(classifyGgufVariantFit(60 * GB, unified), "oom");
+  assert.equal(classifyGgufVariantFit(60 * GB, unified), "disk");
 });
 
 test("an unmeasured budget stays permissive, a measured zero does not", () => {
@@ -68,4 +70,30 @@ test("an unmeasured budget stays permissive, a measured zero does not", () => {
 
 test("a zero-byte listing never reads as an overage", () => {
   assert.equal(classifyGgufVariantFit(0, budget(24, 64)), "fits");
+});
+
+// ── the Hub download card, same bug in different words ───────────────────────
+
+test("the Hub card agrees with the quant list on the same file", () => {
+  // Two copies of the rule with different formulas: this one is size * 1.15 + 1 GB
+  // against 0.97 of the card and half of RAM. They disagreed on wording ("Won't
+  // fit" against "OOM") and now they agree on the verdict, which is the half that
+  // matters when both are on screen for one download.
+  const budget = { gpuGb: 80, systemRamGb: 167.1 };
+  // 68 * 1.15 + 1 = 79.2, over the 0.97 budget of 77.6 but under the raw 80 GiB
+  // card, which is what `marginal` means. Unchanged by this diff, pinned so the
+  // tier below it cannot be widened by accident.
+  assert.equal(hubFit(68 * GB, budget), "marginal");
+  assert.equal(hubFit(120 * GB, budget), "partial");
+  assert.equal(hubFit(330 * GB, budget), "disk");
+});
+
+test("the Hub card pages from disk on a machine with no GPU", () => {
+  assert.equal(hubFit(30 * GB, { gpuGb: 0, systemRamGb: 128 }), "ram");
+  assert.equal(hubFit(300 * GB, { gpuGb: 0, systemRamGb: 128 }), "disk");
+});
+
+test("no budget at all is still a refusal, not a disk load", () => {
+  // Nothing was measured, so there is no claim to make about paging either.
+  assert.equal(hubFit(30 * GB, { gpuGb: 0, systemRamGb: 0 }), "oom");
 });

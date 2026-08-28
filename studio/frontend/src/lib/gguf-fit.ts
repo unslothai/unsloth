@@ -8,7 +8,13 @@
  * chat picker can't disagree.
  */
 
-export type GgufFitClass = "fits" | "marginal" | "partial" | "ram" | "oom";
+export type GgufFitClass =
+  | "fits"
+  | "marginal"
+  | "partial"
+  | "ram"
+  | "disk"
+  | "oom";
 
 export interface GgufFitInput {
   gpuGb?: number;
@@ -66,7 +72,12 @@ export function classifyGgufFit(
   const required = requiredGgufMemoryGb(sizeBytes);
   if (!gpuGb || gpuGb <= 0) {
     const ramBudget = (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
-    return required <= ramBudget ? "ram" : "oom";
+    if (required <= ramBudget) return "ram";
+    // Reasoned, not measured, unlike the discrete case below. mmap does not care
+    // about pool topology: a CPU-only or unified-memory host still pages weights
+    // from the file. Nobody has handed us a Mac run past its whole pool, so this
+    // says "slow" rather than "impossible" on the mechanism alone.
+    return ramBudget > 0 ? "disk" : "oom";
   }
   // Guarded rather than trusted: this arrives from a settings route, and a 0 or a
   // non-finite value would score every quant as an overage.
@@ -94,5 +105,9 @@ export function classifyGgufFit(
   // when the budget leaves them no way to load.
   const combined = budget + (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
   if (required <= combined) return "partial";
-  return "oom";
+  // Past every volatile byte and still not a refusal. llama.cpp maps the weights,
+  // so the OS pages the remainder from the file. Reported on the Qwen3.8-Flash-Next
+  // thread: a 90 GB quant on 16 GB of VRAM and 64 GB of RAM, running at about
+  // 12 tok/s while this function called it "Won't fit".
+  return "disk";
 }

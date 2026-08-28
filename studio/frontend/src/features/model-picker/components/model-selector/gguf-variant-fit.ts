@@ -42,10 +42,11 @@ export function classifyGgufVariantFit(
   if (totalBudgetGb <= 0) return budgetKnown ? "oom" : "fits";
   const gb = sizeBytes / 1024 ** 3;
   if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
-  // No-GPU / unified-memory hosts (Mac) have only the RAM budget. There is no
-  // separate disk tier here: on one pool a load past it is a real refusal, not
-  // a slow success.
-  if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
+  // No-GPU / unified-memory hosts (Mac) have only the RAM budget, and past it they
+  // page from the file like anything else. mmap does not care about pool topology.
+  // This branch first said "oom" on the reasoning that one pool has nothing to
+  // offload to, which confused "cannot be resident" with "cannot run".
+  if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "disk";
   if (gb <= totalBudgetGb) return "tight";
   // Past GPU plus RAM, and still not a refusal. llama.cpp mmaps the weights by
   // default and the OS pages them in from the file, so a model larger than every

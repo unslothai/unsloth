@@ -61,8 +61,11 @@ export function ggufVariantFitRank(
     case "partial":
     case "ram":
       return 2;
-    default:
+    // Below anything that fits in memory, above a load that cannot happen.
+    case "disk":
       return 3;
+    default:
+      return 4;
   }
 }
 
