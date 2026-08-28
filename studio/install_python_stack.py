@@ -1956,7 +1956,15 @@ def _runtime_gfx_target(
     # table has a key for, and an unnormalized target matches none of them.
     _explicit_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":", 1)[0]
     if _explicit_gfx:
-        return _explicit_gfx, [_explicit_gfx], None, [_explicit_gfx]
+        # Returning early skips _hsa_spoofed_physical_gfx, so the spoof still has to be
+        # answered here: HSA_OVERRIDE_GFX_VERSION=11.0.0 is the workaround half these hosts
+        # already carry, and leaving it set while installing per-arch wheels for the named
+        # arch is #7331 exactly -- ROCr keeps handing torch a gfx1100 agent that the gfx1151
+        # wheels have no code for. Report the arch as spoofed-physical so the callers clear
+        # it. Only when the override names a DIFFERENT arch: naming the arch you spoofed TO
+        # is a deliberate pairing, and undoing it would strand wheels the user asked for.
+        _spoofed = _explicit_gfx if _hsa_spoof_contradicts(_explicit_gfx) else None
+        return _explicit_gfx, [_explicit_gfx], _spoofed, [_explicit_gfx]
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     # Keyed to the userland probe: ROCr spoofs that reading and no other.
     physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
@@ -2273,6 +2281,18 @@ def _hsa_spoofed_physical_gfx(
     # went away and the name did not move, so it is real silicon. Declining here is
     # why a genuine gfx1100 dGPU in a Ryzen AI Max chassis keeps its own wheels.
     return _confirm(list(dict.fromkeys(reprobed)), "rocminfo with HSA_OVERRIDE_GFX_VERSION unset")
+
+
+def _hsa_spoof_contradicts(gfx: "str | None") -> bool:
+    """True when HSA_OVERRIDE_GFX_VERSION names an arch other than ``gfx``.
+
+    The question every branch installing per-arch wheels has to ask, since those wheels carry
+    one arch's code objects and ROCr builds the agent's ISA name from this variable. An
+    override naming the SAME arch is not a spoof, and one naming a different arch is only
+    left alone where the caller has no reason to trust ``gfx``.
+    """
+    _override_arch = _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION"))
+    return bool(gfx) and _override_arch is not None and _override_arch != gfx
 
 
 def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
@@ -3732,6 +3752,13 @@ def _ensure_rocm_torch() -> None:
             )
             rocm_torch_ready = True
             _inferred_arch_installed = True
+            # The same reconciliation the reroutes below make, for the same reason: these
+            # wheels carry _inferred_linux_gfx code objects alone, and a spoof still naming
+            # another arch has ROCr hand them a device none of it matches (#7331). This
+            # branch has already committed the multi-GB install to that arch, so declining
+            # to act on it here would only guarantee the install it just made is unusable.
+            if _hsa_spoof_contradicts(_inferred_linux_gfx):
+                _clear_confirmed_hsa_spoof(_inferred_linux_gfx)
 
     # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
     # MI50 / Radeon VII path; it must win over the Strix probe-order detection

@@ -1479,3 +1479,49 @@ def test_a_mask_that_selects_no_gpu_takes_no_gfx906_reroute_either(mask, value):
         env = {mask: value, "UNSLOTH_ROCM_GFX_ARCH": "gfx906"},
     )
     assert "rocm6.3" not in _pinned, _pinned
+
+
+def test_an_explicit_arch_still_reconciles_a_contradicting_spoof():
+    """UNSLOTH_ROCM_GFX_ARCH returns before the spoof detection runs, and
+    HSA_OVERRIDE_GFX_VERSION=11.0.0 is the workaround half these hosts already carry from
+    before per-arch wheels existed. Naming the physical arch then bought the right wheels and
+    left ROCr handing torch a gfx1100 agent none of their code objects match, which is #7331
+    with the fix already downloaded."""
+    calls = _run_install(
+        gfx_devices = (),
+        kfd = ("gfx1151",),
+        inferred = "gfx1151",
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    assert f"{_AMD}/gfx1151/" in calls, calls
+    assert _run_install.hsa_override_after is None, _run_install.hsa_override_after
+
+
+def test_an_explicit_arch_reconciles_the_spoof_on_the_reroute_path_too():
+    """The same host with ROCm torch already installed takes the Strix reroute instead of the
+    inferred-arch install, and reaches the clear through _runtime_gfx_target's third return
+    value rather than directly. Both paths install gfx1151-only wheels, so both have to
+    answer the override."""
+    calls = _run_install(
+        gfx_devices = (),
+        kfd = ("gfx1151",),
+        inferred = "gfx1151",
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_GENERIC_TORCH,
+        torch_owns_rocm = False,
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    assert f"{_AMD}/gfx1151/" in calls, calls
+    assert _run_install.hsa_override_after is None, _run_install.hsa_override_after
+
+
+def test_an_arch_naming_what_the_override_spoofs_to_keeps_the_spoof():
+    """Setting both to gfx1100 is a deliberate pairing -- run this card as an RDNA 3 dGPU --
+    not a leftover. Clearing it would strand the wheels the user just asked for."""
+    _run_install(
+        gfx_devices = (),
+        kfd = ("gfx1103",),
+        inferred = "gfx1103",
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1100", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    assert _run_install.hsa_override_after == "11.0.0"
