@@ -21,33 +21,58 @@ def is_external_host(host: str) -> bool:
     return host.lower() not in _LOOPBACK_HOSTS
 
 
-def is_wildcard_host(host: str) -> bool:
-    """True when the host resolves to an unspecified bind address."""
-    if not isinstance(host, str):
-        return False
-    if host == "":
-        return False
+def _normalized_ip(address: str):
     try:
-        literal = ipaddress.ip_address(host)
+        parsed = ipaddress.ip_address(address)
     except ValueError:
-        literal = None
+        return None
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    return parsed
+
+
+def _unspecified_address(host: str):
+    if not isinstance(host, str) or not host:
+        return None
+    literal = _normalized_ip(host)
     if literal is not None:
-        return literal.is_unspecified
+        return literal if literal.is_unspecified else None
     try:
-        return socket.inet_aton(host) == b"\0\0\0\0"
+        legacy_ipv4 = ipaddress.IPv4Address(socket.inet_aton(host))
     except OSError:
         pass
+    else:
+        return legacy_ipv4 if legacy_ipv4.is_unspecified else None
     try:
         addresses = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except OSError:
-        return False
+        return None
+    ipv6_unspecified = None
     for _family, _kind, _protocol, _name, sockaddr in addresses:
         try:
-            if ipaddress.ip_address(sockaddr[0]).is_unspecified:
-                return True
-        except (IndexError, ValueError):
+            parsed = _normalized_ip(sockaddr[0])
+        except IndexError:
             continue
-    return False
+        if parsed is not None and not parsed.is_unspecified:
+            continue
+        if isinstance(parsed, ipaddress.IPv4Address):
+            return parsed
+        if parsed is not None:
+            ipv6_unspecified = parsed
+    return ipv6_unspecified
+
+
+def is_wildcard_host(host: str) -> bool:
+    """True when the host resolves to an unspecified bind address."""
+    return _unspecified_address(host) is not None
+
+
+def wildcard_loopback_host(host: str) -> Optional[str]:
+    """The loopback address reachable through a wildcard bind."""
+    address = _unspecified_address(host)
+    if isinstance(address, ipaddress.IPv6Address):
+        return "::1"
+    return "127.0.0.1" if address is not None else None
 
 
 def resolve_tool_policy(

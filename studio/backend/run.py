@@ -152,7 +152,7 @@ import _platform_compat  # noqa: F401
 
 from loggers import get_logger, install_uvicorn_duplicate_exception_filter
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
-from utils.host_policy import is_wildcard_host
+from utils.host_policy import is_wildcard_host, wildcard_loopback_host
 
 logger = get_logger(__name__)
 
@@ -522,7 +522,7 @@ def _display_host_for_bind(host: str) -> str:
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    return "::1" if is_wildcard_host(host) and ":" in host else "127.0.0.1"
+    return wildcard_loopback_host(host) or "127.0.0.1"
 
 
 def _url_host(host: str) -> str:

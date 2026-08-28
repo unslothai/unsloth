@@ -33,6 +33,7 @@ def test_alias_loopback_shows_canned_url(capsys, host):
         ("::0", "http://[::1]:8891"),
         ("0:0:0:0:0:0:0:0", "http://[::1]:8891"),
         ("0", "http://127.0.0.1:8891"),
+        ("::ffff:0.0.0.0", "http://127.0.0.1:8891"),
     ],
 )
 def test_wildcard_aliases_show_reachable_urls(capsys, host, loopback_url):

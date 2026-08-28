@@ -338,8 +338,8 @@ def _display_host_for_bind(run_mod, host: str) -> str:
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    from unsloth_cli._tool_policy import is_wildcard_host
-    return "::1" if is_wildcard_host(host) and ":" in host else "127.0.0.1"
+    from unsloth_cli._tool_policy import wildcard_loopback_host
+    return wildcard_loopback_host(host) or "127.0.0.1"
 
 
 def _require_bind_host(host: str) -> None:

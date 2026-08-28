@@ -50,6 +50,7 @@ _NEW_PW = "brand-new-password"
         (True, "::0", False, False, True),
         (True, "0:0:0:0:0:0:0:0", False, False, True),
         (True, "0", False, False, True),
+        (True, "::ffff:0.0.0.0", False, False, True),
         (True, "", False, False, False),
         (True, "127.0.0.1", False, False, False),
         (True, "0.0.0.0", False, True, False),

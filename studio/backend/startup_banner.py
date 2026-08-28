@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sys
 
-from utils.host_policy import is_wildcard_host
+from utils.host_policy import is_wildcard_host, wildcard_loopback_host
 
 
 def _safe_print(text: str) -> None:
@@ -102,7 +102,7 @@ def print_studio_access_banner(
         return f"{code}{text}{reset}" if use_color else text
 
     listen_all = is_wildcard_host(bind_host)
-    ipv6_bind = bind_host in ("::", "::1") or (listen_all and ":" in bind_host)
+    ipv6_bind = bind_host == "::1" or wildcard_loopback_host(bind_host) == "::1"
     if ipv6_bind:
         loopback_url = f"http://[::1]:{port}"
         alt_local = f"http://localhost:{port}"
