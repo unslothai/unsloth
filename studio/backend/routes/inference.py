@@ -6669,6 +6669,11 @@ async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: boo
                 " GGUF build of it, which accepts several."
             ),
         )
+    if not target_is_gguf and image_preflight.get("remote") and image_preflight.get("b64") is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Remote image URLs are not supported. Use a base64 data URL.",
+        )
     encoded_images = (
         image_preflight.get("b64s", ()) if target_is_gguf else (image_preflight.get("b64"),)
     )
@@ -6685,6 +6690,17 @@ async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: boo
 def _messages_have_image(messages) -> bool:
     return any(
         isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    )
+
+
+def _messages_have_remote_image(messages) -> bool:
+    return any(
+        isinstance(m.content, list)
+        and any(
+            isinstance(p, ImageContentPart) and not p.image_url.url.startswith("data:")
+            for p in m.content
+        )
         for m in messages
     )
 
@@ -18696,6 +18712,7 @@ async def produce_openai_chat_completions(
         _image_preflight = {
             "b64": _image_b64,
             "b64s": _local_image_payloads,
+            "remote": _messages_have_remote_image(payload.messages),
             "multiple": (
                 _images_on_turn + int(_legacy_image_distinct) > 1
                 or bool(_pre_parsed[2] and _legacy_image_distinct)

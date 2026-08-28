@@ -9594,7 +9594,18 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
     return backend, recorder
 
 
-def test_chat_rejects_an_empty_openai_image_before_non_gguf_switch(monkeypatch):
+@pytest.mark.parametrize(
+    ("url", "detail"),
+    [
+        ("data:image/png;base64,", "Failed to decode image"),
+        (
+            "https://example.com/image.png",
+            "Remote image URLs are not supported. Use a base64 data URL.",
+        ),
+    ],
+    ids = ["empty data url", "remote url"],
+)
+def test_chat_rejects_unsupported_openai_images_before_non_gguf_switch(monkeypatch, url, detail):
     from models.inference import ChatMessage, ImageContentPart, ImageUrl
 
     backend, recorder = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
@@ -9606,7 +9617,7 @@ def test_chat_rejects_an_empty_openai_image_before_non_gguf_switch(monkeypatch):
                 content = [
                     ImageContentPart(
                         type = "image_url",
-                        image_url = ImageUrl(url = "data:image/png;base64,"),
+                        image_url = ImageUrl(url = url),
                     )
                 ],
             )
@@ -9617,7 +9628,7 @@ def test_chat_rejects_an_empty_openai_image_before_non_gguf_switch(monkeypatch):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
     assert exc.value.status_code == 400
-    assert exc.value.detail == "Failed to decode image"
+    assert exc.value.detail == detail
     assert recorder.calls == []
     assert backend.model_identifier == "org/A-GGUF"
 
