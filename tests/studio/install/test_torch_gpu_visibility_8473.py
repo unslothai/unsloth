@@ -79,6 +79,7 @@ def _make_venv(
     sleep_seconds: float = 0.0,
     torch_on_disk: bool = True,
     torch_local_label: str = "+rocm6.4",
+    torch_hip: str = "",
 ) -> Path:
     """A venv whose `python` prints exactly what the test wants, when it wants."""
     venv = tmp_path / "venv"
@@ -93,8 +94,13 @@ def _make_venv(
     )
     if torch_on_disk:
         (venv / "lib" / "python3.11" / "site-packages" / "torch").mkdir(parents = True)
+        # The `hip` line is real: torch writes it on every build, quoted on ROCm and None
+        # elsewhere. Derived from the label so a fixture cannot claim a shape torch never ships.
+        _hip = torch_hip or ("6.4.43483" if "+rocm" in torch_local_label else "")
+        _hip = f"'{_hip}'" if _hip else "None"
         (venv / "lib" / "python3.11" / "site-packages" / "torch" / "version.py").write_text(
-            f"__version__ = '2.9.0{torch_local_label}'\n", encoding = "utf-8"
+            f"__version__ = '2.9.0{torch_local_label}'\nhip: Optional[str] = {_hip}\n",
+            encoding = "utf-8",
         )
     return venv
 
@@ -900,6 +906,38 @@ def test_an_unmapped_arch_on_a_real_rocm_wheel_is_still_reported(block, tmp_path
     assert result["calls"] != "", "the probe never ran, so the wheel was never reconciled"
 
 
+@pytest.mark.parametrize("gfx", ["gfx1010", "gfx803"])
+def test_a_rocm_build_with_no_local_label_is_still_reported(block, tmp_path, gfx):
+    """AMD's own builds and source builds record ROCm in `hip`, not in the local label.
+
+    "2.5.0a0+git1234567" with a populated hip field is a supported shape elsewhere in the tree
+    (tests/studio/install/test_amd_fastpath_probe.py:118). Reading only __version__ classified it
+    as a CPU route, so on an arch outside the wheel table the probe never ran.
+    """
+    venv = _make_venv(
+        tmp_path,
+        stdout = _answer("0", version = "2.5.0a0+git1234567", hip = "6.2.41134"),
+        torch_local_label = "a0+git1234567",
+        torch_hip = "6.2.41134",
+    )
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = gfx)
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+    assert result["calls"] != "", "the probe never ran, so the wheel was never reconciled"
+
+
+def test_a_null_hip_field_is_not_read_as_a_rocm_build(block, tmp_path):
+    """Every CUDA and CPU wheel carries `hip: Optional[str] = None`, so an unquoted value must
+    not count. Without that the wheel read would answer true for every venv and re-open the
+    report on the RDNA 1 / Polaris hosts the arch table exists to keep quiet."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"), torch_local_label = "+cpu")
+    assert "hip: Optional[str] = None" in (
+        venv / "lib" / "python3.11" / "site-packages" / "torch" / "version.py"
+    ).read_text(encoding = "utf-8")
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1010")
+    assert "gpu check" not in result["stdout"]
+    assert result["calls"] == ""
+
+
 def test_an_unreadable_arch_is_not_accused(block, tmp_path):
     """The KFD-sysfs path: /dev/kfd names an AMD vendor_id but no gfx arch is readable.
     get_torch_index_url cannot route GPU wheels without an arch (install.sh:3330 warns and
@@ -1127,10 +1165,12 @@ def test_the_posix_cpu_route_excuse_reads_the_wheel_not_only_the_arch_table():
     text = SETUP_SH.read_text(encoding = "utf-8")
 
     assert "_setup_torch_is_rocm=false" in text
-    assert "grep -q \"^__version__ = '[^']*+rocm\"" in text, (
+    assert "^__version__ = '[^']*[+]rocm" in text, (
         "the POSIX gate no longer reads the installed wheel, so an unmapped arch routed to a "
         "generic ROCm index is dismissed as a CPU route and never probed."
     )
+    # A build with no local label records ROCm in `hip` instead, and only a QUOTED value counts.
+    assert "^hip[[:space:]]*(:[^=]*)?=[[:space:]]*'[^']" in text
 
     entry = text[text.index('if { [ "$_setup_nvidia_usable" = true ]') :]
     entry = entry[: entry.index("then")]
@@ -1158,7 +1198,8 @@ def test_a_local_cpu_fallback_is_not_a_mismatch():
     """
     text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
     assert "-not $_gpuCheckLocalCpuFallback -and" in text
-    assert "$_gpuCheckLocalCpuFallback = $ROCmCpuFallback -or $XpuCpuFallback" in text
+    assert "$_gpuCheckLocalCpuFallback = $XpuCpuFallback -or" in text
+    assert "($ROCmCpuFallback -and " in text
 
     decl = text.index("$ROCmCpuFallback = $false\n$XpuCpuFallback = $false")
     branch = text.index("if (-not $SkipPythonDeps) {")
@@ -1166,6 +1207,45 @@ def test_a_local_cpu_fallback_is_not_a_mismatch():
         "the fallback flags are declared inside the dependency-pass branch, so on the fast path "
         "they are never assigned and the gate reads an undefined variable."
     )
+
+
+def test_the_cpu_fallback_excuse_reads_the_wheel_the_dependency_pass_left():
+    """The flag says what setup DECIDED; the dependency pass that runs after it can undo that.
+
+    On Windows _ensure_rocm_torch retries the AMD index precisely because setup fell back to CPU
+    (studio/install_python_stack.py:2980), so a run that set $ROCmCpuFallback can still end on a
+    ROCm wheel, and a ROCm wheel that cannot see its GPU is the report. Excusing on the flag alone
+    silenced #8473 on exactly that wheel.
+
+    $XpuCpuFallback is deliberately NOT reconciled: _ensure_xpu_torch returns on Windows
+    (install_python_stack.py:2481), so nothing reinstalls over that fallback, and reading the wheel
+    there would contradict the XPU suppression, which is decided on what the probe saw.
+    """
+    text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    code = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("#"))
+    assert "($ROCmCpuFallback -and -not (Test-VenvTorchIsRocm -VenvPath $VenvDir))" in code, (
+        "the CPU-fallback excuse no longer reads the wheel, so a ROCm build installed by the "
+        "repair pass is never reconciled."
+    )
+
+    excuse = code[code.index("$_gpuCheckLocalCpuFallback = ") :]
+    excuse = excuse[: excuse.index("\nif (")]
+    assert "Test-VenvTorchIsXpu" not in excuse
+    # Free on the fast path: -and short-circuits, and the flag is never set there.
+    assert excuse.index("$ROCmCpuFallback") < excuse.index("Test-Venv")
+
+
+def test_a_rocm_build_with_no_local_label_is_read_as_rocm_on_windows():
+    """Same shape as the POSIX read: no local label, ROCm named in `hip`. Test-VenvTorchIsRocm
+    also decides whether a venv survives repair (setup.ps1:4228), so widening it there is the
+    safe direction as well: an unlabelled ROCm venv was being classed as unknown."""
+    text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    fn = text[text.index("function Test-VenvTorchIsRocm") :]
+    fn = fn[: fn.index("\n}")]
+    assert "^hip\\s*(:[^=]*)?=\\s*'[^']" in fn, (
+        "Test-VenvTorchIsRocm reads the local label alone, so an AMD or source build is unknown."
+    )
+    assert "__version__\\s*=\\s*'[^']*\\+(rocm|gfx)" in fn
 
 
 def test_the_posix_gate_covers_the_windows_list():

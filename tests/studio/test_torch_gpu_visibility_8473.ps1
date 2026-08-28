@@ -556,13 +556,23 @@ Check "an unmapped arch expects cpu"       ((Get-ExpectedTag "x64" "rocm" "gfx90
 Write-Host ""
 Write-Host "it does not accuse a run that already explained itself"
 Check "a local ROCm fallback is excluded" ($report -match '-not \$_gpuCheckLocalCpuFallback')
-Check "it reads both fallback flags"      ($reportCode -match '\$ROCmCpuFallback -or \$XpuCpuFallback')
+Check "it reads both fallback flags"      (($reportCode -match '\$ROCmCpuFallback') -and ($reportCode -match '\$XpuCpuFallback'))
 # Both are assigned inside `if (-not $SkipPythonDeps)`. The fast path never enters that block, and
 # the fast path is the run this whole check exists for, so a caller's Set-StrictMode would make
 # the read fatal on exactly the reported host.
 $_fallbackDecl = [regex]::Match($setupText,
     '(?ms)^\$ROCmCpuFallback = \$false\r?\n\$XpuCpuFallback = \$false\r?\n\r?\nif \(-not \$SkipPythonDeps\) \{')
 Check "both are declared before the branch" ($_fallbackDecl.Success)
+# $ROCmCpuFallback records what setup DECIDED. install_python_stack.py runs after it and its
+# Windows _ensure_rocm_torch retries the AMD index precisely because setup fell back, so the venv
+# can hold a ROCm wheel by the time this check runs -- and a ROCm wheel that cannot see its GPU is
+# the report. The excuse holds only while a CPU wheel is really what is there.
+Check "the rocm excuse reads the wheel" ($reportCode -match '\$ROCmCpuFallback -and -not \(Test-VenvTorchIsRocm -VenvPath \$VenvDir\)')
+# XPU is NOT reconciled: _ensure_xpu_torch returns on Windows, so nothing reinstalls over that CPU
+# fallback, and reading the wheel there would contradict the probe-based XPU suppression above.
+Check "the xpu flag stands alone"       ($reportCode -match '\$_gpuCheckLocalCpuFallback = \$XpuCpuFallback -or')
+# Short-circuits before the disk read on the fast path, where the flag is never set.
+Check "the flag is read first"          ($reportCode -match '\$ROCmCpuFallback -and -not \(Test-Venv')
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }

@@ -1246,13 +1246,17 @@ function Test-VenvTorchIsXpu {
 # the two-component 2.8.0+rocm6.4 (Linux only). "gfx" is accepted anyway, cheaply, so a future
 # per-arch local label cannot make this read a ROCm venv as unknown and delete it. The dist-info
 # name is NOT usable either -- pip normalises the local label out of it.
+#
+# A build off AMD's own tree or off source carries no local label at all ("2.5.0a0+git1234567")
+# and records ROCm in the `hip` field instead, so the label alone read one as unknown. A QUOTED
+# value is required, since every CUDA and CPU wheel carries `hip: Optional[str] = None`.
 function Test-VenvTorchIsRocm {
     param([string]$VenvPath)
     if (-not $VenvPath) { return $false }
     try {
         $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
         if (-not (Test-Path -LiteralPath $verPy)) { return $false }
-        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+(rocm|gfx)")
+        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "(__version__\s*=\s*'[^']*\+(rocm|gfx))|(^hip\s*(:[^=]*)?=\s*'[^'])")
     } catch { return $false }
 }
 
@@ -5696,7 +5700,19 @@ $_gpuCheckArm64Amd = ($_gpuCheckAnnounced -like "AMD*") -and ((Get-HostMachineAr
 # ($ROCmCpuFallback / $XpuCpuFallback, set at the two force-reinstall arms below the index
 # selection). $InstallerTorchTag does not carry either, so without these terms the failure the
 # user just read is followed by a red accusation and a request to file an issue about it.
-$_gpuCheckLocalCpuFallback = $ROCmCpuFallback -or $XpuCpuFallback
+#
+# $ROCmCpuFallback records what THIS script decided, not what is installed, and the dependency
+# pass runs after it: _ensure_rocm_torch retries the AMD index on Windows precisely because setup
+# fell back (install_python_stack.py:2980), so the venv can be holding a ROCm wheel by the time
+# this runs -- and a ROCm wheel that cannot see its GPU is the whole report. The excuse holds only
+# while a CPU wheel is really what is there. Read off disk, and short-circuited on the fast path,
+# where the flag is never set. $XpuCpuFallback needs none of it: _ensure_xpu_torch returns on
+# Windows (install_python_stack.py:2481), so setup.ps1 owns that wheel end to end and nothing
+# reinstalls over the CPU fallback. Deciding it on the wheel would also contradict the XPU
+# suppression below, which reads what the probe SAW so a +xpu wheel with a dead runtime is
+# reported rather than excused.
+$_gpuCheckLocalCpuFallback = $XpuCpuFallback -or
+    ($ROCmCpuFallback -and -not (Test-VenvTorchIsRocm -VenvPath $VenvDir))
 # The Windows half of the resolved-backend exclusion: install.ps1 routes an NVIDIA host whose CUDA
 # is below 11 to the CPU index by design. $null is "did not say" and must still be reconciled.
 if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu") -and

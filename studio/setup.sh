@@ -2644,13 +2644,19 @@ fi
 #
 # Re-deriving that ladder here would duplicate install.sh's arch and version logic in a second
 # place, which is the divergence this PR exists to remove. The installed wheel is the routing's
-# own answer, so read it: the local label off version.py, the same disk-first trick the +xpu
-# check at :2194 uses and for the same reason, so a genuinely CPU-routed host still never pays
-# for an `import torch`.
+# own answer, so read it: version.py off disk, the same trick the +xpu check at :2194 uses and for
+# the same reason, so a genuinely CPU-routed host still never pays for an `import torch`.
+#
+# The local label is not the only place a ROCm build records itself. AMD's own builds and source
+# builds carry a git hash where the flavour would be ("2.5.0a0+git1234567") and name ROCm in the
+# `hip` field instead -- the shape tests/studio/install/test_amd_fastpath_probe.py:118 already
+# covers -- so on an unmapped arch such a wheel read as a deliberate CPU route and went unprobed.
+# A QUOTED value is required: every CUDA and CPU wheel carries `hip: Optional[str] = None`.
 _setup_torch_is_rocm=false
 for _setup_rv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
     [ -f "$_setup_rv" ] || continue
-    grep -q "^__version__ = '[^']*+rocm" "$_setup_rv" 2>/dev/null || continue
+    grep -Eq "^__version__ = '[^']*[+]rocm|^hip[[:space:]]*(:[^=]*)?=[[:space:]]*'[^']" \
+        "$_setup_rv" 2>/dev/null || continue
     _setup_torch_is_rocm=true
     break
 done

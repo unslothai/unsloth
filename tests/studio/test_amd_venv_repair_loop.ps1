@@ -179,16 +179,22 @@ Check "gfx110X-all wheel"    (Invoke-IsRocm "C:\v" "__version__ = '2.7.1+gfx110X
 # A dev/nightly release segment sits before the local label, so it must not shift the match.
 Check "nightly rocm wheel"   (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+rocm7.2'")
 Check "nightly cuda wheel"   (-not (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+cu130'"))
-# A source build carries a git hash where the flavour would be, and is not a ROCm wheel.
-Check "source build"         (-not (Invoke-IsRocm "C:\v" "__version__ = '2.9.0a0+git1a2b3c'"))
+# A source build carries a git hash where the flavour would be, so the label alone cannot answer:
+# the `hip` field decides. Both shapes are real -- torch annotates it on current releases and did
+# not on older ones -- and AMD's own builds ship exactly this (2.5.0a0+git1234567, hip 6.2.41134).
+Check "source build, no hip" (-not (Invoke-IsRocm "C:\v" "__version__ = '2.9.0a0+git1a2b3c'"))
+Check "amd build, hip set"   (Invoke-IsRocm "C:\v" "__version__ = '2.5.0a0+git1234567'`nhip: Optional[str] = '6.2.41134'")
+Check "unannotated hip"      (Invoke-IsRocm "C:\v" "__version__ = '2.5.0a0+git1234567'`nhip = '6.2.41134'")
+# Quoted and non-empty, or `hip: Optional[str] = None` would make every venv a ROCm one.
+Check "empty hip"            (-not (Invoke-IsRocm "C:\v" "__version__ = '2.9.0a0+git1a2b3c'`nhip: Optional[str] = ''"))
 Check "cuda wheel"           (-not (Invoke-IsRocm "C:\v" $CU))
 Check "xpu wheel"            (-not (Invoke-IsRocm "C:\v" $XPU))
 Check "untagged wheel"       (-not (Invoke-IsRocm "C:\v" $BARE))
 Check "cpu wheel"            (-not (Invoke-IsRocm "C:\v" "__version__ = '2.10.0+cpu'"))
 # git_version is a real line in torch/version.py and can name a branch. Only __version__ decides.
 Check "gfx in git_version"   (-not (Invoke-IsRocm "C:\v" ($CU + "`ngit_version = 'rocm-branch-gfx1100'")))
-# A CUDA build's version.py carries `hip: Optional[str] = None` and ROCm builds carry a `gfx` line,
-# so only the local label on __version__ decides, or a CUDA venv would be kept as ROCm forever.
+# Every CUDA and CPU build's version.py carries `hip: Optional[str] = None`, so an unquoted value
+# must not count, or a CUDA venv would be kept as ROCm forever.
 Check "hip attr but cuda wheel"  (-not (Invoke-IsRocm "C:\v" ($CU + "`nhip: Optional[str] = None")))
 Check "gfx attr but cuda wheel"  (-not (Invoke-IsRocm "C:\v" ($CU + "`ngfx = 'gfx1100'")))
 Check "no torch installed"   (-not (Invoke-IsRocm "C:\v" "__version__ = '2.8.0+rocm6.4'" -Missing))
