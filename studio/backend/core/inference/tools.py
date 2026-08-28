@@ -7529,8 +7529,10 @@ def _recorded_project_for_session(session_id: str) -> "tuple[str, str, bool] | N
     # workspaces under Studio's own root, so they keep the old behaviour rather than
     # going unreachable on upgrade. Every external workspace records one.
     recorded_identity = (record.get("deviceId"), record.get("fileId"))
-    if all(recorded_identity) and _recorded_directory_identity(path) != recorded_identity:
-        return None
+    if all(recorded_identity):
+        from storage.studio_db import same_directory_identity
+        if not same_directory_identity(recorded_identity, _recorded_directory_identity(path)):
+            return None
     live = get_chat_project(project_id)
     if live:
         raise ProjectWorkspaceSessionUnavailableError("Project workspace changed")
@@ -7543,6 +7545,7 @@ def record_orphaned_project(
     pending_delete: bool = False,
     root_path: "str | None" = None,
     session_id: "str | None" = None,
+    identity: "tuple[str, str] | None" = None,
 ) -> bool:
     """Remember where a deleted project's kept workspace lives.
 
@@ -7556,16 +7559,19 @@ def record_orphaned_project(
     session_id = session_id or project_session_id(project_id)
     storage_id = _project_orphan_storage_id(project_id, session_id)
     path = os.path.realpath(workspace)
-    device_id, file_id = _recorded_directory_identity(path)
+    # A caller with the identity already verified passes it: a workspace on a
+    # drive that is unplugged right now cannot be stat'd, and a record with no
+    # identity is one the next resolve has to take on the pathname alone.
+    device_id, file_id = identity or _recorded_directory_identity(path)
     return _write_orphan_record(
         _ORPHAN_PROJECT,
         project_id,
         {
             "path": path,
-            # A path is not an identity. The live row carries (st_dev, st_ino) and
+            # A path is not an identity. The live row carries the directory's and
             # refuses a workspace that does not match; without the same thing here, a
-            # folder deleted and replaced at the same pathname is served to the old
-            # session, which is how a fork's file cards start listing someone else's
+            # folder replaced at the same pathname is served to the old session,
+            # which is how a fork's file cards start listing someone else's
             # directory.
             "deviceId": device_id,
             "fileId": file_id,
@@ -7580,16 +7586,16 @@ def record_orphaned_project(
 
 
 def _recorded_directory_identity(path: str) -> "tuple[str | None, str | None]":
-    """(st_dev, st_ino) as hex, or a pair of Nones when the path cannot be stat'd.
+    """The directory's identity as hex, or a pair of Nones when it cannot be stat'd.
 
     Same spelling as ``storage.studio_db._directory_identity`` so a record written
     here compares against a live row without a conversion in between.
     """
     try:
-        metadata = os.stat(path)
+        from storage.studio_db import _directory_identity
+        return _directory_identity(path)
     except OSError:
         return None, None
-    return f"{metadata.st_dev:x}", f"{metadata.st_ino:x}"
 
 
 def _write_orphan_record(

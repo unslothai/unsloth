@@ -407,6 +407,7 @@ def _ensure_external_project_workspace(
     check_descendants: bool = False,
     exclude_project_id: str | None = None,
     expected_identity: tuple[str, str] | None = None,
+    verify_writable: bool = True,
 ) -> str:
     workspace = Path(workspace_path).expanduser()
     probe_path = None
@@ -422,19 +423,26 @@ def _ensure_external_project_workspace(
             raise PermissionError("unsafe workspace path")
         if _workspace_overlaps_chat_sandbox_root(str(resolved)):
             raise PermissionError("workspace overlaps the chat sandbox folder")
-        if (
-            expected_identity is not None
-            and _directory_identity(str(resolved)) != expected_identity
+        if expected_identity is not None and not same_directory_identity(
+            expected_identity, _directory_identity(str(resolved))
         ):
             raise PermissionError("workspace identity changed")
         if not os.access(resolved, os.R_OK | os.W_OK | os.X_OK):
             raise PermissionError("workspace is not readable and writable")
         with os.scandir(resolved) as entries:
             next(entries, None)
-        descriptor, probe_path = tempfile.mkstemp(prefix = ".unsloth-workspace-probe-", dir = resolved)
-        os.close(descriptor)
-        os.unlink(probe_path)
-        probe_path = None
+        # Only when the folder is being taken on. os.access answers from the mode
+        # bits and is wrong often enough on Windows that accepting a workspace has
+        # to really write one file. Doing that on every resolve would touch the
+        # user's own directory on each tool call, each listing and each download,
+        # which is a rebuild to a file watcher and an upload to a sync client.
+        if verify_writable:
+            descriptor, probe_path = tempfile.mkstemp(
+                prefix = ".unsloth-workspace-probe-", dir = resolved
+            )
+            os.close(descriptor)
+            os.unlink(probe_path)
+            probe_path = None
         if managed_root_path and project_workspace_overlaps_managed_root(
             str(resolved), managed_root_path, check_descendants = check_descendants
         ):
@@ -462,8 +470,32 @@ def _ensure_external_project_workspace(
 
 
 def _directory_identity(path: str) -> tuple[str, str]:
+    """(st_dev, st_ino.st_ctime_ns) as hex.
+
+    The change time is in there because an inode is not a name for a directory
+    that lasted. Linux hands the same inode straight back when a directory is
+    removed and one is created at that pathname, so dev and inode alone say two
+    different directories are the same one. Creation moves ctime, which does not
+    come back.
+    """
     metadata = os.stat(path)
-    return f"{metadata.st_dev:x}", f"{metadata.st_ino:x}"
+    return f"{metadata.st_dev:x}", f"{metadata.st_ino:x}.{metadata.st_ctime_ns:x}"
+
+
+def same_directory_identity(
+    recorded: "tuple[str | None, str | None]",
+    current: "tuple[str | None, str | None]",
+) -> bool:
+    """Whether two identities name one directory, tolerating a pre-ctime record."""
+    if not all(recorded) or not all(current):
+        return False
+    if recorded[0] != current[0]:
+        return False
+    if recorded[1] == current[1]:
+        return True
+    # Written before the change time was part of it: compare what it does carry
+    # rather than declaring every record from an older build a stranger.
+    return "." not in str(recorded[1]) and str(current[1]).split(".")[0] == recorded[1]
 
 
 def _project_workspace_identity(project: dict) -> tuple[str, str] | None:
@@ -487,7 +519,9 @@ def _external_project_workspace_available(
         resolved = workspace.resolve(strict = True)
         if not resolved.is_dir() or not os.access(resolved, os.R_OK | os.W_OK | os.X_OK):
             return False
-        if expected_identity is None or _directory_identity(str(resolved)) != expected_identity:
+        if expected_identity is None or not same_directory_identity(
+            expected_identity, _directory_identity(str(resolved))
+        ):
             return False
         with os.scandir(resolved) as entries:
             next(entries, None)
@@ -3148,6 +3182,7 @@ def _upsert_chat_project(
             root_path,
             exclude_project_id = str(project["id"]),
             expected_identity = workspace_identity,
+            verify_writable = False,
         )
     elif external_workspace_path and not existing:
         workspace_path = _ensure_external_project_workspace(
@@ -3290,6 +3325,29 @@ def set_chat_project_workspace(
         )
 
 
+def _unclaimed_managed_root(project: dict, root_path: str) -> str:
+    """A managed root to create, never one that turned up while it was only reserved.
+
+    A project made with a chosen folder reserves this pathname in its row and does
+    not create it, so anything at all can be sitting there by the time the user
+    switches to managed storage. Adopting it puts ``sandbox`` inside a directory
+    Studio was never given, and deleting the project with its files then takes the
+    whole thing: ``_delete_project_workspace`` decides by the pathname's suffix and
+    cannot tell the difference.
+
+    Ours always holds the subdirectories every managed workspace is created with, so
+    switching back to a root this project already used still finds it.
+    """
+    if project.get("workspaceKind") != "external":
+        return root_path
+    root = Path(root_path).expanduser()
+    if not root.exists():
+        return root_path
+    if all((root / subdir).is_dir() for subdir in _PROJECT_WORKSPACE_SUBDIRS):
+        return root_path
+    return _available_project_root(_default_project_root(project), str(project["id"]))
+
+
 def _record_retired_project_workspace(project: dict) -> None:
     """Write down the folder a working-directory change is about to rotate away.
 
@@ -3300,7 +3358,7 @@ def _record_retired_project_workspace(project: dict) -> None:
     """
     retired_session = project.get("workspaceSessionId")
     retired_workspace = project.get("workspacePath")
-    if not retired_session or not retired_workspace or not os.path.isdir(retired_workspace):
+    if not retired_session or not retired_workspace:
         return
     from core.inference.tools import record_orphaned_project
 
@@ -3312,6 +3370,11 @@ def _record_retired_project_workspace(project: dict) -> None:
         # theirs, and a record naming its parent would offer a delete of that.
         str(project.get("rootPath")) if project.get("workspaceKind") == "managed" else None,
         str(retired_session),
+        # Not stat'd here on purpose: a workspace on a disconnected drive can still
+        # be switched away from, and a folder that cannot be reached this second is
+        # not one to forget. The row's identity is the one that was verified when
+        # the folder was chosen, so the record carries that rather than nothing.
+        identity = _project_workspace_identity(project),
     )
 
 
@@ -3325,6 +3388,7 @@ def _set_chat_project_workspace(
         return None
     root_path = project.get("rootPath") or _default_project_root(project)
     if external_workspace_path is None:
+        root_path = _unclaimed_managed_root(project, root_path)
         root_path = _ensure_project_workspace(
             root_path, check_descendants = True, exclude_project_id = id
         )
@@ -3385,6 +3449,7 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
             str(project.get("rootPath") or "") or None,
             exclude_project_id = id,
             expected_identity = workspace_identity,
+            verify_writable = False,
         )
         if project.get("workspacePath") == workspace_path:
             return project

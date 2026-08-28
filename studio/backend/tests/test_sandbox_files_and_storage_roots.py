@@ -4395,10 +4395,16 @@ def test_a_kept_workspace_the_user_moved_still_resolves(tmp_path, monkeypatch):
 def test_a_kept_workspace_replaced_at_the_same_path_is_not_served(tmp_path, monkeypatch):
     """A pathname is not an identity.
 
-    The live project row carries (st_dev, st_ino) and refuses a workspace that does
-    not match it. Without the same check on the deleted-project record, a folder
-    removed and recreated at the same pathname is handed to the old session, and a
+    The live project row carries the directory's identity and refuses a workspace
+    that does not match it. Without the same check on the deleted-project record, a
+    folder replaced at the same pathname is handed to the old session, and a
     surviving fork's file cards start listing a directory nobody chose.
+
+    The replacement is moved into place rather than created in the gap: Linux hands
+    the same inode straight back to a directory made at a pathname one was just
+    removed from, and within one coarse tick of the change-time clock the two are
+    indistinguishable. A directory that existed elsewhere never collides, which is
+    also the shape a replacement usually arrives in.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
@@ -4423,9 +4429,11 @@ def test_a_kept_workspace_replaced_at_the_same_path_is_not_served(tmp_path, monk
     resolved = tools._recorded_project_for_session(session_id)
     assert resolved and Path(resolved[1]) == workspace.resolve()
 
+    replacement = tmp_path / "somewhere else"
+    replacement.mkdir(parents = True)
+    (replacement / "not mine.csv").write_text("x,y\n", encoding = "utf-8")
     shutil.rmtree(workspace)
-    workspace.mkdir(parents = True)
-    (workspace / "not mine.csv").write_text("x,y\n", encoding = "utf-8")
+    replacement.rename(workspace)
 
     assert tools._recorded_project_for_session(session_id) is None
 
@@ -5408,6 +5416,93 @@ def test_a_chat_sandbox_cannot_be_adopted_as_a_project_workspace(tmp_path, monke
                 external_workspace_identity = studio_db._directory_identity(target),
             )
         assert "sandbox" in str(caught.value.cause), f"{label} was accepted"
+
+
+def test_a_reserved_managed_root_is_not_adopted_from_a_stranger(tmp_path, monkeypatch):
+    """A project made with a chosen folder reserves its managed root without
+    creating it, so anything can be sitting there when the user switches back."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    project = studio_db.upsert_chat_project(
+        {"id": "adopter", "name": "Notes", "archived": False, "createdAt": 1, "updatedAt": 1},
+        external_workspace_path = str(chosen),
+        external_workspace_identity = studio_db._directory_identity(str(chosen)),
+    )
+    reserved = Path(project["rootPath"])
+    assert not reserved.exists(), "the managed root is reserved, not created"
+    reserved.mkdir(parents = True)
+    (reserved / "thesis.txt").write_text("years of work", encoding = "utf-8")
+
+    switched = studio_db.set_chat_project_workspace("adopter", None)
+
+    assert Path(switched["rootPath"]) != reserved
+    studio_db._delete_project_workspace(switched)
+    assert (reserved / "thesis.txt").exists(), "a stranger's folder was deleted"
+
+
+def test_switching_back_to_managed_reuses_the_projects_own_root(tmp_path, monkeypatch):
+    """The check above must not cost a project the root it actually filled."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    project = studio_db.upsert_chat_project(
+        {"id": "backer", "name": "Notes", "archived": False, "createdAt": 1, "updatedAt": 1}
+    )
+    original = project["rootPath"]
+    (Path(original) / "sandbox" / "work.txt").write_text("mine", encoding = "utf-8")
+
+    studio_db.set_chat_project_workspace(
+        "backer", str(chosen), studio_db._directory_identity(str(chosen))
+    )
+    switched = studio_db.set_chat_project_workspace("backer", None)
+
+    assert switched["rootPath"] == original
+    assert (Path(original) / "sandbox" / "work.txt").exists()
+
+
+def test_resolving_a_workspace_does_not_write_in_it(tmp_path, monkeypatch):
+    """Every tool call, listing and download resolves. A create-and-unlink in the
+    user's own folder each time is a rebuild to a watcher and an upload to a sync
+    client, so the real write probe stays on accepting and changing a folder."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from storage import studio_db
+
+    studio_db._schema_ready = False
+    probes = []
+    real_mkstemp = studio_db.tempfile.mkstemp
+    monkeypatch.setattr(
+        studio_db.tempfile,
+        "mkstemp",
+        lambda *args, **kwargs: (probes.append(kwargs.get("dir")) or real_mkstemp(*args, **kwargs)),
+    )
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    studio_db.upsert_chat_project(
+        {"id": "prober", "name": "Notes", "archived": False, "createdAt": 1, "updatedAt": 1},
+        external_workspace_path = str(chosen),
+        external_workspace_identity = studio_db._directory_identity(str(chosen)),
+    )
+    assert len(probes) == 1, "accepting a folder has to really write in it"
+
+    probes.clear()
+    for _ in range(5):
+        studio_db.ensure_chat_project_workspace("prober")
+
+    assert probes == []
+    assert sorted(p.name for p in chosen.iterdir()) == []
 
 
 def test_the_chat_sandbox_check_scans_descendants(tmp_path, monkeypatch):
