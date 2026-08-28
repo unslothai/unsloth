@@ -309,6 +309,29 @@ export function findCodeBlockRegions(
  */
 const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
+const AUTOLINK_RE =
+  /<[a-zA-Z][a-zA-Z\d+.-]{1,31}:[^<>\s]*>|<[a-zA-Z\d.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z\d.-]+>/g;
+const HTML_TAG_RE =
+  /<\/?[a-zA-Z][a-zA-Z\d-]*(?:\s+(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*\/?>/g;
+const HTML_OPAQUE_RE =
+  /<!--[\s\S]*?(?:-->|$)|<\?[\s\S]*?(?:\?>|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<![a-zA-Z][^>]*(?:>|$)/g;
+const HTML_BLOCK_OPEN_RE = /^ {0,3}<\/?([a-zA-Z][a-zA-Z\d-]*)(?=[\s/>]|$)/;
+const HTML_BLOCK_TAG_ONLY_RE =
+  /^ {0,3}<\/?[a-zA-Z][a-zA-Z\d-]*(?:\s+(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*\/?>\s*$/;
+const HTML_BLOCK_TAGS = new Set(
+  `address article aside base basefont blockquote body caption center col colgroup
+   dd details dialog dir div dl dt fieldset figcaption figure footer form frame
+   frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu
+   menuitem nav noframes ol optgroup option p param search section summary table
+   tbody td tfoot th thead title tr track ul`.split(/\s+/),
+);
+const HTML_LITERAL_TAGS = new Set([
+  "code",
+  "pre",
+  "script",
+  "style",
+  "textarea",
+]);
 
 /**
  * Find the destination spans of inline links/images, so a `\(...\)` written with
@@ -326,6 +349,86 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
     regions.push(match.indices![1]);
   }
   return regions;
+}
+
+function findHtmlRegions(content: string): Array<[number, number]> {
+  const tags: Array<[number, number]> = [];
+  const literals: Array<[number, number]> = [];
+  const openLiterals: Array<{ name: string; start: number }> = [];
+  let match: RegExpExecArray | null;
+
+  HTML_TAG_RE.lastIndex = 0;
+  while ((match = HTML_TAG_RE.exec(content)) !== null) {
+    const end = match.index + match[0].length;
+    tags.push([match.index, end]);
+    const name = /^<\/?([a-zA-Z][a-zA-Z\d-]*)/
+      .exec(match[0])?.[1]
+      ?.toLowerCase();
+    if (!name || !HTML_LITERAL_TAGS.has(name)) {
+      continue;
+    }
+    if (match[0].startsWith("</")) {
+      let opener = openLiterals.length - 1;
+      while (opener >= 0 && openLiterals[opener]?.name !== name) {
+        opener -= 1;
+      }
+      if (opener >= 0) {
+        literals.push([openLiterals[opener].start, end]);
+        openLiterals.length = opener;
+      }
+    } else if (!match[0].endsWith("/>") && name !== "code") {
+      openLiterals.push({ name, start: match.index });
+    } else if (name === "code" && !match[0].endsWith("/>")) {
+      openLiterals.push({ name, start: match.index });
+    }
+  }
+  for (const opener of openLiterals) {
+    literals.push([opener.start, content.length]);
+  }
+
+  const blocks: Array<[number, number]> = [];
+  let blockStart = -1;
+  let previousBlank = true;
+  for (const lineMatch of content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
+    const line = lineMatch[0];
+    if (!line) {
+      break;
+    }
+    const text = line.replace(/(?:\r\n|\n|\r)$/, "");
+    if (blockStart >= 0) {
+      if (!text.trim()) {
+        blocks.push([blockStart, lineMatch.index]);
+        blockStart = -1;
+      }
+      previousBlank = !text.trim();
+      continue;
+    }
+    const name = HTML_BLOCK_OPEN_RE.exec(text)?.[1]?.toLowerCase();
+    if (
+      (name && HTML_BLOCK_TAGS.has(name)) ||
+      (previousBlank && HTML_BLOCK_TAG_ONLY_RE.test(text))
+    ) {
+      blockStart = lineMatch.index;
+    }
+    previousBlank = !text.trim();
+  }
+  if (blockStart >= 0) {
+    blocks.push([blockStart, content.length]);
+  }
+
+  const autolinks: Array<[number, number]> = [];
+  AUTOLINK_RE.lastIndex = 0;
+  while ((match = AUTOLINK_RE.exec(content)) !== null) {
+    autolinks.push([match.index, match.index + match[0].length]);
+  }
+  HTML_OPAQUE_RE.lastIndex = 0;
+  while ((match = HTML_OPAQUE_RE.exec(content)) !== null) {
+    autolinks.push([match.index, match.index + match[0].length]);
+  }
+  return mergeRegions(
+    mergeRegions(tags, literals),
+    mergeRegions(blocks, autolinks),
+  );
 }
 
 /**
@@ -596,6 +699,7 @@ function normalizeEscapedInlineMath(content: string): string {
     findCodeBlockRegions(content, true),
     findLinkDestinationRegions(content),
   );
+  skipRegions = mergeRegions(skipRegions, findHtmlRegions(content));
   skipRegions = mergeRegions(
     skipRegions,
     findBracketMathRegions(content, skipRegions),

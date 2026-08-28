@@ -125,6 +125,35 @@ test("incomplete code spans stay literal without crossing block boundaries", () 
   }
 });
 
+test("raw HTML and autolinks keep literal escaped dollars", () => {
+  const cases: [string, string][] = [
+    ["<pre>\n\\$x_1\\$\n</pre>", "<pre>\n\\$x_1\\$\n</pre>"],
+    ["<code>\\$x_1\\$</code>", "<code>\\$x_1\\$</code>"],
+    ["<textarea>\\$x_1\\$</textarea>", "<textarea>\\$x_1\\$</textarea>"],
+    ["<!-- \\$x_1\\$ -->\n\n\\$y_2\\$", "<!-- \\$x_1\\$ -->\n\n$y_2$"],
+    [
+      "<widget>\n\\$x_1\\$\n</widget>\n\n\\$y_2\\$",
+      "<widget>\n\\$x_1\\$\n</widget>\n\n$y_2$",
+    ],
+    [
+      "<div>\n\\$x_1\\$\n</div>\n\n\\$y_2\\$",
+      "<div>\n\\$x_1\\$\n</div>\n\n$y_2$",
+    ],
+    [
+      '<a href="https://e.test/\\$x_1\\$">\\$y_2\\$</a>',
+      '<a href="https://e.test/\\$x_1\\$">$y_2$</a>',
+    ],
+    [
+      "<https://e.test/\\$x_1\\$> then \\$y_2\\$",
+      "<https://e.test/\\$x_1\\$> then $y_2$",
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    assert.equal(preprocessLaTeX(input), expected, input);
+  }
+});
+
 test("escaped inline math from local models is recovered inside lists", () => {
   const input = [
     String.raw`- \$v_s\$ is the velocity of the bubble,`,
