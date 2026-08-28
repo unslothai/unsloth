@@ -22954,7 +22954,7 @@ def _openai_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
-        if model_info.get("is_audio") and (
+        if not model_info.get("is_mlx") and model_info.get("is_audio") and (
             model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES
         ):
             entry["task"] = _TTS_MODEL_TASK

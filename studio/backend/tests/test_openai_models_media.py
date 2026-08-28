@@ -549,6 +549,11 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     (entry,) = inf._openai_model_objects()
     assert entry["task"] == "text-to-speech"
 
+    # The MLX worker rejects audio generation even when its model metadata is TTS.
+    unsloth.models["unsloth/csm-1b"]["is_mlx"] = True
+    (entry,) = inf._openai_model_objects()
+    assert "task" not in entry
+
 
 def test_downloaded_tts_model_is_not_advertised_without_switch_support(monkeypatch):
     tts = _Info(
