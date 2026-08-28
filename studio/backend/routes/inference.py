@@ -22396,6 +22396,12 @@ async def _openai_catalog_objects() -> list[dict]:
     return list(by_id.values())
 
 
+# Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
+# literally and do not follow FastAPI's automatic slash redirect. Register the
+# slash form directly so model discovery reaches authentication and returns the
+# catalog in one response. Keep it out of the schema because it is only a wire
+# compatibility alias for the canonical OpenAI path.
+@router.get("/models/", include_in_schema = False)
 @router.get("/models")
 async def openai_list_models(current_subject: str = Depends(get_current_subject)):
     """
