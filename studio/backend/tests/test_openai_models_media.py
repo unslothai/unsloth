@@ -90,8 +90,11 @@ def _catalog(
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
     monkeypatch.setattr(
-        resolver, "local_gguf_quants", lambda info: ("Q8_0",) if info.is_gguf else None
+        resolver,
+        "local_servable_model",
+        lambda info: (info.is_gguf, ("Q8_0",) if info.is_gguf else ()),
     )
+    monkeypatch.setattr(inf, "_resolves_to_resident", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(inf, "_resident_media_status", lambda task: (resident or {}).get(task))
     monkeypatch.setattr(inf, "_stt_model_objects", lambda created: [])
     _media_index(monkeypatch, picks if picks is not None else _PICKS)
