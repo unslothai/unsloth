@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import sys
 
+from utils.host_policy import is_wildcard_host, wildcard_loopback_host
+
 
 def _safe_print(text: str) -> None:
     """Print text without crashing on terminals that cannot encode Unicode."""
@@ -107,7 +109,8 @@ def print_studio_access_banner(
     def style(text: str, code: str) -> str:
         return f"{code}{text}{reset}" if use_color else text
 
-    ipv6_bind = bind_host in ("::", "::1")
+    listen_all = is_wildcard_host(bind_host)
+    ipv6_bind = bind_host == "::1" or wildcard_loopback_host(bind_host) == "::1"
     if ipv6_bind:
         loopback_url = f"http://[::1]:{port}"
         alt_local = f"http://localhost:{port}"
@@ -128,8 +131,6 @@ def print_studio_access_banner(
         network_url = f"http://[{resolved_network_host}]:{port}"
     else:
         network_url = f"http://{resolved_network_host}:{port}"
-
-    listen_all = bind_host in ("0.0.0.0", "::")
     # The exact aliases the canned loopback_url below is valid for; any other bind
     # (e.g. a specific LAN IP) must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
@@ -150,12 +151,10 @@ def print_studio_access_banner(
     if (listen_all or loopback_bind) and primary_url != alt_local:
         lines.append(style(f"    (same as {alt_local})", dim))
 
-    if listen_all and resolved_network_host not in (
-        "127.0.0.1",
-        "localhost",
-        "::1",
-        "0.0.0.0",
-        "::",
+    if (
+        listen_all
+        and not is_wildcard_host(resolved_network_host)
+        and resolved_network_host not in ("127.0.0.1", "localhost", "::1")
     ):
         lines.extend(
             [

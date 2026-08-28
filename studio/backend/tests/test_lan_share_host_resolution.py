@@ -23,6 +23,7 @@ from startup_banner import print_studio_access_banner
 
 PUBLIC_IP = "104.32.48.18"
 LAN_IP = "192.168.1.50"
+LAN_IPV6 = "fd00::50"
 
 
 class _FakeSocket:
@@ -66,8 +67,13 @@ def public_and_lan(monkeypatch):
 # ── resolution ───────────────────────────────────────────────────────
 
 
-def test_resolve_lan_ip_never_calls_the_network(public_and_lan):
+def test_resolve_lan_ip_never_calls_the_network(public_and_lan, monkeypatch):
     # Only the UDP-socket trick backs this, never urlopen.
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("LAN resolution made an HTTP request"),
+    )
     assert _resolve_lan_ip() == LAN_IP
 
 
@@ -75,9 +81,15 @@ def test_external_ip_prefers_the_public_service(public_and_lan):
     assert run._resolve_external_ip() == PUBLIC_IP
 
 
-def test_network_share_host_is_lan_not_public(public_and_lan):
+def test_network_share_host_is_lan_not_public(monkeypatch):
+    monkeypatch.setattr(
+        run,
+        "_resolve_lan_ip",
+        lambda ip_version = 4: LAN_IP if ip_version == 4 else LAN_IPV6,
+    )
     assert _network_share_host_for_bind("0.0.0.0") == LAN_IP
-    assert _network_share_host_for_bind("::") == LAN_IP
+    assert _network_share_host_for_bind("::") == LAN_IPV6
+    assert _network_share_host_for_bind("::0") == LAN_IPV6
 
 
 def test_network_share_host_is_unchanged_for_a_specific_bind(public_and_lan):
@@ -97,6 +109,18 @@ def test_banner_network_line_shows_lan_ip_not_public_ip(capsys):
     )
     out = capsys.readouterr().out
     assert f"http://{LAN_IP}:8888" in out
+    assert PUBLIC_IP not in out
+
+
+def test_banner_network_line_brackets_ipv6_for_a_wildcard_alias(capsys):
+    print_studio_access_banner(
+        port = 8888,
+        bind_host = "::0",
+        display_host = PUBLIC_IP,
+        network_host = LAN_IPV6,
+    )
+    out = capsys.readouterr().out
+    assert f"http://[{LAN_IPV6}]:8888" in out
     assert PUBLIC_IP not in out
 
 

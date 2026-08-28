@@ -861,7 +861,7 @@ def _run_auto_load(
         launches.append((list(cmd), dict(kwargs["env"])))
         return _Process(returncode)
 
-    def _wait_for_health(timeout):
+    def _wait_for_health(timeout, **_kw):
         backend._stdout_lines = [output]
         return returncode is None
 
