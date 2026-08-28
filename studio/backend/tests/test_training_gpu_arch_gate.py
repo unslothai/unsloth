@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
+import utils.hardware.hardware as _hw_module
 from utils.hardware.hardware import (
     DeviceType,
     apply_gpu_ids,
@@ -116,6 +117,21 @@ def _no_device_ordinal(monkeypatch):
     behind it. Nothing here sets it deliberately, so clear it rather than let a
     developer's own ROCm shell decide what these assert."""
     monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
+
+
+@pytest.fixture(autouse = True)
+def _detection_is_declared_not_detected(monkeypatch):
+    """Pin the hardware-detection globals for the duration of each test.
+
+    The gate reads ``_get_parent_visible_gpu_spec()``, which calls ``get_device()``
+    and so lazily runs ``detect_hardware()`` against whatever sits in
+    ``sys.modules["torch"]``. With the fake AMD torch these tests install that
+    latches DEVICE / IS_ROCM / CHAT_ONLY for the whole pytest process, and every
+    later test in the session then reads ``IS_ROCM = True`` on a host that has no
+    AMD GPU. Declaring DEVICE means detection is never entered, and monkeypatch
+    restores both names at teardown, so nothing escapes this file."""
+    monkeypatch.setattr(_hw_module, "DEVICE", DeviceType.CUDA)
+    monkeypatch.setattr(_hw_module, "IS_ROCM", _hw_module.IS_ROCM)
 
 
 def _install(monkeypatch, torch):
@@ -268,7 +284,7 @@ class TestFailsOpen:
         _install(monkeypatch, _fake_torch([_props("gfx1036")], available = False))
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
-    def test_a_uuid_mask_cannot_be_named_back(self, monkeypatch):
+    def test_a_uuid_mask_cannot_be_named_back(self, monkeypatch, no_mask):
         # ROCR/CUDA both accept UUID tokens; the ordinals cannot be mapped to
         # physical ids, so pinning would address the wrong card.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "GPU-DEADBEEFDEADBEEF,0")
@@ -301,7 +317,7 @@ class TestIdSpace:
     """The result is consumed as physical ids (they become CUDA_VISIBLE_DEVICES),
     so an ordinal must be mapped through the active mask."""
 
-    def test_ordinals_map_through_the_mask(self, monkeypatch):
+    def test_ordinals_map_through_the_mask(self, monkeypatch, no_mask):
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
         # Ordinal 1 is physical 3 here, not 1.
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
