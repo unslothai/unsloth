@@ -8,10 +8,7 @@ import { resolveResidentInitialConfig } from "@/features/model-picker";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
-import {
-  mergeBackendRecommendedInference,
-  resolveManualAutoCtxPin,
-} from "../presets/preset-policy";
+import { mergeBackendRecommendedInference } from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
@@ -33,6 +30,7 @@ import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
+import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -304,18 +302,29 @@ export function applyActiveModelStatusToStore(
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
-  // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
-  // and status only exposes the RESOLVED context; re-seed the pin from the
-  // requested value (parity with the load paths' keepCustomCtx). Baselines
-  // unconditionally: anything but an applicable pin is null, so a previous
-  // model's pin can't survive a model change underneath and reload at the old length.
-  const gpuPin = status.is_gguf
-    ? resolveManualAutoCtxPin(
-        status.gpu_memory_mode ?? "auto",
-        status.gpu_layers ?? -1,
-        status.requested_context_length ?? null,
-      )
-    : null;
+  // A load sends its context pin as max_seq_length and status only exposes the
+  // resolved context plus the requested n_ctx, and a positive requested n_ctx
+  // does NOT mean a human asked for it: an Auto same-model reload under a custom
+  // preset reports one too. So the pin is re-seeded here from what this tab (or
+  // the model's saved config) actually recorded, never inferred from the echo
+  // alone, and the echo is trusted only where it is unambiguous. See
+  // resolveCtxPinSeed for the full rule, including the mid-load window where
+  // status still answers for the OUTGOING model.
+  const ctxPinFields = resolveCtxPinSeed({
+    incoming: status.requested_context_length,
+    isGguf: status.is_gguf ?? true,
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+    remembered: remembered?.remembered
+      ? (remembered.config.customContextLength ?? null)
+      : null,
+    // Raw, not the normalised incomingGpuMode/incomingGpuLayers below: the rule
+    // needs "Manual with AUTO layers", and those normalise layers to null off
+    // manual, which would read as "no layers reported" rather than as Auto.
+    gpuMemoryMode: status.gpu_memory_mode ?? null,
+    gpuLayers: status.gpu_layers ?? null,
+    loadedPin: prevState.loadedCustomContextLength ?? null,
+  });
   const incomingGpuMode = status.is_gguf
     ? (status.gpu_memory_mode ?? "auto")
     : null;
@@ -340,7 +349,11 @@ export function applyActiveModelStatusToStore(
       },
       { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
     ) ||
-    prevState.loadedCustomContextLength !== gpuPin;
+    // Only a pin this status will actually move counts: a difference it declines
+    // to apply (mid-load, or an echo it cannot read intent out of) is not one.
+    (ctxPinFields.loadedCustomContextLength !== undefined &&
+      prevState.loadedCustomContextLength !==
+        ctxPinFields.loadedCustomContextLength);
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
       prevState.gpuMemoryMode !== prevState.loadedGpuMemoryMode) ||
@@ -364,8 +377,7 @@ export function applyActiveModelStatusToStore(
   const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
   const gpuStatusFields = {
     ...incomingGpuFields,
-    customContextLength: gpuPin,
-    loadedCustomContextLength: gpuPin,
+    ...ctxPinFields,
     ...(preserveSameModelEdits &&
       gpuMemoryEditsPending && {
         gpuMemoryMode: prevState.gpuMemoryMode,

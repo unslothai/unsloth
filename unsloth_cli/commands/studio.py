@@ -334,16 +334,54 @@ def _stream_for_subprocess(stream):
 
 
 def _display_host_for_bind(run_mod, host: str) -> str:
-    return run_mod._resolve_external_ip() if host in ("0.0.0.0", "::") else host
+    return run_mod._display_host_for_bind(host)
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    return "::1" if host == "::" else "127.0.0.1"
+    from unsloth_cli._tool_policy import wildcard_loopback_host
+    return wildcard_loopback_host(host) or "127.0.0.1"
+
+
+def _require_bind_host(host: str) -> None:
+    if isinstance(host, str) and host.strip():
+        return
+    typer.echo(
+        "Error: --host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.",
+        err = True,
+    )
+    raise typer.Exit(2)
+
+
+def _normalize_wildcard_bind_host(host: str) -> str:
+    from unsloth_cli._tool_policy import normalize_wildcard_bind_host
+    try:
+        return normalize_wildcard_bind_host(host)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(2) from None
+
+
+def _require_unambiguous_ephemeral_bind(host: str, port: int) -> None:
+    if port != 0:
+        return
+    from unsloth_cli._tool_policy import resolved_bind_address_count
+
+    if resolved_bind_address_count(host) <= 1:
+        return
+    typer.echo(
+        "Error: --port 0 cannot be used when --host resolves to multiple bind "
+        "addresses; choose an explicit port.",
+        err = True,
+    )
+    raise typer.Exit(2)
 
 
 def _url_host(host: str) -> str:
+    url_host = host.replace("%", "%25")
     return (
-        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+        f"[{url_host}]"
+        if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
+        else url_host
     )
 
 
@@ -820,17 +858,42 @@ def _find_frontend_dist() -> Optional[Path]:
 
 # ── helpers for `unsloth studio run` ────────────────────────────────
 
+_direct_http_opener = None
 
-def _wait_for_server(port: int, timeout: int = 30) -> bool:
+
+def _direct_urlopen(request, timeout):
+    """Open a process-local URL without proxies or redirects."""
+    global _direct_http_opener
+
+    if _direct_http_opener is None:
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise urllib.error.HTTPError(
+                    req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+                )
+
+        _direct_http_opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _NoRedirect(),
+        )
+    return _direct_http_opener.open(request, timeout = timeout)
+
+
+def _wait_for_server(
+    port: int,
+    timeout: int = 30,
+    request_host: str = "127.0.0.1",
+) -> bool:
     """Poll ``GET /api/health`` until the server responds 200 or *timeout* expires."""
     import urllib.request
     import urllib.error
 
-    url = f"http://127.0.0.1:{port}/api/health"
+    url = f"http://{_url_host(request_host)}:{port}/api/health"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout = 2) as resp:
+            with _direct_urlopen(url, timeout = 2) as resp:
                 if resp.status == 200:
                     return True
         except (urllib.error.URLError, OSError, ConnectionError):
@@ -1093,7 +1156,9 @@ def _should_prompt_password_change(
         return True
     if cloudflare is not True:
         return False
-    return host in ("0.0.0.0", "::") and not api_only
+    from unsloth_cli._tool_policy import is_wildcard_host
+
+    return is_wildcard_host(host) and not api_only
 
 
 def _prompt_streams_interactive() -> bool:
@@ -1633,6 +1698,7 @@ def _load_model_via_http(
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
+    request_host: str = "127.0.0.1",
 ) -> dict:
     """POST to ``/api/inference/load`` using the API key for auth."""
     import json
@@ -1661,7 +1727,7 @@ def _load_model_via_http(
         payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
-    url = f"http://127.0.0.1:{port}/api/inference/load"
+    url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
     req = urllib.request.Request(
         url,
         data = data,
@@ -1672,7 +1738,7 @@ def _load_model_via_http(
         method = "POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
+        with _direct_urlopen(req, timeout = timeout) as resp:
             try:
                 body = json.loads(resp.read())
             except ValueError:
@@ -1871,6 +1937,7 @@ def studio_default(
             raise typer.Exit(2)
         return
 
+    _require_bind_host(host)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     _preserve_cloudflare_intent(cloudflare, secure)
 
@@ -1891,6 +1958,9 @@ def studio_default(
                 err = True,
             )
         host = "127.0.0.1"
+
+    host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # --verbose restores the per-request access logs that are suppressed by
     # default (plain-server path; the `run` subcommand has its own --verbose).
@@ -2552,6 +2622,8 @@ def run(
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
 
+    _require_bind_host(host)
+
     # --secure requires the tunnel; force a loopback bind so the raw port is never public.
     if secure:
         if cloudflare is False:
@@ -2569,6 +2641,9 @@ def run(
                 err = True,
             )
         host = "127.0.0.1"
+
+    host = _normalize_wildcard_bind_host(host)
+    _require_unambiguous_ephemeral_bind(host, port)
 
     # Tool policy does not depend on the bind: tools default on everywhere
     # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
@@ -2794,10 +2869,14 @@ def run(
     from studio.backend.run import _graceful_shutdown, _server
 
     try:
+        request_host = getattr(app.state, "server_request_host", None)
+        if not isinstance(request_host, str) or not request_host:
+            typer.echo("Error: server did not expose its bound address.", err = True)
+            raise typer.Exit(1)
         # 3. Wait for server health.
         if not silent:
             typer.echo("Starting Unsloth Studio...")
-        if not _wait_for_server(actual_port):
+        if not _wait_for_server(actual_port, request_host = request_host):
             typer.echo("Error: server did not become healthy within 30 seconds.", err = True)
             raise typer.Exit(1)
 
@@ -2824,6 +2903,7 @@ def run(
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
+                request_host = request_host,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)

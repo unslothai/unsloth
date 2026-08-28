@@ -260,6 +260,7 @@ class CachedGgufRepo(CachedRepoBase):
 
 class CachedGgufResponse(BaseModel):
     cached: List[CachedGgufRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class CachedModelRepo(CachedRepoBase):
@@ -284,6 +285,7 @@ class CachedModelRepo(CachedRepoBase):
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class HiddenModelsResponse(BaseModel):

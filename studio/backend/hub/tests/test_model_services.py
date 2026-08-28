@@ -82,6 +82,29 @@ def _sibling(name: str, size: int, sha: str):
     return SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": sha})
 
 
+def test_gguf_inventory_dates_rows_from_managed_companions(tmp_path):
+    repo = _repo(
+        "Org/Vision-GGUF",
+        [
+            SimpleNamespace(
+                file_name = "model-Q4_K_M.gguf",
+                size_on_disk = 100,
+                blob_path = None,
+                blob_last_modified = 10.0,
+            ),
+            SimpleNamespace(
+                file_name = "mmproj-F16.gguf",
+                size_on_disk = 20,
+                blob_path = None,
+                blob_last_modified = 30.0,
+            ),
+        ],
+        tmp_path,
+    )
+
+    assert cache_inventory._repo_gguf_last_modified(repo) == 30.0
+
+
 class TestExtractQuantToken:
     def test_trailing_precision_is_kept(self):
         assert gguf.extract_quant_token("model-it-F16.gguf") == "F16"
@@ -775,7 +798,7 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
         releases[1].set()
         return await asyncio.gather(second, changed)
 
-    assert asyncio.run(run_requests()) == [{"cached": cached}] * 2
+    assert asyncio.run(run_requests()) == [{"cached": cached, "scan_confirmed": True}] * 2
     assert scans == 1 and cache_inventory._cached_inventory_flights == {}
 
 
@@ -812,8 +835,9 @@ def test_cached_inventory_discards_a_scan_that_raced_an_invalidation(
     monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
     monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
 
-    rows = asyncio.run(cache_inventory._shared_cached_inventory_scan(inventory_call, scan))
-    assert rows == [{"repo_id": "Org/Kept"}], "rows from the superseded walk were served"
+    result = asyncio.run(cache_inventory._shared_cached_inventory_scan(inventory_call, scan))
+    assert result.rows == [{"repo_id": "Org/Kept"}], "rows from the superseded walk were served"
+    assert result.confirmed is True
     assert len(scans) == 2, "the superseded walk was not retried"
     assert cache_inventory._cached_inventory_flights == {}
 
@@ -840,7 +864,9 @@ def test_cached_inventory_scan_stops_retrying_under_constant_invalidation(monkey
             cache_inventory._shared_cached_inventory_scan("gguf", scan), timeout = 5
         )
 
-    assert asyncio.run(run()) == []
+    result = asyncio.run(run())
+    assert result.rows == []
+    assert result.confirmed is False
     assert len(scans) == cache_inventory._INVENTORY_SCAN_MAX_ATTEMPTS
     assert cache_inventory._cached_inventory_flights == {}
 

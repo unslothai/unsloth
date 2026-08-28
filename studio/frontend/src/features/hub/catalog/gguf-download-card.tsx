@@ -26,6 +26,7 @@ import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -249,7 +250,7 @@ interface GgufVariantMenuItem {
 
 function createGgufVariantMenuItems(
   variants: readonly GgufVariantDetail[] | null,
-  resources: { gpuGb?: number; systemRamGb?: number },
+  resources: { gpuGb?: number; systemRamGb?: number; budgetFraction?: number },
 ): GgufVariantMenuItem[] {
   if (!variants) return [];
   return variants.map((variant) => ({
@@ -625,10 +626,19 @@ export function GgufDownloadCard({
     ReadonlySet<string>
   >(() => new Set<string>());
 
+  // The live VRAM Budget, so the badge and the sort score against the line the
+  // loader will actually admit at. The memory bar on this same row already reads
+  // it; without this the two disagreed for every saved fraction below the default.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
+
   const rawSortedVariants = useMemo(() => {
     if (!variants) return null;
-    return sortDownloadableGgufVariants(variants, { gpuGb, systemRamGb });
-  }, [variants, gpuGb, systemRamGb]);
+    return sortDownloadableGgufVariants(variants, {
+      gpuGb,
+      systemRamGb,
+      budgetFraction,
+    });
+  }, [variants, gpuGb, systemRamGb, budgetFraction]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -650,8 +660,13 @@ export function GgufDownloadCard({
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
   const variantMenuItems = useMemo(
-    () => createGgufVariantMenuItems(sortedVariants, { gpuGb, systemRamGb }),
-    [gpuGb, sortedVariants, systemRamGb],
+    () =>
+      createGgufVariantMenuItems(sortedVariants, {
+        gpuGb,
+        systemRamGb,
+        budgetFraction,
+      }),
+    [gpuGb, sortedVariants, systemRamGb, budgetFraction],
   );
 
   const selectedQuant =
@@ -747,9 +762,13 @@ export function GgufDownloadCard({
   const selectedFit = useMemo(
     () =>
       selected
-        ? classifyGgufFit(selected.size_bytes, { gpuGb, systemRamGb })
+        ? classifyGgufFit(selected.size_bytes, {
+            gpuGb,
+            systemRamGb,
+            budgetFraction,
+          })
         : null,
-    [gpuGb, selected?.size_bytes, systemRamGb],
+    [gpuGb, selected?.size_bytes, systemRamGb, budgetFraction],
   );
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)

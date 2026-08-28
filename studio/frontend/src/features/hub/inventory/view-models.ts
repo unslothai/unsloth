@@ -4,6 +4,7 @@
 import { ownerOf, repoOf } from "../lib/format";
 import { looksLikeLocalPath } from "../lib/local-path";
 import { isGgufLike } from "../lib/model-identifiers";
+import { normalizeTimestamp } from "./inventory-timestamps";
 import type {
   BackendModelCapabilities,
   LocalModelInfo,
@@ -31,13 +32,6 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
     default:
       return "Local model";
   }
-}
-
-export function normalizeTimestamp(value?: number | null): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value < 10_000_000_000 ? value * 1000 : value;
 }
 
 export function formatLocalUpdated(value?: number | null): string {
@@ -224,12 +218,7 @@ export function buildCachedInventoryRow(
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
     loadCachePath: row.load_cache_path ?? null,
-    lastModified:
-      typeof row.last_modified === "number" &&
-      Number.isFinite(row.last_modified) &&
-      row.last_modified > 0
-        ? row.last_modified
-        : null,
+    lastModified: normalizeTimestamp(row.last_modified),
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
     partialResumable: row.partial_resumable === true,

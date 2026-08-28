@@ -66,7 +66,7 @@ test("every select-model surface shares that one badge", () => {
 
 test("list header actions end where a hovered row's action does", () => {
   // A row action is `right-0 pr-1.5` inside a pill the list inset by
-  // scrollRowPadding: 12px in normally, 11px under the desktop titlebar.
+  // unrailedRowPadding: 12px in normally, 11px under the desktop titlebar.
   assert.match(
     CSS,
     /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-1\.5/,
@@ -87,7 +87,7 @@ test("list header actions end where a hovered row's action does", () => {
 
   assert.match(
     SIDEBAR,
-    /const scrollRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5";/,
+    /const unrailedRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5";/,
   );
   assert.ok(
     SIDEBAR.includes(
