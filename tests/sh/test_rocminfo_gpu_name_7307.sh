@@ -15,6 +15,8 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
+    echo ""
+    sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
@@ -309,6 +311,28 @@ echo "=== no GPU agent ==="
 assert_eq "falls back to the first marketing name with no arch" \
     "|AMD Ryzen 7 5700U with Radeon Graphics" "$(printf '%s\n' "$APU" | _rocminfo_gpu_records)"
 assert_eq "empty input yields nothing" "" "$(printf '' | _rocminfo_gpu_records)"
+
+# amd-smi heads a device either way. `GPU: N` opens a keyed block and the arch comes
+# later; `GPU[N] : gfx...` is the whole record with the arch on the header. Matching only
+# the first shape returned NOTHING on the second, so a host with no rocminfo answered no
+# arch at all and every arch policy downstream was skipped in silence -- a gfx1200 box on
+# ROCm 6.1 keeps the kernel-less rocm6.1 wheels instead of being floored to rocm6.4.
+SMI_BRACKET="GPU[0]  : gfx1100
+GPU[1]  : gfx1100
+GPU[2]  : gfx1200"
+SMI_KEYED="GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 9070 XT
+        TARGET_GRAPHICS_VERSION: gfx1201"
+echo "=== amd-smi headers ==="
+assert_eq "the bracketed one-line form keeps its arch, one record per device" \
+    "gfx1100| gfx1100| gfx1200|" \
+    "$(printf '%s\n' "$SMI_BRACKET" | _amd_smi_gpu_records | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "the keyed form still pairs arch with name" \
+    "gfx1201|AMD Radeon RX 9070 XT" \
+    "$(printf '%s\n' "$SMI_KEYED" | _amd_smi_gpu_records)"
+assert_eq "a header with no arch stays empty rather than borrowing the next device's" \
+    "|" "$(printf 'GPU: 0\n    BDF: 0000:03:00.0\n' | _amd_smi_gpu_records)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
