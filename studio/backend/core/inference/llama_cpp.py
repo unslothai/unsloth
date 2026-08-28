@@ -7242,6 +7242,70 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _tied_output_bytes(model_path: str) -> int:
+        """Bytes llama.cpp allocates ON TOP of the file for a tied-embedding model.
+
+        A model that ties its input and output embeddings ships no
+        ``output.weight``. llama.cpp does not then reuse ``token_embd.weight``
+        in place: it re-creates the output tensor from it as
+        ``TENSOR_DUPLICATED`` (models/llama.cpp:41-45, models/qwen3.cpp:22-25,
+        models/gemma3.cpp and every other tied arch), and a second vocabulary
+        matrix really is allocated. So the run needs the file's tensors PLUS one
+        more copy of the embedding matrix, and the file size alone understates
+        it.
+
+        Measured on the shipped quants, allocated model buffers against file
+        size:
+
+            gemma-4-E2B-it UD-Q4_K_XL     3037 MiB file, 3285.89 MiB allocated
+            gemma-4-31B-it UD-Q4_K_XL    17951 MiB file, +924 MiB duplicate
+            gemma-4-26B-A4B UD-Q3_K_XL   12309 MiB file, +748 MiB duplicate
+
+        which is 4.6% to 8.7% of the file on the gemma family. Qwen3.6 and
+        Qwen3.8 ship a real ``output.weight`` and are unaffected (0 bytes).
+
+        Returns 0 rather than raising for anything unreadable, so a surprising
+        GGUF costs the old, slightly optimistic budget instead of a failed
+        launch.
+        """
+        # Split GGUF: shard 1 carries the metadata but only its own tensors, and
+        # GGUFReader maps the one path it is given. An ``output.weight`` living
+        # in shard 3 would read as "tied" here and add a duplicate that is not
+        # allocated -- the opposite error, and a much more expensive one on the
+        # very models big enough to be split. Abstain.
+        if _SHARD_FULL_RE.match(Path(model_path).name):
+            return 0
+        try:
+            stat = Path(model_path).stat()
+        except OSError:
+            return 0
+        # Keyed on identity, not just path: a model replaced in place keeps its
+        # name, and the context search calls this once per candidate context, so
+        # an uncached read of a 30 GB header would be paid on every step.
+        return LlamaCppBackend._tied_output_bytes_cached(
+            model_path, stat.st_size, stat.st_mtime_ns,
+        )
+
+    @staticmethod
+    @functools.lru_cache(maxsize = 64)
+    def _tied_output_bytes_cached(model_path: str, _size: int, _mtime_ns: int) -> int:
+        try:
+            from gguf import GGUFReader
+
+            reader = GGUFReader(model_path)
+            embd = 0
+            for tensor in reader.tensors:
+                name = str(tensor.name)
+                if name == "output.weight":
+                    return 0
+                if name == "token_embd.weight":
+                    embd = int(tensor.n_bytes)
+            return embd
+        except Exception as exc:  # noqa: BLE001 - budget must not fail a launch
+            logger.debug("tied-output probe failed for %s (%s)", model_path, exc)
+            return 0
+
+    @staticmethod
     def _installed_ggml_backends(binary: Optional[str] = None) -> frozenset[str]:
         """Backend libraries shipped beside llama-server."""
         binary = binary or LlamaCppBackend._find_llama_server_binary()
@@ -17793,7 +17857,17 @@ class LlamaCppBackend:
                     if _user_mmproj_offload is False and launch_mmproj_path:
                         # Still in system RAM, which the APU shortfall guard prices.
                         _mmproj_pinned_bytes = self._mmproj_vram_bytes(launch_mmproj_path)
-                    model_size = gguf_size + mmproj_size
+                    # A tied-embedding model allocates one more copy of the
+                    # embedding matrix than its file contains, because llama.cpp
+                    # re-creates output.weight from token_embd as
+                    # TENSOR_DUPLICATED. Sizing from the file alone therefore
+                    # UNDER-counts, and under-counting weights is the dangerous
+                    # direction here: it leaves the search believing there is
+                    # VRAM that the load will consume, so it picks a context the
+                    # card cannot hold. 264 MiB on gemma-4-E2B UD-Q4_K_XL and
+                    # 924 MiB on gemma-4-31B UD-Q4_K_XL, against files of 3037
+                    # and 17951 MiB.
+                    model_size = gguf_size + mmproj_size + self._tied_output_bytes(model_path)
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
                     # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
