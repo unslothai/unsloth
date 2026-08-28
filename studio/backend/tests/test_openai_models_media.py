@@ -61,7 +61,10 @@ class _FakeUnsloth:
 
 def _media_index(monkeypatch, picks_by_task):
     """Stand in for the media index the generation routes resolve against."""
+    from core.inference import media_locality
+
     inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
+    monkeypatch.setattr(media_locality, "missing_download_bytes", lambda owner, pick: 0)
     monkeypatch.setattr(
         mmi,
         "available_media_model_ids",
@@ -323,6 +326,22 @@ def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
     data = asyncio.run(inf._openai_catalog_objects())
     assert [m for m in data if m.get("task") in ("text-to-image", "text-to-video")] == []
     assert "half-pulled" not in json.dumps(data)
+
+
+def test_media_model_with_missing_companions_is_not_advertised(monkeypatch):
+    from core.inference import media_locality
+
+    image = _PICKS["text-to-image"][0]
+    _catalog(monkeypatch, _INFOS, picks = {"text-to-image": [image]})
+    monkeypatch.setattr(
+        media_locality,
+        "missing_download_bytes",
+        lambda owner, pick: 9_000 if pick is image else 0,
+    )
+    inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
+
+    data = asyncio.run(inf._openai_catalog_objects())
+    assert [model for model in data if model.get("task") == "text-to-image"] == []
 
 
 def test_loaded_non_gguf_media_stays_listed_when_discovery_misses_it(monkeypatch):

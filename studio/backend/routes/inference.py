@@ -23078,7 +23078,7 @@ def _validated_media_picks(catalog_at: float) -> dict:
     """
     if _MEDIA_PICK_CACHE["at"] == catalog_at:
         return _MEDIA_PICK_CACHE["picks"]
-    from core.inference.media_locality import is_edit_only
+    from core.inference.media_locality import is_edit_only, missing_download_bytes
     from core.inference.media_model_index import (
         available_media_model_ids,
         resolve_local_media_model,
@@ -23096,7 +23096,12 @@ def _validated_media_picks(catalog_at: float) -> dict:
             # is refused by /v1/images/generations too.
             if task == "text-to-image" and is_edit_only(pick):
                 continue
-            rows.append((model_id, pick))
+            try:
+                local = missing_download_bytes(_media_owner(task), pick) == 0
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("media locality unavailable for %s: %s", model_id, exc)
+                local = False
+            rows.append((model_id, pick, local))
         picks[task] = rows
     _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
     return picks
@@ -23133,8 +23138,10 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
     objects: list[dict] = []
     for task in _MEDIA_MODEL_TASKS:
         status = _resident_media_status(task)
-        for model_id, pick in picks_by_task.get(task, ()):
+        for model_id, pick, local in picks_by_task.get(task, ()):
             loaded = bool(status) and satisfied_by(status, model_id, pick)
+            if not loaded and not local:
+                continue
             obj = {
                 "id": model_id,
                 "object": "model",
