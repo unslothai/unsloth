@@ -165,6 +165,14 @@ def _install_device_type_stub(name: str) -> None:
     stub.device_synchronize = lambda *a, **k: None
     stub.device_empty_cache = lambda *a, **k: None
     stub.device_is_bf16_supported = lambda *a, **k: False
+    # The gfx10 bf16 gate (issue 7922). Present here because the stub replaces the
+    # real module wholesale, and tests/python/test_rocm_bf16_capability.py imports
+    # this name at module scope: without it that file raises ImportError during
+    # COLLECTION, which is an error for the whole run rather than a skip. The stub
+    # stands in for a non-HIP host, where there are no HIP devices to read and
+    # nothing is gated, so these are the answers the real module gives there.
+    stub.arch_lacks_bf16 = lambda arch: str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 
 
