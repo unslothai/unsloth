@@ -299,19 +299,17 @@ def _friendly_gen_stream_error(value) -> str:
 def _friendly_upstream_error(text: str) -> str:
     """Rewrite a raw llama-server error body into an actionable message where we can.
 
-    The main case is a tool-calling grammar that llama-server can't compile ("failed to
-    parse grammar" / "failed to initialize samplers"). This surfaces to coding agents as
-    a hard 400 on every tool-bearing turn. It is a llama-server limitation with some
-    model/quant + tool-schema combinations, and recent llama.cpp builds handle the common
-    coding-agent tools, so point the user at updating Unsloth rather than the raw body.
+    A grammar llama-server cannot compile surfaces to coding agents as a hard 400 on
+    every tool-bearing turn, and comes from the request's schemas, not from the model or
+    quant. Other sampler failures keep their own text, which already names what is wrong.
     """
     lowered = text.lower()
-    if "failed to parse grammar" in lowered or "failed to initialize samplers" in lowered:
+    if "failed to parse grammar" in lowered:
         return (
-            "The model couldn't compile a tool-calling grammar for this request. This is a "
-            "llama-server limitation with some model/quant and tool-schema combinations. "
-            "Update Unsloth (it installs the latest llama.cpp, which handles the common "
-            "coding-agent tools) or try a different GGUF model."
+            "The model couldn't compile a grammar for this request. A tool or response_format "
+            "schema in it carries a constraint llama-server's grammar engine cannot compile, "
+            "which does not depend on the model or quant. Update Unsloth, which drops the "
+            "constraints known to break it, and report the schemas if it still fails."
         )
     return f"llama-server error: {text}"
 
@@ -27597,22 +27595,35 @@ _JSON_SCHEMA_SINGLE_KEYWORDS = frozenset(
         "unevaluatedProperties",
     }
 )
-_JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
-_LLAMA_GRAMMAR_MAX_REPETITION = 2000
-_JSON_SCHEMA_REPETITION_KEYWORDS = frozenset({"maxItems", "maxLength", "minItems", "minLength"})
+# "items" is in both sets: draft 2020-12 gives it one schema, draft-07 a tuple of them.
+_JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "items", "oneOf", "prefixItems"})
+# Highest bound each keyword can reach in llama-grammar.cpp's budget of 2000 generated rules.
+# Measured against llama.cpp b10639 and b10679: a string bound of N costs N rules, minItems N-1,
+# and maxItems N+2, its repetition sitting inside a group the enclosing quantifier is charged for
+# too. The array limits assume no lower bound, the costliest shape. Bounds far past the budget
+# compile again as unbounded repetitions; the band just above these does not.
+_JSON_SCHEMA_REPETITION_LIMITS = {
+    "maxItems": 1997,
+    "maxLength": 1999,
+    "minItems": 2000,
+    "minLength": 1999,
+}
+
+
+def _is_json_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _llama_compatible_tool_schema(schema):
     """Return a llama.cpp-compatible copy of one JSON Schema node.
 
-    JSON Schema ``pattern`` expressions match anywhere in a string, so an
-    unanchored pattern is valid and cannot be made compatible by merely adding
-    ``^`` and ``$`` without changing its meaning. llama.cpp's grammar converter
-    currently rejects those patterns outright. Its grammar parser likewise
-    rejects repetition bounds above 2000. Omit only those unsupported
-    constraints from the local-backend copy; the agent retains and validates
-    its original schema, while every compatible constraint still reaches
-    llama.cpp.
+    llama.cpp's converter rejects an unanchored ``pattern`` outright, and anchoring
+    one would change what it matches; its grammar parser fails on repetition bounds
+    that reach its rule budget. Both come off the local-backend copy, erring towards
+    dropping a constraint the backend would have taken, since the agent validates its
+    original schema either way. Recursion follows the schema keywords, so a ``$ref``
+    is covered where its target lives in ``$defs`` or ``definitions``, not where a
+    pointer reaches some other part of the document.
     """
     if not isinstance(schema, dict):
         return schema
@@ -27621,18 +27632,19 @@ def _llama_compatible_tool_schema(schema):
     pattern = compatible.get("pattern")
     if isinstance(pattern, str) and not (pattern.startswith("^") and pattern.endswith("$")):
         compatible.pop("pattern")
-    # llama-grammar.cpp refuses repetition bounds above its sane-default
-    # threshold. Dropping the local-backend constraint preserves every value
-    # the client schema accepts; capping it would incorrectly reject otherwise
-    # valid tool arguments.
-    for keyword in _JSON_SCHEMA_REPETITION_KEYWORDS:
+    for keyword, limit in _JSON_SCHEMA_REPETITION_LIMITS.items():
         bound = compatible.get(keyword)
-        if (
-            isinstance(bound, int)
-            and not isinstance(bound, bool)
-            and bound > _LLAMA_GRAMMAR_MAX_REPETITION
-        ):
+        # An integral bound can decode to float, and llama.cpp reads one either way.
+        if _is_json_number(bound) and bound > limit:
             compatible.pop(keyword)
+    # A lower bound above its upper bound becomes a descending repetition, which
+    # llama-grammar.cpp expands until the process runs out of memory. No grammar
+    # expresses such a pair anyway, so neither half survives.
+    for lower, upper in (("minItems", "maxItems"), ("minLength", "maxLength")):
+        low, high = compatible.get(lower), compatible.get(upper)
+        if _is_json_number(low) and _is_json_number(high) and low > high:
+            compatible.pop(lower)
+            compatible.pop(upper)
 
     for keyword in _JSON_SCHEMA_MAP_KEYWORDS:
         children = compatible.get(keyword)
@@ -27651,6 +27663,28 @@ def _llama_compatible_tool_schema(schema):
         if isinstance(children, list):
             compatible[keyword] = [_llama_compatible_tool_schema(value) for value in children]
 
+    return compatible
+
+
+def _llama_compatible_response_format(response_format):
+    """Return a copy whose guided-decoding schema llama.cpp's grammar engine can compile.
+
+    llama-server reads it from ``json_object``'s ``schema`` and from ``json_schema``'s
+    nested ``schema``, and hands both to the converter that rejects tool schemas.
+    """
+    if not isinstance(response_format, dict):
+        return response_format
+
+    compatible = dict(response_format)
+    schema = compatible.get("schema")
+    if isinstance(schema, dict):
+        compatible["schema"] = _llama_compatible_tool_schema(schema)
+    wrapper = compatible.get("json_schema")
+    if isinstance(wrapper, dict) and isinstance(wrapper.get("schema"), dict):
+        compatible["json_schema"] = {
+            **wrapper,
+            "schema": _llama_compatible_tool_schema(wrapper["schema"]),
+        }
     return compatible
 
 
@@ -27761,7 +27795,7 @@ def _build_passthrough_payload(
         # response_format is present. The field is documented flat at the
         # request root (tools/server/README.md), which is also what the OpenAI
         # SDK produces by spreading extra_body into the body top.
-        body["response_format"] = response_format
+        body["response_format"] = _llama_compatible_response_format(response_format)
     if chat_template_kwargs is not None:
         # Propagate reasoning / template overrides (e.g. enable_thinking) so
         # llama-server renders the Jinja template in the caller's mode instead
