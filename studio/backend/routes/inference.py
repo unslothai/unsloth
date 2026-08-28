@@ -76,6 +76,7 @@ from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
     GenStreamErrorRaised,
+    MINIMAX_MUSIC_MAX_FRAMES,
     MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
 )
@@ -425,6 +426,9 @@ _MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
 # A 24 GB-class card reports slightly less than 24.0 GiB through free-VRAM
 # telemetry even when idle. Keep the admission floor below that value.
 _MINIMAX_MUSIC3_RESIDENT_GB = 23.0
+_MINIMAX_PROMPT_OVERFLOW = _re.compile(
+    r"The assembled prompt has \d+ tokens; the maximum is \d+"
+)
 
 
 def _tts_max_new_tokens(
@@ -443,7 +447,13 @@ def _tts_max_new_tokens(
     moss_generation = audio_type in ("moss_tts_local", "moss_tts_nano")
     context_length = _monitor_context_length() if moss_generation or prompt else None
     token_ceiling = (
-        context_length or MOSS_TTS_MAX_FRAMES if moss_generation else AUDIO_GENERATION_MAX_TOKENS
+        context_length or MOSS_TTS_MAX_FRAMES
+        if moss_generation
+        else (
+            MINIMAX_MUSIC_MAX_FRAMES
+            if audio_type == "minimax_music3"
+            else AUDIO_GENERATION_MAX_TOKENS
+        )
     )
     budget = min(
         token_ceiling,
@@ -16240,6 +16250,8 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
+            if audio_type == "minimax_music3" and _MINIMAX_PROMPT_OVERFLOW.fullmatch(str(e)):
+                raise HTTPException(status_code = 400, detail = str(e))
             logger.error(f"Audio generation error: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
         finally:
@@ -16442,6 +16454,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
             voice = external_voice,
             response_format = (body.response_format or "wav").strip().lower(),
             speed = body.speed,
+            instructions = body.instructions,
         )
     )
     disconnect_watcher = asyncio.create_task(
@@ -16473,7 +16486,7 @@ async def openai_audio_speech(
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
     With ``provider_id`` the request is proxied to that connection, forwarding
-    model/voice/speed. Otherwise the loaded model is used: ``model`` is informational,
+    model/voice/speed/instructions. Otherwise the loaded model is used: ``model`` is informational,
     ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
     a 400 rather than a silent container mismatch."""
     if body.provider_id:

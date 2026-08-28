@@ -359,6 +359,7 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
             "provider_id": "conn-1",
             "model": "kokoro",
             "voice": "af_heart",
+            "instructions": "Speak warmly.",
         },
     )
     assert resp.status_code == 200
@@ -370,6 +371,7 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
     assert created[0]["provider_type"] == "custom"
     assert speech_calls[0]["model"] == "kokoro"
     assert speech_calls[0]["voice"] == "af_heart"
+    assert speech_calls[0]["instructions"] == "Speak warmly."
     rows = api_monitor.snapshot(include_details = False)
     assert len(rows) == 1
     assert rows[0]["endpoint"] == "/v1/audio/speech"
@@ -631,8 +633,9 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         def raise_for_status(self):
             return None
 
-    async def _post(url, **_kwargs):
+    async def _post(url, **kwargs):
         sent["url"] = url
+        sent["json"] = kwargs["json"]
         return _Response()
 
     monkeypatch.setattr(provider_module._http_client, "post", _post)
@@ -641,8 +644,11 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         "http://127.0.0.1:8880/v1?api-version=2026-08-24",
         "sk-test",
     )
-    asyncio.run(client.create_speech(text = "hi", model = "kokoro"))
+    asyncio.run(
+        client.create_speech(text = "hi", model = "kokoro", instructions = "Speak warmly.")
+    )
     assert sent["url"] == ("http://127.0.0.1:8880/v1/audio/speech?api-version=2026-08-24")
+    assert sent["json"]["instructions"] == "Speak warmly."
 
 
 def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
