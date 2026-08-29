@@ -366,7 +366,6 @@ def _sft_config():
     # rebinds that name to the MLX training config, which carries none of SFTConfig's
     # fields. The module the dataclass is defined in still holds the real one.
     from trl.trainer.sft_config import SFTConfig
-
     return SFTConfig
 
 
