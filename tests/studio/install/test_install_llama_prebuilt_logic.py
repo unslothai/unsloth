@@ -5516,15 +5516,43 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
-def _complete_existing_llama_install(tmp_path, *, executable = True):
+# Runtime payload each backend's kept-install check requires, per platform. Only what
+# every install kind of that backend agrees on, which is what the check asks for.
+_KEPT_PAYLOAD = {
+    ("linux", "cpu"): [
+        "libllama-common.so",
+        "libllama.so",
+        "libggml.so",
+        "libggml-base.so",
+        "libggml-cpu.so",
+        "libmtmd.so",
+    ],
+    ("windows", "cuda"): ["llama.dll", "ggml-cuda.dll"],
+}
+
+
+def _complete_existing_llama_install(
+    tmp_path,
+    *,
+    executable = True,
+    backend = None,
+    payload = True,
+    windows = False,
+):
     install_dir = tmp_path / "llama.cpp"
-    runtime_dir = install_dir / "build" / "bin"
+    runtime_dir = (
+        install_dir / "build" / "bin" / "Release" if windows else install_dir / "build" / "bin"
+    )
     runtime_dir.mkdir(parents = True)
+    ext = ".exe" if windows else ""
+    marker = {"release_tag": "old-release", "tag": "old-upstream"}
+    if backend is not None:
+        marker["backend"] = backend
     for path in (
-        install_dir / "llama-server",
-        install_dir / "llama-quantize",
-        runtime_dir / "llama-server",
-        runtime_dir / "llama-quantize",
+        install_dir / f"llama-server{ext}",
+        install_dir / f"llama-quantize{ext}",
+        runtime_dir / f"llama-server{ext}",
+        runtime_dir / f"llama-quantize{ext}",
         install_dir / "convert_hf_to_gguf.py",
         install_dir / "gguf-py",
         install_dir / "UNSLOTH_PREBUILT_INFO.json",
@@ -5532,15 +5560,15 @@ def _complete_existing_llama_install(tmp_path, *, executable = True):
         if path.name == "gguf-py":
             path.mkdir()
         elif path.name == "UNSLOTH_PREBUILT_INFO.json":
-            path.write_text(
-                json.dumps({"release_tag": "old-release", "tag": "old-upstream"}) + "\n",
-                encoding = "utf-8",
-            )
+            path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
         else:
             path.write_text("", encoding = "utf-8")
             # setup.sh's own reuse gate is `-x`, so a tree kept instead of source
             # built has to clear it too; parametrised to cover the tree that does not.
             os.chmod(path, 0o755 if executable else 0o644)
+    if payload and backend is not None:
+        for name in _KEPT_PAYLOAD[("windows" if windows else "linux", backend)]:
+            (runtime_dir / name).write_text("", encoding = "utf-8")
     return install_dir
 
 
@@ -5582,6 +5610,61 @@ def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path
 
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
     assert (install_dir / "llama-server").exists()
+
+
+def _windows_host() -> HostInfo:
+    return HostInfo(
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("windows", "host", "backend"),
+    [
+        (False, linux_host, "cpu"),
+        (True, _windows_host, "cuda"),
+    ],
+    ids = ["linux", "windows"],
+)
+def test_release_listing_failure_does_not_keep_a_gutted_runtime(
+    tmp_path, monkeypatch, windows, host, backend
+):
+    """A tree that lost its runtime payload cannot start, so it is not kept.
+
+    Windows is the case that needs this: both binary preflights are Linux/macOS-only
+    and os.access(X_OK) there is just exists(), so the marker's own backend is the
+    only payload signal a missing llama.dll would trip.
+    """
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    kept = _complete_existing_llama_install(tmp_path / "kept", backend = backend, windows = windows)
+    install_prebuilt(kept, "latest", "unslothai/llama.cpp", "")
+
+    gutted = _complete_existing_llama_install(
+        tmp_path / "gutted", backend = backend, payload = False, windows = windows
+    )
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(gutted, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
 def test_release_listing_failure_does_not_keep_an_unloadable_install(tmp_path, monkeypatch):

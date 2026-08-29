@@ -60,6 +60,7 @@ from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     environment_backend_override,
     install_kinds_for_backend,
     is_requestable_backend,
+    marker_backend,
     marker_backend_request,
     normalize_backend_request,
 )
@@ -6794,8 +6795,19 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
-def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
-    if choice.install_kind in {"linux-cpu", "linux-arm64"}:
+def runtime_payload_health_groups(
+    install_kind: str,
+    *,
+    source_label: str | None = None,
+    runtime_name: str | None = None,
+) -> list[list[str]]:
+    """Runtime files ``install_kind`` must still have, one group per alternative.
+
+    Takes the three fields it reads rather than an ``AssetChoice`` so the kept-install
+    check can ask by install kind alone, having no candidate bundle to compare against.
+    Both keyword arguments only ADD groups, so omitting them asks for the base payload.
+    """
+    if install_kind in {"linux-cpu", "linux-arm64"}:
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6804,7 +6816,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
         ]
-    if choice.install_kind in {"linux-cuda", "linux-arm64-cuda"}:
+    if install_kind in {"linux-cuda", "linux-arm64-cuda"}:
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6814,13 +6826,13 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-cuda.so*"],
         ]
-    if choice.install_kind in {"macos-arm64", "macos-x64"}:
+    if install_kind in {"macos-arm64", "macos-x64"}:
         return [
             ["libllama*.dylib"],
             ["libggml*.dylib"],
             ["libmtmd*.dylib"],
         ]
-    if choice.install_kind == "linux-rocm":
+    if install_kind == "linux-rocm":
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6830,7 +6842,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
         ]
-    if choice.install_kind == "linux-vulkan":
+    if install_kind == "linux-vulkan":
         groups = [
             ["libllama-common.so*"],
             ["libllama.so*"],
@@ -6844,12 +6856,12 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-vulkan.so*"],
         ]
-        if choice.source_label == "published":
+        if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server"])
         return groups
-    if choice.install_kind in {"windows-cpu", "windows-arm64"}:
+    if install_kind in {"windows-cpu", "windows-arm64"}:
         return [["llama.dll"]]
-    if choice.install_kind == "windows-cuda":
+    if install_kind == "windows-cuda":
         groups = [["llama.dll"], ["ggml-cuda.dll"]]
         # When the cudart bundle was paired in (#5106) require all
         # three of its DLLs alongside the main archive's payload.
@@ -6859,16 +6871,16 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         # on reinstall forever. The upstream cudart bundle ships
         # cudart64_X.dll + cublas64_X.dll + cublasLt64_X.dll; missing
         # any one of them still breaks GPU initialisation.
-        if choice.runtime_name:
+        if runtime_name:
             groups.append(["cudart64_*.dll"])
             groups.append(["cublas64_*.dll"])
             groups.append(["cublasLt64_*.dll"])
         return groups
-    if choice.install_kind in {"windows-hip", "windows-rocm"}:
+    if install_kind in {"windows-hip", "windows-rocm"}:
         return [["llama.dll"], ["*hip*.dll"]]
-    if choice.install_kind == "windows-vulkan":
+    if install_kind == "windows-vulkan":
         groups = [["llama.dll"], ["ggml-vulkan.dll"]]
-        if choice.source_label == "published":
+        if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
         return groups
     return []
@@ -6880,11 +6892,11 @@ def install_runtime_dir(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "build" / "bin"
 
 
-def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+def _runtime_payload_has(install_dir: Path, host: HostInfo, groups: list[list[str]]) -> bool:
     runtime_dir = install_runtime_dir(install_dir, host)
     if not runtime_dir.exists():
         return False
-    for pattern_group in runtime_payload_health_groups(choice):
+    for pattern_group in groups:
         matched = False
         for pattern in pattern_group:
             if any(runtime_dir.glob(pattern)):
@@ -6895,6 +6907,51 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
     return True
 
 
+def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+    return _runtime_payload_has(
+        install_dir,
+        host,
+        runtime_payload_health_groups(
+            choice.install_kind,
+            source_label = choice.source_label,
+            runtime_name = choice.runtime_name,
+        ),
+    )
+
+
+def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
+    """Whether the tree still has the runtime payload its own marker implies.
+
+    ``runtime_payload_is_healthy`` needs the candidate ``AssetChoice`` and the failure
+    path has none, so ask by install kind instead: take the kinds the marker's recorded
+    backend allows on this host and require what all of them agree on. This is the only
+    payload signal Windows has -- both binary preflights are Linux/macOS-only and
+    ``os.access(X_OK)`` there is just ``exists()`` -- so without it a tree whose
+    ``llama.dll`` went missing (an antivirus quarantine, a partial delete) would be kept
+    and reported as installed even though ``llama-server.exe`` cannot start.
+
+    Kind-specific extras are deliberately not required. The paired cudart trio is gated
+    on ``choice.runtime_name``, which no marker records, and the published Vulkan visual
+    server is backfilled separately; demanding either would spend a source build on a
+    working install. An unreadable backend asks for nothing rather than guessing, for
+    the same reason.
+    """
+    backend = marker_backend(load_prebuilt_metadata(install_dir))
+    platform_prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
+    kinds = sorted(
+        kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
+    )
+    if not kinds:
+        return True
+    # Intersection, not union: a backend maps to more than one kind (rocm to windows-hip
+    # and windows-rocm, cuda to linux-cuda and linux-arm64-cuda) and the marker does not
+    # say which, so require only what every candidate needs.
+    shared = set.intersection(
+        *({tuple(group) for group in runtime_payload_health_groups(kind)} for kind in kinds)
+    )
+    return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
+
+
 def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     """Whether ``install_dir`` holds a llama.cpp the setup scripts would run.
 
@@ -6902,10 +6959,13 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     building: setup.sh reports exit 0 as "prebuilt installed and validated" and
     only its exit-2 recovery re-checks the binaries, so an ``exists()`` pass hands
     back a tree its own ``-x`` reuse gate would have rejected. Same checks
-    ``existing_install_matches_choice`` makes before reusing a tree, minus the
-    release fingerprint: what is kept here is deliberately an older build.
+    ``existing_install_matches_choice`` makes before reusing a tree -- structure,
+    runtime payload, executables, platform load probe -- minus the release
+    fingerprint: what is kept here is deliberately an older build.
     """
     if not _install_tree_is_usable(install_dir, host):
+        return False
+    if not _kept_install_payload_is_healthy(install_dir, host):
         return False
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
