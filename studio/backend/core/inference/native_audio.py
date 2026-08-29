@@ -199,11 +199,15 @@ def _moss_local_codec_target(model_name: str, hf_token: Optional[str] = None) ->
 
 def _higgs_tts2_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve the codec source that the Higgs TTS 2 processor will load."""
+    audio_tokenizer_config = _read_audio_metadata(
+        model_name, "audio_tokenizer_config.json", hf_token, reject_oversized = True
+    )
     processor_config = _read_audio_metadata(
         model_name, "processor_config.json", hf_token, reject_oversized = True
     )
     nested = processor_config.get("audio_tokenizer")
     candidates = (
+        audio_tokenizer_config.get("audio_tokenizer_name_or_path"),
         processor_config.get("audio_tokenizer_name_or_path"),
         nested.get("audio_tokenizer_name_or_path") if isinstance(nested, dict) else None,
     )

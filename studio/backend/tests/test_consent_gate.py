@@ -9,6 +9,7 @@ and fingerprint run for real; only the config/file fetch is stubbed.
 """
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -744,6 +745,39 @@ class TestStructuredFindingsForDialog:
         )
 
         assert targets == [model, companion]
+
+    def test_scan_route_rejects_oversized_audio_metadata_as_bad_request(
+        self, monkeypatch, tmp_path
+    ):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import routes.models as models_route
+        import utils.security as security
+
+        (tmp_path / "config.json").write_text(
+            json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"
+        )
+        (tmp_path / "processor_config.json").write_text(
+            json.dumps({"padding": "x" * 1_000_000}), encoding = "utf-8"
+        )
+        monkeypatch.setattr(models_route, "is_local_path", lambda *_args: True)
+        monkeypatch.setattr(
+            security, "load_scan_target", lambda target, subdirs: (target, subdirs)
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                models_route.scan_model_remote_code(
+                    model_name = str(tmp_path),
+                    hf_token = None,
+                    current_subject = "tester",
+                )
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "security inspection limit" in str(exc_info.value.detail)
 
     def test_scan_route_uses_selected_cached_snapshot(self, monkeypatch, tmp_path):
         import asyncio

@@ -134,7 +134,32 @@ def test_local_higgs_companion_metadata_drives_security_and_download_plans(
     assert [entry["repo_id"] for entry in plan["entries"]] == [codec]
 
 
-def test_oversized_higgs_companion_metadata_fails_closed(tmp_path):
+def test_higgs2_audio_tokenizer_config_takes_runtime_precedence(tmp_path):
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps(
+            {
+                "audio_tokenizer": {
+                    "audio_tokenizer_name_or_path": "acme/processor-codec"
+                }
+            }
+        ),
+        encoding = "utf-8",
+    )
+    (tmp_path / "audio_tokenizer_config.json").write_text(
+        json.dumps({"audio_tokenizer_name_or_path": "acme/standalone-codec"}),
+        encoding = "utf-8",
+    )
+
+    assert native_audio_security_targets(str(tmp_path), "higgs_tts2") == [
+        str(tmp_path),
+        "acme/standalone-codec",
+    ]
+
+
+@pytest.mark.parametrize(
+    "metadata_file", ("processor_config.json", "audio_tokenizer_config.json")
+)
+def test_oversized_higgs_companion_metadata_fails_closed(tmp_path, metadata_file):
     (tmp_path / "config.json").write_text(
         json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"
     )
@@ -142,12 +167,36 @@ def test_oversized_higgs_companion_metadata_fails_closed(tmp_path):
         "audio_tokenizer": {"audio_tokenizer_name_or_path": "acme/unapproved-codec"},
         "padding": "x" * 1_000_000,
     }
-    (tmp_path / "processor_config.json").write_text(json.dumps(metadata), encoding = "utf-8")
+    (tmp_path / metadata_file).write_text(json.dumps(metadata), encoding = "utf-8")
 
     with pytest.raises(ValueError, match = "security inspection limit"):
         native_audio_security_targets(str(tmp_path), "higgs_tts2")
     with pytest.raises(ValueError, match = "security inspection limit"):
         native_audio_download_plan(str(tmp_path))
+
+
+def test_worker_reports_oversized_audio_metadata_as_a_load_error(tmp_path):
+    from core.inference import worker
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"
+    )
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps({"padding": "x" * 1_000_000}), encoding = "utf-8"
+    )
+
+    class Queue:
+        sent = []
+
+        def put(self, message, *_args, **_kwargs):
+            self.sent.append(message)
+
+    queue = Queue()
+    targets = worker._native_audio_security_targets_or_error(str(tmp_path), None, queue)
+
+    assert targets is None
+    assert queue.sent[-1]["type"] == "error"
+    assert "security inspection limit" in queue.sent[-1]["error"]
 
 
 def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch):
