@@ -26,6 +26,17 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
+_CUSTOM_PROMPT_TEMPLATE_ERROR = (
+    "custom_prompt_template is deprecated and unsupported because Studio cannot persist a "
+    "matching template for inference. Pass None to use the default Alpaca template."
+)
+
+
+def _custom_prompt_template_error(custom_prompt_template):
+    if custom_prompt_template is None:
+        return None
+    return _CUSTOM_PROMPT_TEMPLATE_ERROR
+
 
 def _is_mlx_runtime() -> bool:
     try:
@@ -142,7 +153,8 @@ def apply_chat_template_to_dataset(
     Args:
         dataset_info: Output from format_dataset() with metadata
         tokenizer: Tokenizer with chat template
-        custom_prompt_template: Optional string template for custom formatting
+        custom_prompt_template: Deprecated. Non-None values are rejected because Studio cannot
+            persist a matching inference template.
         add_eos_token: If True, append tokenizer.eos_token to each text
         remove_bos_prefix: If True, remove '<bos>' prefix (Gemma, etc.)
         custom_format_mapping: Dict mapping custom columns to standard format
@@ -159,6 +171,16 @@ def apply_chat_template_to_dataset(
 
     warnings = list(dataset_info.get("warnings", []))
     errors = []
+
+    custom_prompt_error = _custom_prompt_template_error(custom_prompt_template)
+    if custom_prompt_error:
+        errors.append(custom_prompt_error)
+        return {
+            "dataset": dataset,
+            "success": False,
+            "warnings": warnings,
+            "errors": errors,
+        }
 
     eos_token = ""
     if add_eos_token:
