@@ -337,9 +337,34 @@ def _argument_fragment(value: Any) -> str:
 
 def _same_json_document(left: str, right: str) -> bool:
     try:
-        return json.loads(left) == json.loads(right)
+        return _same_json_value(json.loads(left), json.loads(right))
     except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
         return False
+
+
+def _same_json_value(left: Any, right: Any) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, (int, float)) or isinstance(right, (int, float)):
+        return (
+            isinstance(left, (int, float))
+            and not isinstance(left, bool)
+            and isinstance(right, (int, float))
+            and not isinstance(right, bool)
+            and left == right
+        )
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_json_value(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_json_value(left[key], right[key]) for key in left
+        )
+    return left == right
 
 
 def _delta_text(content: Any) -> str:
@@ -632,6 +657,7 @@ class _Turn:
                 and not same_stable_call
                 and name_fragment
                 and not args_fragment.strip()
+                and current["function"]["name"]
             ):
                 key = self._new_split_key(index)
                 current = self._new_call(key, index)

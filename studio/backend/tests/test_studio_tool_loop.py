@@ -264,6 +264,92 @@ def test_idless_parallel_calls_reusing_index_zero_execute_separately(executed, c
     ]
 
 
+def test_delayed_id_distinguishes_json_boolean_from_number(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":1}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_boolean",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":true}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    _run(transport)
+
+    assert len(executed) == 2
+    assert executed[0]["arguments"]["query"] == 1
+    assert type(executed[0]["arguments"]["query"]) is int
+    assert executed[1]["arguments"]["query"] is True
+
+
+def test_name_arriving_after_arguments_attaches_to_the_call(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": '{"query":"late-name"}'},
+                            }
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"name": "web_search", "arguments": ""},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "late-name"})
+    ]
+
+
 def test_a_conversation_search_here_gets_the_active_branch(executed):
     """The provider loops share the local paths' tool catalogue.
 
