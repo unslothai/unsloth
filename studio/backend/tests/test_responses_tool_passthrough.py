@@ -230,6 +230,51 @@ class TestToolsTranslation:
         assert len(out) == 1
         assert out[0]["function"]["name"] == "search"
 
+    def test_codex_apply_patch_custom_tool_becomes_a_local_function(self):
+        out = _translate_responses_tools_to_chat(
+            [
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "freeform",
+                    "format": {"type": "grammar", "syntax": "lark", "definition": "start: x"},
+                }
+            ]
+        )
+
+        assert out == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "apply_patch",
+                    "description": (
+                        "Edit files with one complete *** Begin Patch / *** End Patch "
+                        "patch passed in the input field."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "string",
+                                "description": "The complete apply_patch input.",
+                            }
+                        },
+                        "required": ["input"],
+                        "additionalProperties": False,
+                    },
+                    "strict": False,
+                },
+            }
+        ]
+
+    def test_unrelated_custom_tools_stay_unsupported(self):
+        assert (
+            _translate_responses_tools_to_chat(
+                [{"type": "custom", "name": "code_exec", "description": "raw input"}]
+            )
+            is None
+        )
+
     def test_empty_returns_none(self):
         assert _translate_responses_tools_to_chat(None) is None
         assert _translate_responses_tools_to_chat([]) is None
@@ -262,6 +307,15 @@ class TestToolChoiceTranslation:
         assert _translate_responses_tool_choice_to_chat(
             {"type": "function", "name": "get_weather"}
         ) == {"type": "function", "function": {"name": "get_weather"}}
+
+    def test_forced_apply_patch_custom_tool_converted(self):
+        assert _translate_responses_tool_choice_to_chat(
+            {"type": "custom", "name": "apply_patch"}
+        ) == {"type": "function", "function": {"name": "apply_patch"}}
+
+    def test_unrelated_custom_tool_choice_passes_through(self):
+        choice = {"type": "custom", "name": "code_exec"}
+        assert _translate_responses_tool_choice_to_chat(choice) is choice
 
     def test_already_chat_nested_shape_passes_through(self):
         """A client sending the Chat Completions nested shape isn't
