@@ -3312,6 +3312,7 @@ pub fn start_backend(
         return Err(msg);
     }
 
+    cmd.env_remove(STUDIO_RUNTIME_GATE_HANDOFF_ENV);
     cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1");
 
     if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {

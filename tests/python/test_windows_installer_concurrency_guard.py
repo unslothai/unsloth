@@ -990,9 +990,14 @@ def test_runtime_gate_handoff_covers_managed_children():
     studio_source = STUDIO_COMMAND.read_text(encoding = "utf-8")
 
     start = process_source.index("pub fn start_backend(")
-    acquire = process_source.index('cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1")', start)
+    clear_handoff = process_source.index(
+        "cmd.env_remove(STUDIO_RUNTIME_GATE_HANDOFF_ENV)", start
+    )
+    acquire = process_source.index(
+        'cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1")', clear_handoff
+    )
     spawn = process_source.index("cmd.spawn()", acquire)
-    assert acquire < spawn
+    assert clear_handoff < acquire < spawn
 
     prompt = install_source.index("Start Unsloth Studio now?")
     save = install_source.index("$_runtimeGateHandoff =", prompt)
