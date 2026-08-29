@@ -76,6 +76,8 @@ from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
     GenStreamErrorRaised,
+    MINIMAX_MUSIC_MAX_FRAMES,
+    MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
 )
 from core.inference.llama_admission import (
@@ -299,19 +301,17 @@ def _friendly_gen_stream_error(value) -> str:
 def _friendly_upstream_error(text: str) -> str:
     """Rewrite a raw llama-server error body into an actionable message where we can.
 
-    The main case is a tool-calling grammar that llama-server can't compile ("failed to
-    parse grammar" / "failed to initialize samplers"). This surfaces to coding agents as
-    a hard 400 on every tool-bearing turn. It is a llama-server limitation with some
-    model/quant + tool-schema combinations, and recent llama.cpp builds handle the common
-    coding-agent tools, so point the user at updating Unsloth rather than the raw body.
+    A grammar llama-server cannot compile surfaces to coding agents as a hard 400 on
+    every tool-bearing turn, and comes from the request's schemas, not from the model or
+    quant. Other sampler failures keep their own text, which already names what is wrong.
     """
     lowered = text.lower()
-    if "failed to parse grammar" in lowered or "failed to initialize samplers" in lowered:
+    if "failed to parse grammar" in lowered:
         return (
-            "The model couldn't compile a tool-calling grammar for this request. This is a "
-            "llama-server limitation with some model/quant and tool-schema combinations. "
-            "Update Unsloth (it installs the latest llama.cpp, which handles the common "
-            "coding-agent tools) or try a different GGUF model."
+            "The model couldn't compile a grammar for this request. A tool or response_format "
+            "schema in it carries a constraint llama-server's grammar engine cannot compile, "
+            "which does not depend on the model or quant. Update Unsloth, which drops the "
+            "constraints known to break it, and report the schemas if it still fails."
         )
     return f"llama-server error: {text}"
 
@@ -420,26 +420,48 @@ _MIN_SPEECH_OUTPUT_TOKENS = 64
 # back over the context. Generous rather than exact, since the wrapper is chosen deeper
 # than this and 32 tokens off a 2048 context is not worth threading it up here.
 _TTS_PROMPT_FORMAT_RESERVE = 32
+_MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
+# A 24 GB-class card reports slightly less than 24.0 GiB through free-VRAM
+# telemetry even when idle. Keep the admission floor below that value.
+_MINIMAX_MUSIC3_RESIDENT_GB = 23.0
+_MINIMAX_PROMPT_OVERFLOW = _re.compile(r"The assembled prompt has \d+ tokens; the maximum is \d+")
 
 
-def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
+def _tts_max_new_tokens(
+    payload,
+    prompt: Optional[str] = None,
+    *,
+    audio_type: Optional[str] = None,
+    speech_api_default_max_tokens: bool = False,
+) -> int:
     """Bound TTS work consistently across llama.cpp and subprocess backends.
 
     ``prompt`` shares the loaded context with the output, so a Max tokens slider near the
     ceiling plus a long prompt overflowed the context the page loaded with. Capped here so
     both the Unsloth and OpenAI routes inherit it.
     """
+    moss_generation = audio_type in ("moss_tts_local", "moss_tts_nano")
+    context_length = _monitor_context_length() if moss_generation or prompt else None
+    token_ceiling = (
+        context_length or MOSS_TTS_MAX_FRAMES
+        if moss_generation
+        else (
+            MINIMAX_MUSIC_MAX_FRAMES
+            if audio_type == "minimax_music3"
+            else AUDIO_GENERATION_MAX_TOKENS
+        )
+    )
     budget = min(
-        AUDIO_GENERATION_MAX_TOKENS,
+        token_ceiling,
         max(1, int(_effective_max_tokens(payload) or 2048)),
     )
-    if prompt:
-        context_length = _monitor_context_length()
-        if context_length:
-            budget = min(
-                budget,
-                context_length - _prompt_token_estimate(prompt) - _TTS_PROMPT_FORMAT_RESERVE,
-            )
+    if speech_api_default_max_tokens and audio_type == "minimax_music3":
+        budget = min(budget, _MINIMAX_MUSIC3_DEFAULT_FRAMES)
+    if prompt and context_length:
+        budget = min(
+            budget,
+            context_length - _prompt_token_estimate(prompt) - _TTS_PROMPT_FORMAT_RESERVE,
+        )
     # A caller that reached generation with no budget left gets one token and a useless
     # clip; the routes reject that case up front instead.
     return max(1, budget)
@@ -466,6 +488,19 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
         )
 
 
+def _native_tts_prompt_for_budget(
+    text: str, audio_type: Optional[str], instructions: Optional[str], language: Optional[str]
+) -> str:
+    """User-controlled text fields tokenized by native TTS prompt builders."""
+    if audio_type == "higgs_tts2":
+        instructions = instructions or "Audio is recorded from a quiet room."
+    parts = [instructions]
+    if audio_type == "moss_tts_local":
+        parts.append(language)
+    parts.append(text)
+    return "\n".join(str(part) for part in parts if part)
+
+
 def _prompt_token_estimate(prompt: str) -> int:
     """Tokens the prompt will occupy, from the loaded tokenizer where one is reachable.
 
@@ -484,14 +519,10 @@ def _prompt_token_estimate(prompt: str) -> int:
                     return count
     except Exception:  # noqa: BLE001 - an estimate must never fail the request
         pass
-    # llama-server holds its own tokenizer, so estimate by character class instead of a
-    # flat ratio. Everything outside ASCII counts as a token: the earlier cut at U+2E7F
-    # only caught CJK and emoji, so Arabic, Cyrillic, Hebrew and the Indic scripts were
-    # billed at the Latin third-of-a-token rate and a long prompt in any of them passed
-    # the guard, then overflowed the context during generation. Over-counting accented
-    # Latin is the safe direction for a budget: it shortens the clip rather than failing.
-    dense = sum(1 for ch in prompt if ord(ch) > 0x7F)
-    return max(1, dense + (len(prompt) - dense) // 3)
+    # subprocess and llama-server tokenizers are not reachable here. UTF-8 bytes are a
+    # conservative upper bound for their byte-level fallbacks; under-counting can overflow
+    # the loaded context, while over-counting only shortens the requested clip.
+    return max(1, len(prompt.encode("utf-8")))
 
 
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
@@ -8423,6 +8454,12 @@ async def load_model_for_preview(
 
 
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
+    """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
+    16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    if getattr(config, "audio_type", None) in NATIVE_AUDIO_TYPES:
+        return False
     load_in_4bit = requested
     if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
         return load_in_4bit
@@ -11254,6 +11291,225 @@ class _LoadPlacement(NamedTuple):
     resolved_gpu_ids: Optional[List[int]]
     gpu_ids_are_vulkan_ordinals: bool
     diffusion_kind: Optional[bool]
+    native_required_gb: Optional[float] = None
+    native_post_handoff_free_gb: Optional[dict[int, float]] = None
+
+
+class _NativeAudioAvailability(NamedTuple):
+    effective_free_gb: dict[int, float]
+    reclaimable_gpu_gb: dict[int, float]
+    owner_snapshot: tuple[Optional[str], int] = (None, 0)
+
+
+def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
+    """Free VRAM after the outgoing Studio owner is torn down, or ``None``.
+
+    Only memory attributable to a backend this CHAT handoff provably evicts is
+    credited.  Training, STT, export and unknown/external processes remain in
+    the live-used figure.  Missing attribution fails closed.
+    """
+    import utils.hardware as hardware
+    from core.inference.gpu_arbiter import CHAT, DIFFUSION, VIDEO, owner_snapshot
+
+    outgoing_owner = owner_snapshot()
+    owner = outgoing_owner[0]
+    live: dict[int, tuple[float, float]] = {}
+    reclaimable: dict[int, float] = {}
+
+    def _read_live() -> bool:
+        utilization = hardware.get_visible_gpu_utilization()
+        live.clear()
+        for device in utilization.get("devices", []):
+            try:
+                index = int(device["index"])
+                total = float(device["vram_total_gb"])
+                used = float(device["vram_used_gb"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            live[index] = (max(total - used, 0.0), total)
+        return bool(live)
+
+    def _merge_report(reported) -> bool:
+        if not isinstance(reported, dict):
+            return False
+        try:
+            parsed = {
+                int(index): max(float(value), 0.0)
+                for index, value in reported.items()
+                if int(index) in live
+            }
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if any(value >= 1_000_000 for value in parsed.values()):
+            return False
+        for index, value in parsed.items():
+            reclaimable[index] = reclaimable.get(index, 0.0) + value
+        return True
+
+    if owner == CHAT:
+        # Both standard inference and llama-server run in disposable processes.
+        # The Python worker returns its owner bytes with the system reading under
+        # one admission fence. llama-server contributes only its stable startup
+        # model-buffer floor, so changing KV/compute allocations remain charged.
+        backend = get_inference_backend()
+        worker_snapshot = None
+        if getattr(backend, "active_model_name", None):
+            worker_snapshot = getattr(backend, "post_handoff_gpu_availability_gb", lambda: None)()
+        if worker_snapshot is not None:
+            free_by_index, total_by_index, worker_reclaimable = worker_snapshot
+            live = {
+                int(index): (float(free), float(total_by_index[index]))
+                for index, free in free_by_index.items()
+                if index in total_by_index
+            }
+            if not live:
+                return None
+            _merge_report(worker_reclaimable)
+        elif not _read_live():
+            return None
+        llama_backend = get_llama_cpp_backend()
+        if getattr(llama_backend, "is_loaded", False):
+            _merge_report(getattr(llama_backend, "reclaimable_gpu_memory_gb", lambda: None)())
+    elif owner in (DIFFUSION, VIDEO):
+        # Diffusers/Video normally live in this process; native sd.cpp instead
+        # contributes a child-process startup floor below. Hold the backend's
+        # generation barrier across both readings so a denoise cannot free
+        # activations between them and make the same bytes look free and
+        # reclaimable at once.
+        if owner == DIFFUSION:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            media_backend = get_active_diffusion_engine()
+        else:
+            from core.inference.video import get_video_backend
+            media_backend = get_video_backend()
+        generate_lock = getattr(media_backend, "_generate_lock", None)
+        state_lock = getattr(media_backend, "_lock", None)
+        if generate_lock is None or state_lock is None:
+            return None
+        acquired = generate_lock.acquire(blocking = False)
+        if not acquired:
+            return None
+        try:
+            with state_lock:
+                # begin_load publishes this before its background worker can
+                # replace the old state. The arbiter owner/epoch does not change
+                # again at commit, so sampling the old state here would let a
+                # smaller same-owner replacement spend bytes it no longer owns.
+                if getattr(media_backend, "_loading", None) is not None:
+                    return None
+                if owner == DIFFUSION and (
+                    getattr(media_backend, "_pending_server", None) is not None
+                    or int(getattr(media_backend, "_stopping_servers", 0) or 0) > 0
+                ):
+                    return None
+                state = getattr(media_backend, "_state", None)
+                if state is None or not _read_live():
+                    return None
+                if hasattr(state, "server"):
+                    # Native sd.cpp owns VRAM in a child process. Only its
+                    # stable startup parameter floor is attributable; the
+                    # parent torch allocator says nothing about that process.
+                    server = getattr(state, "server", None)
+                    if (
+                        server is None
+                        or getattr(media_backend, "_cpu_backend_forced", False)
+                        or "--offload-to-cpu" in tuple(getattr(state, "offload_flags", ()) or ())
+                    ):
+                        return None
+                    reported = getattr(server, "reclaimable_params_vram_gb", lambda _gpu: None)(
+                        getattr(state, "physical_gpu_id", None)
+                    )
+                    if not _merge_report(reported):
+                        return None
+                else:
+                    import torch
+
+                    device_type = hardware.get_device()
+                    if device_type == hardware.DeviceType.CUDA:
+                        device_module = torch.cuda
+                    elif device_type == hardware.DeviceType.XPU:
+                        device_module = torch.xpu
+                    else:
+                        return None
+                    memory_reserved = getattr(device_module, "memory_reserved", None)
+                    device_count = int(device_module.device_count())
+                    if not callable(memory_reserved) or device_count <= 0:
+                        return None
+                    physical_ids = hardware.get_parent_visible_gpu_ids()
+                    if not physical_ids:
+                        physical_ids = sorted(live) if len(live) == device_count else None
+                    if not physical_ids or len(physical_ids) < device_count:
+                        return None
+                    reclaimable = {
+                        int(physical_ids[ordinal]): max(
+                            int(memory_reserved(ordinal)) / float(1024**3), 0.0
+                        )
+                        for ordinal in range(device_count)
+                    }
+        except Exception as exc:
+            logger.warning("Could not attribute resident media GPU memory: %s", exc)
+            return None
+        finally:
+            generate_lock.release()
+    else:
+        return None
+
+    # A concurrent media handoff or unload invalidates which process/state this
+    # load will tear down.  Fail closed rather than crediting a former owner.
+    if owner_snapshot() != outgoing_owner:
+        return None
+    if not any(value > 0 for value in reclaimable.values()):
+        return None
+    return _NativeAudioAvailability(
+        effective_free_gb = {
+            index: min(free + reclaimable.get(index, 0.0), total)
+            for index, (free, total) in live.items()
+        },
+        reclaimable_gpu_gb = reclaimable,
+        owner_snapshot = outgoing_owner,
+    )
+
+
+def _wait_for_native_audio_gpu_free_gb(
+    gpu_index: int,
+    required_gb: float,
+    *,
+    max_wait: float = 5.0,
+    interval: float = 0.25,
+) -> bool:
+    """Wait until an evicted media backend's credited VRAM is actually free."""
+    from utils.hardware import get_visible_gpu_utilization
+
+    deadline = time.monotonic() + max(max_wait, 0.0)
+    while True:
+        try:
+            devices = get_visible_gpu_utilization().get("devices", [])
+            for device in devices:
+                if int(device["index"]) != int(gpu_index):
+                    continue
+                total = float(device["vram_total_gb"])
+                used = float(device["vram_used_gb"])
+                if max(total - used, 0.0) >= required_gb:
+                    return True
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval, remaining))
+
+
+async def _unload_llama_before_standard_load(llama_backend) -> None:
+    """Tear down llama-server and wait for asynchronous driver VRAM reclaim."""
+    if not llama_backend.is_loaded:
+        return
+    logger.info("Unloading GGUF model before loading Unsloth model")
+    kill_started = time.monotonic()
+    await asyncio.to_thread(llama_backend.unload_model)
+    await asyncio.to_thread(
+        llama_backend._wait_for_vram_settle,
+        since_kill = kill_started,
+    )
 
 
 def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
@@ -11442,6 +11698,143 @@ async def _prepare_load_placement(
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
+async def _preflight_native_audio_placement(
+    config: ModelConfig, request: LoadRequest | ValidateModelRequest, placement: _LoadPlacement
+) -> _LoadPlacement:
+    """Resolve native-audio placement before a resident model can be evicted."""
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    audio_type = getattr(config, "audio_type", None)
+    if audio_type not in NATIVE_AUDIO_TYPES:
+        return placement
+    if getattr(config, "is_lora", False):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Native audio LoRA adapters are not supported yet. "
+                "Load a merged checkpoint instead."
+            ),
+        )
+    if audio_type in ("higgs_tts2", "higgs_tts3") and sys.version_info < (3, 10):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
+        )
+
+    automatic = not placement.requested_gpu_ids
+    availability = (
+        await asyncio.to_thread(_native_audio_post_handoff_free_gb) if automatic else None
+    )
+
+    def _resolve() -> tuple[Optional[List[int]], Optional[float], Optional[dict[int, float]]]:
+        import utils.hardware as hardware
+        from core.inference.native_audio import (
+            native_audio_kv_memory_gb,
+            native_audio_security_targets,
+        )
+
+        device = hardware.get_device()
+        if audio_type == "minimax_music3":
+            if device != hardware.DeviceType.CUDA or hardware.IS_ROCM:
+                raise ValueError(
+                    "MiniMax Music 3 requires an NVIDIA CUDA GPU in its official local runtime."
+                )
+            if sys.version_info < (3, 10):
+                raise ValueError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")
+        if device not in (hardware.DeviceType.CUDA, hardware.DeviceType.XPU):
+            if placement.requested_gpu_ids:
+                raise ValueError(
+                    "Native audio GPU selection is only supported on CUDA and Intel XPU."
+                )
+            return None, None, None
+
+        model_source = getattr(config, "path", None) or config.identifier
+        targets = list(
+            dict.fromkeys(
+                native_audio_security_targets(
+                    model_source,
+                    audio_type,
+                    request.hf_token,
+                )
+            )
+        )
+        # The published repo is about 67 GB, but the official BF16 modular
+        # pipeline is resident on one 24 GB CUDA device. Using repository bytes
+        # here makes auto-placement select several GPUs and the single-device
+        # native backend then rejects a model that fits one supported card.
+        required_gb = _MINIMAX_MUSIC3_RESIDENT_GB if audio_type == "minimax_music3" else None
+        if len(targets) > 1:
+            required_gb = 0.0
+            for target in targets:
+                target_required_gb, _metadata = hardware.estimate_required_model_memory_gb(
+                    target,
+                    hf_token = request.hf_token,
+                    training_type = None,
+                    load_in_4bit = False,
+                    max_seq_length = request.max_seq_length,
+                )
+                if target_required_gb is None:
+                    raise ValueError(
+                        f"Could not estimate GPU memory for native audio component '{target}'."
+                    )
+                required_gb += target_required_gb
+            required_gb += native_audio_kv_memory_gb(
+                model_source,
+                audio_type,
+                request.hf_token,
+            )
+        resolved, metadata = hardware.prepare_gpu_selection(
+            placement.requested_gpu_ids,
+            model_name = config.identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = False,
+            max_seq_length = request.max_seq_length,
+            required_override_gb = required_gb,
+        )
+        post_handoff_free_gb = None
+        if required_gb is None:
+            required_gb = metadata.get("required_gb")
+        if metadata.get("selection_mode") == "fallback_all":
+            candidates = set(resolved or ())
+            fitting = sorted(
+                (
+                    (index, free_gb)
+                    for index, free_gb in (
+                        availability.effective_free_gb if availability is not None else {}
+                    ).items()
+                    if index in candidates and required_gb is not None and free_gb >= required_gb
+                ),
+                key = lambda item: (-item[1], item[0]),
+            )
+            if not fitting:
+                raise ValueError(
+                    "No single GPU has enough free memory for this native audio model. "
+                    "Select a GPU with enough free memory and try again."
+                )
+            resolved = [fitting[0][0]]
+        if automatic and availability is not None and resolved and len(resolved) == 1:
+            selected_gpu = resolved[0]
+            reported = availability.effective_free_gb.get(selected_gpu)
+            if reported is not None:
+                post_handoff_free_gb = {selected_gpu: reported}
+        if resolved and len(resolved) > 1:
+            raise ValueError(
+                "Native audio models currently require one GPU. Select a single GPU; "
+                "multi-GPU sharding is not supported yet."
+            )
+        return resolved, required_gb, post_handoff_free_gb
+
+    try:
+        resolved, required_gb, post_handoff_free_gb = await asyncio.to_thread(_resolve)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return placement._replace(
+        resolved_gpu_ids = resolved,
+        native_required_gb = required_gb,
+        native_post_handoff_free_gb = post_handoff_free_gb,
+    )
+
+
 def _inherited_batch_flags_stripped(request) -> bool:
     """Whether inheriting the resident extras drops a -b / -ub a set field supersedes.
 
@@ -11573,7 +11966,7 @@ def _guard_chat_load_against_training(
     placement: _LoadPlacement,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
-) -> None:
+) -> Optional[dict[str, Any]]:
     """Protect active training from automatically placed chat-model loads.
 
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -11721,8 +12114,9 @@ def _guard_chat_load_against_training(
             except Exception as e:
                 logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
 
-    required_override_gb = (
-        _estimate_gguf_required_gb(
+    required_override_gb = placement.native_required_gb
+    if is_gguf:
+        required_override_gb = _estimate_gguf_required_gb(
             config,
             hf_token = request.hf_token,
             max_seq_length = request.max_seq_length,
@@ -11743,9 +12137,6 @@ def _guard_chat_load_against_training(
             # hands this guard a bare request double that does not carry the field.
             disable_vision = bool(getattr(request, "disable_vision", False)),
         )
-        if is_gguf
-        else None
-    )
     # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
     # split the loader would drop was nulled above). Unknown classification keeps the full
     # estimate: its header was unreadable, so the layer count is too.
@@ -11775,6 +12166,22 @@ def _guard_chat_load_against_training(
             # GGUF while training runs.
             vulkan_free_vram_gb = {}
 
+    native_post_handoff_free_gb = placement.native_post_handoff_free_gb
+    if native_post_handoff_free_gb is not None:
+        # Revalidate as one atomic post-handoff capacity snapshot.  Combining a
+        # fresh free-memory read with older owner bytes can count a reset cache
+        # twice, so the training policy consumes this value directly.
+        availability = _native_audio_post_handoff_free_gb()
+        selected = list(placement.resolved_gpu_ids or ())
+        if availability is None or len(selected) != 1:
+            native_post_handoff_free_gb = None
+        else:
+            selected_gpu = selected[0]
+            effective_free = availability.effective_free_gb.get(selected_gpu)
+            native_post_handoff_free_gb = (
+                {selected_gpu: effective_free} if effective_free is not None else None
+            )
+
     ok, info = can_load_chat_during_training(
         model_name = getattr(config, "identifier", request.model_path),
         hf_token = request.hf_token,
@@ -11786,9 +12193,10 @@ def _guard_chat_load_against_training(
         vulkan_free_vram_gb = vulkan_free_vram_gb,
         required_override_gb = required_override_gb,
         single_device_gpu = diffusion_gpu,
+        post_handoff_free_gpu_vram_gb = native_post_handoff_free_gb,
     )
     if ok:
-        return
+        return info
 
     usable = info.get("usable_gb")
     needed = info.get("needed_gb")
@@ -12654,7 +13062,14 @@ async def _load_model_impl(
 
         # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the load is known viable; the
         # already-loaded fast paths below re-assert CHAT themselves. Deferred past validation so a doomed load evicts nothing.
-        from core.inference.gpu_arbiter import acquire_for, current_owner, release, CHAT
+        from core.inference.gpu_arbiter import (
+            acquire_for,
+            current_owner,
+            release,
+            CHAT,
+            DIFFUSION,
+            VIDEO,
+        )
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = await asyncio.to_thread(get_inference_backend)
@@ -12932,19 +13347,24 @@ async def _load_model_impl(
                     "architectures)"
                 )
 
+        placement = await _preflight_native_audio_placement(config, request, placement)
+
+        async def _guard_training(guard_placement: _LoadPlacement):
+            return await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                _guard_chat_load_against_training,
+                config,
+                request,
+                load_in_4bit = effective_load_in_4bit,
+                placement = guard_placement,
+                llama_extra_args = extra_llama_args,
+                n_parallel = _n_parallel,
+            )
+
         # Apply the training coexistence policy before the unload step below
         # frees the resident model. Off-loop and guarded: the guard does sync HF work.
-        await asyncio.to_thread(
-            _offline_guarded,
-            (model_identifier, config.identifier, getattr(config, "base_model", None)),
-            _guard_chat_load_against_training,
-            config,
-            request,
-            load_in_4bit = effective_load_in_4bit,
-            placement = placement,
-            llama_extra_args = extra_llama_args,
-            n_parallel = _n_parallel,
-        )
+        initial_training_info = await _guard_training(placement)
 
         # Mark the load and refuse one the download manager already owns BEFORE the eviction below: this 409 leaves nothing
         # loaded. It runs after argument inheritance, since a carried --no-mmproj changes the companion requirement.
@@ -13030,14 +13450,88 @@ async def _load_model_impl(
             if _host_offload_warning:
                 logger.warning("Loading an oversized GGUF: %s", _host_offload_warning)
 
-        if chat_load_needs_gpu:
-            gpu_acquire_kwargs = {} if allow_gpu_owner_eviction else {"allow_evict": False}
-            await asyncio.to_thread(
-                acquire_for,
-                CHAT,
-                lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
-                **gpu_acquire_kwargs,
+        expected_native_owner = None
+        post_media_handoff_gpu = None
+        post_media_handoff_needed_gb = None
+        post_chat_handoff_expected_free_gb = None
+        if chat_load_needs_gpu and placement.native_post_handoff_free_gb is not None:
+            # This model was admitted using memory owned by the outgoing backend.
+            # Refresh immediately before the arbiter handoff, then bind the
+            # snapshot's epoch to the eviction so a same-owner media replacement
+            # cannot swap in a smaller model between check and teardown.
+            final_availability = await asyncio.to_thread(_native_audio_post_handoff_free_gb)
+            selected = list(placement.resolved_gpu_ids or ())
+            required = placement.native_required_gb
+            if final_availability is None or len(selected) != 1 or required is None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "GPU residency changed while preparing this audio model. Retry the load.",
+                )
+            selected_gpu = selected[0]
+            effective_free = final_availability.effective_free_gb.get(selected_gpu)
+            if effective_free is None or effective_free < required:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "GPU residency changed and the audio model no longer fits. Retry the load.",
+                )
+            final_placement = placement._replace(
+                native_post_handoff_free_gb = {selected_gpu: effective_free}
             )
+            final_training_info = await _guard_training(final_placement)
+            expected_native_owner = final_availability.owner_snapshot
+            post_handoff_needed_gb = float(
+                (final_training_info or initial_training_info or {}).get("needed_gb") or required
+            )
+            if expected_native_owner[0] in (DIFFUSION, VIDEO):
+                post_media_handoff_gpu = selected_gpu
+                post_media_handoff_needed_gb = post_handoff_needed_gb
+            elif expected_native_owner[0] == CHAT:
+                post_chat_handoff_expected_free_gb = {selected_gpu: post_handoff_needed_gb}
+
+        if chat_load_needs_gpu:
+            try:
+                handoff_kwargs = {}
+                if expected_native_owner is not None:
+                    handoff_kwargs["expected_current"] = expected_native_owner
+                if not allow_gpu_owner_eviction:
+                    handoff_kwargs["allow_evict"] = False
+                await asyncio.to_thread(
+                    acquire_for,
+                    CHAT,
+                    lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
+                    **handoff_kwargs,
+                )
+            except Exception as exc:
+                from core.inference.gpu_arbiter import OwnerChangedError
+                if isinstance(exc, OwnerChangedError):
+                    raise HTTPException(status_code = 409, detail = str(exc)) from exc
+                raise
+            if post_media_handoff_gpu is not None and post_media_handoff_needed_gb is not None:
+                settled = await asyncio.to_thread(
+                    _wait_for_native_audio_gpu_free_gb,
+                    post_media_handoff_gpu,
+                    post_media_handoff_needed_gb,
+                )
+                if not settled:
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "GPU memory was not released after the resident media model "
+                            "was stopped. Retry the audio-model load."
+                        ),
+                    )
+                # The outgoing media allocation is gone now. Re-run the training
+                # policy against live free VRAM only, so a concurrent training
+                # change cannot hide behind the earlier reclaimable snapshot.
+                live_placement = placement._replace(
+                    # Automatic selection is already fixed at this point. Bind
+                    # the live-only training recheck to that exact card, or a
+                    # roomy second GPU could approve a load that still targets
+                    # a now-constrained first GPU.
+                    requested_gpu_ids = [post_media_handoff_gpu],
+                    native_post_handoff_free_gb = None,
+                )
+                await _guard_training(live_placement)
         else:
             # The marker still goes up (the download-manager handshake reads it, and it keeps this load cancellable). A stale CHAT claim is dropped AFTER the load.
             gguf_load_stack.enter_context(chat_load_in_flight())
@@ -13249,16 +13743,14 @@ async def _load_model_impl(
         _set_preview_resident(None)
         # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
         # 160s and on-loop would block _tunnel_safe_json's own padding.
-        if llama_backend.is_loaded:
-            logger.info("Unloading GGUF model before loading Unsloth model")
-            try:
-                await asyncio.to_thread(llama_backend.unload_model)
-            except Exception:
-                # This teardown runs after the marker was cleared above; if it raises with
-                # the prior preview-owned GGUF still resident, restore its ownership so a
-                # later preview for another checkpoint is not 503'd against it.
-                _restore_marker_if_prior_preview_still_resident()
-                raise
+        try:
+            await _unload_llama_before_standard_load(llama_backend)
+        except Exception:
+            # This teardown runs after the marker was cleared above; if it raises with
+            # the prior preview-owned GGUF still resident, restore its ownership so a
+            # later preview for another checkpoint is not 503'd against it.
+            _restore_marker_if_prior_preview_still_resident()
+            raise
 
         # Shut down any export subprocess to free VRAM
         try:
@@ -13293,11 +13785,16 @@ async def _load_model_impl(
                 hf_token = request.hf_token,
                 trust_remote_code = request.trust_remote_code,
                 approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-                gpu_ids = placement.requested_gpu_ids,
+                gpu_ids = (
+                    placement.resolved_gpu_ids
+                    if placement.resolved_gpu_ids is not None
+                    else placement.requested_gpu_ids
+                ),
                 subject = current_subject,
                 mlx_kv_bits = request.mlx_kv_bits,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
+                post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
@@ -13770,10 +14267,15 @@ async def validate_model(
                 ):
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        placement = await _preflight_native_audio_placement(config, request, placement)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.
-        security_targets = [config.identifier]
+        from core.inference.native_audio import native_audio_security_targets
+
+        security_targets = native_audio_security_targets(
+            config.identifier, getattr(config, "audio_type", None), request.hf_token
+        )
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -15578,12 +16080,29 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
 
-_TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(("snac", "csm", "bicodec", "dac"))
+_TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
+    (
+        "snac",
+        "csm",
+        "bicodec",
+        "dac",
+        "higgs_tts2",
+        "moss_tts_local",
+        "moss_tts_nano",
+        "higgs_tts3",
+        "minimax_music3",
+    )
+)
 _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
 
 
 async def _generate_tts_wav(
-    text: str, payload: ChatCompletionRequest, request: Request, current_subject: str
+    text: str,
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str,
+    *,
+    speech_api_default_max_tokens: bool = False,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
@@ -15611,6 +16130,7 @@ async def _generate_tts_wav(
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
     _audio_cancel = threading.Event()
+    prompt_for_budget = text
 
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
@@ -15631,7 +16151,12 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _tts_max_new_tokens(payload, text),
+            max_new_tokens = _tts_max_new_tokens(
+                payload,
+                prompt_for_budget,
+                audio_type = audio_type,
+                speech_api_default_max_tokens = speech_api_default_max_tokens,
+            ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
         )
@@ -15652,10 +16177,18 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _tts_max_new_tokens(payload, text),
+            max_new_tokens = _tts_max_new_tokens(
+                payload,
+                prompt_for_budget,
+                audio_type = audio_type,
+                speech_api_default_max_tokens = speech_api_default_max_tokens,
+            ),
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
             cancel_event = _audio_cancel,
+            instructions = payload.audio_instructions,
+            language = payload.audio_language,
+            seed = payload.seed,
         )
 
     if audio_type not in supported_audio_types:
@@ -15663,6 +16196,19 @@ async def _generate_tts_wav(
             status_code = 400,
             detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
         )
+    if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
+        raise HTTPException(
+            status_code = 400,
+            detail = "MiniMax Music 3 requires a music description in addition to lyrics.",
+        )
+    if audio_type in ("higgs_tts2", "moss_tts_local"):
+        prompt_for_budget = _native_tts_prompt_for_budget(
+            text,
+            audio_type,
+            payload.audio_instructions,
+            payload.audio_language,
+        )
+        _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget)
 
     # Audio-capable backend confirmed. The middleware claims the slot on a 2xx, so no claim
     # here: claiming before the audio backend runs could strand a preview-owned checkpoint
@@ -15700,6 +16246,8 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
+            if audio_type == "minimax_music3" and _MINIMAX_PROMPT_OVERFLOW.fullmatch(str(e)):
+                raise HTTPException(status_code = 400, detail = str(e))
             logger.error(f"Audio generation error: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
         finally:
@@ -15743,6 +16291,33 @@ def _persist_tts_clip(
     except Exception as exc:  # noqa: BLE001 - log and serve the audio anyway
         logger.warning("audio_gallery.persist_failed: %s", exc)
         return None
+
+
+@studio_router.post("/audio/download-plan", response_model = DiffusionDownloadPlanResponse)
+async def audio_download_plan(
+    request: LoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Stage native-audio checkpoints and companion codecs through Download Manager."""
+    from core.inference.native_audio import native_audio_download_plan
+    from utils.native_path_leases import redact_native_paths
+
+    try:
+        plan = await asyncio.to_thread(
+            native_audio_download_plan,
+            request.model_path,
+            request.hf_token,
+        )
+        return DiffusionDownloadPlanResponse(**plan)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+    except Exception as exc:  # noqa: BLE001 - Hub/API failures become a useful picker error
+        logger.warning("audio.download_plan_failed: %s", exc)
+        raise HTTPException(
+            status_code = 502,
+            detail = redact_native_paths(
+                f"Could not prepare the audio model download: {safe_error_detail(exc)}"
+            ),
+        ) from exc
 
 
 @router.post("/audio/generate")
@@ -15875,6 +16450,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
             voice = external_voice,
             response_format = (body.response_format or "wav").strip().lower(),
             speed = body.speed,
+            instructions = body.instructions,
         )
     )
     disconnect_watcher = asyncio.create_task(
@@ -15906,14 +16482,24 @@ async def openai_audio_speech(
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
     With ``provider_id`` the request is proxied to that connection, forwarding
-    model/voice/speed. Otherwise the loaded model is used: ``model`` is informational,
+    model/voice/speed/instructions. Otherwise the loaded model is used: ``model`` is informational,
     ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
     a 400 rather than a silent container mismatch."""
     if body.provider_id:
+        fmt = (body.response_format or "wav").strip().lower()
+        if fmt != "wav":
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Unsupported response_format '{body.response_format}' for an external "
+                    "TTS connection. Only 'wav' is supported."
+                ),
+            )
         # This branch never touches the local GGUF. Drop it before any monitor or
         # upstream await so slow external speech cannot block a local swap/training
         # start or reset the local model's idle timer.
         from core.inference.llama_keepwarm import untrack_current_request
+
         untrack_current_request(request.scope)
         # A saved TTS connection is still media traffic through this server,
         # just like the proxied STT path below. Keep it visible in the monitor
@@ -15932,9 +16518,9 @@ async def openai_audio_speech(
             detail = f"Unsupported response_format '{body.response_format}'. Only 'wav' is supported.",
         )
     # The tts core reads its sampling knobs from a chat request shape; defaults apply here.
-    # max_tokens is set explicitly because the OpenAI CreateSpeech shape has no field for it,
-    # so the chat default of 2048 would silently truncate any input past ~30s of speech and
-    # still return HTTP 200 with a short WAV.
+    # Keep the full speech ceiling unless a client supplies the native max_new_tokens
+    # extension. MiniMax gets its documented 750-frame default deeper in the shared core;
+    # its adapter converts that frame budget into a 30-second duration upper bound.
     # Unlike the Audio page, which loads with headroom for both, this route is reachable
     # after any /api/inference/load, including the default max_seq_length=0 that becomes
     # 2048. Asking for the full ceiling against that context overflows or truncates, so
@@ -15942,7 +16528,10 @@ async def openai_audio_speech(
     # The over-context check lives in _generate_tts_wav, so both routes share it.
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": body.input}],
-        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+        max_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS,
+        audio_instructions = body.instructions,
+        audio_language = body.language,
+        seed = body.seed,
     )
     # model is informational and is echoed verbatim into the row, so a failure before the
     # relabel below would strand the raw client string, possibly a host path, on a terminal
@@ -15954,7 +16543,11 @@ async def openai_audio_speech(
         subject = current_subject,
     ) as monitor_id:
         wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
-            body.input, payload, request, current_subject
+            body.input,
+            payload,
+            request,
+            current_subject,
+            speech_api_default_max_tokens = body.max_new_tokens is None,
         )
         api_monitor.relabel(monitor_id, model_name)
         await asyncio.to_thread(
@@ -22924,6 +23517,12 @@ def _openai_model_objects() -> list[dict]:
         _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
         if _native_ctx is not None:
             entry["native_context_length"] = _native_ctx
+        # The same gate /v1/audio/speech applies: _audio_type alone also matches whisper
+        # (ASR) and audio_vlm (Gemma 3n chat), which that route rejects with a 400.
+        if getattr(llama_backend, "_is_audio", False) and (
+            getattr(llama_backend, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
+        ):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     # Check Unsloth backend
@@ -22948,6 +23547,12 @@ def _openai_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
+        if (
+            not model_info.get("is_mlx")
+            and model_info.get("is_audio")
+            and (model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES)
+        ):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     return models
@@ -23018,6 +23623,264 @@ def _catalog_lock() -> asyncio.Lock:
         return lock
 
 
+def _classified_catalog(models: list) -> list:
+    from hub.services.models.catalog_classification import _local_model_classification
+
+    classified = []
+    for model in models:
+        if getattr(model, "task", None) is None and hasattr(model, "model_copy"):
+            try:
+                task, audio_type = _local_model_classification(model)
+                model = model.model_copy(update = {"task": task, "audio_type": audio_type})
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "model task classification failed for %s: %s", getattr(model, "id", "?"), exc
+                )
+        classified.append(model)
+    return classified
+
+
+_MEDIA_MODEL_TASKS = ("text-to-image", "text-to-video")
+_STT_MODEL_TASK = "automatic-speech-recognition"
+_TTS_MODEL_TASK = "text-to-speech"
+
+
+def _media_owner(task: str) -> str:
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    return DIFFUSION if task == "text-to-image" else VIDEO
+
+
+def _resident_media_status(task: str) -> Optional[dict]:
+    from core.inference.media_keepwarm import engine_if_imported
+    try:
+        engine = engine_if_imported(_media_owner(task))
+        status = engine.status() if engine is not None else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("%s status unavailable for /v1/models: %s", task, exc)
+        return None
+    return status if status and status.get("loaded") else None
+
+
+_MEDIA_PICK_CACHE: dict = {"at": None, "picks": {}}
+_MEDIA_PICK_CACHE_LOCK = threading.Lock()
+
+
+def _validated_media_picks(catalog_at: float) -> dict:
+    """The (id, pick) rows per task, rebuilt only when the shared catalog scan is replaced.
+
+    Each media index keeps its own short TTL and its own ``collect_local_models`` walk, so
+    resolving them per request made an otherwise-cached /v1/models pay two extra full
+    scans. The Settings usage examples poll this endpoint, so that cost repeats.
+    """
+    if _MEDIA_PICK_CACHE["at"] == catalog_at:
+        return _MEDIA_PICK_CACHE["picks"]
+    with _MEDIA_PICK_CACHE_LOCK:
+        if _MEDIA_PICK_CACHE["at"] == catalog_at:
+            return _MEDIA_PICK_CACHE["picks"]
+        from core.inference.media_locality import is_edit_only, missing_download_bytes
+        from core.inference.media_model_index import (
+            available_media_model_ids,
+            resolve_local_media_model,
+        )
+
+        picks: dict = {}
+        for task in _MEDIA_MODEL_TASKS:
+            rows = []
+            for model_id in available_media_model_ids(task):
+                pick = resolve_local_media_model(model_id, task = task)
+                if pick is None:
+                    continue
+                # The local catalog tags an instruction-editing checkpoint text-to-image, but it
+                # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
+                # is refused by /v1/images/generations too.
+                if task == "text-to-image" and is_edit_only(pick):
+                    continue
+                try:
+                    local = missing_download_bytes(_media_owner(task), pick) == 0
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("media locality unavailable for %s: %s", model_id, exc)
+                    local = False
+                rows.append((model_id, pick, local))
+            picks[task] = rows
+        _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
+        return picks
+
+
+def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list[dict]:
+    """Downloaded image/video models, as the generation resolver actually sees them.
+
+    Built from the media index rather than the raw catalog, because that index is what
+    /v1/images/generations and /v1/videos resolve a name against: it drops partial pulls,
+    directories no loader can open, and builds a sibling quant cannot be told apart from.
+    Anything it rejects would be advertised here and then answered with model_not_found.
+
+    Residency goes through ``resident_is_pick`` for the same reason. A standalone GGUF
+    loads with its parent directory as the model path and an HF cache repo with its
+    snapshot directory, so comparing the public id or the catalog's own path reports the
+    resident model as unloaded. Residency is read per request; only the scan is cached.
+    """
+    from core.inference.media_model_index import (
+        partition_matches,
+        resident_is_gguf,
+        satisfied_by,
+    )
+    from hub.utils.gguf import extract_quant_token
+
+    display_by_id: dict[str, str] = {}
+    for info in catalog:
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        display = getattr(info, "display_name", None)
+        if cid and display:
+            display_by_id.setdefault(cid, display)
+
+    picks_by_task = _validated_media_picks(catalog_at)
+    objects: list[dict] = []
+    for task in _MEDIA_MODEL_TASKS:
+        status = _resident_media_status(task)
+        for model_id, pick, local in picks_by_task.get(task, ()):
+            loaded = bool(status) and satisfied_by(status, model_id, pick)
+            if not loaded and not local:
+                continue
+            obj = {
+                "id": model_id,
+                "object": "model",
+                "created": created,
+                "owned_by": _OWNED_BY,
+                "task": task,
+                "loaded": loaded,
+            }
+            quant = (status.get("gguf_variant") if loaded else None) or (
+                extract_quant_token(pick.gguf_filename) if pick.gguf_filename else None
+            )
+            if quant:
+                obj["quant"] = quant
+            display = display_by_id.get(model_id)
+            if display:
+                obj["display_name"] = display
+            objects.append(obj)
+        resident_id = str((status or {}).get("repo_id") or "").strip()
+        resident_workflows = (status or {}).get("workflows") or ()
+        if (
+            status
+            and resident_id
+            and not resident_is_gguf(status)
+            and partition_matches(status)
+            and (
+                task != "text-to-image" or not resident_workflows or "txt2img" in resident_workflows
+            )
+            and public_model_id(resident_id) == resident_id
+            and not any(obj["id"].lower() == resident_id.lower() for obj in objects)
+        ):
+            objects.append(
+                {
+                    "id": resident_id,
+                    "object": "model",
+                    "created": created,
+                    "owned_by": _OWNED_BY,
+                    "task": task,
+                    "loaded": True,
+                }
+            )
+    return objects
+
+
+_CUSTOM_STT_CACHE: dict = {"at": None, "ids": ()}
+_CUSTOM_STT_CACHE_LOCK = threading.Lock()
+
+
+def _downloaded_custom_stt_ids(catalog_at: Optional[float]) -> tuple[str, ...]:
+    if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+        return _CUSTOM_STT_CACHE["ids"]
+    with _CUSTOM_STT_CACHE_LOCK:
+        if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+            return _CUSTOM_STT_CACHE["ids"]
+        from core.inference import stt_sidecar
+        from hub.services.models.cache_inventory import _scan_cached_models
+
+        try:
+            ids = tuple(
+                sorted(
+                    row["repo_id"]
+                    for row in _scan_cached_models()
+                    if row.get("task") == _STT_MODEL_TASK
+                    and not row.get("partial")
+                    and isinstance(row.get("repo_id"), str)
+                    and stt_sidecar.is_model_downloaded(row["repo_id"])
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("custom stt cache scan unavailable for /v1/models: %s", exc)
+            ids = ()
+        _CUSTOM_STT_CACHE.update(at = catalog_at, ids = ids)
+        return ids
+
+
+def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list[dict]:
+    """Downloaded speech-to-text models this endpoint's own route can actually serve.
+
+    /v1/audio/transcriptions resolves an id to an engine by itself: only the mtmd ids are
+    forced, and everything else lands on Transformers. So a curated Whisper id cached only
+    for whisper.cpp is not servable here (the route loads the absent Transformers snapshot
+    and 409s), and neither engine can serve anything while its runtime is missing (501).
+    Both engines are therefore gated on their own availability, and residency is read only
+    from the engines this route can select.
+    """
+    try:
+        from core.inference import stt_mtmd_sidecar, stt_sidecar
+
+        whisper_ready = stt_sidecar.is_available()
+        mtmd_ready = stt_mtmd_sidecar.is_available()
+        loaded = set()
+        if whisper_ready:
+            whisper_loaded = stt_sidecar.get_stt_sidecar().loaded_model
+            loaded.add(stt_sidecar.STT_MODELS.get(whisper_loaded, whisper_loaded))
+        if mtmd_ready:
+            loaded.add(stt_mtmd_sidecar.get_mtmd_stt_sidecar().loaded_model)
+        loaded -= {None}
+
+        ids: list[str] = []
+        if whisper_ready:
+            ids.extend(
+                repo_id
+                for model_id, repo_id in stt_sidecar.STT_MODELS.items()
+                if stt_sidecar.is_model_downloaded(model_id)
+            )
+            ids.extend(
+                model_id
+                for model_id in _downloaded_custom_stt_ids(catalog_at)
+                if model_id not in ids
+            )
+        if mtmd_ready:
+            ids.extend(
+                model_id
+                for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+                if stt_mtmd_sidecar.is_model_downloaded(model_id)
+            )
+        # A custom Whisper repo the route can still reload by name while it is resident.
+        ids.extend(sorted(model_id for model_id in loaded if model_id not in ids))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("stt models unavailable for /v1/models: %s", exc)
+        return []
+    objects = []
+    for model_id in ids:
+        obj = {
+            "id": model_id,
+            "object": "model",
+            "created": created,
+            "owned_by": _OWNED_BY,
+            "task": _STT_MODEL_TASK,
+            "loaded": model_id in loaded,
+        }
+        spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model_id)
+        if spec is not None:
+            from hub.utils.gguf import extract_quant_token
+            quant = extract_quant_token(spec.model_file)
+            if quant:
+                obj["quant"] = quant
+        objects.append(obj)
+    return objects
+
+
 async def _cached_local_catalog() -> list:
     """Locally available models (models dir + HF caches + LM Studio + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
@@ -23039,7 +23902,7 @@ async def _cached_local_catalog() -> list:
         try:
             from routes.models import collect_local_models
             _CATALOG_CACHE["models"] = await asyncio.to_thread(
-                collect_local_models, Path("./models").resolve()
+                lambda: _classified_catalog(collect_local_models(Path("./models").resolve()))
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
@@ -23055,9 +23918,17 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
     from disk. Module scope, and always called through ``asyncio.to_thread``: the file
     checks stat many files and the residency check reads the inference singleton."""
     from core.inference.local_model_resolver import local_load_dir, local_servable_model
+    from hub.services.models.catalog_classification import _UNSUPPORTED_DIFFUSION_TASK
 
     rows = []
     for info in catalog:
+        if getattr(info, "task", None) in (
+            *_MEDIA_MODEL_TASKS,
+            _STT_MODEL_TASK,
+            _TTS_MODEL_TASK,
+            _UNSUPPORTED_DIFFUSION_TASK,
+        ):
+            continue
         servable = local_servable_model(info)
         if servable is None:
             continue
@@ -23085,6 +23956,8 @@ async def _openai_catalog_objects() -> list[dict]:
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
+    orchestrator = _peek_inference_backend()
+    resident_id = _orchestrator_public_model_id(orchestrator) if orchestrator else None
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
@@ -23093,7 +23966,6 @@ async def _openai_catalog_objects() -> list[dict]:
         if not cid or cid in by_id:
             continue
         if loaded and not is_gguf:
-            resident_id = _orchestrator_public_model_id(get_inference_backend())
             if resident_id in by_id:
                 continue
         obj = {
@@ -23115,6 +23987,15 @@ async def _openai_catalog_objects() -> list[dict]:
         if display:
             obj["display_name"] = display
         by_id[cid] = obj
+
+    media = await asyncio.to_thread(
+        lambda: (
+            _media_model_objects(catalog, _created, _CATALOG_CACHE["at"])
+            + _stt_model_objects(_created, _CATALOG_CACHE["at"])
+        )
+    )
+    for obj in media:
+        by_id.setdefault(obj["id"], obj)
 
     return list(by_id.values())
 
@@ -27597,22 +28478,35 @@ _JSON_SCHEMA_SINGLE_KEYWORDS = frozenset(
         "unevaluatedProperties",
     }
 )
-_JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
-_LLAMA_GRAMMAR_MAX_REPETITION = 2000
-_JSON_SCHEMA_REPETITION_KEYWORDS = frozenset({"maxItems", "maxLength", "minItems", "minLength"})
+# "items" is in both sets: draft 2020-12 gives it one schema, draft-07 a tuple of them.
+_JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "items", "oneOf", "prefixItems"})
+# Highest bound each keyword can reach in llama-grammar.cpp's budget of 2000 generated rules.
+# Measured against llama.cpp b10639 and b10679: a string bound of N costs N rules, minItems N-1,
+# and maxItems N+2, its repetition sitting inside a group the enclosing quantifier is charged for
+# too. The array limits assume no lower bound, the costliest shape. Bounds far past the budget
+# compile again as unbounded repetitions; the band just above these does not.
+_JSON_SCHEMA_REPETITION_LIMITS = {
+    "maxItems": 1997,
+    "maxLength": 1999,
+    "minItems": 2000,
+    "minLength": 1999,
+}
+
+
+def _is_json_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _llama_compatible_tool_schema(schema):
     """Return a llama.cpp-compatible copy of one JSON Schema node.
 
-    JSON Schema ``pattern`` expressions match anywhere in a string, so an
-    unanchored pattern is valid and cannot be made compatible by merely adding
-    ``^`` and ``$`` without changing its meaning. llama.cpp's grammar converter
-    currently rejects those patterns outright. Its grammar parser likewise
-    rejects repetition bounds above 2000. Omit only those unsupported
-    constraints from the local-backend copy; the agent retains and validates
-    its original schema, while every compatible constraint still reaches
-    llama.cpp.
+    llama.cpp's converter rejects an unanchored ``pattern`` outright, and anchoring
+    one would change what it matches; its grammar parser fails on repetition bounds
+    that reach its rule budget. Both come off the local-backend copy, erring towards
+    dropping a constraint the backend would have taken, since the agent validates its
+    original schema either way. Recursion follows the schema keywords, so a ``$ref``
+    is covered where its target lives in ``$defs`` or ``definitions``, not where a
+    pointer reaches some other part of the document.
     """
     if not isinstance(schema, dict):
         return schema
@@ -27621,18 +28515,19 @@ def _llama_compatible_tool_schema(schema):
     pattern = compatible.get("pattern")
     if isinstance(pattern, str) and not (pattern.startswith("^") and pattern.endswith("$")):
         compatible.pop("pattern")
-    # llama-grammar.cpp refuses repetition bounds above its sane-default
-    # threshold. Dropping the local-backend constraint preserves every value
-    # the client schema accepts; capping it would incorrectly reject otherwise
-    # valid tool arguments.
-    for keyword in _JSON_SCHEMA_REPETITION_KEYWORDS:
+    for keyword, limit in _JSON_SCHEMA_REPETITION_LIMITS.items():
         bound = compatible.get(keyword)
-        if (
-            isinstance(bound, int)
-            and not isinstance(bound, bool)
-            and bound > _LLAMA_GRAMMAR_MAX_REPETITION
-        ):
+        # An integral bound can decode to float, and llama.cpp reads one either way.
+        if _is_json_number(bound) and bound > limit:
             compatible.pop(keyword)
+    # A lower bound above its upper bound becomes a descending repetition, which
+    # llama-grammar.cpp expands until the process runs out of memory. No grammar
+    # expresses such a pair anyway, so neither half survives.
+    for lower, upper in (("minItems", "maxItems"), ("minLength", "maxLength")):
+        low, high = compatible.get(lower), compatible.get(upper)
+        if _is_json_number(low) and _is_json_number(high) and low > high:
+            compatible.pop(lower)
+            compatible.pop(upper)
 
     for keyword in _JSON_SCHEMA_MAP_KEYWORDS:
         children = compatible.get(keyword)
@@ -27651,6 +28546,28 @@ def _llama_compatible_tool_schema(schema):
         if isinstance(children, list):
             compatible[keyword] = [_llama_compatible_tool_schema(value) for value in children]
 
+    return compatible
+
+
+def _llama_compatible_response_format(response_format):
+    """Return a copy whose guided-decoding schema llama.cpp's grammar engine can compile.
+
+    llama-server reads it from ``json_object``'s ``schema`` and from ``json_schema``'s
+    nested ``schema``, and hands both to the converter that rejects tool schemas.
+    """
+    if not isinstance(response_format, dict):
+        return response_format
+
+    compatible = dict(response_format)
+    schema = compatible.get("schema")
+    if isinstance(schema, dict):
+        compatible["schema"] = _llama_compatible_tool_schema(schema)
+    wrapper = compatible.get("json_schema")
+    if isinstance(wrapper, dict) and isinstance(wrapper.get("schema"), dict):
+        compatible["json_schema"] = {
+            **wrapper,
+            "schema": _llama_compatible_tool_schema(wrapper["schema"]),
+        }
     return compatible
 
 
@@ -27761,7 +28678,7 @@ def _build_passthrough_payload(
         # response_format is present. The field is documented flat at the
         # request root (tools/server/README.md), which is also what the OpenAI
         # SDK produces by spreading extra_body into the body top.
-        body["response_format"] = response_format
+        body["response_format"] = _llama_compatible_response_format(response_format)
     if chat_template_kwargs is not None:
         # Propagate reasoning / template overrides (e.g. enable_thinking) so
         # llama-server renders the Jinja template in the caller's mode instead

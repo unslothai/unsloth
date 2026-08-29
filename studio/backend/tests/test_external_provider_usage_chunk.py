@@ -248,7 +248,7 @@ def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
     assert any("ok" in line for line in lines)
 
 
-def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
+def test_custom_provider_test_endpoint_probes_models_before_chat(monkeypatch):
     import importlib.util
     import sys
     from pathlib import Path
@@ -267,12 +267,19 @@ def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
         def __init__(self, **kwargs):
             captured["init"] = kwargs
 
-        async def chat_completion(self, **kwargs):
-            captured["chat_completion"] = kwargs
-            return {"choices": [{"message": {"content": "ok"}}]}
-
         async def list_models(self):
-            raise AssertionError("custom provider test must not call /models")
+            captured["list_models"] = True
+            return [{"id": "kokoro"}, {"id": "tts-1"}]
+
+        async def chat_completion(self, **kwargs):
+            raise AssertionError(
+                "custom provider test must not call /chat/completions when /models works"
+            )
+
+        async def create_speech(self, **_kwargs):
+            raise AssertionError(
+                "custom provider test must not call /audio/speech when /models works"
+            )
 
         async def close(self):
             captured["closed"] = True
@@ -292,8 +299,132 @@ def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
 
     result = _drive(run())
     assert result.success is True
-    assert result.models_count is None
+    assert result.models_count == 2
+    assert "Found 2 model(s)" in result.message
     assert captured["init"]["provider_type"] == "custom"
+    assert captured["closed"] is True
+
+
+def test_custom_provider_test_falls_back_to_speech_for_tts_only_gateways(monkeypatch):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
+    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    providers_route = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = providers_route
+    spec.loader.exec_module(providers_route)
+
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def list_models(self):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("GET", "http://custom.example/v1/models"),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
+            )
+
+        async def create_speech(self, **kwargs):
+            captured["create_speech"] = kwargs
+            return b"audio", "audio/wav"
+
+        async def chat_completion(self, **_kwargs):
+            raise AssertionError(
+                "custom provider test must not call /chat/completions when /audio/speech works"
+            )
+
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+
+    async def run():
+        return await providers_route.test_provider(
+            providers_route.ProviderTestRequest(
+                provider_type = "custom",
+                base_url = "http://custom.example/v1",
+                model_id = "kokoro",
+            ),
+            _current_subject = "unsloth",
+            via_api_key = False,
+        )
+
+    result = _drive(run())
+    assert result.success is True
+    assert "Audio speech endpoint responded" in result.message
+    assert captured["create_speech"]["model"] == "kokoro"
+    assert captured["create_speech"]["voice"] == "alloy"
+
+
+def test_custom_provider_test_falls_back_to_chat_when_only_completions_exist(monkeypatch):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
+    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    providers_route = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = providers_route
+    spec.loader.exec_module(providers_route)
+
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def list_models(self):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("GET", "http://custom.example/v1/models"),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
+            )
+
+        async def create_speech(self, **_kwargs):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("POST", "http://custom.example/v1/audio/speech"),
+                response = httpx.Response(
+                    404, request = httpx.Request("POST", "http://custom.example/v1/audio/speech")
+                ),
+            )
+
+        async def chat_completion(self, **kwargs):
+            captured["chat_completion"] = kwargs
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+
+    async def run():
+        return await providers_route.test_provider(
+            providers_route.ProviderTestRequest(
+                provider_type = "custom",
+                base_url = "http://custom.example/v1",
+                model_id = "Qwen/Qwen3-0.6B",
+            ),
+            _current_subject = "unsloth",
+            via_api_key = False,
+        )
+
+    result = _drive(run())
+    assert result.success is True
+    assert "Chat completions endpoint responded" in result.message
     assert captured["chat_completion"]["model"] == "Qwen/Qwen3-0.6B"
     assert captured["chat_completion"]["max_tokens"] == 1
     assert captured["closed"] is True
@@ -315,6 +446,15 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
     class _FakeClient:
         def __init__(self, **kwargs):
             pass
+
+        async def list_models(self):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("GET", "http://custom.example/v1/models"),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
+            )
 
         async def close(self):
             pass

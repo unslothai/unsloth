@@ -5596,20 +5596,15 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
-    # 11b. The pinned Diffusers revision. NOT in base.txt, which is applied early: this must
+    # 11b. The pinned Diffusers release. NOT in base.txt, which is applied early: this must
     #      run after every other requirements file so nothing re-resolves Diffusers back to a
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
     _progress("diffusers pin")
     pip_install(
-        "Installing the pinned Diffusers revision",
+        "Installing the pinned Diffusers release",
         "--no-cache-dir",
-        # The pin is a source ARCHIVE, which uv refuses to build under a user-level
-        # no-build, so a hardened host failed here even once extras.txt succeeded
-        # (#8530). Guarded: python < 3.10 resolves a released wheel from this file that
-        # must not be forced through a source build.
-        *(_sdist_only_build_args("diffusers") if sys.version_info >= (3, 10) else []),
         req = REQ_ROOT / "diffusers-pin.txt",
     )
 

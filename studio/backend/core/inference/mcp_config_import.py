@@ -97,7 +97,7 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
             return None, f"{label}: import cannot preserve {', '.join(unsupported)}."
         if spec.get("oauth") is not None:
             return None, f"{label}: 'oauth' is only supported for remote servers."
-        args = spec.get("args") or []
+        args = spec["args"] if "args" in spec else []
         if not isinstance(args, list) or not all(isinstance(a, _SCALAR) for a in args):
             return None, f"{label}: 'args' must be a list of strings."
         env = spec.get("env")

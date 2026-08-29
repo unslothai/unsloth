@@ -55,18 +55,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
-  buildAgentCommand,
+  buildAgentShellCommands,
   isLoopbackHost,
   normalizeHost,
+  quoteShellArg,
 } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
-import { psSingle, shSingle } from "../components/usage-examples";
 import {
   isChatGenerativeHubModel,
   isClassifierOrRerankerHubModel,
   isSpeechOnlyHubModel,
 } from "../lib/agent-hub-model.ts";
-import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
+import {
+  type ExampleOs,
+  useSettingsPanelPrefsStore,
+} from "../stores/settings-panel-prefs-store";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
@@ -77,7 +80,6 @@ const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
-const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
 
 function isLoopbackBase(base: string): boolean {
@@ -93,24 +95,30 @@ function canUseLocalAgentDetection(base: string): boolean {
   return isTauri && isLoopbackBase(base);
 }
 
-// One timeout, reset on re-click and cleared on unmount, so the tick never leaks.
+// bind feedback to the copied text so command changes cannot retain a stale tick.
 function useCopyButton(text: string) {
-  const [copied, setCopied] = useState(false);
+  const textVersion = useMemo(() => Symbol(text), [text]);
+  const [copiedVersion, setCopiedVersion] = useState<symbol | null>(null);
   const timeoutRef = useRef<number | null>(null);
+  const currentVersionRef = useRef(textVersion);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    currentVersionRef.current = textVersion;
+    return () => {
       if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-    },
-    [],
-  );
+      timeoutRef.current = null;
+    };
+  }, [textVersion]);
 
   const copy = async () => {
-    if (!(await copyToClipboard(text))) return;
-    setCopied(true);
+    const requestedText = text;
+    const requestedVersion = textVersion;
+    if (!(await copyToClipboard(requestedText))) return;
+    if (currentVersionRef.current !== requestedVersion) return;
+    setCopiedVersion(requestedVersion);
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = window.setTimeout(() => {
-      setCopied(false);
+      setCopiedVersion(null);
       timeoutRef.current = null;
     }, 1600);
   };
@@ -120,10 +128,10 @@ function useCopyButton(text: string) {
       window.clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    setCopied(false);
+    setCopiedVersion(null);
   };
 
-  return { copied, copy, reset };
+  return { copied: copiedVersion === textVersion, copy, reset };
 }
 
 type AgentDetails = {
@@ -492,23 +500,6 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
   { flag: "--yolo", descKey: "settings.agents.options.yolo" },
 ];
 
-const REMOTE_CMD_UNIX = `export UNSLOTH_STUDIO_URL=https://studio.example.com
-export UNSLOTH_API_KEY=sk-unsloth-...
-unsloth start claude`;
-
-// PowerShell uses $env: assignments; export is POSIX-only.
-const REMOTE_CMD_WINDOWS = `$env:UNSLOTH_STUDIO_URL = "https://studio.example.com"
-$env:UNSLOTH_API_KEY = "sk-unsloth-..."
-unsloth start claude`;
-
-// Independent alternatives, each with its own copy button (not one script).
-const PASSTHROUGH_EXAMPLES = [
-  { agent: "claude", flags: "--continue" },
-  { agent: "codex", flags: "--persist resume --last" },
-];
-
-const DRY_RUN_FLAGS = "--no-launch";
-
 /** Code box with the copy control inside it, top-right. Presentational: the
  *  copy state stays with the caller so existing resets still apply. */
 function CopyableCode({
@@ -585,26 +576,14 @@ function CommandBlock({ command }: { command: string }) {
   );
 }
 
-// Quote only values with shell metacharacters, e.g. a local path with spaces.
-function quoteShellArg(value: string, windows: boolean): string {
-  if (SAFE_SHELL_ARG_PATTERN.test(value)) {
-    return value;
-  }
-  return windows ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
-}
-
 function SubagentSection({
   agent,
-  baseCommand,
-  modelArgs,
+  command,
 }: {
   agent: AgentDetails;
-  baseCommand: string;
-  modelArgs: string;
+  command: string;
 }) {
   const t = useT();
-  // modelArgs is empty when attaching to a resident model that has no id to name.
-  const command = `${baseCommand} --as-subagent${modelArgs ? ` ${modelArgs}` : ""}`;
   const prompt =
     agent.id === "opencode"
       ? t("settings.agents.subagent.opencodePrompt")
@@ -673,7 +652,8 @@ export function AgentsTab() {
     keepUnsupportedTags: false,
     enabled: online,
   });
-  // The remote snippet runs on the client, so use the client platform, not deviceType.
+  // Seed a remote command from the client platform; the shell picker below can
+  // override it for SSH, WSL, containers, or any other paste destination.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
@@ -684,20 +664,30 @@ export function AgentsTab() {
   // the CLI cannot reach, so use the backend URL from /api/health (getApiBase until it
   // lands). The command then runs wherever that CLI is: a loopback base is this Unsloth's
   // own host, so deviceType decides, and it reports wsl where the browser would claim
-  // Windows; any other base is reached from the viewer's machine, so only the client
-  // platform describes that shell.
+  // Windows. For any other base the client platform is only the initial guess.
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const isWindowsShell = isLoopbackBase(studioBase)
-    ? deviceType === "windows"
-    : isWindowsClient;
+  const inferredCommandOs: ExampleOs = (
+    isLoopbackBase(studioBase)
+      ? deviceType === "windows"
+      : isWindowsClient
+  )
+    ? "windows"
+    : "unix";
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
   const setStoredAgent = useSettingsPanelPrefsStore((s) => s.setAgentsAgent);
   const setStoredModel = useSettingsPanelPrefsStore((s) => s.setAgentsModel);
+  const setStoredOs = useSettingsPanelPrefsStore((s) => s.setAgentsOs);
   const setStoredVariant = useSettingsPanelPrefsStore(
     (s) => s.setAgentsVariant,
   );
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
+  // Detection is only a default: a remote Studio cannot know whether its command
+  // will be pasted into the viewer's local shell, SSH, WSL, or a container.
+  const [commandOsOverride, setCommandOsOverride] = useState<ExampleOs | null>(
+    storedPrefs.agentsOs,
+  );
+  const commandOs = commandOsOverride ?? inferredCommandOs;
   const [agents, setAgents] = useState<string[]>(
     SUPPORTED_AGENTS.map((agent) => agent.id),
   );
@@ -842,13 +832,13 @@ export function AgentsTab() {
     selectedVariant && suffixVariant
       ? `${modelId}:${selectedVariant}`
       : modelId;
-  const commandModelArg = quoteShellArg(commandModel, isWindowsShell);
+  const commandModelArg = quoteShellArg(commandModel, commandOs);
   // A bare `unsloth start` attaches to whatever is loaded, which is the only way
   // to reach a native-grant GGUF: naming it would switch the server to another model.
   const attachOnly = selectedModel === attachOnlyModel;
   const selectedModelArgs =
     selectedVariant && !suffixVariant
-      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, commandOs)}`
       : `--model ${commandModelArg}`;
   const selectedModelFlags =
     modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)
@@ -859,23 +849,18 @@ export function AgentsTab() {
     : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
   // No key is passed: the CLI caches an explicit one per base, overwriting a working
   // saved key. Omitting it replays the saved key; the remote section covers first setup.
-  const commandOs = isWindowsShell ? "windows" : "unix";
-  const commandBase = buildAgentCommand(
+  const shellCommands = buildAgentShellCommands(
     studioBase,
-    null,
     commandOs,
     selectedAgent,
+    modelArgs,
   );
-  const command = attachOnly ? commandBase : `${commandBase} ${modelArgs}`;
-  // The fixed examples below target the same Unsloth, not a bare 127.0.0.1:8888.
-  const example = (agentId: string, flags: string) =>
-    `${buildAgentCommand(studioBase, null, commandOs, agentId)} ${flags}`;
+  const command = shellCommands.primary;
   const {
     copied,
     copy: handleCopy,
     reset: resetCopied,
   } = useCopyButton(command);
-  const remoteCommand = isWindowsClient ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -1611,9 +1596,50 @@ export function AgentsTab() {
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2.5">
-          <span className="text-xs font-medium text-foreground">
-            {t("settings.agents.generatedCommand")}
-          </span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-medium text-foreground">
+              {t("settings.agents.generatedCommand")}
+            </span>
+            <fieldset className="flex min-w-0 items-center gap-0.5">
+              <legend className="sr-only">
+                {t("settings.agents.generatedCommand")}
+              </legend>
+              <button
+                type="button"
+                onClick={() => {
+                  setCommandOsOverride("unix");
+                  setStoredOs("unix");
+                  resetCopied();
+                }}
+                aria-pressed={commandOs === "unix"}
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  commandOs === "unix"
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.apiKeys.osUnix")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCommandOsOverride("windows");
+                  setStoredOs("windows");
+                  resetCopied();
+                }}
+                aria-pressed={commandOs === "windows"}
+                className={cn(
+                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  commandOs === "windows"
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.apiKeys.osWindows")}
+              </button>
+            </fieldset>
+          </div>
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.automaticSettingsNote")}
           </p>
@@ -1639,8 +1665,7 @@ export function AgentsTab() {
 
         <SubagentSection
           key={`${selectedAgent}:${commandModel}`}
-          baseCommand={commandBase}
-          modelArgs={modelArgs}
+          command={shellCommands.subagent}
           agent={selectedAgentDetails}
         />
 
@@ -1675,7 +1700,7 @@ export function AgentsTab() {
         description={t("settings.agents.remote.description")}
       >
         <div className="pt-3">
-          <CommandBlock command={remoteCommand} />
+          <CommandBlock command={shellCommands.remoteSetup} />
         </div>
       </SettingsSection>
 
@@ -1684,8 +1709,11 @@ export function AgentsTab() {
         description={t("settings.agents.passthrough.description")}
       >
         <div className="flex flex-col gap-3 pt-3">
-          {PASSTHROUGH_EXAMPLES.map(({ agent, flags }) => (
-            <CommandBlock key={flags} command={example(agent, flags)} />
+          {shellCommands.passThrough.map((passThroughCommand) => (
+            <CommandBlock
+              key={passThroughCommand}
+              command={passThroughCommand}
+            />
           ))}
         </div>
       </SettingsSection>
@@ -1695,7 +1723,7 @@ export function AgentsTab() {
         description={t("settings.agents.dryRun.description")}
       >
         <div className="pt-3">
-          <CommandBlock command={example("claude", DRY_RUN_FLAGS)} />
+          <CommandBlock command={shellCommands.dryRun} />
         </div>
       </SettingsSection>
     </div>
