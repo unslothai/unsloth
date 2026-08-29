@@ -5538,6 +5538,9 @@ def _complete_existing_llama_install(
     backend = None,
     payload = True,
     windows = False,
+    backend_request = None,
+    runtime_asset = None,
+    paired_runtime = True,
 ):
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = (
@@ -5548,6 +5551,10 @@ def _complete_existing_llama_install(
     marker = {"release_tag": "old-release", "tag": "old-upstream"}
     if backend is not None:
         marker["backend"] = backend
+    if backend_request is not None:
+        marker["backend_request"] = backend_request
+    if runtime_asset is not None:
+        marker["runtime_asset"] = runtime_asset
     for path in (
         install_dir / f"llama-server{ext}",
         install_dir / f"llama-quantize{ext}",
@@ -5569,6 +5576,9 @@ def _complete_existing_llama_install(
     if payload and backend is not None:
         for name in _KEPT_PAYLOAD[("windows" if windows else "linux", backend)]:
             (runtime_dir / name).write_text("", encoding = "utf-8")
+        if runtime_asset is not None and paired_runtime:
+            for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
+                (runtime_dir / name).write_text("", encoding = "utf-8")
     return install_dir
 
 
@@ -5665,6 +5675,91 @@ def test_release_listing_failure_does_not_keep_a_gutted_runtime(
         install_prebuilt(gutted, "latest", "unslothai/llama.cpp", "")
 
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+def _listing_failure(monkeypatch, host):
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+
+@pytest.mark.parametrize(
+    ("runtime_asset", "paired_runtime", "kept"),
+    [
+        ("cudart-llama-bin-win-cuda-13.0-x64.zip", True, True),
+        ("cudart-llama-bin-win-cuda-13.0-x64.zip", False, False),
+        (None, False, True),
+    ],
+    ids = ["paired-intact", "paired-gutted", "pair-less"],
+)
+def test_a_paired_cuda_install_needs_its_cudart_trio(
+    tmp_path, monkeypatch, runtime_asset, paired_runtime, kept
+):
+    """The trio is demanded of the installs that were built with it, and only those.
+
+    write_prebuilt_metadata records runtime_asset for exactly that: a pair-less install
+    is healthy without the DLLs, and demanding them would source build over a working
+    tree (the reason runtime_payload_health_groups gates them on choice.runtime_name).
+    """
+    _listing_failure(monkeypatch, _windows_host)
+    install_dir = _complete_existing_llama_install(
+        tmp_path,
+        backend = "cuda",
+        windows = True,
+        runtime_asset = runtime_asset,
+        paired_runtime = paired_runtime,
+    )
+
+    if kept:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    else:
+        with pytest.raises(SystemExit) as caught:
+            install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+        assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+def test_a_stored_backend_choice_the_install_already_satisfies_is_kept(tmp_path, monkeypatch):
+    """An advisory recorded backend must not turn a transient blip into exit 5.
+
+    Keeping the tree that already runs that backend honours the choice; exit 5 exists to
+    stop a concrete choice becoming a hardware-selected source build, which this is not.
+    """
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert (install_dir / "llama-server").exists()
+
+
+def test_a_backend_named_on_this_run_still_refuses_to_answer_with_the_old_install(
+    tmp_path, monkeypatch
+):
+    """backend_mandatory is a live instruction, not a stored preference."""
+    _listing_failure(monkeypatch, linux_host)
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
+    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_BACKEND_UNAVAILABLE
+
+
+def test_a_stored_backend_the_install_does_not_run_is_not_answered_with_it(tmp_path, monkeypatch):
+    """A recorded request the tree does not satisfy is still exit 5, never a source build."""
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(
+        tmp_path, backend = "cpu", backend_request = "vulkan"
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_BACKEND_UNAVAILABLE
 
 
 def test_release_listing_failure_does_not_keep_an_unloadable_install(tmp_path, monkeypatch):

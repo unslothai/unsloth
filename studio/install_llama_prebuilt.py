@@ -6467,6 +6467,11 @@ def write_prebuilt_metadata(
         # the arch, and a stale copy would outlive its GPU.
         **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
+        # Whether the paired Windows cudart archive (#5106) was overlaid. It is in the
+        # fingerprint already, but that is a hash: the kept-install payload check has to
+        # read the answer back, and a marker without the key is a pair-less install
+        # whose cudart trio must not be demanded.
+        "runtime_asset": choice.runtime_name,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
         # CPU/HIP prebuilts). published_repo/release_tag always refer to the
@@ -6930,13 +6935,15 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     ``llama.dll`` went missing (an antivirus quarantine, a partial delete) would be kept
     and reported as installed even though ``llama-server.exe`` cannot start.
 
-    Kind-specific extras are deliberately not required. The paired cudart trio is gated
-    on ``choice.runtime_name``, which no marker records, and the published Vulkan visual
-    server is backfilled separately; demanding either would spend a source build on a
-    working install. An unreadable backend asks for nothing rather than guessing, for
-    the same reason.
+    The paired Windows cudart trio comes from the marker's own ``runtime_asset``, so it
+    is required of installs that were built with the pair and not of pair-less ones,
+    which are healthy without it. The published Vulkan visual server stays unrequired:
+    ``ensure_diffusion_visual_server`` backfills it and already treats its own failure
+    as non-fatal, so demanding it would spend a source build on a working install. An
+    unreadable backend asks for nothing rather than guessing, for the same reason.
     """
-    backend = marker_backend(load_prebuilt_metadata(install_dir))
+    marker = load_prebuilt_metadata(install_dir)
+    backend = marker_backend(marker)
     platform_prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
     kinds = sorted(
         kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
@@ -6946,8 +6953,15 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     # Intersection, not union: a backend maps to more than one kind (rocm to windows-hip
     # and windows-rocm, cuda to linux-cuda and linux-arm64-cuda) and the marker does not
     # say which, so require only what every candidate needs.
+    runtime_asset = (marker or {}).get("runtime_asset")
     shared = set.intersection(
-        *({tuple(group) for group in runtime_payload_health_groups(kind)} for kind in kinds)
+        *(
+            {
+                tuple(group)
+                for group in runtime_payload_health_groups(kind, runtime_name = runtime_asset)
+            }
+            for kind in kinds
+        )
     )
     return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
 
@@ -8211,8 +8225,21 @@ def install_prebuilt(
         # A stored choice that could not be served was already replaced by "auto"
         # above, so a concrete name here is one this run must not walk away from.
         preserve_backend = backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
+        # ... but keeping the tree that ALREADY runs that backend honours the choice
+        # rather than substituting one, which is the only thing exit 5 exists to
+        # prevent. Restricted to an advisory stored choice: a backend named on this
+        # run (CLI or env, backend_mandatory) is a live instruction, and answering it
+        # with the install that was already there would report success for work this
+        # run did not do. preserve_backend itself is left alone, so a tree that fails
+        # _existing_install_runs still exits 5 instead of source building over the
+        # recorded backend.
+        satisfied_stored_backend = (
+            preserve_backend
+            and not backend_mandatory
+            and marker_backend(load_prebuilt_metadata(install_dir)) == backend
+        )
         if (
-            not preserve_backend
+            (not preserve_backend or satisfied_stored_backend)
             and not explicit_version_request
             and host is not None
             and _existing_install_runs(install_dir, host)
