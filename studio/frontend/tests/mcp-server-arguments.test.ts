@@ -375,7 +375,7 @@ test("composer applies mutation responses before releasing each preset", () => {
   );
   assert.match(
     composer,
-    /disabled=\{\s*!usable \|\|\s*!serversLoaded \|\|\s*pendingUrls\.has\(normalizeMcpUrl\(opts\.url\)\)/,
+    /disabled=\{!serversLoaded \|\| pendingUrls\.has\(normalizeMcpUrl\(opts\.url\)\)\}/,
   );
 });
 
@@ -387,7 +387,9 @@ test("MCP configuration remains reachable when the loaded model lacks tools", ()
 
   assert.doesNotMatch(composer, /aria-disabled=\{true\}/);
   assert.match(composer, /The loaded model cannot use MCP tools/);
-  assert.match(composer, /!usable \|\|\s*!serversLoaded/);
+  // The rows stay toggleable: a preset is persistent configuration, and
+  // tests/studio/playwright_mcp_arguments.py toggles them with no model loaded.
+  assert.doesNotMatch(composer, /disabled=\{[^}]*!usable/);
   assert.match(
     composer,
     /<DropdownMenuItem\s+onSelect=\{\(\) => \{\s*setMenuOpen\(false\);\s*setDialogOpen\(true\);/,

@@ -410,8 +410,12 @@ class TestSdistOnlyBuildArgs:
         for name in ips.SDIST_ONLY_PACKAGES:
             assert name in allow, f"{name} missing from clean-machine-assert.sh nobuild allowlist"
             assert f"'{name}'" in ps1, f"{name} missing from assert-nobuild.ps1 allowlist"
-        assert "diffusers" not in allow, "released Diffusers wheels must not be allowlisted"
-        assert "'diffusers'" not in ps1, "released Diffusers wheels must not be allowlisted"
+        # diffusers is allowlisted for the `overlay: false` legs alone, which install the
+        # released wheel and its pre-0.40.0 archive pin. This ref is held to the no-build
+        # contract by test_the_diffusers_pin_keeps_the_wheel_path instead, so the entry
+        # cannot hide a regression here; it goes when a release carries the wheel pin.
+        assert "diffusers" in allow
+        assert "'diffusers'" in ps1
 
 
 class TestHardenedPipConfigRelaxation:

@@ -624,11 +624,13 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
     """Apply llama-server's reproducibility fields for an explicit seed.
 
-    Prompt-cache state belongs to a serving slot. Reusing another slot's cache
-    can start the sampler from different retained state, which makes identical
-    fixed-seed requests diverge even at temperature zero. Unseeded requests and
+    A cache hit reprocesses only the suffix, and llama.cpp's logits are not
+    bit-for-bit identical across batch sizes, so how much of the prefix a slot
+    happened to retain decides the answer: identical fixed-seed requests diverge
+    even at temperature zero (ggml-org/llama.cpp#4902; the server README says
+    deterministic output needs the prompt cache off). Unseeded requests and
     llama-server's -1 random-seed sentinel keep cache reuse for throughput;
-    every actual fixed seed gets a fresh prompt evaluation.
+    every actual fixed seed pays a full prompt evaluation for reproducibility.
     """
     if seed is None:
         return

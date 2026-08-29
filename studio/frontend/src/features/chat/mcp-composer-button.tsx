@@ -256,9 +256,9 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      disabled={
-        !usable || !serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))
-      }
+      // Not gated on `usable`: a row is server config, not a tool call, and the
+      // label above already says the loaded model cannot run them.
+      disabled={!serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
         void toggleServer({
