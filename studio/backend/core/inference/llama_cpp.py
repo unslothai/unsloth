@@ -3370,9 +3370,7 @@ def _linux_math_core_count(
         cpu_path = cpu_root / f"cpu{cpu}"
         try:
             sibling_set = (
-                (cpu_path / "topology" / "thread_siblings")
-                .read_text(encoding = "utf-8")
-                .strip()
+                (cpu_path / "topology" / "thread_siblings").read_text(encoding = "utf-8").strip()
             )
         except OSError:
             break
@@ -3380,9 +3378,7 @@ def _linux_math_core_count(
             break
         siblings.append(sibling_set)
         try:
-            capacities.append(
-                int((cpu_path / "cpu_capacity").read_text(encoding = "utf-8").strip())
-            )
+            capacities.append(int((cpu_path / "cpu_capacity").read_text(encoding = "utf-8").strip()))
         except (OSError, ValueError):
             capacities.append(None)
         cpu += 1
