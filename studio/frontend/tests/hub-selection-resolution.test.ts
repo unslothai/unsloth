@@ -11,8 +11,12 @@ registerStoreStubResolver();
 const { dedupeSameSourceHubCacheRows } = await import(
   "../src/features/hub/inventory/inventory-dedupe.ts"
 );
-const { buildCachedInventoryRow, buildLocalInventoryRows, cachedInventoryId } =
-  await import("../src/features/hub/inventory/view-models.ts");
+const {
+  buildCachedInventoryRow,
+  buildLocalInventoryRows,
+  cachedInventoryId,
+  optimisticInventoryId,
+} = await import("../src/features/hub/inventory/view-models.ts");
 const { resolveDownloadedSelection } = await import(
   "../src/features/hub/lib/selection-resolution.ts"
 );
@@ -54,21 +58,28 @@ for (const modelFormat of ["gguf", "safetensors"] as const) {
     assert.equal(selectedId, `cache:${modelFormat}:Org%2FModel`);
 
     const transitions = [
-      { input: [observed], selectionId: selectedId },
-      { input: [observed, live], selectionId: selectedId },
+      { input: [observed], selectionId: selectedId, expectedId: selectedId },
+      {
+        input: [observed, live],
+        selectionId: selectedId,
+        expectedId: live.id,
+      },
       {
         input: [observed],
         selectionId: `cache:${modelFormat}:${REPO_ID}`,
+        expectedId: selectedId,
       },
     ];
 
-    for (const { input, selectionId } of transitions) {
+    for (const { input, selectionId, expectedId } of transitions) {
       const cachedRows = dedupeSameSourceHubCacheRows({
         cachedRows: input,
         localRows: [],
       }).cachedRows;
 
-      assert.equal(cachedRows[0]?.id, selectedId);
+      assert.equal(cachedRows.length, 1);
+      assert.equal(cachedRows[0]?.id, expectedId);
+      assert.equal(cachedRows[0]?.liveDownload, input.includes(live) || undefined);
       assert.deepEqual(
         resolveDownloadedSelection({
           selectedId: selectionId,
@@ -77,7 +88,7 @@ for (const modelFormat of ["gguf", "safetensors"] as const) {
           filteredCachedRows: cachedRows,
           filteredLocalRows: [],
         }),
-        { selectedId, hiddenByFilters: false },
+        { selectedId: expectedId, hiddenByFilters: false },
       );
     }
   });
@@ -119,7 +130,7 @@ for (const modelFormat of ["gguf", "safetensors"] as const) {
         ? "unsloth/gemma-3-270m-it"
         : "unsloth/gemma-3-270m-it-GGUF";
     const localId = `hf_cache:${modelFormat}:${encodeURIComponent(repoId)}`;
-    const liveId = cachedInventoryId(modelFormat, repoId);
+    const liveId = optimisticInventoryId(modelFormat, repoId);
     const local = buildLocalInventoryRows([
       {
         id: repoId,
@@ -315,6 +326,42 @@ test("keeps an unclassified local HF-cache partial selected when safetensors com
     hiddenByFilters: false,
   });
 });
+
+for (const modelFormat of ["adapter", "checkpoint"] as const) {
+  test(`keeps a provisional download selected when it becomes ${modelFormat}`, () => {
+    const repoId = `Org/${modelFormat}`;
+    const live = buildCachedInventoryRow(
+      {
+        repo_id: repoId,
+        model_format: "safetensors",
+        size_bytes: 50,
+        partial: true,
+        optimistic: true,
+      },
+      "safetensors",
+    );
+    const complete = buildCachedInventoryRow(
+      {
+        repo_id: repoId,
+        model_format: modelFormat,
+        size_bytes: 100,
+      },
+      "safetensors",
+    );
+
+    assert.equal(live.id, optimisticInventoryId("safetensors", repoId));
+    assert.deepEqual(
+      resolveDownloadedSelection({
+        selectedId: live.id,
+        cachedRows: [complete],
+        localRows: [],
+        filteredCachedRows: [complete],
+        filteredLocalRows: [],
+      }),
+      { selectedId: complete.id, hiddenByFilters: false },
+    );
+  });
+}
 
 test("keeps an HF-cache selection when a local row becomes classified", () => {
   const repoId = "Org/Locally-Classified";

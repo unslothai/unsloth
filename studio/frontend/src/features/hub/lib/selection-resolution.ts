@@ -23,7 +23,7 @@ function idMap<T extends { id: string }>(rows: readonly T[]): Map<string, T> {
 }
 
 type CacheSelectionIdentity = {
-  source: "cache" | "hf_cache";
+  source: "cache" | "download" | "hf_cache";
   modelFormat: CachedInventoryRow["modelFormat"];
   repoKey: string;
 };
@@ -48,7 +48,7 @@ function parseCacheSelectionIdentity(
   const modelFormat = id.slice(firstSeparator + 1, secondSeparator);
   const encodedRepoId = id.slice(secondSeparator + 1);
   if (
-    (source !== "cache" && source !== "hf_cache") ||
+    (source !== "cache" && source !== "download" && source !== "hf_cache") ||
     !MODEL_FORMATS.has(modelFormat as CachedInventoryRow["modelFormat"]) ||
     !encodedRepoId ||
     encodedRepoId.includes(":")
@@ -205,6 +205,15 @@ function resolveFormatTransition(
     (row) =>
       row.source === "hf_cache" && inventoryRepoKey(row) === identity.repoKey,
   );
+  if (identity.source === "download") {
+    return resolveCurrentSelection(
+      matchingCached,
+      matchingLocal,
+      filteredCachedIds,
+      filteredLocalIds,
+      localRows,
+    );
+  }
   if (identity.modelFormat === "unknown") {
     if (identity.source === "cache") {
       return resolveCurrentSelection(
