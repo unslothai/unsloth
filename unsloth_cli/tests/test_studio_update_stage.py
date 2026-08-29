@@ -82,10 +82,7 @@ def test_make_relocatable_rewrites_shell_wrapper_for_path_with_spaces(tmp_path):
     venv = _make_venv(tmp_path / "stage with spaces")
     script = venv / "bin" / "pip"
     script.write_text(
-        "#!/bin/sh\n"
-        f"'''exec' '{venv}/bin/python' \"$0\" \"$@\"\n"
-        "' '''\n"
-        "print('pip')\n",
+        f"#!/bin/sh\n'''exec' '{venv}/bin/python' \"$0\" \"$@\"\n' '''\nprint('pip')\n",
         encoding = "utf-8",
     )
 
@@ -221,7 +218,9 @@ def test_child_environment_points_the_staged_cli_at_the_stage_root(monkeypatch, 
 
     assert env[_studio_stage.STAGE_ROOT_ENV] == str(tmp_path)
     assert env["PATH"].split(os.pathsep)[0] == str(
-        tmp_path / _studio_stage.VENV_NAME / ("Scripts" if platform.system() == "Windows" else "bin")
+        tmp_path
+        / _studio_stage.VENV_NAME
+        / ("Scripts" if platform.system() == "Windows" else "bin")
     )
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONHOME" not in env
