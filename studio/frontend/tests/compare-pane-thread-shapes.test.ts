@@ -202,6 +202,6 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   assert.ok(chatPageSource.includes("if (variant === null) return;"));
   assert.ok(chatPageSource.includes("s.residentCheckpoint === undefined"));
   assert.ok(chatPageSource.includes("activeModel?.isLora"));
-  assert.ok(chatPageSource.includes("s.loraInventoryHydrated ? false : null"));
+  assert.ok(chatPageSource.includes("s.loraInventorySettled ? false : null"));
   assert.ok(chatPageSource.includes("  return stored.variant;"));
 });

@@ -517,6 +517,9 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a
     // toast about a read whose answer would have been discarded anyway.
     if (signal?.aborted || superseded()) return;
+    if (includeLoras) {
+      useChatRuntimeStore.setState({ loraInventorySettled: true });
+    }
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);

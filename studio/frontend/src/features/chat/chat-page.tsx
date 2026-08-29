@@ -552,14 +552,16 @@ function useIsLoraCompare(): boolean | null {
   return useChatRuntimeStore((s) => {
     const cp = s.params.checkpoint;
     if (isExternalModelId(cp)) return false;
-    if (s.residentCheckpoint === undefined) return null;
+    if (s.residentCheckpoint === undefined && !s.loraInventorySettled) {
+      return null;
+    }
     if (!cp) return false;
     const activeModel = s.models.find((model) => model.id === cp);
     if (activeModel?.isLora) return true;
     if (s.loras.find((lora) => lora.id === cp)?.exportType === "lora") {
       return true;
     }
-    return s.loraInventoryHydrated ? false : null;
+    return s.loraInventorySettled ? false : null;
   });
 }
 
