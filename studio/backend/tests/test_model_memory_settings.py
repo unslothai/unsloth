@@ -1669,7 +1669,7 @@ class TestRecordedMemoryState:
             assert isinstance(call.args[0], ast.Name)
             recorded_from.append(call.args[0].id)
 
-        assert sorted(recorded_from) == ["_run", "cmd", "cmd", "run_cmd"]
+        assert sorted(recorded_from) == ["_run", "cmd", "cmd", "replay", "run_cmd"]
 
 
 class TestFitOnRetryReArmsResidency:
@@ -2585,9 +2585,8 @@ class TestFitOffRetryClearsPolicyActivity:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        assert (
-            "self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras" in src
-        )
+        assert "_mem_managed or _load_mode_policy_suppressed" in src
+        assert ") or _mem_policy_touched_extras" in src
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
         assert branch != -1
         end = src.find("return False", branch)

@@ -366,6 +366,7 @@ test("partial saves are serialized before a waiting read", async () => {
       defaultNoRamReserve: false,
       mlockActive: false,
       mlockApplicable: true,
+      mlockSkipReason: null,
       reloadRequired: false,
       memlockLimitBytes: null,
     });
