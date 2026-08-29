@@ -56,6 +56,16 @@ test("LaTeX inside inline code stays literal whatever follows it", () => {
   assert.equal(preprocessLaTeX(`${span}\n\n\`x\``), `${span}\n\n\`x\``);
 });
 
+test("thematic and setext breaks stop cross-block code spans", () => {
+  for (const boundary of ["***", "---", "==="]) {
+    assert.equal(
+      preprocessLaTeX(`\`open\n${boundary}\n\\(x\\)\``),
+      `\`open\n${boundary}\n$x$\``,
+      boundary,
+    );
+  }
+});
+
 test("ordinary code spans and fences are unchanged", () => {
   // Nothing that was already non-overlapping may move.
   const cases: [string, string][] = [
@@ -113,4 +123,15 @@ test("fences stop at their Markdown container boundary", () => {
   for (const [input, expected] of cases) {
     assert.equal(preprocessLaTeX(input), expected, input);
   }
+});
+
+test("same-line nested items set the continuation content column", () => {
+  assert.equal(
+    preprocessLaTeX("- - item\n\n      \\(x\\)"),
+    "- - item\n\n      $x$",
+  );
+  assert.equal(
+    preprocessLaTeX("-   - item\n\n        \\(x\\)"),
+    "-   - item\n\n        $x$",
+  );
 });

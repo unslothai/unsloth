@@ -10,7 +10,10 @@
 //      math delimiters when singleDollarTextMath is enabled.
 
 import { parseMarkdownIntoBlocks } from "streamdown";
-import { codeSpans } from "./markdown-code-spans.ts";
+import {
+  codeSpans,
+  crossesCodeSpanBlockBoundary,
+} from "./markdown-code-spans.ts";
 import {
   EMPTY_LIST_STATE,
   NO_QUOTE,
@@ -69,8 +72,6 @@ const INDENTED_CODE_CANDIDATE_RE =
 const BLOCK_LINE_RE =
   /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
 const LINK_DEFINITION_RE = /^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:/;
-const CODE_SPAN_BLOCK_BOUNDARY_RE =
-  /(?:\r?\n[ \t]*\r?\n|(?:^|[\r\n]) {0,3}(?:#{1,6}(?:[ \t]|$)|>|[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|`{3,}|~{3,}))/;
 const NON_LINE_ENDING_RE = /[^\r\n]/g;
 
 /** `line` with up to `columns` columns of leading whitespace removed. */
@@ -138,7 +139,7 @@ function findInlineCodeRegions(
 
   const spans = codeSpans(masked);
   const crossesBlock = spans.some(({ start, end }) =>
-    CODE_SPAN_BLOCK_BOUNDARY_RE.test(masked.slice(start, end)),
+    crossesCodeSpanBlockBoundary(masked.slice(start, end)),
   );
   if (!crossesBlock) {
     return spans.map(({ start, end }) => [start, end]);

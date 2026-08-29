@@ -109,10 +109,22 @@ test("escaped candidates cannot consume nested Markdown", () => {
   for (const markdown of [
     `${String.raw`Before \$x + `}\`y\`${String.raw`\$ then \$z\$`}`,
     String.raw`Before \$x + [y](https://e.test)\$ then \$z\$`,
+    String.raw`Before \$x_ + [y][ref]\$ then \$z\$
+
+[ref]: https://e.test`,
+    String.raw`Before \$x_ + [y][]\$ then \$z\$
+
+[y]: https://e.test`,
     String.raw`Before \$x + <code>y</code>\$ then \$z\$`,
   ]) {
     assert.deepEqual(annotations(render(markdown)), ["z"], markdown);
   }
+
+  const referenceLink = render(String.raw`Before \$x_ + [y][ref]\$ then \$z\$
+
+[ref]: https://e.test`);
+  assert.ok(referenceLink.includes('data-streamdown="link"'));
+  assert.ok(referenceLink.includes(">y</button>"));
 });
 
 test("rejected candidates do not consume later math openers", () => {
@@ -235,4 +247,37 @@ test("streaming waits for the escaped closer", () => {
   assert.deepEqual(annotations(render(`${incomplete}\\$`, "streaming")), [
     "v_s",
   ]);
+});
+
+test("block boundaries and nested list continuations keep escaped math active", () => {
+  for (const mode of ["static", "streaming"] as const) {
+    assert.deepEqual(
+      annotations(render("- - item\n\n      \\$nested_s\\$", mode)),
+      ["nested_s"],
+    );
+    assert.deepEqual(
+      annotations(render("`open\n***\n\\$boundary_s\\$`", mode)),
+      ["boundary_s"],
+    );
+  }
+});
+
+test("incomplete code spans preserve escaped dollars while streaming", () => {
+  for (const opener of ["`", "``"]) {
+    const incomplete = `${opener}formula \\$x\\$`;
+    assert.equal(normalizeEscapedInlineMath(incomplete), incomplete);
+    const streamingHtml = render(incomplete, "streaming");
+    assert.deepEqual(annotations(streamingHtml), []);
+    if (opener === "`") {
+      assert.ok(streamingHtml.includes(String.raw`formula \$x\$`));
+    }
+    assert.deepEqual(annotations(render(incomplete)), []);
+
+    const completed = `${incomplete}${opener} after \\$y\\$`;
+    for (const mode of ["streaming", "static"] as const) {
+      const completedHtml = render(completed, mode);
+      assert.deepEqual(annotations(completedHtml), ["y"]);
+      assert.ok(completedHtml.includes(String.raw`formula \$x\$`));
+    }
+  }
 });

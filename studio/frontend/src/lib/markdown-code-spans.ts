@@ -14,6 +14,9 @@ export interface CodeSpan {
   content: string;
 }
 
+const BLOCK_BOUNDARY_RE =
+  /(?:\r?\n[ \t]*\r?\n|(?:^|[\r\n]) {0,3}(?:#{1,6}(?:[ \t]|$)|>|[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|`{3,}|~{3,}|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)(?=$|[\r\n])))/;
+
 function runLength(text: string, index: number): number {
   let end = index;
   while (text[end] === "`") {
@@ -101,6 +104,25 @@ export function codeSpans(text: string): CodeSpan[] {
 /** closed spans plus the unmatched tail that incomplete-Markdown repair makes code. */
 export function codeSpansWithOpenTail(text: string): CodeSpan[] {
   return scanCodeSpans(text, true);
+}
+
+/** the unmatched tail that streaming repair treats as code, if it stays in one block. */
+export function openCodeSpanTail(text: string): CodeSpan | undefined {
+  const closed = codeSpans(text);
+  const withOpenTail = codeSpansWithOpenTail(text);
+  const tail = withOpenTail.at(-1);
+  if (
+    !tail ||
+    closed.some((span) => span.start === tail.start && span.end === tail.end) ||
+    crossesCodeSpanBlockBoundary(text.slice(tail.start, tail.end))
+  ) {
+    return undefined;
+  }
+  return tail;
+}
+
+export function crossesCodeSpanBlockBoundary(text: string): boolean {
+  return BLOCK_BOUNDARY_RE.test(text);
 }
 
 /** Replaces every code span with `park(content)`, leaving the rest as is. */

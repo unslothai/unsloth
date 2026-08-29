@@ -18,6 +18,7 @@ import type {
   TokenizeContext,
   Tokenizer,
 } from "micromark-util-types";
+import { openCodeSpanTail } from "./markdown-code-spans.ts";
 
 declare module "micromark-util-types" {
   interface TokenTypeMap {
@@ -44,7 +45,8 @@ const SIMPLE_EXPRESSION_RE = new RegExp(
 );
 const SIMPLE_FUNCTION_RE = /^[a-zA-Z]\([a-zA-Z0-9]\)$/;
 const COMMAND_RE = /^[a-zA-Z]+/;
-const MARKDOWN_INLINE_BOUNDARY_RE = /`|!?\[[^\]\n]*\]\(|<\/?[a-zA-Z][^>\n]*>/;
+const MARKDOWN_INLINE_BOUNDARY_RE =
+  /`|!?\[[^\]\n]*\](?:\(|\[[^\]\n]*\])|<\/?[a-zA-Z][^>\n]*>/;
 const HTML_LITERAL_TAG_START_RE = /^<\/?(code|pre|textarea)(?=[\s/>])/i;
 const CURRENCY_OPENER_RE =
   /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
@@ -435,6 +437,7 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
   const masked = markdown.replace(CURRENCY_OPENER_RE, (opener, offset) =>
     hasLikelyMathCloser(markdown, offset) ? opener : MASKED_DOLLAR,
   );
+  const openCodeTail = openCodeSpanTail(masked);
   const tree = fromMarkdown(masked, {
     extensions: [
       gfm(),
@@ -460,7 +463,8 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
       node.type === "inlineMath" &&
       escapedMathNodes.has(node) &&
       start !== undefined &&
-      end !== undefined
+      end !== undefined &&
+      !(openCodeTail && start >= openCodeTail.start && start < openCodeTail.end)
     ) {
       ranges.push({
         start,
