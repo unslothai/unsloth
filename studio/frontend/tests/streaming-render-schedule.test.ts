@@ -9,6 +9,7 @@ import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  markdownRenderScope,
   parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
@@ -166,7 +167,8 @@ test("link references and definitions stay in one rendered document", () => {
 
   const complete = `${usage}[math-ref]: https://example.com/reference`;
   const render = cache.update(complete);
-  assert.equal(cache.renderGeneration, generation + 1);
+  assert.equal(cache.renderGeneration, generation);
+  assert.notEqual(markdownRenderScope(usage), markdownRenderScope(complete));
   assert.equal(render.markdown, remend(complete));
   assert.deepEqual(render.parseMarkdownIntoBlocks(render.markdown), [
     remend(complete),
