@@ -1799,6 +1799,25 @@ def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     assert plan is not None and plan.spills_anything
 
 
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--cpu-range", "0-2", "--cpu-strict", "1"],
+        ["-C", "0x3"],
+        ["--cpu-mask=0x3"],
+    ],
+)
+def test_affinity_constrained_decode_declines_spill_planning(monkeypatch, extra_args):
+    import core.inference.llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    assert _plan(
+        _Stub(),
+        free_mib = 14 * 1024,
+        extra_args = extra_args,
+    ) is None
+
+
 def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):
     from core.inference.llama_cpp import _linux_math_core_count
 

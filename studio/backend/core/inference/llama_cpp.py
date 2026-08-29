@@ -3332,6 +3332,7 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+_GENERATION_CPU_AFFINITY_FLAGS = frozenset({"-C", "--cpu-mask", "-Cr", "--cpu-range"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
 
 
@@ -3402,9 +3403,9 @@ def _spilled_decode_threads(
     A positive override follows the launched command's managed-flag, then
     pass-through precedence. An inherited ``LLAMA_ARG_THREADS`` is ignored here
     because Studio removes it before spawn whenever argv has no thread flag; if
-    argv does have one, that later flag wins. Explicit SMT oversubscription
-    cannot be represented by this physical-core model and returns ``None`` so
-    the caller can decline. Otherwise llama.cpp sizes its pool from
+    argv does have one, that later flag wins. Explicit SMT oversubscription and
+    CPU affinity cannot be represented by this physical-core model and return
+    ``None`` so the caller can decline. Otherwise llama.cpp sizes its pool from
     ``common_cpu_get_num_math``, which counts physical cores
     and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
     hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
@@ -3420,6 +3421,8 @@ def _spilled_decode_threads(
     if n_threads is not None and n_threads > 0:
         requested = int(n_threads)
     args = [str(arg) for arg in extra_args] if extra_args else []
+    if any(arg.partition("=")[0] in _GENERATION_CPU_AFFINITY_FLAGS for arg in args):
+        return None
     for i, arg in enumerate(args):
         name, _, inline = arg.partition("=")
         if name not in _THREAD_OVERRIDE_FLAGS:
@@ -25197,9 +25200,7 @@ class LlamaCppBackend:
             extra_args,
         )
         if decode_threads is None:
-            logger.debug(
-                "Tensor spill: declined, explicit decode threads exceed physical cores"
-            )
+            logger.debug("Tensor spill: declined, decode CPU settings cannot be priced")
             return None
 
         return plan_placement(
