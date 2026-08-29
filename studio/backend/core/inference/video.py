@@ -156,6 +156,7 @@ from .video_minimax_h3 import (
     h3_transformer_task,
 )
 from .video_minimax_h3_te import (
+    H3_LEGACY_TE_QUANT_REPO,
     H3_TE_QUANT_DEFAULT,
     H3_TE_QUANT_REPO,
     h3_te_quant_scheme,
@@ -1368,10 +1369,19 @@ class VideoBackend:
         # _loading. begin_load returns as soon as the thread is scheduled, and a delete arriving in
         # that gap sees only repo_id and base_repo, passes the guard, and starts removing a
         # companion repo this load needs. A later claim does not revoke a delete already admitted.
-        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO, is_h3_native
+        from .video_minimax_h3 import (
+            H3_COMPONENT_REPO,
+            H3_GGUF_REPO,
+            H3_LEGACY_COMPONENT_REPO,
+            is_h3_native,
+        )
 
         h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
-        claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
+        # Both ids: an install may hold the components under either the mirror or the repack it
+        # was mirrored from, and whichever one this load reads must be protected.
+        claimed_assets = (
+            (H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO) if h3_native else ()
+        )
 
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -1530,8 +1540,15 @@ class VideoBackend:
                     # out from under the in-flight fetch (or out from under the assembly, while
                     # the base snapshot that no longer carries a dense encoder is still coming
                     # down). Same registration the native H3 path makes for its companions.
+                    # Both ids, for the same reason the native path claims both: an install
+                    # whose cache predates the move reads the artifact from the repack, and a
+                    # claim over only the mirror would leave the entry this load is reading
+                    # deletable mid-fetch.
                     if h3_te_scheme:
-                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
+                        self._loading.asset_repos = self._loading.asset_repos + (
+                            H3_TE_QUANT_REPO,
+                            H3_LEGACY_TE_QUANT_REPO,
+                        )
                     self._loading.expected_bytes = expected
             # Checkpoint downloads outside the lock so an unload can preempt the multi-GB pull; companions pre-download the same way.
             checkpoint_local: Optional[Path] = None
@@ -1682,10 +1699,10 @@ class VideoBackend:
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
-            H3_AUDIO_VAE,
             H3_COMPONENT_REPO,
             H3_GGUF_REPO,
-            H3_VIDEO_VAE,
+            H3_LEGACY_COMPONENT_REPO,
+            h3_component_metadata_repo,
             h3_download_error,
             h3_text_encoder_filename,
         )
@@ -1704,7 +1721,15 @@ class VideoBackend:
         with self._lock:
             if self._load_token == token and self._loading is not None:
                 self._loading.base_repo = fam.base_repo
-                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
+                # Every id a component source can resolve to, which is the triple begin_load
+                # already publishes. Naming one resolved answer instead would leave the OTHER
+                # deletable, and the two VAEs are resolved independently: an interrupted pre-move
+                # pull can leave one on the repack and the other on the mirror.
+                self._loading.asset_repos = (
+                    H3_GGUF_REPO,
+                    H3_COMPONENT_REPO,
+                    H3_LEGACY_COMPONENT_REPO,
+                )
 
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
         # predates H3 runs fine and so clears the version() gate below, then aborts on the first
@@ -1779,12 +1804,7 @@ class VideoBackend:
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
 
-        requests = (
-            (repo_id, filename),
-            (self._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
-            (H3_COMPONENT_REPO, H3_VIDEO_VAE),
-            (H3_COMPONENT_REPO, H3_AUDIO_VAE),
-        )
+        requests = self._h3_native_requests(repo_id, filename, qwen_filename)
         total = 0
         try:
             # Skipped wholesale offline: model_info is a Hub call, and the number it produces is
@@ -1797,7 +1817,7 @@ class VideoBackend:
                     break
                 if Path(repo).expanduser().exists():
                     continue
-                info = api.model_info(repo, files_metadata = True)
+                info = api.model_info(h3_component_metadata_repo(repo), files_metadata = True)
                 total += sum(
                     int(s.size or 0) for s in (info.siblings or []) if s.rfilename == wanted
                 )
@@ -2357,11 +2377,18 @@ class VideoBackend:
         way: the base entry drops the dense ``text_encoder/`` shards whenever this resolves, so
         without it the artifact that replaces them is in no entry at all and the disk preflight
         passes on a volume that cannot hold the 27 GB it is about to pull."""
-        from .video_minimax_h3_te import h3_te_quant_filename
+        from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
 
         filename = h3_te_quant_filename(scheme)
         if filename is None:
             return None, []
+        # The repo the fetch will read, so the entry's cached/loadable check asks about the id the
+        # bytes are actually under. Its SIZE comes from the mirror: the repack is a source of
+        # bytes already on disk, never of network metadata, and one taken down since would make
+        # this report no hosted artifact -- after which the plan stages the 62 GB dense
+        # text_encoder shards that the load, reading the artifact straight out of that same cache,
+        # never opens. The two copies are byte identical, so the number is the same.
+        repo = h3_te_quant_source(scheme)
         try:
             info = api.model_info(H3_TE_QUANT_REPO, files_metadata = True)
         except Exception:  # noqa: BLE001 -- an unavailable artifact keeps the dense encoder
@@ -2371,7 +2398,7 @@ class VideoBackend:
             for s in (info.siblings or [])
             if s.rfilename == filename
         ]
-        return (H3_TE_QUANT_REPO, files) if files else (None, [])
+        return (repo, files) if files else (None, [])
 
     def _fetch_h3_te_quant(
         self,
@@ -2396,7 +2423,7 @@ class VideoBackend:
         ``local_files_only`` turns the pull into a cache lookup. An artifact already staged still
         earns the skip; one that is not raises inside the same handler a failed fetch lands in, so
         the load keeps the dense encoder rather than being refused."""
-        from .video_minimax_h3_te import h3_te_quant_filename
+        from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
 
         filename = h3_te_quant_filename(scheme)
         if filename is None:
@@ -2404,9 +2431,10 @@ class VideoBackend:
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+        repo = h3_te_quant_source(scheme)
         try:
             hf_hub_download_with_xet_fallback(
-                H3_TE_QUANT_REPO,
+                repo,
                 filename,
                 hf_token,
                 cancel_event = cancel,
@@ -2417,9 +2445,7 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- no artifact just means the dense encoder
             if cancel.is_set():
                 raise
-            logger.warning(
-                "video.h3_te_quant_fetch_failed: %s/%s: %s", H3_TE_QUANT_REPO, filename, exc
-            )
+            logger.warning("video.h3_te_quant_fetch_failed: %s/%s: %s", repo, filename, exc)
             return ()
         return ("text_encoder",)
 
@@ -3020,23 +3046,60 @@ class VideoBackend:
         }
 
     @staticmethod
-    def _h3_text_encoder_repo(repo_id: str, qwen_filename: str) -> str:
-        """Which repo the H3 native text encoder comes from, preferring a local bundle.
+    def _h3_bundled_repo(repo_id: str, filename: str, hub_repo: str) -> str:
+        """``repo_id`` when it is a LOCAL directory that already holds ``filename``, else
+        ``hub_repo``.
 
-        The GGUF bundle ships the Qwen encoder beside the denoiser partitions, so when the pick is
-        a LOCAL clone of it the encoder is already on disk. Hardcoding the Hub repo instead would
-        re-fetch multiple GB that are sitting next to the checkpoint, and fail outright offline."""
-        from .video_minimax_h3 import H3_GGUF_REPO
-
+        The GGUF bundle ships the Qwen encoder AND both VAEs beside the denoiser partitions, so a
+        local clone of it holds every native component. Hardcoding the Hub repo instead re-fetches
+        several GB that are sitting next to the checkpoint, and fails outright offline -- which
+        would make the self-contained bundle self-contained everywhere except on disk."""
         root = Path(repo_id).expanduser()
         if root.is_dir():
             from .diffusion_families import resolve_local_gguf_child
             try:
-                resolve_local_gguf_child(root, qwen_filename)
+                resolve_local_gguf_child(root, filename)
             except Exception:  # noqa: BLE001 -- not in the local clone, so the Hub copy it is
-                return H3_GGUF_REPO
+                return hub_repo
             return repo_id
-        return H3_GGUF_REPO
+        return hub_repo
+
+    @staticmethod
+    def _h3_text_encoder_repo(repo_id: str, qwen_filename: str) -> str:
+        """Which repo the H3 native text encoder comes from, preferring a local bundle."""
+        from .video_minimax_h3 import H3_GGUF_REPO
+        return VideoBackend._h3_bundled_repo(repo_id, qwen_filename, H3_GGUF_REPO)
+
+    @staticmethod
+    def _h3_native_requests(
+        repo_id: str, filename: str, qwen_filename: str
+    ) -> tuple[tuple[str, str], ...]:
+        """``(repo, filename)`` for the four native H3 components, in download order.
+
+        ONE builder for the plan and the load: they must agree file for file and repo for repo,
+        and they disagreed the moment either one grew a source rule the other did not have.
+
+        Per FILE, in the order the rules apply: a local bundle first, then the cache-aware source
+        for whatever the bundle does not hold. The loop downloads these one at a time, so a bundle
+        carrying one VAE and a pre-move cache holding the other is fully satisfiable, and deciding
+        the pair together would send the second one to the mirror."""
+        from .video_minimax_h3 import H3_AUDIO_VAE, H3_VIDEO_VAE, h3_component_source
+        return (
+            (repo_id, filename),
+            (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
+            (
+                VideoBackend._h3_bundled_repo(
+                    repo_id, H3_VIDEO_VAE, h3_component_source(H3_VIDEO_VAE)
+                ),
+                H3_VIDEO_VAE,
+            ),
+            (
+                VideoBackend._h3_bundled_repo(
+                    repo_id, H3_AUDIO_VAE, h3_component_source(H3_AUDIO_VAE)
+                ),
+                H3_AUDIO_VAE,
+            ),
+        )
 
     @staticmethod
     def _h3_native_download_plan(
@@ -3045,9 +3108,7 @@ class VideoBackend:
         from huggingface_hub import HfApi
 
         from .video_minimax_h3 import (
-            H3_AUDIO_VAE,
-            H3_COMPONENT_REPO,
-            H3_VIDEO_VAE,
+            h3_component_metadata_repo,
             h3_text_encoder_filename,
             validate_h3_transformer_filename,
         )
@@ -3055,12 +3116,9 @@ class VideoBackend:
 
         validate_h3_transformer_filename(gguf_filename)
         qwen_filename = h3_text_encoder_filename(gguf_filename)
-        wanted = (
-            (repo_id, gguf_filename),
-            (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
-            (H3_COMPONENT_REPO, H3_VIDEO_VAE),
-            (H3_COMPONENT_REPO, H3_AUDIO_VAE),
-        )
+        # The same builder the load uses, so the plan cannot promise a download from one repo and
+        # then fetch from the other.
+        wanted = VideoBackend._h3_native_requests(repo_id, gguf_filename, qwen_filename)
         grouped: dict[str, dict[str, Any]] = {}
         missing_files: dict[str, set[str]] = {}
         total = 0
@@ -3071,10 +3129,18 @@ class VideoBackend:
             for repo, filename in wanted:
                 if Path(repo).expanduser().exists():
                     continue
-                info = api.model_info(repo, files_metadata = True)
+                # Sizes come from the repo we control even when the bytes will be read from the
+                # repack it was mirrored from. The repack may have been taken down since -- the
+                # failure this move exists to survive -- and one raising model_info here fails the
+                # WHOLE plan, so a load its own cache can still satisfy is refused by every
+                # locality-dependent caller.
+                meta_repo = h3_component_metadata_repo(repo)
+                info = api.model_info(meta_repo, files_metadata = True)
                 match = next((s for s in (info.siblings or []) if s.rfilename == filename), None)
                 if match is None:
-                    raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
+                    raise ValueError(
+                        f"Required MiniMax-H3 component is missing: {meta_repo}/{filename}"
+                    )
                 size = int(match.size or 0)
                 required_total += size
                 if repo == repo_id and filename == gguf_filename:
@@ -3091,7 +3157,10 @@ class VideoBackend:
                 )
                 if filename not in entry["files"]:
                     entry["files"].append(filename)
-                    revision = getattr(info, "sha", None)
+                    # Only when the metadata came from the repo the bytes come from: the mirror's
+                    # head says nothing about which snapshot the repack's cache holds, and a
+                    # foreign sha would only ever be a pinned miss.
+                    revision = getattr(info, "sha", None) if meta_repo == repo else None
                     if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
                         missing_files.setdefault(repo, set()).add(filename)
                         entry["bytes"] += size
@@ -3364,9 +3433,13 @@ class VideoBackend:
             if state is None or state.engine != "sd_cpp":
                 return ()
             repo_id = state.repo_id
-        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+        from .video_minimax_h3 import (
+            H3_COMPONENT_REPO,
+            H3_GGUF_REPO,
+            H3_LEGACY_COMPONENT_REPO,
+        )
 
-        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO)
+        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)
 
     # ── the load itself ──────────────────────────────────────────────────────
 
