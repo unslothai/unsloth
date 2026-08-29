@@ -249,9 +249,9 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
     # the repo-wide scan above. What the relaxation gives up is the port literal, which
     # this check was never really about; test_indicator_browsers_run_in_parallel.py asserts
     # the ports are distinct, which is the property the number was standing in for.
-    assert "run-studio-indicator-browser.sh" in runs, (
-        "the ui-indicator job no longer invokes the cross-browser indicator helper at all"
-    )
+    assert (
+        "run-studio-indicator-browser.sh" in runs
+    ), "the ui-indicator job no longer invokes the cross-browser indicator helper at all"
     missing = [
         engine
         for engine in ("chromium", "firefox", "webkit")
