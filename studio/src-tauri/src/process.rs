@@ -1233,6 +1233,47 @@ pub(crate) fn clear_adopted_backend_if_current(
     true
 }
 
+/// Drop a spawned backend whose child has already exited.
+///
+/// Preflight otherwise keeps returning `desktop_owned_backend_starting` forever
+/// for a dead handle, so the UI never reaches `managed_ready` / `start_managed_server`
+/// (#9756). Live children are left alone so a real in-flight spawn still waits.
+pub(crate) fn clear_dead_spawned_backend_if_current(
+    state: &BackendState,
+    generation: u64,
+    reason: &str,
+) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation {
+        return false;
+    }
+    let Some(child) = proc.owned.as_mut().and_then(OwnedBackendHandle::spawned_child_mut) else {
+        return false;
+    };
+    let dead = match child.try_wait() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        // Cannot observe the child: prefer clearing so launch can respawn rather
+        // than claim "still starting" indefinitely.
+        Err(_) => true,
+    };
+    if !dead {
+        return false;
+    }
+
+    warn!("Clearing dead spawned backend state after {reason}");
+    if let Some(owned) = proc.owned.take() {
+        owned.remove_owner_metadata();
+    }
+    proc.port = None;
+    proc.diagnostics_session = None;
+    proc.adopted_watchdog_generation = None;
+    true
+}
+
 pub(crate) fn claim_adopted_watchdog_if_current(state: &BackendState, generation: u64) -> bool {
     let mut proc = match state.lock() {
         Ok(guard) => guard,

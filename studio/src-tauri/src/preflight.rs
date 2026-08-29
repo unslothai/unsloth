@@ -273,10 +273,18 @@ pub async fn desktop_preflight_result_with_state(
                 Some(port) => backend::probe_ownerless_spawned_backend(port).await,
                 None => backend,
             };
-            return Ok((
-                choose_ownerless_spawned_preflight(&managed, &probe, snapshot.port),
-                None,
-            ));
+            let transitional = choose_ownerless_spawned_preflight(&managed, &probe, snapshot.port);
+            if transitional.disposition == DesktopPreflightDisposition::ExternalConflict
+                && transitional.reason.as_deref() == Some("desktop_owned_backend_starting")
+                && crate::process::clear_dead_spawned_backend_if_current(
+                    state,
+                    snapshot.generation,
+                    "ownerless spawned backend no longer answers",
+                )
+            {
+                return Ok((choose_preflight(managed, backend), None));
+            }
+            return Ok((transitional, None));
         };
         match crate::desktop_backend_owner::probe_owned_backend_state(
             owner,
@@ -319,6 +327,16 @@ pub async fn desktop_preflight_result_with_state(
                         snapshot.port,
                         "state owner probe no longer verifies",
                     );
+                    return Ok((choose_preflight(managed, backend), None));
+                }
+                // Spawned but unreachable: if the child is already dead, clear and
+                // fall through to managed_ready so we spawn again (#9756). A live
+                // child still gets the transitional "starting" disposition.
+                if crate::process::clear_dead_spawned_backend_if_current(
+                    state,
+                    snapshot.generation,
+                    "state owner probe no longer verifies",
+                ) {
                     return Ok((choose_preflight(managed, backend), None));
                 }
                 return Ok((

@@ -308,6 +308,42 @@ export function useTauriBackend() {
         case "external_conflict":
           setIsExternalServer(false);
           stopExternalServerPoll();
+          // A dead spawned handle used to return "still starting" forever and never
+          // call start_managed_server (#9756). Native preflight now clears dead
+          // children; if we still see this (race), wait briefly and retry once.
+          if (preflight.reason === "desktop_owned_backend_starting") {
+            setBackendStatus("starting");
+            setStartupMessage(INITIAL_STARTUP_MESSAGE);
+            await wait(1500);
+            const retry = await invoke<DesktopPreflightResult>("desktop_preflight");
+            if (retry.disposition === "managed_ready") {
+              setIsExternalServer(false);
+              stopExternalServerPoll();
+              setBackendStatus("starting");
+              await startManagedServer();
+              return;
+            }
+            if (retry.disposition === "owned_ready" && retry.port) {
+              setApiBase(retry.port);
+              portRef.current = retry.port;
+              setIsExternalServer(false);
+              stopExternalServerPoll();
+              setStartupMessage(SERVER_STARTUP_MESSAGE);
+              setRunningStatus();
+              return;
+            }
+            if (retry.disposition === "attached_ready" && retry.port) {
+              setApiBase(retry.port);
+              portRef.current = retry.port;
+              setIsExternalServer(true);
+              setStartupMessage(SERVER_STARTUP_MESSAGE);
+              setRunningStatus();
+              startExternalServerPoll(retry.port);
+              return;
+            }
+            setBackendError(externalConflictMessage(retry.disposition === "external_conflict" ? retry : preflight));
+            return;
+          }
           setBackendError(externalConflictMessage(preflight));
           return;
         case "not_installed":
