@@ -52,11 +52,17 @@ def test_seed_pointer_survives_bootstrap_suppression(tmp_path, monkeypatch, caps
     a public launch restarted before first login.
     """
     import asyncio
+    import threading
 
     from fastapi import FastAPI
 
     import main as studio_main
     from auth import storage
+    from core.rag import folder_sync
+
+    # Keep lifespan shutdown from latching folder-sync's global events for later tests.
+    monkeypatch.setattr(folder_sync, "_stop", threading.Event())
+    monkeypatch.setattr(folder_sync, "_wake", threading.Event())
 
     authdir = tmp_path / "auth"
     authdir.mkdir(parents = True)
