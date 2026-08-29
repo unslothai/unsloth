@@ -60,9 +60,9 @@ _PREBUILT_FAILED_PREFIX = "[llama-prebuilt] prebuilt install failed:"
 def _installer_actionable_detail(lines: list[str]) -> str | None:
     """Pull a short, user-facing reason out of installer stdout.
 
-    The installer logs the real failure before dumping a long system report
-  (Windows PATH lines, nvidia-smi, etc.). A raw tail of stdout therefore hides
-    rate-limit and network errors behind noise (#9970).
+      The installer logs the real failure before dumping a long system report
+    (Windows PATH lines, nvidia-smi, etc.). A raw tail of stdout therefore hides
+      rate-limit and network errors behind noise (#9970).
     """
     for line in lines:
         stripped = line.strip()

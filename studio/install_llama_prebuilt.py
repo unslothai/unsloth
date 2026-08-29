@@ -2135,9 +2135,7 @@ def iter_resolved_published_releases(
         try:
             resolved = _download_host_resolved_release(repo, fast_path_tag)
         except PrebuiltFallback as exc:
-            log(
-                f"download-host release rejected for {repo}@{tag_label} ({exc}); trying GitHub API"
-            )
+            log(f"download-host release rejected for {repo}@{tag_label} ({exc}); trying GitHub API")
             resolved = None
         except Exception as exc:
             log(
