@@ -5269,12 +5269,11 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
 
 
 def _monitor_safetensors_stats_holder(monitor_id: Optional[str]) -> dict:
-    holder: dict = {}
-    if monitor_id:
-        holder[MONITOR_TOKEN_CALLBACK_STATS_KEY] = lambda: api_monitor.record_decoded_token(
-            monitor_id
-        )
-    return holder
+    if not monitor_id:
+        return {}
+    return {
+        MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: api_monitor.record_decoded_token(monitor_id)
+    }
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
