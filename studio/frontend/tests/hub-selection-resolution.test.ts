@@ -233,6 +233,44 @@ test("keeps an unclassified local HF-cache partial selected across GGUF resume a
   }
 });
 
+test("keeps an unclassified local HF-cache partial selected across safetensors resume and cancel", () => {
+  const repoId = "Org/Partial-Model";
+  const local = buildUnknownHfCacheRow(repoId);
+  const live = {
+    ...buildCachedInventoryRow(
+      {
+        repo_id: repoId,
+        model_format: "safetensors",
+        size_bytes: 50,
+        partial: true,
+        optimistic: true,
+      },
+      "safetensors",
+    ),
+    liveDownload: true,
+  };
+
+  assert.ok(local);
+  const resumed = dedupeSameSourceHubCacheRows({
+    cachedRows: [live],
+    localRows: [local],
+  });
+  assert.deepEqual(resumed.localRows, []);
+  assert.deepEqual(resolveInventorySelection(resumed, local.id), {
+    selectedId: live.id,
+    hiddenByFilters: false,
+  });
+
+  const cancelled = dedupeSameSourceHubCacheRows({
+    cachedRows: [],
+    localRows: [local],
+  });
+  assert.deepEqual(resolveInventorySelection(cancelled, live.id), {
+    selectedId: local.id,
+    hiddenByFilters: false,
+  });
+});
+
 test("keeps an unclassified local HF-cache partial selected when safetensors completes", () => {
   const repoId = "Org/Partial-Model";
   const local = buildUnknownHfCacheRow(repoId);

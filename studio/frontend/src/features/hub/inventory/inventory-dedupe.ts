@@ -102,11 +102,11 @@ export function dedupeSameSourceHubCacheRows({
 } {
   const uniqueCachedRows = dedupeCachedRows(cachedRows);
   const completeCachedRepos = new Set<string>();
-  const partialGgufRepos = new Set<string>();
+  const partialKnownFormatRepos = new Set<string>();
   for (const row of uniqueCachedRows) {
-    if (row.partial && row.modelFormat === "gguf") {
+    if (row.partial && row.modelFormat !== "unknown") {
       const repo = repoKey(row.repoId);
-      if (repo) partialGgufRepos.add(repo);
+      if (repo) partialKnownFormatRepos.add(repo);
     }
     if (row.partial) {
       continue;
@@ -119,9 +119,9 @@ export function dedupeSameSourceHubCacheRows({
 
   const completeHfCacheLocalKeys = new Set<string>();
   for (const row of localRows) {
-    if (row.partial && row.modelFormat === "gguf") {
+    if (row.partial && row.modelFormat !== "unknown") {
       const repo = repoKey(row.repoId);
-      if (repo) partialGgufRepos.add(repo);
+      if (repo) partialKnownFormatRepos.add(repo);
     }
     if (row.source !== "hf_cache" || row.partial) {
       continue;
@@ -139,7 +139,7 @@ export function dedupeSameSourceHubCacheRows({
       !row.liveDownload &&
       row.modelFormat === "unknown" &&
       repo &&
-      partialGgufRepos.has(repo)
+      partialKnownFormatRepos.has(repo)
     ) {
       return false;
     }
@@ -168,7 +168,7 @@ export function dedupeSameSourceHubCacheRows({
         row.partial &&
         row.modelFormat === "unknown" &&
         repo &&
-        partialGgufRepos.has(repo)
+        partialKnownFormatRepos.has(repo)
       ) {
         return false;
       }
