@@ -255,9 +255,19 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
         lists,
         activeFence?.quotes ?? quotes,
       );
-      const fenceSource: string = activeFence
-        ? stripIndent(container, activeFence.column)
-        : itemContent(container, afterParagraph);
+      let fenceSource: string;
+      if (activeFence) {
+        fenceSource = stripIndent(container, activeFence.column);
+      } else {
+        fenceSource = container;
+        let previous: string;
+        let itemAfterParagraph = afterParagraph;
+        do {
+          previous = fenceSource;
+          fenceSource = itemContent(fenceSource, itemAfterParagraph);
+          itemAfterParagraph = false;
+        } while (fenceSource !== previous);
+      }
       const fence = FENCE_LINE_RE.exec(fenceSource);
       if (fence !== null) {
         lists = openLists(text, lists, afterParagraph, above.quoted);

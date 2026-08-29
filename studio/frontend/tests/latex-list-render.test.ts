@@ -196,5 +196,13 @@ test("normalization precedes streaming repair and currency escaping", () => {
     );
     assert.equal(currency.match(/application\/x-tex/g)?.length ?? 0, 0);
     assert.ok(currency.includes("$5 + a $10 add-on"));
+
+    const mixedCurrency = renderResponse(
+      String.raw`Cost $5; variable \$x\$; cap $10`,
+      isStreaming,
+    );
+    assertMath(mixedCurrency, ["x"]);
+    assert.ok(mixedCurrency.includes("Cost $5; variable"));
+    assert.ok(mixedCurrency.includes("; cap $10"));
   }
 });

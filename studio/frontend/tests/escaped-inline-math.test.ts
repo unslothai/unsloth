@@ -97,6 +97,12 @@ test("Markdown syntax decides where escaped math is allowed", () => {
   const rawCode = render(String.raw`<code>\$x_1\$</code> after \$y_2\$`);
   assert.deepEqual(annotations(rawCode), ["y_2"]);
   assert.match(rawCode, /data-streamdown="inline-code">\$x_1\$<\/code>/);
+
+  const quotedAttribute = render(
+    String.raw`<code title="x > y">\$v_s\$</code>`,
+  );
+  assert.deepEqual(annotations(quotedAttribute), []);
+  assert.ok(quotedAttribute.includes("$v_s$"));
 });
 
 test("escaped candidates cannot consume nested Markdown", () => {
@@ -171,6 +177,18 @@ test("escaped currency inside a braced math command is not a closer", () => {
   assert.ok(!html.includes("katex-error"));
 });
 
+test("currency markers do not hide escaped math between them", () => {
+  const markdown = String.raw`Cost $5; variable \$x\$; cap $10`;
+  assert.equal(
+    normalizeEscapedInlineMath(markdown),
+    "Cost $5; variable $x$; cap $10",
+  );
+  const html = render(markdown);
+  assert.deepEqual(annotations(html), ["x"]);
+  assert.ok(html.includes("Cost $5; variable"));
+  assert.ok(html.includes("; cap $10"));
+});
+
 test("less-than signs remain valid inside TeX text", () => {
   const html = render(String.raw`\$\text{x<y}\$`);
   assert.deepEqual(annotations(html), [
@@ -184,6 +202,7 @@ test("escaped dollars inside existing math stay inside that math", () => {
   const exactBoundary = String.raw`\text{Revenue: \$USD\$}`.padEnd(200, "x");
   const cases = [
     String.raw`$\text{Revenue: \$USD\$}$`,
+    String.raw`$30^\circ + \text{\$x\$}$`,
     `$${exactBoundary}$`,
     String.raw`\(\text{Revenue: \$x\$}\)`,
     String.raw`$$
@@ -195,6 +214,19 @@ $$`,
     assert.equal(normalizeEscapedInlineMath(markdown), markdown);
     assert.equal(render(markdown), render(markdown, "static", false), markdown);
   }
+});
+
+test("unmatched bracket math does not escape its Markdown block", () => {
+  const markdown = String.raw`unfinished \(
+
+- \$v_s\$`;
+  assert.equal(
+    normalizeEscapedInlineMath(markdown),
+    String.raw`unfinished \(
+
+- $v_s$`,
+  );
+  assert.deepEqual(annotations(render(markdown)), ["v_s"]);
 });
 
 test("streaming waits for the escaped closer", () => {

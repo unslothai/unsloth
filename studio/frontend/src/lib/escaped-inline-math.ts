@@ -45,7 +45,11 @@ const SIMPLE_EXPRESSION_RE = new RegExp(
 const SIMPLE_FUNCTION_RE = /^[a-zA-Z]\([a-zA-Z0-9]\)$/;
 const COMMAND_RE = /^[a-zA-Z]+/;
 const MARKDOWN_INLINE_BOUNDARY_RE = /`|!?\[[^\]\n]*\]\(|<\/?[a-zA-Z][^>\n]*>/;
-const HTML_LITERAL_TAG_RE = /^<\/?(code|pre|textarea)(?:\s[^>]*)?\s*\/?>$/i;
+const HTML_LITERAL_TAG_START_RE = /^<\/?(code|pre|textarea)(?=[\s/>])/i;
+const CURRENCY_OPENER_RE =
+  /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
+const DIGIT_RE = /\d/;
+const MASKED_DOLLAR = "＄";
 const TEXT_COMMANDS = new Set([
   "emph",
   "hbox",
@@ -82,7 +86,7 @@ function isInHtmlLiteral(context: TokenizeContext): boolean {
       continue;
     }
     const source = context.sliceSerialize(token);
-    const match = HTML_LITERAL_TAG_RE.exec(source);
+    const match = HTML_LITERAL_TAG_START_RE.exec(source);
     if (!match) {
       continue;
     }
@@ -392,7 +396,6 @@ const escapedMathFromMarkdown: FromMarkdownExtension = {
 
 type MarkdownNode = {
   readonly type: string;
-  readonly value?: string;
   readonly position?: {
     readonly start: { readonly offset?: number };
     readonly end: { readonly offset?: number };
@@ -406,8 +409,33 @@ type EscapedMathRange = {
   readonly value: string;
 };
 
+function hasLikelyMathCloser(markdown: string, offset: number): boolean {
+  const limit = Math.min(markdown.length, offset + MAX_BODY_LENGTH + 1);
+  for (let index = offset + 1; index < limit; index += 1) {
+    const character = markdown[index];
+    if (character === "\n" || character === "\r") {
+      return false;
+    }
+    if (character !== "$" || markdown[index - 1] === "\\") {
+      continue;
+    }
+    if (markdown[index + 1] === "$") {
+      index += 1;
+      continue;
+    }
+    if (DIGIT_RE.test(markdown[index + 1] ?? "")) {
+      continue;
+    }
+    return looksLikeEscapedInlineMath(markdown.slice(offset + 1, index));
+  }
+  return false;
+}
+
 function escapedMathRanges(markdown: string): EscapedMathRange[] {
-  const tree = fromMarkdown(markdown, {
+  const masked = markdown.replace(CURRENCY_OPENER_RE, (opener, offset) =>
+    hasLikelyMathCloser(markdown, offset) ? opener : MASKED_DOLLAR,
+  );
+  const tree = fromMarkdown(masked, {
     extensions: [
       gfm(),
       math({ singleDollarTextMath: true }),
@@ -431,11 +459,14 @@ function escapedMathRanges(markdown: string): EscapedMathRange[] {
     if (
       node.type === "inlineMath" &&
       escapedMathNodes.has(node) &&
-      node.value !== undefined &&
       start !== undefined &&
       end !== undefined
     ) {
-      ranges.push({ start, end, value: node.value });
+      ranges.push({
+        start,
+        end,
+        value: markdown.slice(start + 2, end - 2).trim(),
+      });
     }
     if (node.children) {
       pending.push(...node.children);
