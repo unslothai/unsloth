@@ -53,7 +53,6 @@ import {
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
 import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
-import { formatTokenCountFull } from "./lib/context-usage-bar-state";
 import {
   exportConversationRawJsonl,
   exportConversationMessagesJsonl,
@@ -279,17 +278,7 @@ export function ThreadSidebar({
                         fork
                       </span>
                     ) : null}
-                    <span className="min-w-0">
-                      <span className="block truncate">{item.title}</span>
-                      {item.type === "single" ? (
-                        <span className="block text-ui-10 text-muted-foreground">
-                          Last request:{" "}
-                          {item.lastRequestUsage
-                            ? `${formatTokenCountFull(item.lastRequestUsage.totalTokens)} tokens`
-                            : "—"}
-                        </span>
-                      ) : null}
-                    </span>
+                    <span>{item.title}</span>
                   </SidebarMenuButton>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
