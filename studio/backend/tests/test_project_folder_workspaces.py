@@ -152,6 +152,74 @@ def test_folder_workspace_rejects_a_windows_junction_boundary(tmp_path, monkeypa
         )
 
 
+def test_folder_claim_requires_a_real_write_probe(tmp_path, monkeypatch):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    project = _folder_claim("project-write-probe", folder)
+    calls = []
+
+    def deny_probe(resolved, *args, **kwargs):
+        calls.append(str(resolved))
+        raise PermissionError("ACL denied")
+
+    monkeypatch.setattr(studio_db, "_probe_folder_writable", deny_probe)
+
+    with pytest.raises(studio_db.ProjectWorkspaceError, match = "ACL denied"):
+        studio_db.claim_chat_project_folder(project)
+
+    assert calls == [str(folder.resolve())]
+    assert studio_db.get_chat_project(project["id"]) is None
+
+
+def test_folder_claim_probe_fails_closed_when_the_path_becomes_a_symlink(tmp_path, monkeypatch):
+    folder = tmp_path / "repository"
+    redirect = tmp_path / "redirect"
+    moved = tmp_path / "repository-original"
+    folder.mkdir()
+    redirect.mkdir()
+    project = _folder_claim("project-probe-race", folder)
+    real_probe = studio_db._probe_folder_writable
+
+    def swap_then_probe(resolved, *args, **kwargs):
+        folder.rename(moved)
+        folder.symlink_to(redirect, target_is_directory = True)
+        return real_probe(resolved, *args, **kwargs)
+
+    monkeypatch.setattr(studio_db, "_probe_folder_writable", swap_then_probe)
+
+    with pytest.raises(studio_db.ProjectWorkspaceError):
+        studio_db.claim_chat_project_folder(project)
+
+    assert studio_db.get_chat_project(project["id"]) is None
+    assert list(redirect.iterdir()) == []
+    folder.unlink()
+    moved.rmdir()
+
+
+def test_workspace_health_does_not_probe_or_touch_the_folder(tmp_path, monkeypatch):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    metadata = folder.stat()
+    calls = []
+
+    def deny_probe(*args, **kwargs):
+        calls.append(args[0] if args else None)
+        raise AssertionError("health checks must not write to the selected folder")
+
+    monkeypatch.setattr(studio_db, "_probe_folder_writable", deny_probe)
+
+    assert (
+        studio_db._ensure_folder_workspace(
+            str(folder),
+            str(metadata.st_dev),
+            str(metadata.st_ino),
+            str(metadata.st_ctime_ns),
+        )
+        == str(folder.resolve())
+    )
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     "request_type,fields",
     [

@@ -416,6 +416,8 @@ def _ensure_folder_workspace(
     expected_device_id: str | None,
     expected_file_id: str | None,
     expected_change_time_ns: str | int | None = None,
+    *,
+    verify_writable: bool = False,
 ) -> str:
     root = Path(root_path).expanduser()
     try:
@@ -434,9 +436,79 @@ def _ensure_folder_workspace(
             raise OSError("Selected project folder identity changed")
         if not os.access(resolved, os.R_OK | os.W_OK | os.X_OK):
             raise PermissionError("Selected project folder must be readable and writable")
+        if verify_writable:
+            _probe_folder_writable(
+                resolved,
+                expected_device_id,
+                expected_file_id,
+                expected_change_time_ns,
+            )
     except OSError as exc:
         raise ProjectWorkspaceError(str(root), exc) from exc
     return str(resolved)
+
+
+def _probe_folder_writable(
+    resolved: Path,
+    expected_device_id: str | None,
+    expected_file_id: str | None,
+    expected_change_time_ns: str | int | None,
+) -> None:
+    """Create and remove one probe through a stable directory descriptor.
+
+    ``mkstemp(dir=...)`` reopens the directory by pathname and can follow a
+    symlink installed after the initial validation. Descriptor-relative calls
+    keep the write inside the directory whose identity was checked. Windows
+    has no equivalent boundary in this code path yet, so claims fail closed
+    there until a native boundary implementation is exercised.
+    """
+    if os.name == "nt" or not all(
+        operation in os.supports_dir_fd for operation in (os.open, os.unlink)
+    ):
+        raise PermissionError("Selected project folder cannot be verified securely on this platform")
+    directory_flags = os.O_RDONLY
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise PermissionError("Selected project folder cannot be verified securely on this platform")
+    directory_flags |= os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = os.open(resolved, directory_flags)
+    try:
+        metadata = os.fstat(directory_fd)
+        if (
+            str(metadata.st_dev) != str(expected_device_id)
+            or str(metadata.st_ino) != str(expected_file_id)
+            or expected_change_time_ns is not None
+            and str(metadata.st_ctime_ns) != str(expected_change_time_ns)
+        ):
+            raise OSError("Selected project folder identity changed")
+        probe_name = f".unsloth-project-workspace-probe-{uuid.uuid4().hex}"
+        probe_fd = os.open(
+            probe_name,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+            0o600,
+            dir_fd = directory_fd,
+        )
+        try:
+            os.close(probe_fd)
+            probe_fd = -1
+        finally:
+            if probe_fd >= 0:
+                os.close(probe_fd)
+            os.unlink(probe_name, dir_fd = directory_fd)
+
+        # Revalidate the pathname after the write. This catches a replacement
+        # or ancestor redirect that happened while the probe was in flight.
+        if resolved.is_symlink() or resolved.resolve(strict = True) != resolved:
+            raise OSError("Selected project folder changed during write verification")
+        post_metadata = os.fstat(directory_fd)
+        current = resolved.stat(follow_symlinks = False)
+        if (
+            current.st_dev != post_metadata.st_dev
+            or current.st_ino != post_metadata.st_ino
+            or current.st_ctime_ns != post_metadata.st_ctime_ns
+        ):
+            raise OSError("Selected project folder changed during write verification")
+    finally:
+        os.close(directory_fd)
 
 
 def _folder_workspace_health(
@@ -4010,13 +4082,34 @@ def claim_chat_project_folder(
         )
     device_id = str(device_id)
     file_id = str(file_id)
+    pre_probe_change_time_ns = None
+    try:
+        pre_probe_change_time_ns = _workspace_change_time(
+            Path(str(project.get("workspacePath") or "")).expanduser().resolve(strict = True)
+        )
+    except (OSError, RuntimeError, ValueError):
+        # _ensure_folder_workspace below remains the authoritative check and
+        # turns this into the same curated workspace error if the folder went
+        # away between the two observations.
+        pass
     folder_path = _ensure_folder_workspace(
         str(project.get("workspacePath") or ""),
         device_id,
         file_id,
         project.get("workspaceChangeTimeNs"),
+        verify_writable = True,
     )
+    # Creating and removing the claim-time probe updates POSIX ctime. Persist
+    # the post-probe value so health checks remain valid. Comparisons below use
+    # the pre-probe value, which is the identity observed before this claim's
+    # own write test.
     change_time_ns = _workspace_change_time(Path(folder_path))
+    _ensure_folder_workspace(
+        folder_path,
+        device_id,
+        file_id,
+        change_time_ns,
+    )
 
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
@@ -4031,7 +4124,7 @@ def claim_chat_project_folder(
             if old_path and (
                 _normalized_workspace_path(str(old_path)) != _normalized_workspace_path(folder_path)
                 or old_change_time is not None
-                and str(old_change_time) != str(change_time_ns)
+                and str(old_change_time) != str(pre_probe_change_time_ns)
             ):
                 try:
                     from core.inference.tools import record_orphaned_project
@@ -4075,7 +4168,7 @@ def claim_chat_project_folder(
         if current is None and identity_owner is not None and reuse_existing_identity:
             if identity_owner["folder_change_time_ns"] is not None and str(
                 identity_owner["folder_change_time_ns"]
-            ) != str(change_time_ns):
+            ) != str(pre_probe_change_time_ns):
                 raise ProjectWorkspaceOverlapError(
                     "The selected folder identity changed since it was connected"
                 )
@@ -4150,7 +4243,7 @@ def claim_chat_project_folder(
             if (
                 old_path != folder_path
                 or old_change_time is not None
-                and str(old_change_time) != str(change_time_ns)
+                and str(old_change_time) != str(pre_probe_change_time_ns)
                 or not workspace_session_id
             ):
                 workspace_session_id = _new_workspace_session_id(str(project["id"]))
