@@ -923,6 +923,35 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                 )
         if prefer_candidate:
             deduped[key] = model
+
+    def _lexical_path_identity(raw_path: str) -> str:
+        try:
+            normalized = normalize_path(raw_path)
+            return os.path.normcase(os.path.abspath(os.path.expanduser(normalized)))
+        except (OSError, UnicodeError, ValueError):
+            return os.path.normcase(raw_path)
+
+    grouped_custom_gguf_dirs = {
+        _lexical_path_identity(model.path)
+        for model in deduped.values()
+        if model.source == "custom"
+        and model.model_format == "gguf"
+        and not model.partial
+        and model.capabilities.requires_variant
+        and _safe_is_dir(Path(model.path))
+    }
+    if grouped_custom_gguf_dirs:
+        deduped = {
+            key: model
+            for key, model in deduped.items()
+            if not (
+                model.source == "custom"
+                and model.model_format == "gguf"
+                and not _safe_is_dir(Path(model.path))
+                and _lexical_path_identity(str(Path(model.path).parent))
+                in grouped_custom_gguf_dirs
+            )
+        }
     return sorted(
         deduped.values(),
         key = lambda item: item.updated_at or 0,

@@ -13,11 +13,13 @@ def _write_gguf(path: Path, size: int = 4) -> Path:
     return path
 
 
-def _custom_rows(root: Path):
-    rows = [
-        local_inventory._promote_to_custom_source(row)
-        for row in local_inventory._scan_custom_folder(root)
-    ]
+def _custom_rows(*roots: Path):
+    rows = []
+    for root in roots:
+        rows.extend(
+            local_inventory._promote_to_custom_source(row)
+            for row in local_inventory._scan_custom_folder(root)
+        )
     return local_inventory._dedupe_local_models(rows)
 
 
@@ -69,3 +71,11 @@ def test_unqualified_distinct_checkpoints_use_file_rows(tmp_path):
     beta = _write_gguf(holder / "beta.gguf")
 
     assert {Path(row.path) for row in _custom_rows(root)} == {alpha, beta}
+
+
+def test_overlapping_parent_and_model_roots_keep_the_grouped_row(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-Q4_K_M.gguf")
+
+    assert [Path(row.path) for row in _custom_rows(root, model)] == [model]
