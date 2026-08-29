@@ -864,16 +864,25 @@ def test_a_continued_stall_keeps_the_boundary_the_model_wrote(executed, stall, m
     assert second[-2]["content"] == merged
 
 
-def test_the_boundary_survives_prose_repeated_inside_stripped_markup(executed):
-    """The stripped markup can quote the prose back, so the boundary is not searchable.
+_NOPE_CALL = '<tool_call>{"name": "nope", "arguments": {"q": "I will search now."}}</tool_call>'
 
-    Locating the surviving text in the raw turn finds the copy inside the call block
-    here, whose own boundary is the argument quote, and reports no whitespace at all.
-    """
-    stall = (
-        ' I will search now.<tool_call>{"name": "nope", '
-        '"arguments": {"q": "I will search now."}}</tool_call>'
-    )
+
+@pytest.mark.parametrize(
+    "stall, merged",
+    [
+        # The markup quotes the prose back, so searching the raw turn for the surviving
+        # text finds the copy inside the arguments, whose own boundary is the quote.
+        (" I will search now." + _NOPE_CALL, "The answer is not I will search now."),
+        # Stripped at both ends with nothing between the block and the prose, so there
+        # is no boundary to restore and one must not be invented.
+        (
+            "[THINK]plan[/THINK]I will search now." + _NOPE_CALL,
+            "The answer is notI will search now.",
+        ),
+    ],
+)
+def test_the_boundary_is_read_off_the_stripped_turn_not_searched_for(executed, stall, merged):
+    """The surviving prose can also sit inside the markup that was stripped out."""
     transport = FakeTransport(
         [
             [_sse({"content": stall}), _sse(finish = "stop"), _DONE],
@@ -893,7 +902,7 @@ def test_the_boundary_survives_prose_repeated_inside_stripped_markup(executed):
     )
 
     second = transport.requests[1]["messages"]
-    assert second[-2]["content"] == "The answer is not I will search now."
+    assert second[-2]["content"] == merged
 
 
 def test_a_markup_only_stall_is_still_not_nudged(executed):

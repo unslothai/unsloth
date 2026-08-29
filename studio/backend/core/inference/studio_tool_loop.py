@@ -715,29 +715,8 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     conversation.append({"role": "user", "content": content})
 
 
-def _replay_boundary_whitespace(raw: str, replayed: str) -> str:
-    """Whitespace to restore in front of ``replayed`` before it merges onto a partial.
-
-    A continuation merges with no separator, so this run is all that keeps the
-    partial's last word apart from the first word replayed, and
-    ``strip_tool_markup(final = True)`` trims it away. Whatever was removed in front
-    of ``replayed`` leaves it ending the turn, so the run sits right before it;
-    otherwise nothing was removed there and the turn's own leading run is it.
-
-    The remaining case is a turn stripped at both ends, where one space stands in for
-    what was removed. Searching ``raw`` for ``replayed`` would settle it exactly but
-    is not sound: the same prose can sit inside the markup that was stripped out, and
-    matching there reports no boundary at all.
-    """
-    if not replayed:
-        return ""
-    if raw.endswith(replayed):
-        head = raw[: len(raw) - len(replayed)]
-        return head[len(head.rstrip()) :]
-    leading = raw[: len(raw) - len(raw.lstrip())]
-    if leading or raw.lstrip().startswith(replayed):
-        return leading
-    return " "
+def _leading_whitespace(text: str) -> str:
+    return text[: len(text) - len(text.lstrip())]
 
 
 def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
@@ -1073,11 +1052,17 @@ async def stream_with_studio_tools(
             # (_reprompt_intent_text). A turn that is nothing but an unpromotable call
             # block strips to "", leaving no assistant turn to append and no promise to
             # continue from, so nudging on the raw text replayed it as user -> user.
-            replayable_answer = strip_tool_markup(
+            # Untrimmed: a continuation merges with no separator, so the whitespace a
+            # removed span exposed is all that keeps the partial's last word apart from
+            # the first word replayed, and "not" + " able" is not "notable".
+            stripped_answer = strip_tool_markup(
                 visible_answer,
                 final = True,
+                trim = False,
                 enabled_tool_names = allowed_tool_names,
             )
+            replayable_answer = stripped_answer.strip()
+            boundary = _leading_whitespace(stripped_answer)
             if not replayable_answer:
                 # A reasoning-only stall announces the plan inside the think block
                 # and nowhere else. _reprompt_intent_text falls back to that block
@@ -1089,12 +1074,11 @@ async def stream_with_studio_tools(
                     visible_answer[start:end]
                     for start, end in _think_spans_outside_tool_markup(visible_answer)
                 ).strip()
-            # Both branches trim, so restore the boundary the model wrote before the
-            # replayed text: a continuation merges it onto the partial with no
-            # separator, and "not" + "able" is a different word.
-            replayable_answer = (
-                _replay_boundary_whitespace(visible_answer, replayable_answer) + replayable_answer
-            )
+                # Only a removed leading [THINK] block empties the strip while leaving a
+                # think span, so the block opens after the turn's own leading run.
+                boundary = _leading_whitespace(visible_answer)
+            if replayable_answer:
+                replayable_answer = boundary + replayable_answer
             if (
                 tools_available
                 and nudge_enabled(policy.nudge_tool_calls)
