@@ -6,6 +6,8 @@
 Apply chat templates to datasets and generate dataset info summaries.
 """
 
+import warnings as python_warnings
+
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
@@ -35,6 +37,7 @@ _CUSTOM_PROMPT_TEMPLATE_ERROR = (
 def _custom_prompt_template_error(custom_prompt_template):
     if custom_prompt_template is None:
         return None
+    python_warnings.warn(_CUSTOM_PROMPT_TEMPLATE_ERROR, DeprecationWarning, stacklevel = 2)
     return _CUSTOM_PROMPT_TEMPLATE_ERROR
 
 

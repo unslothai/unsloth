@@ -39,11 +39,12 @@ def _alpaca_dataset():
 def test_custom_prompt_template_is_rejected_without_changing_the_dataset():
     dataset = _alpaca_dataset()
 
-    result = apply_chat_template_to_dataset(
-        _dataset_info(dataset),
-        _Tokenizer(),
-        custom_prompt_template = "### Q: {instruction}\n### A: {output}",
-    )
+    with pytest.deprecated_call(match = "cannot persist a matching template"):
+        result = apply_chat_template_to_dataset(
+            _dataset_info(dataset),
+            _Tokenizer(),
+            custom_prompt_template = "### Q: {instruction}\n### A: {output}",
+        )
 
     assert result["success"] is False
     assert "deprecated and unsupported" in result["errors"][0]
@@ -75,13 +76,14 @@ def test_default_template_is_unchanged_when_parameter_is_omitted():
 def test_main_entry_point_rejects_custom_templates_before_every_format_branch(options):
     dataset = _alpaca_dataset()
 
-    result = format_and_template_dataset(
-        dataset,
-        model_name = "Qwen2ForCausalLM",
-        tokenizer = _Tokenizer(),
-        custom_prompt_template = "{instruction}",
-        **options,
-    )
+    with pytest.deprecated_call(match = "cannot persist a matching template"):
+        result = format_and_template_dataset(
+            dataset,
+            model_name = "Qwen2ForCausalLM",
+            tokenizer = _Tokenizer(),
+            custom_prompt_template = "{instruction}",
+            **options,
+        )
 
     assert result["success"] is False
     assert "deprecated and unsupported" in result["errors"][0]

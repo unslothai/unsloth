@@ -901,6 +901,9 @@ def format_and_template_dataset(
     Combines format_dataset and apply_chat_template_to_dataset. Convenient for
     UI workflows: one function does everything.
 
+    custom_prompt_template is retained for signature compatibility. Non-None values are rejected
+    because Studio cannot persist a matching inference template.
+
     Returns:
         dict: {
             "dataset": Final dataset with 'text' column,
