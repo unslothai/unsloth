@@ -918,10 +918,10 @@ def test_tauri_runtime_uses_the_same_gate_before_backend_spawn():
     start = process_source.index("pub fn start_backend(")
     guard = process_source.index("acquire_studio_runtime_launch_guard()?", start)
     resolve = process_source.index("resolve_backend_binary()", guard)
-    handoff = process_source.index("STUDIO_RUNTIME_GATE_HANDOFF_ENV", resolve)
-    spawn = process_source.index("cmd.spawn()", handoff)
+    acquire = process_source.index("STUDIO_RUNTIME_GATE_ACQUIRE_ENV", resolve)
+    spawn = process_source.index("cmd.spawn()", acquire)
     store = process_source.index("proc.owned = Some(", spawn)
-    assert guard < resolve < handoff < spawn < store
+    assert guard < resolve < acquire < spawn < store
 
 
 def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
@@ -984,15 +984,15 @@ def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
     assert update_scan < update_gated_child < update_guard_release
 
 
-def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
+def test_runtime_gate_handoff_covers_managed_children():
     process_source = PROCESS_RS.read_text(encoding = "utf-8")
     install_source = INSTALL_PS1.read_text(encoding = "utf-8")
     studio_source = STUDIO_COMMAND.read_text(encoding = "utf-8")
 
     start = process_source.index("pub fn start_backend(")
-    handoff = process_source.index('cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1")', start)
-    spawn = process_source.index("cmd.spawn()", handoff)
-    assert handoff < spawn
+    acquire = process_source.index('cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1")', start)
+    spawn = process_source.index("cmd.spawn()", acquire)
+    assert acquire < spawn
 
     prompt = install_source.index("Start Unsloth Studio now?")
     save = install_source.index("$_runtimeGateHandoff =", prompt)
@@ -1028,6 +1028,12 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
             "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
         )
         == 5
+    )
+    assert (
+        studio_source.count(
+            "runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()"
+        )
+        == 1
     )
     assert studio_source.count("inherited = runtime_gate_handoff") >= 5
 

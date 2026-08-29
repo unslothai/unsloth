@@ -61,6 +61,12 @@ def test_runtime_gate_handoff_is_one_shot(monkeypatch):
     assert gate.consume_runtime_gate_handoff() is False
 
 
+def test_runtime_gate_acquire_is_one_shot(monkeypatch):
+    monkeypatch.setenv(gate._RUNTIME_GATE_ACQUIRE_ENV, "1")
+    assert gate.consume_runtime_gate_acquire() is True
+    assert gate.consume_runtime_gate_acquire() is False
+
+
 def test_terminal_launch_boundaries_use_the_runtime_gate():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
     assert source.count("with _studio_runtime_launch_guard(") >= 5
@@ -123,6 +129,32 @@ except gate.StudioRuntimeGateBusy:
 
     recovered = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check = False)
     assert recovered.returncode == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX flock is required")
+def test_posix_runtime_gate_waits_for_parent_handoff(tmp_path):
+    script = """
+import sys
+from pathlib import Path
+from unsloth_cli import _studio_runtime_gate as gate
+print("waiting", flush=True)
+with gate.studio_runtime_launch_guard(Path(sys.argv[1]), wait=True):
+    print("acquired", flush=True)
+"""
+    with gate.studio_runtime_launch_guard(tmp_path):
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(tmp_path)],
+            stdout = subprocess.PIPE,
+            text = True,
+        )
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "waiting"
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.wait(timeout = 0.2)
+
+    stdout, _ = child.communicate(timeout = 5)
+    assert child.returncode == 0
+    assert stdout.strip() == "acquired"
 
 
 def test_interrupted_windows_setup_kills_tree_before_return(monkeypatch):

@@ -341,6 +341,7 @@ mod appimage_environment_tests {
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
 #[derive(Debug)]
@@ -3311,7 +3312,7 @@ pub fn start_backend(
         return Err(msg);
     }
 
-    cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+    cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1");
 
     if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {
         cmd.env(

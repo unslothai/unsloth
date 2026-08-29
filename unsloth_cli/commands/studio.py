@@ -289,10 +289,11 @@ def _is_application_control_block(error: OSError) -> bool:
 
 
 @contextlib.contextmanager
-def _studio_runtime_launch_guard(*, inherited: bool = False):
+def _studio_runtime_launch_guard(*, inherited: bool = False, wait: bool = False):
     guard = _studio_runtime_gate.studio_runtime_launch_guard(
         STUDIO_HOME,
         inherited = inherited,
+        wait = wait,
     )
     try:
         acquired = guard.__enter__()
@@ -1939,6 +1940,7 @@ def studio_default(
 
     _require_bind_host(host)
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
@@ -2119,29 +2121,32 @@ def studio_default(
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    with _studio_deps.studio_backend_imports("unsloth studio"):
-        run_mod = _load_run_module()
-    run_server = run_mod.run_server
+    with _studio_runtime_launch_guard(
+        inherited = runtime_gate_handoff,
+        wait = runtime_gate_acquire,
+    ):
+        with _studio_deps.studio_backend_imports("unsloth studio"):
+            run_mod = _load_run_module()
+        run_server = run_mod.run_server
 
-    if not silent:
-        display_host = _display_host_for_bind(run_mod, host)
-        typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
+        if not silent:
+            display_host = _display_host_for_bind(run_mod, host)
+            typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
 
-    run_kwargs = dict(
-        host = host,
-        port = port,
-        silent = silent,
-        api_only = api_only,
-        llama_parallel_slots = parallel,
-        cloudflare = cloudflare,
-        secure = secure,
-        enable_tools = enable_tools,
-    )
-    # Forward the frontend validated before the gate (in-venv path), so the
-    # in-process server serves exactly the dist we vouched for.
-    if resolved_frontend is not None:
-        run_kwargs["frontend_path"] = resolved_frontend
-    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        run_kwargs = dict(
+            host = host,
+            port = port,
+            silent = silent,
+            api_only = api_only,
+            llama_parallel_slots = parallel,
+            cloudflare = cloudflare,
+            secure = secure,
+            enable_tools = enable_tools,
+        )
+        # Forward the frontend validated before the gate (in-venv path), so the
+        # in-process server serves exactly the dist we vouched for.
+        if resolved_frontend is not None:
+            run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
     try:
