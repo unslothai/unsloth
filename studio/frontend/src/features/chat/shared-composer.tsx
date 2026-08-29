@@ -537,6 +537,7 @@ export function SharedComposer({
   onExitCompare,
   model1ThreadId,
   model2ThreadId,
+  sendUnavailableReason,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
@@ -544,6 +545,7 @@ export function SharedComposer({
   onExitCompare?: () => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
+  sendUnavailableReason?: string;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
@@ -1070,6 +1072,13 @@ export function SharedComposer({
     const msg = submittedText.trim();
     if (!msg && submittedImages.length === 0 && !submittedAudio) {
       resetPromptQueue();
+      return;
+    }
+    if (sendUnavailableReason) {
+      resetPromptQueue();
+      toast.error("Compare unavailable", {
+        description: sendUnavailableReason,
+      });
       return;
     }
 
@@ -1894,7 +1903,8 @@ export function SharedComposer({
       pendingAudio !== null) &&
     !busy &&
     !isComposing &&
-    !isDictating;
+    !isDictating &&
+    !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one, and only one
   // of the two is ever on screen, so the chords register in both. Both gate on
@@ -2797,7 +2807,7 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={sendUnavailableReason ?? "Send message"}
               side="bottom"
               variant="default"
               size="icon"
