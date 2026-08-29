@@ -25,9 +25,14 @@ import {
 import {
   type PendingInventoryHints,
   nextInventoryHintExpiryDelay,
+  repoKey,
 } from "./inventory-hints";
 import { resolveInventorySettlement } from "./inventory-settlement";
-import type { CachedInventoryRow, LocalInventoryRow } from "./types";
+import type {
+  CachedInventoryRow,
+  InventoryHint,
+  LocalInventoryRow,
+} from "./types";
 import {
   type DeviceInventorySource,
   useDeviceInventorySources,
@@ -37,8 +42,8 @@ import {
   buildLocalInventoryRows,
   cachedInventoryId,
   defaultCapabilities,
-  normalizeTimestamp,
 } from "./view-models";
+import { normalizeTimestamp } from "./inventory-timestamps";
 import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   isInventoryStampFresh,
@@ -137,6 +142,32 @@ function liveInventoryRank(job: ManagedDownload): number {
   return 0;
 }
 
+function inventoryHintKindForJob(job: ManagedDownload): InventoryHint["kind"] {
+  return job.kind === "dataset" ? "dataset" : job.variant ? "gguf" : "model";
+}
+
+function observedKeyProtections(
+  jobs: Record<string, ManagedDownload>,
+): Record<InventoryHint["kind"], Set<string>> {
+  const keys: Record<InventoryHint["kind"], Set<string>> = {
+    model: new Set(),
+    gguf: new Set(),
+    dataset: new Set(),
+  };
+  for (const job of Object.values(jobs)) {
+    if (
+      job.external ||
+      (job.state !== "running" &&
+        job.state !== "cancelling" &&
+        job.state !== "complete")
+    ) {
+      continue;
+    }
+    keys[inventoryHintKindForJob(job)].add(repoKey(job.repoId));
+  }
+  return keys;
+}
+
 function shouldSurfaceLiveJob(
   job: ManagedDownload,
   isDatasetMode: boolean,
@@ -228,6 +259,8 @@ function liveDownloadInventoryRows(
                 ? "transformers"
                 : "unknown",
           size_bytes: job.displayBytes,
+          // live jobs already use epoch milliseconds
+          last_modified: job.startedAt,
           partial: true,
           partial_transport: null,
           optimistic: true,
@@ -346,8 +379,14 @@ export function useHubInventory(
         kind: "gguf",
         rows: cachedGgufSource.rows,
         previouslyObserved: observedInventoryKeys.gguf,
+        refreshStartedAt: cachedGgufSource.refreshStartedAt,
       }),
-    [cachedGgufSource.rows, observedInventoryKeys.gguf, pendingForRender],
+    [
+      cachedGgufSource.rows,
+      cachedGgufSource.refreshStartedAt,
+      observedInventoryKeys.gguf,
+      pendingForRender,
+    ],
   );
   const cachedModelsReconciliation = useMemo(
     () =>
@@ -356,8 +395,14 @@ export function useHubInventory(
         kind: "model",
         rows: cachedModelsSource.rows,
         previouslyObserved: observedInventoryKeys.model,
+        refreshStartedAt: cachedModelsSource.refreshStartedAt,
       }),
-    [cachedModelsSource.rows, observedInventoryKeys.model, pendingForRender],
+    [
+      cachedModelsSource.rows,
+      cachedModelsSource.refreshStartedAt,
+      observedInventoryKeys.model,
+      pendingForRender,
+    ],
   );
   const cachedDatasetsReconciliation = useMemo(
     () =>
@@ -366,24 +411,31 @@ export function useHubInventory(
         kind: "dataset",
         rows: cachedDatasetsSource.rows,
         previouslyObserved: observedInventoryKeys.dataset,
+        refreshStartedAt: cachedDatasetsSource.refreshStartedAt,
       }),
     [
       cachedDatasetsSource.rows,
+      cachedDatasetsSource.refreshStartedAt,
       observedInventoryKeys.dataset,
       pendingForRender,
     ],
   );
 
   useEffect(() => {
+    const protectedObservedKeys = observedKeyProtections(
+      useDownloadManagerStore.getState().jobs,
+    );
     const reconciliations: PendingHintReconciliationCommit[] = [];
     if (!isDatasetMode) {
       reconciliations.push(
         {
           kind: "gguf",
+          protectedObservedKeys: protectedObservedKeys.gguf,
           reconciliation: cachedGgufReconciliation,
         },
         {
           kind: "model",
+          protectedObservedKeys: protectedObservedKeys.model,
           reconciliation: cachedModelsReconciliation,
         },
       );
@@ -391,6 +443,7 @@ export function useHubInventory(
     if (isDatasetMode) {
       reconciliations.push({
         kind: "dataset",
+        protectedObservedKeys: protectedObservedKeys.dataset,
         reconciliation: cachedDatasetsReconciliation,
       });
     }
@@ -650,11 +703,7 @@ export function useHubInventory(
       void refreshDeviceInventory();
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [
-    emptyRevalidationRequired,
-    enabled,
-    refreshDeviceInventory,
-  ]);
+  }, [emptyRevalidationRequired, enabled, refreshDeviceInventory]);
 
   return {
     cachedRows,

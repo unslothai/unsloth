@@ -950,8 +950,6 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         # for a response that is actually about to be served.
         # Classification reads GGUF headers, so keep it off the event loop too.
         try:
-            # Module-qualified for the same reason as _cached_row_task: binding the bare
-            # name re-points a load that resolved to routes.models before the move.
             from hub.services.models import catalog_classification
 
             models = []

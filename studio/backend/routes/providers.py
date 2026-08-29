@@ -616,6 +616,69 @@ def _bind_saved_provider_target(payload):
 # ── Test connectivity ─────────────────────────────────────────────
 
 
+async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderTestResult:
+    """Probe a custom OpenAI-compatible endpoint without assuming /chat/completions.
+
+      TTS-only gateways such as Kokoro expose ``/models`` and ``/audio/speech`` but
+    not ``/chat/completions``. Try those first, then fall back to a chat probe."""
+    model_id = (model_id or "").strip()
+    models_error: Exception | None = None
+    try:
+        models = await client.list_models()
+        return ProviderTestResult(
+            success = True,
+            message = f"Connected successfully. Found {len(models)} model(s).",
+            models_count = len(models),
+        )
+    except Exception as exc:
+        models_error = exc
+
+    if not model_id:
+        return ProviderTestResult(
+            success = False,
+            message = (
+                "Connection failed: could not reach /models and no model ID was "
+                f"provided to test further. {safe_curated_detail(models_error)}"
+            ),
+            models_count = None,
+        )
+
+    try:
+        await client.create_speech(
+            text = ".",
+            model = model_id,
+            voice = "alloy",
+            response_format = "wav",
+        )
+        return ProviderTestResult(
+            success = True,
+            message = "Connected successfully. Audio speech endpoint responded.",
+            models_count = None,
+        )
+    except Exception:
+        pass
+
+    try:
+        await client.chat_completion(
+            messages = [{"role": "user", "content": "ping"}],
+            model = model_id,
+            temperature = 0.0,
+            top_p = 1.0,
+            max_tokens = 1,
+        )
+        return ProviderTestResult(
+            success = True,
+            message = "Connected successfully. Chat completions endpoint responded.",
+            models_count = None,
+        )
+    except Exception as exc:
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {safe_curated_detail(exc)}",
+            models_count = None,
+        )
+
+
 @router.post("/test", response_model = ProviderTestResult)
 async def test_provider(
     payload: ProviderTestRequest,
@@ -625,9 +688,10 @@ async def test_provider(
     """
     Test connectivity to an external provider.
 
-    Makes a lightweight GET /models call to verify the API key works. Generic
-    custom endpoints use a chat-completions probe because /models is optional.
-    An explicit encrypted key takes precedence over the saved provider key.
+    Makes a lightweight GET /models call to verify the API key works. Custom
+    endpoints try /models first, then /audio/speech or /chat/completions when a
+    model ID is available. An explicit encrypted key takes precedence over the
+    saved provider key.
     """
 
     payload = _bind_saved_provider_target(payload)
@@ -670,25 +734,7 @@ async def test_provider(
 
     try:
         if payload.provider_type == "custom":
-            model_id = (payload.model_id or "").strip()
-            if not model_id:
-                return ProviderTestResult(
-                    success = False,
-                    message = "Connection failed: add a model ID to test custom providers.",
-                    models_count = None,
-                )
-            await client.chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = model_id,
-                temperature = 0.0,
-                top_p = 1.0,
-                max_tokens = 1,
-            )
-            return ProviderTestResult(
-                success = True,
-                message = "Connected successfully. Chat completions endpoint responded.",
-                models_count = None,
-            )
+            return await _test_custom_provider_connectivity(client, payload.model_id or "")
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             return ProviderTestResult(

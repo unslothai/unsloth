@@ -2113,9 +2113,9 @@ def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unload
     standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
     standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
     standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
-    # No parens: both teardowns are asyncio.to_thread args (on-loop a 160s one would
-    # block /load's tunnel padding).
-    unload_gguf = src.index("llama_backend.unload_model", standard_wait)
+    # The helper owns both the off-loop teardown and the driver-settle wait; ordering
+    # its call here still proves no destructive GGUF work precedes the final recheck.
+    unload_gguf = src.index("_unload_llama_before_standard_load", standard_wait)
 
     assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
     assert standard_branch < standard_wait < standard_sidecar_check
@@ -3912,6 +3912,9 @@ def _count_tokens_backend(
     backend.count_chat_tokens = _count
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    # Pinned off so message-shape assertions do not depend on the host's stored setting;
+    # test_chat_count_tokens_prices_the_current_date covers the date's own effect on the count.
+    monkeypatch.setattr(inference_route, "current_date_prompt_line", lambda **_kwargs: "")
     return switched, counted
 
 
@@ -4149,6 +4152,63 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
     assert [message.get("content") for message in counted.get("messages") or []] == [
         "first\n\nsecond"
     ]
+
+
+def test_chat_count_tokens_prices_the_current_date(monkeypatch):
+    """The bar has to price what generation sends, and only the passthrough is sent undated."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    monkeypatch.setattr(
+        inference_route,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+    thread = [{"role": "user", "content": "hi"}]
+
+    _counted_body(_count_request(thread))
+    assert counted["messages"][0] == {
+        "role": "system",
+        "content": "The current date is 2026-08-15.",
+    }
+
+    # The passthrough forwards the caller's request verbatim, so counting a date it never sends
+    # would overcount exactly those prompts.
+    _counted_body(_count_request(thread, tools = _PASSTHROUGH_CATALOG))
+    assert all(message.get("role") != "system" for message in counted["messages"])
+
+
+def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    monkeypatch.setattr(
+        inference_route,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    async def _select(_payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    monkeypatch.setattr(
+        inference_route,
+        "_request_is_internal_workflow",
+        lambda _request: False,
+    )
+    request = types.SimpleNamespace(
+        headers = {"authorization": "Bearer sk-unsloth-test"},
+    )
+    thread = [{"role": "user", "content": "hi"}]
+
+    asyncio.run(
+        inference_route.chat_count_tokens(
+            _count_request(thread, enable_tools = True, enabled_tools = ["web_search"]),
+            "tester",
+            request,
+        )
+    )
+    assert counted["messages"][0]["content"].startswith("The current date is 2026-08-15.\n\n")
+
+    asyncio.run(inference_route.chat_count_tokens(_count_request(thread), "tester", request))
+    assert all(message.get("role") != "system" for message in counted["messages"])
 
 
 def _in_flight_generation():

@@ -39,6 +39,7 @@ def _make_protected_app(
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
     upload_passthrough_exact_paths: tuple = (),
+    chunked_upload_exact_paths: tuple = (),
 ):
     app = FastAPI()
     app.add_middleware(
@@ -54,6 +55,7 @@ def _make_protected_app(
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
         upload_passthrough_exact_paths = upload_passthrough_exact_paths,
+        chunked_upload_exact_paths = chunked_upload_exact_paths,
     )
 
     @app.post("/v1/chat/completions")
@@ -159,6 +161,26 @@ class TestMaxBodyMiddleware:
             assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
                 upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
             ), path
+        from utils.upload_limits import (
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            VIDEO_INPUT_REFERENCE_MAX_BYTES,
+        )
+
+        for path in ("/v1/videos", "/api/inference/videos"):
+            expected = max(
+                upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+                VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+            )
+            assert main_module._get_request_body_max_bytes(path) == expected, path
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == expected, path
+            assert VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES > (
+                4 * ((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3)
+            )
+        assert "/v1/videos/video_abc" not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_request_body_max_bytes("/v1/videos/video_abc") == (
+            main_module.default_request_body_limit_bytes()
+        )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -359,6 +381,64 @@ class TestMaxBodyMiddleware:
         )
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
+
+    def test_exact_path_passthrough_without_content_length_is_capped_not_refused(self, main_module):
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_exact_paths = ("/api/train/upload",),
+            chunked_upload_exact_paths = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda path: 1024,
+        )
+        c = TestClient(app)
+
+        def small():
+            yield b"x" * 256
+            yield b"y" * 256
+
+        r = c.post(
+            "/api/train/upload",
+            content = small(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 200
+
+        def large():
+            yield b"x" * 1024
+            yield b"y" * 1024
+
+        r = c.post(
+            "/api/train/upload",
+            content = large(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 413
+
+    def test_a_passthrough_outside_the_chunked_set_still_demands_a_length(self, main_module):
+        """Counting a body means holding it, and this runs before authentication.
+
+        Only paths explicitly opted in may omit Content-Length; the big ones (the
+        dataset cap reaches 8 GB) keep their 411 so an unauthenticated chunked POST
+        cannot make the server retain the whole allowance.
+        """
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_exact_paths = ("/api/train/upload",),
+            chunked_upload_exact_paths = (),
+            upload_passthrough_max_bytes_getter = lambda path: 1024,
+        )
+        c = TestClient(app)
+
+        def body():
+            yield b"x" * 256
+
+        r = c.post(
+            "/api/train/upload",
+            content = body(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 411
 
     def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
         # The exact-path passthrough lifts the cap for the upload path itself, but a sibling sub-path under the same prefix stays capped.
