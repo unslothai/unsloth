@@ -111,7 +111,7 @@ export function HubModelSettingsView({
               {/* Only what auto-switch reaches: it indexes GGUFs and skips Ollama. */}
               {(target.apiLoadable ?? target.isGguf)
                 ? "Saved settings apply everywhere this model loads, including when an OpenAI-compatible API request asks for it."
-                : "Saved settings apply everywhere Studio loads this model."}{" "}
+                : "Saved settings apply everywhere Unsloth loads this model."}{" "}
               Turn on{" "}
               <span className="font-medium text-foreground">
                 Remember for this model

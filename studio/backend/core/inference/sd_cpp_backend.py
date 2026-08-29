@@ -43,7 +43,10 @@ from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
+    DiffusionModelReplacedError,
+    LoadIdentity,
     detect_family_for_pick,
+    load_identity,
     family_sd_cpp_supported,
     mirror_repo,
     legacy_source_repo,
@@ -145,7 +148,7 @@ def _tree_reader(
     replacing is the exact race this exists to prevent.
 
     The wait is cancellable. The caller already holds the generate lock here, so an unload or a
-    cancel that could not get out of this would read as a hung Studio for up to the whole timeout
+    cancel that could not get out of this would read as a hung Unsloth for up to the whole timeout
     while nothing has even started. Nothing notifies the condition on cancel, so the wait is
     re-checked on a short tick rather than once."""
     global _tree_readers
@@ -180,7 +183,7 @@ def _tree_reader(
             _tree_state.notify_all()
 
 
-# Max images per img_gen job; larger Studio batches (up to 32) are split into these chunks.
+# Max images per img_gen job; larger Unsloth batches (up to 32) are split into these chunks.
 _MAX_SERVER_BATCH = 8
 
 
@@ -241,8 +244,8 @@ def _usable_or_discard_managed(binary: str) -> bool:
         return True
     if not is_managed_binary(binary):
         logger.warning(
-            "sd.cpp binary %s is not runnable; leaving it alone (not a Studio-owned install we may "
-            "replace). Delete its directory to have Studio reinstall the prebuilt.",
+            "sd.cpp binary %s is not runnable; leaving it alone (not an Unsloth-owned install we may "
+            "replace). Delete its directory to have Unsloth reinstall the prebuilt.",
             binary,
         )
         return True  # not ours to replace; the router's own probe still refuses it
@@ -440,7 +443,7 @@ def _h3_replacement_hint(binary: str) -> str:
             Path(binary).resolve().relative_to(root.resolve())
         except (OSError, ValueError):
             continue
-        return f", or move {root} aside so Studio can install the pinned prebuilt there"
+        return f", or move {root} aside so Unsloth can install the pinned prebuilt there"
     return ""
 
 
@@ -451,7 +454,7 @@ def ensure_h3_sd_cpp_binary(
     ADVERTISE H3 support.
 
     ``ensure_sd_cpp_binary`` hands back whatever ``find_sd_cpp_binary`` locates and only probes
-    runnability, so an install that predates H3 (an upgraded Studio still carrying an older managed
+    runnability, so an install that predates H3 (an upgraded Unsloth still carrying an older managed
     sd-cli) is returned unchanged, the H3 load reports ready on it, and the first generation fails.
     Only this path is stricter: image generation must keep working on any user-supplied build. Its
     caller runs it BEFORE resolving the H3 assets, so a refusal costs no download.
@@ -650,7 +653,7 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
         if want in _failed_accelerator_upgrades:
             return False
         # From the root the binary is actually in, not the current default: an install an older
-        # build put beside the Studio home keeps its own record, and reading the wrong root would
+        # build put beside the Unsloth home keeps its own record, and reading the wrong root would
         # report it unrecorded and re-download a bundle that is already here.
         return _record_mismatch(mod, root, want)
     except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary, as before
@@ -668,7 +671,7 @@ def _record_mismatch(mod, root: Path, want: str) -> bool:
 
 def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
     """True when ``binary`` is a MISMATCHED sd-server out of the tree an older build left beside
-    the Studio home, while the CURRENT managed root holds a completed install for ``accelerator``
+    the Unsloth home, while the CURRENT managed root holds a completed install for ``accelerator``
     whose bundle shipped no sd-server.
 
     That install is the authoritative one, and the recorded fact that its bundle is serverless
@@ -713,7 +716,7 @@ def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
     it on every single load. What the load needs is narrower -- did the tree it resolved this
     binary out of get replaced underneath it."""
     # From the root the binary is actually IN, not the current default. The finder also serves a
-    # tree an older build left beside the Studio home, and reading the current root for a binary
+    # tree an older build left beside the Unsloth home, and reading the current root for a binary
     # out of that one reports "unrecorded" on both sides of the comparison, so a swap underneath
     # this load reads as no change at all.
     root = owning_managed_root(binary)
@@ -837,7 +840,7 @@ def ensure_sd_server_binary(
                     _note_failed_upgrade(accelerator)
                 return fallback
         installed = find_sd_server_binary()
-        # The finder also probes the tree an older build left beside the Studio home, so when the
+        # The finder also probes the tree an older build left beside the Unsloth home, so when the
         # bundle just installed ships no sd-server the hit here can be that legacy server, built
         # for a different accelerator. None, not the fallback: an install just completed, so the
         # router's next step resolves the sd-cli it landed, and a one-shot run on the right build
@@ -882,6 +885,10 @@ class _SdState:
     # ``offload_flags`` still describe the build the load committed to. None on the server path,
     # which asks the same question at start time against its own local copy.
     sd_accelerator: Optional[str] = None
+    # Physical card behind the server's single resolved CUDA/ROCm backend.
+    # None for CPU/Metal/Vulkan, an unresolved pin, automatic multi-GPU, and
+    # one-shot mode; those shapes cannot safely consume the startup VRAM floor.
+    physical_gpu_id: Optional[int] = None
 
 
 def _offload_with_device_pin_impl(
@@ -892,6 +899,42 @@ def _offload_with_device_pin_impl(
     if ordinal is None:
         return flags
     return [*flags, *device_backend_flags(sd_cpp_device_name_for_ordinal(binary, ordinal), flags)]
+
+
+def _resolved_server_physical_gpu_id(
+    binary: Optional[str], device: str, ordinal: Optional[int], committed_flags: tuple[str, ...]
+) -> Optional[int]:
+    """Physical id for a provably single-device resident sd-server."""
+    if device != "cuda" or "--offload-to-cpu" in committed_flags:
+        return None
+    try:
+        from utils.hardware import get_parent_visible_gpu_ids
+        visible = [int(i) for i in get_parent_visible_gpu_ids()]
+    except Exception:
+        return None
+    local_ordinal = ordinal
+    if local_ordinal is None:
+        if len(visible) != 1:
+            return None
+        local_ordinal = 0
+    if local_ordinal < 0 or local_ordinal >= len(visible):
+        return None
+    device_name = sd_cpp_device_name_for_ordinal(binary, local_ordinal)
+    if device_name is None:
+        return None
+    if ordinal is not None:
+        # An explicit request is attributable only when the committed argv
+        # actually contains the resolved per-module pin. If the probe failed,
+        # sd.cpp falls back to its own default and the requested ordinal is not
+        # evidence of placement.
+        specs = [
+            committed_flags[index + 1]
+            for index, flag in enumerate(committed_flags[:-1])
+            if flag == "--backend"
+        ]
+        if not any(device_name in spec for spec in specs):
+            return None
+    return visible[local_ordinal]
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -1013,6 +1056,17 @@ def _with_mirrors(repo_ids) -> tuple[str, ...]:
         if legacy:
             out.append(legacy)
     return tuple(dict.fromkeys(out))
+
+
+def _assert_pick_is_not_speech(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> None:
+    """The shared speech refusal, imported lazily so this module keeps its import cost."""
+    from .diffusion_compat import assert_pick_is_not_speech
+    assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
 
 class SdCppDiffusionBackend:
@@ -1374,6 +1428,11 @@ class SdCppDiffusionBackend:
             # offline load asks it the way begin_load does: memo or local header or nothing. A
             # None here only falls back to the filename heuristic for the encoder pick, and a
             # cache-only load can fetch nothing the heuristic did not already have.
+            # The speech verdict lands here rather than in begin_load, which is offline-only by
+            # contract; before _asset_specs, so the refusal precedes any fetch.
+            _assert_pick_is_not_speech(
+                repo_id, gguf_filename, hf_token, allow_network = not local_files_only
+            )
             inner_dim = self._flux2_inner_dim(
                 repo_id, gguf_filename, fam, hf_token, allow_network = not local_files_only
             )
@@ -1645,6 +1704,13 @@ class SdCppDiffusionBackend:
                         "The stable-diffusion.cpp binary was replaced by an install for a "
                         "different accelerator while this model was loading. Try the load again."
                     )
+                committed_offload_flags = tuple(
+                    _offload_with_device_pin_impl(
+                        offload,
+                        server_binary if mode == "server" else getattr(engine, "binary", None),
+                        gpu_ordinal,
+                    )
+                )
                 state = _SdState(
                     repo_id = repo_id,
                     base_repo = base,
@@ -1655,13 +1721,7 @@ class SdCppDiffusionBackend:
                     native_speed = native_speed,
                     # Pinned against the binary this load COMMITTED to, which a deferred install or
                     # a one-shot fallback may have changed since the policy was built.
-                    offload_flags = tuple(
-                        _offload_with_device_pin_impl(
-                            offload,
-                            server_binary if mode == "server" else getattr(engine, "binary", None),
-                            gpu_ordinal,
-                        )
-                    ),
+                    offload_flags = committed_offload_flags,
                     # One-shot sd-cli reads this per generation; pin to physical cores.
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
@@ -1674,6 +1734,16 @@ class SdCppDiffusionBackend:
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image,
                     # long after this decision, and has nothing else to check the answer against.
                     sd_accelerator = engine_accelerator if mode == "oneshot" else None,
+                    physical_gpu_id = (
+                        _resolved_server_physical_gpu_id(
+                            server_binary,
+                            device,
+                            gpu_ordinal,
+                            committed_offload_flags,
+                        )
+                        if mode == "server"
+                        else None
+                    ),
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
@@ -1749,6 +1819,8 @@ class SdCppDiffusionBackend:
         if fam is None or not family_sd_cpp_supported(fam):
             # Unreachable through the route, but a direct caller gets the same message begin_load would raise.
             raise ValueError(f"'{repo_id}' has no native sd.cpp asset mapping.")
+        # Same reason as the diffusers plan: this is what stages the download.
+        _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
 
         specs = self._asset_specs(
             repo_id,
@@ -1882,6 +1954,7 @@ class SdCppDiffusionBackend:
         model_kind: Optional[str] = None,
         base_repo: Optional[str] = None,
         hf_token: Optional[str] = None,
+        allow_network: bool = True,  # noqa: ARG002 -- signature parity; no speech probe here
     ) -> None:
         """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
 
@@ -2137,6 +2210,8 @@ class SdCppDiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet is diffusers-only; rejected by the guard below (accepted for parity).
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
+        # load_identity() of the caller's status() read; refuse rather than run a different load (#9448).
+        expected_load: Optional[LoadIdentity] = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -2183,6 +2258,10 @@ class SdCppDiffusionBackend:
                 ):
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+                # Same window as the diffusers engine: a replacement can commit while this waits (#9448).
+                loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
+                if expected_load is not None and expected_load != loaded_id:
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 self._active_generate_cancel = cancel
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))
@@ -2763,3 +2842,9 @@ def get_sd_cpp_backend() -> SdCppDiffusionBackend:
     if _sd_cpp_backend is None:
         _sd_cpp_backend = SdCppDiffusionBackend()
     return _sd_cpp_backend
+
+
+def generation_in_flight() -> bool:
+    """Read the active-generation marker without constructing or locking the backend."""
+    backend = _sd_cpp_backend
+    return backend is not None and backend._gen is not None

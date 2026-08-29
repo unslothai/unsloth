@@ -22,8 +22,14 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
+      - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/playwright_keyboard_shortcuts.py'
+      - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
+      - 'tests/studio/playwright_code_block_flicker.py'
+      - 'tests/studio/_code_block_flicker_analysis.py'
+      - 'tests/studio/test_code_block_flicker_contract.py'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
@@ -366,7 +372,8 @@ jobs:
             tests/studio/test_autoscroll_harness_contract.py \
             tests/studio/test_heavy_thread_harness_contract.py \
             tests/studio/test_heavy_thread_measurement_integrity.py \
-            tests/studio/test_heavy_thread_gap_contract.py -q
+            tests/studio/test_heavy_thread_gap_contract.py \
+            tests/studio/test_code_block_flicker_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
@@ -384,6 +391,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
+      # A gate, not a measurement. The released and streamdown variants are positive controls
+      # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
+      # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
+      # fallback the index.css override exists for.
+      - name: Browser smoke for code block flicker
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_FLICKER_ENGINES: chromium
+        run: python3 tests/studio/playwright_code_block_flicker.py
+
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all
       # a PR gate can afford. The measurement this harness exists for is the three-engine,
@@ -398,14 +415,34 @@ jobs:
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
 
+      # A failure means dismissal triggered an unconfirmed delete.
+      - name: Browser check for non-modal menu dismissal
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+
       # The settings panels are fetched on first view, so only a browser can answer whether
       # every tab renders and deep-opens land (and abandoned ones do not come back).
       - name: Browser smoke for the settings tab panels
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
 
+      # A listener is not a pure function: what a chord does to a focused button, to a
+      # text field, on auto-repeat, or under AltGr is only answerable in a browser, and
+      # the node suite pins those through source text. Chromium here because that is what
+      # this job installs; SMOKE_ENGINES=chromium,firefox,webkit runs the same checks
+      # against all three when the matcher or the reserved sets change.
+      - name: Browser smoke for keyboard shortcuts
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_keyboard_shortcuts.py
+
+      - name: Browser smoke for tool activity collapse
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_ENGINE: chromium
+        run: python3 tests/studio/playwright_tool_activity.py --json
+
       # A panel that cannot be fetched is new with lazy loading, and nothing above the
-      # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
+      # root-mounted dialog catches, so unguarded it unmounts Unsloth, not one panel.
       - name: Browser smoke for a settings panel that cannot load
         working-directory: ${{ github.workspace }}
         env:
@@ -436,13 +473,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-smoke-artifacts
-          # Four of the five smokes write logs/playwright-<name>; the settings smoke writes a
-          # JSON report instead, under its own name, so a bare playwright-* glob uploaded
-          # everything EXCEPT the report of the smoke that had just failed.
+          # Include the settings and dismissal probe reports as well as playwright-* logs.
           path: |
             logs/playwright-*
             logs/settings_tabs_report.json
             logs/settings_tabs_blocked_report.json
+            logs/pw/
           retention-days: 3
           if-no-files-found: ignore
 

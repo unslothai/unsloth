@@ -21,7 +21,29 @@ Covers the two field failures from Unsloth Desktop 0.1.524-beta on Apple Silicon
    C-extension imports, so probes time out while the process is perfectly alive.
    This polls the backend across the whole warm window and asserts it survives.
 
-Runs against a live Studio; drives the real UI. Env contract matches the other
+   "Survives" here means the backend answered again, not that it answered every
+   probe. A probe that times out while the process is alive is the symptom this
+   file was written about, so failing on one states the opposite of the thing it
+   is trying to prove. Run 32862298967 went red on one timed-out probe per route
+   out of eighteen, on a commit that changed one frontend unit test. The stall
+   behind it was real -- the server served no request at all for 10.0s and then
+   33.2s, both windows ending on an /api/inference/status that had been in flight
+   throughout -- and it is worth a warning, but the backend was serving again
+   seconds later and was answering at the end of the run.
+
+   The verdict deliberately does not reproduce the launcher's watchdog. See
+   BackendSurvivalPoller.report: this phase runs no watchdog at all, and its 120s
+   window is shorter than the rule needs to reach any verdict. What fails here is
+   a backend that stops answering and never comes back, a non-200 answer, or a
+   refused port.
+
+   "Never comes back" is decided by await_recovery, which keeps watching after
+   sampling stops rather than letting one probe settle it. Sampling ends at an
+   arbitrary moment, so a stall straddling that boundary would otherwise fail a
+   run where the same stall a minute earlier only warned, which is this file's
+   own flake moved to the edge of the window instead of removed.
+
+Runs against a live Unsloth; drives the real UI. Env contract matches the other
 scripts here: BASE_URL, STUDIO_OLD_PW, PW_ART_DIR.
 """
 
@@ -58,14 +80,52 @@ NEW = os.environ.get("STUDIO_NEW_PW") or f"{OLD}-Rotated1!"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
 ART.mkdir(parents = True, exist_ok = True)
 
-# The watchdog kills after 3 consecutive failures at a 15s interval, and the
-# backend's startup grace is 300s. Outliving the grace is the whole point: a
-# backend that dies at t+66s (the reported crash) fails here.
+# How long to keep polling the backend. The reported crash landed at t+66s, so the
+# window has to reach well past that; the workflow narrows it to 120s because nothing in
+# this phase runs the launcher's watchdog and the longer window buys no extra evidence.
 SURVIVAL_S = float(os.environ.get("STUDIO_MAC_SURVIVAL_S", "330"))
 POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_POLL_INTERVAL_S", "5"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "900"))
 # How long the forced-verdict check gives the row to settle into its pending state.
 FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
+# Matches HEALTH_PROBE_TIMEOUT in studio/src-tauri/src/commands.rs, so a probe here waits
+# as long as the launcher's does before calling it a miss. It is the only watchdog number
+# this file needs; see BackendSurvivalPoller.report for why it does not mirror the rest.
+PROBE_TIMEOUT_S = 10.0
+# How long to keep watching after sampling stops before calling a stall terminal.
+#
+# Sized from the stalls actually observed on this job rather than from a round number. In
+# run 32862298967 one macOS runner produced four of them, at 10.03s, 25.1s, 27.75s and
+# 33.2s, so a window that decides "this one never ended" has to comfortably clear 33.2s.
+# 90s is a little under three times that.
+#
+# This EXTENDS OBSERVATION; it is not a retry. A retry re-asks a question that already has
+# an answer and hopes for a better one, which is how a flaky test hides a real failure. The
+# question here has no answer yet: a probe that timed out says only that nothing came back
+# within its budget, and the run ended at an arbitrary point that may fall mid-stall. A
+# backend that is genuinely dead answers none of these probes either, so the window costs
+# these seconds only on a run that was already going to fail, and it cannot turn a real
+# death into a pass.
+RECOVERY_WINDOW_S = 90.0
+# Minimum spacing between recovery probes.
+#
+# _transport_kind classifies a connection reset as a stall rather than a death, on
+# purpose, because a reset means a listener accepted and then failed to finish. But a
+# reset comes back in about a millisecond, so an unpaced loop turns this window into
+# thousands of connections against a backend that is already in trouble, which can
+# prolong the fault it is waiting to clear. Spacing costs nothing on the case that
+# matters: a real stall spends the full probe budget before returning, so no pause is
+# added at all there.
+RECOVERY_PROBE_SPACING_S = 2.0
+# Health replies are a few hundred bytes; these bound a body read that is going wrong.
+_READ_CHUNK_BYTES = 65536
+_MAX_BODY_BYTES = 1 << 20
+
+LIVENESS_PATH = "/api/liveness"
+HEALTH_PATH = "/api/health"
+# Both are polled, and an answer from either is proof the backend was serving, matching
+# check_health_inner, which probes /api/liveness and falls back to /api/health.
+PROBE_PATHS = (LIVENESS_PATH, HEALTH_PATH)
 # Every tab the user reported interacting with, plus the ones that share the
 # chat-only gate. (route, nav row id, human name).
 TABS = [
@@ -125,18 +185,223 @@ def fail(m: str) -> None:
     _failed.append(m)
 
 
-def _get_json(path: str, timeout: float = 10.0) -> tuple[int, dict | None]:
+def _transport_kind(err: object) -> str:
+    """Classify a failed probe as a dead port or a stalled one.
+
+    ECONNREFUSED is the only error that proves nothing is bound: the kernel answers it
+    itself, immediately, without a server involved. Everything else here -- a budget that
+    ran out, a reset, a truncated response -- is a listener that accepted the connection
+    and then failed to finish, which is the stall this poller is measuring. Treating those
+    as death is what made a backend the launcher would have kept come out as a crash.
+    """
+    if isinstance(err, ConnectionRefusedError):
+        return "refused"
+    return "timeout"
+
+
+def _read_within(resp, deadline: float) -> str:
+    """Read a response body under one deadline for the whole read.
+
+    urllib's ``timeout`` is per socket operation, not per request. A peer that dribbles
+    bytes resets it on every chunk, so ``resp.read()`` can outlive any probe budget and,
+    here, the script's own wall-clock watchdog. These probes exist to decide whether the
+    backend is answering; a probe that never ends is the one outcome that must not
+    happen, because a hung job reports nothing and burns the runner.
+
+    read1() returns as soon as any data arrives rather than looping to fill the buffer,
+    so the deadline is checked between arrivals and the whole read is bounded by the
+    deadline plus at most one socket timeout.
+    """
+    reader = getattr(resp, "read1", None) or resp.read
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("response body did not finish inside the probe budget")
+        chunk = reader(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > _MAX_BODY_BYTES:
+            # A health reply is a few hundred bytes. Anything this large is a fault, and
+            # reading it to the end would be another way to sit here indefinitely.
+            raise TimeoutError("response body exceeded the probe's size cap")
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+def _probe_once(path: str, timeout: float) -> tuple[int, dict | None, str]:
+    """One GET attempt. Do not call directly; _get_json is what bounds it.
+
+    ``kind`` keeps apart the outcomes the desktop watchdog keeps apart, because they
+    are different failures and only one of them means the process is gone:
+
+      "ok"      -- answered 200.
+      "http"    -- answered, with a status that is not 200. The server is up and saying
+                   something is wrong.
+      "timeout" -- no answer inside the budget. The port is still there; the server is
+                   stalled. This is the case the watchdog spends extra patience on.
+      "refused" -- the connection was rejected. Nothing is listening, which is the only
+                   one of these that means the backend died.
+
+    Collapsing all three into "status != 200", which this used to do, reports a 10s
+    stall in the same words as a crash.
+
+    Only ECONNREFUSED earns "refused". A reset or a half-read response means there WAS
+    a listener that failed to see the request through, which is a stall wearing a
+    different errno, so it is counted as one rather than as a death.
+    """
+    deadline = time.monotonic() + timeout
     try:
         with urllib.request.urlopen(f"{BASE}{path}", timeout = timeout) as resp:
-            body = resp.read().decode("utf-8", "replace")
+            kind = "ok" if resp.status == 200 else "http"
+            body = _read_within(resp, deadline)
             try:
-                return resp.status, json.loads(body)
+                return resp.status, json.loads(body), kind
             except ValueError:
-                return resp.status, None
+                return resp.status, None, kind
     except urllib.error.HTTPError as exc:
-        return exc.code, None
-    except Exception:
-        return 0, None
+        return exc.code, None, "http"
+    except urllib.error.URLError as exc:
+        # A connect-time failure arrives wrapped, so the reason decides, not the class.
+        return 0, None, _transport_kind(exc.reason)
+    except Exception as exc:
+        # A read-time failure raises directly: TimeoutError, or an http.client error
+        # when the peer went away mid-response.
+        return 0, None, _transport_kind(exc)
+
+
+def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | None, str]:
+    """GET *path* under a WHOLE-REQUEST deadline, returning (status, body, kind).
+
+    *timeout* bounds the entire probe: DNS, connect, response headers and body. It is
+    not a per-socket-operation timeout, and it must not be turned back into one.
+
+    That distinction is the whole reason this wrapper exists. urllib's own timeout
+    applies to each socket operation separately, so any peer that keeps sending
+    something, anything, more often than the timeout holds the call open forever. Each
+    layer was bounded in turn and the hole simply moved: capping the body read left
+    urlopen able to block indefinitely while response HEADERS trickled, because urlopen
+    has not returned yet at that point and the body deadline never gets to run. Bounding
+    the next layer down would only move it again, to the redirect chain or the TLS
+    handshake. A deadline outside all of them cannot be outflanked by any of them.
+
+    The probe therefore runs on a daemon thread and this joins it for at most *timeout*.
+    A join that expires is a timeout, and the thread is abandoned rather than waited on:
+    it is a daemon, so it cannot hold up interpreter exit, and _probe_once carries its
+    own body deadline and size cap so an abandoned one still lets go of its socket
+    instead of buffering forever. Those inner bounds are hygiene for the abandoned case;
+    the join is what actually enforces the budget.
+
+    Abandoning a thread per hung probe is affordable here because a backend that hangs
+    probes is one this script is about to report on and exit.
+    """
+    outcome: list[tuple[int, dict | None, str]] = []
+
+    def attempt() -> None:
+        outcome.append(_probe_once(path, timeout))
+
+    worker = threading.Thread(target = attempt, name = f"probe-{path}", daemon = True)
+    worker.start()
+    worker.join(timeout)
+    if outcome:
+        return outcome[0]
+    # Either still running, or it died without recording anything. Both are "no answer
+    # inside the budget", which is exactly what a timeout means here.
+    return 0, None, "timeout"
+
+
+def await_recovery(
+    window_s: float = RECOVERY_WINDOW_S, spacing_s: float = RECOVERY_PROBE_SPACING_S
+) -> tuple[str, int, float]:
+    """Watch the backend after sampling stops, until it answers or *window_s* elapses.
+
+    Returns (kind, status, seconds spent watching, probes), where *probes* are
+    sample-shaped records of every attempt, on the poller's clock.
+
+    Only a stall is worth waiting on, so this returns the moment a probe brings back
+    anything decisive: an answer of any status settles whether the process is alive, and
+    a refused port is already death. Neither gets the window.
+
+    Without this the verdict turned on one probe taken at whatever moment the UI drive
+    happened to finish, which put the arbitrary end of the survival window in charge of
+    the result. A 25s stall in the middle of the run warned and passed while the same
+    stall straddling the boundary failed, which is the flake this file was changed to
+    remove, moved to the edge rather than fixed.
+    """
+    began = time.monotonic()
+    probes: list[dict] = []
+    status, kind = 0, "timeout"
+    while True:
+        remaining = window_s - (time.monotonic() - began)
+        if probes and remaining <= 0:
+            # No time left to give a probe. Starting one anyway is how the watch ran
+            # past its own bound: the pacing sleep is clamped to the window, so the
+            # loop could arrive here with nothing left and still begin a full-budget
+            # request. That is the overrun the wall watchdog exists to catch, and it
+            # would terminate the run before the report it is waiting for.
+            break
+        # Never hand out more budget than the window has left either. A probe started
+        # near the end with the default PROBE_TIMEOUT_S can outlive the window by most
+        # of that budget on its own.
+        probe_began = time.monotonic()
+        status, _, kind = _get_json(LIVENESS_PATH, timeout = min(PROBE_TIMEOUT_S, remaining))
+        # Recorded in the same shape and on the same clock as the poller's samples, so
+        # the caller can lay them end to end. Without this a stall that starts after
+        # sampling stops is invisible: the verdict knows it waited, but nothing knows
+        # for how long or that anything went wrong, and a recovered stall that goes
+        # unreported is the one thing this window was added to avoid.
+        probes.append(
+            {
+                "t": round(time.monotonic(), 1),
+                "path": LIVENESS_PATH,
+                "status": status,
+                "kind": kind,
+                "ms": round((time.monotonic() - probe_began) * 1000, 1),
+                "inference_active": None,
+                "hardware_detecting": None,
+                "torch_warm_in_progress": None,
+            }
+        )
+        if kind != "timeout":
+            break
+        elapsed = time.monotonic() - began
+        if elapsed >= window_s:
+            break
+        # A probe that failed instantly did not spend its budget, so it was a reset
+        # rather than silence. Pace the next one, and never past the end of the window.
+        idle = spacing_s - (time.monotonic() - probe_began)
+        if idle > 0:
+            time.sleep(min(idle, window_s - elapsed))
+    return kind, status, round(time.monotonic() - began, 1), probes
+
+
+def _stall_windows(samples: list[dict]) -> list[tuple[float, float, bool]]:
+    """Spans where no probe answered, merged across both routes.
+
+    One answer from either route is proof the backend was serving at that instant, so an
+    answer closes whatever span was open. A span is closed at the moment the successful
+    probe was ISSUED rather than when it came back, which understates a stall that ended
+    mid-probe; the number here only ever feeds a warning, so erring short is the right
+    way to be wrong.
+
+    The third element says the span was still open when sampling stopped, which is the
+    only shape that can be a terminal stall.
+    """
+    ordered = sorted(samples, key = lambda s: s["t"])
+    spans: list[tuple[float, float, bool]] = []
+    open_start = None
+    for s in ordered:
+        began = s["t"] - s["ms"] / 1000.0
+        if s["kind"] == "ok":
+            if open_start is not None:
+                spans.append((open_start, began, False))
+                open_start = None
+        elif open_start is None:
+            open_start = began
+    if open_start is not None:
+        spans.append((open_start, ordered[-1]["t"], True))
+    return spans
 
 
 class BackendSurvivalPoller:
@@ -157,15 +422,20 @@ class BackendSurvivalPoller:
 
     def _run(self) -> None:
         while not self.stop.is_set():
-            for path in ("/api/liveness", "/api/health"):
+            for path in PROBE_PATHS:
                 began = time.monotonic()
-                status, body = _get_json(path)
+                status, body, kind = _get_json(path)
                 self.samples.append(
                     {
                         "t": round(time.monotonic(), 1),
                         "path": path,
                         "status": status,
+                        "kind": kind,
                         "ms": round((time.monotonic() - began) * 1000, 1),
+                        # Recorded for whoever reads the artifact after a stall, since
+                        # "was it generating at the time" is the first question asked of
+                        # one. No verdict below reads it.
+                        "inference_active": (body or {}).get("inference_active"),
                         "hardware_detecting": (body or {}).get("hardware_detecting"),
                         # Stage 0 of the warm only sets hardware_detecting; this one stays
                         # lit through the transformers and datasets imports after it, so the
@@ -180,36 +450,162 @@ class BackendSurvivalPoller:
         self.stop.set()
         self.thread.join(timeout = 30)
 
-    def report(self) -> None:
-        (ART / "survival_samples.json").write_text(
-            json.dumps(self.samples, indent = 1),
-            encoding = "utf-8",
-        )
-        for path in ("/api/liveness", "/api/health"):
+    def report(
+        self,
+        final_kind: str = "ok",
+        final_status: int = 200,
+        final_wait_s: float = 0.0,
+        recovery_samples: "list[dict] | tuple" = (),
+    ) -> None:
+        """Write the samples out and decide whether the backend survived.
+
+        *final_kind* is what await_recovery saw once sampling stopped, and *final_wait_s*
+        is how long it watched for. Together they separate a stall that happened to be in
+        progress when the run ended from a backend that is genuinely gone, which is not a
+        distinction the samples alone can make: they stop at an arbitrary moment.
+
+        *recovery_samples* are that watch's own probes, on the same clock, and they are
+        laid end to end with the poller's. A stall can begin after sampling stops, and
+        one that then clears is exactly the case this file argues is worth reporting
+        rather than failing; measuring spans from the poller's samples alone would let it
+        pass in silence.
+        """
+        # Written below, once the recovery probes have been folded in. Serialising
+        # self.samples alone published a healthy timeline next to a log reporting a long
+        # post-run stall, which removes the evidence a reader needs to check the very
+        # thing the warning announces.
+        for path in PROBE_PATHS:
             got = [s for s in self.samples if s["path"] == path]
             if not got:
                 fail(f"no samples collected for {path}")
                 continue
-            bad = [s for s in got if s["status"] != 200]
+            bad = [s for s in got if s["kind"] != "ok"]
             worst = max(s["ms"] for s in got)
             unmeasured = sum(1 for s in got if s["hardware_detecting"] is True)
             warming = sum(1 for s in got if s["torch_warm_in_progress"] is True)
             info(
-                f"{path}: {len(got)} samples, {len(bad)} non-200, worst {worst}ms, "
+                f"{path}: {len(got)} samples, {len(bad)} miss(es), worst {worst}ms, "
                 f"{unmeasured} with an unmeasured verdict, {warming} with the warm still running"
             )
-            if bad:
+            # These two are the backend saying something, not failing to. Neither is a
+            # stall, so neither gets the watchdog's patience: they fail on sight.
+            refused = [s for s in got if s["kind"] == "refused"]
+            answered_badly = [s for s in got if s["kind"] == "http"]
+            if refused:
+                # The port stopped accepting. Nothing transient does this to a backend
+                # that is meant to be up, so it is fatal on the first occurrence.
                 fail(
-                    f"{path} returned non-200 {len(bad)} time(s) "
-                    f"(first at t={bad[0]['t']}s status={bad[0]['status']}); "
-                    "the backend did not stay up through the warm window"
+                    f"{path}: connection refused at t={refused[0]['t']}s; the port was gone, "
+                    "so the backend did not stay up through the warm window"
                 )
+            elif answered_badly:
+                fail(
+                    f"{path}: answered {answered_badly[0]['status']} at "
+                    f"t={answered_badly[0]['t']}s; the backend stayed up but reported itself "
+                    "unhealthy through the warm window"
+                )
+
+        # What is left of the verdict, and deliberately so.
+        #
+        # This used to replay the launcher's watchdog: a 15s grid, three consecutive
+        # misses, the widened budget while inference_active is latched, the 30s
+        # last-chance probe. Mirroring that state machine in Python turned every detail
+        # of studio/src-tauri/src/commands.rs into a correctness requirement for a smoke
+        # test, and it cannot pay off here for two reasons.
+        #
+        # The window is too small for the rule to run. This phase gets
+        # STUDIO_MAC_SURVIVAL_S = 120 (.github/workflows/studio-mac-ui-smoke.yml), while
+        # the busy path alone is HEALTH_WATCHDOG_MAX_FAILURES_BUSY * 15s plus a 30s
+        # confirmation, about 210s, and BACKEND_STARTUP_GRACE_PERIOD is 300s before a
+        # backend that has not yet answered healthy counts a failure at all. A verdict
+        # reached in 120s is a statement about a rule that never had room to run.
+        #
+        # And the watchdog is not running here in the first place. This phase boots
+        # `unsloth studio` directly, with no Tauri shell, which the workflow says at the
+        # step itself; the watchdog's own behaviour is covered by the Rust tests beside
+        # it in commands.rs. So the rule was being re-implemented to judge a process that
+        # was not subject to it.
+        #
+        # What is left is the part that needs no arithmetic and cannot false-positive: a
+        # backend that stops answering and never comes back did not survive. Anything
+        # that answers again did, on any reading of any budget, so it warns and passes.
+        # If you are tempted to put a threshold back, it has to be strictly longer than
+        # the launcher's most generous path, and nothing that long fits in this window.
+        # One timeline: the poller's samples then the watch's probes, same clock. A span
+        # is therefore measured across the join rather than truncated at it, and a stall
+        # that starts after sampling stops gets a span of its own instead of none.
+        observed = list(self.samples) + list(recovery_samples)
+        (ART / "survival_samples.json").write_text(
+            json.dumps(observed, indent = 1),
+            encoding = "utf-8",
+        )
+        sampling_ended = max((s["t"] for s in self.samples), default = 0.0)
+        spans = _stall_windows(observed)
+        terminal = next((sp for sp in spans if sp[2]), None)
+        longest = max(((end - start) for start, end, _ in spans), default = 0.0)
+        widest = max(spans, key = lambda sp: sp[1] - sp[0], default = None)
+
+        if final_kind == "refused":
+            fail(
+                f"{LIVENESS_PATH} was refused after the run ({final_wait_s}s of watching); "
+                "the port is gone, so the backend did not survive the window"
+            )
+        elif final_kind == "http":
+            fail(
+                f"{LIVENESS_PATH} answered {final_status} after the run; the backend is up "
+                "but reporting itself unhealthy"
+            )
+        elif final_kind == "timeout":
+            # Nothing came back for the whole recovery window. A stall that was going to
+            # end had every one of those seconds to end in.
+            if terminal is not None:
+                # terminal spans the recovery probes too, now that they are on the same
+                # timeline, so the total already includes the watch. Naming the watch
+                # again as extra time on top of it would count it twice.
+                fail(
+                    f"the backend stopped answering at t={round(terminal[0], 1)}s and never "
+                    f"answered again: {round(terminal[1] - terminal[0], 1)}s of silence in "
+                    f"total, of which the last {final_wait_s}s was the post-run watch. It "
+                    "did not survive the window."
+                )
+            else:
+                fail(
+                    f"backend answered nothing for {final_wait_s}s after the run "
+                    f"({LIVENESS_PATH} kept timing out), so it did not survive the window"
+                )
+        elif spans:
+            # It came back, so the launcher would have kept it on any budget and this run
+            # is green. Say so anyway: a stall this long is a real backend defect even
+            # when it is not a fatal one, and it must not vanish into a pass.
+            worst_ms = max(s["ms"] for s in observed)
+            # Where the longest stall sits relative to the end of sampling decides what
+            # can honestly be said about it. All three cases are recovered stalls; only
+            # the first one cleared while the run was still watching in the normal way.
+            if widest is None or widest[1] <= sampling_ended:
+                cleared = "It answered again before the run ended."
+            elif widest[0] >= sampling_ended:
+                cleared = (
+                    "That stall began after sampling ended and was seen only by the "
+                    f"post-run watch, which ran for {final_wait_s}s before it cleared."
+                )
+            else:
+                cleared = (
+                    "Sampling ended during that stall; it cleared during the post-run "
+                    f"watch, which ran for {final_wait_s}s. The length above spans both."
+                )
+            print(
+                f"::warning::backend stalled: {len(spans)} window(s) with nothing answering, "
+                f"longest {round(longest, 1)}s, worst single probe {worst_ms}ms against a "
+                f"{PROBE_TIMEOUT_S}s budget. {cleared} Not a failure here. See "
+                "logs/studio_tabs.log for which request was in flight.",
+                flush = True,
+            )
 
 
 def rotate_password(page) -> None:
     """Complete the forced password change a bootstrap login lands on.
 
-    Studio seeds a one-time bootstrap password and requires it to be replaced before
+    Unsloth seeds a one-time bootstrap password and requires it to be replaced before
     the app proper is reachable. A harness that rotates it over the API first (the
     staging one does) never sees this screen; a harness that hands over the raw
     bootstrap password (this repo's macOS smoke does) always does. Handling it here
@@ -419,7 +815,7 @@ def assert_pending_state_on_forced_verdict(page) -> None:
     having read the row.
     """
     step("forcing an unmeasured verdict and re-checking the pinned Train row")
-    status, live = _get_json("/api/health")
+    status, live, _kind = _get_json("/api/health")
     if status != 200 or not isinstance(live, dict):
         fail(
             "/api/health gave no body to base the provisional reply on "
@@ -615,13 +1011,25 @@ def main() -> int:
         ctx.close()
         browser.close()
 
-    watchdog.cancel()
     poller.finish()
-    poller.report()
 
-    status, _ = _get_json("/api/liveness")
-    if status != 200:
-        fail(f"backend was not alive at the end of the run (/api/liveness -> {status})")
+    # Watched after sampling stopped and handed to report(), which needs it to tell a
+    # stall still in progress at the end of the run from a backend that never came back.
+    step(f"watching up to {RECOVERY_WINDOW_S:.0f}s more for the backend to answer")
+    kind, status, waited, recovery = await_recovery()
+    info(f"post-run {LIVENESS_PATH}: {kind} after {waited}s of watching, {len(recovery)} probe(s)")
+    poller.report(
+        final_kind = kind,
+        final_status = status,
+        final_wait_s = waited,
+        recovery_samples = recovery,
+    )
+
+    # Cancelled only now. The recovery watch adds up to RECOVERY_WINDOW_S after the UI
+    # drive, so disarming before it ran left the longest-running part of the script with
+    # nothing enforcing WALL_TIMEOUT_S, and a probe that would not end had the job's own
+    # cap as its only bound. A hung job reports nothing, which is the worst outcome here.
+    watchdog.cancel()
 
     if _failed:
         print(f"[mac-tabs] {len(_failed)} FAILURE(S)", flush = True)

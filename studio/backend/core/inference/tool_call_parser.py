@@ -272,6 +272,101 @@ def reprompt_to_act_message(tool_hint: str) -> str:
     )
 
 
+# How much of the unfinished thought is carried into the continuation. The point is to
+# resume, not to replay: the whole thought is what filled the window, so putting it back
+# reproduces the same ending. The tail is the part still being worked on.
+_LENGTH_PROGRESS_TAIL_CHARS = 600
+
+
+def unfinished_thought_progress(reasoning: str) -> str:
+    """The short note that stands in for a thought the window cut off."""
+    tail = reasoning.strip()[-_LENGTH_PROGRESS_TAIL_CHARS:].lstrip()
+    return f"Where I had got to:\n{tail}"
+
+
+def starved_result_message(tool_name: str, result: str) -> str:
+    """Appended when the window priced this call's result at nothing before it ran.
+
+    Said on the FIRST such call rather than after a run of identical ones: the pricing is
+    known before the tool executes, so waiting for the repeat guard to notice costs several
+    calls to learn something already computed.
+    """
+    return (
+        f"{result}\n\n"
+        f"[No room in the window for this result, so {tool_name} returned nothing usable. "
+        "Re-reading will not help. Continue from what you have, and deliver the work in "
+        "parts if it will not fit at once.]"
+    )
+
+
+def repeated_result_message(tool_name: str, times: int, last_result: str) -> str:
+    """Appended to a result the tool has now returned unchanged several times.
+
+    The last result is kept rather than replaced: it may be the truncation notice that
+    caused the repeats, and dropping it would leave the model with less than it had.
+    """
+    return (
+        f"{last_result}\n\n"
+        f"[{tool_name} returned exactly this {times} times; it will not change. Continue "
+        "from what you have, in parts if needed, and finish the task.]"
+    )
+
+
+def thinking_exhausted_message(context_length: Optional[int] = None) -> str:
+    """Shown when even a thinking-off retry produced nothing visible.
+
+    Names the lever the user actually has. Hermes surfaces the same advice
+    (NousResearch/hermes-agent, `_thinking_exhausted`) and Codex's guidance for the
+    identical symptom is likewise to lower reasoning effort, because no amount of
+    retrying fits a thought that did not fit the first time.
+    """
+    # Built by substitution rather than `.format` on a pre-spaced fragment, which produced
+    # "spent its whole reply of the 4096-token window on reasoning".
+    window = f"{context_length}-token " if context_length else ""
+    return (
+        f"The model spent the whole of its {window}window on reasoning and had none "
+        "left for an answer, twice in a row.\n\n"
+        "To get past this:\n"
+        "- Lower the reasoning effort, or turn thinking off\n"
+        "- Or raise the context length, so a thought and an answer both fit\n"
+        "- Or ask for a smaller piece of the task at a time"
+    )
+
+
+def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
+    """Shown when a reasoning-only turn was stopped by the CALLER's own Max Tokens.
+
+    A different wall from the one `thinking_exhausted_message` describes, and the levers
+    are opposite: the window has room, the allowance does not, and only one attempt ran.
+    Blaming the context window there sends the user to raise the one setting that was
+    never the constraint, and this text reaches the client as ordinary content, so the
+    frontend's cap-aware error cannot correct it afterwards.
+    """
+    allowance = f" of {max_tokens} tokens" if max_tokens else ""
+    return (
+        f"The model used its whole output allowance{allowance} on reasoning and had none "
+        "left for an answer.\n\n"
+        "To get past this:\n"
+        "- Raise Max Tokens, so a thought and an answer both fit\n"
+        "- Or lower the reasoning effort, or turn thinking off\n"
+        "- Or ask for a smaller piece of the task at a time"
+    )
+
+
+def continue_after_length_message() -> str:
+    """The user message appended when a turn ended inside its own reasoning.
+
+    The instruction is to ACT, not to think more carefully: the previous turn ended with
+    nothing to show because thinking consumed the whole window, so asking for more
+    deliberation is asking for the same ending a second time.
+    """
+    return (
+        "You ran out of room while thinking, so nothing was produced. Stop thinking and "
+        "act: call a tool or answer now. If it will not all fit, deliver the first part "
+        "and continue after."
+    )
+
+
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 # Qwen3.5 ``<function=name>`` and the attribute form ``<function name="name">``
@@ -755,10 +850,15 @@ def strip_tool_markup(
     text: str,
     *,
     final: bool = False,
+    trim: bool = True,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
     ``final=True`` also drops trailing unclosed runs and trims.
+
+    ``trim=False`` keeps the whitespace a removed span exposed, which a caller that
+    has to reproduce the boundary the model wrote cannot recover afterwards: the
+    prose can also appear inside the markup, so searching for it is not sound.
 
     ``enabled_tool_names`` gates the name-conditioned forms so a disabled/example name in
     prose is kept (mirrors the parser gate): the bare reasoning-rehearsal ``name[ARGS]{...}``
@@ -780,7 +880,7 @@ def strip_tool_markup(
     # not executed, so it must not be stripped from display either); a literal think marker
     # inside a real call's arguments is that call's data and is stripped with the call.
     result = _tool_healing.strip_outside_think(text, _strip_segment)
-    return result.strip() if final else result
+    return result.strip() if (final and trim) else result
 
 
 # Every strip arm above is anchored on one of these literals, so text containing none of
