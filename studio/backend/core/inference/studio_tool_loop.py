@@ -651,9 +651,7 @@ class _Turn:
                 # else continues it.
                 if name_fragment:
                     accumulated = current["function"]["name"]
-                    current["function"]["name"] = self._merge_name(
-                        accumulated, name_fragment
-                    )
+                    current["function"]["name"] = self._merge_name(accumulated, name_fragment)
                 current["function"]["arguments"] = combined
                 complete, tail = _split_top_level_json_documents(combined)
                 if complete and not tail:
@@ -674,9 +672,9 @@ class _Turn:
         seen: set[str] = taken if taken is not None else set()
         streamed = streamed_ids if streamed_ids is not None else set()
         out: list[dict[str, Any]] = []
-        ordered_calls = [
-            (key, self.by_index[key]) for key in self.order
-        ] + [(None, call) for call in self.healed]
+        ordered_calls = [(key, self.by_index[key]) for key in self.order] + [
+            (None, call) for call in self.healed
+        ]
         for position, (key, call) in enumerate(ordered_calls):
             if key in self.incomplete_split_keys:
                 continue
