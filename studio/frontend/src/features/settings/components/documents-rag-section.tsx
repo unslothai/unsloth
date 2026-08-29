@@ -256,6 +256,7 @@ export function DocumentsRagSection(): ReactElement {
         variant: scoped ? scopedVariant(EMBEDDING_DOWNLOAD_SCOPE) : null,
         scopeId: scoped ? EMBEDDING_DOWNLOAD_SCOPE : null,
         files: scoped ? (resolution.files ?? undefined) : undefined,
+        inventoryKind: scoped ? "gguf" : undefined,
         expectedBytes: resolution.sizeBytes ?? 0,
       });
       if (outcome === "started") {

@@ -142,10 +142,6 @@ function liveInventoryRank(job: ManagedDownload): number {
   return 0;
 }
 
-function inventoryHintKindForJob(job: ManagedDownload): InventoryHint["kind"] {
-  return job.kind === "dataset" ? "dataset" : job.variant ? "gguf" : "model";
-}
-
 function observedKeyProtections(
   jobs: Record<string, ManagedDownload>,
 ): Record<InventoryHint["kind"], Set<string>> {
@@ -163,7 +159,9 @@ function observedKeyProtections(
     ) {
       continue;
     }
-    keys[inventoryHintKindForJob(job)].add(repoKey(job.repoId));
+    keys[
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind)
+    ].add(repoKey(job.repoId));
   }
   return keys;
 }

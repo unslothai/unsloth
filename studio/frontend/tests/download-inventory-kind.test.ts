@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   downloadInventoryHintKind,
@@ -42,4 +44,20 @@ test("recovers scoped inventory format from backend files", () => {
     "model",
   );
   assert.equal(scopedDownloadInventoryKind(undefined), "model");
+});
+
+test("protects observed keys with the job's explicit inventory kind", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/hub/inventory/use-hub-inventory.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf-8",
+  );
+  assert.match(
+    source,
+    /keys\[\s*downloadInventoryHintKind\(job\.kind, job\.variant, job\.inventoryKind\)\s*\]/,
+  );
 });

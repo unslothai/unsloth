@@ -238,6 +238,7 @@ test("only the embedder's own GGUF is fetched, not every quant", () => {
     SECTION,
     /variant: scoped \? scopedVariant\(EMBEDDING_DOWNLOAD_SCOPE\) : null/,
   );
+  assert.match(SECTION, /inventoryKind: scoped \? "gguf" : undefined/);
 });
 
 test("the current row can be retried and arbitrary relative paths submit", () => {
