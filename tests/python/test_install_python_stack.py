@@ -357,6 +357,10 @@ class TestSdistOnlyBuildArgs:
 
     def test_the_diffusers_release_is_not_forced_through_a_source_build(self):
         """The pinned release ships wheels, so forcing a source build defeats the pin."""
+        pin_lines = (ips.REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8").splitlines()
+        pin_options = [line.split("#", 1)[0].strip() for line in pin_lines]
+        assert not any(option.startswith("--no-binary") for option in pin_options)
+
         tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
