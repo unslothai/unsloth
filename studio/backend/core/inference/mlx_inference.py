@@ -2840,12 +2840,7 @@ class MLXInferenceBackend:
 
 
     def batch_unavailable_reason(self, requests):
-        """Why these replies cannot share one decode, or None if they can.
-
-        The caller falls back to running them one at a time. Kept as a question
-        the caller asks rather than an exception it catches, so a fallback is a
-        decision with a reason attached and never a swallowed error.
-        """
+        """Why these replies cannot share one decode, or None if they can."""
         if self._model is None:
             return "no model is loaded"
         if self._is_vlm:

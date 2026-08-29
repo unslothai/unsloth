@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+PARALLEL_DEFAULT = 4
+
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536

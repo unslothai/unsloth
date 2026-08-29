@@ -66,6 +66,7 @@ _DISPATCH_POLL_INTERVAL = 0.5
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
+_CANCELLED_ROWS_GRACE = 5.0
 
 # Only bounds the Transformers subprocess path; llama.cpp TTS never reaches here. 120s was tuned against GGUF speeds and
 # killed real work: a safetensors LoRA on a mid-range GPU needs minutes for the same clip a GGUF returns in seconds. A
@@ -976,6 +977,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        rows: Optional[list] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1010,6 +1012,8 @@ class InferenceOrchestrator:
             cmd["preserve_thinking"] = preserve_thinking
         if continue_final_message:
             cmd["continue_final_message"] = True
+        if rows:
+            cmd["rows"] = rows
         return cmd
 
     def _consume_token_stream(
@@ -1022,30 +1026,66 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         read_timeout: float = 30.0,
         mark_started: bool = True,
-    ) -> Generator[str, None, None]:
+        rows: Optional[int] = None,
+    ) -> Generator[Any, None, None]:
         """Yield tokens from a response stream until gen_done/gen_error.
+
+        With ``rows`` set the stream carries several replies at once: each token
+        is yielded as ``(row, text)``, a finished reply as ``(row, None)``, and
+        the first finished reply puts a list of one entry per row in
+        ``stats_holder["stats"]``, filled in as the rest finish. A run that
+        finishes none -- a declined batch, or one stopped before any reply was
+        over -- leaves the key absent. Errors are yielded bare either way, so a
+        caller tells them apart by type.
 
         ``read_one(timeout)`` returns the next response (or None on timeout) and
         owns the queue choice — the shared resp_queue under _gen_lock, or a
         per-request mailbox on the dispatcher path — so this loop stays agnostic
-        of which queue is read. On cancel, ``drain_on_cancel()`` consumes the
-        cancel ack from that same source so stale events don't leak into the
-        next request.
+        of which queue is read. A cancelled single reply stops reading at once
+        and lets ``drain_on_cancel()`` consume the ack from that same source, so
+        stale events don't leak into the next request; several replies are read
+        on instead, for _CANCELLED_ROWS_GRACE after the Stop goes out, and drain
+        the same way if they outlast it.
         """
         # Latch this stream's subprocess/queue: if a wedged worker is torn down and a later load spawns a fresh one,
         # bail rather than re-block on the new queue under _gen_lock (deadlock).
         initial_proc = self._proc
         initial_resp_queue = self._resp_queue
+        # Deadline for a cancelled multi-reply stream that has told the worker to
+        # stop and reads on instead of tearing down: the replies handed over while
+        # it stops are ones the caller can publish rather than generate again, and
+        # a drain would have waited for the same gen_done only to discard them.
+        # Set where the Stop goes out, below, and read wherever "on its way out"
+        # is the answer: nothing shared is written past it, and no failure past it
+        # is reported.
+        reading_on_until = None
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
+                # First of four: past its Stop this stream stays quiet about failure.
+                # The worker was told to end this generation, so what fails afterwards
+                # says nothing about the replies it handed over first, and reporting it
+                # would discard them. None of the four drains -- a terminal response is
+                # in hand, or the worker is gone, or the queue is a later worker's. One
+                # reply returns at its own Stop, and its drain discards what follows.
+                if reading_on_until is not None:
+                    return
                 yield GenStreamError(
                     f"Error: {self._subprocess_crash_message(crash_context)}",
                     public = True,
                 )
                 return
-            resp = read_one(read_timeout)
+            timeout = read_timeout
+            if reading_on_until is not None:
+                remaining = reading_on_until - time.monotonic()
+                if remaining <= 0:
+                    drain_on_cancel()
+                    return
+                timeout = min(timeout, remaining)
+            resp = read_one(timeout)
             if resp is None:
                 if not self._ensure_subprocess_alive():
+                    if reading_on_until is not None:
+                        return
                     yield GenStreamError(
                         f"Error: {self._subprocess_crash_message(crash_context)}",
                         public = True,
@@ -1056,32 +1096,73 @@ class InferenceOrchestrator:
             rtype = resp.get("type", "")
             if rtype == "status":
                 continue
-            # The worker is answering THIS request, so it is the one executing: only now may its cancel event speak for
-            # the shared worker one. The dispatched path opts out: its dispatcher already did this in worker order,
-            # which a mailbox read can lag behind.
-            if mark_started:
+            # The worker is answering THIS request, so it is the one executing: only now may its
+            # cancel event speak for the shared worker one. The dispatched path opts out: its
+            # dispatcher already did this in worker order, which a mailbox read can lag behind.
+            # Not once a Stop has gone out and this is reading on: what it reads then is a
+            # request on its way out, and saying so again would displace whichever request the
+            # worker moved to -- the record that request's own Stop is checked against. A single
+            # reply drains instead of reading on, and its drain never marks.
+            if mark_started and reading_on_until is None:
                 self._mark_worker_started(cancel_event)
             # Subprocess-level error (no request_id); request-scoped failures arrive as gen_error below
             if rtype == "error" and not resp.get("request_id"):
+                if reading_on_until is not None:
+                    return
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
-            if rtype == "token":
-                if cancel_event is not None and cancel_event.is_set():
-                    # Same rule as reset_generation_state: the shared worker event may only be set by the generation the
-                    # worker is running. A dispatched request can still be draining stale mailbox tokens after the
-                    # dispatcher retired it, and signalling from here would end the next one instead. Tearing this
-                    # stream down is always safe, so the local drain happens either way.
-                    if self._owns_worker(cancel_event):
-                        self._cancel_generation()
+            # Cancel from route (e.g. SSE connection closed). Sent from a token and
+            # not from the Stop itself, because only a response is evidence the worker
+            # was answering this request -- and from a token alone, so that several
+            # replies relay from exactly what one reply relays from and no response
+            # type becomes a signalling point that a single generation does not have.
+            # Its consequence is deliberate: a reply that withholds its text until a
+            # stop sequence settles sends no token before it finishes, so a turn made
+            # only of those is never told to stop and runs to its own end, bounded by
+            # its token budget. That is what one reply does with the same request, and
+            # it is the cheaper mistake -- a Stop sent from a response the worker has
+            # moved past would end whatever it moved on to.
+            if rtype == "token" and cancel_event is not None and cancel_event.is_set():
+                # Same rule as reset_generation_state: the shared worker event may only be set by
+                # the generation the worker is running. A dispatched request can still be draining
+                # stale mailbox tokens after the dispatcher retired it, and signalling from here
+                # would end the next one instead. Tearing a stream down is always safe, so a
+                # single reply's local drain happens either way.
+                #
+                # Once, for several replies: they go on reading afterwards, and a second
+                # Stop from a response read later could land after the worker had taken
+                # the next command. One reply returns here, so it cannot repeat.
+                if (rows is None or reading_on_until is None) and self._owns_worker(cancel_event):
+                    self._cancel_generation()
+                    if rows is not None:
+                        reading_on_until = time.monotonic() + _CANCELLED_ROWS_GRACE
+                if rows is None:
                     drain_on_cancel()
                     return
-                yield resp.get("text", "")
-            elif rtype == "gen_done":
+                # Several replies read on for their completions, but a token drawn
+                # after the Stop is one the same reply alone would never have shown.
+                continue
+
+            if rtype == "row_done" and rows is not None:
                 if stats_holder is not None:
+                    reported = stats_holder.setdefault("stats", [None] * rows)
+                    row = int(resp.get("row", 0))
+                    if 0 <= row < len(reported):
+                        reported[row] = resp.get("stats")
+                yield int(resp.get("row", 0)), None
+            elif rtype == "token":
+                if rows is not None:
+                    yield int(resp.get("row", 0)), resp.get("text", "")
+                else:
+                    yield resp.get("text", "")
+            elif rtype == "gen_done":
+                if stats_holder is not None and rows is None:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
+                if reading_on_until is not None:
+                    return
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
@@ -2079,6 +2160,58 @@ class InferenceOrchestrator:
             stop = stop,
         )
 
+    def generate_chat_batch(
+        self,
+        rows: list,
+        messages: list,
+        system_prompt: str = "",
+        image = None,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_new_tokens: int = 256,
+        repetition_penalty: float = 1.0,
+        cancel_event = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
+        stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
+    ) -> Generator[Any, None, None]:
+        """Ask for several replies to one prompt in a single command."""
+        yield from self._generate_inner(
+            messages = messages,
+            system_prompt = system_prompt,
+            image = image,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            max_new_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
+            cancel_event = cancel_event,
+            use_adapter = None,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+            stats_holder = stats_holder,
+            presence_penalty = presence_penalty,
+            seed = seed,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+            stop = stop,
+            rows = rows,
+        )
+
     def generate_chat_completion_with_tools(
         self,
         messages: list,
@@ -2296,8 +2429,12 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-    ) -> Generator[str, None, None]:
+        rows: Optional[list] = None,
+    ) -> Generator[Any, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
+
+        With ``rows`` the yields are ``(row, text)`` and ``(row, None)`` rather
+        than bare snapshots; ``GenStreamError`` is yielded bare either way.
 
         Serialized by _gen_lock (one generation at a time) so concurrent
         readers don't consume each other's tokens off the shared resp_queue.
@@ -2345,6 +2482,7 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
                 seed = seed,
+                rows = rows,
             )
 
             # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the lock above, having
@@ -2367,6 +2505,7 @@ class InferenceOrchestrator:
                     crash_context = "generation",
                     cancel_event = cancel_event,
                     stats_holder = stats_holder,
+                    rows = len(rows) if rows else None,
                 )
             finally:
                 self._release_worker(cancel_event)

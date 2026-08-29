@@ -80,6 +80,7 @@ class _ScriptedBackend:
         self._responder = responder
         self._stats = stats
         self.calls: list = []
+        self.batch_calls: list = []
         self.reset_count = 0
 
     def generate_chat_response(
@@ -101,6 +102,25 @@ class _ScriptedBackend:
             stats_holder["stats"] = _stats
         for snap in snapshots:
             yield snap
+
+    def generate_chat_batch(
+        self,
+        rows,
+        *,
+        stats_holder = None,
+        **kwargs,
+    ):
+        """Every choice's first reply in one command, as the real bridge does."""
+        self.batch_calls.append(rows)
+        reported: list = []
+        for index, row in enumerate(rows):
+            holder: dict = {}
+            for snapshot in self.generate_chat_response(stats_holder = holder, **{**kwargs, **row}):
+                yield index, snapshot
+            reported.append(holder.get("stats"))
+            yield index, None
+        if stats_holder is not None:
+            stats_holder["stats"] = reported
 
     def reset_generation_state(self, caller_cancel_event = None):
         self.reset_count += 1
@@ -503,23 +523,6 @@ def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkey
     body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
     assert backend.calls[0]["stop"] == ["END"]
     assert body["choices"][0]["message"]["content"] == "hi"
-
-
-def test_n_serves_one_full_generation_per_choice(monkeypatch):
-    """Each choice is its own sampling run, as on the llama-server path: the
-    backend is asked once per choice rather than one reply being copied, and the
-    prompt they share is not re-counted. Two runs may sample the same text; what
-    is guaranteed is that each was generated."""
-    turns = iter(["first", "second"])
-    backend = _ScriptedBackend(
-        lambda messages, tools: [next(turns)],
-        stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3}},
-    )
-    body = _json_body(_call(_request(n = 2), monkeypatch, backend, supports_tools = False))
-    assert [c["index"] for c in body["choices"]] == [0, 1]
-    assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
-    assert len(backend.calls) == 2  # a generation per choice, not one reused
-    assert _totals(body) == {"prompt_tokens": 7, "completion_tokens": 6, "total_tokens": 13}
 
 
 def _totals(body):

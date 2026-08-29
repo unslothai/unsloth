@@ -653,6 +653,55 @@ def _backend_declares(
         return False
 
 
+def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
+    """One reply, or an ask for several, by whether the command carries rows."""
+
+    if cmd.get("rows"):
+        _handle_generate_rows(backend, cmd, resp_queue, cancel_event)
+    else:
+        _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+
+def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+    """The keyword set a generate command asks a backend for."""
+
+    image = None
+    image_b64 = cmd.get("image_base64")
+    if image_b64:
+        image = _decode_image(image_b64)
+        image = _resize_image(image)
+
+    gen_kwargs = {
+        "messages": cmd["messages"],
+        "system_prompt": cmd.get("system_prompt", ""),
+        "image": image,
+        "temperature": cmd.get("temperature", 0.7),
+        "top_p": cmd.get("top_p", 0.9),
+        "top_k": cmd.get("top_k", 40),
+        "min_p": cmd.get("min_p", 0.0),
+        "max_new_tokens": cmd.get("max_new_tokens", 256),
+        "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+        "presence_penalty": cmd.get("presence_penalty", 0.0),
+        "cancel_event": cancel_event,
+    }
+
+    for opt_key in (
+        "tools",
+        "enable_thinking",
+        "reasoning_effort",
+        "preserve_thinking",
+        "continue_final_message",
+    ):
+        if opt_key in cmd:
+            gen_kwargs[opt_key] = cmd[opt_key]
+
+    for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
+        if gated in cmd and _backend_declares(backend, gated):
+            gen_kwargs[gated] = cmd[gated]
+
+    return gen_kwargs
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
@@ -662,39 +711,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     request_id = cmd.get("request_id", "")
 
     try:
-        image = None
-        image_b64 = cmd.get("image_base64")
-        if image_b64:
-            image = _decode_image(image_b64)
-            image = _resize_image(image)
-
-        gen_kwargs = {
-            "messages": cmd["messages"],
-            "system_prompt": cmd.get("system_prompt", ""),
-            "image": image,
-            "temperature": cmd.get("temperature", 0.7),
-            "top_p": cmd.get("top_p", 0.9),
-            "top_k": cmd.get("top_k", 40),
-            "min_p": cmd.get("min_p", 0.0),
-            "max_new_tokens": cmd.get("max_new_tokens", 256),
-            "repetition_penalty": cmd.get("repetition_penalty", 1.0),
-            "presence_penalty": cmd.get("presence_penalty", 0.0),
-            "cancel_event": cancel_event,
-        }
-
-        for opt_key in (
-            "tools",
-            "enable_thinking",
-            "reasoning_effort",
-            "preserve_thinking",
-            "continue_final_message",
-        ):
-            if opt_key in cmd:
-                gen_kwargs[opt_key] = cmd[opt_key]
-
-        for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
-            if gated in cmd and _backend_declares(backend, gated):
-                gen_kwargs[gated] = cmd[gated]
+        gen_kwargs = _generation_kwargs(backend, cmd, cancel_event)
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
@@ -796,6 +813,79 @@ def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
             "error": "Counting is not supported on the transformers backend.",
         },
     )
+
+def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
+    """Answer one command with several replies, tagging each event with its row."""
+    request_id = cmd.get("request_id", "")
+    rows = cmd.get("rows") or []
+
+    try:
+        shared = _generation_kwargs(backend, cmd, cancel_event)
+        shared.pop("cancel_event", None)
+        requests = [{**shared, **row} for row in rows]
+
+        unavailable = getattr(backend, "batch_unavailable_reason", None)
+        reason = unavailable(requests) if callable(unavailable) else "backend cannot batch"
+        if reason is not None:
+            logger.info(
+                "Declining %d replies in one command for request_id=%s: %s",
+                len(requests),
+                request_id,
+                reason,
+            )
+        else:
+            logger.info(
+                "Starting batched text generation for request_id=%s rows=%d",
+                request_id,
+                len(requests),
+            )
+            generator = backend.generate_chat_batch(requests, cancel_event = cancel_event)
+            try:
+                for row, snapshot in generator:
+                    if snapshot is None:
+                        _send_response(
+                            resp_queue,
+                            {
+                                "type": "row_done",
+                                "request_id": request_id,
+                                "row": row,
+                                "stats": backend.last_batch_generation_stats[row],
+                            },
+                        )
+                    else:
+                        _send_response(
+                            resp_queue,
+                            {
+                                "type": "token",
+                                "request_id": request_id,
+                                "row": row,
+                                "text": snapshot,
+                            },
+                        )
+            finally:
+                close = getattr(generator, "close", None)
+                if callable(close):
+                    close()
+            logger.info(
+                "Finished %d-reply text generation for request_id=%s", len(requests), request_id
+            )
+
+        _send_response(
+            resp_queue,
+            {"type": "gen_done", "request_id": request_id, "stats": None},
+        )
+
+    except Exception as exc:
+        logger.error("Multi-reply generation error: %s", exc, exc_info = True)
+        _send_response(
+            resp_queue,
+            {
+                "type": "gen_error",
+                "request_id": request_id,
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
 
 
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1205,7 +1295,7 @@ def run_inference_process(
                     # which would stall the switch until the dispatcher idle-timeout.
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
-                    _handle_generate(backend, cmd, resp_queue, cancel_event)
+                    _dispatch_generate(backend, cmd, resp_queue, cancel_event)
                 elif cmd_type == "generate_audio_input":
                     # Drain discipline as in "generate" (see that branch).
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
@@ -1491,7 +1581,7 @@ def run_inference_process(
                 # the switch until the dispatcher idle-timeout tears the subprocess down.
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
-                _handle_generate(backend, cmd, resp_queue, cancel_event)
+                _dispatch_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "count_tokens":
                 _decline_count_tokens(cmd, resp_queue)

@@ -24094,20 +24094,81 @@ async def produce_openai_chat_completions(
                     final = token
                 return final
 
+            _produced: dict = {}
+
+            async def _produce_choices(_indices):
+                """These choices' first replies, asked for in one command."""
+                rows = [
+                    {} if idx == 0 else {"seed": _choice_seed(payload.seed, idx)}
+                    for idx in _indices
+                ]
+                batch_stats: dict = {}
+                texts = [""] * len(rows)
+                _finished = set()
+
+                def _drain_batch():
+                    for event in backend.generate_chat_batch(
+                        rows = rows,
+                        cancel_event = cancel_event,
+                        stats_holder = batch_stats,
+                        **gen_kwargs,
+                    ):
+                        if isinstance(event, GenStreamError):
+                            return event
+                        _row, _text = event
+                        if _text is None:
+                            _finished.add(_row)
+                        else:
+                            texts[_row] = _text
+                    return None
+
+                failed = await _run_blocking_generation(
+                    _drain_batch,
+                    cancel_event,
+                    name = "openai-chat-nonstream-batch",
+                )
+                if isinstance(failed, GenStreamError):
+                    backend.reset_generation_state(cancel_event)
+                    logger.warning(
+                        "Falling back to one command per choice: %s",
+                        _friendly_gen_stream_error(failed),
+                    )
+                    _reported = batch_stats.get("stats") or []
+                    for _row, idx in enumerate(_indices):
+                        if _row in _finished:
+                            _produced[idx] = (
+                                texts[_row],
+                                _reported[_row] if _row < len(_reported) else None,
+                            )
+                    return False
+                _reported = batch_stats.get("stats") or []
+                for _row, idx in enumerate(_indices):
+                    if _row in _finished or texts[_row]:
+                        _produced[idx] = (
+                            texts[_row],
+                            _reported[_row] if _row < len(_reported) else None,
+                        )
+                return any(idx in _produced for idx in _indices)
+
             async def _one_choice(choice_index):
                 """One sampled answer, healing and nudge retry included.
 
-                A full generation of its own -- its own seed, its own stats --
-                exactly as the llama-server path drains its own ``n``.
+                Its own seed and its own stats, exactly as the llama-server path
+                drains its own ``n``. The reply itself comes from the batch when
+                one produced it; everything after the reply runs per choice
+                either way, and a nudge retry is always a generation of its own.
                 """
                 # Cleared per choice: one cancelled before it publishes must report
                 # nothing rather than inherit the previous choice's token count.
                 stats_holder.pop("stats", None)
-                full_text = await _run_blocking_generation(
-                    lambda: _drain_generate(choice_index = choice_index),
-                    cancel_event,
-                    name = "openai-chat-nonstream",
-                )
+                if choice_index in _produced:
+                    full_text, stats_holder["stats"] = _produced[choice_index]
+                else:
+                    full_text = await _run_blocking_generation(
+                        lambda: _drain_generate(choice_index = choice_index),
+                        cancel_event,
+                        name = "openai-chat-nonstream",
+                    )
                 if isinstance(full_text, GenStreamError):
                     backend.reset_generation_state(cancel_event)
                     _msg = _friendly_gen_stream_error(full_text)
@@ -24128,10 +24189,14 @@ async def produce_openai_chat_completions(
                 if _reasoning_text:
                     _msg["reasoning_content"] = _reasoning_text
                 # Budget exhaustion unless a heal below promotes a tool call; a cancelled turn
-                # stopped on request, not at the cap, so it stays "stop".
+                # stopped on request, not at the cap, so it stays "stop". A reply the batch
+                # produced reports its own end instead: a Stop aimed at some other choice must
+                # not rewrite the reason this one already finished for, and a row the cancel did
+                # catch has "stop" in its own stats anyway. A row cut off part-way carries no
+                # stats to read a reason out of, so it reports the stopped turn it is.
                 _finish = (
                     "stop"
-                    if cancel_event.is_set()
+                    if cancel_event.is_set() and choice_index not in _produced
                     else _stats_finish_reason(stats_holder.get("stats"))
                 )
                 if _sf_heal:
@@ -24214,12 +24279,28 @@ async def produce_openai_chat_completions(
                             _msg["tool_calls"] = _tcs[:1]
                 return _msg, _finish, stats_holder.get("stats")
 
+            # How many replies decode at once, the default parallel width the
+            # GGUF path serves concurrent requests at. A turn asking for more
+            # choices than that is served in several commands, so the replies in
+            # flight never outnumber it however large `n` is -- every row holds a
+            # KV cache of its own, and asking for all 128 at once would fail a
+            # model that answers the same turn a few choices at a time. Not the
+            # launch's --parallel: that sizes llama-server's slots and is ignored
+            # for the models served here, so a GGUF setting would decide how a
+            # safetensors turn is answered.
+            from core.inference.llama_server_args import PARALLEL_DEFAULT
+
+            _width = PARALLEL_DEFAULT
+            if _n > 1 and _width > 1 and payload.use_adapter is None and not cancel_event.is_set():
+                for _start in range(0, _n, _width):
+                    if cancel_event.is_set():
+                        break
+                    if not await _produce_choices(range(_start, min(_start + _width, _n))):
+                        break
+
             for _idx in range(_n):
-                # Stop spawning the remaining choices once cancelled. Index 0 runs
-                # regardless, so a cancelled turn still answers with one choice
-                # rather than the empty `choices` a client indexes into.
-                if _idx and cancel_event.is_set():
-                    break
+                if _idx and cancel_event.is_set() and _idx not in _produced:
+                    continue
                 _msg, _finish, _choice_stats = await _one_choice(_idx)
                 _choices.append(
                     CompletionChoice(
@@ -24279,9 +24360,12 @@ async def produce_openai_chat_completions(
             if len(_choices) > 1:
                 # Every choice, labelled, as the llama-server drain reports them:
                 # showing the last one alone would hide the rest of the turn.
+                # Numbered from the choice's own index, not its place in the list:
+                # a cancelled turn publishes the choices the batch produced and skips
+                # the ones it did not, so position and identity come apart.
                 _monitor_reply = "\n\n".join(
-                    f"Choice {_i + 1}:\n{_reply_text(_reply, _choice.finish_reason)}"
-                    for _i, (_reply, _choice) in enumerate(zip(_monitor_replies, _choices))
+                    f"Choice {_choice.index + 1}:\n{_reply_text(_reply, _choice.finish_reason)}"
+                    for _reply, _choice in zip(_monitor_replies, _choices)
                 )
             else:
                 _monitor_reply = _reply_text(_msg, _finish)
