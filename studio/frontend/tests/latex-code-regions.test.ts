@@ -258,8 +258,8 @@ $$`,
     ],
     [String.raw`literal \$ + \$v_s\$`, String.raw`literal \$ + $v_s$`],
     [
-      String.raw`Before \$x + ` + "`y`" + String.raw`\$ then \$z\$`,
-      String.raw`Before \$x + ` + "`y`" + String.raw`\$ then $z$`,
+      `${String.raw`Before \$x + `}\`y\`${String.raw`\$ then \$z\$`}`,
+      `${String.raw`Before \$x + `}\`y\`${String.raw`\$ then $z$`}`,
     ],
     [
       String.raw`Before \$x + [y](https://e.test)\$ then \$z\$`,

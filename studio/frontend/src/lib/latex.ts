@@ -174,10 +174,49 @@ export function findCodeBlockRegions(
 
   FENCE_CANDIDATE_RE.lastIndex = 0;
   INDENTED_CODE_CANDIDATE_RE.lastIndex = 0;
-  const needsBlockScan =
-    FENCE_CANDIDATE_RE.test(content) ||
-    INDENTED_CODE_CANDIDATE_RE.test(content);
+  let simpleFenceStart = -1;
+  let simpleFenceMarker = "";
+  let needsBlockScan = false;
+  while ((match = FENCE_CANDIDATE_RE.exec(content)) !== null) {
+    const prefix = match[2] ?? "";
+    if (prefix.trim() || indentWidth(prefix) > 3) {
+      needsBlockScan = true;
+      break;
+    }
+    const marker = match[3] ?? "";
+    const tail = match[4] ?? "";
+    const lineStart = match.index + (match[1]?.length ?? 0);
+    if (simpleFenceStart < 0) {
+      if (marker[0] !== "`" || !tail.includes("`")) {
+        simpleFenceStart = lineStart;
+        simpleFenceMarker = marker;
+      }
+    } else if (
+      marker[0] === simpleFenceMarker[0] &&
+      marker.length >= simpleFenceMarker.length &&
+      !tail.trim()
+    ) {
+      fenced.push([
+        simpleFenceStart,
+        lineStart + prefix.length + marker.length,
+      ]);
+      simpleFenceStart = -1;
+      simpleFenceMarker = "";
+    }
+  }
+  if (!needsBlockScan && simpleFenceStart >= 0) {
+    fenced.push([simpleFenceStart, content.length]);
+  }
+  if (!needsBlockScan) {
+    while ((match = INDENTED_CODE_CANDIDATE_RE.exec(content)) !== null) {
+      if (!isInRegion(match.index + match[0].length - 1, fenced)) {
+        needsBlockScan = true;
+        break;
+      }
+    }
+  }
   if (needsBlockScan) {
+    fenced.length = 0;
     const lines = content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g);
     let openFence: {
       start: number;
