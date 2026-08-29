@@ -569,15 +569,17 @@ function useCompareVariant(pairId: string): CompareVariant | null {
   }>();
 
   useEffect(() => {
-    if (checkpointIsLora === null || stored?.pairId === pairId) return;
+    if (stored?.pairId === pairId) return;
     let isActive = true;
     const settle = (threads: ThreadRecord[]) => {
       if (!isActive) return;
+      const variant = compareVariantForPair(threads, checkpointIsLora);
+      if (variant === null) return;
       setStored((previous) => {
         if (previous?.pairId === pairId) return previous;
         return {
           pairId,
-          variant: compareVariantForPair(threads, checkpointIsLora),
+          variant,
         };
       });
     };

@@ -46,25 +46,26 @@ test("a generalized pair never reaches the adapter-toggle path", () => {
   // Loading model 2, a LoRA export, is what used to swap the component mid-session.
   assert.equal(compareVariantForPair(threads, true), "general");
   assert.equal(compareVariantForPair(threads, false), "general");
+  assert.equal(compareVariantForPair(threads, null), "general");
 });
 
-test("a LoRA pair follows the loaded checkpoint, as it always has", () => {
+test("a LoRA pair keeps its renderer across checkpoint changes", () => {
   const threads = storedPair([
     ["base", 20],
     ["lora", 10],
   ]);
   assert.equal(compareVariantForPair(threads, true), "lora");
-  // No LoRA loaded: the adapter toggle would answer both panes from the same
-  // weights, so the generalized panes take it and show their model selectors.
-  assert.equal(compareVariantForPair(threads, false), "general");
+  assert.equal(compareVariantForPair(threads, false), "lora");
+  assert.equal(compareVariantForPair(threads, null), "lora");
 });
 
 test("a pair with no threads yet follows the loaded checkpoint", () => {
   assert.equal(compareVariantForPair([], true), "lora");
   assert.equal(compareVariantForPair([], false), "general");
+  assert.equal(compareVariantForPair([], null), null);
 });
 
-test("the generalized panes recover a LoRA pair", () => {
+test("the resolver recognizes a LoRA pair", () => {
   const threads = storedPair([
     ["base", 20],
     ["lora", 10],
@@ -120,16 +121,33 @@ test("two partial shapes never splice into a complete comparison", () => {
 });
 
 test("one surviving legacy pane stays in its persisted shape", () => {
+  assert.deepEqual(resolveComparePaneThreadIds(storedPair([["base", 10]])), {
+    shape: "lora",
+    first: "base-thread",
+    second: undefined,
+  });
+  assert.equal(
+    compareVariantForPair(storedPair([["base", 10]]), false),
+    "lora",
+  );
   assert.deepEqual(resolveComparePaneThreadIds(storedPair([["lora", 10]])), {
     shape: "lora",
     first: undefined,
     second: "lora-thread",
   });
+  assert.equal(
+    compareVariantForPair(storedPair([["lora", 10]]), false),
+    "lora",
+  );
   assert.deepEqual(resolveComparePaneThreadIds(storedPair([["model2", 10]])), {
     shape: "general",
     first: undefined,
     second: "model2-thread",
   });
+  assert.equal(
+    compareVariantForPair(storedPair([["model2", 10]]), null),
+    "general",
+  );
 });
 
 test("the freshest row wins only within the selected shape", () => {
@@ -179,10 +197,9 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   assert.ok(chatPageSource.includes('return compareVariant === "lora" ? ('));
   assert.doesNotMatch(chatPageSource, CHECKPOINT_PICKS_RENDERER);
   assert.ok(
-    chatPageSource.includes(
-      "if (checkpointIsLora === null || stored?.pairId === pairId) return;",
-    ),
+    chatPageSource.includes("if (stored?.pairId === pairId) return;"),
   );
+  assert.ok(chatPageSource.includes("if (variant === null) return;"));
   assert.ok(chatPageSource.includes("s.residentCheckpoint === undefined"));
   assert.ok(chatPageSource.includes("activeModel.isLora"));
   assert.ok(chatPageSource.includes("  return stored.variant;"));

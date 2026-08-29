@@ -38,19 +38,15 @@ export function resolveComparePaneThreadIds(
 }
 
 /**
- * The loaded checkpoint decides, as it always has, except that a generalized pair
- * is pinned to the generalized path: handing one to the adapter-toggle path
- * relabels its panes and appends adapter-off and adapter-on answers to the two
- * histories it already holds (#9823).
- *
- * Not pinned the other way. A base/lora pair reopened with a plain checkpoint
- * loaded stays generalized, where the panes carry model selectors; the adapter
- * toggle would warn "model is not a PeftModel" and answer both panes identically.
+ * A persisted shape owns the renderer. Reclassifying it from the loaded checkpoint
+ * relabels existing histories and can write the other comparison mode into them.
  */
 export function compareVariantForPair(
   threads: ThreadRecord[],
-  checkpointIsLora: boolean,
-): CompareVariant {
+  checkpointIsLora: boolean | null,
+): CompareVariant | null {
   const { shape } = resolveComparePaneThreadIds(threads);
-  return shape !== "general" && checkpointIsLora ? "lora" : "general";
+  if (shape) return shape;
+  if (checkpointIsLora === null) return null;
+  return checkpointIsLora ? "lora" : "general";
 }
