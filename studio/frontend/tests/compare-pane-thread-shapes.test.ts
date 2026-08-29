@@ -91,6 +91,45 @@ test("a pair holding both shapes resolves from its own shape, not the freshest r
   });
 });
 
+test("a complete LoRA shape wins over an interrupted generalized write", () => {
+  const threads = storedPair([
+    ["model1", 30],
+    ["base", 20],
+    ["lora", 10],
+  ]);
+  assert.deepEqual(resolveComparePaneThreadIds(threads), {
+    shape: "lora",
+    first: "base-thread",
+    second: "lora-thread",
+  });
+  assert.equal(compareVariantForPair(threads, true), "lora");
+});
+
+test("two partial shapes never splice into a complete comparison", () => {
+  const threads = storedPair([
+    ["model1", 20],
+    ["lora", 10],
+  ]);
+  assert.deepEqual(resolveComparePaneThreadIds(threads), {
+    shape: "general",
+    first: "model1-thread",
+    second: undefined,
+  });
+});
+
+test("one surviving legacy pane stays in its persisted shape", () => {
+  assert.deepEqual(resolveComparePaneThreadIds(storedPair([["lora", 10]])), {
+    shape: "lora",
+    first: undefined,
+    second: "lora-thread",
+  });
+  assert.deepEqual(resolveComparePaneThreadIds(storedPair([["model2", 10]])), {
+    shape: "general",
+    first: undefined,
+    second: "model2-thread",
+  });
+});
+
 test("the LoRA panes adopt no generalized thread", () => {
   assert.ok(
     LORA_PANE_SOURCE.includes('threads.find((t) => t.modelType === "base")'),
