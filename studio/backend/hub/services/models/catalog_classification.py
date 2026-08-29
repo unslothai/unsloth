@@ -28,6 +28,7 @@ _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
 _VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
 _VIDEO_GEN_TASK = "text-to-video"
+_STT_TASK = "automatic-speech-recognition"
 
 # TTS-only GGUF archs llama.cpp cannot load, tagged speech so the chat picker keeps them out of
 # llama-server. One shared definition rather than a copy per layer: the chat gate, this classifier
@@ -428,6 +429,12 @@ def _local_model_task(model) -> Optional[str]:
     id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_task(path, id_hints)
+    try:
+        from utils.hidden_models import _config_is_whisper
+        if _config_is_whisper(Path(path) / "config.json"):
+            return _STT_TASK
+    except Exception:
+        pass
     if not _local_is_diffusers(model):
         return None
     try:
