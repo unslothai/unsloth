@@ -2022,6 +2022,115 @@ class TestResponsesStreamAdapter:
             "message",
         ]
 
+    def test_apply_patch_stream_is_restored_to_one_custom_tool_call(self, monkeypatch):
+        patch = "*** Begin Patch\n*** Add File: nested/café.txt\n+héllo\n*** End Patch"
+        arguments = json.dumps({"input": patch}, ensure_ascii = False)
+        split = len(arguments) // 2
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_patch",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch",
+                                        "arguments": arguments[:split],
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": arguments[split:]},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(
+            input = "edit",
+            stream = True,
+            tools = [{"type": "custom", "name": "apply_patch"}],
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.function_call_arguments.delta") == []
+        assert self._payloads(lines, "response.function_call_arguments.done") == []
+        done = self._payloads(lines, "response.output_item.done")
+        assert len(done) == 1
+        assert done[0]["item"] == {
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": "call_patch",
+            "name": "apply_patch",
+            "input": patch,
+        }
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["output"] == [done[0]["item"]]
+
+    def test_regular_apply_patch_function_stream_stays_a_function_call(self, monkeypatch):
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_patch",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_patch",
+                                        "arguments": '{"path":"x"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(
+            input = "edit",
+            stream = True,
+            tools = [{"type": "function", "name": "apply_patch"}],
+        )
+
+        async def run():
+            response = await _responses_stream(
+                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        done = self._payloads(lines, "response.output_item.done")
+        assert done[0]["item"]["type"] == "function_call"
+        assert self._payloads(lines, "response.function_call_arguments.done")
+
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod
 
