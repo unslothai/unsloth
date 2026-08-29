@@ -129,7 +129,10 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
   );
   assert.match(dialog, /addressIsCommand && \(\s*<ArgumentsEditor/);
   assert.match(dialog, /const addressIsCommand = form\.transport === "stdio"/);
-  assert.match(dialog, /const transport = transportFromAddress\(url\)/);
+  assert.match(
+    dialog,
+    /const transport = transportFromAddress\(\s*url,\s*prev\.credentialTransport,\s*\)/,
+  );
   assert.match(
     dialog,
     /queueMicrotask\(\(\) => \{\s*if \(cancelled\) return;[\s\S]*setView\(\{ kind: "list" \}\)/,
