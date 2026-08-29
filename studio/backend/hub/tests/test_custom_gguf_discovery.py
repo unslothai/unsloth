@@ -231,6 +231,17 @@ def test_direct_custom_model_root_keeps_loose_variants(tmp_path):
     assert {Path(row.path) for row in _custom_rows(root)} == {q4, q8}
 
 
+def test_direct_custom_model_root_dedupes_split_shards(tmp_path):
+    root = tmp_path / "direct-model-root"
+    _write_gguf(root / "Q4_K_M-00001-of-00002.gguf")
+    _write_gguf(root / "Q4_K_M-00002-of-00002.gguf")
+
+    rows = _custom_rows(root)
+
+    assert len(rows) == 1
+    assert gguf.gguf_variant_family(Path(rows[0].path).name) == "Q4_K_M"
+
+
 def test_lmstudio_publisher_model_layout_keeps_its_model_id(tmp_path):
     root = tmp_path / "lmstudio"
     model = root / "publisher" / "model"

@@ -804,6 +804,25 @@ def _scan_custom_folder(
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
 
+    seen_loose_shard_families: set[tuple[str, str]] = set()
+    unsharded_selectable: list[LocalModelInfo] = []
+    for model in selectable:
+        path = Path(model.path)
+        family = gguf.gguf_variant_family(path.name)
+        is_loose_shard = (
+            model.source == "lmstudio"
+            and model.model_format == "gguf"
+            and not _safe_is_dir(path)
+            and family != path.stem
+        )
+        if is_loose_shard:
+            shard_key = (_inventory_path_identity(str(path.parent)), family)
+            if shard_key in seen_loose_shard_families:
+                continue
+            seen_loose_shard_families.add(shard_key)
+        unsharded_selectable.append(model)
+    selectable = unsharded_selectable
+
     grouped_gguf_dirs = {
         _inventory_path_identity(model.path)
         for model in selectable
