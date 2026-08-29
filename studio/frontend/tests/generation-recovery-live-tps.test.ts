@@ -5,6 +5,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+const RECOVERY_STOP_DISPATCH =
+  /if \(isQueueRunning\) \{[\s\S]*?return;[\s\S]*?stopChatThread\(activeThreadId\);/;
+
 test("durable reload recovery owns captures and finishes live TPS", async () => {
   const source = await readFile(
     new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
@@ -34,5 +37,21 @@ test("durable reload recovery owns captures and finishes live TPS", async () => 
   assert.ok(
     clearOwner > finish,
     "TPS must finish before the run owner is cleared",
+  );
+});
+
+test("the visible Stop button cancels the recovered server run", async () => {
+  const source = await readFile(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const ComposerRightControls:");
+  const end = source.indexOf("const MessageError:", start);
+  const controls = source.slice(start, end);
+
+  assert.match(
+    controls,
+    RECOVERY_STOP_DISPATCH,
+    "assistant-ui cannot cancel a recovery follower; Stop must also dispatch its server handle",
   );
 });

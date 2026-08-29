@@ -222,6 +222,7 @@ import {
   type SentTextGuard,
 } from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { stopChatThread } from "@/features/chat/utils/stop-chat-thread";
 import {
   getStoredChatThread,
   updateStoredChatThread,
@@ -6621,7 +6622,11 @@ const ComposerRightControls: FC<{
         });
       return;
     }
-    if (isQueueRunning) onStopClick?.();
+    if (isQueueRunning) {
+      onStopClick?.();
+      return;
+    }
+    stopChatThread(activeThreadId);
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
