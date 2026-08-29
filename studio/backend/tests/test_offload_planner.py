@@ -434,6 +434,35 @@ def test_a_safe_partial_spill_across_two_gpus_is_planned():
     assert plan.spilled_blocks == (0, 3)
 
 
+def test_partial_spill_selection_covers_each_device_shortfall():
+    sizes = [1200 * MIB, 0, 0, 600 * MIB, 600 * MIB]
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 5,
+        n_attention_layers = 5,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = 0)
+            for i, size in enumerate(sizes)
+        ),
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [1300 * MIB, 100 * MIB],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [1, 1],
+    )
+
+    assert plan.spilled_blocks == (3, 4)
+
+
 def test_a_full_spill_is_checked_per_device_not_assumed():
     """A full spill used to be waved through on the theory that "every device
     keeps its layer share". It does keep its ROW share -- llama.cpp splits rows

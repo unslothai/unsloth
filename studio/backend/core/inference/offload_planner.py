@@ -531,6 +531,92 @@ def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int
     return slots
 
 
+def _per_device_usage(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    n_ctx: int,
+    spilled_indices: set[int],
+    spill_lm_head: bool,
+    vram_bytes_per_device: Sequence[int],
+    *,
+    quantised: bool,
+    kv_bytes_floor: int,
+    split_weights_per_device: Sequence[float] = (),
+    kv_layer_weights: Sequence[int] = (),
+) -> tuple[Optional[str], list[int], list[list[int]]]:
+    if len(vram_bytes_per_device) <= 1:
+        return None, [], []
+    # These three shapes -- recurrent hybrid, n_attention_layers short of
+    # n_layers, sliding window -- are only a problem when the cache has to be
+    # spread evenly for want of anything better. A vector removes that guess;
+    # without one they still abstain.
+    uneven_cache = (
+        layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
+    )
+    weights = [max(0, int(w)) for w in kv_layer_weights]
+    if len(weights) != layout.n_layers or not any(weights):
+        weights = []
+    if uneven_cache and not weights:
+        if layout.recurrent_bytes > 0:
+            return "the recurrent state's per-layer split is not visible in the layout", [], []
+        if layout.n_attention_layers != layout.n_layers:
+            return (
+                f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
+                "and the layout does not say which",
+                [],
+                [],
+            )
+        return (
+            "the cache is per-layer uneven (sliding-window attention) and no per-layer "
+            "vector was supplied to say which layers are full-context",
+            [],
+            [],
+        )
+    if layout.has_excluded_blocks:
+        return "the GGUF carries trailing blocks that shift llama.cpp's row count", [], []
+
+    n_slots = layout.n_layers + 1
+    if n_slots <= 1:
+        return None, [], []
+    cache = (
+        0
+        if opts.kv_on_host
+        else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
+    )
+    # Scaled to the total the caller already priced. Uniform when unsupplied.
+    total_weight = sum(weights)
+    if weights and total_weight > 0:
+        kv_by_layer = [cache * w // total_weight for w in weights]
+    else:
+        per = cache // layout.n_layers if layout.n_layers else 0
+        kv_by_layer = [per] * layout.n_layers
+    by_index = {b.index: b for b in layout.blocks}
+    output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
+
+    slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
+    usage: list[int] = []
+    for device, rows in enumerate(slots):
+        used = 0
+        for row in rows:
+            if row == n_slots - 1:
+                used += output_row_bytes
+                continue
+            block = by_index.get(row)
+            if block is None:
+                continue
+            used += block.resident_bytes
+            if row < len(kv_by_layer):
+                used += kv_by_layer[row]
+            if row not in spilled_indices:
+                used += block.spillable_bytes
+        # Everything outside the layout sits on the main device, which is
+        # devices[0] once -sm none has already pruned the list.
+        if device == 0:
+            used += max(0, opts.extra_resident_bytes)
+        usage.append(used)
+    return None, usage, slots
+
+
 def _per_device_shortfall(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -557,70 +643,21 @@ def _per_device_shortfall(
     pool says fits. A per-device shortfall is a hard throw (llama-model.cpp:1731)
     and ``--fit off`` means common/fit.cpp never runs to catch it.
     """
-    if len(vram_bytes_per_device) <= 1:
-        return None
-    # These three shapes -- recurrent hybrid, n_attention_layers short of
-    # n_layers, sliding window -- are only a problem when the cache has to be
-    # spread evenly for want of anything better. A vector removes that guess;
-    # without one they still abstain.
-    uneven_cache = (
-        layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
+    error, usage, slots = _per_device_usage(
+        layout,
+        opts,
+        n_ctx,
+        spilled_indices,
+        spill_lm_head,
+        vram_bytes_per_device,
+        quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        split_weights_per_device = split_weights_per_device,
+        kv_layer_weights = kv_layer_weights,
     )
-    weights = [max(0, int(w)) for w in kv_layer_weights]
-    if len(weights) != layout.n_layers or not any(weights):
-        weights = []
-    if uneven_cache and not weights:
-        if layout.recurrent_bytes > 0:
-            return "the recurrent state's per-layer split is not visible in the layout"
-        if layout.n_attention_layers != layout.n_layers:
-            return (
-                f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
-                "and the layout does not say which"
-            )
-        return (
-            "the cache is per-layer uneven (sliding-window attention) and no per-layer "
-            "vector was supplied to say which layers are full-context"
-        )
-    if layout.has_excluded_blocks:
-        return "the GGUF carries trailing blocks that shift llama.cpp's row count"
-
-    n_slots = layout.n_layers + 1
-    if n_slots <= 1:
-        return None
-    cache = (
-        0
-        if opts.kv_on_host
-        else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
-    )
-    # Scaled to the total the caller already priced. Uniform when unsupplied.
-    total_weight = sum(weights)
-    if weights and total_weight > 0:
-        kv_by_layer = [cache * w // total_weight for w in weights]
-    else:
-        per = cache // layout.n_layers if layout.n_layers else 0
-        kv_by_layer = [per] * layout.n_layers
-    by_index = {b.index: b for b in layout.blocks}
-    output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
-
-    slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
-    for device, rows in enumerate(slots):
-        used = 0
-        for row in rows:
-            if row == n_slots - 1:
-                used += output_row_bytes
-                continue
-            block = by_index.get(row)
-            if block is None:
-                continue
-            used += block.resident_bytes
-            if row < len(kv_by_layer):
-                used += kv_by_layer[row]
-            if row not in spilled_indices:
-                used += block.spillable_bytes
-        # Everything outside the layout sits on the main device, which is
-        # devices[0] once -sm none has already pruned the list.
-        if device == 0:
-            used += max(0, opts.extra_resident_bytes)
+    if error is not None:
+        return error
+    for device, (used, rows) in enumerate(zip(usage, slots)):
         fixed_reserve = max(0, opts.overhead_bytes_per_device)
         if device > 0:
             fixed_reserve += max(0, opts.pipeline_overhead_bytes)
@@ -632,6 +669,68 @@ def _per_device_shortfall(
                 f"{len(rows)}-row share against {headroom / GIB:.2f} GiB usable"
             )
     return None
+
+
+def _select_blocks_per_device(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    n_ctx: int,
+    vram_bytes_per_device: Sequence[int],
+    *,
+    quantised: bool,
+    kv_bytes_floor: int,
+    split_weights_per_device: Sequence[float] = (),
+    kv_layer_weights: Sequence[int] = (),
+) -> Optional[list[BlockLayout]]:
+    error, usage, slots = _per_device_usage(
+        layout,
+        opts,
+        n_ctx,
+        set(),
+        False,
+        vram_bytes_per_device,
+        quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        split_weights_per_device = split_weights_per_device,
+        kv_layer_weights = kv_layer_weights,
+    )
+    if error is not None:
+        return None
+    by_index = {block.index: block for block in layout.blocks}
+    chosen: list[BlockLayout] = []
+    for device, (used, rows) in enumerate(zip(usage, slots)):
+        fixed_reserve = max(0, opts.overhead_bytes_per_device)
+        if device > 0:
+            fixed_reserve += max(0, opts.pipeline_overhead_bytes)
+        deficit = used + fixed_reserve - max(0, vram_bytes_per_device[device])
+        if deficit <= 0:
+            continue
+        candidates = [
+            by_index[row]
+            for row in rows
+            if row in by_index and by_index[row].spillable_bytes > 0
+        ]
+        local, freed = _select_blocks(candidates, deficit, opts.spill_order)
+        if freed < deficit:
+            return None
+        chosen.extend(local)
+    if (
+        _per_device_shortfall(
+            layout,
+            opts,
+            n_ctx,
+            {block.index for block in chosen},
+            False,
+            vram_bytes_per_device,
+            quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            split_weights_per_device = split_weights_per_device,
+            kv_layer_weights = kv_layer_weights,
+        )
+        is not None
+    ):
+        return None
+    return chosen
 
 
 def _plan_at(
@@ -673,6 +772,20 @@ def _plan_at(
     deficit = needed - budget
     chosen, freed = _select_blocks(layout.blocks, deficit, opts.spill_order)
     if freed >= deficit:
+        if len(vram_bytes_per_device) > 1:
+            per_device = _select_blocks_per_device(
+                layout,
+                opts,
+                n_ctx,
+                vram_bytes_per_device,
+                quantised = quantised,
+                kv_bytes_floor = kv_bytes_floor,
+                split_weights_per_device = split_weights_per_device,
+                kv_layer_weights = kv_layer_weights,
+            )
+            if per_device is not None:
+                chosen = per_device
+                freed = sum(block.spillable_bytes for block in chosen)
         uneven = _per_device_shortfall(
             layout,
             opts,
