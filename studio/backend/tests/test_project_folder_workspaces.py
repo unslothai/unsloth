@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -78,6 +79,7 @@ def _sign_folder(
         "modified_ms": None,
         "device_id": format(metadata.st_dev, "x"),
         "file_id": format(metadata.st_ino, "x"),
+        "change_time_ns": str(metadata.st_ctime_ns),
     }
     payload_b64 = _b64(json.dumps(payload, separators = (",", ":")).encode("utf-8"))
     signature = hmac.new(
@@ -185,6 +187,21 @@ def test_project_folder_lease_is_single_use(tmp_path):
 
     assert caught.value.status_code == 400
     assert "already used" in str(caught.value.detail)
+
+
+def test_project_folder_lease_rejects_ctime_replacement(tmp_path):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    lease = _sign_folder(folder)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    folder.rmdir()
+    replacement.rename(folder)
+
+    with pytest.raises(HTTPException) as caught:
+        chat_history._resolve_project_folder_lease(lease)
+
+    assert caught.value.status_code == 400
 
 
 def test_open_folder_project_persists_path_identity_and_public_state(tmp_path):
@@ -456,9 +473,9 @@ def test_managed_create_retries_when_prepared_identity_disappears(tmp_path, monk
     original_prepare = studio_db._prepare_project_workspace
     prepare_count = 0
 
-    def prepare_then_remove(path):
+    def prepare_then_remove(path, **kwargs):
         nonlocal prepare_count
-        prepared = original_prepare(path)
+        prepared = original_prepare(path, **kwargs)
         prepare_count += 1
         if prepare_count == 1:
             (Path(prepared.root_path) / "sandbox").rmdir()
@@ -475,7 +492,31 @@ def test_managed_create_retries_when_prepared_identity_disappears(tmp_path, monk
     assert Path(created["sandboxPath"]).is_dir()
 
 
-def test_invalid_managed_workspace_marker_returns_a_workspace_error():
+def test_managed_create_does_not_adopt_a_root_won_between_check_and_mkdir(tmp_path, monkeypatch):
+    project = _managed_project("project-create-reservation-race")
+    expected = Path(studio_db._default_project_root(project))
+    original_mkdir = Path.mkdir
+    injected = False
+
+    def race_mkdir(path, *args, **kwargs):
+        nonlocal injected
+        if path == expected and not injected and not kwargs.get("exist_ok"):
+            injected = True
+            original_mkdir(path, *args, **kwargs)
+            (path / "foreign.txt").write_text("do not adopt", encoding = "utf-8")
+            raise FileExistsError(str(path))
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", race_mkdir)
+
+    created = studio_db.create_chat_project(project)
+
+    assert injected is True
+    assert Path(created["rootPath"]) != expected
+    assert (expected / "foreign.txt").read_text(encoding = "utf-8") == "do not adopt"
+
+
+def test_invalid_managed_workspace_marker_is_never_adopted():
     project = _managed_project("project-invalid-marker")
     root = Path(studio_db._default_project_root(project))
     (root / "sandbox").mkdir(parents = True)
@@ -484,10 +525,12 @@ def test_invalid_managed_workspace_marker_returns_a_workspace_error():
         encoding = "ascii",
     )
 
-    with pytest.raises(studio_db.ProjectWorkspaceError):
-        studio_db.create_chat_project(project)
+    created = studio_db.create_chat_project(project)
 
-    assert studio_db.get_chat_project(project["id"]) is None
+    assert created["rootPath"] != str(root)
+    assert (root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).read_text(encoding = "ascii") == (
+        "not-a-valid-marker"
+    )
 
 
 def test_concurrent_workspace_marker_publication_is_atomic(tmp_path, monkeypatch):
@@ -616,6 +659,303 @@ def test_stale_disconnect_does_not_create_an_unowned_managed_workspace(tmp_path)
     assert not managed_root.exists()
 
 
+def test_disconnect_skips_a_reserved_root_with_foreign_content(tmp_path, monkeypatch):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-reserved", folder))
+    assert project is not None
+    reserved = Path(studio_db._default_project_root(project))
+    reserved.mkdir(parents = True)
+    foreign = reserved / "someone-elses.txt"
+    foreign.write_text("keep", encoding = "utf-8")
+
+    disconnected = studio_db.disconnect_chat_project_folder(
+        project["id"],
+        expected_workspace_revision = project["workspaceRevision"],
+        updated_at = 1_700_000_000_002,
+    )
+
+    assert disconnected is not None
+    assert Path(disconnected["managedRootPath"]) != reserved
+    assert foreign.read_text(encoding = "utf-8") == "keep"
+    assert reserved.is_dir()
+
+
+def test_new_managed_project_skips_a_preexisting_reserved_root():
+    payload = _managed_project("project-create-reserved")
+    reserved = Path(studio_db._default_project_root(payload))
+    reserved.mkdir(parents = True)
+    foreign = reserved / "someone-elses.txt"
+    foreign.write_text("keep", encoding = "utf-8")
+
+    created = studio_db.create_chat_project(payload)
+
+    assert Path(created["managedRootPath"]) != reserved
+    assert foreign.read_text(encoding = "utf-8") == "keep"
+
+
+def test_workspace_change_time_rejects_same_identity_replacement(tmp_path, monkeypatch):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    device_id, file_id = studio_db._workspace_identity(folder)
+    old_change_time = studio_db._workspace_change_time(folder)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    monkeypatch.setattr(
+        studio_db,
+        "_workspace_identity",
+        lambda _root: (device_id, file_id),
+    )
+
+    assert not studio_db._workspace_identity_matches(
+        replacement,
+        device_id,
+        file_id,
+        old_change_time,
+    )
+
+
+def test_folder_workspace_rejects_an_alias_to_a_managed_root(tmp_path):
+    managed = studio_db.upsert_chat_project(_managed_project("project-alias"))
+    managed_root = Path(managed["managedRootPath"])
+    selected = tmp_path / "repository"
+    selected.mkdir()
+    alias = selected / "managed-alias"
+    try:
+        alias.symlink_to(managed_root, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    with pytest.raises(studio_db.ProjectWorkspaceOverlapError):
+        studio_db.claim_chat_project_folder(_folder_claim("project-alias-child", selected))
+
+
+def test_workspace_session_rotates_and_stale_session_fails_closed(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-session", first))
+    assert project is not None
+    old_session = project["workspaceSessionId"]
+
+    changed = studio_db.claim_chat_project_folder(
+        _folder_claim("project-session", second),
+        expected_workspace_revision = project["workspaceRevision"],
+    )
+    assert changed is not None
+    assert changed["workspaceSessionId"] != old_session
+    with pytest.raises(RuntimeError, match = "workspace changed"):
+        tools.get_sandbox_workdir(old_session)
+
+
+def test_folder_change_route_releases_the_retired_session(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-route-change", first))
+    old_session = project["workspaceSessionId"]
+
+    changed = chat_history.change_project_folder(
+        project["id"],
+        chat_history.ProjectFolderMutation(
+            nativePathLease=_sign_folder(
+                second,
+                operation="set-project-workspace",
+                path_kind="project-workspace",
+            ),
+            expectedWorkspaceRevision=project["workspaceRevision"],
+        ),
+        current_subject="tester",
+    )
+
+    assert changed.workspacePath == str(second.resolve())
+    assert tools._session_key(old_session) not in tools._removing_sessions
+
+
+def test_disconnect_route_releases_the_retired_session(tmp_path):
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-route-disconnect", folder))
+    old_session = project["workspaceSessionId"]
+
+    disconnected = chat_history.disconnect_project_folder(
+        project["id"],
+        chat_history.DisconnectProjectFolderRequest(
+            expectedWorkspaceRevision=project["workspaceRevision"]
+        ),
+        current_subject="tester",
+    )
+
+    assert disconnected.workspaceKind == "managed"
+    assert tools._session_key(old_session) not in tools._removing_sessions
+
+
+def test_recreated_project_id_never_reuses_an_old_managed_session():
+    first = studio_db.create_chat_project(_managed_project("project-recreated"))
+    old_session = first["workspaceSessionId"]
+
+    deleted = studio_db.delete_chat_project("project-recreated")
+    assert deleted is not None
+
+    recreated = studio_db.create_chat_project(_managed_project("project-recreated"))
+    assert recreated["workspaceSessionId"] != old_session
+    assert recreated["workspaceSessionId"].startswith("project-workspace-")
+
+
+def test_deleted_folder_project_records_its_external_workspace(tmp_path):
+    folder = tmp_path / "external-project"
+    folder.mkdir()
+    try:
+        project = studio_db.claim_chat_project_folder(_folder_claim("project-delete-folder", folder))
+        deleted = studio_db.delete_chat_project(project["id"])
+        assert deleted is not None
+        record = tools._read_orphan_record(tools._ORPHAN_PROJECT, project["id"])
+        assert record is not None
+        assert record["sessionId"] == project["workspaceSessionId"]
+        assert record["path"] == str(folder.resolve())
+        assert record["pendingDelete"] is False
+    finally:
+        if folder.exists():
+            folder.rmdir()
+
+
+def test_folder_delete_aborts_when_external_workspace_record_fails(tmp_path, monkeypatch):
+    folder = tmp_path / "external-project"
+    folder.mkdir()
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-record-fail", folder))
+    monkeypatch.setattr(tools, "record_orphaned_project", lambda *args, **kwargs: False)
+
+    with pytest.raises(studio_db.ProjectWorkspaceError):
+        studio_db.delete_chat_project(project["id"])
+
+    assert studio_db.get_chat_project(project["id"]) is not None
+
+
+def test_retired_workspace_identity_blocks_replacement(tmp_path):
+    folder = tmp_path / "retired"
+    folder.mkdir()
+    tools.record_orphaned_project("project-retired-identity", str(folder))
+    session = tools.project_session_id("project-retired-identity")
+    folder.rmdir()
+    folder.mkdir()
+
+    assert tools._recorded_project_workdir("project-retired-identity", session) is None
+
+
+def test_retired_workspace_records_are_unique_per_incarnation(tmp_path):
+    project_id = "project-retired-incarnations"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    (first / "sandbox").mkdir(parents = True)
+    (second / "sandbox").mkdir(parents = True)
+    first_session = "project-workspace-first-incarnation"
+    second_session = "project-workspace-second-incarnation"
+
+    assert tools.record_orphaned_project(
+        project_id,
+        str(first / "sandbox"),
+        True,
+        str(first),
+        first_session,
+    )
+    assert tools.record_orphaned_project(
+        project_id,
+        str(second / "sandbox"),
+        True,
+        str(second),
+        second_session,
+    )
+
+    assert tools._recorded_project_workdir(project_id, first_session) == str(
+        (first / "sandbox").resolve()
+    )
+    assert tools._recorded_project_workdir(project_id, second_session) == str(
+        (second / "sandbox").resolve()
+    )
+    assert len([entry for entry in tools.list_orphaned_projects() if entry[0] == project_id]) == 2
+
+
+def test_retired_cleanup_and_runtime_evidence_are_session_scoped(tmp_path):
+    project_id = "project-same-path-incarnations"
+    root = tmp_path / "workspace"
+    (root / "sandbox").mkdir(parents = True)
+    first_session = "project-workspace-same-path-first"
+    second_session = "project-workspace-same-path-second"
+
+    first_evidence, first_token = studio_db.capture_recorded_orphan_evidence(
+        project_id, str(root), first_session
+    )
+    second_evidence, second_token = studio_db.capture_recorded_orphan_evidence(
+        project_id, str(root), second_session
+    )
+    assert first_evidence is not None and second_evidence is not None
+    assert first_token is not second_token
+    assert (
+        studio_db.recorded_orphan_evidence_for(project_id, str(root), first_session).runtime_token
+        is first_token
+    )
+    assert (
+        studio_db.recorded_orphan_evidence_for(project_id, str(root), second_session).runtime_token
+        is second_token
+    )
+
+    tools.record_orphaned_project(
+        project_id,
+        str(root / "sandbox"),
+        True,
+        str(root),
+        first_session,
+        (first_evidence["deviceId"], first_evidence["fileId"], first_evidence["changeTimeNs"]),
+    )
+    tools.record_orphaned_project(
+        project_id,
+        str(root / "sandbox"),
+        True,
+        str(root),
+        second_session,
+        (second_evidence["deviceId"], second_evidence["fileId"], second_evidence["changeTimeNs"]),
+    )
+    shutil.rmtree(root)
+    tools.forget_orphaned_project_if_gone(
+        project_id,
+        str(root / "sandbox"),
+        str(root),
+        False,
+        first_session,
+    )
+    assert tools._read_orphan_record(tools._ORPHAN_PROJECT, project_id, second_session) is not None
+
+
+def test_switch_records_retired_folder_identity_when_drive_is_disconnected(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-retired", first))
+    assert project is not None
+    old_session = project["workspaceSessionId"]
+    old_identity = (
+        project["workspaceDeviceId"],
+        project["workspaceFileId"],
+        project["workspaceChangeTimeNs"],
+    )
+    first.rmdir()
+
+    changed = studio_db.claim_chat_project_folder(
+        _folder_claim("project-retired", second),
+        expected_workspace_revision = project["workspaceRevision"],
+    )
+    assert changed is not None
+    record = tools._read_orphan_record(tools._ORPHAN_PROJECT, project["id"])
+    assert record is not None
+    assert record["sessionId"] == old_session
+    assert record["pendingDelete"] is False
+    assert record["rootIdentity"]["deviceId"] == str(old_identity[0])
+    assert record["rootIdentity"]["fileId"] == str(old_identity[1])
+
+
 def test_disconnect_cas_failure_cleans_the_workspace_prepared_by_that_attempt(
     tmp_path, monkeypatch
 ):
@@ -628,8 +968,8 @@ def test_disconnect_cas_failure_cleans_the_workspace_prepared_by_that_attempt(
     managed_root = Path(studio_db._default_project_root(project))
     original_prepare = studio_db._prepare_project_workspace
 
-    def prepare_then_change(path):
-        prepared = original_prepare(path)
+    def prepare_then_change(path, **kwargs):
+        prepared = original_prepare(path, **kwargs)
         studio_db.claim_chat_project_folder(
             _folder_claim("project-disconnect-race", second),
             expected_workspace_revision = project["workspaceRevision"],

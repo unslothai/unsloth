@@ -32,6 +32,7 @@ import tempfile
 import contextlib
 import threading
 from contextvars import ContextVar
+from pathlib import Path
 
 # What a truncated result costs besides its body, charged where the cut is decided rather
 # than held back from the room in advance. See its definition for why that matters.
@@ -7376,27 +7377,29 @@ def _session_in_flight(session_id: "str | None"):
                     _sessions_free.notify_all()
 
 
-def begin_project_workspace_change(project_id: str) -> None:
+def begin_project_workspace_change(project_id: str) -> str:
     """Fence new project tool entries and reject an in-flight workspace switch."""
-    key = _session_key(project_session_id(project_id))
+    session_id = project_session_id(project_id)
+    key = _session_key(session_id)
     with _sessions_free:
         if key in _removing_sessions or _active_sessions.get(key, 0) > 0:
             raise ProjectWorkspaceBusy(
                 "A project tool is still running. Stop it before changing the workspace."
             )
         _removing_sessions.add(key)
+    return session_id
 
 
-def finish_project_workspace_change(project_id: str) -> None:
-    key = _session_key(project_session_id(project_id))
+def finish_project_workspace_change(project_id: str, session_id: str | None = None) -> None:
+    key = _session_key(session_id or project_session_id(project_id))
     with _sessions_free:
         _removing_sessions.discard(key)
         _sessions_free.notify_all()
 
 
-def invalidate_project_workdir(project_id: str) -> None:
+def invalidate_project_workdir(project_id: str, session_id: str | None = None) -> None:
     """Drop the cached cwd after a committed workspace identity change."""
-    _workdirs.pop(project_session_id(project_id), None)
+    _workdirs.pop(session_id or project_session_id(project_id), None)
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -7446,23 +7449,60 @@ _ORPHAN_PROJECT = "project"
 _MAX_ORPHAN_RECORDS = 10_000
 
 
-def _orphan_record_name(kind: str, record_id: str) -> str:
-    """The filename a record is kept under."""
-    digest = hashlib.sha256(record_id.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+def _orphan_record_name(
+    kind: str, record_id: str, session_id: str | None = None
+) -> str:
+    """The filename for one folder incarnation.
+
+    The first managed incarnation keeps the historical name for rolling
+    upgrades. Every opaque session gets its own durable key so a later delete
+    cannot overwrite an older workspace that a fork still references.
+    """
+    key = str(record_id)
+    if session_id and session_id != f"project-{record_id}":
+        key = f"{key}\0{session_id}"
+    digest = hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()[:32]
     return f"{kind}-{digest}"
 
 
-def _read_orphan_record(kind: str, record_id: str) -> "dict | None":
-    """One record by key, without listing the directory."""
+def _read_orphan_record(
+    kind: str, record_id: str, session_id: str | None = None
+) -> "dict | None":
+    """Read one incarnation, with legacy-id fallback for old records."""
     import json as _json
 
-    path = os.path.join(_orphan_records_dir(), _orphan_record_name(kind, record_id))
-    try:
-        with open(path, encoding = "utf-8") as fh:
-            record = _json.loads(fh.read(4096).strip())
-    except (OSError, ValueError, TypeError):
+    def read(path: str) -> dict | None:
+        try:
+            with open(path, encoding = "utf-8") as fh:
+                record = _json.loads(fh.read(4096).strip())
+        except (OSError, ValueError, TypeError):
+            return None
+        return record if isinstance(record, dict) and record.get("path") else None
+
+    directory = _orphan_records_dir()
+    exact = read(os.path.join(directory, _orphan_record_name(kind, record_id, session_id)))
+    if exact is not None:
+        if not session_id or exact.get("sessionId") in (None, session_id):
+            return exact
+    if session_id:
         return None
-    return record if isinstance(record, dict) and record.get("path") else None
+    # Prefer the legacy first incarnation, then find any opaque incarnation
+    # when a caller only has the project id.
+    legacy = read(os.path.join(directory, _orphan_record_name(kind, record_id)))
+    if legacy is not None and legacy.get("id") == record_id:
+        return legacy
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return None
+    matches = []
+    for name in names:
+        if not name.startswith(f"{kind}-"):
+            continue
+        record = read(os.path.join(directory, name))
+        if record is not None and record.get("id") == record_id:
+            matches.append(record)
+    return matches[-1] if matches else None
 
 
 def record_orphaned_project(
@@ -7470,7 +7510,9 @@ def record_orphaned_project(
     workspace: str,
     pending_delete: bool = False,
     root_path: "str | None" = None,
-) -> None:
+    session_id: "str | None" = None,
+    identity: "tuple[str | None, str | None, str | None] | None" = None,
+) -> bool:
     """Remember where a deleted project's kept workspace lives.
 
     Written whether or not files were to be deleted: the row that knew the path
@@ -7479,11 +7521,23 @@ def record_orphaned_project(
     reachable" from "the user asked for it, finish when nothing is using it".
     """
     if not project_id or not workspace:
-        return
+        return False
     from storage.studio_db import capture_recorded_orphan_evidence
 
-    root_identity, _runtime_token = capture_recorded_orphan_evidence(project_id, root_path)
-    _write_orphan_record(
+    record_session_id = session_id or project_session_id(project_id)
+    root_identity = None
+    if identity and all(identity[:2]):
+        root_identity = {
+            "deviceId": str(identity[0]),
+            "fileId": str(identity[1]),
+            "changeTimeNs": str(identity[2]) if identity[2] is not None else None,
+            "markerToken": None,
+        }
+    else:
+        root_identity, _runtime_token = capture_recorded_orphan_evidence(
+            project_id, root_path or workspace, record_session_id
+        )
+    return _write_orphan_record(
         _ORPHAN_PROJECT,
         project_id,
         {
@@ -7493,22 +7547,25 @@ def record_orphaned_project(
             "rootPath": os.path.realpath(root_path) if root_path else None,
             "pendingDelete": bool(pending_delete),
             "rootIdentity": root_identity,
+            "sessionId": record_session_id,
         },
     )
 
 
-def _write_orphan_record(kind: str, record_id: str, record: dict) -> None:
-    """One small JSON file per kept folder, under its kind and id."""
+def _write_orphan_record(kind: str, record_id: str, record: dict) -> bool:
+    """Write one small JSON file per kept folder incarnation."""
     import json as _json
 
     record = {**record, "id": record_id, "chat": kind == _ORPHAN_CHAT}
     try:
         os.makedirs(_orphan_records_dir(), exist_ok = True)
-        name = _orphan_record_name(kind, record_id)
+        name = _orphan_record_name(kind, record_id, record.get("sessionId"))
         with open(os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8") as fh:
             fh.write(_json.dumps(record))
+        return True
     except OSError:
         logger.warning("Could not record kept folder for %s", record_id)
+        return False
 
 
 def record_kept_sandbox(session_id: str) -> None:
@@ -7532,49 +7589,85 @@ def record_kept_sandbox(session_id: str) -> None:
     )
 
 
-def forget_orphaned_project(project_id: str, is_chat: bool = False) -> None:
-    """Drop the record once the folder has gone."""
-    if not project_id:
-        return
-    kind = _ORPHAN_CHAT if is_chat else _ORPHAN_PROJECT
+def _forget_orphan_record_file(path: str) -> None:
     try:
-        os.unlink(os.path.join(_orphan_records_dir(), _orphan_record_name(kind, project_id)))
+        os.unlink(path)
     except OSError:
         pass
 
 
-def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
-    """Every recorded (id, folder, project root, pending, is a chat) still there."""
+def forget_orphaned_project(
+    project_id: str, is_chat: bool = False, session_id: str | None = None
+) -> None:
+    """Drop one incarnation, or all records for an id when no session is known."""
+    if not project_id:
+        return
+    kind = _ORPHAN_CHAT if is_chat else _ORPHAN_PROJECT
+    directory = _orphan_records_dir()
+    if session_id:
+        _forget_orphan_record_file(
+            os.path.join(directory, _orphan_record_name(kind, project_id, session_id))
+        )
+        return
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return
     import json as _json
 
-    records = []
+    for name in names:
+        if not name.startswith(f"{kind}-"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            with open(path, encoding = "utf-8") as fh:
+                record = _json.loads(fh.read(4096).strip())
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(record, dict) and record.get("id") == project_id:
+            _forget_orphan_record_file(path)
+
+
+def _iter_orphan_records():
+    """Yield ``(record_path, record)`` for every valid retained folder."""
+    import json as _json
+
     try:
         names = sorted(os.listdir(_orphan_records_dir()))
     except OSError:
-        return records
+        return
     if len(names) > _MAX_ORPHAN_RECORDS:
         logger.warning(
             "%d kept-folder records; reading the first %d", len(names), _MAX_ORPHAN_RECORDS
         )
         names = names[:_MAX_ORPHAN_RECORDS]
     for name in names:
+        path = os.path.join(_orphan_records_dir(), name)
         try:
-            with open(os.path.join(_orphan_records_dir(), name), encoding = "utf-8") as fh:
-                raw = fh.read(4096).strip()
-        except OSError:
+            with open(path, encoding = "utf-8") as fh:
+                record = _json.loads(fh.read(4096).strip())
+            if not isinstance(record, dict) or not record.get("path"):
+                continue
+        except (OSError, ValueError, TypeError):
             continue
+        yield path, record
+
+
+def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
+    """Every recorded (id, folder, project root, pending, is a chat) still there."""
+    records = []
+    for record_path, record in _iter_orphan_records():
         try:
-            record = _json.loads(raw)
             path, pending = record["path"], bool(record.get("pendingDelete"))
             root = record.get("rootPath") or None
             is_chat = bool(record.get("chat"))
             record_id = record["id"]
-        except (ValueError, TypeError, KeyError):
+        except (TypeError, KeyError):
             continue
         if _recorded_workspace_remains(path, root):
             records.append((record_id, path, root, pending, is_chat))
         else:
-            forget_orphaned_project(record_id, is_chat)
+            _forget_orphan_record_file(record_path)
     return records
 
 
@@ -7596,15 +7689,21 @@ def forget_orphaned_project_if_gone(
     workspace: str,
     root: "str | None",
     is_chat: bool = False,
+    session_id: str | None = None,
 ) -> None:
     """Drop the record only once the folder has gone."""
     if _recorded_workspace_remains(workspace, root):
         logger.warning("Workspace for %s is still there; left pending", project_id)
         return
-    forget_orphaned_project(project_id, is_chat)
+    forget_orphaned_project(project_id, is_chat, session_id)
 
 
-def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | None") -> None:
+def _delete_recorded_workspace(
+    project_id: str,
+    workspace: str,
+    root: "str | None",
+    session_id: str | None = None,
+) -> None:
     """Remove a recorded workspace the way the immediate delete would.
 
     Always through the storage helper, whose folder-name and denied-path checks
@@ -7621,10 +7720,10 @@ def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | Non
     )
 
     target = root or os.path.dirname(os.path.realpath(workspace))
-    evidence = recorded_orphan_evidence_for(project_id, target)
+    evidence = recorded_orphan_evidence_for(project_id, target, session_id)
     persisted = None
     if evidence is None:
-        record = _read_orphan_record(_ORPHAN_PROJECT, project_id)
+        record = _read_orphan_record(_ORPHAN_PROJECT, project_id, session_id)
         if isinstance(record, dict):
             persisted = record.get("rootIdentity")
     delete_project_workspace(
@@ -7632,6 +7731,7 @@ def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | Non
             "id": project_id,
             "rootPath": target,
             "_recordedOrphan": _RECORDED_ORPHAN_TOKEN,
+            "workspaceSessionId": session_id,
             "_recordedOrphanEvidence": (
                 evidence.runtime_token if evidence is not None else persisted
             ),
@@ -7647,11 +7747,24 @@ def collect_orphaned_project_workspaces() -> None:
     running in there, or while a chat still shows its files.
     """
     from storage.studio_db import sandbox_is_referenced_elsewhere
-    for record_id, workspace, root, pending, is_chat in list_orphaned_projects():
+    for _record_path, record in _iter_orphan_records():
+        try:
+            record_id = str(record["id"])
+            workspace = str(record["path"])
+            root = record.get("rootPath") or None
+            pending = bool(record.get("pendingDelete"))
+            is_chat = bool(record.get("chat"))
+        except (TypeError, KeyError):
+            continue
         if not pending:
             continue
         try:
-            session = record_id if is_chat else project_session_id(record_id)
+            persisted = record if not is_chat else None
+            session = (
+                record_id
+                if is_chat
+                else str((persisted or {}).get("sessionId") or project_session_id(record_id))
+            )
             # This runs minutes after the row went, and the id is the client's
             # to reuse: a chat or a project created since owns that folder, and
             # a card of its own may not be stored yet.
@@ -7672,16 +7785,22 @@ def collect_orphaned_project_workspaces() -> None:
                 # ours to take, exactly as the chat's own delete would.
                 remove_session_sandbox(session, delete_files = True)
             else:
-                _delete_recorded_workspace(record_id, workspace, root)
+                _delete_recorded_workspace(record_id, workspace, root, session)
             # A locked file on Windows, or a network volume having a bad
             # moment: the record stays so the next launch tries again.
-            forget_orphaned_project_if_gone(record_id, workspace, root, is_chat)
+            forget_orphaned_project_if_gone(
+                record_id,
+                workspace,
+                root,
+                is_chat,
+                session if not is_chat else None,
+            )
         except Exception:  # noqa: BLE001 - a stuck record must not break a delete
             logger.warning("Could not collect workspace for %s", record_id, exc_info = True)
 
 
 def finish_workspace_delete_when_idle(
-    project_id: str, timeout: float = 600.0
+    project_id: str, timeout: float = 600.0, session_id: str | None = None
 ) -> "threading.Thread":
     """Wait out the tool call still using a workspace, then delete it.
 
@@ -7690,7 +7809,7 @@ def finish_workspace_delete_when_idle(
     """
 
     def _wait_and_collect() -> None:
-        session = project_session_id(project_id)
+        session = session_id or project_session_id(project_id)
         wait_for_sessions_idle([session], timeout = timeout)
         collect_orphaned_project_workspaces()
 
@@ -7703,29 +7822,58 @@ def finish_workspace_delete_when_idle(
     return thread
 
 
-def _recorded_project_workdir(project_id: str) -> "str | None":
+def _recorded_project_workdir(
+    project_id: str, session_id: str | None = None
+) -> "str | None":
     """The kept workspace of a deleted project, wherever the user put it.
 
     By key: a resolve happens on every tool call for such a project, and no
     number of other records may keep it from finding its own.
     """
-    record = _read_orphan_record(_ORPHAN_PROJECT, project_id)
+    record = _read_orphan_record(_ORPHAN_PROJECT, project_id, session_id)
     if not record:
         return None
-    path = record["path"]
+    if session_id and record.get("sessionId") != session_id:
+        return None
+    identity = record.get("rootIdentity")
+    if identity:
+        if not isinstance(identity, dict):
+            return None
+        identity_root = record.get("rootPath") or record.get("path")
+        try:
+            from storage.studio_db import _workspace_identity_matches
+
+            identity_matches = bool(
+                identity_root
+                and _workspace_identity_matches(
+                    Path(str(identity_root)),
+                    identity.get("deviceId"),
+                    identity.get("fileId"),
+                    identity.get("changeTimeNs"),
+                )
+            )
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+            identity_matches = False
+        if not identity_matches:
+            return None
+    path = record.get("path")
+    if not isinstance(path, str) or not path:
+        return None
     # Only a sandbox still there: a record kept alive by the rest of its
     # workspace names a directory nothing can be served from.
     return path if os.path.isdir(path) else None
 
 
-def _orphaned_project_workdir(project_id: str) -> "str | None":
+def _orphaned_project_workdir(
+    project_id: str, session_id: str | None = None
+) -> "str | None":
     """A deleted project's workspace, when its files were kept.
 
     The record answers for any id, since it is keyed by a digest. Only the
     guess below builds a directory name, so only that needs an id a filename
     can hold.
     """
-    recorded = _recorded_project_workdir(project_id)
+    recorded = _recorded_project_workdir(project_id, session_id)
     if recorded:
         return recorded
     if not _usable_session_id(project_id):
@@ -7814,10 +7962,35 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     return _get_project_workdir(session_id)
 
 
+def _project_id_for_workspace_session(session_id: str) -> str | None:
+    try:
+        from storage.studio_db import project_id_for_workspace_session
+
+        project_id = project_id_for_workspace_session(session_id)
+        if project_id:
+            return project_id
+    except Exception:
+        pass
+    # The active row is gone after deletion. Retired records retain the exact
+    # opaque session key so a fork can still resolve its files.
+    try:
+        names = sorted(os.listdir(_orphan_records_dir()))[:_MAX_ORPHAN_RECORDS]
+        for name in names:
+            if not name.startswith(f"{_ORPHAN_PROJECT}-"):
+                continue
+            with open(os.path.join(_orphan_records_dir(), name), encoding = "utf-8") as fh:
+                record = json.loads(fh.read(4096))
+            if record.get("sessionId") == session_id:
+                return str(record.get("id") or "") or None
+    except (OSError, TypeError, ValueError):
+        pass
+    return None
+
+
 def _get_project_workdir(session_id: str) -> str | None:
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
-    project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
+    project_id = _project_id_for_workspace_session(session_id)
     if not project_id:
         return None
     if _thread_exists(session_id):
@@ -7839,7 +8012,10 @@ def _get_project_workdir(session_id: str) -> str | None:
         # The project is gone but a chat forked out of it still shows cards for
         # this sandbox, and the workspace was kept for exactly that: the record
         # answers for any id, and the folder-name guess needs a usable one.
-        return _orphaned_project_workdir(project_id)
+        return _orphaned_project_workdir(project_id, session_id)
+    current_session = project.get("workspaceSessionId")
+    if current_session and str(current_session) != session_id:
+        raise RuntimeError("the project workspace changed; reopen the project before running tools")
     root_path = project.get("rootPath")
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
@@ -7857,7 +8033,9 @@ def _tracks_workspace_artifacts(session_id: "str | None") -> bool:
         return True
     if _thread_exists(session_id):
         return True
-    project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
+    project_id = _project_id_for_workspace_session(session_id)
+    if not project_id:
+        return True
     try:
         from storage.studio_db import get_chat_project
         project = get_chat_project(project_id)
@@ -8992,7 +9170,20 @@ def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
 
 
 def project_session_id(project_id: str) -> str:
-    """The sandbox session a project's chats share."""
+    """The current opaque sandbox session for a project's workspace.
+
+    Legacy rows retain ``project-<id>``. New workspace incarnations receive a
+    different key, so a stale tool run cannot resolve into a newly selected
+    folder after a project switch.
+    """
+    try:
+        from storage.studio_db import get_chat_project
+
+        project = get_chat_project(str(project_id))
+        if project and project.get("workspaceSessionId"):
+            return str(project["workspaceSessionId"])
+    except Exception:  # pragma: no cover - storage may be unavailable during startup
+        pass
     return f"{_PROJECT_SESSION_PREFIX}{project_id}"
 
 

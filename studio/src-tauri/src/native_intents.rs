@@ -5,7 +5,7 @@ use crate::native_backend_lease::{
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
-    classify_native_document_folder, classify_native_model_path, classify_native_project_folder,
+    classify_native_document_folder, classify_native_model_path, classify_native_project_workspace,
     reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
@@ -59,6 +59,7 @@ struct NativePathEntry {
     modified_ms: Option<u64>,
     device_id: String,
     file_id: String,
+    change_time_ns: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -246,6 +247,7 @@ impl NativeIntakeState {
                 modified_ms: None,
                 device_id: Some(classified.device_id),
                 file_id: Some(classified.file_id),
+                change_time_ns: Some(classified.change_time_ns),
             },
         )?;
         Ok(NativeDocumentFolderSelection {
@@ -258,7 +260,7 @@ impl NativeIntakeState {
         &self,
         path: impl AsRef<Path>,
     ) -> Result<NativeProjectFolderSelection, String> {
-        let mut classified = classify_native_project_folder(path.as_ref())?;
+        let mut classified = classify_native_project_workspace(path.as_ref())?;
         classified.modified_ms = None;
         let display_path = portable_path_string(&classified.canonical_path);
         let entry = self.insert_entry(
@@ -311,6 +313,7 @@ impl NativeIntakeState {
             modified_ms: classified.modified_ms,
             device_id: classified.device_id,
             file_id: classified.file_id,
+            change_time_ns: classified.change_time_ns,
         };
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         inner.tokens.insert(token, entry.clone());
@@ -365,7 +368,10 @@ impl NativeIntakeState {
         token: &str,
         operation: NativePathOperation,
     ) -> Result<NativePathLeaseResponse, String> {
-        let entry = if operation == NativePathOperation::OpenProject {
+        let entry = if matches!(
+            operation,
+            NativePathOperation::OpenProject | NativePathOperation::SetProjectWorkspace
+        ) {
             self.consume_entry_for_operation(token, operation)?
         } else {
             self.entry_for_operation(token, operation)?
@@ -385,6 +391,7 @@ impl NativeIntakeState {
                 modified_ms: entry.modified_ms,
                 device_id: Some(entry.device_id),
                 file_id: Some(entry.file_id),
+                change_time_ns: Some(entry.change_time_ns),
             },
         )
     }
@@ -411,7 +418,7 @@ fn validate_entry_path(
             classify_native_attachment_path(&entry.canonical_path)?
         }
         NativePathValidationPolicy::ProjectFolder => {
-            classify_native_project_folder(&entry.canonical_path)?
+            classify_native_project_workspace(&entry.canonical_path)?
         }
         NativePathValidationPolicy::Artifact(kind) => {
             classify_artifact_path(kind, &entry.canonical_path)?
@@ -431,6 +438,7 @@ fn validate_entry_path(
             && classified.modified_ms != entry.modified_ms)
         || (check_fingerprint && classified.device_id != entry.device_id)
         || (check_fingerprint && classified.file_id != entry.file_id)
+        || (check_fingerprint && classified.change_time_ns != entry.change_time_ns)
     {
         return Err("Native path changed after it was selected.".to_string());
     }
@@ -1210,16 +1218,16 @@ mod tests {
             .is_err());
 
         let lease = state
-            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .sign_grant(&selection.token, NativePathOperation::SetProjectWorkspace)
             .unwrap();
         let payload = lease.native_path_lease.split('.').next().unwrap();
         let payload: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
-        assert_eq!(payload["operation"], "open-project");
-        assert_eq!(payload["path_kind"], "document-folder");
+        assert_eq!(payload["operation"], "set-project-workspace");
+        assert_eq!(payload["path_kind"], "project-workspace");
         assert_eq!(payload["path_type"], "directory");
         assert!(state
-            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .sign_grant(&selection.token, NativePathOperation::SetProjectWorkspace)
             .is_err());
         let _ = fs::remove_dir(path);
     }
@@ -1229,11 +1237,12 @@ mod tests {
         let state = new_native_intake_state();
         let path = temp_path("active-project-folder");
         fs::create_dir(&path).unwrap();
+        fs::write(path.join("existing-file.txt"), b"before").unwrap();
         let selection = state.register_project_folder_path(&path).unwrap();
 
-        fs::write(path.join("new-file.txt"), b"work").unwrap();
+        fs::write(path.join("existing-file.txt"), b"after").unwrap();
         assert!(state
-            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .sign_grant(&selection.token, NativePathOperation::SetProjectWorkspace)
             .is_ok());
 
         let _ = fs::remove_dir_all(path);
@@ -1250,10 +1259,10 @@ mod tests {
         fs::rename(&path, &moved).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(state
-            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .sign_grant(&selection.token, NativePathOperation::SetProjectWorkspace)
             .is_err());
         assert!(state
-            .sign_grant(&selection.token, NativePathOperation::OpenProject)
+            .sign_grant(&selection.token, NativePathOperation::SetProjectWorkspace)
             .is_err());
 
         let _ = fs::remove_dir(path);

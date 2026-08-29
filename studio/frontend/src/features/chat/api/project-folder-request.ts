@@ -5,7 +5,7 @@ export const OPEN_PROJECT_FOLDER_ENDPOINT = "/api/chat/projects/open-folder";
 
 type ConsumeProjectFolderToken = (
   token: string,
-  operation: "open-project",
+  operation: "open-project" | "set-project-workspace",
 ) => Promise<{ nativePathLease: string }>;
 
 function required(value: string, message: string): string {
@@ -24,7 +24,7 @@ export async function buildOpenProjectFolderRequest(
     "A native project-folder token is required.",
   );
   const projectName = required(name, "Project name is required.");
-  const { nativePathLease } = await consume(token, "open-project");
+  const { nativePathLease } = await consume(token, "set-project-workspace");
   return {
     input: OPEN_PROJECT_FOLDER_ENDPOINT,
     init: {
@@ -45,7 +45,7 @@ export async function buildChangeProjectFolderRequest(
     nativePathToken,
     "A native project-folder token is required.",
   );
-  const { nativePathLease } = await consume(token, "open-project");
+  const { nativePathLease } = await consume(token, "set-project-workspace");
   return {
     input: `/api/chat/projects/${encodeURIComponent(projectId)}/workspace-folder`,
     init: {

@@ -92,6 +92,7 @@ class NativePathGrant:
     modified_ms: int | None
     device_id: int | None
     file_id: int | None
+    change_time_ns: str | None
 
 
 def native_path_leases_supported() -> bool:
@@ -220,6 +221,9 @@ def verify_native_path_lease(
         modified_ms = _optional_int(payload.get("modified_ms")),
         device_id = identity_options[0][0] if identity_options else None,
         file_id = identity_options[0][1] if identity_options else None,
+        change_time_ns = str(payload["change_time_ns"])
+        if payload.get("change_time_ns") is not None
+        else None,
     )
 
     if expected_path_type and grant.path_type != expected_path_type:
@@ -370,6 +374,8 @@ def _validate_current_stat(
         raise NativePathLeaseError("Native path changed after it was selected.")
     current_modified_ms = int(st.st_mtime_ns // 1_000_000)
     if grant.modified_ms is not None and current_modified_ms != grant.modified_ms:
+        raise NativePathLeaseError("Native path changed after it was selected.")
+    if grant.change_time_ns is not None and str(st.st_ctime_ns) != grant.change_time_ns:
         raise NativePathLeaseError("Native path changed after it was selected.")
     if grant.path_kind == "document-folder" and not identity_options:
         raise NativePathLeaseError("Native path grant is missing its folder identity.")

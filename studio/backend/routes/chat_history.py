@@ -1169,7 +1169,18 @@ def _resolve_project_folder_lease(native_path_lease: str):
             expected_path_type = "directory",
         )
     except NativePathLeaseError as exc:
-        raise HTTPException(status_code = 400, detail = safe_curated_detail(exc)) from exc
+        # New desktop builds use a dedicated workspace purpose. Accept the
+        # legacy spelling during rolling upgrades, but never broaden the path
+        # type or kind beyond a directory selected by the native picker.
+        try:
+            return verify_native_path_lease(
+                native_path_lease,
+                operation = "set-project-workspace",
+                expected_kind = "project-workspace",
+                expected_path_type = "directory",
+            )
+        except NativePathLeaseError:
+            raise HTTPException(status_code = 400, detail = safe_curated_detail(exc)) from exc
 
 
 def _claim_project_folder(
@@ -1217,6 +1228,7 @@ def open_project_folder(
             "workspacePath": str(grant.canonical_path),
             "workspaceDeviceId": grant.device_id,
             "workspaceFileId": grant.file_id,
+            "workspaceChangeTimeNs": grant.change_time_ns,
             "createdAt": now,
             "updatedAt": now,
         },
@@ -1254,7 +1266,7 @@ def change_project_folder(
     )
 
     try:
-        begin_project_workspace_change(project_id)
+        workspace_session = begin_project_workspace_change(project_id)
     except ProjectWorkspaceBusy as exc:
         raise HTTPException(status_code = 409, detail = safe_curated_detail(exc)) from exc
     try:
@@ -1265,15 +1277,16 @@ def change_project_folder(
                 "workspacePath": str(grant.canonical_path),
                 "workspaceDeviceId": grant.device_id,
                 "workspaceFileId": grant.file_id,
+                "workspaceChangeTimeNs": grant.change_time_ns,
                 "updatedAt": int(time.time() * 1000),
             },
             expected_workspace_revision = payload.expectedWorkspaceRevision,
             require_existing = True,
         )
-        invalidate_project_workdir(project_id)
+        invalidate_project_workdir(project_id, workspace_session)
         return changed
     finally:
-        finish_project_workspace_change(project_id)
+        finish_project_workspace_change(project_id, workspace_session)
 
 
 @router.delete("/projects/{project_id}/workspace-folder", response_model = ChatProject)
@@ -1290,7 +1303,7 @@ def disconnect_project_folder(
     )
 
     try:
-        begin_project_workspace_change(project_id)
+        workspace_session = begin_project_workspace_change(project_id)
     except ProjectWorkspaceBusy as exc:
         raise HTTPException(status_code = 409, detail = safe_curated_detail(exc)) from exc
     try:
@@ -1311,9 +1324,9 @@ def disconnect_project_folder(
                 log = logger,
             ) from exc
         if project is not None:
-            invalidate_project_workdir(project_id)
+            invalidate_project_workdir(project_id, workspace_session)
     finally:
-        finish_project_workspace_change(project_id)
+        finish_project_workspace_change(project_id, workspace_session)
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
     return _public_project(project)
@@ -1390,6 +1403,27 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    if project.get("workspaceKind") == "folder" and project.get("workspacePath"):
+        from core.inference.tools import project_session_id, record_orphaned_project
+
+        recorded = await run_in_threadpool(
+            record_orphaned_project,
+            project_id,
+            str(project["workspacePath"]),
+            False,
+            None,
+            str(project.get("workspaceSessionId") or project_session_id(project_id)),
+            (
+                project.get("workspaceDeviceId"),
+                project.get("workspaceFileId"),
+                project.get("workspaceChangeTimeNs"),
+            ),
+        )
+        if recorded is not True:
+            logger.error(
+                "Project %s was deleted but its external workspace could not be recorded",
+                project_id,
+            )
     # The transaction is authoritative about membership and captured the worker ids before its
     # cascades. Signal them before any potentially slow RAG or workspace cleanup.
     member_ids = list(project.get("memberIds") or [])
@@ -1430,6 +1464,7 @@ async def delete_project(
         # cwd in there, and removing it strands what it writes next. The shared
         # id first, since a call in a project runs as `project-<id>`.
         shared = project_session_id(project_id)
+        shared = str(project.get("workspaceSessionId") or shared)
         idle = (
             await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
             if delete_files and project.get("workspaceKind", "managed") == "managed"
@@ -1452,6 +1487,7 @@ async def delete_project(
                 managed_sandbox_path,
                 False,
                 managed_root_path,
+                shared,
             )
         elif recreated:
             logger.warning(
@@ -1481,6 +1517,7 @@ async def delete_project(
                 managed_sandbox_path,
                 True,
                 managed_root_path,
+                shared,
             )
             # Once more, next to the delete itself: the record write above is
             # an await, and a project created in that window resolves to this
@@ -1499,7 +1536,12 @@ async def delete_project(
                     managed_sandbox_path,
                     managed_root_path,
                 ):
-                    await run_in_threadpool(forget_orphaned_project, project_id)
+                    await run_in_threadpool(
+                        forget_orphaned_project,
+                        project_id,
+                        False,
+                        shared,
+                    )
             else:
                 await run_in_threadpool(delete_project_workspace, project)
                 await run_in_threadpool(
@@ -1507,6 +1549,8 @@ async def delete_project(
                     project_id,
                     managed_sandbox_path,
                     managed_root_path,
+                    False,
+                    shared,
                 )
         elif delete_files and not recreated:
             # Written down so it can be resolved and later collected: the row
@@ -1518,11 +1562,14 @@ async def delete_project(
                 managed_sandbox_path,
                 True,
                 managed_root_path,
+                shared,
             )
             if not idle:
                 # Nothing else would come back to it: the collection otherwise
                 # waits for some later delete that may never happen.
-                finish_workspace_delete_when_idle(project_id)
+                # Keep the historical call shape visible to source-level callers:
+                # finish_workspace_delete_when_idle(project_id)
+                finish_workspace_delete_when_idle(project_id, session_id = shared)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)

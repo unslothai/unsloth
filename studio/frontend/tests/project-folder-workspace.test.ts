@@ -44,7 +44,10 @@ function deferred<T>(): {
 
 test("project folder requests consume purpose-bound tokens without sending paths", async () => {
   const consumed: Array<[string, string]> = [];
-  const consume = async (token: string, operation: "open-project") => {
+  const consume = async (
+    token: string,
+    operation: "open-project" | "set-project-workspace",
+  ) => {
     consumed.push([token, operation]);
     return { nativePathLease: "signed.lease" };
   };
@@ -63,8 +66,8 @@ test("project folder requests consume purpose-bound tokens without sending paths
   const disconnected = buildDisconnectProjectFolderRequest("project/one", 8);
 
   assert.deepEqual(consumed, [
-    ["opaque-token", "open-project"],
-    ["replacement-token", "open-project"],
+    ["opaque-token", "set-project-workspace"],
+    ["replacement-token", "set-project-workspace"],
   ]);
   assert.equal(opened.input, "/api/chat/projects/open-folder");
   assert.deepEqual(JSON.parse(String(opened.init.body)), {
