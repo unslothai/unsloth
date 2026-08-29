@@ -109,9 +109,9 @@ import {
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import {
   findStreamedToolCallPartIndex,
-  fragmentStartsNewToolCall,
   mintStreamedToolCallId,
   resolveToolCallPartId,
+  splitTopLevelJsonDocuments,
 } from "../tool-call-id";
 
 import { buildResearchInferenceRequest } from "../research-inference-request";
@@ -469,6 +469,15 @@ function parseLiveToolArgs(
     return null;
   }
   return { args: parsed, argsText: candidate };
+}
+
+function parseStreamedToolCallArgs(raw: string): ToolCallMessagePart["args"] {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as ToolCallMessagePart["args"];
+  } catch {
+    return { _raw: raw } as ToolCallMessagePart["args"];
+  }
 }
 
 function parseSystemVariablesMap(raw: string): Record<string, unknown> {
@@ -6923,7 +6932,14 @@ export function createOpenAIStreamAdapter(
                   };
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
-                  const stableId = call.id;
+                  const stableId =
+                    typeof call.id === "string" && call.id
+                      ? call.id
+                      : undefined;
+                  const nameFragment =
+                    typeof call.function?.name === "string"
+                      ? call.function.name
+                      : "";
                   // Unsloth's local Codex loop follows the OpenAI tool-call delta with
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
@@ -6934,7 +6950,10 @@ export function createOpenAIStreamAdapter(
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
-                  const argsFragment = call.function?.arguments ?? "";
+                  const argsFragment =
+                    typeof call.function?.arguments === "string"
+                      ? call.function.arguments
+                      : "";
                   const existingIndex = findStreamedToolCallPartIndex(
                     toolCallParts,
                     stablePartId,
@@ -6944,7 +6963,17 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // An id-less opening landing on a slot whose arguments are
+                  const exactStableMatch = Boolean(
+                    stablePartId && matchedPart?.toolCallId === stablePartId,
+                  );
+                  const matchedDocuments = matchedPart
+                    ? splitTopLevelJsonDocuments(matchedPart.argsText ?? "")
+                    : null;
+                  const matchedClosed = Boolean(
+                    matchedDocuments?.complete.length === 1 &&
+                      !matchedDocuments.tail,
+                  );
+                  // an id-less opening landing on a slot whose arguments are
                   // already a complete JSON document is the next parallel
                   // call, not a continuation: some proxies strip ids and
                   // renumber every call's index to 0, and merging would glue
@@ -6952,8 +6981,10 @@ export function createOpenAIStreamAdapter(
                   // the thread on replay (#9807).
                   const existing =
                     matchedPart !== undefined &&
-                    !stablePartId &&
-                    fragmentStartsNewToolCall(matchedPart.argsText, argsFragment)
+                    !exactStableMatch &&
+                    matchedClosed &&
+                    Boolean(nameFragment) &&
+                    !argsFragment
                       ? undefined
                       : matchedPart;
 
@@ -6963,25 +6994,63 @@ export function createOpenAIStreamAdapter(
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
                   }
-                  streamedChars +=
-                    argsFragment.length + (call.function?.name?.length ?? 0);
+                  streamedChars += argsFragment.length + nameFragment.length;
+                  if (!exactStableMatch) {
+                    const split = splitTopLevelJsonDocuments(
+                      (matchedPart?.argsText ?? "") + argsFragment,
+                    );
+                    const segments = [
+                      ...split.complete,
+                      ...(split.tail ? [split.tail] : []),
+                    ];
+                    if (segments.length > 1) {
+                      const firstNewSegment = matchedPart ? 1 : 0;
+                      if (matchedPart) {
+                        toolCallParts[existingIndex] = {
+                          ...(matchedPart as PositionedToolCallPart),
+                          argsText: segments[0],
+                          args: parseStreamedToolCallArgs(segments[0]),
+                        };
+                      }
+                      for (const [segmentIndex, argsText] of segments
+                        .slice(firstNewSegment)
+                        .entries()) {
+                        const callId =
+                          segmentIndex === 0 && stablePartId
+                            ? stablePartId
+                            : mintStreamedToolCallId(toolCallParts, idx);
+                        if (!stablePartId || callId !== stablePartId) {
+                          toolPartIdByBackendId.set(callId, callId);
+                        }
+                        if (!codexRoundToolCallIds.includes(callId)) {
+                          codexRoundToolCallIds.push(callId);
+                        }
+                        toolCallParts.push({
+                          type: "tool-call" as const,
+                          toolCallId: callId,
+                          toolName: nameFragment || matchedPart?.toolName || "",
+                          argsText,
+                          args: parseStreamedToolCallArgs(argsText),
+                          textCursor: cumulativeText.length,
+                          ...(segmentIndex === 0 &&
+                          call.extra_content !== undefined
+                            ? { extra_content: call.extra_content }
+                            : {}),
+                          ...(segmentIndex === 0 && stablePartId
+                            ? { _has_stable_id: true }
+                            : {}),
+                          ...(idx !== undefined ? { _delta_index: idx } : {}),
+                        });
+                      }
+                      addedToolCall = true;
+                      continue;
+                    }
+                  }
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    const nextName = call.function?.name ?? prevName;
+                    const nextName = nameFragment || prevName;
                     const merged = (existing.argsText ?? "") + argsFragment;
-                    let parsedArgs: ToolCallMessagePart["args"] =
-                      existing.args ?? {};
-                    if (merged) {
-                      try {
-                        parsedArgs = JSON.parse(
-                          merged,
-                        ) as ToolCallMessagePart["args"];
-                      } catch {
-                        parsedArgs = {
-                          _raw: merged,
-                        } as ToolCallMessagePart["args"];
-                      }
-                    }
+                    const parsedArgs = parseStreamedToolCallArgs(merged);
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
                     if (
@@ -7012,33 +7081,26 @@ export function createOpenAIStreamAdapter(
                     };
                     toolCallParts[existingIndex] = updated;
                   } else {
-                    // Minted collision-free: a boundary-split parallel call
+                    // minted collision-free: a boundary-split parallel call
                     // shares its delta index with the part it split from, so
                     // the plain tool_call_<idx> spelling is already taken.
                     const callId =
                       stablePartId ||
                       mintStreamedToolCallId(toolCallParts, idx);
 
+                    if (!stablePartId) {
+                      toolPartIdByBackendId.set(callId, callId);
+                    }
+
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
                     }
                     const argsText = argsFragment;
-                    let parsedArgs: ToolCallMessagePart["args"] = {};
-                    if (argsText) {
-                      try {
-                        parsedArgs = JSON.parse(
-                          argsText,
-                        ) as ToolCallMessagePart["args"];
-                      } catch {
-                        parsedArgs = {
-                          _raw: argsText,
-                        } as ToolCallMessagePart["args"];
-                      }
-                    }
+                    const parsedArgs = parseStreamedToolCallArgs(argsText);
                     const fresh: PositionedToolCallPart = {
                       type: "tool-call" as const,
                       toolCallId: callId,
-                      toolName: call.function?.name ?? "",
+                      toolName: nameFragment,
                       argsText,
                       args: parsedArgs,
                       textCursor: cumulativeText.length,

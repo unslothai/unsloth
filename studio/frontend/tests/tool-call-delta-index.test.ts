@@ -16,43 +16,82 @@ import {
 interface DeltaFragment {
   id?: string;
   index?: number;
+  name?: string;
   arguments: string;
 }
 
 /** Accumulate `delta.tool_calls[]` fragments the way the chat adapter does. */
 function accumulate(
   fragments: DeltaFragment[],
-): (StreamedToolCallPart & { argsText: string })[] {
-  const parts: (StreamedToolCallPart & { argsText: string })[] = [];
+): (StreamedToolCallPart & { argsText: string; toolName?: string })[] {
+  const parts: (StreamedToolCallPart & {
+    argsText: string;
+    toolName?: string;
+  })[] = [];
+  const append = (
+    fragment: DeltaFragment,
+    argsText: string,
+    id = fragment.id,
+  ) => {
+    parts.push({
+      toolCallId: id ?? mintStreamedToolCallId(parts, fragment.index),
+      toolName: fragment.name,
+      argsText,
+      ...(id ? { _has_stable_id: true } : {}),
+      ...(fragment.index !== undefined ? { _delta_index: fragment.index } : {}),
+    });
+  };
   for (const fragment of fragments) {
     const matched = findStreamedToolCallPartIndex(
       parts,
       fragment.id,
       fragment.index,
     );
-    // Mirrors the adapter: an id-less opening landing on a slot whose
-    // arguments are already complete is the next parallel call (#9807).
+    const matchedPart = matched === -1 ? undefined : parts[matched];
+    const exactId = Boolean(
+      fragment.id && matchedPart?.toolCallId === fragment.id,
+    );
+    const settled = matchedPart
+      ? splitTopLevelJsonDocuments(matchedPart.argsText)
+      : null;
     const target =
       matched !== -1 &&
-      !fragment.id &&
-      fragmentStartsNewToolCall(parts[matched].argsText, fragment.arguments)
+      !exactId &&
+      settled?.complete.length === 1 &&
+      !settled.tail &&
+      Boolean(fragment.name) &&
+      !fragment.arguments
         ? -1
         : matched;
+    if (!exactId) {
+      const split = splitTopLevelJsonDocuments(
+        (matchedPart?.argsText ?? "") + fragment.arguments,
+      );
+      const segments = [...split.complete, ...(split.tail ? [split.tail] : [])];
+      if (segments.length > 1) {
+        const firstNewSegment = matchedPart ? 1 : 0;
+        if (matchedPart)
+          parts[matched] = { ...matchedPart, argsText: segments[0] };
+        for (const [segmentIndex, segment] of segments
+          .slice(firstNewSegment)
+          .entries()) {
+          append(
+            fragment,
+            segment,
+            segmentIndex === 0 ? fragment.id : undefined,
+          );
+        }
+        continue;
+      }
+    }
     if (target === -1) {
-      parts.push({
-        toolCallId:
-          fragment.id ?? mintStreamedToolCallId(parts, fragment.index),
-        argsText: fragment.arguments,
-        ...(fragment.id ? { _has_stable_id: true } : {}),
-        ...(fragment.index !== undefined
-          ? { _delta_index: fragment.index }
-          : {}),
-      });
+      append(fragment, fragment.arguments);
       continue;
     }
     parts[target] = {
       ...parts[target],
       ...(fragment.id ? { toolCallId: fragment.id, _has_stable_id: true } : {}),
+      ...(fragment.name ? { toolName: fragment.name } : {}),
       argsText: parts[target].argsText + fragment.arguments,
     };
   }
@@ -232,7 +271,12 @@ test("JSON document boundaries keep an incomplete final document as the tail", (
 });
 
 test("JSON document boundaries reject mismatched or non-document text", () => {
-  for (const text of ['{"a":1]','{"a":1}suffix','"{\\"a\\":1}"','true{"a":1}']) {
+  for (const text of [
+    '{"a":1]',
+    '{"a":1}suffix',
+    '"{\\"a\\":1}"',
+    'true{"a":1}',
+  ]) {
     assert.deepEqual(splitTopLevelJsonDocuments(text), {
       complete: [],
       tail: text,
@@ -266,4 +310,47 @@ test("a document-looking continuation is not split while the first document is o
     fragmentStartsNewToolCall('{"text":"prefix', '{\\"nested\\":true}"}'),
     false,
   );
+});
+
+test("a name-only opening does not rename the completed call before it", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"a":1}' },
+    { index: 0, name: "beta", arguments: "" },
+    { index: 0, arguments: '{"b":2}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [
+      ["alpha", '{"a":1}'],
+      ["beta", '{"b":2}'],
+    ],
+  );
+});
+
+test("one fragment can close a call and open the next call", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"a":' },
+    { index: 0, name: "beta", arguments: '1}{"b":2}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [
+      ["alpha", '{"a":1}'],
+      ["beta", '{"b":2}'],
+    ],
+  );
+});
+
+test("one fresh fragment can contain several complete calls", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"a":1}{"b":2}[]' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => part.argsText),
+    ['{"a":1}', '{"b":2}', "[]"],
+  );
+  assert.equal(new Set(parts.map((part) => part.toolCallId)).size, 3);
 });

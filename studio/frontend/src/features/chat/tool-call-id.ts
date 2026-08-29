@@ -28,7 +28,7 @@ export interface JsonDocumentSplit {
   tail: string;
 }
 
-/** Split a stream slot into complete top-level JSON documents and its open tail. */
+/** split a stream slot into complete top-level JSON documents and its open tail. */
 export function splitTopLevelJsonDocuments(text: string): JsonDocumentSplit {
   const unsplit = { complete: [], tail: text };
   const complete: string[] = [];
@@ -146,7 +146,10 @@ export function fragmentStartsNewToolCall(
   const existing = existingArgsText ?? "";
   if (!existing.trim() || !fragmentArguments.trim()) return false;
   const split = splitTopLevelJsonDocuments(existing + fragmentArguments);
-  return split.complete.length > 1 || (split.complete.length === 1 && Boolean(split.tail));
+  return (
+    split.complete.length > 1 ||
+    (split.complete.length === 1 && Boolean(split.tail))
+  );
 }
 
 /** A `tool_call_<n>` id no existing part already carries. */
