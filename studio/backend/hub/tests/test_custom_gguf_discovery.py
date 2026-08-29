@@ -310,7 +310,7 @@ def test_incomplete_direct_split_is_not_collapsed(tmp_path):
             "alpha-00001-of-00002-final-Q4_K_M.gguf",
             "alpha-00002-of-00002-final-Q4_K_M.gguf",
         ),
-        ("model-Q4_K_M-001-of-002.gguf", "model-Q4_K_M-002-of-002.gguf"),
+        ("model-Q4_K_M-01-of-02.gguf", "model-Q4_K_M-02-of-02.gguf"),
     ],
 )
 def test_noncanonical_split_like_names_stay_separate(tmp_path, names):
