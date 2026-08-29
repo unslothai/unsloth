@@ -7,7 +7,7 @@ use std::path::Path;
 /// A mutation rewrites the install tree, so the question it has to answer about
 /// an unattributable backend is not "is something listening" but "is a live
 /// process running out of the tree I am about to overwrite". A health probe
-/// cannot answer that: a Studio reached through an SSH forward answers from
+/// cannot answer that: an Unsloth reached through an SSH forward answers from
 /// 127.0.0.1 exactly like a local one.
 ///
 /// The server records itself on bind, in a per-port `studio-{port}-{pid}.pid`

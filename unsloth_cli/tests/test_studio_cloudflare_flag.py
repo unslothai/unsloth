@@ -269,14 +269,17 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     assert captured.get("cloudflare") is expected, captured
 
 
-def test_run_display_host_and_url_helpers_cover_ipv6_wildcard():
+def test_run_display_host_delegates_wildcard_aliases_to_the_backend():
     import types
 
     studio_mod = _studio()
-    run_mod = types.SimpleNamespace(_resolve_external_ip = lambda: "198.51.100.7")
+    aliases = {"0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0"}
+    run_mod = types.SimpleNamespace(
+        _display_host_for_bind = lambda host: "198.51.100.7" if host in aliases else host
+    )
 
-    assert studio_mod._display_host_for_bind(run_mod, "0.0.0.0") == "198.51.100.7"
-    assert studio_mod._display_host_for_bind(run_mod, "::") == "198.51.100.7"
+    for host in aliases:
+        assert studio_mod._display_host_for_bind(run_mod, host) == "198.51.100.7"
     assert studio_mod._url_host("2001:db8::7") == "[2001:db8::7]"
     assert studio_mod._url_host("127.0.0.1") == "127.0.0.1"
 
@@ -305,11 +308,18 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     ]
 
     calls.clear()
+    studio_mod._emit_run_cloudflare_notice(run_mod, "::ffff:0.0.0.0", "198.51.100.7", 8888, False)
+    assert calls == [
+        ("verify", "198.51.100.7", 8888),
+        ("print", {"secure": False, "loopback_host": "127.0.0.1"}),
+    ]
+
+    calls.clear()
     studio_mod._emit_run_cloudflare_notice(run_mod, "127.0.0.1", "127.0.0.1", 8888, False)
     assert calls == []
 
 
-def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
+def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch):
     import types
 
     studio_mod = _studio()
@@ -338,12 +348,16 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     class _App:
         class state:
             server_port = 8888
+            server_request_host = "127.0.0.1"
             cloudflare_url = "https://x.trycloudflare.com"
 
     calls = []
     backend = types.ModuleType("studio.backend.run")
     backend.run_server = lambda **_kwargs: _App()
     backend._resolve_external_ip = lambda: "198.51.100.7"
+    backend._display_host_for_bind = lambda host: (
+        backend._resolve_external_ip() if host == "0.0.0.0" else host
+    )
     backend._verify_global_reachability = lambda host, port: calls.append(("verify", host, port))
     backend._print_cloudflare_line = lambda **kw: calls.append(("print", kw))
     backend._server = object()
@@ -360,12 +374,19 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
 
-    monkeypatch.setattr(studio_mod, "_wait_for_server", lambda *a, **k: True)
+    monkeypatch.setattr(
+        studio_mod,
+        "_wait_for_server",
+        lambda port, **kwargs: calls.append(("health", port, kwargs)) or True,
+    )
     monkeypatch.setattr(studio_mod, "_create_api_key_inprocess", lambda name: "sk-test")
     monkeypatch.setattr(
         studio_mod,
         "_load_model_via_http",
-        lambda **_kwargs: {"model": "unsloth/Qwen3-1.7B-GGUF", "context_length": 4096},
+        lambda **kwargs: (
+            calls.append(("load", kwargs))
+            or {"model": "unsloth/Qwen3-1.7B-GGUF", "context_length": 4096}
+        ),
     )
 
     import typer as _typer
@@ -376,13 +397,14 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     )(studio_mod.run)
     result = CliRunner().invoke(
         app,
-        _BASE + ["--silent", "-H", "0.0.0.0"],
+        _BASE + ["--silent", "-H", "localhost"],
         catch_exceptions = True,
     )
 
     assert result.exit_code == 0, result.output
-    assert ("verify", "198.51.100.7", 8888) in calls
-    assert ("print", {"secure": False, "loopback_host": "127.0.0.1"}) in calls
+    assert ("health", 8888, {"request_host": "127.0.0.1"}) in calls
+    assert next(entry[1] for entry in calls if entry[0] == "load")["request_host"] == "127.0.0.1"
+    assert all(entry[0] not in {"verify", "print"} for entry in calls)
 
 
 # ── parent-level --cloudflare/--no-cloudflare with a subcommand is rejected ─

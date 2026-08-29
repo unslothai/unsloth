@@ -10,6 +10,7 @@ import {
   type CachedInventoryRow,
   type LocalInventoryRow,
   type LocalSource,
+  epochMillisecondsToSeconds,
   isHiddenModelId,
   studioPageForTask,
   useHubInventory,
@@ -20,6 +21,7 @@ import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
   "models_dir",
+  "ollama",
   "custom",
 ]);
 
@@ -34,9 +36,10 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     load_id: row.loadId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",
-    last_modified: row.lastModified ?? undefined,
+    last_modified: epochMillisecondsToSeconds(row.lastModified),
     has_vision: row.capabilities.supportsVision,
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
     has_variant_state: row.hasVariantState ?? false,
   };
 }
@@ -48,8 +51,9 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     // Delete targets the copy the row describes; without it the request hits the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
-    last_modified: row.lastModified ?? undefined,
+    last_modified: epochMillisecondsToSeconds(row.lastModified),
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
     tags: row.tags,
     library_name: row.libraryName,
     // Carried through: the diffusion picker drops single-file checkpoint repos (loading one as a pipeline fails after the handoff), and undefined reads as "full pipeline".
@@ -65,8 +69,9 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
     source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
-    updated_at: row.updatedAt,
+    updated_at: epochMillisecondsToSeconds(row.updatedAt),
     task: row.task ?? null,
+    audio_type: row.audioType ?? null,
   };
 }
 

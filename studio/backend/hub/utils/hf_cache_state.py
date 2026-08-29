@@ -9,7 +9,6 @@ import re
 import shutil
 import stat as stat_module
 import sys
-from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
 
@@ -59,8 +58,7 @@ _LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
 ABANDONED_PARTIAL_SECONDS = 120
 
 
-@lru_cache(maxsize = 1)
-def hf_partials_are_resumable() -> bool:
+def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     """Whether an interrupted download leaves bytes the next attempt can reuse.
 
     Up to 1.17 huggingface_hub appended to a shared ``<etag>.incomplete`` and restarted from
@@ -71,6 +69,19 @@ def hf_partials_are_resumable() -> bool:
 
     An unreadable version answers True: not knowing which writer is installed is not grounds
     for deleting bytes that may still be resumable.
+
+    On 1.18+ this also asks whether the download worker will put the 1.17 writer back
+    (:mod:`hub.utils.resumable_partials`), since a restored resumer makes partials reusable again.
+    That half turns on the filesystem the partial is on, so *hub_cache* names the root being asked
+    about. Unsloth remembers several and they need not lock alike: without it, a selected cache on a
+    network mount would condemn a local cache's partials to the abandoned-partial sweep. Omitting it
+    asks about the cache in force, which is where a new download lands.
+
+    Deliberately not cached here. The verdict is a fact about a filesystem, not about a path, so a
+    result keyed on the path alone survives a remount at the same name and outlives a momentary
+    failure to probe. The expensive part, the lock probe, is cached in
+    :mod:`hub.utils.resumable_partials` against the mounted device instead, and a probe that could
+    not run raises rather than answering, so nothing remembers a bad moment.
     """
     try:
         from huggingface_hub import __version__ as hf_version
@@ -86,7 +97,35 @@ def hf_partials_are_resumable() -> bool:
         if not digits:
             return True
         release.append(int(digits))
-    return tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION
+    if tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION:
+        return True
+    try:
+        from hub.utils.resumable_partials import _ProbeUnavailable, can_restore_partials
+        try:
+            return can_restore_partials(hub_cache)
+        except _ProbeUnavailable:
+            # Nothing was shown, so nothing is promised -- and nothing is remembered either.
+            return False
+    except Exception:  # noqa: BLE001 - no restoration is just the stock answer
+        from loggers import get_logger
+        get_logger(__name__).debug(
+            "Resumable-partial restoration unavailable; partials stay unresumable.",
+            exc_info = True,
+        )
+        return False
+
+
+def invalidate_partial_resumability() -> None:
+    """Re-decide resumability, for when the cache moves to another filesystem.
+
+    The verdict depends on whether ``flock`` excludes a second writer where the partial lands, so
+    it cannot be carried over from the old root.
+    """
+    try:
+        from hub.utils.resumable_partials import invalidate_probe_cache
+        invalidate_probe_cache()
+    except Exception:  # noqa: BLE001 - nothing to invalidate is not an error
+        pass
 
 
 def partial_is_process_unique(name: str) -> bool:
@@ -131,17 +170,20 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
         return True
 
 
-def partial_is_resumable(name: str) -> bool:
+def partial_is_resumable(name: str, hub_cache: Optional[Path | str] = None) -> bool:
     """Whether any later attempt could append to this particular partial.
 
     Two conditions, and the layout half matters on its own: a nonce partial is private to the
     process that created it, so even a legacy writer will not reopen it. That combination is
     reachable whenever caches are shared across environments, which this repo's own pins
     produce (Python 3.10+ takes hub >= 1.23, older takes 0.36.2, one cache between them).
+
+    *hub_cache* is the root the partial lives under. Callers walking more than one cache must pass
+    it, since the answer is partly a property of that root's filesystem.
     """
     if partial_is_process_unique(name):
         return False
-    return hf_partials_are_resumable()
+    return hf_partials_are_resumable(str(hub_cache) if hub_cache is not None else None)
 
 
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
@@ -260,14 +302,43 @@ def blob_bytes_present(path: Path) -> int:
     ``st_blocks``, falling back to ``st_size`` where it is unreported (Windows,
     some network filesystems)."""
     st = path.stat()
-    blocks = getattr(st, "st_blocks", 0)
-    if blocks > 0:
+    blocks = getattr(st, "st_blocks", None)
+    if blocks is not None and blocks > 0:
         return min(blocks * 512, st.st_size)
+    # A present zero is not a missing field. A parallel writer that sets the partial to its
+    # final length before its first chunk lands sits exactly here, and reading st_size then
+    # says "0 B left" on a download that has transferred nothing. The zero alone is not enough
+    # to act on -- a mount that never populates st_blocks looks the same -- so confirm the
+    # emptiness directly before believing it.
+    if blocks == 0 and _holds_no_data(path):
+        return 0
     if sys.platform == "win32":
         allocated = _windows_allocated_size(path)
         if allocated is not None:
             return min(allocated, st.st_size)
     return st.st_size
+
+
+def _holds_no_data(path: Path) -> bool:
+    """Whether the file has no allocated extent anywhere, asked of the kernel rather than
+    inferred. ``SEEK_DATA`` past the end of the last extent is ENXIO, so a file with nothing
+    written raises on the very first seek. Every other answer -- an unsupported seek, an
+    unreadable path -- leaves the caller's size fallback in charge.
+    """
+    seek_data = getattr(os, "SEEK_DATA", None)
+    if seek_data is None:
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        os.lseek(fd, 0, seek_data)
+    except OSError as exc:
+        return exc.errno == errno.ENXIO
+    finally:
+        os.close(fd)
+    return False
 
 
 def _windows_allocated_size(path: Path) -> Optional[int]:
@@ -450,17 +521,32 @@ def latest_snapshot_from_cache_path(
         return None
 
 
-def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
-    latest = latest_snapshot_dir(repo_dir)
-    if latest is None:
-        return False
+def snapshot_has_broken_symlinks(snapshot: Path) -> bool:
+    """Whether ``snapshot`` links to a blob that is not finalized.
+
+    Scoped to one snapshot on purpose. A ``.incomplete`` blob under ``blobs/``
+    belongs to whichever revision or scoped file set is fetching it, and the cache
+    is shared, so its presence says nothing about the revision being validated.
+    What does is a link this snapshot owns whose target is not there yet.
+
+    Windows hydrates the cache with copies rather than links, so there is nothing
+    to dangle: a half-fetched file is simply absent, which the payload inventory
+    catches instead.
+    """
     try:
-        for entry in latest.rglob("*"):
+        for entry in snapshot.rglob("*"):
             if entry.is_symlink() and not entry.exists():
                 return True
     except OSError:
         return False
     return False
+
+
+def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
+    latest = latest_snapshot_dir(repo_dir)
+    if latest is None:
+        return False
+    return snapshot_has_broken_symlinks(latest)
 
 
 def iter_repo_cache_dirs(

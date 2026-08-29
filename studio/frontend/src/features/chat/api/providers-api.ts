@@ -22,7 +22,7 @@ export interface ProviderRegistryEntry {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
-  /** Studio runs its own tool loop (search/code/MCP/RAG) against this provider. */
+  /** Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider. */
   supports_studio_tools?: boolean;
   /** Backend-only entry, surfaced through a custom preset rather than the dropdown. */
   hidden?: boolean;
@@ -57,6 +57,8 @@ export interface ProviderModelInfo {
   display_name: string;
   context_length?: number | null;
   owned_by?: string | null;
+  /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
+  vision?: boolean | null;
 }
 
 export interface ProviderTestResult {
@@ -311,6 +313,27 @@ export async function listProviderModels(payload: {
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
   });
+}
+
+
+export interface CodexSubscriptionModels {
+  models: ProviderModelInfo[];
+  /** Every model the plan returned, offered or not: absent from this means the account
+   * cannot reach it, while present-but-unoffered only means it is no longer shown. */
+  known?: ProviderModelInfo[];
+  /** "reauthorization_required" is a curated answer that also says the connection has
+   * to be reconnected: the picker must not treat it as the plan's catalog. */
+  source: "subscription" | "curated" | "reauthorization_required";
+}
+
+export async function fetchCodexSubscriptionModels(
+  providerId: string,
+  options?: { refresh?: boolean },
+): Promise<CodexSubscriptionModels> {
+  // An explicit reload asks about plan changes, so it must not be served from cache.
+  const query = options?.refresh ? "?refresh=true" : "";
+  const response = await authFetch(`/api/providers/${providerId}/codex/models${query}`);
+  return parseJsonOrThrow<CodexSubscriptionModels>(response);
 }
 
 

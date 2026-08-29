@@ -8,19 +8,28 @@ import atexit
 import concurrent.futures
 import hashlib
 import json
+import mimetypes
 import os
+import re
 import shlex
+import shutil
+import subprocess
 import sys
 import threading
 import time
 import uuid
+from functools import wraps
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
+from weakref import WeakKeyDictionary
 
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
+_WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
+_WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
 # A failed probe isn't cached (a recovered server must come back), but it's
 # recorded so a down server isn't re-probed -- and the chat send re-hung for
@@ -66,7 +75,10 @@ def _split_windows_command_line(address: str) -> list[str]:
             backslashes = 0
             i += 1
             continue
-        if ch.isspace() and not in_quotes:
+        # subprocess.list2cmdline() implements the MS C runtime grammar: only
+        # space and tab delimit arguments. Other Unicode/control whitespace is
+        # ordinary argument data and must not be split here.
+        if ch in (" ", "\t") and not in_quotes:
             if backslashes:
                 current.extend("\\" * backslashes)
                 arg_started = True
@@ -76,7 +88,7 @@ def _split_windows_command_line(address: str) -> list[str]:
                 current = []
                 arg_started = False
             i += 1
-            while i < len(address) and address[i].isspace():
+            while i < len(address) and address[i] in (" ", "\t"):
                 i += 1
             continue
         if backslashes:
@@ -115,9 +127,18 @@ def join_stdio_command(parts: list[str]) -> str:
     one string in the url field. Windows uses list2cmdline so spaced/backslash
     paths round-trip through the posix=False quote-strip; posix uses shlex."""
     if sys.platform == "win32":
-        import subprocess
         return subprocess.list2cmdline(parts)
     return shlex.join(parts)
+
+
+def _windows_batch_argument_is_unsafe(argument: str) -> bool:
+    if _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS.intersection(argument):
+        return True
+    serialized = subprocess.list2cmdline([argument])
+    is_quoted = serialized.startswith('"') and serialized.endswith('"')
+    return not is_quoted and bool(
+        _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS.intersection(argument)
+    )
 
 
 def _stdio_log_id(url: str) -> str:
@@ -241,6 +262,151 @@ async def clear_oauth_tokens_async(url: str) -> None:
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
+_IS_WINDOWS = os.name == "nt"
+_NODE_COMMANDS = frozenset({"node", "npm", "npx"})
+_WINDOWS_LAUNCHER_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1")
+
+
+def _launcher_name(command: str) -> str:
+    """argv[0] reduced to its bare launcher name, Windows suffix stripped."""
+    name = os.path.basename(command).lower()
+    for suffix in _WINDOWS_LAUNCHER_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _is_node_command(command: str) -> bool:
+    """Whether argv[0] is a Node launcher. Only those need the managed runtime, so a
+    Python or other stdio server keeps the toolchain its own env pinned."""
+    return _launcher_name(command) in _NODE_COMMANDS
+
+
+def _command_selects_runtime(command: Optional[str]) -> bool:
+    """A path to a ``node`` launcher picks the runtime explicitly and runs regardless of
+    PATH, so handing its children a different Node would only split the two."""
+    return (
+        command is not None and bool(os.path.dirname(command)) and _launcher_name(command) == "node"
+    )
+
+
+def _runtime_requirements(command: Optional[str]) -> tuple[bool, bool]:
+    """``(needs npm, needs npx)`` for argv[0]. Each launcher asks only for what it runs,
+    so an unrelated missing launcher cannot shadow a good runtime: node needs neither, npm
+    needs npm, and npx needs npx alone -- npx never shells out to an ``npm`` executable,
+    its npx-cli.js delegates in-process to the npm library it ships with, so a PATH
+    exposing node and npx without a separate npm runs it fine and must be left alone.
+    A pathed npm/npx is already located and only needs a node for its shebang, so it
+    does not require a second copy of itself on PATH either."""
+    name = _launcher_name(command) if command is not None else None
+    if name == "node":
+        return False, False
+    if command is not None and os.path.dirname(command):
+        return False, False
+    if name == "npm":
+        return True, False
+    if name == "npx":
+        return False, True
+    return True, True
+
+
+def _path_key(env: dict) -> str:
+    """The key holding PATH. Windows env names are case-insensitive, so a config may
+    spell it ``Path``; on POSIX only the exact name counts."""
+    if _IS_WINDOWS:
+        for key in env:
+            if key.upper() == "PATH":
+                return key
+    return "PATH"
+
+
+def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Optional[dict]:
+    """Process env for a stdio server: its own vars, plus the managed Node bin dir
+    on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
+    env = dict(headers or {})
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("stdio environment names and values must be strings")
+        if "\x00" in key or "\x00" in value:
+            raise ValueError("stdio environment must not contain NUL characters")
+        if "=" in key:
+            raise ValueError("stdio environment variable names must not contain '='")
+    key = _path_key(env)
+    base = env.get(key)
+    if isinstance(base, str) and not base:
+        # An explicitly empty PATH is a deliberate sandbox: hand it over untouched.
+        return env
+    if command is not None and not _is_node_command(command):
+        return env or None
+    if _command_selects_runtime(command):
+        return env or None
+    if not isinstance(base, str):
+        base = os.environ.get("PATH", "")
+    try:
+        from utils.node_runtime import path_with_managed_node
+        require_npm, require_npx = _runtime_requirements(command)
+        patched = path_with_managed_node(base, require_npm = require_npm, require_npx = require_npx)
+    except (ImportError, OSError, ValueError):
+        patched = base
+    if patched and patched != env.get(key):
+        env[key] = patched
+    return env or None
+
+
+def _stdio_argv(parts: list, env: Optional[dict]) -> list:
+    """argv with argv[0] resolved against the child's PATH. Windows resolves the
+    command against the parent environment before ``env`` applies, so a managed-only
+    ``npx`` has to be handed over as a full path."""
+    path_key = _path_key(env or {})
+    explicit_path = env is not None and path_key in env
+    path = (env or {}).get(path_key)
+    if not isinstance(path, str):
+        path = os.environ.get("PATH", "")
+    try:
+        resolved = shutil.which(parts[0], path = path)
+    except OSError:
+        resolved = None
+    if _IS_WINDOWS and resolved is None and explicit_path and not os.path.dirname(parts[0]):
+        raise ValueError(f"Cannot find {parts[0]!r} on the MCP server's configured PATH")
+    executable = resolved or parts[0]
+    if _IS_WINDOWS:
+        suffix = os.path.splitext(executable)[1].lower()
+        if suffix in {".cmd", ".bat"} and _launcher_name(executable) in {"npm", "npx"}:
+            launcher_dir = os.path.dirname(executable)
+            cli = os.path.join(
+                launcher_dir,
+                "node_modules",
+                "npm",
+                "bin",
+                f"{_launcher_name(executable)}-cli.js",
+            )
+            sibling_node = os.path.join(launcher_dir, "node.exe")
+            try:
+                node = (
+                    sibling_node
+                    if os.path.isfile(sibling_node)
+                    else shutil.which("node", path = path)
+                )
+                cli_exists = os.path.isfile(cli)
+            except OSError:
+                node = None
+                cli_exists = False
+            if node and cli_exists:
+                # bypass cmd.exe so shell metacharacters remain literal argv.
+                return [node, cli, *parts[1:]]
+            raise ValueError(
+                f"Cannot launch {executable!r} without its Node executable and npm CLI script"
+            )
+        if suffix in {".cmd", ".bat"} and any(
+            _windows_batch_argument_is_unsafe(argument) for argument in parts[1:]
+        ):
+            raise ValueError(
+                "Windows batch launchers cannot safely preserve these MCP command arguments; "
+                "invoke the executable directly, or use node.exe with the JavaScript entry point"
+            )
+    return [executable, *parts[1:]]
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -259,11 +425,13 @@ def _client(
             raise ValueError(f"Empty stdio command: {url!r}")
         # env vars ride the headers field (merged over the SDK default env).
         # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
+        env = _stdio_env(headers, parts[0])
+        argv = _stdio_argv(parts, env)
         return Client(
             StdioTransport(
-                command = parts[0],
-                args = parts[1:],
-                env = headers or None,
+                command = argv[0],
+                args = argv[1:],
+                env = env,
                 keep_alive = False,
             )
         )
@@ -841,6 +1009,28 @@ _tool_cache: dict[str, list[dict]] = {}
 # eviction.
 _probe_cooloff_until: dict[str, float] = {}
 
+# Coordinate off-loop token-count snapshots with row and schema-cache mutations.
+_mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    WeakKeyDictionary()
+)
+
+
+def mcp_server_snapshot_guard() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    return _mcp_server_snapshot_locks.setdefault(loop, asyncio.Lock())
+
+
+def serialize_mcp_server_mutation(handler):
+    """Run an MCP mutation from validation through row/cache commit as one snapshot."""
+
+    @wraps(handler)
+    async def _serialized(*args, **kwargs):
+        async with mcp_server_snapshot_guard():
+            return await handler(*args, **kwargs)
+
+    return _serialized
+
+
 # MCP server fields whose change invalidates a server's discovered tools: the
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
 # all (is_enabled). A rename does not. The update route's eviction and
@@ -880,29 +1070,132 @@ MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 
+def _block_text(block: Any) -> Optional[str]:
+    text = getattr(block, "text", None)
+    if text:
+        return str(text)
+    resource = getattr(block, "resource", None)
+    if resource is not None:
+        text = getattr(resource, "text", None)
+        return str(text) if text else None
+    return None
+
+
+def _block_link(block: Any) -> Optional[str]:
+    # keep host-generated link text from suppressing structured_content
+    uri = getattr(block, "uri", None)
+    if uri and getattr(block, "type", None) == "resource_link":
+        name = getattr(block, "name", None)
+        return f"[resource: {name} <{uri}>]" if name else f"[resource: <{uri}>]"
+    return None
+
+
+# fastmcp File(data=..., format=...) labels payloads as application/<format>
+_IMAGE_SUBTYPES = {
+    "apng": "image/apng",
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "avif": "image/avif",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "ico": "image/vnd.microsoft.icon",
+    "svg": "image/svg+xml",
+    "svg+xml": "image/svg+xml",
+}
+
+
+# What tool-fallback.tsx may interpolate into data:<type>;base64,... : an RFC 9110
+# 8.3.1 token subtype, minus "*", which names a range and never a payload.
+_MEDIA_TYPE = re.compile(r"^image/[a-z0-9][a-z0-9!#$%&'^_`|~.+-]*$")
+
+
+def _uri_mime(uri: Any) -> Optional[str]:
+    """Guess a media type from the part of a URI that names the resource.
+
+    mimetypes only stopped reading the query and fragment in 3.11.9 / 3.12.3 / 3.13
+    (CPython gh-117217), and on older supported interpreters 'gen.png?download=1'
+    guessed nothing while 'download?name=gen.png' guessed image/png. Dropping both
+    keeps every interpreter in agreement. The scheme stays so a data: URI still
+    resolves; a bare host goes, since a host name is not a file name."""
+    split = urlsplit(str(uri))
+    cleaned = urlunsplit((split.scheme, split.netloc if split.path else "", split.path, "", ""))
+    return mimetypes.guess_type(cleaned, strict = False)[0]
+
+
+def _image_mime(mime: Any) -> Optional[str]:
+    if not isinstance(mime, str):
+        return None
+    # media type names are case-insensitive; data urls need only the essence
+    essence = mime.partition(";")[0].strip().lower()
+    if essence.startswith("image/"):
+        resolved = essence
+    else:
+        subtype = essence[len("application/") :] if essence.startswith("application/") else ""
+        resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
+    # one gate for every branch. Lowercased again because a registry answer carries the
+    # host's spelling: Windows returns image/JXL for .jxl, Linux and macOS image/jxl.
+    resolved = resolved.lower() if resolved else ""
+    return resolved if _MEDIA_TYPE.match(resolved) else None
+
+
+def _resource_mime(obj: Any) -> Any:
+    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
+    mime = getattr(obj, "mimeType", None)
+    return mime if mime is not None else getattr(obj, "mime_type", None)
+
+
+def _block_image(block: Any) -> Optional[tuple[str, str]]:
+    # embedded resources keep binary data on resource.blob
+    data = getattr(block, "data", None)
+    mime = _resource_mime(block)
+    if not data:
+        resource = getattr(block, "resource", None)
+        if resource is None:
+            return None
+        data = getattr(resource, "blob", None)
+        mime = _resource_mime(resource)
+        if not mime:
+            uri = getattr(resource, "uri", None)
+            mime = _uri_mime(uri) if uri else None
+    mime = _image_mime(mime)
+    if data and mime:
+        return str(data), mime
+    return None
+
+
 def _flatten_result(result: Any) -> str:
     parts = []
     images = []
     omitted = 0
+    has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
+        text = _block_text(block)
         if text:
-            parts.append(str(text))
+            parts.append(text)
+            has_text = True
             continue
-        data = getattr(block, "data", None)
-        mime = getattr(block, "mimeType", None)
-        if data and isinstance(mime, str) and mime.startswith("image/"):
-            data = str(data)
+        link = _block_link(block)
+        if link:
+            parts.append(link)
+            continue
+        image = _block_image(block)
+        if image is not None:
+            data, mime = image
             if len(data) > budget:
                 omitted += 1
                 continue
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
-    if not body:
+    if not has_text:
         structured = getattr(result, "structured_content", None)
-        body = str(structured) if structured is not None else ""
+        if structured is not None:
+            body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted:
         notes = []
         if images:

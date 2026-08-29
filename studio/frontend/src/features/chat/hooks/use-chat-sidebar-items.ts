@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
@@ -36,8 +36,6 @@ export interface SidebarItem {
   updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
-  /** The model this chat was started on. Single rows only: a compare row runs two. */
-  modelId?: string;
 }
 
 function lastActivityAt(thread: ThreadRecord): number {
@@ -89,8 +87,6 @@ export function groupThreads(
         updatedAt: lastActivityAt(t),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
-        // Stamped at creation. Blank on a legacy row, which reads as unknown.
-        modelId: t.modelId || undefined,
       });
     }
   }
@@ -169,8 +165,16 @@ export function useChatSidebarItems(options?: {
     };
   }, [enabled, options?.projectId, requireMessages]);
 
-  const items = groupThreads(allThreads ?? []);
-  const archivedItems = groupThreads(allThreads ?? [], true);
+  // Memoised for identity as much as for the work. These arrays are the root
+  // of every derived sidebar list, so rebuilding them on each render leaves
+  // each of those with a new identity too, and an effect that depends on one
+  // re-runs every render. Where such an effect also sets state, React
+  // re-renders once to find the bail-out, rebuilds these, and never settles.
+  const items = useMemo(() => groupThreads(allThreads ?? []), [allThreads]);
+  const archivedItems = useMemo(
+    () => groupThreads(allThreads ?? [], true),
+    [allThreads],
+  );
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
   return { items, archivedItems, canCompare, loaded };
@@ -268,9 +272,21 @@ export async function archiveAllChatItems(
   requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
-  await Promise.all(
-    toArchive.map((t) => updateStoredChatThread(t.id, { archived: true })),
+  // allSettled, not all: Promise.all rejects while slower siblings are still writing silently.
+  const writes = await Promise.allSettled(
+    toArchive.map((t) =>
+      updateStoredChatThread(t.id, { archived: true }, { notify: false }),
+    ),
   );
+  const failure = writes.find(
+    (write): write is PromiseRejectedResult => write.status === "rejected",
+  );
+  if (failure) {
+    // Silent updates mean a partial batch announces itself nowhere, so whatever did
+    // archive would stay listed here and in every other tab until some later change.
+    notifyChatHistoryUpdated();
+    throw failure.reason;
+  }
 
   // Reset only when this action archived the active single thread or compare
   // pair. An already-archived chat opened from the archive is not in

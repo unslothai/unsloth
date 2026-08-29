@@ -9,7 +9,13 @@ import os
 import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Iterable
 import tempfile
+
+from loggers import get_logger
+from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
+
+logger = get_logger(__name__)
 
 
 def _infer_studio_home_from_venv() -> Path | None:
@@ -236,36 +242,87 @@ def hf_default_cache_dir() -> Path:
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def _host_path(path: str | Path) -> Path:
+    """Expand a configured path into one this process can stat.
+
+    A drive-letter path from another tool's config means nothing to a WSL process
+    until it is mapped under the automount root.
+    """
+    return Path(host_normalize_path(str(path))).expanduser()
+
+
+def _existing_dirs(candidates: Iterable[str | Path], *, resolve: bool) -> list[Path]:
+    """Host-translate *candidates*, drop non-directories, dedupe by real path.
+
+    *resolve* picks the return shape: ``well_known_model_dirs`` feeds a containment
+    check and needs real paths, while the per-tool lists feed model ids and must keep
+    the spelling the user configured.
+    """
+    out: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            expanded = _host_path(candidate)
+            resolved = expanded.resolve()
+            is_dir = expanded.is_dir()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = str(resolved)
+        if key in seen or not is_dir:
+            continue
+        seen.add(key)
+        out.append(resolved if resolve else expanded)
+    return out
+
+
+def _lmstudio_downloads_folder() -> str:
+    """Custom models folder from LM Studio's settings.json, or "" if unset.
+
+    utf-8-sig: LM Studio may write this file with a BOM, which a plain utf-8 read turns
+    into a JSONDecodeError that used to be swallowed, dropping the folder (#9748).
+    """
+    settings_path = Path.home() / ".lmstudio" / "settings.json"
+    if not settings_path.is_file():
+        return ""
+    try:
+        settings = json.loads(settings_path.read_text(encoding = "utf-8-sig"))
+        downloads = settings.get("downloadsFolder", "")
+        # A number or list here is a corrupt file, not a path; str() would stat "123".
+        return downloads if isinstance(downloads, str) else ""
+    except Exception as exc:
+        logger.debug("Ignoring unreadable LM Studio settings at %s: %s", settings_path, exc)
+        return ""
+
+
 def lmstudio_model_dirs() -> list[Path]:
     """Return LM Studio model directories that exist on disk."""
-    dirs: list[Path] = []
-    seen: set[Path] = set()
+    candidates: list[str | Path] = []
 
-    def _add(p: Path) -> None:
-        resolved = p.resolve()
-        if resolved not in seen and p.is_dir():
-            seen.add(resolved)
-            dirs.append(p)
+    downloads = _lmstudio_downloads_folder()
+    if downloads:
+        candidates.append(downloads)
 
-    # LM Studio settings.json custom downloads folder
-    settings_path = Path.home() / ".lmstudio" / "settings.json"
-    if settings_path.is_file():
-        try:
-            with open(settings_path, encoding = "utf-8-sig") as f:
-                settings = json.load(f)
-            downloads = settings.get("downloadsFolder", "")
-            if downloads:
-                _add(Path(downloads).expanduser())
-        except Exception:
-            pass
+    candidates.append(Path.home() / ".lmstudio" / "models")
+    # Legacy cache location.
+    candidates.append(Path.home() / ".cache" / "lm-studio" / "models")
 
-    # LM Studio default models directory (all platforms)
-    _add(Path.home() / ".lmstudio" / "models")
+    return _existing_dirs(candidates, resolve = False)
 
-    # Legacy LM Studio cache location
-    _add(Path.home() / ".cache" / "lm-studio" / "models")
 
-    return dirs
+def ollama_model_dirs() -> list[Path]:
+    """Return Ollama model directories that exist on disk.
+
+    User-level plus the common system-wide install paths
+    (https://github.com/ollama/ollama/issues/733).
+    """
+    candidates: list[str | Path] = []
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        candidates.append(ollama_env)
+    candidates.append(Path.home() / ".ollama" / "models")
+    candidates.append(Path("/usr/share/ollama/.ollama/models"))
+    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+    return _existing_dirs(candidates, resolve = False)
 
 
 def well_known_model_dirs() -> list[Path]:
@@ -276,48 +333,25 @@ def well_known_model_dirs() -> list[Path]:
     likelihood of models being there -- LM Studio and Ollama first, then
     generic fallbacks.
     """
-    candidates: list[Path] = []
-
-    # LM Studio (reuses the logic above, including settings.json override)
+    candidates: list[str | Path] = []
     candidates.extend(lmstudio_model_dirs())
+    candidates.extend(ollama_model_dirs())
 
-    # Ollama -- user-level and common system-wide install paths
-    # (https://github.com/ollama/ollama/issues/733).
-    ollama_env = os.environ.get("OLLAMA_MODELS")
-    if ollama_env:
-        candidates.append(Path(ollama_env).expanduser())
-    candidates.append(Path.home() / ".ollama" / "models")
-    candidates.append(Path("/usr/share/ollama/.ollama/models"))
-    candidates.append(Path("/var/lib/ollama/.ollama/models"))
-
-    # HF hub cache root (separate from the explicit HF cache chip)
+    # HF hub cache root, separate from the explicit HF cache chip.
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
 
-    # Generic "my models" spots users drop things into
+    # Generic "my models" spots users drop things into.
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
-    # Dedupe preserving order; keep only extant dirs
-    out: list[Path] = []
-    seen: set[str] = set()
-    for p in candidates:
-        try:
-            resolved = str(p.resolve())
-        except OSError:
-            continue
-        if resolved in seen:
-            continue
-        if Path(resolved).is_dir():
-            seen.add(resolved)
-            out.append(Path(resolved))
-    return out
+    return _existing_dirs(candidates, resolve = True)
 
 
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
-    Explicit Hugging Face environment variables take precedence over Studio's
-    stored location. Studio seeds import-time variables once, while each later
+    Explicit Hugging Face environment variables take precedence over Unsloth's
+    stored location. Unsloth seeds import-time variables once, while each later
     worker receives its own captured cache location.
     """
     root = cache_root()
@@ -328,7 +362,7 @@ def _setup_cache_env() -> None:
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
         # unsloth_zoo defaults this to a bare relative name, which resolves
-        # against the CWD, and the Windows launcher runs Studio with
+        # against the CWD, and the Windows launcher runs Unsloth with
         # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
         # Must be set before unsloth_zoo.compiler imports: it reads the value
         # at import time and puts it on sys.path.
@@ -425,7 +459,7 @@ def _assert_contained(resolved: Path, root: Path) -> None:
         resolved_real.relative_to(root_real)
     except ValueError as exc:
         raise ValueError(
-            f"path escapes root: {resolved!s} -> {resolved_real!s} " f"is not under {root_real!s}"
+            f"path escapes root: {resolved!s} -> {resolved_real!s} is not under {root_real!s}"
         ) from exc
 
 
@@ -530,6 +564,23 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
         root = tensorboard_root(),
         strip_prefixes = ("runs", "tensorboard"),
     )
+
+
+def dataset_files_in_dir(directory: Path) -> list[Path]:
+    """Loadable dataset files for *directory*, preferring a ``parquet-files/`` export over the
+    directory's own files. Raises ``ValueError`` when it holds no supported format."""
+    parquet_dir = directory / "parquet-files"
+    if not parquet_dir.exists():
+        parquet_dir = directory
+    parquet = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
+    if parquet:
+        return parquet
+    files: list[Path] = []
+    for ext in (".json", ".jsonl", ".csv", ".parquet"):
+        files.extend(drop_appledouble_metadata(sorted(directory.glob(f"*{ext}"))))
+    if not files:
+        raise ValueError(f"No supported data files in directory: {directory}")
+    return files
 
 
 def resolve_dataset_path(path_value: str) -> Path:
