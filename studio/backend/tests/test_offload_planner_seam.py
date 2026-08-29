@@ -1779,6 +1779,13 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"]) is None
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) is None
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"]) is None
+
+    class _NonSmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 8
+
+    monkeypatch.setitem(sys.modules, "psutil", _NonSmtHost)
     monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 8)
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) == 8
 
