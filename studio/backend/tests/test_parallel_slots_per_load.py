@@ -320,7 +320,7 @@ def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     resolved_intent = load_impl.index("_resolve_gguf_load_intent(")
     resolved_dedupe = load_impl.index("_reuse_loaded_gguf(", resolved_intent)
     guard = load_impl.index("_guard_chat_load_against_training")
-    load_call = load_impl.index("llama_backend.load_model")
+    load_call = load_impl.index("_run_gguf_load_attempt(")
     assert resolve < fast_dedupe < active_intent
     assert active_intent < resolved_intent < resolved_dedupe
     assert resolved_dedupe < guard < load_call

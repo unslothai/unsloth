@@ -1257,7 +1257,8 @@ def test_link_resolver_leaves_raw_blocks_and_escapes_alone():
 def test_code_span_closers_ignore_backslashes():
     """Escapes are not processed inside a code span, so a run after one closes."""
     src = CODE_SPANS.read_text(encoding = "utf-8")
-    body = src[src.index("export function codeSpans") :]
+    start = src.index("function scanCodeSpans")
+    body = src[start : src.index("export function codeSpans", start)]
     assert body.count("escaped(text") == 1, "only an opener can be escaped"
 
 

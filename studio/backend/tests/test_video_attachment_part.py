@@ -144,7 +144,7 @@ def test_video_joins_the_projector_requirement_before_switching():
     cannot serve it either. Audio already votes here."""
     source = _inference_source()
     start = source.index("_needs_image = bool(_pre_parsed[2])")
-    block = source[start : start + 400]
+    block = source[start : source.index("await _maybe_auto_switch_model(", start)]
     assert "payload.audio_base64" in block
     assert "payload.video_base64" in block
 

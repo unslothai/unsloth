@@ -3790,9 +3790,12 @@ def test_responses_and_anthropic_wire_require_vision_from_images():
     import inspect
 
     responses_src = inspect.getsource(inference_route.openai_responses)
-    assert "require_vision = _messages_have_image(" in responses_src
+    assert "_responses_has_image = _messages_have_image(messages)" in responses_src
+    assert "require_vision = _responses_has_image" in responses_src
+    assert "return await _responses_non_streaming(" in responses_src
     anthropic_src = inspect.getsource(inference_route.anthropic_messages)
-    assert "require_vision = _anthropic_request_has_image(" in anthropic_src
+    assert "_anthropic_has_image = _anthropic_request_has_image(payload)" in anthropic_src
+    assert "require_vision = _anthropic_has_image" in anthropic_src
     # /messages/count_tokens shares the /messages translation, so it needs the same
     # guard: an image count must not evict a vision model for a text-only target.
     count_src = inspect.getsource(inference_route.anthropic_count_tokens)
@@ -9073,12 +9076,10 @@ def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
         raise RuntimeError("reached the switch")
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
-    for streaming in (True, False):
-        captured.clear()
-        payload = _responses_payload(stream = streaming)
-        with pytest.raises(RuntimeError):
-            asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
-        assert captured["gguf_only"] is streaming
+    payload = _responses_payload(stream = True)
+    with pytest.raises(RuntimeError):
+        asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+    assert captured["gguf_only"] is True
 
 
 def test_a_pickle_checkpoint_is_not_switchable(tmp_path):

@@ -529,10 +529,12 @@ function Test-UnslothCmdShimFile {
     return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
 }
 
-# Shared default cache, or the custom Unsloth home's llama.cpp tree.
+# Explicit staging root, shared default cache, or the custom Unsloth home's tree.
 function Get-ManagedLlamaCppDir {
-    if ($StageRoot) {
-        return (Join-Path $StageRoot "llama.cpp")
+    param([AllowNull()][string]$StagingRoot = $null)
+
+    if ($StagingRoot) {
+        return (Join-Path $StagingRoot "llama.cpp")
     }
     if (-not (Test-StudioHomeIsCustom)) {
         return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -542,9 +544,11 @@ function Get-ManagedLlamaCppDir {
 
 # Failure reason when the managed tree is denied; never touches its ACLs.
 function Invoke-ManagedLlamaCppPreflight {
+    param([AllowNull()][string]$StagingRoot = $null)
+
     # Let the existing profile validation handle a missing USERPROFILE later.
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
-    $dir = Get-ManagedLlamaCppDir
+    $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
     if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
     Write-StudioLine ""
     # A denied custom home cannot be claimed as an Unsloth-managed cache.
@@ -1943,11 +1947,11 @@ $StudioOwnedMarker = ".unsloth-studio-owned"
 $NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 $StudioHomeIsCustom = Test-StudioHomeIsCustom
-$LlamaCppDir = Get-ManagedLlamaCppDir
+$LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot
 $UnslothHome = Split-Path -Parent $LlamaCppDir
 
 $WithLlamaCppDir = $null
-$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight
+$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight -StagingRoot $StageRoot
 if ($llamaPreflightFailure) {
     Exit-SetupFailure $llamaPreflightFailure
 }

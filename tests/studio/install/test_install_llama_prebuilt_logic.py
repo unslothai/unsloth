@@ -5516,6 +5516,82 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
+def _complete_existing_llama_install(tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    runtime_dir = install_dir / "build" / "bin"
+    runtime_dir.mkdir(parents = True)
+    for path in (
+        install_dir / "llama-server",
+        install_dir / "llama-quantize",
+        runtime_dir / "llama-server",
+        runtime_dir / "llama-quantize",
+        install_dir / "convert_hf_to_gguf.py",
+        install_dir / "gguf-py",
+        install_dir / "UNSLOTH_PREBUILT_INFO.json",
+    ):
+        if path.name == "gguf-py":
+            path.mkdir()
+        elif path.name == "UNSLOTH_PREBUILT_INFO.json":
+            path.write_text(
+                json.dumps({"release_tag": "old-release", "tag": "old-upstream"}) + "\n",
+                encoding = "utf-8",
+            )
+        else:
+            path.write_text("", encoding = "utf-8")
+    return install_dir
+
+
+def test_release_listing_failure_keeps_a_complete_existing_install(tmp_path, monkeypatch):
+    """An unpinned transient update failure must keep a complete local runtime."""
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+
+    install_dir = _complete_existing_llama_install(tmp_path)
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert (install_dir / "llama-server").exists()
+
+
+@pytest.mark.parametrize(
+    ("llama_tag", "published_release_tag"),
+    [
+        ("b9002", ""),
+        ("latest", "release-2"),
+        ("b9002", "release-2"),
+    ],
+    ids = ["upstream-tag", "published-release", "both-pins"],
+)
+def test_release_listing_failure_does_not_ignore_an_explicit_version(
+    tmp_path, monkeypatch, llama_tag, published_release_tag
+):
+    """A usable older install cannot satisfy an explicit version request."""
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    install_dir = _complete_existing_llama_install(tmp_path)
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(
+            install_dir,
+            llama_tag,
+            "unslothai/llama.cpp",
+            published_release_tag,
+        )
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+    assert (install_dir / "llama-server").exists()
+
+
 @pytest.mark.parametrize(
     "error",
     [

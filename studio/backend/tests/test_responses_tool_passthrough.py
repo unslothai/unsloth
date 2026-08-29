@@ -62,6 +62,7 @@ from routes.inference import (
     _ResponsesReasoningExtractor,
     _SameTaskStreamingResponse,
     _build_chat_request,
+    _build_openai_passthrough_body,
     _chat_tool_calls_to_responses_output,
     _extract_response_format,
     _extract_responses_reasoning,
@@ -275,6 +276,17 @@ class TestToolChoiceTranslation:
 
 
 class TestBuildChatRequest:
+    def test_seed_reaches_the_llama_passthrough_policy(self):
+        payload = ResponsesRequest(input = "hi", seed = 3407)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = True)
+        body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+
+        assert chat_req.seed == 3407
+        assert body["seed"] == 3407
+        assert body["cache_prompt"] is False
+
     def test_parallel_tool_calls_false_is_preserved_for_passthrough_caps(self):
         payload = ResponsesRequest(
             input = "hi",
@@ -804,7 +816,11 @@ class TestResponsesNonStreamingAdapter:
     ):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             return JSONResponse(
                 content = {
                     "model": "test-model",
@@ -855,7 +871,11 @@ class TestResponsesNonStreamingAdapter:
         import routes.inference as inf_mod
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -911,7 +931,11 @@ class TestResponsesNonStreamingAdapter:
 
         usage = {"prompt_tokens": 11, "completion_tokens": 50, "total_tokens": 61}
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             # monitor_id is None here: this call's own row is the suppressed one.
             if observations is not None:
@@ -1030,7 +1054,11 @@ class TestResponsesNonStreamingAdapter:
     def test_monitor_records_tool_only_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -1085,7 +1113,11 @@ class TestResponsesNonStreamingAdapter:
     def test_cancelled_chat_completion_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             raise asyncio.CancelledError()
 

@@ -7856,6 +7856,9 @@ def install_prebuilt(
     instruction_cleanup_root: Path | None = None,
 ) -> None:
     choice: AssetChoice | None = None
+    explicit_version_request = normalized_requested_llama_tag(llama_tag) != "latest" or bool(
+        (published_release_tag or "").strip()
+    )
     # The failure handler can run before selection assigns these.
     host: HostInfo | None = None
     backend = "auto"
@@ -8122,6 +8125,15 @@ def install_prebuilt(
         # A stored choice that could not be served was already replaced by "auto"
         # above, so a concrete name here is one this run must not walk away from.
         preserve_backend = backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
+        if (
+            not preserve_backend
+            and not explicit_version_request
+            and host is not None
+            and _install_tree_is_usable(install_dir, host)
+        ):
+            log("prebuilt update unavailable; keeping the existing complete install")
+            log(f"prebuilt update reason: {exc}")
+            return
         log(
             "prebuilt install failed; preserving the selected backend"
             if preserve_backend

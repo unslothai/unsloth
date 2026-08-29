@@ -1462,6 +1462,7 @@ try:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -1519,6 +1520,7 @@ except ImportError:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -25037,6 +25039,8 @@ def _build_chat_request(
         chat_kwargs["temperature"] = payload.temperature
     if payload.top_p is not None:
         chat_kwargs["top_p"] = payload.top_p
+    if payload.seed is not None:
+        chat_kwargs["seed"] = payload.seed
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
 
@@ -27549,6 +27553,7 @@ async def anthropic_messages(
                     min_p = min_p,
                     repetition_penalty = repetition_penalty,
                     presence_penalty = presence_penalty,
+                    seed = payload.seed,
                     tool_choice = openai_tool_choice,
                     session_id = payload.session_id,
                     cancel_id = payload.cancel_id,
@@ -27573,6 +27578,7 @@ async def anthropic_messages(
                 min_p = min_p,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
+                seed = payload.seed,
                 tool_choice = openai_tool_choice,
                 disable_parallel_tool_use = _disable_parallel,
                 auto_heal_tool_calls = payload.auto_heal_tool_calls,
@@ -27690,6 +27696,7 @@ async def anthropic_messages(
                 presence_penalty = presence_penalty,
                 max_tokens = payload.max_tokens,
                 stop = stop,
+                seed = payload.seed,
                 cancel_event = cancel_event,
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
@@ -27757,6 +27764,7 @@ async def anthropic_messages(
             presence_penalty = presence_penalty,
             max_tokens = payload.max_tokens,
             stop = stop,
+            seed = payload.seed,
             cancel_event = cancel_event,
             promote_reasoning_only = False,
             perf_callback = _monitor_perf_callback(
@@ -28648,8 +28656,7 @@ def _build_passthrough_payload(
         tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
-    if seed is not None:
-        body["seed"] = seed
+    _apply_seeded_llama_request(body, seed)
     if stream and stream_options is not None:
         body["stream_options"] = stream_options
     body["max_tokens"] = (
@@ -28771,6 +28778,7 @@ async def _anthropic_passthrough_stream(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    seed = None,
     tool_choice = "auto",
     session_id = None,
     cancel_id = None,
@@ -28796,6 +28804,7 @@ async def _anthropic_passthrough_stream(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        seed = seed,
         tool_choice = tool_choice,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
@@ -29071,6 +29080,7 @@ async def _anthropic_passthrough_non_streaming(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    seed = None,
     tool_choice = "auto",
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
@@ -29102,6 +29112,7 @@ async def _anthropic_passthrough_non_streaming(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        seed = seed,
         tool_choice = tool_choice,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
