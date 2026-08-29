@@ -2146,6 +2146,10 @@ class InferenceOrchestrator:
             # later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
             turn_stats: dict = {}
+            if isinstance(stats_holder, dict):
+                on_token = stats_holder.get(MONITOR_TOKEN_CALLBACK_STATS_KEY)
+                if callable(on_token):
+                    turn_stats[MONITOR_TOKEN_CALLBACK_STATS_KEY] = on_token
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",

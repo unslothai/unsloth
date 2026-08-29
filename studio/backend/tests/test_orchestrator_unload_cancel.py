@@ -261,6 +261,39 @@ def test_consume_token_stream_reports_each_worker_token():
     assert stats_holder["stats"]["usage"]["completion_tokens"] == 2
 
 
+def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
+    from core.inference.orchestrator import MONITOR_TOKEN_CALLBACK_STATS_KEY
+    from core.inference import safetensors_agentic
+
+    o = _bare_orchestrator()
+    observed = []
+
+    def generate_chat_response(**kwargs):
+        kwargs["stats_holder"][MONITOR_TOKEN_CALLBACK_STATS_KEY]()
+        kwargs["stats_holder"]["stats"] = {"usage": {"completion_tokens": 1}}
+        yield "answer"
+
+    def run_tool_loop(*, single_turn, **_kwargs):
+        assert list(single_turn([])) == ["answer"]
+        yield {"type": "content", "text": "answer"}
+
+    monkeypatch.setattr(o, "generate_chat_response", generate_chat_response)
+    monkeypatch.setattr(safetensors_agentic, "run_safetensors_tool_loop", run_tool_loop)
+    stats_holder = {MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: observed.append("token")}
+
+    events = list(
+        o.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "use a tool"}],
+            tools = [{"type": "function", "function": {"name": "lookup"}}],
+            stats_holder = stats_holder,
+        )
+    )
+
+    assert events == [{"type": "content", "text": "answer"}]
+    assert observed == ["token"]
+    assert stats_holder["stats"]["usage"]["completion_tokens"] == 1
+
+
 def test_unload_pending_clears_after_unload(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
