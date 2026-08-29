@@ -225,7 +225,14 @@ def test_windows_stdio_argv_keeps_safe_batch_arguments(monkeypatch, tmp_path):
     batch.write_text("")
     monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
     monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
-    arguments = ["--port", "3000", r"C:\Users\me\data", "a b", ""]
+    arguments = [
+        "--port",
+        "3000",
+        r"C:\Users\me\data",
+        r"C:\Program Files (x86)\mcp data",
+        "a & b",
+        "",
+    ]
 
     assert mcp_client._stdio_argv(["mcp-server-example", *arguments], {"PATH": str(tmp_path)}) == [
         str(batch),

@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -27,7 +28,8 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
-_WINDOWS_BATCH_UNSAFE_ARGUMENT_CHARS = frozenset('&|<>^()%!"\r\n')
+_WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
+_WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
 # A failed probe isn't cached (a recovered server must come back), but it's
 # recorded so a down server isn't re-probed -- and the chat send re-hung for
@@ -125,9 +127,18 @@ def join_stdio_command(parts: list[str]) -> str:
     one string in the url field. Windows uses list2cmdline so spaced/backslash
     paths round-trip through the posix=False quote-strip; posix uses shlex."""
     if sys.platform == "win32":
-        import subprocess
         return subprocess.list2cmdline(parts)
     return shlex.join(parts)
+
+
+def _windows_batch_argument_is_unsafe(argument: str) -> bool:
+    if _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS.intersection(argument):
+        return True
+    serialized = subprocess.list2cmdline([argument])
+    is_quoted = serialized.startswith('"') and serialized.endswith('"')
+    return not is_quoted and bool(
+        _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS.intersection(argument)
+    )
 
 
 def _stdio_log_id(url: str) -> str:
@@ -387,7 +398,7 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
                 f"Cannot launch {executable!r} without its Node executable and npm CLI script"
             )
         if suffix in {".cmd", ".bat"} and any(
-            _WINDOWS_BATCH_UNSAFE_ARGUMENT_CHARS.intersection(argument) for argument in parts[1:]
+            _windows_batch_argument_is_unsafe(argument) for argument in parts[1:]
         ):
             raise ValueError(
                 "Windows batch launchers cannot safely preserve these MCP command arguments; "

@@ -157,7 +157,14 @@ def test_safe_arguments_survive_a_real_windows_batch_launcher(tmp_path, monkeypa
         f'@echo off\r\n"{sys.executable}" "{FIXTURE}" %*\r\n',
         encoding = "utf-8",
     )
-    arguments = ["--port", "3000", r"C:\Users\me\data", "a b", ""]
+    arguments = [
+        "--port",
+        "3000",
+        r"C:\Users\me\data",
+        r"C:\Program Files (x86)\mcp data",
+        "a & b",
+        "",
+    ]
     url = routes_mcp.encode_stdio_command(
         McpStdioCommand(command = str(launcher), arguments = arguments),
         current_subject = "u",
