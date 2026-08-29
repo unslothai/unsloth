@@ -248,7 +248,14 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
         remove_confirmed_previous(&prev);
         return Ok(());
     }
-    if prev.join(ROLLED_BACK_MARKER).is_file() {
+    let rolled_back = prev.join(ROLLED_BACK_MARKER);
+    if rolled_back.is_file() {
+        if let Some(versions) = read_versions(&rolled_back) {
+            let failed = home.join(FAILED_MARKER);
+            if !failed.is_file() {
+                write_versions(&failed, &versions)?;
+            }
+        }
         let _ = fs::remove_dir_all(home.join(STAGE_DIR));
         let _ = fs::remove_dir_all(&prev);
         return Ok(());
@@ -283,10 +290,10 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     info!("[staged-update] staged backend never became healthy, restoring previous runtime");
     let trash = restore_previous_runtime(home, &prev, &previous_entries)?;
     if let Some(versions) = versions.as_ref() {
-        write_versions(&prev.join(ROLLED_BACK_MARKER), versions)?;
         let failed = home.join(FAILED_MARKER);
         let _ = fs::remove_file(&failed);
         write_versions(&failed, versions)?;
+        write_versions(&prev.join(ROLLED_BACK_MARKER), versions)?;
     }
     let _ = fs::remove_dir_all(home.join(STAGE_DIR));
     let _ = fs::remove_dir_all(&prev);
@@ -902,6 +909,25 @@ mod tests {
         }
         cleanup(first_trash);
         cleanup(second_trash);
+        cleanup(home);
+    }
+
+    #[test]
+    fn an_interrupted_rollback_marker_recreates_the_failed_version() {
+        let home = temp_home("rollback-marker-recovery");
+        make_runtime(&home, "old");
+        let stage = home.join(STAGE_DIR);
+        make_runtime(&stage, "bad");
+        let prev = home.join(PREV_DIR);
+        fs::create_dir_all(&prev).unwrap();
+        write_versions(&prev.join(ROLLED_BACK_MARKER), &versions(None)).unwrap();
+
+        roll_back_unconfirmed_with(&home, false).unwrap();
+
+        assert_eq!(read_versions(&home.join(FAILED_MARKER)), Some(versions(None)));
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        assert!(!stage.exists());
+        assert!(!prev.exists());
         cleanup(home);
     }
 
