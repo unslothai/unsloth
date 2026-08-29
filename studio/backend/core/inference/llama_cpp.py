@@ -3402,20 +3402,13 @@ def _linux_math_core_count(
         physical_count = len(set(siblings))
         online_cpus = cpu_list(cpu_root / "online")
         native_count = len(online_cpus) if online_cpus else len(siblings)
-        if online_cpus and any(cpu not in online_cpus for cpu in range(native_count)):
-            return physical_count
-        if cpu_root == Path("/sys/devices/system/cpu") and hasattr(os, "sched_getaffinity"):
-            try:
-                allowed_cpus = os.sched_getaffinity(0)
-                if any(cpu not in allowed_cpus for cpu in range(native_count)):
-                    return physical_count
-            except OSError:
-                pass
 
         def hybrid_math_count(performance_cpus: set[int]) -> int:
             result = 0
             cpu = 0
             while cpu < native_count:
+                if online_cpus and cpu not in online_cpus:
+                    return physical_count
                 if cpu not in performance_cpus:
                     cpu += 1
                     continue
