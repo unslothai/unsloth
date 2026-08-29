@@ -113,6 +113,25 @@ export function scopedDownloadInventoryKind(
     : "model";
 }
 
+export function downloadRequestInventoryKind(
+  request: Pick<
+    DownloadRequest,
+    "kind" | "variant" | "inventoryKind" | "files"
+  >,
+): DownloadRequest["inventoryKind"] {
+  if (request.inventoryKind) {
+    return request.inventoryKind;
+  }
+  if (
+    request.kind !== "model" ||
+    !request.variant?.startsWith("@") ||
+    !request.files?.length
+  ) {
+    return undefined;
+  }
+  return scopedDownloadInventoryKind(request.files);
+}
+
 export interface JobListeners {
   onComplete?: (variant: string | null, bytes: number) => unknown;
   onCancelled?: (variant: string | null) => unknown;

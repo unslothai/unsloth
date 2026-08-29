@@ -56,13 +56,14 @@ import {
   pollAccessErrorMessage,
   withPollRequestTimeout,
 } from "./download-api-adapter";
-import type {
-  DownloadRequest,
-  JobListeners,
-  JobRuntime,
-  ManagedDownload,
-  ProgressLike,
-  Terminal,
+import {
+  downloadRequestInventoryKind,
+  type DownloadRequest,
+  type JobListeners,
+  type JobRuntime,
+  type ManagedDownload,
+  type ProgressLike,
+  type Terminal,
 } from "./download-manager-types";
 import {
   XET_NOTICE_TITLE,
@@ -678,6 +679,7 @@ export async function startJob(
       )
     : { transport: mode, cancelTransport: undefined };
   const activeTransport = adopted.transport;
+  const inventoryKind = downloadRequestInventoryKind(req);
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -723,8 +725,8 @@ export async function startJob(
       : opts.adopt && existing?.checkpoint !== undefined
         ? { checkpoint: existing.checkpoint }
         : {}),
-    ...(req.inventoryKind !== undefined
-      ? { inventoryKind: req.inventoryKind }
+    ...(inventoryKind !== undefined
+      ? { inventoryKind }
       : opts.adopt && existing?.inventoryKind !== undefined
         ? { inventoryKind: existing.inventoryKind }
         : {}),

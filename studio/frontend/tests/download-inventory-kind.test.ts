@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   downloadInventoryHintKind,
+  downloadRequestInventoryKind,
   scopedDownloadInventoryKind,
 } from "../src/features/hub/download-manager/download-manager-types.ts";
 
@@ -44,6 +45,34 @@ test("recovers scoped inventory format from backend files", () => {
     "model",
   );
   assert.equal(scopedDownloadInventoryKind(undefined), "model");
+});
+
+test("infers missing scoped request formats during adoption", () => {
+  assert.equal(
+    downloadRequestInventoryKind({
+      kind: "model",
+      variant: "@rag-embedding",
+      files: ["model-Q4_K_M.gguf"],
+    }),
+    "gguf",
+  );
+  assert.equal(
+    downloadRequestInventoryKind({
+      kind: "model",
+      variant: "@diffusion",
+      files: ["transformer/model.safetensors"],
+    }),
+    "model",
+  );
+  assert.equal(
+    downloadRequestInventoryKind({
+      kind: "model",
+      variant: "@rag-embedding",
+      inventoryKind: "model",
+      files: ["model-Q4_K_M.gguf"],
+    }),
+    "model",
+  );
 });
 
 test("protects observed keys with the job's explicit inventory kind", () => {
