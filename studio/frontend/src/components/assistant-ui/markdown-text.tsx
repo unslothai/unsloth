@@ -620,6 +620,9 @@ const StreamdownBlock = memo((props: BlockProps) => (
   </MarkdownBlockBoundary>
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
+const DocumentStreamdownBlock = (props: BlockProps) => (
+  <StreamdownBlock {...props} />
+);
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
@@ -787,7 +790,7 @@ const MarkdownTextImpl = () => {
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={status.type} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderScope}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
             parseMarkdownIntoBlocksFn={
@@ -802,7 +805,11 @@ const MarkdownTextImpl = () => {
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
-            BlockComponent={StreamdownBlock}
+            BlockComponent={
+              renderScope === "document"
+                ? DocumentStreamdownBlock
+                : StreamdownBlock
+            }
           >
             {incrementalRender?.markdown ?? processedText}
           </Streamdown>
