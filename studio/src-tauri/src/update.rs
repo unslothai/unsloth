@@ -542,6 +542,27 @@ pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &Diagnos
 
 pub const UPDATE_STOPPED: &str = "Update stopped.";
 
+#[cfg(unix)]
+fn process_group_alive(process_group: i32) -> bool {
+    let result = unsafe { libc::kill(-process_group, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group: i32, signal: i32) -> Result<(), String> {
+    let result = unsafe { libc::kill(-process_group, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(format!(
+        "Could not signal update process group {process_group}: {error}"
+    ))
+}
+
 pub fn stop_update(state: &UpdateState) -> Result<(), String> {
     let mut child = {
         let mut update = match state.lock() {
@@ -571,34 +592,50 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
             let _ = child.wait();
             return Ok(());
         }
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+        let process_group = pid as i32;
+        signal_process_group(process_group, libc::SIGTERM)?;
+        let mut leader_exited = false;
+        for _ in 0..50 {
+            if !leader_exited {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        leader_exited = true;
+                        info!("Update leader exited with status: {:?}", status);
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!("Could not poll update leader: {error}"),
+                }
+            }
+            if !process_group_alive(process_group) {
+                if !leader_exited {
+                    let _ = child.wait();
+                }
+                info!("Update process group stopped gracefully");
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        warn!("Update process group did not exit gracefully, force killing");
+        signal_process_group(process_group, libc::SIGKILL)?;
+        if !leader_exited {
+            let _ = child.wait();
         }
         for _ in 0..50 {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    info!("Update exited gracefully with status: {:?}", status);
-                    return Ok(());
-                }
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
-                Err(_) => break,
+            if !process_group_alive(process_group) {
+                info!("Update process group force stopped");
+                return Ok(());
             }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        warn!("Update did not exit gracefully, force killing");
+        return Err(format!(
+            "Update process group {process_group} is still running after SIGKILL"
+        ));
     }
 
     #[cfg(windows)]
     {
         crate::process::force_kill_process_tree(pid, child, "Update");
         return Ok(());
-    }
-
-    #[cfg(unix)]
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        info!("Update process group force stopped");
-        Ok(())
     }
 }
 
@@ -767,5 +804,45 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_update_kills_descendants_after_the_group_leader_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let child_pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "trap 'exit 0' TERM; /bin/sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $! > \"$1\"; while :; do sleep 1; done",
+                "update-test",
+            ])
+            .arg(&child_pid_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessGroup::leader());
+        let child = wrapped.spawn().unwrap();
+        let process_group = child.id() as i32;
+        let state = new_update_state();
+        state.lock().unwrap().child = Some(child);
+
+        for _ in 0..50 {
+            if child_pid_file.is_file() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let descendant = std::fs::read_to_string(&child_pid_file)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+
+        stop_update(&state).unwrap();
+
+        assert!(!process_group_alive(process_group));
+        assert_eq!(unsafe { libc::kill(descendant, 0) }, -1);
     }
 }
