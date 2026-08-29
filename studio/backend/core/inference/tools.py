@@ -10070,6 +10070,7 @@ def apply_chat_history_tool_policy(tools: list[dict]) -> list[dict]:
         if (tool.get("function") or {}).get("name") not in _DURABLE_SANDBOX_TOOLS
     ]
 
+
 RENDER_HTML_TOOL = {
     "type": "function",
     "function": {

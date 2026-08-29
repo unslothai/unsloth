@@ -194,9 +194,7 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
     assert stats["models"][0]["tokens"] == 175
 
 
-def test_excluding_chat_history_never_scans_or_reports_legacy_chat_rows(
-    stats_db, monkeypatch
-):
+def test_excluding_chat_history_never_scans_or_reports_legacy_chat_rows(stats_db, monkeypatch):
     today = datetime.now(timezone.utc).replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:

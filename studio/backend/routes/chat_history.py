@@ -1558,7 +1558,6 @@ async def clear_history(
     _cancel_chat_generation_runs(request, cleared_chat_runs)
     if chat_history_policy.disabled():
         from core.rag.history_cleanup import clear_non_knowledge_base_data
-
         await run_in_threadpool(clear_non_knowledge_base_data)
     # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
     # conversation searchable in rag.db, and a reused thread id reads the old archive.
@@ -1738,6 +1737,7 @@ def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_cu
 @router.get("/export", response_model = ChatExportResponse)
 def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
+
     if chat_history_policy.disabled():
         return ChatExportResponse(
             exportedAt = datetime.now(timezone.utc).isoformat(),

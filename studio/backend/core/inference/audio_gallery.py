@@ -201,9 +201,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
 
 
 def owned_audio_path(
-    audio_id: str,
-    *,
-    valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+    audio_id: str, *, valid: Optional[Callable[[dict[str, Any]], bool]] = None
 ) -> Optional[Path]:
     """Resolve an id to its WAV only for an Unsloth-owned clip (readable sidecar).
 

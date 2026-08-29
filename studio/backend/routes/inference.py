@@ -16293,6 +16293,7 @@ def _persist_tts_clip(
     if chat_history_policy.disabled() and origin != _AUDIO_PAGE_GALLERY_ORIGIN:
         return None
     from core.inference import audio_gallery
+
     try:
         return audio_gallery.save(
             wav_bytes,
@@ -16339,11 +16340,7 @@ async def audio_download_plan(
 
 
 async def _generate_audio_response(
-    payload: ChatCompletionRequest,
-    request: Request,
-    current_subject: str,
-    *,
-    origin: str,
+    payload: ChatCompletionRequest, request: Request, current_subject: str, *, origin: str
 ):
     """Generate audio (TTS) from the latest user message, as base64 WAV.
     Works with both GGUF (llama-server) and Unsloth/transformers backends."""
@@ -32040,9 +32037,7 @@ async def get_search_image_thumbnail(
         media_type = "image/jpeg",
         headers = {
             "Cache-Control": (
-                "private, no-store"
-                if chat_history_policy.disabled()
-                else "private, max-age=86400"
+                "private, no-store" if chat_history_policy.disabled() else "private, max-age=86400"
             ),
             "X-Content-Type-Options": "nosniff",
             "Content-Disposition": f'inline; filename="{image_id}.jpg"',
@@ -32124,10 +32119,7 @@ async def list_gallery_audio(
 
     # validate inside the pager so offset, limit and has_more count over the accepted domain
     def _valid_gallery_audio(record: dict) -> bool:
-        if (
-            chat_history_policy.disabled()
-            and record.get("origin") != _AUDIO_PAGE_GALLERY_ORIGIN
-        ):
+        if chat_history_policy.disabled() and record.get("origin") != _AUDIO_PAGE_GALLERY_ORIGIN:
             return False
         try:
             AudioGalleryItem(**record)

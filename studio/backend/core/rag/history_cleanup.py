@@ -69,12 +69,8 @@ def clear_non_knowledge_base_data() -> int:
         if not _table_exists(conn, "documents"):
             return 0
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "CREATE TEMP TABLE no_chat_history_documents(id TEXT NOT NULL PRIMARY KEY)"
-        )
-        conn.execute(
-            "CREATE TEMP TABLE no_chat_history_folders(id TEXT NOT NULL PRIMARY KEY)"
-        )
+        conn.execute("CREATE TEMP TABLE no_chat_history_documents(id TEXT NOT NULL PRIMARY KEY)")
+        conn.execute("CREATE TEMP TABLE no_chat_history_folders(id TEXT NOT NULL PRIMARY KEY)")
         conn.execute("CREATE TEMP TABLE no_chat_history_scopes(scope TEXT NOT NULL PRIMARY KEY)")
 
         has_kbs = _table_exists(conn, "knowledge_bases")
@@ -84,14 +80,11 @@ def clear_non_knowledge_base_data() -> int:
             for row in document_rows
             if not has_kbs or store.document_knowledge_base_id(conn, dict(row)) is None
         ]
-        conn.executemany(
-            "INSERT INTO no_chat_history_documents(id) VALUES(?)", hidden_document_ids
-        )
+        conn.executemany("INSERT INTO no_chat_history_documents(id) VALUES(?)", hidden_document_ids)
 
         if _table_exists(conn, "linked_folders"):
             folder_kb_scope_guard = (
-                "AND NOT EXISTS (SELECT 1 FROM knowledge_bases kb "
-                "WHERE f.scope='kb_' || kb.id)"
+                "AND NOT EXISTS (SELECT 1 FROM knowledge_bases kb WHERE f.scope='kb_' || kb.id)"
                 if has_kbs
                 else ""
             )
@@ -199,9 +192,7 @@ def clear_non_knowledge_base_data() -> int:
                 "DELETE FROM chunks WHERE document_id IN "
                 "(SELECT id FROM no_chat_history_documents)"
             )
-        conn.execute(
-            "DELETE FROM documents WHERE id IN (SELECT id FROM no_chat_history_documents)"
-        )
+        conn.execute("DELETE FROM documents WHERE id IN (SELECT id FROM no_chat_history_documents)")
         conn.commit()
         return len(documents)
     except Exception:

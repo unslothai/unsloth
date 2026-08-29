@@ -620,9 +620,7 @@ def _training_stats(conn) -> dict[str, Any]:
 
 def _fingerprint(conn, subject: str, include_chat_history: bool) -> tuple:
     message_row = (
-        conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM chat_messages"
-        ).fetchone()
+        conn.execute("SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM chat_messages").fetchone()
         if include_chat_history
         else (0, 0)
     )

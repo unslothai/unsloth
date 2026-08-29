@@ -238,10 +238,7 @@ def _doc_view(row: dict) -> dict:
 
 
 def _require_visible_document(conn: sqlite3.Connection, document: dict) -> None:
-    if (
-        chat_history_policy.disabled()
-        and store.document_knowledge_base_id(conn, document) is None
-    ):
+    if chat_history_policy.disabled() and store.document_knowledge_base_id(conn, document) is None:
         raise HTTPException(status_code = 404, detail = "Document not found")
 
 
@@ -724,7 +721,6 @@ def list_linked_folders(
         project_names = {}
         if not chat_history_policy.disabled():
             from storage.studio_db import list_chat_projects
-
             project_names = {
                 row["id"]: row["name"] for row in list_chat_projects(include_archived = True)
             }
@@ -811,7 +807,6 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
     project_names = {}
     if not chat_history_policy.disabled():
         from storage.studio_db import list_chat_projects
-
         project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived = True)}
 
     out = []

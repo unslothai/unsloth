@@ -152,9 +152,7 @@ def test_no_history_shows_only_explicit_audio_page_clips_and_can_clear_all(monke
 
     legacy = gallery.save(_wav(), _meta(prompt = "legacy private text"))
     chat = gallery.save(_wav(), _meta(prompt = "private chat text", origin = "chat"))
-    audio_page = gallery.save(
-        _wav(), _meta(prompt = "standalone audio text", origin = "audio_page")
-    )
+    audio_page = gallery.save(_wav(), _meta(prompt = "standalone audio text", origin = "audio_page"))
     monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
     listed = asyncio.run(inference.list_gallery_audio(current_subject = "tester"))
     assert [record.id for record in listed.audio] == [audio_page["id"]]
@@ -162,9 +160,7 @@ def test_no_history_shows_only_explicit_audio_page_clips_and_can_clear_all(monke
 
     for hidden in (legacy, chat):
         with pytest.raises(HTTPException) as caught:
-            asyncio.run(
-                inference.get_gallery_audio_file(hidden["id"], current_subject = "tester")
-            )
+            asyncio.run(inference.get_gallery_audio_file(hidden["id"], current_subject = "tester"))
         assert caught.value.status_code == 404
 
     response = asyncio.run(

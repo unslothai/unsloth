@@ -86,7 +86,9 @@ def test_project_cleanup_response_redacts_stored_content(no_chat_history, monkey
     monkeypatch.setattr(chat_history, "_cancel_chat_generation_runs", lambda *_args: None)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda *_args: None)
     monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda *_args: None)
-    monkeypatch.setattr(chat_history, "_remove_conversation_archives", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        chat_history, "_remove_conversation_archives", lambda *_args, **_kwargs: None
+    )
 
     async def remove_sandboxes(*_args, **_kwargs):
         return [], []
@@ -170,9 +172,10 @@ def test_durable_run_cancellation_returns_no_stored_content(no_chat_history, mon
             AssertionError("cancellation must not rewrite chat history")
         ),
     )
-    assert research_runs.cancel_research_run(
-        "research-1", request, current_subject = "alice"
-    ) == {"id": "research-1", "status": "cancelled"}
+    assert research_runs.cancel_research_run("research-1", request, current_subject = "alice") == {
+        "id": "research-1",
+        "status": "cancelled",
+    }
 
 
 def test_only_explicit_knowledge_base_rag_scopes_remain(no_chat_history):
@@ -258,17 +261,13 @@ def test_sandbox_reads_are_hidden_without_resolving_stored_paths(no_chat_history
     )
 
     listed = asyncio.run(
-        inference.list_sandbox_files(
-            "thread-1", request = None, token = None, session = None
-        )
+        inference.list_sandbox_files("thread-1", request = None, token = None, session = None)
     )
     assert listed == {"path": "", "files": []}
 
     with pytest.raises(HTTPException) as reveal_error:
         asyncio.run(
-            inference.reveal_sandbox_dir(
-                "thread-1", request = None, token = None, session = None
-            )
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
         )
     assert reveal_error.value.status_code == 404
 
@@ -285,9 +284,7 @@ def test_sandbox_reads_are_hidden_without_resolving_stored_paths(no_chat_history
     assert file_error.value.status_code == 404
 
 
-def test_clear_history_does_not_return_stored_thread_or_sandbox_ids(
-    no_chat_history, monkeypatch
-):
+def test_clear_history_does_not_return_stored_thread_or_sandbox_ids(no_chat_history, monkeypatch):
     from core.inference import search_images
 
     monkeypatch.setattr(chat_history, "_archive_cutoff", lambda: None)
@@ -333,8 +330,7 @@ def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
     outside.write_text("external", encoding = "utf-8")
 
     paths = {
-        name: uploads / f"{name}.txt"
-        for name in ("kb", "legacy-kb", "thread", "project", "shared")
+        name: uploads / f"{name}.txt" for name in ("kb", "legacy-kb", "thread", "project", "shared")
     }
     for name, path in paths.items():
         path.write_text(name, encoding = "utf-8")
@@ -426,12 +422,14 @@ def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
     assert history_cleanup.clear_non_knowledge_base_data() == 5
 
     with metadata_connection() as checked:
-        assert {
-            row["id"] for row in checked.execute("SELECT id FROM documents")
-        } == {"kb", "legacy-kb", "shared-kb"}
-        assert {
-            row["id"] for row in checked.execute("SELECT id FROM linked_folders")
-        } == {"kb-folder"}
+        assert {row["id"] for row in checked.execute("SELECT id FROM documents")} == {
+            "kb",
+            "legacy-kb",
+            "shared-kb",
+        }
+        assert {row["id"] for row in checked.execute("SELECT id FROM linked_folders")} == {
+            "kb-folder"
+        }
         assert {
             row["scope"]
             for row in checked.execute("SELECT scope FROM linked_folder_retired_scopes")
@@ -446,8 +444,7 @@ def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
             row["document_id"] for row in checked.execute("SELECT document_id FROM chunks")
         } == {"kb", "legacy-kb", "shared-kb"}
         assert {
-            row["document_id"]
-            for row in checked.execute("SELECT document_id FROM ingestion_jobs")
+            row["document_id"] for row in checked.execute("SELECT document_id FROM ingestion_jobs")
         } == {"kb", "legacy-kb", "shared-kb"}
 
     assert not paths["thread"].exists()
@@ -473,9 +470,7 @@ def test_no_history_rag_visibility_accepts_legacy_kb_scope(no_chat_history):
     assert exc_info.value.status_code == 404
 
 
-def test_no_history_kb_listing_requires_an_existing_owner(
-    no_chat_history, monkeypatch, tmp_path
-):
+def test_no_history_kb_listing_requires_an_existing_owner(no_chat_history, monkeypatch, tmp_path):
     db_path = tmp_path / "rag-list.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE knowledge_bases(id TEXT PRIMARY KEY)")

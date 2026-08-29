@@ -862,9 +862,7 @@ class ApiMonitor:
             if entry.finished_at is not None:
                 # Already terminal; refresh error text only.
                 if error:
-                    entry.error = (
-                        _trim(error, 1000) if self._capture_content else "Request failed"
-                    )
+                    entry.error = _trim(error, 1000) if self._capture_content else "Request failed"
                 return
             self._fail_locked(entry, error)
             notification = self._terminal_notification_locked(entry)
@@ -879,9 +877,7 @@ class ApiMonitor:
         now = time.time()
         entry.status = "error"
         entry.error = (
-            _trim(error, 1000)
-            if self._capture_content
-            else "Request failed" if error else ""
+            _trim(error, 1000) if self._capture_content else "Request failed" if error else ""
         )
         entry.updated_at = now
         entry.finished_at = now

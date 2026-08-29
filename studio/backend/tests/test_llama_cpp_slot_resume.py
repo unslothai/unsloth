@@ -73,9 +73,7 @@ def test_no_history_disables_slot_save_and_restore(monkeypatch, tmp_path):
     )
 
     assert backend.save_slots_for_resume() is None
-    backend.restore_slots_for_resume(
-        {"slots": [{"id": 0, "filename": "resume-private-slot0.bin"}]}
-    )
+    backend.restore_slots_for_resume({"slots": [{"id": 0, "filename": "resume-private-slot0.bin"}]})
 
 
 def test_save_skipped_when_prompt_cache_disabled(monkeypatch, tmp_path):

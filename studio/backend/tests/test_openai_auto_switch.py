@@ -583,7 +583,9 @@ def test_audio_page_gallery_generation_is_studio_only_and_authenticated():
     assert key in routes
     route = routes[key]
     assert route.endpoint.__name__ == "generate_gallery_audio"
-    assert "get_current_subject" in [dependency.call.__name__ for dependency in route.dependant.dependencies]
+    assert "get_current_subject" in [
+        dependency.call.__name__ for dependency in route.dependant.dependencies
+    ]
     assert all(getattr(route, "path", None) != key[1] for route in inference_route.router.routes)
 
 

@@ -25756,7 +25756,6 @@ class LlamaCppBackend:
 
     def restore_slots_for_resume(self, manifest: dict) -> None:
         from utils import chat_history_policy
-
         if chat_history_policy.disabled() or not self.is_loaded or not self._slot_save_dir:
             return
         for entry in manifest.get("slots") or []:
