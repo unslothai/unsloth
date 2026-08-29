@@ -878,6 +878,106 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_research_document_sources_run "
         "ON research_document_sources(run_id, id)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_generation_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            assistant_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            request_hash TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            worker_token TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'running', 'cancelling', 'cancelled', 'completed', 'failed'
+            )),
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            last_event_seq INTEGER NOT NULL DEFAULT 0,
+            finish_reason TEXT,
+            error_message TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER
+        )
+        """
+    )
+    chat_generation_run_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()
+    }
+    if "worker_token" not in chat_generation_run_cols:
+        conn.execute("ALTER TABLE chat_generation_runs ADD COLUMN worker_token TEXT")
+    conn.execute(
+        """UPDATE chat_generation_runs SET worker_token=lower(hex(randomblob(16)))
+           WHERE worker_token IS NULL"""
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_generation_events (
+            run_id TEXT NOT NULL REFERENCES chat_generation_runs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(run_id, seq)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_owner_thread_status "
+        "ON chat_generation_runs(owner_subject, thread_id, status)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_chat_generation_runs_one_active_thread")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_thread_status "
+        "ON chat_generation_runs(thread_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS reject_second_active_chat_generation_insert
+        BEFORE INSERT ON chat_generation_runs
+        WHEN NEW.status IN ('queued','running','cancelling')
+         AND EXISTS (
+             SELECT 1 FROM chat_generation_runs
+             WHERE thread_id = NEW.thread_id
+               AND status IN ('queued','running','cancelling')
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'thread already has an active chat generation');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS reject_second_active_chat_generation_update
+        BEFORE UPDATE OF thread_id, status ON chat_generation_runs
+        WHEN NEW.status IN ('queued','running','cancelling')
+         AND EXISTS (
+             SELECT 1 FROM chat_generation_runs
+             WHERE thread_id = NEW.thread_id
+               AND id != NEW.id
+               AND status IN ('queued','running','cancelling')
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'thread already has an active chat generation');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS tombstone_chat_generation_run_id
+        BEFORE DELETE ON chat_generation_runs
+        BEGIN
+            INSERT OR REPLACE INTO app_settings (key, value_json, updated_at)
+            VALUES (
+                'chat-generation-run-tombstone:' || OLD.id,
+                'true',
+                CAST(strftime('%s', 'now') AS INTEGER) * 1000
+            );
+        END
+        """
+    )
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
@@ -2182,15 +2282,41 @@ def _active_research_run_ids(
     return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
 
 
-def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
+def _active_chat_generation_run_ids(
+    conn: sqlite3.Connection, thread_ids: set[str] | None = None
+) -> list[str]:
+    if thread_ids is None:
+        rows = conn.execute(
+            """SELECT id, created_at FROM chat_generation_runs
+               WHERE status IN ('queued','running','cancelling')"""
+        ).fetchall()
+    else:
+        rows = []
+        sorted_thread_ids = sorted(thread_ids)
+        for start in range(0, len(sorted_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = sorted_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                conn.execute(
+                    f"""SELECT id, created_at FROM chat_generation_runs
+                        WHERE status IN ('queued','running','cancelling')
+                          AND thread_id IN ({placeholders})""",
+                    chunk,
+                ).fetchall()
+            )
+    return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
+
+
+def delete_chat_threads_with_active_runs(ids: list[str]) -> tuple[list[str], list[str]]:
     if not ids:
-        return []
+        return [], []
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
         thread_ids = set(ids)
         active_research_run_ids = _active_research_run_ids(conn, thread_ids)
+        active_chat_run_ids = _active_chat_generation_run_ids(conn, thread_ids)
         _reparent_surviving_forks(conn, thread_ids)
         # Record the delete even when no row exists yet. A late POST carrying the same unique id
         # must not recreate a thread after this request has confirmed deletion.
@@ -2202,12 +2328,17 @@ def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
         conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
-        return active_research_run_ids
+        return active_research_run_ids, active_chat_run_ids
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
+    research_run_ids, _chat_run_ids = delete_chat_threads_with_active_runs(ids)
+    return research_run_ids
 
 
 def delete_chat_threads(ids: list[str]) -> list[str]:
@@ -2309,22 +2440,33 @@ def clear_chat_history_with_active_research_runs(
 
 
 def clear_chat_history(
-    additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
-) -> "tuple[list[str], list[str]]":
+    additional_thread_ids: Iterable[str] = (),
+    operation_id: Optional[str] = None,
+    include_chat_generation_runs: bool = False,
+) -> "tuple[list[str], list[str]] | tuple[list[str], list[str], list[str]]":
     """Delete every chat thread. Returns (thread ids removed, research runs cascaded)."""
-    removed, active_runs, _replayed = clear_chat_history_with_replay_status(
+
+    result = clear_chat_history_with_replay_status(
         additional_thread_ids,
         operation_id = operation_id,
+        include_chat_generation_runs = include_chat_generation_runs,
     )
+    if include_chat_generation_runs:
+        removed, active_runs, active_chat_runs, _replayed = result
+        return removed, active_runs, active_chat_runs
+    removed, active_runs, _replayed = result
     return removed, active_runs
 
 
 def clear_chat_history_with_replay_status(
-    additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
-) -> "tuple[list[str], list[str], bool]":
+    additional_thread_ids: Iterable[str] = (),
+    operation_id: Optional[str] = None,
+    include_chat_generation_runs: bool = False,
+) -> "tuple[list[str], list[str], bool] | tuple[list[str], list[str], list[str], bool]":
     """`clear_chat_history`, plus whether this call replayed a recorded outcome.
 
-    Returns (thread ids removed, research runs cascaded, replayed).
+    Returns (thread ids removed, research runs cascaded, replayed), optionally
+    including active chat generation run ids before the replay flag.
 
     The first two are taken inside the same transaction: another process can add a
     thread between a listing and this call, its sandbox has to be cleaned up too, and
@@ -2356,7 +2498,8 @@ def clear_chat_history_with_replay_status(
                 conn.commit()
                 # The original request already signalled its workers. Replaying that signal can
                 # leave a cancellation event behind after the worker has exited.
-                return list(json.loads(completed["deleted_thread_ids_json"])), [], True
+                replay = (list(json.loads(completed["deleted_thread_ids_json"])), [])
+                return (*replay, [], True) if include_chat_generation_runs else (*replay, True)
         _ensure_chat_attachment_inventory_current(conn)
         removed = sorted(str(row[0]) for row in conn.execute("SELECT id FROM chat_threads"))
         status_placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_RUN_STATUSES)
@@ -2368,6 +2511,7 @@ def clear_chat_history_with_replay_status(
                 _ACTIVE_RESEARCH_RUN_STATUSES,
             )
         ]
+        active_chat_runs = _active_chat_generation_run_ids(conn)
         # Fence pending frontend writes and legacy-only ids in the same transaction as the clear.
         _tombstone_chat_threads(conn, sorted(set(additional_thread_ids) | set(removed)))
         conn.execute("DELETE FROM chat_attachment_tombstones")
@@ -2388,6 +2532,8 @@ def clear_chat_history_with_replay_status(
                 ),
             )
         conn.commit()
+        if include_chat_generation_runs:
+            return removed, active_runs, active_chat_runs, False
         return removed, active_runs, False
     except Exception:
         conn.rollback()
@@ -2556,6 +2702,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
             if thread_ids
             else []
         )
+        active_chat_runs = _active_chat_generation_run_ids(conn, thread_ids)
         _reparent_surviving_forks(conn, thread_ids)
         # Fence the exact membership selected by this transaction so a late writer cannot
         # recreate a project member after the project and its workspace are gone.
@@ -2571,6 +2718,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         project = dict(project)
         project["memberIds"] = sorted(thread_ids)
         project["activeResearchRunIds"] = active_runs
+        project["activeChatGenerationRunIds"] = active_chat_runs
         return project
     except Exception:
         conn.rollback()
@@ -2713,6 +2861,65 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     }
 
 
+def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(message_id)
+        for row in conn.execute(
+            """SELECT user_message_id, assistant_message_id
+               FROM chat_generation_runs WHERE thread_id = ?""",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+
+
+def _terminal_generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    terminal = {
+        str(message_id)
+        for row in conn.execute(
+            """SELECT user_message_id, assistant_message_id
+               FROM chat_generation_runs
+               WHERE thread_id = ? AND status IN ('cancelled', 'completed', 'failed')""",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+    active = {
+        str(message_id)
+        for row in conn.execute(
+            """SELECT user_message_id, assistant_message_id
+               FROM chat_generation_runs
+               WHERE thread_id = ? AND status IN ('queued', 'running', 'cancelling')""",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+    return terminal - active
+
+
+def _references_tombstoned_generation(conn: sqlite3.Connection, message: dict) -> bool:
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("serverManaged") is not True:
+        return False
+    run_id = metadata.get("generationRunId")
+    if not isinstance(run_id, str) or not run_id:
+        return False
+    return (
+        conn.execute(
+            "SELECT 1 FROM app_settings WHERE key=?",
+            (f"chat-generation-run-tombstone:{run_id}",),
+        ).fetchone()
+        is not None
+    )
+
+
+def _server_managed_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return _research_message_ids(conn, thread_id) | _generation_message_ids(conn, thread_id)
+
+
 def _surviving_parent_id(
     conn: sqlite3.Connection, thread_id: str, message_id: str, pruned: set
 ) -> "str | None":
@@ -2786,22 +2993,169 @@ def _research_message_would_change(
     )
 
 
-def _guard_research_messages(
+_GENERATION_ACTIVE_STATUSES = {"queued", "running", "cancelling"}
+_GENERATION_TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
+_GENERATION_STATUS_RANK = {"queued": 0, "running": 1, "cancelling": 2}
+
+
+def _safe_generation_assistant_update(
+    conn: sqlite3.Connection, thread_id: str, message: dict
+) -> bool:
+    """Allow only monotonic writes to the assistant row owned by one run."""
+    row = conn.execute(
+        """SELECT r.id AS run_id, r.status AS run_status, r.last_event_seq,
+                  m.parent_id, m.role, m.content_json, m.metadata_json,
+                  m.attachments_json, m.created_at
+           FROM chat_generation_runs r
+           JOIN chat_messages m ON m.id = r.assistant_message_id
+           WHERE r.thread_id = ? AND r.assistant_message_id = ?""",
+        (thread_id, str(message["id"])),
+    ).fetchone()
+    if row is None or str(message.get("role")) != "assistant":
+        return False
+    if (message.get("parentId") or None) != (row["parent_id"] or None):
+        return False
+    if int(message.get("createdAt", row["created_at"])) != int(row["created_at"]):
+        return False
+
+    stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
+    if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
+        stored_attachments, sort_keys = True
+    ):
+        return False
+
+    incoming = message.get("metadata")
+    stored = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    if not isinstance(incoming, dict) or not isinstance(stored, dict):
+        return False
+    if incoming.get("serverManaged") is not True:
+        return False
+    if incoming.get("generationRunId") != row["run_id"]:
+        return False
+
+    incoming_seq = incoming.get("generationSeq")
+    stored_seq = stored.get("generationSeq", 0)
+    if (
+        isinstance(incoming_seq, bool)
+        or not isinstance(incoming_seq, int)
+        or isinstance(stored_seq, bool)
+        or not isinstance(stored_seq, int)
+        or incoming_seq < stored_seq
+        or incoming_seq > int(row["last_event_seq"])
+    ):
+        return False
+    if incoming_seq == stored_seq and json.dumps(
+        message.get("content", []), sort_keys = True
+    ) != json.dumps(json.loads(row["content_json"] or "[]"), sort_keys = True):
+        return False
+
+    # A settled terminal row is immutable. Repeated repository syncs may send
+    # the exact row again, but an old tab must not erase authoritative finish
+    # metadata or replace it with an earlier view at the same cursor.
+    if stored.get("generationSettled") is True:
+        return incoming == stored
+
+    incoming_status = incoming.get("generationStatus")
+    stored_status = stored.get("generationStatus")
+    run_status = str(row["run_status"])
+    if incoming_status not in _GENERATION_ACTIVE_STATUSES | _GENERATION_TERMINAL_STATUSES:
+        return False
+    if run_status in _GENERATION_TERMINAL_STATUSES and incoming_status != run_status:
+        return False
+    if run_status in _GENERATION_TERMINAL_STATUSES:
+        # Terminal settlement may add client timing/details, but it must retain
+        # every field already persisted by the producer (especially incomplete).
+        for key in stored:
+            if key not in incoming:
+                return False
+        if incoming.get("incomplete") != stored.get("incomplete"):
+            return False
+    if (
+        run_status in _GENERATION_ACTIVE_STATUSES
+        and incoming_status in _GENERATION_TERMINAL_STATUSES
+    ):
+        return False
+    if (
+        incoming.get("generationSettled") is True
+        and run_status not in _GENERATION_TERMINAL_STATUSES
+    ):
+        return False
+    if incoming.get("generationSettled") is True and incoming_seq != int(row["last_event_seq"]):
+        return False
+    if stored_status in _GENERATION_TERMINAL_STATUSES and incoming_status != stored_status:
+        return False
+    if stored.get("generationSettled") is True and incoming.get("generationSettled") is not True:
+        return False
+    if (
+        stored_status in _GENERATION_ACTIVE_STATUSES
+        and incoming_status in _GENERATION_ACTIVE_STATUSES
+        and _GENERATION_STATUS_RANK[incoming_status] < _GENERATION_STATUS_RANK[stored_status]
+    ):
+        return False
+    return True
+
+
+def _guard_server_managed_messages(
     conn: sqlite3.Connection,
     thread_id: str,
     messages: list[dict],
     pruned: set = frozenset(),
+    *,
+    allow_research_update: bool = False,
 ) -> None:
-    protected = _research_message_ids(conn, thread_id)
+    generation = _generation_message_ids(conn, thread_id)
+    protected = set(generation)
+    if not allow_research_update:
+        protected.update(_research_message_ids(conn, thread_id))
     if not protected:
         return
     for message in messages:
-        if str(message["id"]) in protected and _research_message_would_change(
-            conn, thread_id, message, pruned
+        message_id = str(message["id"])
+        if (
+            message_id in generation
+            and not _safe_generation_assistant_update(conn, thread_id, message)
+        ) or (
+            message_id in protected
+            and message_id not in generation
+            and _research_message_would_change(conn, thread_id, message, pruned)
         ):
-            raise ChatMessageProtectedError(
-                "Research prompts and responses are server-managed and cannot be edited"
-            )
+            raise ChatMessageProtectedError("server-managed generation messages cannot be edited")
+
+
+def _detach_terminal_generation_for_edit(
+    conn: sqlite3.Connection, thread_id: str, message: dict
+) -> bool:
+    row = conn.execute(
+        """SELECT r.id AS run_id, r.status AS run_status,
+                  m.parent_id, m.role, m.metadata_json, m.attachments_json, m.created_at
+           FROM chat_generation_runs r
+           JOIN chat_messages m ON m.id = r.assistant_message_id
+           WHERE r.thread_id = ? AND r.assistant_message_id = ?""",
+        (thread_id, str(message["id"])),
+    ).fetchone()
+    if row is None or str(row["run_status"]) not in _GENERATION_TERMINAL_STATUSES:
+        return False
+    stored_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    incoming_metadata = message.get("metadata")
+    if (
+        not isinstance(stored_metadata, dict)
+        or stored_metadata.get("serverManaged") is not True
+        or stored_metadata.get("generationRunId") != row["run_id"]
+        or stored_metadata.get("generationSettled") is not True
+        or isinstance(incoming_metadata, dict)
+        and incoming_metadata.get("serverManaged") is True
+        or str(message.get("role")) != str(row["role"])
+        or (message.get("parentId") or None) != (row["parent_id"] or None)
+        or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
+    ):
+        return False
+    stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
+    if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
+        stored_attachments, sort_keys = True
+    ):
+        return False
+    conn.execute("DELETE FROM chat_generation_runs WHERE id = ?", (row["run_id"],))
+    return True
 
 
 _CONTENT_PART_ID_PREFIX = "content-part-sha256-"
@@ -3079,6 +3433,7 @@ def upsert_chat_message(
     message: dict,
     *,
     allow_research_update: bool = False,
+    allow_generation_edit: bool = False,
     expected_research_run_id: str | None = None,
     expected_research_attempt: int | None = None,
 ) -> dict | None:
@@ -3103,8 +3458,18 @@ def upsert_chat_message(
                 conn.rollback()
                 return None
         _ensure_chat_attachment_inventory_current(conn)
-        if not allow_research_update:
-            _guard_research_messages(conn, message["threadId"], [message])
+        if _references_tombstoned_generation(conn, message):
+            raise ChatMessageProtectedError(
+                "deleted server-managed generation messages cannot be restored"
+            )
+        if allow_generation_edit:
+            _detach_terminal_generation_for_edit(conn, message["threadId"], message)
+        _guard_server_managed_messages(
+            conn,
+            message["threadId"],
+            [message],
+            allow_research_update = allow_research_update,
+        )
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
@@ -3179,23 +3544,46 @@ def sync_chat_messages(
     prune_missing: bool = False,
     *,
     allow_research_update: bool = False,
+    deleted_message_ids: Iterable[str] = (),
 ) -> list[dict]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
-        # Research messages are server-managed: keep the server record rather than reject the
+        # Dropping a stale tab's view of a tombstoned run is a content decision, not a delete
+        # one. Once an edit detaches an assistant, the run row is gone, so the id no longer
+        # counts as generation-linked and nothing else would hold it back from the prune below.
+        tombstoned_ids = {
+            str(message["id"])
+            for message in messages
+            if _references_tombstoned_generation(conn, message)
+        }
+        messages = [message for message in messages if str(message["id"]) not in tombstoned_ids]
+        # Generation-linked messages are server-managed: keep the record rather than reject the
         # batch on client drift. No _guard_research_messages call here as a result -- these ids
         # never reach it. upsert_chat_message still guards, so the single-message route keeps
         # rejecting edits.
         research_ids = _research_message_ids(conn, thread_id)
+        generation_ids = _generation_message_ids(conn, thread_id)
+        managed_ids = research_ids | generation_ids
+        requested_ids = {str(m["id"]) for m in messages}
+        # Snapshot pruning is not delete intent: terminal generation messages may be absent from
+        # a stale client snapshot and must survive unless the delete flow names them explicitly.
+        explicitly_deleted_ids = {str(message_id) for message_id in deleted_message_ids}
+        explicitly_deleted_terminal_ids = explicitly_deleted_ids & _terminal_generation_message_ids(
+            conn, thread_id
+        )
+        prune_protected_ids = (
+            research_ids
+            | (generation_ids - explicitly_deleted_terminal_ids)
+            | (tombstoned_ids - explicitly_deleted_ids)
+        )
         # The rows this sync will delete, computed before the upsert so a relink forced by
         # that deletion can be told apart from an edit. Research ids are subtracted because
         # the delete below exempts them: counting one as pruned would walk the reseat past a
         # parent that actually survives, detaching a research turn from its own prompt.
         pruned: set = set()
         if prune_missing:
-            retained = {str(m["id"]) for m in messages}
             pruned = (
                 {
                     str(row["id"])
@@ -3204,20 +3592,28 @@ def sync_chat_messages(
                         (thread_id,),
                     ).fetchall()
                 }
-                - retained
-                - research_ids
+                - requested_ids
+                - prune_protected_ids
             )
-        protected = set() if allow_research_update else research_ids
-        messages = [m for m in messages if str(m["id"]) not in protected]
+        protected = generation_ids if allow_research_update else managed_ids
+        messages = [
+            m
+            for m in messages
+            if str(m["id"]) not in protected
+            or (
+                str(m["id"]) in generation_ids
+                and _safe_generation_assistant_update(conn, thread_id, m)
+            )
+        ]
         # Content is dropped, structure is not: the prune below can delete a research
         # message's parent, and a dangling parent makes the whole thread unimportable. The
         # replacement is walked from the stored chain, never taken from the client.
         #
-        # Candidates come from research_ids rather than `protected` because the delete exempts
+        # Candidates come from managed_ids rather than `protected` because the delete exempts
         # research rows whatever allow_research_update says, so a narrower set would leave one
         # dangling. Ids the batch itself writes are excluded: an authorized caller reparenting
         # a research row must not have that overwritten by the repair.
-        reseat_candidates = research_ids - {str(m["id"]) for m in messages}
+        reseat_candidates = managed_ids - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
@@ -3280,7 +3676,6 @@ def sync_chat_messages(
                 content_json,
             )
         if prune_missing:
-            retained_ids = {m["id"] for m in reconciled_messages}
             existing_ids = {
                 row["id"]
                 for row in conn.execute(
@@ -3290,7 +3685,7 @@ def sync_chat_messages(
             }
             # Update permission is not delete permission: prune-exempt even for
             # allow_research_update callers.
-            missing_ids = sorted(existing_ids - retained_ids - research_ids)
+            missing_ids = sorted(existing_ids - requested_ids - prune_protected_ids)
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -3354,6 +3749,12 @@ _RESEARCH_LINK_KEYS = {
     "researchPlanRevision",
     "serverManaged",
 }
+_SERVER_MANAGED_LINK_KEYS = _RESEARCH_LINK_KEYS | {
+    "generationRunId",
+    "generationSeq",
+    "generationStatus",
+    "generationSettled",
+}
 
 
 def _detach_research_message_json(
@@ -3364,12 +3765,12 @@ def _detach_research_message_json(
     custom = metadata.get("custom") if isinstance(metadata, dict) else None
     linked = (
         isinstance(metadata, dict)
-        and any(key in metadata for key in _RESEARCH_LINK_KEYS)
+        and any(key in metadata for key in _SERVER_MANAGED_LINK_KEYS)
         or isinstance(custom, dict)
-        and any(key in custom for key in _RESEARCH_LINK_KEYS)
+        and any(key in custom for key in _SERVER_MANAGED_LINK_KEYS)
         or isinstance(content, list)
         and any(
-            isinstance(part, dict) and any(key in part for key in _RESEARCH_LINK_KEYS)
+            isinstance(part, dict) and any(key in part for key in _SERVER_MANAGED_LINK_KEYS)
             for part in content
         )
     )
@@ -3378,17 +3779,19 @@ def _detach_research_message_json(
 
     if isinstance(content, list):
         content = [
-            {key: value for key, value in part.items() if key not in _RESEARCH_LINK_KEYS}
+            {key: value for key, value in part.items() if key not in _SERVER_MANAGED_LINK_KEYS}
             if isinstance(part, dict)
             else part
             for part in content
         ]
     if isinstance(metadata, dict):
-        metadata = {key: value for key, value in metadata.items() if key not in _RESEARCH_LINK_KEYS}
+        metadata = {
+            key: value for key, value in metadata.items() if key not in _SERVER_MANAGED_LINK_KEYS
+        }
         custom = metadata.get("custom")
         if isinstance(custom, dict):
             metadata["custom"] = {
-                key: value for key, value in custom.items() if key not in _RESEARCH_LINK_KEYS
+                key: value for key, value in custom.items() if key not in _SERVER_MANAGED_LINK_KEYS
             }
     return (
         json.dumps(content, ensure_ascii = False),
@@ -3424,7 +3827,6 @@ def fork_chat_thread(
         if src is None:
             conn.rollback()
             return None
-        # Verify branch msg belongs to source thread.
         branch_row = conn.execute(
             "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
             (source_thread_id, branch_message_id),
@@ -3432,7 +3834,6 @@ def fork_chat_thread(
         if branch_row is None:
             conn.rollback()
             return None
-        # Walk ancestry from branch msg back to root via parent_id chain.
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()
@@ -3447,7 +3848,6 @@ def fork_chat_thread(
                 (source_thread_id, parent),
             ).fetchone()
         ancestry.reverse()  # root .. branch msg
-        # Map old msg id -> new msg id for parent_id rewriting.
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
         conn.execute(
@@ -3815,7 +4215,10 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if row is None:
             conn.rollback()
             return False
-        if str(message_id) in _research_message_ids(conn, str(row["thread_id"])):
+        protected_message_ids = _server_managed_message_ids(
+            conn, str(row["thread_id"])
+        ) - _terminal_generation_message_ids(conn, str(row["thread_id"]))
+        if str(message_id) in protected_message_ids:
             conn.rollback()
             raise ChatMessageProtectedError(
                 "Research prompts and responses are server-managed and cannot be edited"
@@ -3921,10 +4324,66 @@ def get_app_setting(key: str, fallback = None):
         conn.close()
 
 
-def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+def get_app_settings(keys: list[str]) -> dict[str, Any]:
+    """Read a set of settings from one SQLite snapshot.
+
+    Values that form one logical record must not be fetched through separate
+    connections: a concurrent multi-key upsert could otherwise leave a reader
+    pairing one save's first field with another save's remaining fields.
+    Missing keys are omitted from the result.
+    """
+    unique = list(dict.fromkeys(keys))
+    if not unique:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in unique)
+        rows = conn.execute(
+            f"SELECT key, value_json FROM app_settings WHERE key IN ({placeholders})",
+            unique,
+        ).fetchall()
+        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
+def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
+    """Write ``value`` to ``key`` only while it still holds ``expected``.
+
+    A read-then-upsert cannot express "clear this flag": another save committing
+    in the gap is silently reverted by the write that follows it. Comparing inside
+    one immediate transaction makes a losing update a no-op instead. Returns
+    whether the write happened.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        current = _json_loads(row["value_json"], None) if row is not None else None
+        if current != expected:
+            conn.rollback()
+            return False
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(value), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def upsert_app_settings(settings: dict[str, Any], *, read_back: bool = True) -> dict[str, Any]:
     if not settings:
         return {}
     conn = get_connection()
+    committed = False
     try:
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
@@ -3938,10 +4397,17 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
             [(key, json.dumps(value), now) for key, value in settings.items()],
         )
         conn.commit()
+        committed = True
+        if not read_back:
+            return settings
         rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            if not committed or read_back:
+                raise
 
 
 def upsert_app_setting_map_entry(

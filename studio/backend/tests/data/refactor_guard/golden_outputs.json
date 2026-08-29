@@ -53,11 +53,14 @@
     "is_reprompt_restatement": "8bec9da2bf58bada77617c893169063c29d5ed8ef3ffe96c12c70755bfcea0be",
     "is_short_intent_without_action": "de99e25b81def8c5ac63b03718b84c3525f49e5f31598555fb183f7637959340",
     "parse_tool_calls_from_text": "19077dca174b78f6d41a710beb02bd3875752343c2a6b35f00ec4805cb5595f7",
+    "repeated_result_message": "3edd2438690044e5084358837c50c633c7b893242cb28fb5b626febfc7b00441",
     "reprompt_to_act_message": "53b231a1489544f480ae21ab5e3b461e0eff072564f582dae0df55938779b445",
+    "starved_result_message": "b1eadfc967db807f41712d430237eec49b095ea6a1f1219972057434c9870f07",
     "strip_leading_bare_json_call": "4dfe14fa258e30d340cfa8400eec6dde4cbbcdbaba20ac5ace312d54176c83d3",
     "strip_llama3_leading_sentinels": "7ba3f83eee7f9c5aed00d24c8cc26e5cdd82cdca7e8aca747f02566c417eef9d",
     "strip_segment": "6feb0ddeab2929915953a9a806766a07fba35be1e96bff66563128364daded17",
-    "strip_tool_markup": "fb2df4ad97d8e280dec296b615ab454b8990e1bcb3ad1caad1bfc7b4a73fd573"
+    "strip_tool_markup": "fb2df4ad97d8e280dec296b615ab454b8990e1bcb3ad1caad1bfc7b4a73fd573",
+    "unfinished_thought_progress": "9ea96157cabd83756b4217f82ed18a19c96c80713009269b7cf93811f872a9aa"
   },
   "core.tool_healing": {
     "_balanced_brace_end": "0b82a90811adc2196cb441d8bc569ab360aafa2552bb4093ab5b2777d9cf3a18",

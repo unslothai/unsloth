@@ -29,6 +29,7 @@ from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
     is_stubbed,
+    torch_is_rocm,
 )
 from core.inference.diffusion_families import (
     detect_family,
@@ -463,7 +464,8 @@ def train_precision_modes() -> tuple[list[str], str]:
         import torch
         if native_bf16_supported():
             modes.append("bf16")
-            torchao_ok = has_functional_torchao()
+            # ROCm capability values are gfx versions, not the NVIDIA SM levels checked below.
+            torchao_ok = has_functional_torchao() and not torch_is_rocm()
             if torchao_ok:
                 modes.append("int8")
             major, minor = torch.cuda.get_device_capability()
@@ -779,9 +781,11 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     child, after eviction). Every gate mirrors one in _resolve_base_precision, so a doomed run is
     rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); no accelerator at
     all (dit_accelerator_missing_reason, which covers nf4 too); the dense precisions
-    (bf16/int8/fp8/mxfp8) needing CUDA; explicit int8 needing a FUNCTIONAL torchao (its
-    _int8_quantize_base has no fallback); explicit fp8/mxfp8 against the Windows-ROCm torchao stub;
-    explicit mxfp8 needing Blackwell (sm100+). Add a gate there, add it here. Never raises."""
+    (bf16/int8/fp8/mxfp8) needing CUDA; the torchao precisions (int8/fp8/mxfp8) against a ROCm
+    build, which clears the stub test and hands the sm100 floor an AMD gfx version; explicit int8
+    needing a FUNCTIONAL torchao (its _int8_quantize_base has no fallback); explicit fp8/mxfp8
+    against the Windows-ROCm torchao stub; explicit mxfp8 needing Blackwell (sm100+). Add a gate
+    there, add it here. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
@@ -802,6 +806,12 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
             return (
                 f"base_precision={mode!r} needs a CUDA GPU; this host has none. "
                 "Use base_precision='nf4' or 'auto'."
+            )
+        # Reject before eviction; _resolve_base_precision repeats this in the child.
+        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm():
+            return (
+                f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
+                "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
             )
         if mode == "int8" and not has_functional_torchao():
             return (
