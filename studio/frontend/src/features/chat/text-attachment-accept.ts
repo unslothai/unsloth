@@ -669,10 +669,33 @@ function headerParameter(value: string, name: string): string | undefined {
     if (parameter.slice(0, equals).trim().toLowerCase() !== name) continue;
     const raw = parameter.slice(equals + 1).trim();
     if (!raw.startsWith('"')) return raw || undefined;
-    const close = raw.indexOf('"', 1);
-    return (close === -1 ? raw.slice(1) : raw.slice(1, close)) || undefined;
+    return unquoteHeaderValue(raw) || undefined;
   }
   return undefined;
+}
+
+/**
+ * A quoted-string parameter value, escapes resolved.
+ *
+ * `\X` stands for `X`, so a value carrying a quote reads to its real closing
+ * one rather than stopping at the escaped one, and the text it yields is what a
+ * delimiter line actually holds. The splitter above already honours escapes;
+ * this is the other half of that.
+ */
+function unquoteHeaderValue(raw: string): string {
+  let out = "";
+  for (let index = 1; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character === "\\" && index + 1 < raw.length) {
+      out += raw[index + 1];
+      index += 1;
+    } else if (character === '"') {
+      break;
+    } else {
+      out += character;
+    }
+  }
+  return out;
 }
 
 /** The charset a header declares, restricted to the shape of a label. */

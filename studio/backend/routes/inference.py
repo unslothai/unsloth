@@ -6855,6 +6855,14 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
             audio_preflight["prepared"] = await asyncio.to_thread(
                 _prepare_audio_for_llama, audio_preflight["b64"]
             )
+        except _DecodedAudioTooLongError:
+            # A limit the caller can act on. Reading as "could not be decoded"
+            # answered the same upload differently depending on whether a swap
+            # happened to be running.
+            raise HTTPException(
+                status_code = 413,
+                detail = _audio_too_long_detail(),
+            ) from None
         except Exception:
             raise HTTPException(
                 status_code = 400,
@@ -6888,6 +6896,11 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
         audio_preflight["decoded"] = await asyncio.to_thread(
             _decode_audio_base64, audio_preflight["b64"]
         )
+    except _DecodedAudioTooLongError:
+        raise HTTPException(
+            status_code = 413,
+            detail = _audio_too_long_detail(),
+        ) from None
     except Exception:
         raise HTTPException(
             status_code = 400,
@@ -17450,6 +17463,11 @@ class _DecodedAudioTooLongError(ValueError):
     """Decoded audio crossed the duration cap before it could be buffered."""
 
 
+def _audio_too_long_detail() -> str:
+    """The one answer an overlong upload gets, whichever path found it out."""
+    return f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes)."
+
+
 def _id3_tag_length(raw: bytes) -> int:
     """Bytes an ID3v2 tag occupies before the first MPEG frame.
 
@@ -20060,7 +20078,7 @@ async def produce_openai_chat_completions(
                 api_monitor.fail(monitor_id, str(e))
                 raise HTTPException(
                     status_code = 413,
-                    detail = f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes).",
+                    detail = _audio_too_long_detail(),
                 )
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
@@ -20510,7 +20528,7 @@ async def produce_openai_chat_completions(
                 # A valid file that is simply too long reports the limit, as the
                 # non-GGUF path does, rather than reading as corrupt audio.
                 logger.info("Audio rejected at the duration limit: %s", e)
-                raise _reject(413, f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes).")
+                raise _reject(413, _audio_too_long_detail())
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")

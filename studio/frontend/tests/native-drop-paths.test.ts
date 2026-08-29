@@ -2300,3 +2300,75 @@ test("the reference drop zone takes what its dialog offers", async () => {
   );
   assert.match(picked, /accept: REFERENCE_DROP_ACCEPT\[kind\]/);
 });
+
+test("a quoted parameter value resolves its escapes", async () => {
+  // The splitter honours "\\X" already; the unquoting did not, so a value
+  // carrying a quote stopped at the escaped one and kept the backslashes.
+  const enc = new TextEncoder();
+  const eml = new Uint8Array([
+    ...enc.encode(
+      'Content-Type: multipart/mixed; boundary="part\\"one"\r\n\r\n--part"one\r\n' +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+  ]);
+  assert.match(await readTextAttachment(new File([eml], "message.eml")), /Café/);
+
+  // And a parameter after the escaped quote is still found, rather than being
+  // swallowed by a value that never terminated.
+  const named = new Uint8Array([
+    ...enc.encode(
+      'Content-Type: text/plain; name="say \\"hi\\""; charset=windows-1252\r\n\r\nCaf',
+    ),
+    0xe9,
+  ]);
+  assert.match(await readTextAttachment(new File([named], "message.eml")), /Café/);
+});
+
+test("the clipboard reader takes what the native side hands it", () => {
+  // Rust reads a pasted clip to MAX_CLIPBOARD_VIDEO_BYTES; refusing it here
+  // threw away a file already read and encoded, and dropped the paste with it.
+  const source = readFileSync(
+    new URL("../src/features/chat/utils/clipboard-files.ts", import.meta.url),
+    "utf8",
+  );
+  const rust = readFileSync(
+    new URL("../../src-tauri/src/native_clipboard.rs", import.meta.url),
+    "utf8",
+  );
+  const rustLimit = (name: string): number => {
+    const raw = rust.match(
+      new RegExp(`const ${name}: u64 = ([0-9_]+(?:\\\\s*\\\\*\\\\s*[0-9_]+)*)`),
+    )?.[1];
+    assert.ok(raw, name);
+    return raw
+      .split("*")
+      .reduce((total, part) => total * Number(part.replace(/[\s_]/g, "")), 1);
+  };
+  const frontLimit = (name: string): number => {
+    const raw = source.match(
+      new RegExp(`const ${name} = ([0-9_]+(?:\\\\s*\\\\*\\\\s*[0-9_]+)*)`),
+    )?.[1];
+    assert.ok(raw, name);
+    return raw
+      .split("*")
+      .reduce((total, part) => total * Number(part.replace(/[\s_]/g, "")), 1);
+  };
+
+  assert.equal(
+    frontLimit("MAX_CLIPBOARD_VIDEO_BYTES"),
+    rustLimit("MAX_CLIPBOARD_VIDEO_BYTES"),
+  );
+  assert.equal(
+    frontLimit("MAX_CLIPBOARD_NON_AUDIO_BYTES"),
+    rustLimit("MAX_CLIPBOARD_SOURCE_BYTES"),
+  );
+  // The total may not refuse a single file the per-file limits allow.
+  assert.match(source, /const MAX_CLIPBOARD_BYTES = MAX_CLIPBOARD_VIDEO_BYTES;/);
+  assert.match(rust, /const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_VIDEO_BYTES;/);
+  // And video is classified before the catch-all, as it is natively.
+  assert.match(
+    source,
+    /file\.mimeType\.startsWith\("video\/"\)\s*\?\s*MAX_CLIPBOARD_VIDEO_BYTES/,
+  );
+});

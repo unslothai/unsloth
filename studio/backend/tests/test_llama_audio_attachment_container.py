@@ -3,6 +3,7 @@
 
 import base64
 import io
+import pathlib
 import sys
 import types
 
@@ -684,3 +685,57 @@ def test_an_id3v1_trailer_does_not_hide_the_duration():
     seconds = inference_route._mp3_seconds(tagged, 60.0)
     assert seconds is not None
     assert 9.0 < seconds < 11.0
+
+
+def test_a_switch_preflight_answers_an_overlong_upload_like_the_serving_path(monkeypatch):
+    """The same file must not read as 413 when the model is loaded and 400 when a
+    swap happens to be running."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    def _too_long(_b64):
+        raise inference_route._DecodedAudioTooLongError("decoded audio exceeds the limit")
+
+    monkeypatch.setattr(inference_route, "_prepare_audio_for_llama", _too_long)
+    monkeypatch.setattr(inference_route, "_decode_audio_base64", _too_long)
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+
+    for target_is_gguf in (True, False):
+        try:
+            asyncio.run(inference_route._preflight_audio_for_switch({"b64": "x"}, target_is_gguf))
+        except HTTPException as error:
+            assert error.status_code == 413, target_is_gguf
+            assert error.detail == inference_route._audio_too_long_detail()
+        else:
+            raise AssertionError(f"expected a 413 for target_is_gguf={target_is_gguf}")
+
+
+def test_a_switch_preflight_still_reports_undecodable_audio_as_a_bad_value(monkeypatch):
+    """Only the duration case moves; a file that really cannot be read keeps 400."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    def _broken(_b64):
+        raise ValueError("not audio at all")
+
+    monkeypatch.setattr(inference_route, "_prepare_audio_for_llama", _broken)
+    monkeypatch.setattr(inference_route, "_decode_audio_base64", _broken)
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+
+    for target_is_gguf in (True, False):
+        try:
+            asyncio.run(inference_route._preflight_audio_for_switch({"b64": "x"}, target_is_gguf))
+        except HTTPException as error:
+            assert error.status_code == 400, target_is_gguf
+        else:
+            raise AssertionError(f"expected a 400 for target_is_gguf={target_is_gguf}")
+
+
+def test_every_path_names_the_limit_the_same_way(monkeypatch):
+    """One message, so a client sees one answer wherever the limit was found."""
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 90 * 60)
+    assert inference_route._audio_too_long_detail() == "Audio is too long (max 90 minutes)."
+    source = (pathlib.Path(inference_route.__file__)).read_text()
+    assert source.count('f"Audio is too long') == 1
