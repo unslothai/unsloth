@@ -600,9 +600,7 @@ class _Turn:
             name_fragment = function.get("name") if isinstance(function, dict) else None
             if not isinstance(name_fragment, str):
                 name_fragment = None
-            argument_fragment = (
-                function.get("arguments") if isinstance(function, dict) else None
-            )
+            argument_fragment = function.get("arguments") if isinstance(function, dict) else None
             if not isinstance(argument_fragment, str):
                 argument_fragment = None
 
@@ -1285,9 +1283,7 @@ async def stream_with_studio_tools(
                 # execute: the cap is a safety limit, not a hint to the provider.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
-                    tool_call_id = (
-                        call.get("card_id") or call.get("stream_id") or call["id"]
-                    ),
+                    tool_call_id = (call.get("card_id") or call.get("stream_id") or call["id"]),
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
                     provenance = _unrun_provenance(call["function"]["name"], round_id),

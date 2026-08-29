@@ -1301,11 +1301,7 @@ def test_an_id_less_name_opens_the_next_call_once_the_slot_closed(executed):
                 ),
                 _sse({"tool_calls": [{"index": 0, "function": {"name": "web_fetch"}}]}),
                 _sse(
-                    {
-                        "tool_calls": [
-                            {"index": 0, "function": {"arguments": '{"query":"second"}'}}
-                        ]
-                    }
+                    {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"second"}'}}]}
                 ),
                 _sse(finish = "tool_calls"),
                 _DONE,
@@ -1330,11 +1326,7 @@ def test_a_name_resent_as_it_grows_still_names_one_call(executed):
                 _sse({"tool_calls": [{"index": 0, "function": {"name": "web"}}]}),
                 _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
                 _sse(
-                    {
-                        "tool_calls": [
-                            {"index": 0, "function": {"arguments": '{"query":"first"}'}}
-                        ]
-                    }
+                    {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"first"}'}}]}
                 ),
                 _sse(finish = "tool_calls"),
                 _DONE,
@@ -1423,11 +1415,7 @@ def test_arguments_streamed_before_the_name_stay_with_their_call(executed):
         [
             [
                 _sse(
-                    {
-                        "tool_calls": [
-                            {"index": 0, "function": {"arguments": '{"query":"first"}'}}
-                        ]
-                    }
+                    {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"first"}'}}]}
                 ),
                 _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
                 _sse(finish = "tool_calls"),
@@ -1451,9 +1439,7 @@ def test_balanced_text_that_is_not_json_is_never_split(executed):
         [{"index": 0, "function": {"name": "web_search", "arguments": "{bad}{worse}"}}]
     )
 
-    assert [call["function"]["arguments"] for call in turn.by_index.values()] == [
-        "{bad}{worse}"
-    ]
+    assert [call["function"]["arguments"] for call in turn.by_index.values()] == ["{bad}{worse}"]
 
 
 def test_a_long_argument_is_read_once_not_once_per_fragment():
@@ -1461,13 +1447,9 @@ def test_a_long_argument_is_read_once_not_once_per_fragment():
     opening = '{"code":"'
     body = "x" * (64 * 1024)
     turn = loop_mod._Turn()
-    turn.merge_structured(
-        [{"index": 0, "function": {"name": "python", "arguments": opening}}]
-    )
+    turn.merge_structured([{"index": 0, "function": {"name": "python", "arguments": opening}}])
     for at in range(0, len(body), 1024):
-        turn.merge_structured(
-            [{"index": 0, "function": {"arguments": body[at : at + 1024]}}]
-        )
+        turn.merge_structured([{"index": 0, "function": {"arguments": body[at : at + 1024]}}])
 
     assert turn.boundaries[0].scanned == len(opening) + len(body)
 
@@ -1661,10 +1643,7 @@ def test_id_less_calls_address_their_events_to_the_painted_card(executed):
     )
     lines = _run(transport)
 
-    assert [call["arguments"] for call in executed] == [
-        {"query": "first"},
-        {"query": "second"},
-    ]
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
     assert _event_ids(lines, "tool_start") == ["tool_call_0", "tool_call_1"]
     assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
 
@@ -1681,10 +1660,7 @@ def test_a_second_round_keeps_numbering_where_the_first_stopped(executed):
     )
     lines = _run(transport)
 
-    assert [call["arguments"] for call in executed] == [
-        {"query": "first"},
-        {"query": "second"},
-    ]
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
     assert _event_ids(lines, "tool_start") == ["tool_call_0", "tool_call_1"]
     assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
 
