@@ -525,6 +525,26 @@ test("streaming tool-call argument deltas are paced like the text path", () => {
   );
 });
 
+test("plain tool argument fragments do not rescan the accumulated JSON", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  assert.match(
+    loop,
+    /\(argsFragment\.includes\("\{"\) \|\| argsFragment\.includes\("\["\)\)[\s\S]{0,120}?combinedDocuments = splitTopLevelJsonDocuments/,
+  );
+  assert.match(
+    loop,
+    /_split_tail &&[\s\S]{0,120}?\(argsFragment\.includes\("\}"\) \|\| argsFragment\.includes\("\]"\)\)[\s\S]{0,80}?\? splitTopLevelJsonDocuments/,
+  );
+  assert.ok(
+    loop.includes("const matchedClosed = checkCompletedSlot"),
+    "completed-slot detection scans every argument fragment",
+  );
+});
+
 test("the gate is fed every arrival, not only the tool-call ones", () => {
   const loop = regionOf(
     "for await (const chunk of stream) {",

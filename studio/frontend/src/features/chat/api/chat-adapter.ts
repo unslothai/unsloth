@@ -7072,13 +7072,23 @@ export function createOpenAIStreamAdapter(
                   const exactStableMatch = Boolean(
                     stablePartId && matchedPart?.toolCallId === stablePartId,
                   );
-                  const matchedDocuments = matchedPart
-                    ? splitTopLevelJsonDocuments(matchedPart.argsText ?? "")
-                    : null;
-                  const matchedClosed = Boolean(
-                    matchedDocuments?.complete.length === 1 &&
-                      !matchedDocuments.tail,
+                  const checkCompletedSlot = Boolean(
+                    matchedPart &&
+                      !exactStableMatch &&
+                      matchedPart.toolName &&
+                      nameFragment &&
+                      argsFragmentIsBlank,
                   );
+                  const matchedClosed = checkCompletedSlot
+                    ? (() => {
+                        const documents = splitTopLevelJsonDocuments(
+                          matchedPart?.argsText ?? "",
+                        );
+                        return (
+                          documents.complete.length === 1 && !documents.tail
+                        );
+                      })()
+                    : false;
                   // an id-less opening landing on a slot whose arguments are
                   // already a complete JSON document is the next parallel
                   // call, not a continuation: some proxies strip ids and
@@ -7102,13 +7112,21 @@ export function createOpenAIStreamAdapter(
                     codexRoundToolCallIds.push(stablePartId);
                   }
                   streamedChars += argsFragment.length + nameFragment.length;
-                  if (!exactStableMatch || argsFragment) {
-                    const split = splitTopLevelJsonDocuments(
+                  let combinedDocuments: ReturnType<
+                    typeof splitTopLevelJsonDocuments
+                  > | null = null;
+                  if (
+                    (!exactStableMatch || argsFragment) &&
+                    (argsFragment.includes("{") || argsFragment.includes("["))
+                  ) {
+                    combinedDocuments = splitTopLevelJsonDocuments(
                       (matchedPart?.argsText ?? "") + argsFragment,
                     );
                     const segments = [
-                      ...split.complete,
-                      ...(split.tail ? [split.tail] : []),
+                      ...combinedDocuments.complete,
+                      ...(combinedDocuments.tail
+                        ? [combinedDocuments.tail]
+                        : []),
                     ];
                     if (segments.length > 1) {
                       const firstNewSegment = matchedPart ? 1 : 0;
@@ -7175,7 +7193,8 @@ export function createOpenAIStreamAdapter(
                             ? { _has_stable_id: true }
                             : {}),
                           ...(idx !== undefined ? { _delta_index: idx } : {}),
-                          ...(split.tail && argsText === split.tail
+                          ...(combinedDocuments.tail &&
+                          argsText === combinedDocuments.tail
                             ? { _split_tail: true }
                             : {}),
                         });
@@ -7191,7 +7210,12 @@ export function createOpenAIStreamAdapter(
                       nameFragment,
                     );
                     const merged = (existing.argsText ?? "") + argsFragment;
-                    const mergedDocuments = splitTopLevelJsonDocuments(merged);
+                    const mergedDocuments =
+                      combinedDocuments ??
+                      ((existing as PositionedToolCallPart)._split_tail &&
+                      (argsFragment.includes("}") || argsFragment.includes("]"))
+                        ? splitTopLevelJsonDocuments(merged)
+                        : null);
                     const parsedArgs = parseStreamedToolCallArgs(merged);
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
@@ -7223,7 +7247,7 @@ export function createOpenAIStreamAdapter(
                       _split_tail:
                         (existing as PositionedToolCallPart)._split_tail &&
                         !(
-                          mergedDocuments.complete.length === 1 &&
+                          mergedDocuments?.complete.length === 1 &&
                           !mergedDocuments.tail
                         )
                           ? true
