@@ -143,6 +143,11 @@ export async function loadModelMemorySettings(
 export async function updateModelMemorySettings(
   patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
 ): Promise<ModelMemorySettings> {
+  // a get already in flight describes the state before this write. displace it
+  // so its later response cannot repaint subscribers with the value just saved.
+  inFlightModelMemory = null;
+  modelMemoryGeneration += 1;
+  const generation = modelMemoryGeneration;
   const body: Record<string, boolean> = {};
   if (patch.keepResident !== undefined) {
     body.keep_resident = patch.keepResident;
@@ -163,5 +168,8 @@ export async function updateModelMemorySettings(
   // Residency vetoes the idle-unload TTL, so the auto-switch endpoint's
   // idleUnloadActive changed too and its own cache is now stale.
   invalidateOpenAIAutoSwitchSettings();
-  return publishModelMemory(fromApi(await res.json()));
+  const settings = fromApi(await res.json());
+  return generation === modelMemoryGeneration
+    ? publishModelMemory(settings)
+    : settings;
 }

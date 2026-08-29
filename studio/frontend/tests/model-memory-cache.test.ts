@@ -199,6 +199,47 @@ test("a displaced read neither publishes nor frees the slot", async () => {
   }
 });
 
+test("a save displaces a runtime read already in flight", async () => {
+  const original = globalThis.fetch;
+  let finishRead: ((body: Record<string, unknown>) => void) | null = null;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") {
+      return new Response(
+        JSON.stringify({ ...API, keep_resident: true }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Promise<Response>((resolve) => {
+      finishRead = (body) =>
+        resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+    });
+  }) as typeof fetch;
+
+  const published: boolean[] = [];
+  const stop = subscribeModelMemorySettings((settings) => {
+    published.push(settings.keepResident);
+  });
+  try {
+    const staleRead = loadModelMemorySettings({ force: true });
+    await updateModelMemorySettings({ keepResident: true });
+    finishRead?.({ ...API, keep_resident: false });
+    await staleRead;
+    assert.deepEqual(
+      published,
+      [true],
+      "the response predating the save must not repaint subscribers",
+    );
+  } finally {
+    stop();
+    globalThis.fetch = original;
+  }
+});
+
 test("a later read is NOT served from a cache", async () => {
   calls = [];
   await loadModelMemorySettings();
