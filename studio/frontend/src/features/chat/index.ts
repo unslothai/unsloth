@@ -255,6 +255,7 @@ export {
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,

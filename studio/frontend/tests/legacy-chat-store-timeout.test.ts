@@ -74,6 +74,10 @@ function loadStorage(options: {
         markChatThreadDeleted: () => {},
         markChatThreadsDeleted: () => {},
       },
+      "@/lib/chat-history-policy": {
+        chatHistoryDisabledError: () => new Error("Chat history is disabled"),
+        isChatHistoryDisabled: () => false,
+      },
       "./thread-record-write-coordinator": {
         ThreadRecordWriteCoordinator: StubWriteCoordinator,
       },

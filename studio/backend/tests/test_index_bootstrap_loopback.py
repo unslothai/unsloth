@@ -121,3 +121,14 @@ def test_non_colab_gate_requires_local_client(monkeypatch):
     monkeypatch.setattr(main, "_IS_COLAB", False)
     assert main._should_inject_bootstrap(_request("127.0.0.1", "localhost")) is True
     assert main._should_inject_bootstrap(_request("192.168.1.10", "localhost")) is False
+
+
+def test_host_history_policy_is_injected_before_boot_scripts(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main.chat_history_policy, "NO_CHAT_HISTORY", True)
+    html = b'<html lang="en"><head><script src="/reload-snapshot.js"></script></head></html>'
+    injected = main._inject_host_policy(html)
+
+    assert b'<html data-unsloth-no-chat-history="true" lang="en">' in injected
+    assert injected.index(b"data-unsloth-no-chat-history") < injected.index(b"<script")

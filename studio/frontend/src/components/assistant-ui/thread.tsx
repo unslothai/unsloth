@@ -92,6 +92,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { forkChatThread } from "@/features/chat/api/chat-api";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import {
   findLatestUserAudioBase64,
   resolveProjectId,
@@ -5846,6 +5847,7 @@ const ComposerToolsMenu: FC<{
     incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
+  const historyDisabled = isChatHistoryDisabled();
   const recentProjects = [...projects]
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 3);
@@ -6116,8 +6118,11 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const visiblePlusItems = PLUS_MENU_ORDER.filter(
+    (id) => !historyDisabled || id !== "projects",
+  );
+  const pinnedPlusItems = visiblePlusItems.filter((id) => plusPins[id]);
+  const overflowPlusItems = visiblePlusItems.filter((id) => !plusPins[id]);
 
   return (
     <>

@@ -396,6 +396,7 @@ function createEnvironment(options: {
   trackScrollRestores?: boolean;
   localStorage?: Map<string, string>;
   supportsPageSwap?: boolean;
+  noChatHistoryGlobal?: boolean;
 }) {
   const storage = options.storage ?? new Map<string, string>();
   const listeners = new Map<string, Listener[]>();
@@ -429,6 +430,7 @@ function createEnvironment(options: {
   };
 
   const window = {
+    __UNSLOTH_NO_CHAT_HISTORY__: options.noChatHistoryGlobal,
     addEventListener(name: string, listener: Listener) {
       const current = listeners.get(name) ?? [];
       current.push(listener);
@@ -806,6 +808,54 @@ test("never persists a Temporary Chat shell", () => {
     activation: { navigationType: "reload" },
   });
   assert.equal(environment.storage.size, 0);
+});
+
+test("operator-disabled history purges snapshots before restore and capture", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Previously stored transcript</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    supportsPageSwap: true,
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+  assert.equal(outgoing.storage.size, 1);
+
+  const locked = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+    rootHtml: "<main>Current private transcript</main>",
+    htmlAttributes: { "data-unsloth-no-chat-history": "true" },
+    supportsPageSwap: true,
+  });
+  assert.equal(locked.appended.length, 0);
+  assert.equal(locked.storage.size, 0);
+
+  locked.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+  assert.equal(locked.storage.size, 0);
+});
+
+test("desktop document-start policy purges snapshots without an HTML attribute", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Previously stored transcript</main>",
+    supportsPageSwap: true,
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const locked = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+    noChatHistoryGlobal: true,
+    supportsPageSwap: true,
+  });
+  assert.equal(locked.appended.length, 0);
+  assert.equal(locked.storage.size, 0);
 });
 
 test("mirrors Temporary Chat privacy and lets history completion retire chat shells", () => {

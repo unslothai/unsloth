@@ -60,6 +60,7 @@ function harness(): Harness {
         ensureStoredChatThread: async () => {
           calls.push("ensureStoredChatThread");
         },
+        isThreadIncognito: () => false,
         syncStoredChatMessages: async (
           _threadId: string,
           records: Record<string, unknown>[],

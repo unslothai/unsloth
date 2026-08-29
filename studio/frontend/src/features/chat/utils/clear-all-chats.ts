@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { clearPersistedChatDrafts } from "../../../lib/chat-history-policy";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { chatHistoryClearBoundary } from "./chat-history-clear-boundary";
 import { clearStoredChats, countStoredChats } from "./chat-history-storage";
@@ -25,5 +26,6 @@ export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
     stopChatThread(threadId);
   }
   requestPromptQueueStop();
+  clearPersistedChatDrafts();
   return await clearStoredChats(options);
 }

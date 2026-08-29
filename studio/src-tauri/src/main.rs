@@ -63,6 +63,48 @@ const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 /// "off" that the user only discovers the next morning.
 const LAUNCH_AT_LOGIN_PREFERENCE_FILE: &str = "launch-at-login-v1";
 
+const NO_CHAT_HISTORY_ENV_VAR: &str = "UNSLOTH_NO_CHAT_HISTORY";
+const NO_CHAT_HISTORY_INIT_SCRIPT: &str = r#"
+if (
+  window.location.protocol === "tauri:" ||
+  window.location.hostname === "tauri.localhost" ||
+  window.location.hostname === "localhost"
+) {
+  window.__UNSLOTH_NO_CHAT_HISTORY__ = true;
+}
+"#;
+
+fn chat_history_disabled_from_env(value: Option<&OsStr>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let Some(value) = value.to_str() else {
+        return true;
+    };
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
+fn create_main_window(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == "main")
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "main window config not found")
+        })?;
+    let mut builder = tauri::WebviewWindowBuilder::from_config(app, config)?;
+    if chat_history_disabled_from_env(std::env::var_os(NO_CHAT_HISTORY_ENV_VAR).as_deref()) {
+        builder = builder.initialization_script(NO_CHAT_HISTORY_INIT_SCRIPT);
+    }
+    builder.build()?;
+    Ok(())
+}
+
 struct CloseToTrayState(AtomicBool);
 
 fn new_close_to_tray_state() -> CloseToTrayState {
@@ -2027,6 +2069,8 @@ fn main() {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
+            create_main_window(app)?;
+
             initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
             if let Err(error) = process::with_studio_runtime_launch_guard(|| {
@@ -2111,6 +2155,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_history_policy_matches_backend_startup_parsing() {
+        for value in [None, Some(""), Some("0"), Some(" false "), Some("NO"), Some("off")] {
+            assert!(!chat_history_disabled_from_env(value.map(OsStr::new)), "{value:?}");
+        }
+        for value in [Some("1"), Some("true"), Some(" YES "), Some("on"), Some("invalid")] {
+            assert!(chat_history_disabled_from_env(value.map(OsStr::new)), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn main_window_is_manually_created_with_a_document_start_policy_hook() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["app"]["windows"][0]["create"], false);
+        assert!(NO_CHAT_HISTORY_INIT_SCRIPT.contains("window.__UNSLOTH_NO_CHAT_HISTORY__ = true"));
+    }
 
     #[test]
     fn log_file_rotates_mid_session_and_keeps_one_generation() {

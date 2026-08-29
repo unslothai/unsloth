@@ -351,6 +351,7 @@ from utils.torch_warmup import (
     start_background_warm,
     warm_status,
 )
+from utils import chat_history_policy
 from utils.cache_cleanup import (
     clear_compiled_cache_unless_shared as _clear_compiled_cache_unless_shared,
 )
@@ -576,6 +577,7 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
             admission_lock = _post_warm_lock,
             admit = lambda: _post_warm_generation == generation,
             project_exists = lambda project_id: get_chat_project(project_id) is not None,
+            knowledge_bases_only = chat_history_policy.disabled(),
         )
     except Exception as exc:
         import structlog as _structlog
@@ -711,14 +713,20 @@ async def lifespan(app: FastAPI):
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
 
-    from core.research_runs import ResearchSupervisor
+    if chat_history_policy.disabled():
+        # Durable supervisors resume rows from earlier sessions, so route guards
+        # alone would still let old content producers write after startup.
+        app.state.research_supervisor = None
+        app.state.chat_generation_supervisor = None
+    else:
+        from core.research_runs import ResearchSupervisor
 
-    app.state.research_supervisor = ResearchSupervisor(app)
-    app.state.research_supervisor.start()
+        app.state.research_supervisor = ResearchSupervisor(app)
+        app.state.research_supervisor.start()
 
-    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+        from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
-    app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
+        app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -2226,6 +2234,17 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     return html.encode("utf-8")
 
 
+def _inject_host_policy(html_bytes: bytes) -> bytes:
+    """Expose immutable host policy before any frontend boot script runs."""
+    if not chat_history_policy.disabled():
+        return html_bytes
+    return html_bytes.replace(
+        b"<html",
+        b'<html data-unsloth-no-chat-history="true"',
+        1,
+    )
+
+
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     """Inject bootstrap credentials when password change is pending.
     Returns ``(html_bytes, script_nonce_or_None)``; callers forward the nonce
@@ -2491,6 +2510,7 @@ def setup_frontend(
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
+        content = _inject_host_policy(content)
         # Bootstrap pw goes only to a same-origin, direct-loopback client (or Colab's single-user
         # proxy): a wildcard bind must not serve it to a LAN or proxied peer. Vary: Origin.
         if _should_inject_bootstrap(request):
@@ -2529,6 +2549,9 @@ def setup_frontend(
         # Block path traversal — resolved path must stay inside build_path
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
+
+        if file_path == (build_path / "index.html").resolve():
+            return _build_index_response(request)
 
         if file_path.is_file():
             return FileResponse(file_path)

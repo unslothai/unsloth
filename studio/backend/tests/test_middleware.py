@@ -921,6 +921,26 @@ class TestResearchPortMiddleware:
 
 
 class TestFrontendAssets:
+    def test_index_file_receives_host_policy_before_boot_scripts(
+        self, tmp_path, main_module, monkeypatch
+    ):
+        (tmp_path / "index.html").write_text(
+            '<html><head><script src="/reload-snapshot.js"></script></head></html>',
+            encoding = "utf-8",
+        )
+        monkeypatch.setattr(main_module.chat_history_policy, "NO_CHAT_HISTORY", True)
+        app = FastAPI()
+        assert main_module.setup_frontend(app, tmp_path)
+        client = TestClient(app)
+
+        for path in ("/", "/index.html", "/chat/thread-1"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert 'data-unsloth-no-chat-history="true"' in response.text
+            assert response.text.index("data-unsloth-no-chat-history") < response.text.index(
+                "<script"
+            )
+
     def test_desktop_frontend_is_available_only_through_live_tunnel(self, tmp_path, main_module):
         (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
         assets = tmp_path / "assets"

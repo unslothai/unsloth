@@ -188,6 +188,7 @@ import {
   saveStoredChatMessage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import {
   readLastLocalModelLoad,
   recordLastLocalModelLoad,
@@ -2087,6 +2088,7 @@ export async function resolveProjectId(
   // screen when it polls rather than the one it is waiting for.
   opts?: { rethrowReadFailure?: boolean; composerProjectId?: string | null },
 ): Promise<string | null> {
+  if (isChatHistoryDisabled()) return null;
   // Read before the await: a send survives navigation, so a store read after the
   // lookup could hand this request the project the user moved to.
   const composerProjectId =

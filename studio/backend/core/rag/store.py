@@ -236,6 +236,20 @@ def get_kb(conn: sqlite3.Connection, kb_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def document_knowledge_base_id(conn: sqlite3.Connection, document: dict) -> str | None:
+    """Resolve current and legacy document ownership to an existing global KB."""
+    kb_id = document.get("kb_id")
+    if kb_id and get_kb(conn, kb_id) is not None:
+        return str(kb_id)
+    scope = document.get("scope")
+    if not scope:
+        return None
+    row = conn.execute(
+        "SELECT id FROM knowledge_bases WHERE ?='kb_' || id LIMIT 1", (scope,)
+    ).fetchone()
+    return str(row["id"]) if row else None
+
+
 def delete_kb(
     conn: sqlite3.Connection,
     kb_id: str,

@@ -25,6 +25,7 @@ from core.inference.providers import provider_runs_local_tools
 from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
+from utils import chat_history_policy
 
 router = APIRouter()
 _SENSITIVE_KEY_EXACT = {
@@ -383,6 +384,7 @@ def create_research_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    chat_history_policy.require_enabled()
     thread = get_chat_thread(payload.threadId)
     if thread is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -444,6 +446,8 @@ def create_research_run(
 def active_research_runs(
     thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
+    if chat_history_policy.disabled():
+        return {"runs": [], "hasRun": False}
     return {
         "runs": db.list_active(thread_id),
         "hasRun": db.research_spent(thread_id),
@@ -452,6 +456,8 @@ def active_research_runs(
 
 @router.get("/{run_id}")
 def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+    if chat_history_policy.disabled():
+        raise HTTPException(status_code = 404, detail = "Research run not found")
     return _require_run(run_id)
 
 
@@ -461,6 +467,7 @@ def update_research_plan(
     payload: UpdatePlan,
     current_subject: str = Depends(get_current_subject),
 ):
+    chat_history_policy.require_enabled()
     _require_run(run_id)
     try:
         db.set_plan(run_id, payload.plan.model_dump(), payload.expectedRevision)
@@ -478,6 +485,7 @@ def approve_research_plan(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    chat_history_policy.require_enabled()
     _require_run(run_id)
     try:
         db.approve(run_id, payload.planRevision, payload.planHash)
@@ -503,6 +511,8 @@ def cancel_research_run(
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None and status == "cancelling":
         supervisor.cancel(run_id)
+    if chat_history_policy.disabled():
+        return {"id": run_id, "status": status}
     run = _require_run(run_id)
     _sync_assistant(run)
     return run
@@ -514,6 +524,7 @@ def retry_research_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    chat_history_policy.require_enabled()
     _require_run(run_id)
     try:
         db.retry(run_id)
@@ -539,6 +550,8 @@ async def research_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
+    if chat_history_policy.disabled():
+        raise HTTPException(status_code = 404, detail = "Research run not found")
     _require_run(run_id)
     header_after = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
     cursor = max(after or 0, header_after)

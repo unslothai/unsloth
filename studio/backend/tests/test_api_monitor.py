@@ -15,6 +15,39 @@ from core.inference.api_monitor import ApiMonitor, _trim
 import routes.inference as inference_route
 
 
+def test_content_capture_can_be_disabled_without_losing_usage_metrics():
+    receipts = []
+    monitor = ApiMonitor(capture_content = False, terminal_callback = receipts.append)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local",
+        prompt = "private prompt",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.append_reply(entry_id, "private reply")
+    monitor.accumulate_openai_tool_call(
+        entry_id,
+        choice_index = 0,
+        tool_index = 0,
+        call_id = "call-1",
+        name_fragment = "private_tool",
+        arguments_fragment = {"private": "argument"},
+    )
+    monitor.set_reply(entry_id, "replacement private reply")
+    monitor.set_usage(entry_id, prompt_tokens = 4, completion_tokens = 6, total_tokens = 10)
+    monitor.fail(entry_id, "private provider response")
+    monitor.fail(entry_id, "replacement private provider response")
+
+    snapshot = monitor.get(entry_id)
+    assert snapshot["prompt"] == snapshot["reply"] == ""
+    assert snapshot["prompt_preview"] == snapshot["reply_preview"] == ""
+    assert snapshot["error"] == "Request failed"
+    assert snapshot["total_tokens"] == 10
+    assert receipts[0].total_tokens == 10
+
+
 def test_terminal_api_usage_receipt_is_immutable_and_emitted_once():
     receipts = []
     monitor = ApiMonitor(terminal_callback = receipts.append)

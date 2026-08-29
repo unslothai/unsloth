@@ -21,6 +21,7 @@ import routes.inference as routes_module
 from auth.authentication import get_current_subject
 from routes.inference import router
 from utils.api_errors import install_api_error_handlers
+from utils import chat_history_policy
 
 _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 
@@ -71,6 +72,22 @@ def test_persists_clip_to_gallery(monkeypatch):
     assert meta["sample_rate"] == 24000
     assert isinstance(meta["duration_s"], float)
     assert meta["created_at"]
+    assert meta["origin"] == "speech_api"
+
+
+def test_no_history_serves_audio_without_persisting_clip(monkeypatch):
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    cli, calls, saved = _make_client(monkeypatch)
+
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {"input": "do not persist me", "origin": "audio_page"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.content == _WAV
+    assert calls[0]["text"] == "do not persist me"
+    assert saved == []
 
 
 def test_gallery_persist_failure_still_serves_audio(monkeypatch):

@@ -38,6 +38,10 @@ import {
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
+import {
+  chatHistoryDisabledError,
+  isChatHistoryDisabled,
+} from "@/lib/chat-history-policy";
 
 // Thread ids that belong to a temporary/incognito session. A thread is
 // tagged once, at creation (ensureThreadRecord, when the toggle is on), and
@@ -56,7 +60,7 @@ export function markThreadIncognito(threadId: string): void {
 
 /** True for a temporary-session thread, which is deliberately never persisted. */
 export function isThreadIncognito(threadId: string): boolean {
-  return incognitoThreadIds.has(threadId);
+  return isChatHistoryDisabled() || incognitoThreadIds.has(threadId);
 }
 
 type ThreadListArgs = {
@@ -108,6 +112,10 @@ export function trackStoredChatThreadRecord(
   threadId: string,
   createRecord: () => Promise<void>,
 ): Promise<void> {
+  if (isChatHistoryDisabled()) {
+    markThreadIncognito(threadId);
+    return Promise.resolve();
+  }
   const inFlight = initializingThreadRecords.get(threadId);
   if (inFlight) {
     return inFlight;
@@ -481,6 +489,7 @@ async function dexieIsEmpty(): Promise<boolean> {
 }
 
 async function importLegacyChatsIfNeeded(): Promise<void> {
+  if (isChatHistoryDisabled()) return;
   // Session-level cache: repeated sidebar mounts in the same tab share
   // one import. localStorage is NOT consulted -- the server-side ledger
   // is the source of truth, so a studio.db wipe re-triggers the import
@@ -813,6 +822,7 @@ export async function getStoredChatMessage(
 export async function listStoredChatThreads(
   args: ThreadListArgs = {},
 ): Promise<ThreadRecord[]> {
+  if (isChatHistoryDisabled()) return [];
   const importGenerationBeforeRead = legacyChatImportGeneration;
   const [legacyThreads, backendResult] = await Promise.all([
     listLegacyThreads(args),
@@ -883,18 +893,21 @@ export async function listStoredChatThreadsWithMessages(
 export async function listStoredChatProjects(
   args: { includeArchived?: boolean } = {},
 ): Promise<ProjectRecord[]> {
+  if (isChatHistoryDisabled()) return [];
   return listChatProjects(args);
 }
 
 export async function getStoredChatProject(
   projectId: string,
 ): Promise<ProjectRecord | null> {
+  if (isChatHistoryDisabled()) return null;
   return getChatProject(projectId);
 }
 
 export async function createStoredChatProject(
   name: string,
 ): Promise<ProjectRecord> {
+  if (isChatHistoryDisabled()) throw chatHistoryDisabledError();
   const trimmed = name.trim();
   if (!trimmed) {
     throw new Error("Project name is required.");
@@ -914,6 +927,7 @@ export async function updateStoredChatProject(
   projectId: string,
   patch: Partial<ProjectRecord>,
 ): Promise<ProjectRecord> {
+  if (isChatHistoryDisabled()) throw chatHistoryDisabledError();
   return updateChatProject(projectId, {
     ...patch,
     updatedAt: patch.updatedAt ?? Date.now(),
@@ -931,6 +945,7 @@ export async function moveStoredChatItemToProject(
   item: { type: "single" | "compare"; id: string },
   projectId: string | null,
 ): Promise<void> {
+  if (isChatHistoryDisabled()) throw chatHistoryDisabledError();
   const threadIds =
     item.type === "single"
       ? [item.id]
@@ -1013,7 +1028,9 @@ export async function deleteStoredChatThreads(
   // Incognito chats have no history row, but their ids still name sandboxes. Send every id to
   // the backend for file cleanup while limiting Dexie and write-coordinator work to stored chats.
   idsToDelete = Array.from(new Set(idsToDelete));
-  const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
+  const ids = isChatHistoryDisabled()
+    ? idsToDelete
+    : idsToDelete.filter((id) => !isThreadIncognito(id));
   if (idsToDelete.length === 0) return [];
   let kept: string[] = [];
   // the backend tombstones every requested id in the transaction that deletes its row, so a save
@@ -1061,6 +1078,7 @@ export async function deleteStoredChatThreads(
 }
 
 export async function countStoredChats(): Promise<number> {
+  if (isChatHistoryDisabled()) return 0;
   return (await listStoredChatThreads()).length;
 }
 
@@ -1185,6 +1203,16 @@ async function clearStoredChatsWithAdmissionClosed(
 }
 
 export async function buildStoredChatExport(): Promise<ExportedChat> {
+  if (isChatHistoryDisabled()) {
+    return {
+      exportedAt: new Date().toISOString(),
+      version: 1,
+      threadCount: 0,
+      projects: [],
+      threads: [],
+      messages: [],
+    };
+  }
   await importLegacyChatsIfNeeded().catch(() => undefined);
   const [legacyThreads, legacyMessages] = await readLegacyStore<
     [ThreadRecord[], MessageRecord[]]

@@ -10,6 +10,8 @@
  * the next token. The new text is appended to the partial.
  */
 
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
+
 /** Why a turn ended before the model was done. */
 export type IncompleteReason = "length" | "cancelled" | "interrupted";
 
@@ -540,6 +542,10 @@ type Lease = {
 function browserLeaseStorage(): AutoContinueLeaseStorage | null {
   try {
     if (typeof window === "undefined") {
+      return null;
+    }
+    if (isChatHistoryDisabled()) {
+      window.localStorage.removeItem(AUTO_CONTINUE_LEASE_KEY);
       return null;
     }
     return (

@@ -127,6 +127,25 @@ def test_empty_and_invalid_inputs_return_empty(rag_home):
     )
 
 
+def test_no_history_uses_snippet_fallback_without_opening_rag(monkeypatch):
+    from storage import rag_db
+    from utils import chat_history_policy
+
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    monkeypatch.setattr(
+        rag_db,
+        "get_connection",
+        lambda: pytest.fail("no-history web ranking must not open durable RAG storage"),
+    )
+
+    assert web_rank.retrieve_web_chunks(
+        [{"text": "private research page"}],
+        "private research",
+        top_n = 5,
+        min_score = 0.0,
+    ) == ("", [])
+
+
 def test_ephemeral_scope_is_cleaned_up(rag_home):
     pages = [{"text": "LoRA low-rank adaptation fine tuning.", "title": "LoRA", "url": "https://a"}]
     rendered, _ = web_rank.retrieve_web_chunks(pages, "lora", top_n = 5, min_score = 0.0)

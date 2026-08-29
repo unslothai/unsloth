@@ -80,6 +80,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 
 from loggers import get_logger
+from utils import chat_history_policy
 
 logger = get_logger(__name__)
 
@@ -7756,6 +7757,8 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     character one may not: it is the project part that has to be usable, and
     the workspace path comes from the row rather than from the id.
     """
+    if chat_history_policy.disabled():
+        return None
     if not session_id:
         return None
     if not _usable_session_id(session_id) and not session_id.startswith(_PROJECT_SESSION_PREFIX):
@@ -10054,6 +10057,19 @@ EDIT_FILE_TOOL_FULL_ACCESS = {
 
 _FULL_ACCESS_TOOL_BY_NAME["edit_file"] = EDIT_FILE_TOOL_FULL_ACCESS
 
+_DURABLE_SANDBOX_TOOLS = frozenset({"python", "terminal", "edit_file"})
+
+
+def apply_chat_history_tool_policy(tools: list[dict]) -> list[dict]:
+    """Remove tools whose outputs can persist in a conversation sandbox."""
+    if not chat_history_policy.disabled():
+        return tools
+    return [
+        tool
+        for tool in tools
+        if (tool.get("function") or {}).get("name") not in _DURABLE_SANDBOX_TOOLS
+    ]
+
 RENDER_HTML_TOOL = {
     "type": "function",
     "function": {
@@ -10443,6 +10459,8 @@ def execute_tool(
             f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
             "split across smaller calls if the content is long."
         )
+    if chat_history_policy.disabled() and name in _DURABLE_SANDBOX_TOOLS:
+        return "Error: local file tools are unavailable while chat history is disabled."
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _fit_result_to_room(
@@ -15158,6 +15176,8 @@ def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | No
     ``thread_id`` is taken and unused for that reason -- it identifies the chat, which is
     not the thing that has to be separate.
     """
+    if chat_history_policy.disabled():
+        return None
     if not session_id or session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     return ""

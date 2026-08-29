@@ -63,7 +63,7 @@ export async function generateAudio(
   options: GenerateAudioOptions = {},
 ): Promise<GenerateAudioResponse> {
   const { signal, ...sampling } = options;
-  const response = await authFetch("/api/inference/audio/generate", {
+  const response = await authFetch("/api/inference/audio/generate/gallery", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

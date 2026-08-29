@@ -3,6 +3,9 @@
 
 (function () {
   var storageKey = "unsloth.reload-snapshot.v1";
+  var chatHistoryDisabled =
+    window.__UNSLOTH_NO_CHAT_HISTORY__ === true ||
+    document.documentElement.getAttribute("data-unsloth-no-chat-history") === "true";
   var maxSnapshotLength = 3 * 1024 * 1024;
   var maxInlineStylesLength = 2 * 1024 * 1024;
   var maxSnapshotAgeMs = 10 * 1000;
@@ -61,6 +64,10 @@
   }
 
   function readStoredSnapshot() {
+    if (chatHistoryDisabled) {
+      clearStoredSnapshot();
+      return null;
+    }
     try {
       var value = sessionStorage.getItem(storageKey);
       sessionStorage.removeItem(storageKey);
@@ -660,6 +667,7 @@
 
   function saveSnapshot() {
     if (
+      chatHistoryDisabled ||
       document.documentElement.hasAttribute("data-reload-snapshot-private")
     ) {
       clearStoredSnapshot();
@@ -865,6 +873,7 @@
 
   // Fail open: the copy is a nicety, the real document is not.
   try {
+    if (chatHistoryDisabled) clearStoredSnapshot();
     restoreSnapshot();
   } catch (error) {
     removeOverlay();

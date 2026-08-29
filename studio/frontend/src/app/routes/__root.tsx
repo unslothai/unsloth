@@ -17,6 +17,7 @@ import {
   type ChatSearch,
   clearNewChatDraft,
   hydrateModelDisclaimerPreference,
+  isChatHistoryDisabled,
   StopRunningChatsDialog,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -267,6 +268,7 @@ const DEFAULT_DOCUMENT_TITLE = "Unsloth";
 
 function RootLayout() {
   const t = useT();
+  const historyDisabled = isChatHistoryDisabled();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
@@ -470,7 +472,7 @@ function RootLayout() {
     { enabled: routeShortcutEnabled },
   );
   useShortcut("switchToProjects", goTo("/projects"), {
-    enabled: routeShortcutEnabled,
+    enabled: routeShortcutEnabled && !historyDisabled,
   });
   useShortcut("switchToHub", goTo("/hub"), {
     enabled: routeShortcutEnabled,

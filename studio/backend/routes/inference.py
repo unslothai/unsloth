@@ -4356,9 +4356,12 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
     """KB is exclusive, matching retrieval. Thread precedes project so a file just
     attached to this chat survives truncation."""
     from core.rag.store import kb_scope, project_scope, thread_scope
+    from utils import chat_history_policy
 
     if rag_scope.get("kb_id"):
         return [kb_scope(rag_scope["kb_id"])]
+    if chat_history_policy.disabled():
+        return []
     scopes = []
     if rag_scope.get("thread_id"):
         scopes.append(thread_scope(rag_scope["thread_id"]))
@@ -4610,6 +4613,7 @@ async def _select_request_tools(
     (disable_sandbox = bypass_permissions)."""
     from core.inference.tools import (
         ALL_TOOLS,
+        apply_chat_history_tool_policy,
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
     )
@@ -4622,6 +4626,7 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    tools = apply_chat_history_tool_policy(tools)
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -16270,11 +16275,23 @@ def _wav_duration_seconds(wav_bytes: bytes, sample_rate: int) -> float:
         return round(payload_bytes / (2 * sample_rate), 3) if sample_rate else 0.0
 
 
+_AUDIO_PAGE_GALLERY_ORIGIN = "audio_page"
+
+
 def _persist_tts_clip(
-    wav_bytes: bytes, sample_rate: int, text: str, model_name: str, audio_type: Optional[str]
+    wav_bytes: bytes,
+    sample_rate: int,
+    text: str,
+    model_name: str,
+    audio_type: Optional[str],
+    origin: str,
 ) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
     the audio. Blocking, so callers run it off the event loop."""
+    from utils import chat_history_policy
+
+    if chat_history_policy.disabled() and origin != _AUDIO_PAGE_GALLERY_ORIGIN:
+        return None
     from core.inference import audio_gallery
     try:
         return audio_gallery.save(
@@ -16286,6 +16303,7 @@ def _persist_tts_clip(
                 "sample_rate": sample_rate,
                 "duration_s": _wav_duration_seconds(wav_bytes, sample_rate),
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "origin": origin,
             },
         )
     except Exception as exc:  # noqa: BLE001 - log and serve the audio anyway
@@ -16320,11 +16338,12 @@ async def audio_download_plan(
         ) from exc
 
 
-@router.post("/audio/generate")
-async def generate_audio(
+async def _generate_audio_response(
     payload: ChatCompletionRequest,
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str,
+    *,
+    origin: str,
 ):
     """Generate audio (TTS) from the latest user message, as base64 WAV.
     Works with both GGUF (llama-server) and Unsloth/transformers backends."""
@@ -16343,7 +16362,7 @@ async def generate_audio(
         text, payload, request, current_subject
     )
     persisted_clip = await asyncio.to_thread(
-        _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
+        _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type, origin
     )
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
@@ -16365,6 +16384,36 @@ async def generate_audio(
                 }
             ],
         }
+    )
+
+
+@router.post("/audio/generate")
+async def generate_audio(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Generate ephemeral API/chat audio, persisting only when history is enabled."""
+    return await _generate_audio_response(
+        payload,
+        request,
+        current_subject,
+        origin = "audio_api",
+    )
+
+
+@studio_router.post("/audio/generate/gallery")
+async def generate_gallery_audio(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Generate an Audio-page clip whose explicit purpose is gallery storage."""
+    return await _generate_audio_response(
+        payload,
+        request,
+        current_subject,
+        origin = _AUDIO_PAGE_GALLERY_ORIGIN,
     )
 
 
@@ -16551,7 +16600,13 @@ async def openai_audio_speech(
         )
         api_monitor.relabel(monitor_id, model_name)
         await asyncio.to_thread(
-            _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
+            _persist_tts_clip,
+            wav_bytes,
+            sample_rate,
+            body.input,
+            model_name,
+            audio_type,
+            "speech_api",
         )
     return Response(content = wav_bytes, media_type = "audio/wav")
 
@@ -19618,7 +19673,12 @@ async def produce_openai_chat_completions(
                 subject = current_subject,
             )
         try:
-            response = await generate_audio(payload, request)
+            response = await _generate_audio_response(
+                payload,
+                request,
+                current_subject,
+                origin = "chat",
+            )
         except asyncio.CancelledError:
             api_monitor.finish(tts_monitor_id, "cancelled")
             raise
@@ -23299,6 +23359,11 @@ async def list_sandbox_files(
     """
     await _authenticate_header_or_query(request, token)
 
+    from utils import chat_history_policy
+
+    if chat_history_policy.disabled():
+        return {"path": "", "files": []}
+
     from starlette.concurrency import run_in_threadpool
 
     def _resolve_and_list() -> "tuple[str, list[dict]]":
@@ -23332,6 +23397,11 @@ async def reveal_sandbox_dir(
     backend runs on the user's own machine, which is the desktop app.
     """
     await _authenticate_header_or_query(request, token)
+
+    from utils import chat_history_policy
+
+    if chat_history_policy.disabled():
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
 
     from starlette.concurrency import run_in_threadpool
 
@@ -23392,6 +23462,11 @@ async def serve_sandbox_file(
     """
     # ── Authentication (header or query param) ──────────────────
     await _authenticate_header_or_query(request, token)
+
+    from utils import chat_history_policy
+
+    if chat_history_policy.disabled():
+        raise HTTPException(status_code = 404, detail = "Not found")
 
     # ── Filename sanitization + path containment ────────────────
     import stat as _stat
@@ -26528,6 +26603,9 @@ def _select_anthropic_server_tools(
     all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
+    from core.inference.tools import apply_chat_history_tool_policy
+
+    all_tools = apply_chat_history_tool_policy(all_tools)
     if not requested_studio_tools and enabled_tools is None:
         return all_tools
 
@@ -31949,6 +32027,7 @@ async def get_search_image_thumbnail(
 ):
     # Id-only on purpose: no URL parameter, so this cannot become a generic image proxy.
     from core.inference import search_images
+    from utils import chat_history_policy
 
     # fullmatch, as the store does: `$` also matches before a trailing newline.
     if not search_images.IMAGE_ID_RE.fullmatch(image_id or ""):
@@ -31960,7 +32039,11 @@ async def get_search_image_thumbnail(
         content = data,
         media_type = "image/jpeg",
         headers = {
-            "Cache-Control": "private, max-age=86400",
+            "Cache-Control": (
+                "private, no-store"
+                if chat_history_policy.disabled()
+                else "private, max-age=86400"
+            ),
             "X-Content-Type-Options": "nosniff",
             "Content-Disposition": f'inline; filename="{image_id}.jpg"',
         },
@@ -32029,6 +32112,7 @@ async def list_gallery_audio(
     from pydantic import ValidationError
 
     from core.inference import audio_gallery
+    from utils import chat_history_policy
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
@@ -32040,6 +32124,11 @@ async def list_gallery_audio(
 
     # validate inside the pager so offset, limit and has_more count over the accepted domain
     def _valid_gallery_audio(record: dict) -> bool:
+        if (
+            chat_history_policy.disabled()
+            and record.get("origin") != _AUDIO_PAGE_GALLERY_ORIGIN
+        ):
+            return False
         try:
             AudioGalleryItem(**record)
         except ValidationError:
@@ -32071,9 +32160,15 @@ async def get_gallery_audio_file(
     audio_id: str, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference import audio_gallery
+    from utils import chat_history_policy
 
     # ownership-gate the serve like delete/clear, so a guessed stem cannot stream out a foreign file
-    path = await asyncio.to_thread(audio_gallery.owned_audio_path, audio_id)
+    path = await asyncio.to_thread(
+        audio_gallery.owned_audio_path,
+        audio_id,
+        valid = lambda meta: not chat_history_policy.disabled()
+        or meta.get("origin") == _AUDIO_PAGE_GALLERY_ORIGIN,
+    )
     if path is None:
         raise HTTPException(status_code = 404, detail = "Audio not found.")
     from fastapi.responses import FileResponse

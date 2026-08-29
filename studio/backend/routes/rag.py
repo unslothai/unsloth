@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.rag import config, folder_sync, ingestion, retrieval, store
 from storage import rag_db
+from utils import chat_history_policy
 from utils.paths import ensure_dir, rag_uploads_root
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,35 @@ def _doc_view(row: dict) -> dict:
         "managed": bool(row.get("linked_folder_id")),
         "createdAt": row.get("created_at"),
     }
+
+
+def _require_visible_document(conn: sqlite3.Connection, document: dict) -> None:
+    if (
+        chat_history_policy.disabled()
+        and store.document_knowledge_base_id(conn, document) is None
+    ):
+        raise HTTPException(status_code = 404, detail = "Document not found")
+
+
+def _require_visible_document_id(document_id: str) -> None:
+    if not chat_history_policy.disabled():
+        return
+    conn = _rag_connection()
+    try:
+        document = store.get_document(conn, document_id)
+        if document is None:
+            raise HTTPException(status_code = 404, detail = "Document not found")
+        _require_visible_document(conn, document)
+    finally:
+        conn.close()
+
+
+def _require_visible_folder(folder_id: str) -> None:
+    if not chat_history_policy.disabled():
+        return
+    folder = folder_sync.get_folder(folder_id)
+    if folder is not None and folder.get("scope_type") != "knowledge_base":
+        raise HTTPException(status_code = 404, detail = "Linked folder not found")
 
 
 class CreateKbRequest(BaseModel):
@@ -517,7 +547,11 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
     _require_rag()
     conn = _rag_connection()
     try:
-        docs = store.list_documents(conn, store.kb_scope(kb_id))
+        _require_scope_owner("knowledge_base", kb_id, conn)
+        docs = [
+            document if document.get("kb_id") else {**document, "kb_id": kb_id}
+            for document in store.list_documents(conn, store.kb_scope(kb_id))
+        ]
         return {"documents": [_doc_view(d) for d in docs]}
     finally:
         conn.close()
@@ -543,6 +577,7 @@ async def upload_thread_document(
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
+    chat_history_policy.require_enabled()
     _require_rag()
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
     with _rag_unavailable_as_503(stored_path):
@@ -560,6 +595,7 @@ async def upload_thread_document(
 
 @router.get("/threads/{thread_id}/documents")
 def list_thread_documents(thread_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    chat_history_policy.require_enabled()
     _require_rag()
     conn = _rag_connection()
     try:
@@ -592,6 +628,7 @@ async def upload_project_document(
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
+    chat_history_policy.require_enabled()
     _require_rag()
     from storage.studio_db import get_chat_project
 
@@ -628,6 +665,7 @@ async def upload_project_document(
 
 @router.get("/projects/{project_id}/documents")
 def list_project_documents(project_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    chat_history_policy.require_enabled()
     _require_rag()
     _require_scope_owner("project", project_id)
     conn = _rag_connection()
@@ -644,6 +682,7 @@ def link_project_folder(
     payload: LinkFolderRequest,
     subject: str = Depends(get_current_subject),
 ) -> dict:
+    chat_history_policy.require_enabled()
     _require_rag()
     _require_scope_owner("project", project_id)
     return _create_linked_folder("project", project_id, payload)
@@ -663,6 +702,8 @@ def list_linked_folders(
     if scope_type:
         if scope_type not in {"knowledge_base", "project"}:
             raise HTTPException(status_code = 400, detail = "Unsupported linked-folder scope")
+        if scope_type == "project":
+            chat_history_policy.require_enabled()
         scope = (
             store.kb_scope(scope_id)
             if scope_type == "knowledge_base"
@@ -675,14 +716,18 @@ def list_linked_folders(
             scopes = [
                 row["scope"] for row in conn.execute("SELECT DISTINCT scope FROM linked_folders")
             ]
+            if chat_history_policy.disabled():
+                scopes = [scope for scope in scopes if scope.startswith("kb_")]
             kb_names = {row["id"]: row["name"] for row in store.list_kbs(conn)}
         finally:
             conn.close()
-        from storage.studio_db import list_chat_projects
+        project_names = {}
+        if not chat_history_policy.disabled():
+            from storage.studio_db import list_chat_projects
 
-        project_names = {
-            row["id"]: row["name"] for row in list_chat_projects(include_archived = True)
-        }
+            project_names = {
+                row["id"]: row["name"] for row in list_chat_projects(include_archived = True)
+            }
         rows = [row for scope in scopes for row in folder_sync.list_folders(scope)]
         for row in rows:
             names = kb_names if row["scope_type"] == "knowledge_base" else project_names
@@ -698,6 +743,7 @@ def update_linked_folder(
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
+    _require_visible_folder(folder_id)
     try:
         row = folder_sync.update_folder(folder_id, name = payload.name, auto_sync = payload.auto_sync)
     except KeyError as exc:
@@ -722,6 +768,7 @@ def unlink_folder(
 @router.post("/linked-folders/{folder_id}/sync")
 def sync_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
+    _require_visible_folder(folder_id)
     try:
         return {"job": _folder_job_view(folder_sync.get_job(folder_sync.request_sync(folder_id)))}
     except KeyError as exc:
@@ -731,6 +778,7 @@ def sync_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> 
 @router.post("/linked-folders/{folder_id}/rebuild")
 def rebuild_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
+    _require_visible_folder(folder_id)
     try:
         return {
             "job": _folder_job_view(
@@ -748,14 +796,23 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
     _require_rag()
     conn = _rag_connection()
     try:
-        docs = store.list_all_documents(conn)
         kb_names = {kb["id"]: kb["name"] for kb in store.list_kbs(conn)}
+        docs = store.list_all_documents(conn)
+        if chat_history_policy.disabled():
+            visible_docs = []
+            for document in docs:
+                kb_id = store.document_knowledge_base_id(conn, document)
+                if kb_id is not None:
+                    visible_docs.append({**document, "kb_id": kb_id})
+            docs = visible_docs
     finally:
         conn.close()
 
-    from storage.studio_db import list_chat_projects
+    project_names = {}
+    if not chat_history_policy.disabled():
+        from storage.studio_db import list_chat_projects
 
-    project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived = True)}
+        project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived = True)}
 
     out = []
     for doc in docs:
@@ -801,6 +858,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
         row = ingestion.get_job_status(job_id)
     if row is None:
         raise HTTPException(status_code = 404, detail = "Job not found")
+    _require_visible_document_id(row["document_id"])
     return {
         "id": row["id"],
         "documentId": row["document_id"],
@@ -817,6 +875,10 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
 @router.get("/jobs/{job_id}/events", include_in_schema = False)
 def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> StreamingResponse:
     _require_rag()
+    row = ingestion.get_job_status(job_id)
+    if row is None:
+        raise HTTPException(status_code = 404, detail = "Job not found")
+    _require_visible_document_id(row["document_id"])
 
     def gen():
         try:
@@ -864,6 +926,7 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     row = folder_sync.get_job(job_id)
     if row is None:
         raise HTTPException(status_code = 404, detail = "Folder sync job not found")
+    _require_visible_folder(row["folder_id"])
     return _folder_job_view(row)
 
 
@@ -874,8 +937,10 @@ def folder_job_events(
     job_id: str, subject: str = Depends(get_current_subject)
 ) -> StreamingResponse:
     _require_rag()
-    if folder_sync.get_job(job_id) is None:
+    row = folder_sync.get_job(job_id)
+    if row is None:
         raise HTTPException(status_code = 404, detail = "Folder sync job not found")
+    _require_visible_folder(row["folder_id"])
 
     def gen():
         for event in folder_sync.job_events(job_id):
@@ -902,6 +967,8 @@ def folder_job_events(
 
 @router.post("/search")
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
+    if not payload.kb_id:
+        chat_history_policy.require_enabled()
     _require_rag()
     # One connection for the whole request; the ownership check reads a single row.
     conn = _rag_connection()
@@ -1006,6 +1073,7 @@ def preview_target(
         doc = store.get_visible_document(conn, document_id)
         if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
+        _require_visible_document(conn, doc)
         _require_document_owner(conn, doc)
         ext = os.path.splitext(doc["filename"])[1].lower()
         out = {
@@ -1053,6 +1121,7 @@ def document_file_url(
         doc = store.get_visible_document(conn, document_id)
         if doc is None or not doc.get("stored_path"):
             raise HTTPException(status_code = 404, detail = "Document file not available")
+        _require_visible_document(conn, doc)
         _require_document_owner(conn, doc)
     finally:
         conn.close()
@@ -1074,6 +1143,7 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     try:
         doc = store.get_visible_document(conn, document_id)
         if doc is not None:
+            _require_visible_document(conn, doc)
             _require_document_owner(conn, doc)
     finally:
         conn.close()

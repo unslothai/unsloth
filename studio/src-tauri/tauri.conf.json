@@ -21,6 +21,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Unsloth",
         "width": 760,
         "height": 560,
