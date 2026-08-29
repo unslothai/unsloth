@@ -47,6 +47,67 @@ from core.inference.offload_layout import (
 GIB = 1024**3
 MIB = 1024**2
 
+# Nominal ggml bits-per-weight, by quant type. Standard block layouts: a type's
+# block size divided by its bytes per block.
+#
+# Used ONLY by :func:`moe_down_up_bpw_ratio`, which decides a granularity, never
+# to size anything. A byte count always comes from the tensor table.
+_NOMINAL_BPW: dict[str, float] = {
+    "Q2_K": 2.5625, "Q3_K": 3.4375, "Q4_K": 4.5, "Q5_K": 5.5, "Q6_K": 6.5625,
+    "Q8_0": 8.5, "Q4_0": 4.5, "Q4_1": 5.0, "Q5_0": 5.5, "Q5_1": 6.0,
+    "IQ2_XXS": 2.0625, "IQ2_XS": 2.3125, "IQ2_S": 2.5, "IQ3_XXS": 3.0625,
+    "IQ3_S": 3.4375, "IQ4_NL": 4.5, "IQ4_XS": 4.25, "F16": 16.0, "BF16": 16.0,
+    "F32": 32.0,
+}
+
+# Above this ratio the every-block ladder beat the whole-FFN planner on every
+# MoE measured; below it, it lost or went flat. See
+# ``PlanOptions.granularity_from_quant`` for the cells and the caveats.
+_LADDER_BPW_THRESHOLD = 1.40
+
+
+def moe_down_up_bpw_ratio(layout) -> Optional[float]:
+    """How much denser ``ffn_down`` is than ``ffn_up``, in bits per weight.
+
+    Returns None when the layout is not a graded MoE or the quant types were not
+    recovered, which is the "no opinion" answer every caller must handle: the
+    types come from the GGUF tensor table and an architecture whose tails match
+    no class pattern leaves them empty.
+
+    Computed from the TYPE rather than from bytes over elements because the
+    layout carries types and not element counts. Checked against the five
+    model-quants measured end to end, where nominal and measured bits-per-weight
+    agree to within 0.025 and, critically, put every model on the same side of
+    :data:`_LADDER_BPW_THRESHOLD`:
+
+        gemma-26B Q2   measured 1.937   nominal 1.946
+        gemma-26B Q3   measured 1.494   nominal 1.469
+        Qwen35B   Q2   measured 1.349   nominal 1.324
+        gemma-26B Q4   measured 1.341   nominal 1.333
+        Qwen35B   Q4   measured 1.231   nominal 1.222
+
+    Note the middle pair SWAPS order between the two columns. That is a real
+    limitation and it is why the threshold sits at 1.40 rather than hard against
+    either point: the rule separates the group, and does not resolve two models
+    0.008 apart.
+    """
+    if not getattr(layout, "is_moe", False):
+        return None
+    downs, ups = [], []
+    for b in getattr(layout, "blocks", ()):
+        d = _NOMINAL_BPW.get((b.ffn_down_type or "").upper())
+        u = _NOMINAL_BPW.get((b.ffn_up_type or "").upper())
+        if d and u:
+            downs.append(d)
+            ups.append(u)
+    if not downs:
+        return None
+    # Mean over blocks: a mixed quant gives different types to different blocks,
+    # and the decision is about the model, not about one layer.
+    mean_down = sum(downs) / len(downs)
+    mean_up = sum(ups) / len(ups)
+    return (mean_down / mean_up) if mean_up else None
+
 
 class ContextPolicy(Enum):
     """Whether the planner may shrink a context the user asked for.
@@ -174,6 +235,36 @@ class PlanOptions:
     # which reads much less like an implementation detail once the split cost is
     # on the table.
     ffn_granularity: FfnGranularity = FfnGranularity.BOUNDARY
+    # Pick the granularity from the model's quant types instead of taking
+    # ``ffn_granularity`` as given. OFF, and it should stay off until the
+    # evidence is better than it is.
+    #
+    # WHAT IT ENCODES. The every-block ladder spills ``ffn_down`` and keeps
+    # ``ffn_up``/``gate_up`` resident. It wins when the tensor it MOVES is much
+    # denser in bits per weight than the one it KEEPS, because it then frees
+    # more VRAM per unit of host work. Ratio of down bpw to up bpw against the
+    # measured ladder-over-coarse generation ratio, six model-quants, two
+    # families, five hosts:
+    #
+    #     1.93  gemma-26B Q2   1.27-1.33x   WIN
+    #     1.49  gemma-26B Q3   1.34x        WIN
+    #     1.35  Qwen35B   Q2   0.98-1.02x   flat
+    #     1.34  gemma-26B Q4   0.93-0.96x   LOSS
+    #     1.28  Qwen35B   Q6   0.954, 0.994 LOSS
+    #     1.23  Qwen35B   Q4   0.88-0.95x   LOSS
+    #
+    # Monotonic, no inversion, and it holds inside each family taken alone, so
+    # it is not a family effect wearing a ratio as a disguise.
+    #
+    # WHY IT IS OFF. Six points with a threshold located only to within
+    # 1.35-1.49 is a candidate, not a default. The rule is also MoE-only: the
+    # two dense models measured (gemma-31B at 1.30 and 1.32) both WIN, which is
+    # the wrong side of any threshold fitted here, and they have a third rung
+    # the MoE case does not. Dense keeps BOUNDARY regardless.
+    #
+    # WHAT WOULD FALSIFY IT. An MoE landing in the untested 1.35-1.49 gap that
+    # comes out on the wrong side, or any MoE above 1.5 that loses.
+    granularity_from_quant: bool = False
     # Which matrix goes first. llama.cpp's order (common/fit.cpp:407-440), and
     # UNMEASURED by us -- see :class:`SpillClass`. Exposed so the benchmark can
     # try the permutations rather than inheriting an assumption forever.
@@ -396,7 +487,7 @@ def _grade_the_boundary_block(
     when dropping the block's smallest rung would reopen the deficit -- in which
     case the whole block was needed and there is nothing to trim.
     """
-    if opts.ffn_granularity is not FfnGranularity.BOUNDARY:
+    if _effective_granularity(layout, opts) is not FfnGranularity.BOUNDARY:
         return taken, freed
     coarse = [u for u in taken if u.cls is None]
     if not coarse:
@@ -472,6 +563,30 @@ def _rung_description(units: Sequence[SpillUnit], layout: ModelLayout) -> str:
     return " plus ".join(parts) if parts else "nothing"
 
 
+def _effective_granularity(layout: ModelLayout, opts: PlanOptions) -> FfnGranularity:
+    """The granularity actually used, after the optional quant-type rule.
+
+    Resolved in ONE place because two sites consume it -- rung selection and the
+    boundary grading -- and a rule applied at one but not the other would emit a
+    plan whose rungs and whose boundary block disagree about what mode it is in.
+
+    Returns ``opts.ffn_granularity`` unchanged unless
+    ``granularity_from_quant`` is set AND the layout is a MoE whose quant types
+    were recovered. Dense models keep the shipped default even with the flag on:
+    the two dense models measured both win with the ladder at ratios that would
+    put them below the threshold, so the rule is known not to describe them.
+    """
+    if not opts.granularity_from_quant:
+        return opts.ffn_granularity
+    ratio = moe_down_up_bpw_ratio(layout)
+    if ratio is None:
+        return opts.ffn_granularity
+    return (
+        FfnGranularity.ALL if ratio >= _LADDER_BPW_THRESHOLD
+        else FfnGranularity.BOUNDARY
+    )
+
+
 def _rung_classes(layout: ModelLayout, opts: PlanOptions) -> tuple[Optional[SpillClass], ...]:
     """The per-block rungs, cheapest first, for this layout and these options.
 
@@ -481,7 +596,7 @@ def _rung_classes(layout: ModelLayout, opts: PlanOptions) -> tuple[Optional[Spil
     """
     spillable = [b for b in layout.blocks if b.spillable_bytes > 0]
     graded = bool(spillable) and all(b.graded for b in spillable)
-    if opts.ffn_granularity is FfnGranularity.ALL and graded:
+    if _effective_granularity(layout, opts) is FfnGranularity.ALL and graded:
         rungs: list[Optional[SpillClass]] = [
             cls for cls in opts.ffn_rung_order if cls in FFN_SPILL_CLASSES
         ]

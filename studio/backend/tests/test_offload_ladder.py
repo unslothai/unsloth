@@ -39,6 +39,8 @@ from core.inference.offload_layout import (
 )
 from core.inference.offload_planner import (
     FfnGranularity,
+    _effective_granularity,
+    moe_down_up_bpw_ratio,
     PlanOptions,
     plan_placement,
     plan_to_args,
@@ -797,3 +799,103 @@ def test_the_selection_matches_an_independent_minimal_walk():
         checked += 1
 
     assert checked >= 5, f"only {checked} budgets spilled; the sweep is vacuous"
+
+
+def _typed_moe(down_type: str, up_type: str, n_blocks: int = 40) -> ModelLayout:
+    """A graded MoE carrying real GGUF quant type names on its rungs."""
+    base = graded_moe(n_blocks)
+    return ModelLayout(
+        **{
+            **base.__dict__,
+            "blocks": tuple(
+                BlockLayout(
+                    index = b.index,
+                    spillable_bytes = b.spillable_bytes,
+                    resident_bytes = b.resident_bytes,
+                    ffn_down_bytes = b.ffn_down_bytes,
+                    ffn_up_bytes = b.ffn_up_bytes,
+                    ffn_gate_bytes = b.ffn_gate_bytes,
+                    dense_ffn_bytes = b.dense_ffn_bytes,
+                    attn_bytes = b.attn_bytes,
+                    ffn_down_type = down_type,
+                    ffn_up_type = up_type,
+                )
+                for b in base.blocks
+            ),
+        }
+    )
+
+
+def test_the_quant_rule_reproduces_every_measured_moe_verdict():
+    """The bits-per-weight rule, scored against the cells that produced it.
+
+    Ladder over coarse generation ratio, six MoE model-quants, two families,
+    five hosts. WIN means the every-block ladder (ALL) beat the whole-FFN
+    planner; anything else means it did not and BOUNDARY should be kept:
+
+        down/up   model         measured        verdict
+        1.93      gemma-26B Q2  1.27-1.33x      ALL
+        1.49      gemma-26B Q3  1.34x           ALL
+        1.35      Qwen35B   Q2  0.98-1.02x      BOUNDARY (flat)
+        1.34      gemma-26B Q4  0.93-0.96x      BOUNDARY
+        1.28      Qwen35B   Q6  0.954, 0.994    BOUNDARY
+        1.23      Qwen35B   Q4  0.88-0.95x      BOUNDARY
+
+    These are labels from hardware, so this test is the rule's actual evidence
+    rather than a restatement of its implementation. It uses NOMINAL bits per
+    weight from the type names, which is what a real launch has available; the
+    measured GGUF ratios differ by up to 0.025 and land on the same side of the
+    threshold, which is the property that makes the type-name version usable.
+    """
+    cases = [
+        ("IQ4_NL", "IQ2_XS", FfnGranularity.ALL),       # gemma-26B Q2
+        ("IQ4_NL", "IQ3_XXS", FfnGranularity.ALL),      # gemma-26B Q3
+        ("IQ3_XXS", "IQ2_XS", FfnGranularity.BOUNDARY),  # Qwen35B Q2, flat
+        ("Q5_1", "Q4_K", FfnGranularity.BOUNDARY),       # gemma-26B Q4
+        ("Q6_K", "Q5_K", FfnGranularity.BOUNDARY),       # Qwen35B Q6
+        ("Q5_K", "Q4_K", FfnGranularity.BOUNDARY),       # Qwen35B Q4
+    ]
+    for down, up, expected in cases:
+        layout = _typed_moe(down, up)
+        chosen = _effective_granularity(
+            layout, opts(granularity_from_quant = True)
+        )
+        ratio = moe_down_up_bpw_ratio(layout)
+        assert chosen is expected, (
+            f"{down}/{up} ratio {ratio:.3f} chose {chosen} not {expected}"
+        )
+
+
+def test_the_quant_rule_is_off_by_default_and_changes_no_plan():
+    """OFF unless asked for. Six points do not earn a default."""
+    layout = _typed_moe("IQ4_NL", "IQ2_XS")  # the strongest ALL case there is
+    assert PlanOptions().granularity_from_quant is False
+    assert _effective_granularity(layout, shipped()) is FfnGranularity.BOUNDARY
+
+    off = plan_placement(layout, [16 * GIB], 94 * GIB, 8192, opts = shipped())
+    forced = plan_placement(
+        layout, [16 * GIB], 94 * GIB, 8192,
+        opts = shipped(ffn_granularity = FfnGranularity.BOUNDARY),
+    )
+    assert moved_bytes(off, layout) == moved_bytes(forced, layout)
+
+
+def test_the_quant_rule_abstains_rather_than_guessing():
+    """No types, or a dense model, means no opinion -- not a default of ALL.
+
+    Dense is excluded deliberately and not by oversight: both dense models
+    measured (gemma-31B at ratios 1.30 and 1.32) WIN with the ladder, which is
+    the wrong side of a threshold fitted to MoE, so the rule is known not to
+    describe them. Silently applying it there would use evidence against itself.
+    """
+    untyped = graded_moe()
+    assert moe_down_up_bpw_ratio(untyped) is None
+    assert _effective_granularity(
+        untyped, opts(granularity_from_quant = True)
+    ) is FfnGranularity.ALL  # falls through to whatever opts asked for
+
+    dense = ModelLayout(**{**_typed_moe("Q3_K", "Q2_K").__dict__, "is_moe": False})
+    assert moe_down_up_bpw_ratio(dense) is None
+    assert _effective_granularity(
+        dense, shipped(granularity_from_quant = True)
+    ) is FfnGranularity.BOUNDARY
