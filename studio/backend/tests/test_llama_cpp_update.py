@@ -185,14 +185,17 @@ def test_status_managed_source_offers_refresh_when_no_prebuilt(monkeypatch, tmp_
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
     _no_prebuilt(monkeypatch)
     monkeypatch.setattr(
-        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+        upd,
+        "_resolve_source_build_for_host",
+        lambda *, force_refresh = False: {
             "source_ref": "b11000",
             "compatibility_upstream_tag": "b11000",
-        }
+        },
     )
     monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9000)
     monkeypatch.setattr(
-        upd, "_managed_source_git_behind",
+        upd,
+        "_managed_source_git_behind",
         lambda *a, **k: None,
     )
     st = upd.get_update_status()
@@ -211,9 +214,11 @@ def test_status_managed_source_git_behind_offers_refresh(monkeypatch, tmp_path):
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
     _no_prebuilt(monkeypatch)
     monkeypatch.setattr(
-        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+        upd,
+        "_resolve_source_build_for_host",
+        lambda *, force_refresh = False: {
             "source_ref": "master",
-        }
+        },
     )
     monkeypatch.setattr(upd, "_installed_build_number", lambda b: 11000)
     monkeypatch.setattr(
@@ -235,9 +240,11 @@ def test_status_managed_source_git_current_no_refresh(monkeypatch, tmp_path):
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
     _no_prebuilt(monkeypatch)
     monkeypatch.setattr(
-        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+        upd,
+        "_resolve_source_build_for_host",
+        lambda *, force_refresh = False: {
             "source_ref": "master",
-        }
+        },
     )
     monkeypatch.setattr(upd, "_installed_build_number", lambda b: 11000)
     monkeypatch.setattr(
@@ -263,9 +270,11 @@ def test_start_update_managed_source_refresh_runs_installer(monkeypatch, tmp_pat
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
     _no_prebuilt(monkeypatch)
     monkeypatch.setattr(
-        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+        upd,
+        "_resolve_source_build_for_host",
+        lambda *, force_refresh = False: {
             "source_ref": "b11000",
-        }
+        },
     )
     monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
     monkeypatch.setattr(upd, "_managed_source_git_behind", lambda *a, **k: None)

@@ -175,10 +175,7 @@ def _git_rev(cwd: Path, rev: str) -> Optional[str]:
 
 
 def _managed_source_git_behind(
-    install_root: Path,
-    *,
-    desired_ref: str,
-    force_fetch: bool,
+    install_root: Path, *, desired_ref: str, force_fetch: bool
 ) -> Optional[tuple[bool, str, str]]:
     """Return ``(behind, installed_short, desired_short)`` for a git checkout.
 
@@ -219,9 +216,7 @@ def _managed_source_git_behind(
     return (head != remote, head[:7], remote[:7])
 
 
-def _source_build_refresh_when_no_prebuilt(
-    binary: str, *, force_refresh: bool
-) -> Optional[dict]:
+def _source_build_refresh_when_no_prebuilt(binary: str, *, force_refresh: bool) -> Optional[dict]:
     """Offer refreshing a managed source tree when no prebuilt matches the host.
 
     Blackwell / other hosts that fall back to compiling llama.cpp previously got
@@ -363,9 +358,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     falls through to the no-marker default (unsupported)."""
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
-        return _source_build_refresh_when_no_prebuilt(
-            binary, force_refresh = force_refresh
-        )
+        return _source_build_refresh_when_no_prebuilt(binary, force_refresh = force_refresh)
     # llama_tag is the upstream bNNNN base whose numeric part matches the build
     # field in --version; release_tag is the full tag, either a same-base mix
     # (bNNNN-mix-<sha>) or a fork wrapper (e.g. v1.0). Compare the numeric base
@@ -1067,11 +1060,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             }
         res = _resolve_prebuilt_for_host()
         install_dir = _llama_install_root(binary)
-        repo = (
-            src.get("published_repo")
-            or (res or {}).get("repo")
-            or DEFAULT_PUBLISHED_REPO
-        )
+        repo = src.get("published_repo") or (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = src.get("installed_tag")
         # Source refresh with no matching prebuilt: leave asset unset so the
         # installer falls through to compiling the resolved source plan.

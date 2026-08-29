@@ -14991,11 +14991,9 @@ class LlamaCppBackend:
             if LlamaCppBackend._is_unsloth_managed_binary(binary):
                 try:
                     from utils.llama_cpp_freshness import read_install_marker
-
                     if read_install_marker(binary) is None:
                         return (
-                            base
-                            + " Your llama.cpp was built from source and may be "
+                            base + " Your llama.cpp was built from source and may be "
                             "missing this architecture. Use Update llama.cpp "
                             "(or rebuild the managed source tree) after upgrading "
                             "Unsloth, then reload the model."

@@ -140,9 +140,7 @@ class TestUnsupportedNonDiffusionArchitecture:
         monkeypatch.setattr(
             LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda b: True)
         )
-        monkeypatch.setattr(
-            "utils.llama_cpp_freshness.read_install_marker", lambda b: None
-        )
+        monkeypatch.setattr("utils.llama_cpp_freshness.read_install_marker", lambda b: None)
         out = "error loading model: unknown model architecture: 'qwen4exp'"
         msg = _classify(out, "/models/x.gguf", "local/x", None, str(binary))
         assert "qwen4exp" in msg
