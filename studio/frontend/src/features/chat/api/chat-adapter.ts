@@ -5306,21 +5306,6 @@ export function createOpenAIStreamAdapter(
       >();
       // Calls a boundary split off whose own document has not closed yet.
       const splitTailPartIds = new Set<string>();
-      // Split calls the backend has already withheld. Their card stays until the
-      // final sweep, but no event will ever reach it, so the next round's id-less
-      // delta has to open its own call instead of continuing this one.
-      const retiredSplitTailIds = new Set<string>();
-      const retireWithheldSplitCalls = (): void => {
-        for (const part of toolCallParts) {
-          if (
-            splitTailPartIds.has(part.toolCallId) &&
-            part.result === undefined &&
-            toolArgumentBoundaries.get(part.toolCallId)?.isOpen()
-          ) {
-            retiredSplitTailIds.add(part.toolCallId);
-          }
-        }
-      };
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
           toolPartIdByBackendId,
@@ -6492,12 +6477,6 @@ export function createOpenAIStreamAdapter(
                   toolEvent.provenance,
                 );
                 if (toolEvent.type === "tool_start") {
-                  // The loop only runs a call once the provider turn is over, so
-                  // this is the boundary a provider that omits finish_reason
-                  // never gives us. Hosted tool events arrive on the same shape
-                  // but come from providers that stamp real ids, which never
-                  // split.
-                  retireWithheldSplitCalls();
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const approvalId = (toolEvent.approval_id as string) || "";
@@ -6913,11 +6892,6 @@ export function createOpenAIStreamAdapter(
 
               if (chunk.choices?.[0]?.finish_reason) {
                 codexRoundToolCallIds = [];
-                // The provider turn is over, so the backend now decides which
-                // split calls it withholds. Retire them before the next round.
-                // Not the only boundary: a provider may omit finish_reason and
-                // the backend runs the turn anyway, so tool_start retires too.
-                retireWithheldSplitCalls();
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
               // wrap inline as <think>...</think> for parseAssistantContent.
@@ -6992,15 +6966,12 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // A card the backend already closed, or one it withheld, takes
-                  // no more fragments: the next delta in its slot is the next
-                  // round's call, whatever its scan was left holding.
+                  // A card the backend already closed takes no more fragments:
+                  // the next delta in its slot is the next round's call, whatever
+                  // its scan was left holding. A split call it withheld is closed
+                  // too, so no boundary has to be guessed at here.
                   const matched =
-                    slotPart &&
-                    slotPart.result === undefined &&
-                    !retiredSplitTailIds.has(slotPart.toolCallId)
-                      ? slotPart
-                      : undefined;
+                    slotPart?.result === undefined ? slotPart : undefined;
 
                   const argsFragment = call.function?.arguments ?? "";
                   const nameFragment = call.function?.name ?? "";
@@ -7428,7 +7399,8 @@ export function createOpenAIStreamAdapter(
         closeReasoningContent();
         settleFirstTokenOk();
 
-        // The backend withholds unfinished split calls, so remove their open cards.
+        // A split call the backend withheld is closed by its own unrun card. This
+        // is the net for a stream that ends before that lands.
         for (let i = toolCallParts.length - 1; i >= 0; i -= 1) {
           const part = toolCallParts[i];
           if (

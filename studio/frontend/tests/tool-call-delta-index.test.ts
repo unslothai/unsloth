@@ -24,9 +24,10 @@ interface DeltaFragment {
 }
 
 /** The adapter's tool_start branch, which replaces argsText with the arguments
- * the backend parsed out of it. */
+ * the backend parsed out of it. An unrun card carries `{}`. */
 interface ToolStartEvent {
   toolStart: string;
+  arguments?: unknown;
 }
 
 /** The adapter's tool_end branch, which puts a result on the card. */
@@ -34,16 +35,7 @@ interface ToolEndEvent {
   toolEnd: string;
 }
 
-/** The provider-turn boundary, where the backend decides what it withholds. */
-interface RoundEndEvent {
-  finishReason: string;
-}
-
-type StreamEvent =
-  | DeltaFragment
-  | ToolStartEvent
-  | ToolEndEvent
-  | RoundEndEvent;
+type StreamEvent = DeltaFragment | ToolStartEvent | ToolEndEvent;
 
 /** The adapter's parseStreamedToolCallArgs, used by the tool_start mirror. */
 function parseArgs(raw: string): unknown {
@@ -71,30 +63,19 @@ function accumulate(
   const scans = new Map<string, ToolCallArgumentBoundaries>();
   const providerIds = new Set<string>();
   const splitTails = new Set<string>();
-  const retired = new Set<string>();
   const withheld = (part: AccumulatedPart) =>
     splitTails.has(part.toolCallId) &&
     part.result === undefined &&
     scans.get(part.toolCallId)?.isOpen() === true;
   for (const event of fragments) {
-    if ("finishReason" in event) {
-      for (const part of parts) {
-        if (withheld(part)) retired.add(part.toolCallId);
-      }
-      continue;
-    }
     if ("toolStart" in event) {
-      // The loop runs a call only once the provider turn is over, so tool_start
-      // is a round boundary too, and the one a provider that omits
-      // finish_reason still gives us.
-      for (const part of parts) {
-        if (withheld(part)) retired.add(part.toolCallId);
-      }
       const at = parts.findIndex((part) => part.toolCallId === event.toolStart);
       if (at !== -1) {
         parts[at] = {
           ...parts[at],
-          argsText: JSON.stringify(parseArgs(parts[at].argsText)),
+          argsText: JSON.stringify(
+            "arguments" in event ? event.arguments : parseArgs(parts[at].argsText),
+          ),
         };
       }
       continue;
@@ -112,12 +93,7 @@ function accumulate(
       fragment.index,
     );
     const slotPart = target === -1 ? undefined : parts[target];
-    const matched =
-      slotPart &&
-      slotPart.result === undefined &&
-      !retired.has(slotPart.toolCallId)
-        ? slotPart
-        : undefined;
+    const matched = slotPart?.result === undefined ? slotPart : undefined;
     const name = fragment.name ?? "";
     let scan = matched ? scans.get(matched.toolCallId) : undefined;
     if (!scan) {
@@ -722,48 +698,29 @@ test("a name fork left unfinished is swept like any other split tail", () => {
   );
 });
 
-// The backend withheld the tail and ran only the first call, so the next round
-// has to open its own card. Continuing the tail fed the new arguments into a
-// call no event ever reaches, and the sweep then deleted them.
+// The backend withheld the tail and closed its card with an unrun pair, so the
+// next round opens its own call. Before that close existed the tail stayed a
+// live match and swallowed the next round's arguments, which the sweep deleted.
 test("a withheld split tail does not take the next round's arguments", () => {
   const parts = accumulate(
     [
       { index: 0, name: "web_search", arguments: '{"a":1}{"b":' },
-      { finishReason: "tool_calls" },
-      { index: 0, name: "web_search", arguments: '{"query":"second"}' },
-    ],
-    true,
-  );
-
-  // tool_call_1 is the withheld tail: its spelling stays spoken for, which is
-  // what keeps the next round on the tool_call_2 the backend mints for it.
-  assert.deepEqual(
-    parts.map((part) => [part.toolCallId, part.argsText]),
-    [
-      ["tool_call_0", '{"a":1}'],
-      ["tool_call_2", '{"query":"second"}'],
-    ],
-  );
-});
-
-// The backend consumes each turn's [DONE] and runs the turn whether or not the
-// provider ever sent a finish_reason, so the boundary cannot depend on that
-// field alone. tool_start is emitted only after the turn, so it stands in.
-test("a withheld split tail is retired without a finish_reason", () => {
-  const parts = accumulate(
-    [
-      { index: 0, name: "web_search", arguments: '{"a":1}{"b":' },
-      { toolStart: "tool_call_0" },
+      { toolStart: "tool_call_1", arguments: {} },
+      { toolEnd: "tool_call_1" },
+      { toolStart: "tool_call_0", arguments: { a: 1 } },
       { toolEnd: "tool_call_0" },
       { index: 0, name: "web_search", arguments: '{"query":"second"}' },
     ],
     true,
   );
 
+  // tool_call_1 is the withheld tail. Its spelling stays spoken for, which is
+  // what keeps the next round on the tool_call_2 the backend mints for it.
   assert.deepEqual(
     parts.map((part) => [part.toolCallId, part.argsText]),
     [
       ["tool_call_0", '{"a":1}'],
+      ["tool_call_1", "{}"],
       ["tool_call_2", '{"query":"second"}'],
     ],
   );

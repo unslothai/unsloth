@@ -104,6 +104,11 @@ _TOOL_TRUNCATED = (
     "output limit."
 )
 
+_TOOL_UNFINISHED = (
+    "Unsloth did not execute this tool call because the provider never finished writing its "
+    "arguments."
+)
+
 # Card text for a call the controller skipped. The client already painted a card
 # from the provider's own tool_calls delta, so it needs a short result; the long
 # model-facing nudge stays in the conversation.
@@ -702,6 +707,15 @@ class _Turn:
             call["card_id"] = _mint_streamed_tool_call_id(streamed, index)
             streamed.add(call["card_id"])
 
+    def withheld(self) -> list[dict[str, Any]]:
+        """Split calls whose own document never closed, so ``calls`` drops them."""
+        return [
+            self.by_index[key]
+            for key in self.order
+            if key in self.split_keys
+            and self.boundaries.get(key, _EMPTY_BOUNDARIES).is_open()
+        ]
+
     def calls(
         self,
         taken: set[str] | None = None,
@@ -1273,6 +1287,30 @@ async def stream_with_studio_tools(
             break
 
         round_id += 1
+        # A call this loop split off and will not run was still relayed to the
+        # client as part of the provider's own delta, so a card is already open
+        # for it. Close it the way every other unrun call is closed: nothing
+        # else ever names it again, and a client left to notice that on its own
+        # has to guess at the provider turn boundary to do it.
+        for withheld_call in turn.withheld():
+            withheld_id = withheld_call.get("card_id")
+            withheld_function = withheld_call.get("function")
+            withheld_name = (
+                withheld_function.get("name") if isinstance(withheld_function, dict) else ""
+            )
+            if not isinstance(withheld_id, str) or not withheld_id:
+                continue
+            if not isinstance(withheld_name, str):
+                withheld_name = ""
+            for card_line in _unrun_call_card(
+                tool_name = withheld_name,
+                tool_call_id = withheld_id,
+                # Cut off mid-write, so there is nothing well formed to show.
+                arguments = {},
+                result = _TOOL_UNFINISHED,
+                provenance = _unrun_provenance(withheld_name, round_id),
+            ):
+                yield card_line
         assistant_tool_calls: list[dict[str, Any]] = []
         tool_messages: list[dict[str, Any]] = []
         noop_messages: list[dict[str, Any]] = []
