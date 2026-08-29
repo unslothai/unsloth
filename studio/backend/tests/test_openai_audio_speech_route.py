@@ -28,7 +28,7 @@ _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject):
+    async def _fake_generate(text, payload, request, current_subject, **_kwargs):
         calls.append({"text": text, "payload": payload})
         if generate is not None:
             return await generate(text)
@@ -291,27 +291,18 @@ def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(mon
     assert [clip["id"] for clip in gallery.list_audio()] == [saved["id"]]
 
 
-def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
-    """Without a Python tokenizer (GGUF TTS), the estimate is by character class. Cutting
-    at U+2E7F caught CJK and emoji but billed Arabic, Cyrillic, Hebrew and the Indic
-    scripts at a third of a token each, so a long prompt in any of them passed the guard
-    and then overflowed the loaded context during generation."""
+def test_unreachable_subprocess_tokenizers_use_a_conservative_byte_budget():
     estimate = routes_module._prompt_token_estimate
 
-    for label, text in (
-        ("arabic", "مرحبا بالعالم " * 40),
-        ("cyrillic", "Привет мир " * 40),
-        ("hebrew", "שלום עולם " * 40),
-        ("devanagari", "नमस्ते दुनिया " * 40),
+    for text in (
+        "a " * 100,
+        "مرحبا بالعالم " * 40,
+        "Привет мир " * 40,
+        "שלום עולם " * 40,
+        "नमस्ते दुनिया " * 40,
+        "你好世界" * 50,
     ):
-        assert estimate(text) >= len(text.replace(" ", "")), label
-
-    # Latin is still counted at the cheaper rate, so ordinary English is not rejected.
-    english = "the quick brown fox jumps over the lazy dog " * 40
-    assert estimate(english) < len(english) // 2
-
-    # And CJK, which already worked, is unchanged.
-    assert estimate("你好世界" * 50) >= 200
+        assert estimate(text) == len(text.encode("utf-8"))
 
 
 # ── External connection proxying (provider_id) ───────────────────
@@ -368,6 +359,7 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
             "provider_id": "conn-1",
             "model": "kokoro",
             "voice": "af_heart",
+            "instructions": "Speak warmly.",
         },
     )
     assert resp.status_code == 200
@@ -379,6 +371,7 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
     assert created[0]["provider_type"] == "custom"
     assert speech_calls[0]["model"] == "kokoro"
     assert speech_calls[0]["voice"] == "af_heart"
+    assert speech_calls[0]["instructions"] == "Speak warmly."
     rows = api_monitor.snapshot(include_details = False)
     assert len(rows) == 1
     assert rows[0]["endpoint"] == "/v1/audio/speech"
@@ -640,8 +633,9 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         def raise_for_status(self):
             return None
 
-    async def _post(url, **_kwargs):
+    async def _post(url, **kwargs):
         sent["url"] = url
+        sent["json"] = kwargs["json"]
         return _Response()
 
     monkeypatch.setattr(provider_module._http_client, "post", _post)
@@ -650,8 +644,9 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         "http://127.0.0.1:8880/v1?api-version=2026-08-24",
         "sk-test",
     )
-    asyncio.run(client.create_speech(text = "hi", model = "kokoro"))
+    asyncio.run(client.create_speech(text = "hi", model = "kokoro", instructions = "Speak warmly."))
     assert sent["url"] == ("http://127.0.0.1:8880/v1/audio/speech?api-version=2026-08-24")
+    assert sent["json"]["instructions"] == "Speak warmly."
 
 
 def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):

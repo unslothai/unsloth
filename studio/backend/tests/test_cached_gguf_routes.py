@@ -3590,6 +3590,11 @@ def test_hub_local_rows_are_tagged_with_their_task():
     assert '"task":task' in compact
     assert '"audio_type":audio_type' in compact
 
+    from hub.services.models import catalog_classification
+
+    classifier_src = inspect.getsource(catalog_classification._local_model_audio_type)
+    assert "native_audio_type_from_local_path" in classifier_src
+
 
 def test_pipeline_class_guard_fires_before_any_download():
     # The newer families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on

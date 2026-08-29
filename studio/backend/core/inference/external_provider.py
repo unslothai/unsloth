@@ -6359,6 +6359,7 @@ class ExternalProviderClient:
         voice: Optional[str] = None,
         response_format: str = "wav",
         speed: Optional[float] = None,
+        instructions: Optional[str] = None,
     ) -> tuple[bytes, str]:
         """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
         body: dict[str, Any] = {
@@ -6370,6 +6371,8 @@ class ExternalProviderClient:
             body["voice"] = voice
         if speed is not None:
             body["speed"] = speed
+        if instructions is not None:
+            body["instructions"] = instructions
         response = await _http_client.post(
             _append_provider_path(self.base_url, "/audio/speech"),
             headers = self._auth_headers(),

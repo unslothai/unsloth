@@ -26,12 +26,32 @@ test("uncached remote TTS GGUFs stage the exact file through the shared manager"
   );
 });
 
+test("remote code approval precedes native model staging and survives completion", () => {
+  const start = source.indexOf("const loadOrStageTtsModel");
+  const end = source.indexOf("const ensureSttLoaded", start);
+  const stagedFlow = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.ok(
+    stagedFlow.indexOf("confirmRemoteCodeIfNeeded(") <
+      stagedFlow.indexOf("getAudioDownloadPlan("),
+  );
+  assert.match(
+    stagedFlow,
+    /pendingStagedTtsLoad\.current = \{[\s\S]*remoteCodeApproval,[\s\S]*generation/,
+  );
+  assert.match(source, /pending\.audioType,[\s\S]*pending\.remoteCodeApproval/);
+  assert.match(
+    source,
+    /audioModelRequiresRemoteCode\(repoId, audioType\) &&[\s\S]*!remoteCodeApproval/,
+  );
+});
+
 test("cached and local TTS picks keep the direct load path and supersede stale staging", () => {
   assert.match(
     source,
     // meta.loadId is the load target for a row cached in a non-active HF cache; sending
     // the display repo id instead failed offline or re-downloaded into the active cache.
-    /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\(repoId, ggufFilename, meta\.loadId\)/,
+    /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\([\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*meta\.loadId,[\s\S]*meta\.audioType/,
   );
   assert.match(source, /if \(busyRef\.current !== null\) return;/);
   assert.match(
@@ -43,7 +63,7 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
   // cleared ?model=, so nothing retried it.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}/,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{[\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*loadId,[\s\S]*audioType,[\s\S]*remoteCodeApproval,[\s\S]*\};\s*return;\s*\}/,
   );
   assert.match(
     source,
@@ -54,6 +74,27 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
   );
 });
 
+test("a preflight that loses to generation queues its load until generation ends", () => {
+  assert.match(
+    source,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{[\s\S]*pendingRoutedTtsPick\.current/,
+  );
+  assert.match(
+    source,
+    /generateAbort\.current = null;\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current\) replayQueuedTtsPick\(\)/,
+  );
+});
+
+test("a completed load keeps controls disabled until status catches up", () => {
+  const start = source.indexOf("const loadTtsModel = useCallback");
+  const end = source.indexOf("const loadTtsModelRef", start);
+  const loadFlow = source.slice(start, end);
+  assert.match(
+    loadFlow,
+    /if \(activeRef\.current\) await refreshStatus\(\);[\s\S]*busyRef\.current = null;[\s\S]*setBusy\(null\)/,
+  );
+});
+
 test("managed completion loads the exact GGUF only when Audio is active and idle", () => {
   assert.match(
     source,
@@ -61,7 +102,7 @@ test("managed completion loads the exact GGUF only when Audio is active and idle
   );
   assert.match(
     source,
-    /loadTtsModelRef\.current\(pending\.repoId, pending\.ggufFilename\)/,
+    /loadTtsModelRef\.current\([\s\S]*pending\.repoId,[\s\S]*pending\.ggufFilename,[\s\S]*pending\.loadId,[\s\S]*pending\.audioType/,
   );
   assert.match(
     source,
@@ -88,7 +129,7 @@ test("switching to Transcribe invalidates a pending staged TTS auto-load", () =>
 test("a GGUF forwarded from Chat enters the managed staging path", () => {
   assert.match(
     source,
-    /ggufFilename: routeSearch\.quant \?\? undefined,[\s\S]*isDownloaded: routeSearch\.quant \? false : undefined/,
+    /ggufFilename: routeSearch\.quant \?\? undefined,[\s\S]*isDownloaded: routeSearch\.loadId[\s\S]*routeSearch\.quant[\s\S]*\? false/,
   );
 });
 

@@ -406,6 +406,12 @@ def _local_model_task(model) -> Optional[str]:
     id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_task(path, id_hints)
+    try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+        if native_audio_type_from_local_path(path):
+            return "text-to-speech"
+    except Exception:
+        pass
     if not _local_is_diffusers(model):
         return None
     try:
@@ -442,21 +448,34 @@ def _local_model_audio_type(model) -> Optional[str]:
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
     try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+        native_audio_type = native_audio_type_from_local_path(path)
+        if native_audio_type is not None:
+            return native_audio_type
+    except Exception:
+        pass
+    try:
         from utils.audio_tokens import detect_local_tts_audio_type
         return detect_local_tts_audio_type(path)
     except Exception:
         return None
 
 
-def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
-    """Return picker task and decoder provenance from one local-row probe."""
-    task = _local_model_task(model)
+def _local_model_classification_for_task(
+    model, task: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Add decoder provenance to an already classified local-row task."""
     audio_type = _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
     if task is None and audio_type is not None:
-        from utils.audio_tokens import is_tts_audio_type
-        if is_tts_audio_type(audio_type):
+        from utils.audio_tokens import is_output_audio_type
+        if is_output_audio_type(audio_type):
             task = _SPEECH_TASK
     return task, audio_type
+
+
+def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
+    """Return picker task and decoder provenance from one local-row probe."""
+    return _local_model_classification_for_task(model, _local_model_task(model))
 
 
 def _local_is_diffusers(model) -> bool:
