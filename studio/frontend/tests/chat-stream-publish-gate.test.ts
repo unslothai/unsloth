@@ -506,8 +506,8 @@ test("streaming tool-call argument deltas are paced like the text path", () => {
 
   // Both branches of the OpenAI delta.tool_calls accumulator feed the counter,
   // so a turn that only streams a call's arguments is still capped.
-  const count = loop.indexOf(
-    "streamedChars +=\n                    argsFragment.length",
+  const count = loop.search(
+    /streamedChars\s*\+=\s*argsFragment\.length\s*\+\s*nameFragment\.length/,
   );
   assert.notEqual(count, -1, "tool-call argument deltas are not counted");
 
