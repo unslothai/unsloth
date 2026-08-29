@@ -95,11 +95,15 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   chat: [
     "settings.general.chatDefaults",
+    "settings.chat.currentDate.label",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
+    "settings.chat.autoCompact",
+    "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
+    "settings.chat.tools.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
@@ -281,4 +285,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  "settings.chat.compactionStyle": "settings.chat.autoCompactKeywords",
 };

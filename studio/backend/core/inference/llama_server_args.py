@@ -1620,6 +1620,161 @@ def scrub_memory_env(env: dict) -> list[str]:
     return removed
 
 
+# The pageable twin of each mode that reads the weights into a buffer it allocates.
+# Upstream sets use_mmap for mmap / mmap+mlock / auto only (llama-model-loader.cpp),
+# so `mlock` is a full host copy that is also locked, and `mmap+mlock` is the same
+# lock over a mapping. `none` has no lock to preserve, so it goes back to the default.
+_PAGEABLE_LOAD_MODE: dict[str, Optional[str]] = {"none": None, "mlock": "mmap+mlock"}
+# Modes that already map, so the rewrite has no unmapped copy of its own to fix and
+# leaves them alone. It reaches them only when a LATER reserving selector shadowed the
+# lock (``--load-mode mmap+mlock --no-mmap`` runs unlocked and unmapped, last-wins), and
+# there dropping only the selector hands the child back the lock it had lost -- over the
+# full-size mapping the override just restored, which is the one outcome it exists to
+# prevent. So they are stripped in that state and in no other.
+_SHADOWED_LOCK_LOAD_MODE = frozenset({"mmap+mlock"})
+
+
+def _pageable_mode_replacement(
+    normalized: str, drop_shadowed_mlock: bool
+) -> tuple[bool, Optional[str]]:
+    """``(rewrite, replacement)`` for one ``--load-mode`` value, argv or env alike.
+
+    ``replacement`` None removes the selector, leaving llama.cpp's default mapping.
+    """
+    if normalized in _PAGEABLE_LOAD_MODE:
+        return True, None if drop_shadowed_mlock else _PAGEABLE_LOAD_MODE[normalized]
+    if normalized in _SHADOWED_LOCK_LOAD_MODE:
+        return drop_shadowed_mlock, None
+    return False, None
+
+
+def _pageable_env_value(
+    name: str,
+    value: str,
+    drop_shadowed_mlock: bool = False,
+) -> tuple[bool, Optional[str]]:
+    """``(rewrite, new_value)`` for an inherited var that disables mmap.
+
+    ``rewrite`` False leaves the var alone. ``new_value`` None means remove it; a
+    string replaces it, which is how a locked mode keeps its lock. ``LLAMA_ARG_MLOCK``
+    is otherwise left alone: on its own it sets the lock bit over the default mapping
+    and holds no unmapped copy.
+
+    ``drop_shadowed_mlock`` says the launch is NOT locked before the rewrite, because
+    a later selector reset the mlock bit -- llama.cpp resolves these last-wins, so
+    ``LLAMA_ARG_MLOCK=1`` beside ``LLAMA_ARG_NO_MMAP`` leaves the child unlocked. There
+    is then no lock to carry, so the var goes and a ``mlock`` mode is dropped rather
+    than promoted to ``mmap+mlock``.
+    """
+    normalized = value.strip().lower()
+    if name == "LLAMA_ARG_MLOCK":
+        # Only when it is already shadowed: resurrecting it would page-lock the
+        # oversized mapping into the RAM this override exists to keep pageable.
+        return drop_shadowed_mlock and normalized in _ENV_TRUE_VALUES, None
+    if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+        # Presence alone selects mode "none", whatever the value says.
+        return True, None
+    if name in {"LLAMA_ARG_MMAP", "LLAMA_ARG_DIO"}:
+        # Falsy selects "none"; truthy selects mmap / dio, neither of which
+        # holds a full copy.
+        return normalized in _ENV_FALSE_VALUES, None
+    if name == "LLAMA_ARG_LOAD_MODE":
+        return _pageable_mode_replacement(normalized, drop_shadowed_mlock)
+    return False, None
+
+
+def force_pageable_load(
+    argv: Optional[Iterable[str]], env: Optional[dict] = None
+) -> tuple[list[str], list[str]]:
+    """Rewrite a launch that would hold a full unmapped host copy into a pageable one.
+
+    Returns ``(argv, overridden)``, naming the argv tokens and env vars that were
+    dropped or rewritten, for the log line and the warning. Empty means the launch was
+    already pageable and ``argv`` comes back unchanged.
+
+    Modes ``none`` and ``mlock`` read the weights into a buffer llama.cpp allocates
+    (``use_mmap`` is set for ``mmap``/``mmap+mlock``/``auto`` and nothing else), so a
+    model larger than free RAM cannot load at all rather than paging in slowly. Both
+    sides of llama.cpp's env-then-argv resolution are rewritten, since the environment
+    supplies the default the argv only overrides when it names the same option.
+
+    A lock that is EFFECTIVE is preserved rather than dropped: ``mlock`` becomes
+    ``mmap+mlock`` and ``--no-mmap --mlock`` keeps its lock through the strip, so "keep
+    this in RAM" still holds -- over a mapping the kernel can fall back on. ``none`` has
+    no lock to keep and needs no replacement flag at all, mmap being the default, so a
+    build predating ``--load-mode`` is handed nothing it cannot parse.
+
+    A SHADOWED lock is not resurrected. These options resolve last-wins, so
+    ``--mlock --no-mmap`` (and the ``LLAMA_ARG_`` twins, where the negative alias is
+    read after the affirmative one) runs unlocked and unmapped: the reserving selector
+    already cleared the lock bit, which is what ``resolve_effective_memory_state``
+    reports. Dropping only the selector and leaving the earlier ``--mlock`` standing
+    would hand the child ``mmap+mlock`` and page-lock the whole oversized mapping into
+    the RAM this override exists to keep pageable -- worse than the load it fixes. So
+    the pre-rewrite state decides, not the tokens that happen to be present.
+    """
+    tokens = [str(a) for a in (argv or [])]
+    # What the child runs TODAY, across env and argv in llama.cpp's own resolution
+    # order. Only a launch that reserves RAM is rewritten at all, so a pageable one
+    # (``dio``, plain ``mmap``) keeps every token it was given, mlock included.
+    _mlock_now, _reserves_now = resolve_effective_memory_state(tokens, env)
+    drop_shadowed_mlock = _reserves_now and not _mlock_now
+    overridden: list[str] = []
+    out: list[str] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        token = tokens[i]
+        flag = _flag_name(token)
+        # --no-mmap / --no-direct-io: upstream's deprecated spellings for "none".
+        # Valueless, so the token goes and nothing follows it out.
+        if flag in _RAM_RESERVING_FLAGS:
+            overridden.append(token)
+            i += 1
+            continue
+        # A lock a later selector already cleared. Valueless like the above, and
+        # named in `overridden` so the log line describes the whole rewrite.
+        if drop_shadowed_mlock and flag in _MLOCK_FLAGS:
+            overridden.append(token)
+            i += 1
+            continue
+        if flag in _LOAD_MODE_FLAGS:
+            if "=" in token:
+                value, step = token.split("=", 1)[1], 1
+            elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+                value, step = tokens[i + 1], 2
+            else:
+                value, step = "", 1
+            normalized = value.strip().lower()
+            # `--load-mode mlock --no-mmap` is unlocked by the time the child parses
+            # it, so mmap+mlock would ADD a lock; `mmap+mlock --no-mmap` is the same
+            # shape one spelling further on, and there the selector itself is the lock.
+            rewrite_mode, replacement = _pageable_mode_replacement(normalized, drop_shadowed_mlock)
+            if rewrite_mode:
+                overridden.append(" ".join(tokens[i : i + step]))
+                if replacement is not None:
+                    out.extend([tokens[i].split("=", 1)[0], replacement])
+                i += step
+                continue
+            out.extend(tokens[i : i + step])
+            i += step
+            continue
+        out.append(token)
+        i += 1
+    if env is not None:
+        for name in MEMORY_ENV_VARS:
+            if name not in env:
+                continue
+            rewrite, new_value = _pageable_env_value(name, str(env[name]), drop_shadowed_mlock)
+            if not rewrite:
+                continue
+            if new_value is None:
+                env.pop(name, None)
+            else:
+                env[name] = new_value
+            overridden.append(name)
+    return out, overridden
+
+
 # Mirrors llama_cpp's _LLAMA_ARG_TRUE/FALSE_VALUES; duplicated so this module
 # stays dependency-free (llama_cpp imports from here, not the other way).
 _ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})

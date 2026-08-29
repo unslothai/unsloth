@@ -22,7 +22,8 @@ const transport = readFileSync(
 
 test("local chat opts into the rolling context policy", () => {
   assert.match(adapter, /isGguf === true/);
-  assert.match(adapter, /context_overflow:\s*"truncate_oldest"/);
+  assert.match(adapter, /autoCompactEnabled/);
+  assert.match(adapter, /ggufCompactionRequestFields\(/);
   assert.match(adapter, /This conversation was compacted/);
 });
 
@@ -30,6 +31,17 @@ test("the transport preserves standard chunks with context metadata", () => {
   assert.doesNotMatch(transport, /parsed\.type === "context_truncated"/);
   assert.match(adapter, /chunk\.context_truncated/);
   assert.match(adapter, /contextTruncation = mergeContextTruncation\(/);
+});
+
+test("durable replay persists context-truncation metadata", () => {
+  const runtimeProvider = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(runtimeProvider, /contextTruncation: mergeContextTruncation\(/);
+  assert.match(runtimeProvider, /generationChunkCount/);
+  assert.match(adapter, /generationFirstChunkAt/);
+  assert.match(adapter, /generationChunkCount \+= 1/);
 });
 
 test("the compaction notice follows the boundary, not the accumulated drops", () => {

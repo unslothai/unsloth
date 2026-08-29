@@ -269,12 +269,20 @@ def start_remote_access(app_state) -> dict:
     port = getattr(app_state, "remote_access_port", None)
     if not isinstance(port, int) or port <= 0:
         raise RuntimeError("server_port_unavailable")
+    origin_host = getattr(app_state, "server_request_host", None)
+    if not isinstance(origin_host, str) or not origin_host:
+        raise RuntimeError("server_address_unavailable")
     if get_studio_tunnel_control_token() != admission:
         raise RuntimeError("server_lifecycle_changed")
 
     def _start() -> None:
         from cloudflare_tunnel import start_studio_tunnel
-        url = start_studio_tunnel(port, managed_by = "settings", admission = admission)
+        url = start_studio_tunnel(
+            port,
+            managed_by = "settings",
+            admission = admission,
+            origin_host = origin_host,
+        )
         if url:
             logger.info("Secure link access via Cloudflare: %s", url)
 

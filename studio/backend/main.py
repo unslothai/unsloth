@@ -309,9 +309,11 @@ from routes import (
     openai_codex_auth_router,
     rag_router,
     research_runs_router,
+    chat_generation_runs_router,
     training_history_router,
     training_router,
     video_router,
+    video_openai_router,
     youtube_router,
 )
 from routes.llama import router as llama_router
@@ -669,6 +671,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
+    try:
+        from storage.chat_generation_runs_db import reconcile_orphaned_runs
+        reconciled_chat_runs = reconcile_orphaned_runs()
+        if reconciled_chat_runs:
+            _lifespan_log.warning(
+                "Marked %s interrupted chat generation run(s) failed after restart.",
+                reconciled_chat_runs,
+            )
+    except Exception as exc:
+        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -702,6 +715,10 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -797,6 +814,10 @@ async def lifespan(app: FastAPI):
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
+
+    _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
+    if _chat_generation_supervisor is not None:
+        await _chat_generation_supervisor.stop()
 
     from core.inference.llama_http import aclose as _close_llama_http
 
@@ -1076,13 +1097,15 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
 
 _BODY_PROTECTED_PREFIXES = (
     # Blanket-protect the whole /v1 surface, like /api/inference: every /v1 POST buffers a JSON
-    # body and none is a multipart passthrough, so one prefix caps them all.
+    # body (the multipart routes are listed as exact passthroughs below), so one prefix caps them all.
     "/v1",
     "/p/",
     "/api/inference",
@@ -1110,6 +1133,10 @@ _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
 )
+_VIDEO_MULTIPART_UPLOAD_PATHS = (
+    "/v1/videos",
+    "/api/inference/videos",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1118,7 +1145,14 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
+    *_VIDEO_MULTIPART_UPLOAD_PATHS,
 )
+# Which of those may arrive with no Content-Length and be counted instead of refused.
+# Deliberately NOT the whole set above: this middleware runs before authentication, and
+# a counted body is a held body, so the dataset path (whose cap is the configurable
+# upload limit, up to 8 GB) and the 25 MB stt paths keep their 411. The videos
+# reference image is bounded at 32 MB, the same order as the default protected cap.
+_CHUNKED_UPLOAD_EXACT_PATHS = _VIDEO_MULTIPART_UPLOAD_PATHS
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
@@ -1126,6 +1160,11 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1144,6 +1183,11 @@ def _get_request_body_max_bytes(path: str) -> int:
     # multipart headroom over the raw stt cap for the openai transcription route on both mounts
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     return default_request_body_limit_bytes()
 
 
@@ -1193,6 +1237,7 @@ class MaxBodyMiddleware:
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
+        chunked_upload_exact_paths: tuple = (),
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1202,6 +1247,8 @@ class MaxBodyMiddleware:
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
         # Exact path, not prefix: sibling JSON sub-routes must keep the normal (small) body cap.
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
+        # The subset of those allowed to omit Content-Length; the rest still get a 411.
+        self.chunked_upload_exact_paths = chunked_upload_exact_paths
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
@@ -1254,14 +1301,16 @@ class MaxBodyMiddleware:
 
         if self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
-            if declared is None:
+            if declared is not None:
+                if declared > upload_max_bytes:
+                    await _send_413(send, declared, upload_max_bytes)
+                    return
+                await self.app(scope, receive, send)
+                return
+            if path.rstrip("/") not in self.chunked_upload_exact_paths:
                 await _send_411(send)
                 return
-            if declared > upload_max_bytes:
-                await _send_413(send, declared, upload_max_bytes)
-                return
-            await self.app(scope, receive, send)
-            return
+            max_bytes = upload_max_bytes
 
         if declared is not None and declared > max_bytes:
             await _send_413(send, declared, max_bytes)
@@ -1311,6 +1360,7 @@ app.add_middleware(
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
+    chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -1382,12 +1432,19 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
+app.include_router(
+    chat_generation_runs_router,
+    prefix = "/api/inference/chat-runs",
+    tags = ["inference"],
+)
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
 # Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
