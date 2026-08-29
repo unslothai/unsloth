@@ -17,6 +17,7 @@ STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
 SHELL_VERSION_ENV = "UNSLOTH_TAURI_SHELL_VERSION"
 READY_MARKER = "READY.json"
 VENV_NAME = "unsloth_studio"
+HELPER_NAMES = ("node", "llama.cpp", "whisper.cpp")
 MIN_FREE_BYTES = 1 << 30
 PROBE_TIMEOUT_SECONDS = 300
 
@@ -42,6 +43,15 @@ def runtime_root(studio_home: Path) -> Path:
 
 def stage_root(studio_home: Path) -> Path:
     return studio_home / STAGE_DIR_NAME
+
+
+def managed_helper_root(studio_home: Path) -> Path:
+    legacy = Path.home() / ".unsloth" / "studio"
+    try:
+        is_legacy = studio_home.resolve() == legacy.resolve()
+    except (OSError, ValueError):
+        is_legacy = studio_home == legacy
+    return studio_home.parent if is_legacy else studio_home
 
 
 def venv_python(venv: Path) -> Path:
@@ -188,6 +198,8 @@ def probe_console_script(venv: Path, env: dict[str, str]) -> None:
 def child_environment(root: Path) -> dict[str, str]:
     env = dict(os.environ)
     env[STAGE_ROOT_ENV] = str(root)
+    scripts = root / VENV_NAME / ("Scripts" if platform.system() == "Windows" else "bin")
+    env["PATH"] = str(scripts) + os.pathsep + env.get("PATH", "")
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
     env.pop("VIRTUAL_ENV", None)
@@ -231,6 +243,11 @@ def stage(
     try:
         echo("[TAURI:STEP] clone")
         clone_tree(live, root / VENV_NAME)
+        helper_root = managed_helper_root(studio_home)
+        for name in HELPER_NAMES:
+            helper = helper_root / name
+            if helper.is_dir():
+                clone_tree(helper, root / name)
         make_relocatable(root / VENV_NAME)
         echo("[TAURI:STEP] update")
         if run_update(root, update_args) != 0:

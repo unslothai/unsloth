@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 from pathlib import Path
 
@@ -107,9 +108,21 @@ def test_clone_tree_copies_symlinks_as_symlinks(tmp_path):
     assert (tmp_path / "dst" / "bin" / "link").read_text(encoding = "utf-8") == "x"
 
 
+def test_managed_helper_root_matches_default_and_custom_layout(monkeypatch, tmp_path):
+    monkeypatch.setattr(_studio_stage.Path, "home", lambda: tmp_path)
+
+    assert _studio_stage.managed_helper_root(tmp_path / ".unsloth" / "studio") == (
+        tmp_path / ".unsloth"
+    )
+    assert _studio_stage.managed_helper_root(tmp_path / "custom") == tmp_path / "custom"
+
+
 def test_stage_builds_a_ready_marker_from_a_successful_update(monkeypatch, tmp_path):
     home = tmp_path / "studio"
     _make_venv(home)
+    for name in _studio_stage.HELPER_NAMES:
+        (home / name).mkdir()
+        (home / name / "tag").write_text("live", encoding = "utf-8")
     monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, "0.1.900-beta")
     seen: dict = {}
 
@@ -134,6 +147,8 @@ def test_stage_builds_a_ready_marker_from_a_successful_update(monkeypatch, tmp_p
     assert marker["backend_version"] == "2026.9.1"
     assert marker["shell_version"] == "0.1.900-beta"
     assert (root / _studio_stage.VENV_NAME / "pyvenv.cfg").is_file()
+    for name in _studio_stage.HELPER_NAMES:
+        assert (root / name / "tag").read_text(encoding = "utf-8") == "live"
     assert (
         (home / _studio_stage.VENV_NAME / "bin" / "unsloth")
         .read_text(encoding = "utf-8")
@@ -203,6 +218,9 @@ def test_child_environment_points_the_staged_cli_at_the_stage_root(monkeypatch, 
     env = _studio_stage.child_environment(tmp_path)
 
     assert env[_studio_stage.STAGE_ROOT_ENV] == str(tmp_path)
+    assert env["PATH"].split(os.pathsep)[0] == str(
+        tmp_path / _studio_stage.VENV_NAME / ("Scripts" if platform.system() == "Windows" else "bin")
+    )
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONHOME" not in env
     assert "PYTHONPATH" not in env

@@ -249,6 +249,7 @@ function Add-ToUserPath {
         [ValidateSet('Append','Prepend')]
         [string]$Position = 'Append'
     )
+    if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
     try {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
@@ -530,6 +531,9 @@ function Test-UnslothCmdShimFile {
 
 # Shared default cache, or the custom Studio home's llama.cpp tree.
 function Get-ManagedLlamaCppDir {
+    if ($StageRoot) {
+        return (Join-Path $StageRoot "llama.cpp")
+    }
     if (-not (Test-StudioHomeIsCustom)) {
         return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
     }
@@ -1544,6 +1548,7 @@ function Test-VCRedistInstalled {
 # and Build Tools torch cannot import without it, and winget is absent on LTSC/Server images.
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
+    if ($StageRoot) { step "vcredist" "missing; unchanged during staging" "Yellow"; return }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
     if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
         try {
@@ -1948,28 +1953,30 @@ if ($llamaPreflightFailure) {
 }
 
 # Back up User PATH under HKCU\Software\Unsloth before any modifications.
-try {
-    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
-    if ($envKey) {
-        try {
-            $rawPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        } finally {
-            $envKey.Close()
-        }
-        if ($rawPath) {
-            $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+if (-not $StageRoot) {
+    try {
+        $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+        if ($envKey) {
             try {
-                $existingBackup = $backupKey.GetValue('PathBackup', $null)
-                if (-not $existingBackup) {
-                    $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-                }
+                $rawPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             } finally {
-                $backupKey.Close()
+                $envKey.Close()
+            }
+            if ($rawPath) {
+                $backupKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Unsloth')
+                try {
+                    $existingBackup = $backupKey.GetValue('PathBackup', $null)
+                    if (-not $existingBackup) {
+                        $backupKey.SetValue('PathBackup', $rawPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                    }
+                } finally {
+                    $backupKey.Close()
+                }
             }
         }
+    } catch {
+        Write-StudioLine "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
-} catch {
-    Write-StudioLine "[DEBUG] Could not back up User PATH: $($_.Exception.Message)" -ForegroundColor DarkGray
 }
 
 # ==========================================================================
@@ -3280,32 +3287,36 @@ $NodeSource = $null
 if (-not $IsPipInstall) {
     # Put Node beside the Unsloth root. OXC can still need npm when the
     # frontend build is skipped.
-    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
-    elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
-    if ($NodeOverride) {
-        if ($NodeOverride -eq "~") {
-            $NodeOverride = $env:USERPROFILE
-        } elseif ($NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
-            $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
-        }
-        if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
-            Write-StudioLine "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
-            Write-StudioLine "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-            Exit-SetupFailure "UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist"
-        }
-        $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
-        # An override pointing at the legacy default maps to the legacy sibling
-        # ~/.unsloth/node (what the runtime resolver and setup.sh use), not <root>/node.
-        $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
-        if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
-            $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
-        }
-        if ($NodeParent -eq $_legacyStudio) {
-            $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
-            $NodeOverride = $null
-        }
+    if ($StageRoot) {
+        $NodeParent = $StageRoot
     } else {
-        $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
+        elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
+        if ($NodeOverride) {
+            if ($NodeOverride -eq "~") {
+                $NodeOverride = $env:USERPROFILE
+            } elseif ($NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
+                $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
+            }
+            if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
+                Write-StudioLine "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
+                Write-StudioLine "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+                Exit-SetupFailure "UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist"
+            }
+            $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
+            # An override pointing at the legacy default maps to the legacy sibling
+            # ~/.unsloth/node (what the runtime resolver and setup.sh use), not <root>/node.
+            $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+            if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
+                $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
+            }
+            if ($NodeParent -eq $_legacyStudio) {
+                $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+                $NodeOverride = $null
+            }
+        } else {
+            $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+        }
     }
     $NodeDir = Join-Path $NodeParent "node"
 
@@ -4633,7 +4644,7 @@ Assert-VenvActivated -VenvDir $VenvDir
 $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
-} else {
+} elseif (-not $StageRoot) {
     substep "installing uv package manager..."
     try {
         $script:UvPinnedInstalled = $false
@@ -4932,13 +4943,15 @@ if ($script:UnslothVerbose) {
 # Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
 # paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
 if ($LongPathsEnabled) {
-    $TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
+    $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"
 } else {
     $TorchCacheDir = "C:\tc"
 }
 if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
-[Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+if (-not $StageRoot) {
+    [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+}
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
 # Explicit pin (URL or family) wins over GPU probing and suppresses the AMD reroute below;
@@ -6123,6 +6136,10 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     } else {
         step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "Yellow"
     }
+}
+
+if ($StageRoot -and $NeedLlamaSourceBuild) {
+    Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
 
 # ==========================================================================

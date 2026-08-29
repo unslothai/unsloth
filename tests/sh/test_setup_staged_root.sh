@@ -67,6 +67,21 @@ check "setup.sh skips the webview cache clear while staging" \
 check "setup.ps1 skips the webview cache clear while staging" \
     "$(has "$SETUP_PS1" 'if (-not $StageRoot -and (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf)) {')"
 
+check "setup.sh stages the managed Node runtime" \
+    "$(has "$SETUP_SH" '_NODE_PARENT="$RUNTIME_ROOT"')"
+check "setup.sh stages llama.cpp and whisper.cpp" \
+    "$(has "$SETUP_SH" 'UNSLOTH_HOME="$RUNTIME_ROOT"')"
+check "setup.sh does not install global uv while staging" \
+    "$(has "$SETUP_SH" 'step "uv" "using pip inside the staged environment"')"
+check "setup.ps1 stages the managed Node runtime" \
+    "$(has "$SETUP_PS1" '$NodeParent = $StageRoot')"
+check "setup.ps1 stages llama.cpp and whisper.cpp" \
+    "$(has "$SETUP_PS1" 'return (Join-Path $StageRoot "llama.cpp")')"
+check "setup.ps1 does not persist User PATH while staging" \
+    "$(has "$SETUP_PS1" 'Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue')"
+check "setup.ps1 leaves vcredist unchanged while staging" \
+    "$(has "$SETUP_PS1" 'step "vcredist" "missing; unchanged during staging"')"
+
 # ── the staged activation cannot dot-source a copied Activate script ──
 # A venv copied out of $STUDIO_HOME still names the original root in its activate
 # scripts, so the staged branch sets PATH itself. Assert-VenvActivated then proves

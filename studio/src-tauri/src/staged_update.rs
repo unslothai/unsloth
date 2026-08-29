@@ -20,6 +20,19 @@ const RUNTIME_ENTRIES: [&str; 4] = [
     ".venv_t5_550",
     ".venv_t5_510",
 ];
+const HELPER_RUNTIME_ENTRIES: [&str; 3] = ["node", "llama.cpp", "whisper.cpp"];
+
+fn all_runtime_entries() -> impl Iterator<Item = &'static str> {
+    RUNTIME_ENTRIES.into_iter().chain(HELPER_RUNTIME_ENTRIES)
+}
+
+fn live_entry(home: &Path, name: &str) -> PathBuf {
+    if HELPER_RUNTIME_ENTRIES.contains(&name) {
+        home.parent().unwrap_or(home).join(name)
+    } else {
+        home.join(name)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct StagedVersions {
@@ -204,7 +217,7 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     }
     let journal = read_journal(&prev.join(PENDING_MARKER));
     let versions = journal.as_ref().map(|journal| journal.versions.clone());
-    let has_previous_runtime = RUNTIME_ENTRIES.iter().any(|name| prev.join(name).exists());
+    let has_previous_runtime = all_runtime_entries().any(|name| prev.join(name).exists());
     if versions.is_none() && !has_previous_runtime {
         if prev.is_dir() {
             let _ = fs::remove_dir_all(&prev);
@@ -224,10 +237,9 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
         .map(|journal| journal.previous_entries)
         .filter(|entries| !entries.is_empty())
         .unwrap_or_else(|| {
-            RUNTIME_ENTRIES
-                .iter()
+            all_runtime_entries()
                 .filter(|name| prev.join(name).exists())
-                .map(|name| (*name).to_string())
+                .map(str::to_string)
                 .collect()
         });
     info!("[staged-update] staged backend never became healthy, restoring previous runtime");
@@ -279,10 +291,9 @@ fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     fs::create_dir_all(&prev).map_err(|e| e.to_string())?;
     let journal = ActivationJournal {
         versions: versions.clone(),
-        previous_entries: RUNTIME_ENTRIES
-            .iter()
-            .filter(|name| home.join(name).exists())
-            .map(|name| (*name).to_string())
+        previous_entries: all_runtime_entries()
+            .filter(|name| live_entry(home, name).exists())
+            .map(str::to_string)
             .collect(),
     };
     write_journal(&prev.join(PENDING_MARKER), &journal)?;
@@ -354,10 +365,10 @@ fn restore_previous_runtime(
     fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = (|| {
-        for name in RUNTIME_ENTRIES {
+        for name in all_runtime_entries() {
             let old = previous.join(name);
             let staged = stage.join(name);
-            let live = home.join(name);
+            let live = live_entry(home, name);
             if previous_entries.iter().any(|entry| entry == name) {
                 if old.exists() {
                     if live.exists() {
@@ -393,9 +404,9 @@ fn swap_entries(
 ) -> Result<(), String> {
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     let result = (|| {
-        for name in RUNTIME_ENTRIES {
+        for name in all_runtime_entries() {
             let staged = incoming.join(name);
-            let live = home.join(name);
+            let live = live_entry(home, name);
             if !staged.exists() {
                 if evict_extra && live.exists() {
                     rename_tracked(&live, &outgoing.join(name), &mut moved)?;
@@ -807,6 +818,35 @@ mod tests {
         }
         assert_eq!(status(&home).state, "failed");
         cleanup(home);
+    }
+
+    #[test]
+    fn native_helpers_activate_and_roll_back_with_the_python_runtime() {
+        let container = temp_home("helpers");
+        let home = container.join("studio");
+        fs::create_dir_all(&home).unwrap();
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(None));
+        for name in HELPER_RUNTIME_ENTRIES {
+            fs::create_dir_all(container.join(name)).unwrap();
+            fs::write(container.join(name).join("tag"), "old").unwrap();
+            fs::create_dir_all(home.join(STAGE_DIR).join(name)).unwrap();
+            fs::write(home.join(STAGE_DIR).join(name).join("tag"), "new").unwrap();
+        }
+
+        activate_ready(&home, "0.1.900-beta").unwrap();
+
+        for name in HELPER_RUNTIME_ENTRIES {
+            assert_eq!(tag(&container, name), "new", "{name}");
+            assert_eq!(tag(&home.join(PREV_DIR), name), "old", "{name}");
+        }
+
+        roll_back_unconfirmed_with(&home, false).unwrap();
+
+        for name in HELPER_RUNTIME_ENTRIES {
+            assert_eq!(tag(&container, name), "old", "{name}");
+        }
+        cleanup(container);
     }
 
     #[test]

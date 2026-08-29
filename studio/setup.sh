@@ -1164,7 +1164,9 @@ decide_node_source() {
 }
 
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
-if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+if [ -n "$STAGE_ROOT" ]; then
+    _NODE_PARENT="$RUNTIME_ROOT"
+elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
     _NODE_PARENT="$HOME/.unsloth"
@@ -1752,6 +1754,8 @@ _setup_persist_uv_path() {
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
+elif [ -n "$STAGE_ROOT" ]; then
+    step "uv" "using pip inside the staged environment"
 elif {
     _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned; then
@@ -2271,7 +2275,9 @@ fi
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
-if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+if [ -n "$STAGE_ROOT" ]; then
+    UNSLOTH_HOME="$RUNTIME_ROOT"
+elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else
     UNSLOTH_HOME="$HOME/.unsloth"
@@ -2632,6 +2638,10 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
+if [ -n "$STAGE_ROOT" ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    setup_fail 1 "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 fi
 
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──

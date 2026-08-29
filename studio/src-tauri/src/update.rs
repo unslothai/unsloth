@@ -101,11 +101,8 @@ fn build_update_command(bin: &std::path::Path, args: &[&str]) -> Result<Command,
     // the failure is unrecoverable: a foreign PYTHONHOME stops the managed interpreter
     // finding its own site-packages, and a PYTHONPATH pointing at another checkout
     // makes `from unsloth_cli import app` update the wrong install.
-    #[cfg(windows)]
-    {
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
     Ok(cmd)
 }
 
@@ -116,6 +113,18 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     cmd.env_remove("STUDIO_HOME");
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
     cmd.env("SKIP_STUDIO_FRONTEND", "1");
+}
+
+fn configure_staged_update_environment(cmd: &mut Command) {
+    for name in [
+        "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
+        "UNSLOTH_LLAMA_FORCE_COMPILE",
+        "UNSLOTH_LLAMA_FORCE_COMPILE_REF",
+        "UNSLOTH_LLAMA_PR",
+        "UNSLOTH_LLAMA_PR_FORCE",
+    ] {
+        cmd.env_remove(name);
+    }
 }
 
 fn spawn_update(
@@ -168,6 +177,9 @@ fn spawn_update(
     // Keep the update on the desktop-managed install and avoid rebuilding assets
     // that are already compiled into the signed Tauri bundle.
     configure_tauri_update_environment(&mut cmd);
+    if matches!(kind, UpdateKind::Staged { .. }) {
+        configure_staged_update_environment(&mut cmd);
+    }
     #[cfg(windows)]
     cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
@@ -690,9 +702,8 @@ mod tests {
     // The Windows trampoline moved into process.rs; nothing about the POSIX
     // Dropping -I made this load bearing rather than belt and braces: without -E the
     // child now reads both. See build_update_command for what each one breaks.
-    #[cfg(windows)]
     #[test]
-    fn windows_update_command_still_scrubs_the_python_search_path() {
+    fn update_command_scrubs_the_python_search_path() {
         let dir = std::env::temp_dir().join(format!(
             "unsloth-update-scrub-{}-{}",
             std::process::id(),
@@ -732,8 +743,30 @@ mod tests {
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![OsString::from("studio"), OsString::from("update")]
         );
-        // No PYTHONHOME/PYTHONPATH scrubbing off Windows: the console script is
-        // not the interpreter, and callers that need it do it themselves.
-        assert!(cmd.get_envs().next().is_none());
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == std::ffi::OsStr::new(name) && value.is_none()));
+        }
+    }
+
+    #[test]
+    fn staged_update_drops_source_build_overrides() {
+        use std::ffi::OsStr;
+
+        let mut cmd = Command::new("unused");
+        configure_staged_update_environment(&mut cmd);
+
+        for name in [
+            "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
+            "UNSLOTH_LLAMA_FORCE_COMPILE",
+            "UNSLOTH_LLAMA_FORCE_COMPILE_REF",
+            "UNSLOTH_LLAMA_PR",
+            "UNSLOTH_LLAMA_PR_FORCE",
+        ] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
+        }
     }
 }
