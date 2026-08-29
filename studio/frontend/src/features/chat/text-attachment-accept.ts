@@ -655,31 +655,35 @@ function headerParameters(value: string): string[] {
 }
 
 /**
- * The `charset` parameter of a header value, and nothing that merely looks like
- * one.
+ * A header value's parameter by name, and nothing that merely looks like one.
  *
- * An unanchored search took the first `charset=` anywhere in the value, so
+ * An unanchored search took the first match anywhere in the value, so
  * `text/plain; name="charset=windows-1251.txt"; charset=windows-1252` read the
- * filename and stopped: either an unsupported label that refused a valid
- * message, or a supported one that quietly chose the wrong decoder.
+ * filename and stopped, and a `filename="report; boundary=fake"` on any header
+ * at all registered a multipart delimiter that does not exist.
  */
-function headerCharsetParameter(value: string): string | undefined {
+function headerParameter(value: string, name: string): string | undefined {
   for (const parameter of headerParameters(value)) {
     const equals = parameter.indexOf("=");
     if (equals === -1) continue;
-    if (parameter.slice(0, equals).trim().toLowerCase() !== "charset") continue;
+    if (parameter.slice(0, equals).trim().toLowerCase() !== name) continue;
     const raw = parameter.slice(equals + 1).trim();
-    const unquoted = raw.startsWith('"') ? raw.slice(1) : raw;
-    return unquoted.match(CHARSET_LABEL_RE)?.[0];
+    if (!raw.startsWith('"')) return raw || undefined;
+    const close = raw.indexOf('"', 1);
+    return (close === -1 ? raw.slice(1) : raw.slice(1, close)) || undefined;
   }
   return undefined;
 }
 
+/** The charset a header declares, restricted to the shape of a label. */
+function headerCharsetParameter(value: string): string | undefined {
+  return headerParameter(value, "charset")?.match(CHARSET_LABEL_RE)?.[0];
+}
+
 // vCard 2.1 puts the encoding on the property: `FN;CHARSET=windows-1252:...`.
 const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
-// The delimiter a multipart header names for its own parts.
-const MIME_BOUNDARY_RE =
-  /;[ \t]*boundary[ \t]*=[ \t]*(?:"([^"\r\n]*)"|([^\s;"]+))/gi;
+// Only a multipart type carries a delimiter for its own parts.
+const MULTIPART_TYPE_RE = /^[ \t]*multipart\//i;
 // A header continues on the next line when that line begins with whitespace.
 const HEADER_FOLD_RE = /\r?\n[ \t]+/g;
 
@@ -715,8 +719,13 @@ function emailHeaderBlocks(text: string, mbox: boolean): string[] {
     // scanned and the charset they declare went with them.
     const unfolded = block.replace(HEADER_FOLD_RE, " ");
     blocks.push(unfolded);
-    for (const declared of unfolded.matchAll(MIME_BOUNDARY_RE)) {
-      const boundary = declared[1] ?? declared[2];
+    for (const header of unfolded.matchAll(EMAIL_CONTENT_TYPE_RE)) {
+      const value = header[1] ?? "";
+      // A boundary means something only on the header that owns the parts. Any
+      // header's quoted filename could otherwise register a delimiter, and a
+      // body line repeating it then reopened the headers.
+      if (!MULTIPART_TYPE_RE.test(value)) continue;
+      const boundary = headerParameter(value, "boundary");
       if (boundary) boundaries.add(boundary);
     }
   };
@@ -1084,11 +1093,15 @@ function vCardValueDelimiter(
 /**
  * @param truncated Whether `bytes` is a prefix of the file, in which case a
  * partial character at the end is a cut rather than a bad encoding.
+ * @param whole The complete file, when `bytes` is a prefix of it. A declaration
+ * can sit anywhere, so a preview that looked for one inside its own slice
+ * reported an error for a file the attachment itself decodes.
  */
 export function decodeTextAttachmentBytes(
   bytes: Uint8Array,
   fileName = "",
   truncated = false,
+  whole: Uint8Array = bytes,
 ): string {
   // A BOM is a declaration too, so it decodes as strictly as the rest: an odd
   // trailing byte or an unpaired surrogate is corrupt, not readable.
@@ -1107,15 +1120,15 @@ export function decodeTextAttachmentBytes(
   // A mail Content-Type is the exception and stays a fallback below: clients
   // mislabel 8-bit mail constantly, so the bytes being valid UTF-8 is the
   // better evidence there.
-  const xmlEncoding = declaredXmlEncoding(bytes);
+  const xmlEncoding = declaredXmlEncoding(whole);
   if (xmlEncoding) {
     return decodeWithCharset(bytes, xmlEncoding, fileName, truncated);
   }
-  const gettextCharset = declaredGettextCharset(bytes, fileName);
+  const gettextCharset = declaredGettextCharset(whole, fileName);
   if (gettextCharset) {
     return decodeWithCharset(bytes, gettextCharset, fileName, truncated);
   }
-  const vCardCharsets = declaredVCardCharsets(bytes, fileName);
+  const vCardCharsets = declaredVCardCharsets(whole, fileName);
   if (vCardCharsets.length > 0) {
     // CHARSET is a property parameter whatever the count, so one declaration
     // speaks for its own property and not for the file: an export holding a 2.1
@@ -1146,7 +1159,7 @@ export function decodeTextAttachmentBytes(
     // this line when it named more than one charset.
     const declared = vCardCharsets.length
       ? vCardCharsets
-      : declaredEmailCharsets(bytes, fileName);
+      : declaredEmailCharsets(whole, fileName);
     if (declared.length === 1) {
       return decodeWithCharset(bytes, declared[0]!, fileName, truncated);
     }

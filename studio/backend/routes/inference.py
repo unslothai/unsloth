@@ -17450,24 +17450,32 @@ class _DecodedAudioTooLongError(ValueError):
     """Decoded audio crossed the duration cap before it could be buffered."""
 
 
+def _id3_tag_length(raw: bytes) -> int:
+    """Bytes an ID3v2 tag occupies before the first MPEG frame.
+
+    An ID3v2 tag can prefix any MPEG audio layer (and occasionally AAC), so it
+    is skipped before anything reads a frame header. The four size bytes are
+    synchsafe: their top bit must be clear.
+    """
+    if len(raw) < 10 or raw[:3] != b"ID3" or any(byte & 0x80 for byte in raw[6:10]):
+        return 0
+    tag_size = 0
+    for byte in raw[6:10]:
+        tag_size = (tag_size << 7) | byte
+    length = 10 + tag_size
+    # ID3v2.4's optional footer is not included in the stored tag size.
+    if raw[3] == 4 and raw[5] & 0x10:
+        length += 10
+    return length
+
+
 def _sniff_audio_container(raw: bytes) -> Optional[str]:
     """Return 'wav' or 'mp3' if the bytes are a container llama-server accepts
     directly (so we can forward them untouched), else None (needs transcoding)."""
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
         return "wav"
 
-    # An ID3v2 tag can prefix any MPEG audio layer (and occasionally AAC), so
-    # skip it before deciding whether the first frame is actually Layer III.
-    # The four size bytes are synchsafe: their top bit must be clear.
-    frame_offset = 0
-    if len(raw) >= 10 and raw[:3] == b"ID3" and not any(byte & 0x80 for byte in raw[6:10]):
-        tag_size = 0
-        for byte in raw[6:10]:
-            tag_size = (tag_size << 7) | byte
-        frame_offset = 10 + tag_size
-        # ID3v2.4's optional footer is not included in the stored tag size.
-        if raw[3] == 4 and raw[5] & 0x10:
-            frame_offset += 10
+    frame_offset = _id3_tag_length(raw)
 
     # MPEG audio frame header: the 11-bit sync is followed by version and layer
     # bits. Layer III is binary 01; Layer II (MP2) is 10, while ADTS AAC uses
@@ -17482,6 +17490,93 @@ def _sniff_audio_container(raw: bytes) -> Optional[str]:
 
     # ID3-only or malformed MPEG data must go through the decoder too; treating
     # the tag itself as proof of MP3 would reintroduce the MP2/AAC collision.
+    return None
+
+
+# Layer III bitrates in kbps by MPEG version bits, and the sample rates that go
+# with them. Index 0 is "free" and index 15 is invalid; both read as 0 here.
+_MPEG_LAYER3_BITRATES = {
+    3: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0),
+    2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0),
+    0: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0),
+}
+_MPEG_SAMPLE_RATES = {
+    3: (44_100, 48_000, 32_000, 0),
+    2: (22_050, 24_000, 16_000, 0),
+    0: (11_025, 12_000, 8_000, 0),
+}
+
+
+def _wav_seconds(raw: bytes) -> Optional[float]:
+    """Seconds of PCM a RIFF/WAVE header describes, or None if it cannot say.
+
+    Header arithmetic only: the point is to bound a file that is forwarded
+    without ever being decoded here.
+    """
+    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        return None
+    byte_rate = 0
+    offset = 12
+    while offset + 8 <= len(raw):
+        chunk = raw[offset : offset + 4]
+        size = int.from_bytes(raw[offset + 4 : offset + 8], "little")
+        body = offset + 8
+        if chunk == b"fmt " and size >= 16 and body + 16 <= len(raw):
+            byte_rate = int.from_bytes(raw[body + 8 : body + 12], "little")
+        elif chunk == b"data":
+            if byte_rate <= 0:
+                return None
+            # A streaming writer can declare a size the file does not carry, so
+            # the smaller of the two is what is really there.
+            carried = len(raw) - body
+            return (min(size, carried) if size else carried) / byte_rate
+        # Chunks are padded to an even length, and the padding is not counted.
+        offset = body + size + (size & 1)
+    return None
+
+
+def _mp3_seconds(raw: bytes, cap: float) -> Optional[float]:
+    """Seconds of audio an MPEG stream holds, walking frame headers only.
+
+    Returns as soon as the running total passes `cap`, so proving a file too long
+    costs a fraction of the walk. A tail that is not a frame ends the count: an
+    ID3v1 or APE trailer is metadata, not audio. None when not one frame reads,
+    since nothing has then been established.
+    """
+    offset = _id3_tag_length(raw)
+    seconds = 0.0
+    frames = 0
+    while offset + 4 <= len(raw):
+        first, second, third = raw[offset], raw[offset + 1], raw[offset + 2]
+        if first != 0xFF or (second & 0xE0) != 0xE0:
+            break
+        version = (second >> 3) & 0x03
+        layer = (second >> 1) & 0x03
+        if version == 0x01 or layer != 0x01:
+            break
+        bitrate = _MPEG_LAYER3_BITRATES[version][(third >> 4) & 0x0F] * 1000
+        rate = _MPEG_SAMPLE_RATES[version][(third >> 2) & 0x03]
+        if bitrate <= 0 or rate <= 0:
+            break
+        # MPEG-1 Layer III carries 1152 samples per frame, MPEG-2 and 2.5 half that.
+        samples = 1152 if version == 0x03 else 576
+        length = (samples // 8) * bitrate // rate + ((third >> 1) & 0x01)
+        if length <= 4:
+            break
+        seconds += samples / rate
+        frames += 1
+        if seconds > cap:
+            return seconds
+        offset += length
+    return seconds if frames else None
+
+
+def _passthrough_audio_seconds(raw: bytes, container: str, cap: float) -> Optional[float]:
+    """How long a container forwarded untouched runs, or None if unreadable."""
+    if container == "wav":
+        return _wav_seconds(raw)
+    if container == "mp3":
+        return _mp3_seconds(raw, cap)
     return None
 
 
@@ -17715,6 +17810,16 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     raw = base64.b64decode(b64)
     passthrough = _sniff_audio_container(raw)
     if passthrough is not None:
+        # Forwarding skips every bounded decoder, so the duration cap has to be
+        # applied from the headers instead. A 16 kbps MP3 holds hours inside the
+        # 25 MB upload cap, and llama-server was left to decode all of it. A
+        # container whose headers cannot say stays forwarded, as before: this
+        # refuses what it can prove, and invents nothing.
+        seconds = _passthrough_audio_seconds(raw, passthrough, _MAX_AUDIO_SECONDS)
+        if seconds is not None and seconds > _MAX_AUDIO_SECONDS:
+            raise _DecodedAudioTooLongError(
+                f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+            )
         return b64, passthrough
 
     arr, sr = _decode_audio_mono(raw)

@@ -11,15 +11,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  CHAT_AUDIO_DROP_ACCEPT,
-  CHAT_VIDEO_DROP_ACCEPT,
-} from "@/features/native-intents/drop-paths";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
 import {
+  REFERENCE_DROP_ACCEPT,
   REFERENCE_PICKER_ACCEPT,
   createReferenceSelectionGate,
   readReferenceFile,
@@ -129,7 +126,7 @@ export function ReferenceMediaPicker({
   // fire on the desktop app; this claims the OS drop for the button (#9036).
   const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
     onFiles: (files) => void readFile(files[0]),
-    accept: kind === "video" ? CHAT_VIDEO_DROP_ACCEPT : CHAT_AUDIO_DROP_ACCEPT,
+    accept: REFERENCE_DROP_ACCEPT[kind],
     multiple: false,
   });
 

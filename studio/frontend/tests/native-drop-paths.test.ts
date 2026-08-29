@@ -2168,6 +2168,135 @@ test("a 3GP is inspected however large the surface taking it allows", async () =
   );
   assert.match(
     source,
-    /export function needsAttachmentTrackInspection[\s\S]*?\{\s*return \/\\\.3gp\$\/i\.test\(file\.name\) && !\/\^audio\\\/\/i\.test\(file\.type\);\s*\}/,
+    /export function needsAttachmentTrackInspection[^)]*\)[^{]*\{\s*return \/\\\.3gp\$\/i\.test\(file\.name\);\s*\}/,
   );
+});
+
+test("a boundary counts only on the header that owns the parts", async () => {
+  // A quoted filename on any header could register a delimiter, and a body line
+  // repeating it then reopened the headers.
+  const enc = new TextEncoder();
+  const eml = new Uint8Array([
+    ...enc.encode(
+      "Content-Type: text/plain; charset=ISO-8859-1\r\n" +
+        'Content-Disposition: attachment; filename="report; boundary=fake"\r\n\r\nCaf',
+    ),
+    0xe9,
+    ...enc.encode(
+      "\r\n--fake\r\nContent-Type: text/plain; charset=windows-1251\r\n",
+    ),
+  ]);
+  assert.match(await readTextAttachment(new File([eml], "message.eml")), /Café/);
+
+  // A real multipart boundary still registers, quoted or bare.
+  for (const header of [
+    'Content-Type: multipart/mixed; boundary="part"',
+    "Content-Type: multipart/alternative; boundary=part",
+  ]) {
+    const multipart = new Uint8Array([
+      ...enc.encode(
+        `${header}\r\n\r\n--part\r\nContent-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf`,
+      ),
+      0xe9,
+    ]);
+    assert.match(
+      await readTextAttachment(new File([multipart], "message.eml")),
+      /Café/,
+      header,
+    );
+  }
+});
+
+test("a preview finds a declaration that sits past its own slice", async () => {
+  // The preview decodes a bounded prefix. Looking for the declaration inside
+  // that prefix reported an error for a file the attachment itself decodes.
+  const enc = new TextEncoder();
+  // A translator comment in the file's own encoding, so the prefix is not UTF-8
+  // and the strict decode has to fall back to the declaration to read it.
+  const comment = new Uint8Array([
+    ...enc.encode("# "),
+    0xcf,
+    0xf0,
+    ...enc.encode(" translated by\n"),
+  ]);
+  const whole = new Uint8Array([
+    ...Array.from({ length: 200 }).flatMap(() => Array.from(comment)),
+    ...enc.encode(
+      `msgid ""\nmsgstr ""\n` +
+        '"Content-Type: text/plain; charset=windows-1251\\n"\n\n' +
+        'msgid "hi"\nmsgstr "',
+    ),
+    0xcf,
+    0xf0,
+    ...enc.encode('"\n'),
+  ]);
+  // The slice stops above the header entry, exactly as the preview cap would.
+  const slice = whole.subarray(0, comment.length * 200 - 40);
+  assert.throws(() => decodeTextAttachmentBytes(slice, "ru.po", true));
+  assert.equal(
+    typeof decodeTextAttachmentBytes(slice, "ru.po", true, whole),
+    "string",
+  );
+
+  const source = readFileSync(
+    new URL("../src/features/chat/attachment-content.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /decodeTextAttachmentBytes\(bytes, file\.name, truncated, whole\)/);
+  assert.match(source, /DECLARES_ITS_CHARSET_RE/);
+});
+
+test("a 3GP typed as audio by the platform is still inspected", async () => {
+  // A platform that maps the shared extension to audio/3gpp says so for a clip
+  // too, and the audio adapter is matched before the video one.
+  const clip = new File([threeGpWithTracks(["soun", "vide"])], "clip.3gp", {
+    type: "audio/3gpp",
+  });
+  const classified = await classifiedAttachmentFile(clip);
+  assert.equal(classified.type, "video/3gpp");
+  assert.equal(isVideoFile(classified), true);
+  assert.equal(isAudioAttachmentFile(classified), false);
+
+  // A recording already typed correctly is returned untouched, not rewrapped.
+  const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
+    type: "audio/3gpp",
+  });
+  assert.equal(await classifiedAttachmentFile(recording), recording);
+
+  // Tracks that cannot be read decide nothing.
+  const unreadable = new File([new Uint8Array([1, 2, 3, 4])], "odd.3gp", {
+    type: "audio/3gpp",
+  });
+  assert.equal(await classifiedAttachmentFile(unreadable), unreadable);
+});
+
+test("the reference drop zone takes what its dialog offers", async () => {
+  const { REFERENCE_DROP_ACCEPT, REFERENCE_PICKER_ACCEPT: picker } = await import(
+    "../src/features/video/reference-budget.ts"
+  );
+  // The zone filters on the name before the classifier can look at the file, so
+  // a list narrower than the dialog's refused what the button accepts.
+  assert.ok(REFERENCE_DROP_ACCEPT.audio.split(",").includes(".3gp"));
+  for (const [kind, offered] of Object.entries(picker)) {
+    const dropped = REFERENCE_DROP_ACCEPT[kind as "audio" | "video"].split(",");
+    for (const entry of offered.split(",")) {
+      if (!entry.startsWith(".")) continue;
+      assert.ok(dropped.includes(entry), `${kind} ${entry}`);
+    }
+    // Extensions only: the zone shows this list verbatim when it refuses a file.
+    assert.equal(dropped.some((entry) => entry.includes("/")), false, kind);
+  }
+  // Nothing the chat drop lists may be missing from it either.
+  for (const ext of CHAT_AUDIO_DROP_ACCEPT.split(",")) {
+    assert.ok(REFERENCE_DROP_ACCEPT.audio.split(",").includes(ext), ext);
+  }
+  for (const ext of CHAT_VIDEO_DROP_ACCEPT.split(",")) {
+    assert.ok(REFERENCE_DROP_ACCEPT.video.split(",").includes(ext), ext);
+  }
+
+  const picked = readFileSync(
+    new URL("../src/features/video/reference-picker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(picked, /accept: REFERENCE_DROP_ACCEPT\[kind\]/);
 });

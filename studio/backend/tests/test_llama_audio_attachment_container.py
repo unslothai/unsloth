@@ -589,3 +589,98 @@ def test_ordinary_audio_keeps_its_block_size(monkeypatch):
         )
         inference_route._decode_audio_mono_with_soundfile(b"ordinary audio")
     assert sizes == [48_000, 48_000, 48_000, 48_000]
+
+
+def _wav_header(sample_rate: int, channels: int, bits: int, data_bytes: int) -> bytes:
+    block_align = channels * bits // 8
+    byte_rate = sample_rate * block_align
+    return (
+        b"RIFF"
+        + (36 + data_bytes).to_bytes(4, "little")
+        + b"WAVEfmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + channels.to_bytes(2, "little")
+        + sample_rate.to_bytes(4, "little")
+        + byte_rate.to_bytes(4, "little")
+        + block_align.to_bytes(2, "little")
+        + bits.to_bytes(2, "little")
+        + b"data"
+        + data_bytes.to_bytes(4, "little")
+    )
+
+
+def _mp3_frames(seconds: float, bitrate_kbps: int = 8) -> bytes:
+    """MPEG-2.5 Layer III frames at 8 kHz: 576 samples and 72 bytes each at 8 kbps."""
+    version_bits = 0x00 << 3  # MPEG 2.5
+    layer_bits = 0x01 << 1  # Layer III
+    bitrate_index = (0, 8, 16, 24, 32, 40, 48, 56, 64).index(bitrate_kbps)
+    third = (bitrate_index << 4) | (0x02 << 2)  # 8 kHz, no padding
+    header = bytes([0xFF, 0xE0 | version_bits | layer_bits | 0x01, third, 0x00])
+    length = (576 // 8) * bitrate_kbps * 1000 // 8_000
+    frame = header + b"\x00" * (length - 4)
+    return frame * max(1, round(seconds / (576 / 8_000)))
+
+
+def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
+    """Passthrough returns before every bounded decoder, so the duration cap has
+    to come from the header."""
+    # A small cap, so the fixture can carry the PCM its header declares rather
+    # than allocating the 24 MB that 50 minutes at 8 kHz would really take.
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
+    long_wav = _wav_header(8_000, 1, 8, 8_000 * 2) + b"\x80" * (8_000 * 2)
+    try:
+        inference_route._prepare_audio_for_llama(base64.b64encode(long_wav).decode())
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected a forwarded wav to be held to the limit")
+
+    # One inside the limit is still forwarded untouched.
+    short_wav = _wav_header(8_000, 1, 8, 4_000) + b"\x80" * 4_000
+    encoded, container = inference_route._prepare_audio_for_llama(
+        base64.b64encode(short_wav).decode()
+    )
+    assert container == "wav"
+    assert base64.b64decode(encoded) == short_wav
+
+
+def test_a_forwarded_mp3_is_bounded_by_its_frame_headers(monkeypatch):
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 60)
+    try:
+        inference_route._prepare_audio_for_llama(base64.b64encode(_mp3_frames(120)).decode())
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected a forwarded mp3 to be held to the limit")
+
+    encoded, container = inference_route._prepare_audio_for_llama(
+        base64.b64encode(_mp3_frames(10)).decode()
+    )
+    assert container == "mp3"
+
+
+def test_the_frame_walk_stops_at_the_cap(monkeypatch):
+    """Proving a file too long must not cost the whole walk."""
+    hours = _mp3_frames(3 * 60 * 60)
+    assert len(hours) > 1_000_000
+    seconds = inference_route._mp3_seconds(hours, 60.0)
+    assert seconds is not None
+    # Just past the cap, not the file's full three hours.
+    assert 60.0 < seconds < 61.0
+
+
+def test_a_container_that_cannot_say_is_still_forwarded():
+    """Refuse what can be proved, and invent nothing for the rest."""
+    assert inference_route._wav_seconds(b"RIFF\x00\x00\x00\x00WAVE") is None
+    assert inference_route._mp3_seconds(b"not a frame at all", 60.0) is None
+    # A tag with no frames behind it reads as no audio, not as a duration.
+    assert inference_route._mp3_seconds(_id3_prefix(), 60.0) is None
+
+
+def test_an_id3v1_trailer_does_not_hide_the_duration():
+    """A trailing tag is metadata; the frames before it still count."""
+    tagged = _mp3_frames(10) + b"TAG" + b"\x00" * 125
+    seconds = inference_route._mp3_seconds(tagged, 60.0)
+    assert seconds is not None
+    assert 9.0 < seconds < 11.0

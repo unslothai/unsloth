@@ -858,13 +858,28 @@ export async function readAttachmentText(
   return { label: null, ...(await readBoundedText(file)) };
 }
 
+// Formats that state their own encoding somewhere other than the first bytes: a
+// gettext header sits below the translator comments, and a mail or vCard
+// declaration below whatever came before it in the archive.
+const DECLARES_ITS_CHARSET_RE = /\.(?:po|pot|eml|mbox|vcf)$/i;
+
 async function readBoundedText(
   file: File,
 ): Promise<{ text: string; truncated: boolean }> {
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
   const bytes = new Uint8Array(await slice.arrayBuffer());
-  return { text: decodeTextAttachmentBytes(bytes, file.name, truncated), truncated };
+  // The declaration can sit past the preview slice, and looking for it inside
+  // the slice reported an error for a file the attachment itself decodes. Only
+  // the formats that can carry one that far in pay for the second read.
+  const whole =
+    truncated && DECLARES_ITS_CHARSET_RE.test(file.name)
+      ? new Uint8Array(await file.arrayBuffer())
+      : bytes;
+  return {
+    text: decodeTextAttachmentBytes(bytes, file.name, truncated, whole),
+    truncated,
+  };
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview

@@ -150,7 +150,7 @@ const MAX_MOOV_BYTES = 8 * 1024 * 1024;
 const MAX_TOP_LEVEL_BOXES = 64;
 
 /**
- * The same answer as `isAudioOnly3gpBytes`, without holding the container.
+ * Which track kinds a container declares, without holding it.
  *
  * The tracks live in `moov`, and the samples in `mdat` beside it, so reading the
  * file to reach a handler retains the whole clip: a 64 MB one costs 64 MB, and a
@@ -158,7 +158,7 @@ const MAX_TOP_LEVEL_BOXES = 64;
  * through slices and reads only `moov`, which is the same walk `bmffBoxPayloads`
  * does, one level up.
  */
-async function isAudioOnly3gpFile(file: File): Promise<boolean> {
+async function read3gpTracks(file: File): Promise<BmffTracks> {
   const found: BmffTracks = { audio: false, video: false };
   let offset = 0;
   for (let box = 0; box < MAX_TOP_LEVEL_BOXES && offset + 8 <= file.size; box++) {
@@ -199,7 +199,7 @@ async function isAudioOnly3gpFile(file: File): Promise<boolean> {
     }
     offset += boxSize;
   }
-  return found.audio && !found.video;
+  return found;
 }
 
 /**
@@ -207,15 +207,20 @@ async function isAudioOnly3gpFile(file: File): Promise<boolean> {
  * Cheap and synchronous, so a surface can keep its existing path for everything
  * else.
  *
- * No size condition. One was here, at the composer's video cap, and the video
- * reference surface accepts a larger file than that, so a recording in between
- * skipped inspection and was staged as a video reference on its extension
- * alone. A ceiling that has to track every surface's limit is a ceiling that
- * will fall behind one of them, and the walk below is bounded by box count and
- * by the size of the track table rather than by the size of the file.
+ * The extension alone, and nothing about the MIME type or the size.
+ *
+ * Not the type, because it comes from the same ambiguous extension: a platform
+ * that reports audio/3gpp for a recording reports it for a clip as well, and
+ * trusting that sent the clip down the audio path.
+ *
+ * Not the size, because the one condition here sat at the composer's video cap
+ * while the video reference surface accepts a larger file, so a recording in
+ * between skipped inspection entirely. A ceiling that has to track every
+ * surface's limit will fall behind one of them, and the walk below is bounded
+ * by box count and by the size of the track table rather than by the file.
  */
 export function needsAttachmentTrackInspection(file: File): boolean {
-  return /\.3gp$/i.test(file.name) && !/^audio\//i.test(file.type);
+  return /\.3gp$/i.test(file.name);
 }
 
 /**
@@ -233,18 +238,27 @@ export async function classifiedAttachmentFile(file: File): Promise<File> {
   if (!needsAttachmentTrackInspection(file)) {
     return file;
   }
-  let audioOnly: boolean;
+  let tracks: BmffTracks;
   try {
-    audioOnly = await isAudioOnly3gpFile(file);
+    tracks = await read3gpTracks(file);
   } catch {
     // An unreadable file is left as it came; the surface reports the read.
     return file;
   }
-  if (!audioOnly) {
+  // Both directions, because the browser's answer comes from the same ambiguous
+  // extension: a platform that maps .3gp to audio/3gpp says so for a clip too,
+  // and the audio adapter is matched before the video one. Tracks it cannot
+  // read decide nothing, so the file is left as it came.
+  const corrected = tracks.video
+    ? "video/3gpp"
+    : tracks.audio
+      ? "audio/3gpp"
+      : null;
+  if (corrected === null || corrected === file.type) {
     return file;
   }
   return new File([file], file.name, {
-    type: "audio/3gpp",
+    type: corrected,
     lastModified: file.lastModified,
   });
 }

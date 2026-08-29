@@ -55,6 +55,27 @@ export const REFERENCE_PICKER_ACCEPT: Record<ReferenceKind, string> = {
   audio: AUDIO_PICKER_ACCEPT,
 };
 
+/**
+ * The same policy for the drop zone, extensions only.
+ *
+ * A drop zone filters on the name before the classifier can look at the file,
+ * so a list narrower than the dialog's refuses what the button accepts. It
+ * carries no MIME types because the zone matches names and puts this list
+ * verbatim into the message it shows when it turns a file away.
+ */
+export const REFERENCE_DROP_ACCEPT: Record<ReferenceKind, string> = {
+  video: extensionsOf(REFERENCE_PICKER_ACCEPT.video),
+  audio: extensionsOf(REFERENCE_PICKER_ACCEPT.audio),
+};
+
+function extensionsOf(accept: string): string {
+  return accept
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.startsWith("."))
+    .join(",");
+}
+
 /** Why this file cannot be staged as a reference, or null when it can. */
 export function referenceFileRejection(
   kind: ReferenceKind,
