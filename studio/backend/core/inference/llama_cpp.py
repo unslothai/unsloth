@@ -3468,8 +3468,9 @@ def _spilled_decode_threads(
     pass-through precedence. An inherited ``LLAMA_ARG_THREADS`` is ignored here
     because Studio removes it before spawn whenever argv has no thread flag; if
     argv does have one, that later flag wins. Explicit SMT oversubscription and
-    CPU affinity cannot be represented by this physical-core model and return
-    ``None`` so the caller can decline. Otherwise llama.cpp sizes its pool from
+    explicit or inherited CPU affinity cannot be represented by this
+    physical-core model, so those settings return ``None`` and the caller declines.
+    Otherwise llama.cpp sizes its pool from
     ``common_cpu_get_num_math``, which counts physical cores
     and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
     hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
@@ -3498,7 +3499,13 @@ def _spilled_decode_threads(
             continue
     physical: Optional[int] = None
     logical: Optional[int] = None
+    affinity_count: Optional[int] = None
     if sys.platform.startswith("linux") and os.uname().machine.lower() in ("x86_64", "amd64"):
+        if hasattr(os, "sched_getaffinity"):
+            try:
+                affinity_count = len(os.sched_getaffinity(0))
+            except OSError:
+                pass
         physical = _linux_math_core_count()
     try:
         import psutil
@@ -3511,6 +3518,8 @@ def _spilled_decode_threads(
                 physical = int(answer)
     except Exception:
         pass
+    if affinity_count is not None and logical is not None and affinity_count < logical:
+        return None
     if physical is None:
         logical = os.cpu_count()
         physical = logical if logical and logical <= 4 else (logical // 2 if logical else 4)

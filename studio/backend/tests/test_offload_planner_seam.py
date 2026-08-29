@@ -1806,6 +1806,25 @@ def test_default_thread_override_uses_native_logical_count(monkeypatch):
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) is None
 
 
+def test_inherited_linux_cpu_affinity_declines_spill_pricing(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _SmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 16 if logical else 8
+
+    import sys
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: {0, 1})
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
+    assert llama_mod._spilled_decode_threads() is None
+
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)))
+    assert llama_mod._spilled_decode_threads() == 8
+
+
 def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     import core.inference.llama_cpp as llama_mod
 
@@ -2099,5 +2118,6 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
     import sys
 
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(24)))
     monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
     assert llama_mod._spilled_decode_threads() == 12
