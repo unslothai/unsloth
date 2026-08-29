@@ -337,7 +337,6 @@ mod appimage_environment_tests {
 #[cfg(windows)]
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
-#[cfg(windows)]
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
 
 #[cfg(windows)]
@@ -352,6 +351,23 @@ impl Drop for StudioManagedRuntimeLaunchGuard {
         unsafe {
             let _ = windows_sys::Win32::System::Threading::ReleaseMutex(self.handle);
             let _ = windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct StudioManagedRuntimeLaunchGuard {
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for StudioManagedRuntimeLaunchGuard {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }
     }
 }
@@ -493,11 +509,44 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
     acquire_named_studio_runtime_launch_guard(&name)
 }
 
-/// Serialize creation of managed-environment children with install/repair.
+#[cfg(unix)]
+fn acquire_file_studio_runtime_launch_guard(
+    home: &std::path::Path,
+) -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    use std::os::fd::AsRawFd;
+
+    std::fs::create_dir_all(home)
+        .map_err(|error| format!("Could not create the Studio runtime lock directory: {error}"))?;
+    let path = home.join(".studio-runtime.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|error| format!("Could not open the Studio runtime lock: {error}"))?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(StudioManagedRuntimeLaunchGuard { file });
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return Err(
+            "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
+                .to_string(),
+        );
+    }
+    Err(format!("Could not acquire the Studio runtime lock: {error}"))
+}
+
+#[cfg(unix)]
+fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    acquire_file_studio_runtime_launch_guard(&crate::diagnostics::studio_dir())
+}
+
+/// serialize creation of managed-environment children with install/repair.
 ///
-/// The guard ends when the sync operation returns. The installer takes the same
-/// mutex then scans for managed processes, so holding it through child creation
-/// closes the race without carrying a thread-owned Win32 mutex across an await.
+/// the guard ends when the synchronous operation returns, so platform locks do
+/// not cross an await.
 #[cfg(windows)]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,
@@ -515,8 +564,38 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
         let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
         return with_named_studio_runtime_launch_guard(&name, operation);
     }
-    #[cfg(not(windows))]
-    operation()
+    #[cfg(unix)]
+    {
+        let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
+        return operation();
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        operation()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod posix_studio_runtime_launch_guard_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_a_second_launcher_until_the_first_releases_the_file_lock() {
+        let home = tempfile::tempdir().unwrap();
+        let first = acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+        let path = home.path().to_path_buf();
+        let error = std::thread::spawn(move || {
+            acquire_file_studio_runtime_launch_guard(&path)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        assert!(error.contains("installation is modifying"));
+
+        drop(first);
+        acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+    }
 }
 
 #[cfg(windows)]
@@ -3061,7 +3140,6 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
-    #[cfg(windows)]
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // A backend started while the job is disarmed is the orphan this guards
@@ -3175,7 +3253,6 @@ pub fn start_backend(
         return Err(msg);
     }
 
-    #[cfg(windows)]
     cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
     if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {

@@ -4108,16 +4108,18 @@ def _stage_update(*, local: bool, package: str, verbose: bool, verify: bool) -> 
         args.append("--verbose")
     if not verify:
         args.append("--no-verify")
-    try:
-        result = _studio_stage.stage(STUDIO_HOME, update_args = args, echo = typer.echo)
-    except _studio_stage.StageError as exc:
-        typer.echo(f"[TAURI:ERROR] {exc}")
-        raise typer.Exit(1)
-    except Exception as exc:
-        # A full disk, a timed-out probe, a copy the OS refused: the desktop reads
-        # this stream, so a traceback here would reach it as an unlabelled failure.
-        typer.echo(f"[TAURI:ERROR] {type(exc).__name__}: {exc}")
-        raise typer.Exit(1)
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        try:
+            result = _studio_stage.stage(STUDIO_HOME, update_args = args, echo = typer.echo)
+        except _studio_stage.StageError as exc:
+            typer.echo(f"[TAURI:ERROR] {exc}")
+            raise typer.Exit(1)
+        except Exception as exc:
+            # A full disk, a timed-out probe, a copy the OS refused: the desktop reads
+            # this stream, so a traceback here would reach it as an unlabelled failure.
+            typer.echo(f"[TAURI:ERROR] {type(exc).__name__}: {exc}")
+            raise typer.Exit(1)
     typer.echo(f"Staged Unsloth Studio {result['backend_version']} at {result['root']}")
 
 

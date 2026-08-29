@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Coordinate Windows launches that consume the Tauri-managed Studio environment."""
+"""Coordinate launches that consume the Tauri-managed Studio environment."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from typing import Iterator, Mapping
 _RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironment-"
 _PATH_RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironmentPath-"
 _RUNTIME_GATE_HANDOFF_ENV = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF"
+_POSIX_RUNTIME_LOCK_FILE = ".studio-runtime.lock"
 
 
 class StudioRuntimeGateBusy(RuntimeError):
@@ -176,10 +177,28 @@ def _current_windows_user_sid() -> str:
 
 @contextlib.contextmanager
 def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -> Iterator[bool]:
-    """Hold the shared Windows launch gate through backend admission."""
+    """Hold the shared launch gate through backend admission."""
 
-    if sys.platform != "win32" or inherited:
+    if inherited:
         yield False
+        return
+
+    if sys.platform != "win32":
+        import fcntl
+
+        studio_home.mkdir(parents = True, exist_ok = True)
+        lock_file = (studio_home / _POSIX_RUNTIME_LOCK_FILE).open("a+b")
+        try:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise StudioRuntimeGateBusy(str(lock_file.name)) from exc
+            yield True
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
         return
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)

@@ -1935,10 +1935,15 @@ fn main() {
 
             initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
-            staged_update::reconcile_at_launch(
-                &diagnostics::studio_dir(),
-                &app.package_info().version.to_string(),
-            );
+            if let Err(error) = process::with_studio_runtime_launch_guard(|| {
+                staged_update::reconcile_at_launch(
+                    &diagnostics::studio_dir(),
+                    &app.package_info().version.to_string(),
+                );
+                Ok(())
+            }) {
+                warn!("Staged update activation deferred: {error}");
+            }
             // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");

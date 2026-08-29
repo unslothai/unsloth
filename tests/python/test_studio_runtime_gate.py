@@ -63,7 +63,7 @@ def test_runtime_gate_handoff_is_one_shot(monkeypatch):
 
 def test_terminal_launch_boundaries_use_the_runtime_gate():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    assert source.count("with _studio_runtime_launch_guard(") >= 4
+    assert source.count("with _studio_runtime_launch_guard(") >= 5
     assert "runtime_gate_child_environment()" in source
     assert "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()" in source
 
@@ -92,6 +92,36 @@ def test_terminal_setup_holds_the_gate_through_environment_mutation():
     idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
     setup = body.index("_run_setup_script(", idle_scan)
     assert consume < guard < idle_scan < setup
+
+
+def test_terminal_stage_holds_the_gate_through_the_clone():
+    source = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    body = source[source.index("def _stage_update(") : source.index("class _WindowsLauncher")]
+    consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
+    guard = body.index("with _studio_runtime_launch_guard(", consume)
+    stage = body.index("_studio_stage.stage(", guard)
+    assert consume < guard < stage
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX flock is required")
+def test_posix_runtime_gate_blocks_another_process_and_recovers(tmp_path):
+    script = """
+import sys
+from pathlib import Path
+from unsloth_cli import _studio_runtime_gate as gate
+try:
+    with gate.studio_runtime_launch_guard(Path(sys.argv[1])):
+        pass
+except gate.StudioRuntimeGateBusy:
+    raise SystemExit(7)
+"""
+    with gate.studio_runtime_launch_guard(tmp_path) as acquired:
+        assert acquired is True
+        blocked = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check = False)
+        assert blocked.returncode == 7
+
+    recovered = subprocess.run([sys.executable, "-c", script, str(tmp_path)], check = False)
+    assert recovered.returncode == 0
 
 
 def test_interrupted_windows_setup_kills_tree_before_return(monkeypatch):

@@ -180,7 +180,6 @@ fn spawn_update(
     if matches!(kind, UpdateKind::Staged { .. }) {
         configure_staged_update_environment(&mut cmd);
     }
-    #[cfg(windows)]
     cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
     // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
