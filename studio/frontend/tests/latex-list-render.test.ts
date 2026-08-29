@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import { remarkEscapedInlineMath } from "../src/lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
@@ -32,6 +33,7 @@ function renderResponse(
         parseMarkdownIntoBlocksFn: incremental?.parseMarkdownIntoBlocks,
         isAnimating: isStreaming,
         plugins: { math },
+        remarkPlugins: [remarkEscapedInlineMath],
       },
       incremental?.markdown ?? processed,
     ),

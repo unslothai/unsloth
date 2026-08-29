@@ -9,6 +9,8 @@
 //   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
 //      math delimiters when singleDollarTextMath is enabled.
 
+import { parseMarkdownIntoBlocks } from "streamdown";
+import { codeSpans } from "./markdown-code-spans.ts";
 import {
   EMPTY_LIST_STATE,
   NO_QUOTE,
@@ -19,8 +21,6 @@ import {
   quoteDepth,
   quoteState,
 } from "./markdown-list-columns.ts";
-import { parseMarkdownIntoBlocks } from "streamdown";
-import { codeSpans, codeSpansWithOpenTail } from "./markdown-code-spans.ts";
 
 /**
  * Matches a single $ followed by a number pattern (currency), e.g.:
@@ -121,7 +121,6 @@ function normalizedMarkdownOffsets(content: string): {
 
 function findInlineCodeRegions(
   content: string,
-  includeOpenTail: boolean,
   blockRegions: Array<[number, number]>,
 ): Array<[number, number]> {
   let masked = content;
@@ -141,7 +140,7 @@ function findInlineCodeRegions(
   const crossesBlock = spans.some(({ start, end }) =>
     CODE_SPAN_BLOCK_BOUNDARY_RE.test(masked.slice(start, end)),
   );
-  if (!includeOpenTail && !crossesBlock) {
+  if (!crossesBlock) {
     return spans.map(({ start, end }) => [start, end]);
   }
 
@@ -150,10 +149,7 @@ function findInlineCodeRegions(
   const regions: Array<[number, number]> = [];
   let blockStart = 0;
   for (const block of blocks) {
-    const blockSpans = includeOpenTail
-      ? codeSpansWithOpenTail(block)
-      : codeSpans(block);
-    for (const span of blockSpans) {
+    for (const span of codeSpans(block)) {
       regions.push([
         normalized.offsets[blockStart + span.start] ?? content.length,
         normalized.offsets[blockStart + span.end] ?? content.length,
@@ -164,10 +160,7 @@ function findInlineCodeRegions(
   return regions;
 }
 
-export function findCodeBlockRegions(
-  content: string,
-  includeOpenInlineTail = false,
-): Array<[number, number]> {
+export function findCodeBlockRegions(content: string): Array<[number, number]> {
   const fenced: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
   const indented: Array<[number, number]> = [];
@@ -332,7 +325,7 @@ export function findCodeBlockRegions(
   }
 
   const blocks = mergeRegions(fenced, indented);
-  const inline = findInlineCodeRegions(content, includeOpenInlineTail, blocks);
+  const inline = findInlineCodeRegions(content, blocks);
 
   // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
   // the binary search land on the inner span and miss the outer one.
@@ -348,29 +341,6 @@ export function findCodeBlockRegions(
  */
 const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
-const AUTOLINK_RE =
-  /<[a-zA-Z][a-zA-Z\d+.-]{1,31}:[^<>\s]*>|<[a-zA-Z\d.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z\d.-]+>/g;
-const HTML_TAG_RE =
-  /<\/?[a-zA-Z][a-zA-Z\d-]*(?:\s+(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*\/?>/g;
-const HTML_OPAQUE_RE =
-  /<!--[\s\S]*?(?:-->|$)|<\?[\s\S]*?(?:\?>|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<![a-zA-Z][^>]*(?:>|$)/g;
-const HTML_BLOCK_OPEN_RE = /^ {0,3}<\/?([a-zA-Z][a-zA-Z\d-]*)(?=[\s/>]|$)/;
-const HTML_BLOCK_TAG_ONLY_RE =
-  /^ {0,3}<\/?[a-zA-Z][a-zA-Z\d-]*(?:\s+(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*\/?>\s*$/;
-const HTML_BLOCK_TAGS = new Set(
-  `address article aside base basefont blockquote body caption center col colgroup
-   dd details dialog dir div dl dt fieldset figcaption figure footer form frame
-   frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu
-   menuitem nav noframes ol optgroup option p param search section summary table
-   tbody td tfoot th thead title tr track ul`.split(/\s+/),
-);
-const HTML_LITERAL_TAGS = new Set([
-  "code",
-  "pre",
-  "script",
-  "style",
-  "textarea",
-]);
 
 /**
  * Find the destination spans of inline links/images, so a `\(...\)` written with
@@ -388,86 +358,6 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
     regions.push(match.indices![1]);
   }
   return regions;
-}
-
-function findHtmlRegions(content: string): Array<[number, number]> {
-  const tags: Array<[number, number]> = [];
-  const literals: Array<[number, number]> = [];
-  const openLiterals: Array<{ name: string; start: number }> = [];
-  let match: RegExpExecArray | null;
-
-  HTML_TAG_RE.lastIndex = 0;
-  while ((match = HTML_TAG_RE.exec(content)) !== null) {
-    const end = match.index + match[0].length;
-    tags.push([match.index, end]);
-    const name = /^<\/?([a-zA-Z][a-zA-Z\d-]*)/
-      .exec(match[0])?.[1]
-      ?.toLowerCase();
-    if (!name || !HTML_LITERAL_TAGS.has(name)) {
-      continue;
-    }
-    if (match[0].startsWith("</")) {
-      let opener = openLiterals.length - 1;
-      while (opener >= 0 && openLiterals[opener]?.name !== name) {
-        opener -= 1;
-      }
-      if (opener >= 0) {
-        literals.push([openLiterals[opener].start, end]);
-        openLiterals.length = opener;
-      }
-    } else if (!match[0].endsWith("/>") && name !== "code") {
-      openLiterals.push({ name, start: match.index });
-    } else if (name === "code" && !match[0].endsWith("/>")) {
-      openLiterals.push({ name, start: match.index });
-    }
-  }
-  for (const opener of openLiterals) {
-    literals.push([opener.start, content.length]);
-  }
-
-  const blocks: Array<[number, number]> = [];
-  let blockStart = -1;
-  let previousBlank = true;
-  for (const lineMatch of content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g)) {
-    const line = lineMatch[0];
-    if (!line) {
-      break;
-    }
-    const text = line.replace(/(?:\r\n|\n|\r)$/, "");
-    if (blockStart >= 0) {
-      if (!text.trim()) {
-        blocks.push([blockStart, lineMatch.index]);
-        blockStart = -1;
-      }
-      previousBlank = !text.trim();
-      continue;
-    }
-    const name = HTML_BLOCK_OPEN_RE.exec(text)?.[1]?.toLowerCase();
-    if (
-      (name && HTML_BLOCK_TAGS.has(name)) ||
-      (previousBlank && HTML_BLOCK_TAG_ONLY_RE.test(text))
-    ) {
-      blockStart = lineMatch.index;
-    }
-    previousBlank = !text.trim();
-  }
-  if (blockStart >= 0) {
-    blocks.push([blockStart, content.length]);
-  }
-
-  const autolinks: Array<[number, number]> = [];
-  AUTOLINK_RE.lastIndex = 0;
-  while ((match = AUTOLINK_RE.exec(content)) !== null) {
-    autolinks.push([match.index, match.index + match[0].length]);
-  }
-  HTML_OPAQUE_RE.lastIndex = 0;
-  while ((match = HTML_OPAQUE_RE.exec(content)) !== null) {
-    autolinks.push([match.index, match.index + match[0].length]);
-  }
-  return mergeRegions(
-    mergeRegions(tags, literals),
-    mergeRegions(blocks, autolinks),
-  );
 }
 
 /**
@@ -492,24 +382,6 @@ export function isInRegion(
     }
   }
   return false;
-}
-
-function intersectsRegion(
-  start: number,
-  end: number,
-  regions: Array<[number, number]>,
-): boolean {
-  let low = 0;
-  let high = regions.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (regions[middle][1] <= start) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return low < regions.length && regions[low][0] < end;
 }
 
 /** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
@@ -570,21 +442,6 @@ function looksLikeMathBody(body: string): boolean {
   return LONE_LETTER_RE.test(trimmed);
 }
 
-const OPERATOR_ONLY_RE = /^[=+\-<>/*]+$/;
-const PLAIN_WORD_EXPRESSION_RE = /^[a-zA-Z]{2,}(?:[-/][a-zA-Z]{2,})+$/;
-
-function looksLikeEscapedMathBody(body: string): boolean {
-  const trimmed = body.trim();
-  if (
-    OPERATOR_ONLY_RE.test(trimmed) ||
-    PLAIN_WORD_EXPRESSION_RE.test(trimmed) ||
-    (/^[a-zA-Z]+$/.test(trimmed) && trimmed.length > 1)
-  ) {
-    return false;
-  }
-  return looksLikeMathBody(trimmed);
-}
-
 /**
  * True if the `$` at `offset` opens a balanced inline math span (`$...$`)
  * on the same line. The closer must be unescaped, not part of `$$`, and
@@ -634,196 +491,12 @@ function hasInlineMathCloser(
   return false;
 }
 
-function isEscapedDollar(content: string, offset: number): boolean {
-  if (content[offset] !== "$") return false;
-  let slashes = 0;
-  for (let i = offset - 1; i >= 0 && content[i] === "\\"; i -= 1) {
-    slashes += 1;
-  }
-  return slashes % 2 === 1;
-}
-
-/** Find existing bracket-delimited math outside code and link destinations. */
-function findBracketMathRegions(
-  content: string,
-  skipRegions: Array<[number, number]>,
-): Array<[number, number]> {
-  const regions: Array<[number, number]> = [];
-  for (const [opener, closer] of [
-    ["\\(", "\\)"],
-    ["\\[", "\\]"],
-  ] as const) {
-    let opening = -1;
-    for (let i = 0; i < content.length - 1; i += 1) {
-      if (content[i] !== "\\") continue;
-      const token = content.slice(i, i + 2);
-      if (isInRegion(i, skipRegions)) {
-        if (opening >= 0 && token === closer) opening = -1;
-        if (token === opener || token === closer) i += 1;
-        continue;
-      }
-      if (opening < 0) {
-        if (token === opener && content[i - 1] !== "\\") opening = i;
-      } else if (token === closer) {
-        regions.push([opening, i + 2]);
-        opening = -1;
-      }
-      if (token === opener || token === closer) i += 1;
-    }
-  }
-  const sorted = regions.sort((a, b) => a[0] - b[0]);
-  const nonOverlapping: Array<[number, number]> = [];
-  for (const region of sorted) {
-    const previous = nonOverlapping[nonOverlapping.length - 1];
-    if (!previous || region[0] >= previous[1]) nonOverlapping.push(region);
-  }
-  return nonOverlapping;
-}
-
-/** Find existing `$...$` and `$$...$$` regions outside code and links. */
-function findDollarMathRegions(
-  content: string,
-  skipRegions: Array<[number, number]>,
-): Array<[number, number]> {
-  const displayRegions: Array<[number, number]> = [];
-  let displayOpening = -1;
-  for (let i = 0; i < content.length - 1; i += 1) {
-    if (
-      content[i] !== "$" ||
-      content[i + 1] !== "$" ||
-      isEscapedDollar(content, i) ||
-      isInRegion(i, skipRegions)
-    ) {
-      continue;
-    }
-    if (displayOpening < 0) {
-      displayOpening = i;
-    } else {
-      displayRegions.push([displayOpening, i + 2]);
-      displayOpening = -1;
-    }
-    i += 1;
-  }
-
-  const inlineRegions: Array<[number, number]> = [];
-  const allSkipRegions = mergeRegions(skipRegions, displayRegions);
-  let inlineOpening = -1;
-  for (let i = 0; i < content.length; i += 1) {
-    if (content[i] === "\n" || content[i] === "\r") {
-      inlineOpening = -1;
-      continue;
-    }
-    if (
-      content[i] !== "$" ||
-      isEscapedDollar(content, i) ||
-      content[i - 1] === "$" ||
-      content[i + 1] === "$" ||
-      isInRegion(i, allSkipRegions)
-    ) {
-      continue;
-    }
-    if (inlineOpening < 0) {
-      inlineOpening = i;
-      continue;
-    }
-    if (i - inlineOpening - 1 > 200) {
-      inlineOpening = i;
-      continue;
-    }
-    if (/\d/.test(content[i + 1] ?? "")) continue;
-    if (looksLikeMathBody(content.slice(inlineOpening + 1, i))) {
-      inlineRegions.push([inlineOpening, i + 1]);
-      inlineOpening = -1;
-    } else {
-      inlineOpening = i;
-    }
-  }
-  return [...displayRegions, ...inlineRegions].sort((a, b) => a[0] - b[0]);
-}
-
+/**
+ * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. The body
+ * is capped so repeated incomplete openers stay linear during streaming.
+ */
 const CONVERT_LATEX_DELIM_RE =
   /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
-
-/**
- * recover math-looking `\$...\$` spans emitted by local models. existing
- * math, currency, code, links, even-backslash runs, and incomplete spans stay
- * literal. same-line pairs are consumed once.
- */
-function normalizeEscapedInlineMath(content: string): string {
-  if (!content.includes("\\$")) return content;
-
-  let skipRegions = mergeRegions(
-    findCodeBlockRegions(content, true),
-    findLinkDestinationRegions(content),
-  );
-  skipRegions = mergeRegions(skipRegions, findHtmlRegions(content));
-  skipRegions = mergeRegions(
-    skipRegions,
-    findBracketMathRegions(content, skipRegions),
-  );
-  skipRegions = mergeRegions(
-    skipRegions,
-    findDollarMathRegions(content, skipRegions),
-  );
-  const parts: string[] = [];
-  let last = 0;
-  let lastChar = "";
-  const append = (chunk: string): void => {
-    if (!chunk) return;
-    if (lastChar === "$" && chunk.startsWith("$")) parts.push(" ");
-    parts.push(chunk);
-    lastChar = chunk[chunk.length - 1];
-  };
-
-  for (let opening = 0; opening < content.length; opening += 1) {
-    if (
-      content[opening] !== "$" ||
-      !isEscapedDollar(content, opening) ||
-      content[opening - 1] === "$" ||
-      content[opening + 1] === "$" ||
-      isInRegion(opening, skipRegions)
-    ) {
-      continue;
-    }
-
-    const opener = opening;
-    for (let closing = opening + 1; closing < content.length; closing += 1) {
-      if (content[closing] === "\n" || content[closing] === "\r") break;
-      if (content[closing] !== "$" || !isEscapedDollar(content, closing)) {
-        continue;
-      }
-      if (
-        content[closing + 1] === "$" ||
-        isInRegion(closing, skipRegions) ||
-        intersectsRegion(opener, closing + 1, skipRegions)
-      ) {
-        opening = closing - 1;
-        break;
-      }
-
-      const body = content.slice(opener + 1, closing - 1);
-      const trimmed = body.trim();
-      if (body.length > 200) {
-        opening = closing;
-        break;
-      }
-      if (!looksLikeEscapedMathBody(trimmed)) {
-        opening = closing - 1;
-        break;
-      }
-
-      append(content.slice(last, opener - 1));
-      append(`$${trimmed}$`);
-      last = closing + 1;
-      opening = closing;
-      break;
-    }
-  }
-
-  if (parts.length === 0) return content;
-  append(content.slice(last));
-  return parts.join("");
-}
 
 /**
  * Rewrite `\[...\]` -> block `$$...$$` and `\(...\)` -> inline `$...$` so
@@ -940,8 +613,7 @@ function convertLatexDelimiters(content: string): {
  * - Currency inside code blocks/spans is untouched
  */
 export function preprocessLaTeX(content: string): string {
-  const normalized = normalizeEscapedInlineMath(content);
-  const { text, mathRegions } = convertLatexDelimiters(normalized);
+  const { text, mathRegions } = convertLatexDelimiters(content);
 
   if (!text.includes("$")) return text;
 

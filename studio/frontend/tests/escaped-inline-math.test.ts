@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createMathPlugin } from "@streamdown/math";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Streamdown } from "streamdown";
+import {
+  looksLikeEscapedInlineMath,
+  remarkEscapedInlineMath,
+} from "../src/lib/escaped-inline-math.ts";
+import { preprocessLaTeX } from "../src/lib/latex.ts";
+
+const math = createMathPlugin({ singleDollarTextMath: true });
+
+function render(
+  markdown: string,
+  mode: "static" | "streaming" = "static",
+  escapedMath = true,
+): string {
+  return renderToStaticMarkup(
+    React.createElement(
+      Streamdown,
+      {
+        mode,
+        plugins: { math },
+        remarkPlugins: escapedMath ? [remarkEscapedInlineMath] : [],
+      },
+      preprocessLaTeX(markdown),
+    ),
+  );
+}
+
+function annotations(html: string): string[] {
+  return Array.from(
+    html.matchAll(
+      /<annotation encoding="application\/x-tex">(.*?)<\/annotation>/g,
+    ),
+    (match) => match[1],
+  );
+}
+
+test("the escaped-math classifier stays conservative", () => {
+  for (const body of ["x", "v_s", String.raw`f \to 0`, "x + y", "f(x)"]) {
+    assert.equal(looksLikeEscapedInlineMath(body), true, body);
+  }
+  for (const body of ["5", "5 to 10", "read-only", "USD/EUR", "not math"]) {
+    assert.equal(looksLikeEscapedInlineMath(body), false, body);
+  }
+});
+
+test("escaped math is parsed in ordinary and list text", () => {
+  const html = render(
+    [
+      String.raw`- \$v_s\$ and \$f(r_s)\$`,
+      String.raw`- \$f \to 0\$ and \$x + y\$`,
+      String.raw`after \$f(x)\$`,
+    ].join("\n"),
+  );
+  assert.deepEqual(annotations(html), [
+    "v_s",
+    "f(r_s)",
+    "f \\to 0",
+    "x + y",
+    "f(x)",
+  ]);
+});
+
+test("Markdown syntax decides where escaped math is allowed", () => {
+  const literalCases = [
+    "`\\$v_s\\$`",
+    "``a ` \\$v_s\\$ b``",
+    "    \\$v_s\\$",
+    "# heading\n    \\$v_s\\$",
+    " \t\\$v_s\\$",
+    "```tex\n\\$v_s\\$\n```",
+    "```tex\n\\$v_s\\$",
+    "```\n    ```\n\\$v_s\\$\n```",
+    "- ```\n  \\$v_s\\$\n  ```",
+    "> ```\n> \\$v_s\\$\n> ```",
+    "```\n- ```\n\\$v_s\\$\n```",
+    ">     \\$v_s\\$",
+    "-     \\$v_s\\$",
+    "- item\n\n      \\$v_s\\$",
+    String.raw`<https://example.com/\$v_s\$>`,
+  ];
+  for (const markdown of literalCases) {
+    assert.deepEqual(annotations(render(markdown)), [], markdown);
+  }
+
+  const linked = render(String.raw`[\$v_s\$](https://example.com/\$literal\$)`);
+  assert.deepEqual(annotations(linked), ["v_s"]);
+
+  const rawCode = render(String.raw`<code>\$x_1\$</code> after \$y_2\$`);
+  assert.deepEqual(annotations(rawCode), ["y_2"]);
+  assert.match(rawCode, /data-streamdown="inline-code">\$x_1\$<\/code>/);
+});
+
+test("escaped candidates cannot consume nested Markdown", () => {
+  for (const markdown of [
+    `${String.raw`Before \$x + `}\`y\`${String.raw`\$ then \$z\$`}`,
+    String.raw`Before \$x + [y](https://e.test)\$ then \$z\$`,
+    String.raw`Before \$x + <code>y</code>\$ then \$z\$`,
+  ]) {
+    assert.deepEqual(annotations(render(markdown)), ["z"], markdown);
+  }
+});
+
+test("rejected candidates do not consume later math openers", () => {
+  const cases: [string, string][] = [
+    [String.raw`literal \$ then \$v_s\$`, "v_s"],
+    [String.raw`literal \$ not math \$v_s\$`, "v_s"],
+    [String.raw`\$5\$ + \$10\$ and \$v_s\$`, "v_s"],
+    [String.raw`\$\$ then \$v_s\$`, "v_s"],
+    [`${String.raw`\$`}${"a".repeat(201)}${String.raw`\$ + \$x\$`}`, "x"],
+  ];
+  for (const [markdown, expected] of cases) {
+    assert.deepEqual(annotations(render(markdown)), [expected]);
+  }
+});
+
+test("the maximum body length is inclusive", () => {
+  const body = `v_${"a".repeat(198)}`;
+  assert.equal(body.length, 200);
+  assert.deepEqual(annotations(render(`\\$${body}\\$ and \\$x\\$`)), [
+    body,
+    "x",
+  ]);
+});
+
+test("escaped prose and currency remain literal", () => {
+  for (const markdown of [
+    String.raw`the label \$read-only\$`,
+    String.raw`the pair \$USD/EUR\$`,
+    String.raw`\$5\$ is intentionally literal currency`,
+    String.raw`\$5 to 10\$ is prose`,
+  ]) {
+    assert.deepEqual(annotations(render(markdown)), [], markdown);
+  }
+});
+
+test("non-interrupting list markers cannot hide later escaped math", () => {
+  const html = render("paragraph\n2. ```\n\\$v_s\\$");
+  assert.deepEqual(annotations(html), ["v_s"]);
+});
+
+test("adjacent escaped spans remain separate math nodes", () => {
+  assert.deepEqual(annotations(render(String.raw`\$a\$\$b\$`)), ["a", "b"]);
+});
+
+test("escaped dollars inside existing math stay inside that math", () => {
+  const exactBoundary = String.raw`\text{Revenue: \$USD\$}`.padEnd(200, "x");
+  const cases = [
+    String.raw`$\text{Revenue: \$USD\$}$`,
+    `$${exactBoundary}$`,
+    String.raw`\(\text{Revenue: \$USD\$}\)`,
+    String.raw`$$
+\text{Revenue: \$USD\$}
+$$`,
+  ];
+  for (const markdown of cases) {
+    assert.equal(render(markdown), render(markdown, "static", false), markdown);
+  }
+});
+
+test("streaming waits for the escaped closer", () => {
+  const incomplete = String.raw`- \$v_s`;
+  assert.deepEqual(annotations(render(incomplete, "streaming")), []);
+  assert.deepEqual(annotations(render(`${incomplete}\\$`, "streaming")), [
+    "v_s",
+  ]);
+});

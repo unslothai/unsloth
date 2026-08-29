@@ -68,22 +68,22 @@ test("ordinary code spans and fences are unchanged", () => {
     ["costs $5 outside", "costs \\$5 outside"],
     ["costs $5 outside\n\n`x`", "costs \\$5 outside\n\n`x`"],
     ["```\n`inner`\n```", "```\n`inner`\n```"],
-    ["```tex\n\\$x\\$\n", "```tex\n\\$x\\$\n"],
-    ["```\n    ```\n\\$x\\$\n```", "```\n    ```\n\\$x\\$\n```"],
-    ["- ```\n  \\$x\\$\n  ```", "- ```\n  \\$x\\$\n  ```"],
-    ["> ```\n> \\$x\\$\n> ```", "> ```\n> \\$x\\$\n> ```"],
-    ["```\n- ```\n\\$x\\$\n```", "```\n- ```\n\\$x\\$\n```"],
+    ["```tex\n\\(x\\)\n", "```tex\n\\(x\\)\n"],
+    ["```\n    ```\n\\(x\\)\n```", "```\n    ```\n\\(x\\)\n```"],
+    ["- ```\n  \\(x\\)\n  ```", "- ```\n  \\(x\\)\n  ```"],
+    ["> ```\n> \\(x\\)\n> ```", "> ```\n> \\(x\\)\n> ```"],
+    ["```\n- ```\n\\(x\\)\n```", "```\n- ```\n\\(x\\)\n```"],
     [
-      "- item\n    ~~~tex\n    \\$x\\$\n    ~~~",
-      "- item\n    ~~~tex\n    \\$x\\$\n    ~~~",
+      "- item\n    ~~~tex\n    \\(x\\)\n    ~~~",
+      "- item\n    ~~~tex\n    \\(x\\)\n    ~~~",
     ],
     [
-      "- item\n    ```tex\n    \\$x\\$\n    ````",
-      "- item\n    ```tex\n    \\$x\\$\n    ````",
+      "- item\n    ```tex\n    \\(x\\)\n    ````",
+      "- item\n    ```tex\n    \\(x\\)\n    ````",
     ],
-    ["- item\n    ~~~tex\n    \\$x\\$", "- item\n    ~~~tex\n    \\$x\\$"],
-    ["# heading\n    \\$x\\$", "# heading\n    \\$x\\$"],
-    ["# heading\n \t\\$x\\$", "# heading\n \t\\$x\\$"],
+    ["- item\n    ~~~tex\n    \\(x\\)", "- item\n    ~~~tex\n    \\(x\\)"],
+    ["# heading\n    \\(x\\)", "# heading\n    \\(x\\)"],
+    ["# heading\n \t\\(x\\)", "# heading\n \t\\(x\\)"],
     ["`\\(x\\)` and \\(y\\)", "`\\(x\\)` and $y$"],
     ["```\n\\(x\\)\n```\n\nthen \\(y\\)", "```\n\\(x\\)\n```\n\nthen $y$"],
   ];
@@ -98,174 +98,12 @@ test("ordinary code spans and fences are unchanged", () => {
 
 test("fences stop at their Markdown container boundary", () => {
   const cases: [string, string][] = [
-    ["- ```txt\n  code\noutside \\$x\\$", "- ```txt\n  code\noutside $x$"],
-    ["> ```txt\n> code\noutside \\$x\\$", "> ```txt\n> code\noutside $x$"],
+    ["- ```txt\n  code\noutside \\(x\\)", "- ```txt\n  code\noutside $x$"],
+    ["> ```txt\n> code\noutside \\(x\\)", "> ```txt\n> code\noutside $x$"],
     [
-      "paragraph\n2. ``` literal\n\\$x\\$ after",
+      "paragraph\n2. ``` literal\n\\(x\\) after",
       "paragraph\n2. ``` literal\n$x$ after",
     ],
-  ];
-
-  for (const [input, expected] of cases) {
-    assert.equal(preprocessLaTeX(input), expected, input);
-  }
-});
-
-test("incomplete code spans stay literal without crossing block boundaries", () => {
-  const cases: [string, string][] = [
-    ["Use `code \\$x\\$", "Use `code \\$x\\$"],
-    ["Use `code\n\\$x\\$", "Use `code\n\\$x\\$"],
-    ["`open\n\n\\$x\\$\n\nclose`", "`open\n\n$x$\n\nclose`"],
-    ["`open\n# heading\n\\$x\\$\nclose`", "`open\n# heading\n$x$\nclose`"],
-    ["`open\nsoft \\$x\\$ close`", "`open\nsoft \\$x\\$ close`"],
-  ];
-
-  for (const [input, expected] of cases) {
-    assert.equal(preprocessLaTeX(input), expected, input);
-  }
-});
-
-test("raw HTML and autolinks keep literal escaped dollars", () => {
-  const cases: [string, string][] = [
-    ["<pre>\n\\$x_1\\$\n</pre>", "<pre>\n\\$x_1\\$\n</pre>"],
-    ["<code>\\$x_1\\$</code>", "<code>\\$x_1\\$</code>"],
-    ["<textarea>\\$x_1\\$</textarea>", "<textarea>\\$x_1\\$</textarea>"],
-    ["<!-- \\$x_1\\$ -->\n\n\\$y_2\\$", "<!-- \\$x_1\\$ -->\n\n$y_2$"],
-    [
-      "<widget>\n\\$x_1\\$\n</widget>\n\n\\$y_2\\$",
-      "<widget>\n\\$x_1\\$\n</widget>\n\n$y_2$",
-    ],
-    [
-      "<div>\n\\$x_1\\$\n</div>\n\n\\$y_2\\$",
-      "<div>\n\\$x_1\\$\n</div>\n\n$y_2$",
-    ],
-    [
-      '<a href="https://e.test/\\$x_1\\$">\\$y_2\\$</a>',
-      '<a href="https://e.test/\\$x_1\\$">$y_2$</a>',
-    ],
-    [
-      "<https://e.test/\\$x_1\\$> then \\$y_2\\$",
-      "<https://e.test/\\$x_1\\$> then $y_2$",
-    ],
-  ];
-
-  for (const [input, expected] of cases) {
-    assert.equal(preprocessLaTeX(input), expected, input);
-  }
-});
-
-test("long existing display and bracket math protect escaped dollars", () => {
-  const display = `$$\n${"x+".repeat(2050)}\\$y\\$\n$$`;
-  const bracket = `\\[${"x+".repeat(2050)}\\$y\\$\\]`;
-
-  assert.equal(preprocessLaTeX(display), display);
-  assert.equal(preprocessLaTeX(bracket), bracket);
-});
-
-test("escaped inline math from local models is recovered inside lists", () => {
-  const input = [
-    String.raw`- \$v_s\$ is the velocity of the bubble,`,
-    String.raw`- \$f(r_s)\$ is a shape function, with \$f \to 0\$ far away and \$f \to 1\$ inside,`,
-    String.raw`- \$r_s\$ is the radial coordinate.`,
-  ].join("\n");
-  const expected = [
-    "- $v_s$ is the velocity of the bubble,",
-    "- $f(r_s)$ is a shape function, with $f \\to 0$ far away and $f \\to 1$ inside,",
-    "- $r_s$ is the radial coordinate.",
-  ].join("\n");
-
-  assert.equal(preprocessLaTeX(input), expected);
-});
-
-test("escaped math recovery preserves literal and non-math dollars", () => {
-  const longBody = "a".repeat(201);
-  const existingInlineBody = String.raw`\text{Revenue: \$USD\$}`.padEnd(
-    200,
-    "x",
-  );
-  const cases: [string, string][] = [
-    [
-      String.raw`\$5\$ is intentionally literal currency`,
-      String.raw`\$5\$ is intentionally literal currency`,
-    ],
-    [String.raw`\$5 to 10\$ is prose`, String.raw`\$5 to 10\$ is prose`],
-    [
-      String.raw`\$read-only\$ is a label`,
-      String.raw`\$read-only\$ is a label`,
-    ],
-    [String.raw`\$USD/EUR\$ is a pair`, String.raw`\$USD/EUR\$ is a pair`],
-    [
-      String.raw`\$5\$ + \$10\$ and \$v_s\$`,
-      String.raw`\$5\$ + \$10\$ and $v_s$`,
-    ],
-    [String.raw`$5 + \$v_s\$ costs $10`, String.raw`\$5 + $v_s$ costs \$10`],
-    ["$ v_s $ already works", "$ v_s $ already works"],
-    ["$5 to $10 is a price range", "\\$5 to \\$10 is a price range"],
-    ["`\\$v_s\\$` is code", "`\\$v_s\\$` is code"],
-    [String.raw`    \$v_s\$`, String.raw`    \$v_s\$`],
-    [String.raw`>     \$v_s\$`, String.raw`>     \$v_s\$`],
-    [String.raw`-     \$v_s\$`, String.raw`-     \$v_s\$`],
-    [
-      String.raw`- item
-    \$v_s\$`,
-      "- item\n    $v_s$",
-    ],
-    [
-      String.raw`- item
-
-    \$v_s\$`,
-      "- item\n\n    $v_s$",
-    ],
-    [
-      String.raw`10. item
-
-    \$v_s\$`,
-      "10. item\n\n    $v_s$",
-    ],
-    [
-      String.raw`- item
-
-      \$v_s\$`,
-      String.raw`- item
-
-      \$v_s\$`,
-    ],
-    [
-      String.raw`[\$v_s\$](https://example.com/\$literal\$)`,
-      String.raw`[$v_s$](https://example.com/\$literal\$)`,
-    ],
-    ["$$\n v_s \n$$", "$$\n v_s \n$$"],
-    [
-      String.raw`$$
-\text{Revenue: \$USD\$}
-$$`,
-      String.raw`$$
-\text{Revenue: \$USD\$}
-$$`,
-    ],
-    [String.raw`\$a\$\$b\$`, "$a$ $b$"],
-    [`$${existingInlineBody}$`, `$${existingInlineBody}$`],
-    [
-      String.raw`\(\text{Revenue: \$USD\$}\)`,
-      String.raw`$\text{Revenue: \$USD\$}$`,
-    ],
-    [String.raw`\$${longBody}\$ + \$x\$`, String.raw`\$${longBody}\$ + $x$`],
-    [String.raw`\$v_s is incomplete`, String.raw`\$v_s is incomplete`],
-    [String.raw`literal \$ then \$v_s\$`, String.raw`literal \$ then $v_s$`],
-    [
-      String.raw`Price is \$5; formula is \$v_s\$`,
-      String.raw`Price is \$5; formula is $v_s$`,
-    ],
-    [String.raw`literal \$ + \$v_s\$`, String.raw`literal \$ + $v_s$`],
-    [
-      `${String.raw`Before \$x + `}\`y\`${String.raw`\$ then \$z\$`}`,
-      `${String.raw`Before \$x + `}\`y\`${String.raw`\$ then $z$`}`,
-    ],
-    [
-      String.raw`Before \$x + [y](https://e.test)\$ then \$z\$`,
-      String.raw`Before \$x + [y](https://e.test)\$ then $z$`,
-    ],
-    ["\\$a\nb\\$ crosses a line", "\\$a\nb\\$ crosses a line"],
   ];
 
   for (const [input, expected] of cases) {
