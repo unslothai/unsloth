@@ -24,13 +24,13 @@ import time
 
 import pytest
 
-from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
+from core.inference.generation_admission import AdmissionConfig, AdmissionQueue
 
 
 def _lease(queue, *, tokens, budget, capacity):
     reservation = queue.reserve(
         capacity = capacity,
-        config = LlamaAdmissionConfig(),
+        config = AdmissionConfig(),
         tokens = tokens,
         budget = budget,
     )
@@ -68,7 +68,7 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
     rng = random.Random(seed)
     capacity = rng.choice([1, 2, 4, 8])
     budget = rng.choice([2048, 4096, 65536])
-    queue = LlamaAdmissionQueue(f"stress-{seed}")
+    queue = AdmissionQueue(f"stress-{seed}")
 
     # Every holder is admitted at a size that fits alongside the others, so any excess is
     # the queue's doing, not the workload's. The escape is exercised separately.
@@ -124,7 +124,7 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
     rng = random.Random(1000 + seed)
     capacity = 4
     budget = 4096
-    queue = LlamaAdmissionQueue(f"mixed-{seed}")
+    queue = AdmissionQueue(f"mixed-{seed}")
     share = budget // capacity
 
     holders = [
@@ -151,7 +151,7 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
     async def arrive():
         reservation = queue.reserve(
             capacity = capacity,
-            config = LlamaAdmissionConfig(),
+            config = AdmissionConfig(),
             tokens = rng.randint(1, share),
             budget = budget,
         )
@@ -191,7 +191,7 @@ async def test_a_wait_that_can_never_be_satisfied_gives_up_rather_than_wedging_t
     """The blast-radius test. A reparker holds the line shut for everyone, so a wait with
     no possible end must expire, restore its old figure and let the queue run again."""
     budget = 4096
-    queue = LlamaAdmissionQueue("timeout")
+    queue = AdmissionQueue("timeout")
     # All but one token, so the grower is still admitted alongside it and the cache is
     # exactly full. A squatter holding the whole budget would leave nothing to admit it.
     squatter = _lease(queue, tokens = budget - 1, budget = budget, capacity = 4)
@@ -217,7 +217,7 @@ async def test_release_during_a_wait_does_not_spin_forever():
     """release() runs from the route's teardown without touching the cancel event, so a
     wait that only watched the event would spin on a dead lease and hold the line shut."""
     budget = 4096
-    queue = LlamaAdmissionQueue("released")
+    queue = AdmissionQueue("released")
     squatter = _lease(queue, tokens = budget - 1, budget = budget, capacity = 4)
     grower = _lease(queue, tokens = 1, budget = budget, capacity = 4)
     assert squatter is not None and grower is not None

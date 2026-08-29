@@ -32,14 +32,14 @@ from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from core.inference.api_monitor import ApiMonitor
-from core.inference.llama_admission import (
+from core.inference.generation_admission import (
     ADMISSION_KEEPALIVE_INTERVAL_ENV,
     ADMISSION_MAX_QUEUE_ENV,
     ADMISSION_QUEUE_TIMEOUT_ENV,
-    LlamaAdmissionCancelled,
-    LlamaAdmissionConfig,
-    get_llama_admission_queue,
-    reset_llama_admission_queues,
+    AdmissionCancelled,
+    AdmissionConfig,
+    get_admission_queue,
+    reset_admission_queues,
 )
 from routes.inference import (
     _aclose_stream_resources,
@@ -95,9 +95,9 @@ _BLUE_PNG_B64 = (
 
 @pytest.fixture(autouse = True)
 def _reset_admission_queues():
-    reset_llama_admission_queues()
+    reset_admission_queues()
     yield
-    reset_llama_admission_queues()
+    reset_admission_queues()
 
 
 def test_aclose_stream_resources_attempts_remaining_closes_after_cancel():
@@ -2984,19 +2984,19 @@ class TestOpenAICompatibilityHelpers:
 
     def test_openai_admission_non_streaming_exits_invalidated_waiter(self):
         async def _run():
-            queue = get_llama_admission_queue("http://llama.invalidated.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.invalidated.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
-            reservation = queue.reserve(capacity = 1, config = LlamaAdmissionConfig())
+            reservation = queue.reserve(capacity = 1, config = AdmissionConfig())
             assert reservation._waiter is not None
 
             reservation._waiter.future.cancel()
 
-            with pytest.raises(LlamaAdmissionCancelled):
+            with pytest.raises(AdmissionCancelled):
                 await asyncio.wait_for(
                     _wait_for_openai_admission_non_streaming(
                         reservation,
-                        LlamaAdmissionConfig(),
+                        AdmissionConfig(),
                         request = None,
                         cancel_event = None,
                     ),
@@ -3012,21 +3012,21 @@ class TestOpenAICompatibilityHelpers:
 
     def test_openai_admission_stream_exits_invalidated_waiter(self):
         async def _run():
-            queue = get_llama_admission_queue("http://llama.invalidated.stream.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.invalidated.stream.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
-            reservation = queue.reserve(capacity = 1, config = LlamaAdmissionConfig())
+            reservation = queue.reserve(capacity = 1, config = AdmissionConfig())
             assert reservation._waiter is not None
 
             reservation._waiter.future.cancel()
 
             chunks = _openai_admission_wait_stream_chunks(
                 reservation,
-                LlamaAdmissionConfig(),
+                AdmissionConfig(),
                 request = None,
                 cancel_event = None,
             )
-            with pytest.raises(LlamaAdmissionCancelled):
+            with pytest.raises(AdmissionCancelled):
                 await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
 
             blocker.release()
@@ -4324,8 +4324,8 @@ class TestGgufVisionToolRouting:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
-            queue = get_llama_admission_queue("http://llama.standard.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.standard.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             payload = ChatCompletionRequest(
@@ -4405,7 +4405,7 @@ class TestGgufVisionToolRouting:
             await aclose()
 
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
-            assert get_llama_admission_queue("http://llama.standard.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.standard.test").snapshot().active == 0
 
         asyncio.run(_run())
 
@@ -4467,7 +4467,7 @@ class TestGgufVisionToolRouting:
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
-            assert get_llama_admission_queue("http://llama.standard.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.standard.test").snapshot().active == 0
 
         asyncio.run(_run())
 
@@ -4512,8 +4512,8 @@ class TestGgufVisionToolRouting:
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
             monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
 
-            queue = get_llama_admission_queue("http://llama.tool.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.tool.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             payload = ChatCompletionRequest(
@@ -4702,7 +4702,7 @@ class TestGgufVisionToolRouting:
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
-            assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.tool.test").snapshot().active == 0
 
         asyncio.run(_run())
 
@@ -5173,8 +5173,8 @@ class TestGgufVisionToolRouting:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
-            queue = get_llama_admission_queue("http://llama.standard.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.standard.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             payload = ChatCompletionRequest(
@@ -5225,8 +5225,8 @@ class TestGgufVisionToolRouting:
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
-            queue = get_llama_admission_queue("http://llama.standard.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.standard.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             cancel_id = "standard-nonstream-admission-cancel"
@@ -5316,7 +5316,7 @@ class TestGgufVisionToolRouting:
                 )
 
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
-            assert get_llama_admission_queue("http://llama.standard.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.standard.test").snapshot().active == 0
 
         asyncio.run(_run())
 
@@ -5359,8 +5359,8 @@ class TestGgufVisionToolRouting:
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
             monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
 
-            queue = get_llama_admission_queue("http://llama.tool.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.tool.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             payload = ChatCompletionRequest(
@@ -5460,7 +5460,7 @@ class TestGgufVisionToolRouting:
             # idle box, and it is the drain itself that matters, not whether it
             # had already finished by the time we looked.
             assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
-            assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
@@ -8173,7 +8173,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 )
 
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
-            assert get_llama_admission_queue("http://llama.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
@@ -8230,8 +8230,8 @@ class TestApiMonitorProviderAndCompletionStreams:
                 fake_admitted,
             )
 
-            queue = get_llama_admission_queue("http://llama.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             cancel_id = "queued-inner-unstarted-cleanup"
@@ -8341,8 +8341,8 @@ class TestApiMonitorProviderAndCompletionStreams:
                 prompt = "hi",
             )
 
-            queue = get_llama_admission_queue("http://llama.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             cancel_id = "queued-inner-cancel-monitor"
@@ -8547,8 +8547,8 @@ class TestApiMonitorProviderAndCompletionStreams:
                 prompt = "hi",
             )
 
-            queue = get_llama_admission_queue("http://llama.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             payload = ChatCompletionRequest(
@@ -8613,8 +8613,8 @@ class TestApiMonitorProviderAndCompletionStreams:
                 fail_upstream,
             )
 
-            queue = get_llama_admission_queue("http://llama.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
 
             payload = ChatCompletionRequest(
@@ -8666,12 +8666,12 @@ class TestApiMonitorProviderAndCompletionStreams:
                 fail_upstream,
             )
 
-            queue = get_llama_admission_queue("http://llama.test")
+            queue = get_admission_queue("http://llama.test")
             blocker = queue.reserve(
                 capacity = 1,
-                config = LlamaAdmissionConfig(max_queue = 1),
+                config = AdmissionConfig(max_queue = 1),
             ).lease_nowait()
-            queued = queue.reserve(capacity = 1, config = LlamaAdmissionConfig(max_queue = 1))
+            queued = queue.reserve(capacity = 1, config = AdmissionConfig(max_queue = 1))
             assert blocker is not None
             assert queued.lease_nowait() is None
 
@@ -8747,7 +8747,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 )
 
             assert exc.value.status_code == 499
-            assert get_llama_admission_queue("http://llama.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
@@ -8801,7 +8801,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = threading.Event(),
                 )
 
-            assert get_llama_admission_queue("http://llama.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
@@ -10235,8 +10235,8 @@ class TestResponsesChatTemplateKwargs:
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
 
-            queue = get_llama_admission_queue("http://llama.responses.test")
-            blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+            queue = get_admission_queue("http://llama.responses.test")
+            blocker = queue.reserve(capacity = 1, config = AdmissionConfig()).lease_nowait()
             assert blocker is not None
             monitor_id = monitor.start(
                 endpoint = "/v1/responses",
@@ -10314,7 +10314,7 @@ class TestResponsesChatTemplateKwargs:
             with pytest.raises(asyncio.CancelledError):
                 await iterator.athrow(asyncio.CancelledError())
 
-            assert get_llama_admission_queue("http://llama.responses.test").snapshot().active == 0
+            assert get_admission_queue("http://llama.responses.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0

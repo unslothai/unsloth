@@ -2508,11 +2508,11 @@ def _reset_policy():
 def _reset_admission_queues():
     # The admission queue is process-global; isolate the shared "llama-server" key
     # so one test's leftover reservation can't stall the next.
-    from core.inference.llama_admission import reset_llama_admission_queues
+    from core.inference.generation_admission import reset_admission_queues
 
-    reset_llama_admission_queues()
+    reset_admission_queues()
     yield
-    reset_llama_admission_queues()
+    reset_admission_queues()
 
 
 class TestAnthropicMessagesToolRouting:

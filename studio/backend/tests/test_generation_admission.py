@@ -11,8 +11,8 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference import llama_admission
-from core.inference.llama_admission import (
+from core.inference import generation_admission
+from core.inference.generation_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KEEPALIVE_INTERVAL_ENV,
     ADMISSION_MAX_QUEUE_ENV,
@@ -21,11 +21,11 @@ from core.inference.llama_admission import (
     DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S,
     DEFAULT_ADMISSION_MAX_QUEUE,
     DEFAULT_ADMISSION_QUEUE_TIMEOUT_S,
-    LlamaAdmissionConfig,
-    LlamaAdmissionQueueFull,
-    get_llama_admission_queue,
-    llama_admission_config_from_env,
-    reset_llama_admission_queues,
+    AdmissionConfig,
+    AdmissionQueueFull,
+    get_admission_queue,
+    admission_config_from_env,
+    reset_admission_queues,
 )
 
 
@@ -35,7 +35,7 @@ _ADMISSION_ENV = (
     ADMISSION_KEEPALIVE_INTERVAL_ENV,
     ADMISSION_MAX_QUEUE_ENV,
     ADMISSION_QUEUE_PER_SLOT_ENV,
-    *llama_admission._LEGACY_ENV.values(),
+    *generation_admission._LEGACY_ENV.values(),
 )
 
 
@@ -46,9 +46,9 @@ def _reset_queues(monkeypatch):
     # is exercising, and the queue registry is process-global.
     for name in _ADMISSION_ENV:
         monkeypatch.delenv(name, raising = False)
-    reset_llama_admission_queues()
+    reset_admission_queues()
     yield
-    reset_llama_admission_queues()
+    reset_admission_queues()
 
 
 def test_admission_config_defaults(monkeypatch):
@@ -65,7 +65,7 @@ def test_admission_config_defaults(monkeypatch):
     ):
         monkeypatch.delenv(name, raising = False)
 
-    config = llama_admission_config_from_env()
+    config = admission_config_from_env()
 
     # Literals, not the module constants: comparing a default to itself would let
     # any future value change through silently.
@@ -84,7 +84,7 @@ def test_admission_config_env_overrides(monkeypatch):
     monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.25")
     monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "0")
 
-    config = llama_admission_config_from_env()
+    config = admission_config_from_env()
 
     assert config.enabled is False
     assert config.queue_timeout_s is None
@@ -98,7 +98,7 @@ def test_admission_config_honors_legacy_openai_compat_env(monkeypatch):
     monkeypatch.setenv("UNSLOTH_OPENAI_COMPAT_ADMISSION_MAX_QUEUE", "7")
     monkeypatch.setenv("UNSLOTH_OPENAI_COMPAT_ADMISSION_CONTROL", "off")
 
-    config = llama_admission_config_from_env()
+    config = admission_config_from_env()
 
     assert config.max_queue == 7
     assert config.enabled is False
@@ -108,21 +108,21 @@ def test_admission_config_prefers_neutral_env_over_legacy(monkeypatch):
     monkeypatch.setenv("UNSLOTH_OPENAI_COMPAT_ADMISSION_MAX_QUEUE", "7")
     monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "3")
 
-    assert llama_admission_config_from_env().max_queue == 3
+    assert admission_config_from_env().max_queue == 3
 
 
 def test_admission_config_positive_queue_timeout_env(monkeypatch):
     monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "600")
 
-    config = llama_admission_config_from_env()
+    config = admission_config_from_env()
 
     assert config.queue_timeout_s == 600.0
 
 
 def test_fifo_capacity_one_grants_next_waiter_on_release():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -153,8 +153,8 @@ def test_fifo_capacity_one_grants_next_waiter_on_release():
 
 def test_pool_hands_out_distinct_slots_and_reuses_them():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         leases = [queue.reserve(capacity = 3, config = config).lease_nowait() for _ in range(3)]
         assert sorted(lease.slot for lease in leases) == [0, 1, 2]  # one slot each
@@ -179,8 +179,8 @@ def test_pool_hands_out_distinct_slots_and_reuses_them():
 
 def test_pool_waiter_is_handed_a_real_slot():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         held = queue.reserve(capacity = 1, config = config).lease_nowait()
         waiting = queue.reserve(capacity = 1, config = config)
@@ -197,8 +197,8 @@ def test_pool_waiter_is_handed_a_real_slot():
 
 def test_shrinking_capacity_retires_slots_beyond_the_new_pool():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         leases = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
         assert queue.snapshot().capacity == 4
@@ -222,34 +222,34 @@ def test_shrinking_capacity_retires_slots_beyond_the_new_pool():
 def test_queue_limit_scales_with_the_serving_slots():
     # The wait line follows --parallel: 16 per slot, floored at 64 so a 1-slot
     # backend keeps the depth it had before scaling existed.
-    config = LlamaAdmissionConfig()
+    config = AdmissionConfig()
     assert config.queue_limit(4) == 64  # --parallel 4  (the default)
     assert config.queue_limit(8) == 128  # --parallel 8
     assert config.queue_limit(16) == 256
     assert config.queue_limit(1) == 64  # floor, not 16
     assert config.queue_limit(2) == 64  # floor, not 32
     # An explicit cap wins, and a None multiplier means an unbounded line.
-    assert LlamaAdmissionConfig(max_queue = 5).queue_limit(8) == 5
-    assert LlamaAdmissionConfig(queue_per_slot = None).queue_limit(8) is None
+    assert AdmissionConfig(max_queue = 5).queue_limit(8) == 5
+    assert AdmissionConfig(queue_per_slot = None).queue_limit(8) is None
     # Non-positive settings mean unbounded, never "reject everything".
-    assert LlamaAdmissionConfig(max_queue = 0).queue_limit(4) is None
-    assert LlamaAdmissionConfig(max_queue = -1).queue_limit(4) is None
-    assert LlamaAdmissionConfig(queue_per_slot = 0).queue_limit(4) is None
-    assert LlamaAdmissionConfig(queue_per_slot = -3).queue_limit(4) is None
+    assert AdmissionConfig(max_queue = 0).queue_limit(4) is None
+    assert AdmissionConfig(max_queue = -1).queue_limit(4) is None
+    assert AdmissionConfig(queue_per_slot = 0).queue_limit(4) is None
+    assert AdmissionConfig(queue_per_slot = -3).queue_limit(4) is None
 
 
 def test_queue_limit_rejects_only_once_the_line_is_full():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
+        queue = get_admission_queue("http://llama.test")
         # Explicit cap, so the test drives rejection without standing up the 64
         # waiters the scaled floor would otherwise require.
-        config = LlamaAdmissionConfig(max_queue = 4)
+        config = AdmissionConfig(max_queue = 4)
 
         held = [queue.reserve(capacity = 2, config = config).lease_nowait() for _ in range(2)]
         parked = [queue.reserve(capacity = 2, config = config) for _ in range(4)]
         assert queue.snapshot().queued == 4
 
-        with pytest.raises(LlamaAdmissionQueueFull):
+        with pytest.raises(AdmissionQueueFull):
             queue.reserve(capacity = 2, config = config)
 
         for reservation in parked:
@@ -262,16 +262,16 @@ def test_queue_limit_rejects_only_once_the_line_is_full():
 
 def test_waiting_is_never_timed_out_by_default():
     # "Wait forever": the default config sets no queue timeout at all.
-    assert llama_admission_config_from_env().queue_timeout_s is None
-    assert LlamaAdmissionConfig().queue_timeout_s is None
+    assert admission_config_from_env().queue_timeout_s is None
+    assert AdmissionConfig().queue_timeout_s is None
 
 
 def test_single_request_at_a_time_never_queues_or_allocates_waiters():
     # The common serving case: one request in flight at a time must take a slot
     # straight away and never touch the wait line.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
         for _ in range(50):
             reservation = queue.reserve(capacity = 4, config = config)
             lease = reservation.lease_nowait()
@@ -288,12 +288,12 @@ def test_unbounded_queue_keeps_waiting_instead_of_rejecting():
     # queue_per_slot None is the "pool + unbounded wait line" mode: nothing is
     # ever rejected, callers just line up for the next free slot.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(max_queue = None, queue_per_slot = None)
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig(max_queue = None, queue_per_slot = None)
 
         held = queue.reserve(capacity = 1, config = config).lease_nowait()
         waiters = [queue.reserve(capacity = 1, config = config) for _ in range(200)]
-        assert queue.snapshot().queued == 200  # no LlamaAdmissionQueueFull
+        assert queue.snapshot().queued == 200  # no AdmissionQueueFull
 
         held.release()
         first = await waiters[0].wait(0.1)
@@ -307,15 +307,15 @@ def test_unbounded_queue_keeps_waiting_instead_of_rejecting():
 
 def test_queue_full_rejects_excess_waiter():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(max_queue = 1)
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig(max_queue = 1)
 
         first = queue.reserve(capacity = 1, config = config)
         queued = queue.reserve(capacity = 1, config = config)
 
         assert first.lease_nowait() is not None
         assert queued.lease_nowait() is None
-        with pytest.raises(LlamaAdmissionQueueFull):
+        with pytest.raises(AdmissionQueueFull):
             queue.reserve(capacity = 1, config = config)
 
     asyncio.run(_run())
@@ -323,8 +323,8 @@ def test_queue_full_rejects_excess_waiter():
 
 def test_disabled_admission_bypasses_active_slot_limit():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(enabled = False)
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig(enabled = False)
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -339,8 +339,8 @@ def test_disabled_admission_bypasses_active_slot_limit():
 
 def test_cancelling_promoted_waiter_releases_slot():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -359,8 +359,8 @@ def test_cancelling_promoted_waiter_releases_slot():
 
 def test_cancelling_promoted_waiter_before_delivery_releases_slot():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -378,8 +378,8 @@ def test_cancelling_promoted_waiter_before_delivery_releases_slot():
 
 def test_external_waiter_future_cancel_invalidates_reservation():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -403,8 +403,8 @@ def test_external_waiter_future_cancel_invalidates_reservation():
 
 def test_wait_returns_none_when_waiter_future_cancelled_during_wait():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -429,8 +429,8 @@ def test_wait_returns_none_when_waiter_future_cancelled_during_wait():
 
 def test_capacity_increase_promotes_existing_waiter_fifo():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -467,8 +467,8 @@ def test_capacity_increase_promotes_existing_waiter_fifo():
 
 def test_lease_release_is_idempotent_under_concurrent_calls():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         reservation = queue.reserve(capacity = 1, config = config)
         lease = reservation.lease_nowait()
@@ -495,8 +495,8 @@ def test_releasing_a_stale_lease_does_not_free_someone_elses_slot():
     # then the caller's finally cancels the reservation and releases the same
     # lease again, by which point the slot can belong to another request.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         stale = queue.reserve(capacity = 1, config = config).lease_nowait()
         stale.release()
@@ -515,8 +515,8 @@ def test_grant_reclaims_the_slot_when_the_waiters_loop_is_gone():
     # _grant_waiters_locked takes the slot before scheduling delivery, so if the
     # schedule fails the bit is already set. Leaving it set strands the slot for
     # good, because _free is rebuilt from the bitmask.
-    queue = get_llama_admission_queue("http://llama.test")
-    config = LlamaAdmissionConfig()
+    queue = get_admission_queue("http://llama.test")
+    config = AdmissionConfig()
     held = None
 
     dead = asyncio.new_event_loop()
@@ -539,8 +539,8 @@ def test_grant_reclaims_the_slot_when_the_waiters_loop_is_gone():
 def test_cancel_returns_the_granted_slot_when_the_waiters_loop_is_gone():
     # Routes cancel() from finally blocks, so a raise here would mask their
     # exception and skip the release that hands the granted slot back.
-    queue = get_llama_admission_queue("http://llama.test")
-    config = LlamaAdmissionConfig()
+    queue = get_admission_queue("http://llama.test")
+    config = AdmissionConfig()
     held = reservation = None
 
     dead = asyncio.new_event_loop()
@@ -568,8 +568,8 @@ def test_delivery_to_an_already_finished_waiter_releases_the_slot():
     # the outcome, not which one. Reaches into the waiter because no public call
     # leaves that window open: queue.cancel() reclaims granted_lease itself.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         held = queue.reserve(capacity = 1, config = config).lease_nowait()
         reservation = queue.reserve(capacity = 1, config = config)
@@ -589,17 +589,17 @@ def test_delivery_to_an_already_finished_waiter_releases_the_slot():
 def test_new_key_evicts_idle_prior_load_queues():
     # Each model load carries a fresh ephemeral port, so a new base_url key must
     # not leave the drained queues from earlier loads accumulating forever.
-    get_llama_admission_queue("http://127.0.0.1:1001")
-    get_llama_admission_queue("http://127.0.0.1:1002")
-    assert set(llama_admission._QUEUES) == {"http://127.0.0.1:1002"}
+    get_admission_queue("http://127.0.0.1:1001")
+    get_admission_queue("http://127.0.0.1:1002")
+    assert set(generation_admission._QUEUES) == {"http://127.0.0.1:1002"}
 
-    get_llama_admission_queue("http://127.0.0.1:1003")
-    assert set(llama_admission._QUEUES) == {"http://127.0.0.1:1003"}
+    get_admission_queue("http://127.0.0.1:1003")
+    assert set(generation_admission._QUEUES) == {"http://127.0.0.1:1003"}
 
 
 def test_new_key_retains_in_flight_prior_load_queue():
-    config = LlamaAdmissionConfig()
-    busy = get_llama_admission_queue("http://127.0.0.1:2001")
+    config = AdmissionConfig()
+    busy = get_admission_queue("http://127.0.0.1:2001")
 
     async def _run():
         reservation = busy.reserve(capacity = 1, config = config)
@@ -607,13 +607,16 @@ def test_new_key_retains_in_flight_prior_load_queue():
         assert lease is not None
 
         # A new load must not drop a queue that still has an in-flight request.
-        get_llama_admission_queue("http://127.0.0.1:2002")
-        assert set(llama_admission._QUEUES) == {"http://127.0.0.1:2001", "http://127.0.0.1:2002"}
+        get_admission_queue("http://127.0.0.1:2002")
+        assert set(generation_admission._QUEUES) == {
+            "http://127.0.0.1:2001",
+            "http://127.0.0.1:2002",
+        }
 
         # Once it drains, the next load reclaims it.
         lease.release()
-        get_llama_admission_queue("http://127.0.0.1:2003")
-        assert set(llama_admission._QUEUES) == {"http://127.0.0.1:2003"}
+        get_admission_queue("http://127.0.0.1:2003")
+        assert set(generation_admission._QUEUES) == {"http://127.0.0.1:2003"}
 
     asyncio.run(_run())
 
@@ -623,8 +626,8 @@ def test_capacity_shrink_never_admits_past_the_new_ceiling():
     # pool while slots are still held. Those holdovers keep occupying the backend, so
     # they must count against the ceiling; sizing on free ids alone over-admits.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         held = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
         assert all(lease is not None for lease in held)
@@ -654,26 +657,26 @@ def test_capacity_shrink_never_admits_past_the_new_ceiling():
 
 def test_queue_per_slot_env_is_parsed(monkeypatch):
     monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, "4")
-    assert llama_admission_config_from_env().queue_limit(32) == 128
+    assert admission_config_from_env().queue_limit(32) == 128
     # Non-positive asks for an unbounded line rather than rejecting everything.
     monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, "0")
-    assert llama_admission_config_from_env().queue_limit(32) is None
+    assert admission_config_from_env().queue_limit(32) is None
 
 
 def test_max_queue_zero_from_env_is_unbounded_end_to_end(monkeypatch):
     # Guards the whole env path, not just the parsed field: a regression that let
     # queue_per_slot survive MAX_QUEUE=0 would silently re-bound the line.
     monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "0")
-    config = llama_admission_config_from_env()
+    config = admission_config_from_env()
     assert config.max_queue is None and config.queue_per_slot is None
     assert config.queue_limit(1) is None and config.queue_limit(64) is None
 
 
 def test_legacy_env_fallback_covers_every_setting(monkeypatch):
-    for canonical, legacy in llama_admission._LEGACY_ENV.items():
+    for canonical, legacy in generation_admission._LEGACY_ENV.items():
         monkeypatch.delenv(canonical, raising = False)
         monkeypatch.setenv(legacy, "0" if "CONTROL" in canonical else "7")
-    config = llama_admission_config_from_env()
+    config = admission_config_from_env()
     assert config.enabled is False
     assert config.queue_timeout_s == 7.0
     assert config.keepalive_interval_s == 7.0
@@ -683,27 +686,27 @@ def test_legacy_env_fallback_covers_every_setting(monkeypatch):
 def test_empty_canonical_env_falls_through_to_legacy(monkeypatch):
     # The branch _raw_env exists for: set but blank must not mask the legacy name.
     monkeypatch.setenv(ADMISSION_CONTROL_ENV, "   ")
-    monkeypatch.setenv(llama_admission._LEGACY_ENV[ADMISSION_CONTROL_ENV], "0")
-    assert llama_admission_config_from_env().enabled is False
+    monkeypatch.setenv(generation_admission._LEGACY_ENV[ADMISSION_CONTROL_ENV], "0")
+    assert admission_config_from_env().enabled is False
 
 
 def test_explicit_queue_per_slot_is_not_floored(monkeypatch):
     # The floor exists so a 1-slot backend keeps its old depth by default, not to
     # override an operator who asked for a shallow line.
     monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, "2")
-    config = llama_admission_config_from_env()
+    config = admission_config_from_env()
     assert config.queue_limit(1) == 2
     assert config.queue_limit(8) == 16
 
     # Unset, the default multiplier is floored instead.
     monkeypatch.delenv(ADMISSION_QUEUE_PER_SLOT_ENV, raising = False)
-    assert llama_admission_config_from_env().queue_limit(1) == 64
+    assert admission_config_from_env().queue_limit(1) == 64
 
     # A value that does not parse falls back to the default multiplier, so it has
     # to keep the default's floor. Otherwise a typo quietly shrinks the line 4x.
     for garbage in ("abc", "1e3", "16.0"):
         monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, garbage)
-        assert llama_admission_config_from_env().queue_limit(1) == 64, garbage
+        assert admission_config_from_env().queue_limit(1) == 64, garbage
 
 
 def test_module_imports_on_python_39(monkeypatch):
@@ -712,7 +715,7 @@ def test_module_imports_on_python_39(monkeypatch):
     import ast
     import pathlib
 
-    src = pathlib.Path(llama_admission.__file__).read_text(encoding = "utf-8")
+    src = pathlib.Path(generation_admission.__file__).read_text(encoding = "utf-8")
     tree = ast.parse(src)
 
     # int.bit_count() (3.10+)
@@ -747,26 +750,26 @@ def test_slots_gate_matches_the_running_interpreter():
     """The gate is only worth having if it actually applies where it can."""
     import sys
 
-    gated = (LlamaAdmissionConfig, llama_admission.LlamaAdmissionSnapshot, llama_admission._Waiter)
+    gated = (AdmissionConfig, generation_admission.AdmissionSnapshot, generation_admission._Waiter)
     if sys.version_info >= (3, 10):
-        assert llama_admission._SLOTS == {"slots": True}
+        assert generation_admission._SLOTS == {"slots": True}
         for cls in gated:
             assert getattr(cls, "__slots__", None), cls
     else:
-        assert llama_admission._SLOTS == {}
+        assert generation_admission._SLOTS == {}
 
     # Construct through the gate either way: slots=True rebuilds the class, so a
     # field it cannot carry over would only show up on instantiation.
-    config = LlamaAdmissionConfig(max_queue = 7)
+    config = AdmissionConfig(max_queue = 7)
     assert config.max_queue == 7 and config.queue_limit(4) == 7
-    assert llama_admission.LlamaAdmissionSnapshot("k", 1, 1, 0).capacity == 1
+    assert generation_admission.AdmissionSnapshot("k", 1, 1, 0).capacity == 1
 
 
 def test_held_count_tracks_the_bitmask():
     # _held replaces int.bit_count(); the two must never drift apart.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
         popcount = lambda: bin(queue._in_use).count("1")
 
         leases = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
@@ -787,8 +790,8 @@ def test_snapshot_free_never_exceeds_what_can_be_admitted():
     # After a shrink, low ids can sit in _free while holdovers fill the ceiling.
     # Reporting them as free made the admission log contradict itself.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         held = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
         queue.reserve(capacity = 1, config = config)  # capacity collapses to 1
@@ -808,8 +811,8 @@ def test_a_newcomer_does_not_barge_past_a_parked_waiter():
     # check: _take_slot_locked consults _can_admit_locked anyway, so either alone
     # refuses the newcomer. This fails if both ever go.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         held = queue.reserve(capacity = 1, config = config).lease_nowait()
         parked = queue.reserve(capacity = 1, config = config)
@@ -828,14 +831,14 @@ def test_dead_waiters_stop_counting_against_the_queue_limit():
     # called, so only the prune drops it. Without that, depth, is_idle() and the
     # queue-full limit all drift for the life of the queue.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(max_queue = 2)
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig(max_queue = 2)
 
         held = queue.reserve(capacity = 1, config = config).lease_nowait()
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
         assert queue.snapshot().queued == 2
-        with pytest.raises(LlamaAdmissionQueueFull):
+        with pytest.raises(AdmissionQueueFull):
             queue.reserve(capacity = 1, config = config)
 
         first._waiter.future.cancel()
@@ -857,8 +860,8 @@ def test_parking_frees_the_slot_for_a_waiter():
     """
 
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         second = queue.reserve(capacity = 1, config = config)
@@ -882,8 +885,8 @@ def test_parking_frees_the_slot_for_a_waiter():
 
 def test_unpark_without_park_is_a_no_op():
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         first = queue.reserve(capacity = 1, config = config)
         first_lease = first.lease_nowait()
@@ -902,8 +905,8 @@ def test_releasing_a_parked_lease_leaves_the_queue_evictable():
     # nothing but the parked count keeps its queue alive. A stuck count would
     # pin every dead queue for the life of the process.
     async def _run():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         lease = queue.reserve(capacity = 1, config = config).lease_nowait()
         lease.park()
@@ -919,8 +922,8 @@ def test_unpark_waits_instead_of_putting_two_holders_on_one_slot():
     # prompt someone else may be decoding in it. Resuming regardless left two holders
     # against capacity 1, and the resumed tool loop went past the admission limit.
     async def scenario():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         a = queue.reserve(capacity = 1, config = config)
         a_lease = a.lease_nowait()
@@ -949,8 +952,8 @@ def test_unpark_waits_instead_of_putting_two_holders_on_one_slot():
 def test_unpark_gives_up_when_the_caller_is_cancelled():
     # A holder being torn down must not sit in the wait loop.
     async def scenario():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
         a = queue.reserve(capacity = 1, config = config)
         a_lease = a.lease_nowait()
         assert a_lease is not None
@@ -974,8 +977,8 @@ def test_an_approved_chat_is_not_overtaken_by_later_arrivals():
     # under the same lock, so a plain poll in unpark_async never saw a free slot: A waited
     # behind every later arrival and starved.
     async def scenario():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         a = queue.reserve(capacity = 1, config = config)
         a_lease = a.lease_nowait()
@@ -1004,8 +1007,8 @@ def test_two_approved_chats_do_not_block_each_other():
     # A bare pending-count made every approved holder count against every other: park A, admit
     # and park B, admit C, approve both, and once C released the predicate stayed false forever.
     async def scenario():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         a = queue.reserve(capacity = 1, config = config)
         a_lease = a.lease_nowait()
@@ -1043,8 +1046,8 @@ def test_an_immediate_arrival_cannot_take_an_approved_chats_slot():
     # ignored it, so a request arriving in the window between the slot freeing and the
     # approved chat's next poll took the slot straight off the top.
     async def scenario():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
 
         a = queue.reserve(capacity = 1, config = config)
         a_lease = a.lease_nowait()
@@ -1073,12 +1076,12 @@ def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained(monkeypatch):
     # to_thread(next, gen)) and frees a slot that admits another run which can
     # park too, so unbounded parking drains the pool the generators run on.
     # Pinned because the real budget follows the runner's usable CPUs.
-    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+    monkeypatch.setattr(generation_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
-        queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig()
-        limit = llama_admission._max_parked(1)
+        queue = get_admission_queue("http://llama.test")
+        config = AdmissionConfig()
+        limit = generation_admission._max_parked(1)
         assert limit >= 1
 
         leases = []
@@ -1106,13 +1109,13 @@ def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained(monkeypatch):
 def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
     # One executor, so a per-queue budget would be handed out again to every
     # backend and to every reload onto a fresh ephemeral port.
-    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+    monkeypatch.setattr(generation_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
-        config = LlamaAdmissionConfig()
-        first = get_llama_admission_queue("http://llama.test:1")
-        second = get_llama_admission_queue("http://llama.test:2")
-        limit = llama_admission._max_parked(1)
+        config = AdmissionConfig()
+        first = get_admission_queue("http://llama.test:1")
+        second = get_admission_queue("http://llama.test:2")
+        limit = generation_admission._max_parked(1)
 
         for index in range(limit):
             queue = first if index % 2 == 0 else second
@@ -1124,8 +1127,8 @@ def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
 
         # A reset drops the queues the count was claimed against, so it must drop
         # the count too or the leak shrinks the budget process-wide.
-        reset_llama_admission_queues()
-        revived = get_llama_admission_queue("http://llama.test:1")
+        reset_admission_queues()
+        revived = get_admission_queue("http://llama.test:1")
         fresh = revived.reserve(capacity = 1, config = config).lease_nowait()
         assert fresh.park(), "reset leaked the park count"
         fresh.release()
@@ -1139,17 +1142,17 @@ def test_the_park_budget_leaves_the_executor_room_to_work(monkeypatch):
     # rather than read off this host, since a container gets a small one.
     for cpus in (1, 2, 4, 8, 16, 28, 64):
         workers = min(32, cpus + 4)
-        monkeypatch.setattr(llama_admission, "_executor_workers", lambda w = workers: w)
-        reserve = llama_admission._executor_reserve(workers)
+        monkeypatch.setattr(generation_admission, "_executor_workers", lambda w = workers: w)
+        reserve = generation_admission._executor_reserve(workers)
         assert reserve >= 2, f"{workers} workers left no reserve"
 
         # Even the smallest executor fits the two simultaneous prompts #7455 needs.
-        assert llama_admission._max_parked(1) >= 2, f"no room for two on {workers} workers"
-        assert llama_admission._max_parked(1) <= workers // 2
+        assert generation_admission._max_parked(1) >= 2, f"no room for two on {workers} workers"
+        assert generation_admission._max_parked(1) <= workers // 2
         # A backend whose --parallel alone fills the executor gets no parks.
-        assert llama_admission._max_parked(workers) == 0
+        assert generation_admission._max_parked(workers) == 0
         for capacity in range(0, workers + 8):
-            budget = llama_admission._max_parked(capacity)
+            budget = generation_admission._max_parked(capacity)
             assert budget >= 0, f"negative budget at capacity {capacity}"
             assert (
                 budget == 0 or capacity + budget <= workers - reserve
@@ -1168,7 +1171,7 @@ def test_the_park_budget_follows_the_executors_own_cpu_count(monkeypatch):
     # Against the real thing rather than the formula: the default executor is a
     # plain ThreadPoolExecutor(), so its own sizing is the answer on any version.
     with concurrent.futures.ThreadPoolExecutor() as pool:
-        assert llama_admission._executor_workers() == pool._max_workers
+        assert generation_admission._executor_workers() == pool._max_workers
 
 
 def test_the_stream_retries_a_park_that_was_refused():
@@ -1208,20 +1211,20 @@ def test_the_park_budget_counts_every_live_backend(monkeypatch):
     # base_url takes a fresh port on every load, so a reload mints a queue while
     # the old one drains. Prompts on both park threads of the one executor, so a
     # budget sized from either backend alone lets them add up past the reserve.
-    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+    monkeypatch.setattr(generation_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
-        config = LlamaAdmissionConfig()
-        old = get_llama_admission_queue("http://llama.test:1")
+        config = AdmissionConfig()
+        old = get_admission_queue("http://llama.test:1")
         draining = old.reserve(capacity = 16, config = config).lease_nowait()
         assert draining is not None  # in flight, so the registry keeps this queue
 
-        new = get_llama_admission_queue("http://llama.test:2")
+        new = get_admission_queue("http://llama.test:2")
         lease = new.reserve(capacity = 16, config = config).lease_nowait()
         assert lease is not None
 
         # 16 slots each against 32 workers: their prompts alone can fill it.
-        assert llama_admission._max_parked(16) > 0, "this test needs a budget to remove"
+        assert generation_admission._max_parked(16) > 0, "this test needs a budget to remove"
         assert not lease.park(), "budget sized from one backend of two"
 
         draining.release()  # the old backend drains and is up for eviction
@@ -1235,14 +1238,14 @@ def test_the_park_budget_is_freed_when_the_prompt_is_answered(monkeypatch):
     # The executor thread comes back the moment the answer arrives, before the
     # resume queues for a slot. Holding the budget until the slot lands refuses
     # someone else's park, and that someone holds the slot the resumer wants.
-    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+    monkeypatch.setattr(generation_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
-        config = LlamaAdmissionConfig()
-        queue = get_llama_admission_queue("http://llama.test")
+        config = AdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
 
         parked = []
-        for _ in range(llama_admission._max_parked(1)):
+        for _ in range(generation_admission._max_parked(1)):
             lease = queue.reserve(capacity = 1, config = config).lease_nowait()
             assert lease is not None and lease.park()
             parked.append(lease)
@@ -1270,14 +1273,14 @@ def test_releasing_a_parked_holder_returns_its_budget(monkeypatch):
     # A client that disconnects on the prompt releases straight out of parked,
     # never unparking. Its executor thread went with it, so keeping the budget
     # would lose one for the life of the process.
-    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+    monkeypatch.setattr(generation_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
-        config = LlamaAdmissionConfig()
-        queue = get_llama_admission_queue("http://llama.test")
+        config = AdmissionConfig()
+        queue = get_admission_queue("http://llama.test")
 
         parked = []
-        for _ in range(llama_admission._max_parked(1)):
+        for _ in range(generation_admission._max_parked(1)):
             lease = queue.reserve(capacity = 1, config = config).lease_nowait()
             assert lease is not None and lease.park()
             parked.append(lease)

@@ -24,15 +24,15 @@ import asyncio
 
 import pytest
 
-from core.inference.llama_admission import (
+from core.inference.generation_admission import (
     DEFAULT_ADMISSION_KV_BUDGET,
-    LlamaAdmissionConfig,
-    LlamaAdmissionQueue,
+    AdmissionConfig,
+    AdmissionQueue,
 )
 
 
 def _config(**overrides):
-    return LlamaAdmissionConfig(**overrides)
+    return AdmissionConfig(**overrides)
 
 
 async def _reserve(
@@ -60,7 +60,7 @@ class TestTheBudgetIsEnforced:
         """The live failure, in miniature. 1500 + 1500 against 2048."""
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             first = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             lease = first.lease_nowait()
             assert lease is not None, "the first request owns the cache"
@@ -77,7 +77,7 @@ class TestTheBudgetIsEnforced:
         """The regression guard: this must not become "one request at a time"."""
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             leases = []
             for _ in range(4):
                 reservation = await _reserve(queue, capacity = 4, tokens = 400, budget = 2048)
@@ -92,7 +92,7 @@ class TestTheBudgetIsEnforced:
         Refusing it here would strand it forever, since nothing else is running."""
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             reservation = await _reserve(queue, capacity = 4, tokens = 3000, budget = 2048)
             return reservation.lease_nowait()
 
@@ -100,7 +100,7 @@ class TestTheBudgetIsEnforced:
 
     def test_releasing_returns_the_tokens(self):
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             first = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             lease = first.lease_nowait()
             assert queue.snapshot().committed == 1500
@@ -117,7 +117,7 @@ class TestTheBudgetIsEnforced:
         admit callers the cache cannot hold."""
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             first = await _reserve(queue, capacity = 4, tokens = 1000, budget = 2048)
             lease = first.lease_nowait()
             lease.release()
@@ -132,7 +132,7 @@ class TestBackwardsCompatibility:
         """Every caller that does not pass a budget must behave exactly as before."""
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             leases = []
             for _ in range(4):
                 reservation = queue.reserve(capacity = 4, config = _config())
@@ -144,7 +144,7 @@ class TestBackwardsCompatibility:
 
     def test_the_env_flag_off_restores_slot_only_admission(self):
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             config = _config(kv_budget = False)
             first = await _reserve(
                 queue,
@@ -171,7 +171,7 @@ class TestBackwardsCompatibility:
 
     def test_a_zero_budget_disables_the_check(self):
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             first = await _reserve(queue, capacity = 4, tokens = 5000, budget = 0)
             assert first.lease_nowait() is not None
             second = await _reserve(queue, capacity = 4, tokens = 5000, budget = 0)
@@ -272,7 +272,7 @@ class TestParkedLeasesStillHoldTheirKV:
 
     def test_parking_does_not_reopen_the_whole_cache(self):
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             first = await _reserve(queue, capacity = 4, tokens = 1500, budget = 2048)
             lease = first.lease_nowait()
             assert lease is not None
@@ -290,7 +290,7 @@ class TestParkedLeasesStillHoldTheirKV:
         """The escape must survive the fix, or a large lone request deadlocks."""
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             reservation = await _reserve(queue, capacity = 4, tokens = 9999, budget = 2048)
             return reservation.lease_nowait()
 
@@ -387,7 +387,7 @@ class TestTheWholeRenderedPromptIsCounted:
         from types import SimpleNamespace
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             payload = SimpleNamespace(
                 messages = [{"role": "user", "content": "hi"}],
                 max_tokens = None,
@@ -513,7 +513,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
         from types import SimpleNamespace
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             payload = SimpleNamespace(
                 messages = [{"role": "user", "content": "hi"}],
                 max_tokens = 16,
@@ -535,7 +535,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
         from types import SimpleNamespace
 
         async def scenario():
-            queue = LlamaAdmissionQueue("test")
+            queue = AdmissionQueue("test")
             payload = SimpleNamespace(
                 messages = [{"role": "user", "content": "hi"}],
                 max_tokens = 16,
@@ -599,7 +599,7 @@ class TestCancellingTheBlockingHeadReopensTheLine:
 
     def test_a_smaller_waiter_runs_once_the_oversized_head_is_cancelled(self):
         async def scenario():
-            queue = LlamaAdmissionQueue("cancel-head")
+            queue = AdmissionQueue("cancel-head")
             head_room = await _reserve(queue, capacity = 4, tokens = 1000, budget = 2048)
             assert head_room.lease_nowait() is not None
 
@@ -625,7 +625,7 @@ class TestCancellingTheBlockingHeadReopensTheLine:
         """The line is still FIFO: losing a tail waiter must not skip the head."""
 
         async def scenario():
-            queue = LlamaAdmissionQueue("cancel-tail")
+            queue = AdmissionQueue("cancel-tail")
             active = await _reserve(queue, capacity = 4, tokens = 1000, budget = 2048)
             assert active.lease_nowait() is not None
 

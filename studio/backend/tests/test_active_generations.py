@@ -1097,14 +1097,14 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
     _route_gate()
     import asyncio
 
-    from core.inference import llama_admission
+    from core.inference import generation_admission
     from models.inference import ChatMessage, ResponsesRequest
 
     for name in (
-        llama_admission.ADMISSION_CONTROL_ENV,
-        llama_admission.ADMISSION_QUEUE_TIMEOUT_ENV,
-        llama_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV,
-        llama_admission.ADMISSION_MAX_QUEUE_ENV,
+        generation_admission.ADMISSION_CONTROL_ENV,
+        generation_admission.ADMISSION_QUEUE_TIMEOUT_ENV,
+        generation_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV,
+        generation_admission.ADMISSION_MAX_QUEUE_ENV,
     ):
         monkeypatch.delenv(name, raising = False)
 
@@ -1114,13 +1114,13 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
     payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
     messages = [ChatMessage(role = "user", content = "hi")]
 
-    llama_admission.reset_llama_admission_queues()
+    generation_admission.reset_admission_queues()
     try:
 
         async def run():
             # Hold the backend's only decode slot so the run below has to queue.
-            queue = llama_admission.get_llama_admission_queue("http://llama.test")
-            holder = queue.reserve(capacity = 1, config = llama_admission.LlamaAdmissionConfig())
+            queue = generation_admission.get_admission_queue("http://llama.test")
+            holder = queue.reserve(capacity = 1, config = generation_admission.AdmissionConfig())
             assert holder.lease_nowait() is not None
             response = await inf_mod._responses_stream(
                 payload, messages, _NeverDisconnectedRequest()
@@ -1144,7 +1144,7 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
 
         chunks = asyncio.run(run())
     finally:
-        llama_admission.reset_llama_admission_queues()
+        generation_admission.reset_admission_queues()
 
     body = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
     # It gave up its place instead of taking the slot: no upstream call, no envelope.
