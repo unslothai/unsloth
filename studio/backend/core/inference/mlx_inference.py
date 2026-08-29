@@ -11,6 +11,7 @@ import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
+from core.inference.live_token_progress import live_token_progress_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
@@ -467,6 +468,14 @@ def _build_generation_stats(
         # cannot rewrite the reason the completion actually ended for.
         "finish_reason": finish_reason,
     }
+
+
+def _mlx_live_text(text: str, response) -> str:
+    return live_token_progress_text(
+        text,
+        generated_tokens = getattr(response, "generation_tokens", None),
+        tok_per_sec = getattr(response, "generation_tps", None),
+    )
 
 
 PROMPT_CACHE_ENTRIES = 6
@@ -2014,7 +2023,7 @@ class MLXInferenceBackend:
                         released = cut
                         if delta:
                             normalized_output += delta
-                            yield normalized_output
+                            yield _mlx_live_text(normalized_output, response)
                     else:
                         # Re-decoding every id rebuilds rather than extends, so an
                         # invalid byte sequence can revise characters already shown.
@@ -2024,7 +2033,7 @@ class MLXInferenceBackend:
                             skip_special_tokens = True,
                         )
                         if not sequences:
-                            yield think_prefix + sampled
+                            yield _mlx_live_text(think_prefix + sampled, response)
                         else:
                             # Matched every step, delivered once at the end: this
                             # decode revises earlier snapshots, and consumers diff
@@ -2076,12 +2085,12 @@ class MLXInferenceBackend:
                 # The prefill already went out, so a turn whose settled text is just
                 # the prefill owes no second snapshot saying the same thing.
                 if settled != think_prefix:
-                    yield settled
+                    yield _mlx_live_text(settled, final_response)
             else:
                 delta = normalizer.feed(sampled[released:cut])
                 if delta:
                     normalized_output += delta
-                    yield normalized_output
+                    yield _mlx_live_text(normalized_output, final_response)
         if normalizer is not None:
             # A sequence ends the turn as a stop token would, so a reasoning block it
             # cut inside is closed. Only a cancelled turn drains: more was coming.
@@ -2089,7 +2098,7 @@ class MLXInferenceBackend:
             tail = normalizer.drain() if cancelled else normalizer.finish()
             if tail:
                 normalized_output += tail
-                yield normalized_output
+                yield _mlx_live_text(normalized_output, final_response)
         if stopped:
             self._mark_stopped()
 
@@ -2292,21 +2301,21 @@ class MLXInferenceBackend:
                         token_text = response.text if hasattr(response, "text") else str(response)
                         sampled += token_text
                         if not sequences:
-                            yield prefill + sampled
+                            yield _mlx_live_text(prefill + sampled, response)
                         else:
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                             # These deltas only append, so the cut never moves back
                             # over text already released.
                             if cut > released:
                                 released = cut
-                                yield prefill + sampled[:cut]
+                                yield _mlx_live_text(prefill + sampled[:cut], response)
                             if stopped:
                                 break
                         if cancel_event and cancel_event.is_set():
                             break
                     # As in _generate_text: what was withheld is ordinary text now.
                     if sequences and not stopped and released < len(sampled):
-                        yield prefill + sampled
+                        yield _mlx_live_text(prefill + sampled, final_response)
                 finally:
                     # mlx_vlm exposes the same stats fields as mlx_lm, minus a
                     # finish reason, so that one is derived.
@@ -2425,7 +2434,7 @@ class MLXInferenceBackend:
                     if normalizer is not None:
                         delta = normalizer.feed(delta)
                     if delta:
-                        yield delta
+                        yield _mlx_live_text(delta, response)
                     if stopped:
                         break
                     if cancel_event and cancel_event.is_set():
@@ -2453,13 +2462,13 @@ class MLXInferenceBackend:
             if normalizer is not None:
                 delta = normalizer.feed(delta)
             if delta:
-                yield delta
+                yield _mlx_live_text(delta, final_response)
         if normalizer is not None:
             # As in _generate_text: a sequence closes the block it cut inside.
             cancelled = not stopped and cancel_event is not None and cancel_event.is_set()
             tail = normalizer.drain() if cancelled else normalizer.finish()
             if tail:
-                yield tail
+                yield _mlx_live_text(tail, final_response)
         if stopped:
             self._mark_stopped()
 

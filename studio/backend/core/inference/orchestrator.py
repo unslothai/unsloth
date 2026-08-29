@@ -39,7 +39,7 @@ from utils.utils import hf_env_offline
 # Via PEP 562, not a module-level import: resolving the name imports unsloth_zoo, hence
 # torch, and routes/inference.py imports this module at startup only for GenStream*.
 DownloadStallError: type
-MONITOR_TOKEN_CALLBACK_STATS_KEY = "_monitor_token_callback"
+MONITOR_LIVE_TPS_CALLBACK_STATS_KEY = "_monitor_live_tps_callback"
 MONITOR_TURN_END_CALLBACK_STATS_KEY = "_monitor_turn_end_callback"
 
 
@@ -1100,16 +1100,17 @@ class InferenceOrchestrator:
                         self._cancel_generation()
                     drain_on_cancel()
                     return
-                on_token = (
-                    stats_holder.get(MONITOR_TOKEN_CALLBACK_STATS_KEY)
+                on_live_tps = (
+                    stats_holder.get(MONITOR_LIVE_TPS_CALLBACK_STATS_KEY)
                     if isinstance(stats_holder, dict)
                     else None
                 )
-                if callable(on_token):
+                live_tps = resp.get("tok_per_sec")
+                if callable(on_live_tps) and live_tps is not None:
                     try:
-                        on_token()
+                        on_live_tps(live_tps)
                     except Exception:
-                        logger.warning("Failed to record a live generation token", exc_info = True)
+                        logger.warning("Failed to record live generation speed", exc_info = True)
                 yield resp.get("text", "")
             elif rtype == "gen_done":
                 if stats_holder is not None:
@@ -2149,9 +2150,9 @@ class InferenceOrchestrator:
             turn_stats: dict = {}
             on_turn_end = None
             if isinstance(stats_holder, dict):
-                on_token = stats_holder.get(MONITOR_TOKEN_CALLBACK_STATS_KEY)
-                if callable(on_token):
-                    turn_stats[MONITOR_TOKEN_CALLBACK_STATS_KEY] = on_token
+                on_live_tps = stats_holder.get(MONITOR_LIVE_TPS_CALLBACK_STATS_KEY)
+                if callable(on_live_tps):
+                    turn_stats[MONITOR_LIVE_TPS_CALLBACK_STATS_KEY] = on_live_tps
                 on_turn_end = stats_holder.get(MONITOR_TURN_END_CALLBACK_STATS_KEY)
             common_kwargs = dict(
                 messages = conv,

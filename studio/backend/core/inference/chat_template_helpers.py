@@ -17,6 +17,8 @@ import weakref
 from dataclasses import dataclass
 from typing import Optional
 
+from core.inference.live_token_progress import inherit_live_token_progress
+
 logger = logging.getLogger(__name__)
 
 # "Not JSON we can walk", distinct from a payload that legitimately decodes to None.
@@ -2143,14 +2145,16 @@ def normalize_reasoning_snapshots(
     )
     raw_output = ""
     normalized_output = ""
+    latest_snapshot = ""
     for snapshot in stream:
         if not snapshot.startswith(raw_output):
             raise RuntimeError("Reasoning normalization requires cumulative text snapshots")
         delta = normalizer.feed(snapshot[len(raw_output) :])
         raw_output = snapshot
+        latest_snapshot = snapshot
         if delta:
             normalized_output += delta
-            yield normalized_output
+            yield inherit_live_token_progress(normalized_output, snapshot)
 
     cancelled = (
         not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
@@ -2158,7 +2162,7 @@ def normalize_reasoning_snapshots(
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:
         normalized_output += tail
-        yield normalized_output
+        yield inherit_live_token_progress(normalized_output, latest_snapshot)
 
 
 def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:

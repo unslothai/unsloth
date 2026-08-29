@@ -104,6 +104,41 @@ def test_worker_closes_cancelled_generator_before_gen_done():
     assert [item["type"] for item in responses.items] == ["gen_done"]
 
 
+def test_worker_carries_token_id_progress_separately_from_text_chunks():
+    from core.inference.live_token_progress import live_token_progress_text
+    from core.inference.worker import _handle_generate
+
+    class _Backend:
+        last_generation_stats = None
+
+        def generate_chat_response(self, **_kwargs):
+            yield live_token_progress_text(
+                "one buffered fragment",
+                generated_tokens = 6,
+                elapsed_seconds = 0.5,
+            )
+
+    class _Responses:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            self.items.append(item)
+
+    responses = _Responses()
+    _handle_generate(
+        _Backend(),
+        {"request_id": "r1", "messages": []},
+        responses,
+        threading.Event(),
+    )
+
+    token = responses.items[0]
+    assert token["text"] == "one buffered fragment"
+    assert token["decoded_tokens"] == 6
+    assert token["tok_per_sec"] == 10.0
+
+
 def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -235,17 +270,17 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
         next(gen)
 
 
-def test_consume_token_stream_reports_each_worker_token():
-    from core.inference.orchestrator import MONITOR_TOKEN_CALLBACK_STATS_KEY
+def test_consume_token_stream_reports_worker_live_tps():
+    from core.inference.orchestrator import MONITOR_LIVE_TPS_CALLBACK_STATS_KEY
 
     o = _bare_orchestrator()
     responses = [
         {"type": "token", "text": "A"},
-        {"type": "token", "text": "AB"},
+        {"type": "token", "text": "AB", "tok_per_sec": 12.5},
         {"type": "gen_done", "stats": {"usage": {"completion_tokens": 2}}},
     ]
     observed = []
-    stats_holder = {MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: observed.append(len(observed) + 1)}
+    stats_holder = {MONITOR_LIVE_TPS_CALLBACK_STATS_KEY: observed.append}
 
     chunks = list(
         o._consume_token_stream(
@@ -257,13 +292,13 @@ def test_consume_token_stream_reports_each_worker_token():
     )
 
     assert chunks == ["A", "AB"]
-    assert observed == [1, 2]
+    assert observed == [12.5]
     assert stats_holder["stats"]["usage"]["completion_tokens"] == 2
 
 
 def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
     from core.inference.orchestrator import (
-        MONITOR_TOKEN_CALLBACK_STATS_KEY,
+        MONITOR_LIVE_TPS_CALLBACK_STATS_KEY,
         MONITOR_TURN_END_CALLBACK_STATS_KEY,
     )
     from core.inference import safetensors_agentic
@@ -272,7 +307,7 @@ def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
     observed = []
 
     def generate_chat_response(**kwargs):
-        kwargs["stats_holder"][MONITOR_TOKEN_CALLBACK_STATS_KEY]()
+        kwargs["stats_holder"][MONITOR_LIVE_TPS_CALLBACK_STATS_KEY](20.0)
         kwargs["stats_holder"]["stats"] = {"usage": {"completion_tokens": 1}}
         yield "answer"
 
@@ -283,7 +318,7 @@ def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
     monkeypatch.setattr(o, "generate_chat_response", generate_chat_response)
     monkeypatch.setattr(safetensors_agentic, "run_safetensors_tool_loop", run_tool_loop)
     stats_holder = {
-        MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: observed.append("token"),
+        MONITOR_LIVE_TPS_CALLBACK_STATS_KEY: lambda rate: observed.append(("tps", rate)),
         MONITOR_TURN_END_CALLBACK_STATS_KEY: lambda: observed.append("turn_end"),
     }
 
@@ -296,7 +331,7 @@ def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
     )
 
     assert events == [{"type": "content", "text": "answer"}]
-    assert observed == ["token", "turn_end"]
+    assert observed == [("tps", 20.0), "turn_end"]
     assert stats_holder["stats"]["usage"]["completion_tokens"] == 1
 
 

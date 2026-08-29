@@ -76,7 +76,7 @@ from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
     GenStreamErrorRaised,
-    MONITOR_TOKEN_CALLBACK_STATS_KEY,
+    MONITOR_LIVE_TPS_CALLBACK_STATS_KEY,
     MONITOR_TURN_END_CALLBACK_STATS_KEY,
     MINIMAX_MUSIC_MAX_FRAMES,
     MOSS_TTS_MAX_FRAMES,
@@ -5273,7 +5273,9 @@ def _monitor_safetensors_stats_holder(monitor_id: Optional[str]) -> dict:
     if not monitor_id:
         return {}
     return {
-        MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: api_monitor.record_decoded_token(monitor_id),
+        MONITOR_LIVE_TPS_CALLBACK_STATS_KEY: lambda rate: api_monitor.set_live_tps(
+            monitor_id, rate
+        ),
         MONITOR_TURN_END_CALLBACK_STATS_KEY: lambda: api_monitor.pause_decoding(monitor_id),
     }
 

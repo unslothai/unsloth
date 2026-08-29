@@ -1642,11 +1642,7 @@ def test_a_decoded_first_token_starts_both_clocks(monkeypatch):
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["tok_per_sec"] == 10.0
 
 
-def test_running_decoded_tokens_report_live_tps(monkeypatch):
-    import core.inference.api_monitor as m
-
-    clock = [100.0]
-    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+def test_running_worker_rate_reports_live_tps():
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -1655,23 +1651,14 @@ def test_running_decoded_tokens_report_live_tps(monkeypatch):
         prompt = "hi",
     )
 
-    monitor.record_decoded_token(entry_id)
-    clock[0] = 100.5
-    for _ in range(5):
-        monitor.record_decoded_token(entry_id)
+    monitor.set_live_tps(entry_id, 12.5)
 
     running = monitor.get(entry_id)
     assert running["status"] == "running"
-    assert running["tok_per_sec"] == 10.0
-    monitor.finish(entry_id)
-    assert monitor.get(entry_id)["tok_per_sec"] is None
+    assert running["tok_per_sec"] == 12.5
 
 
-def test_live_tps_excludes_tool_pauses(monkeypatch):
-    import core.inference.api_monitor as m
-
-    clock = [100.0]
-    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+def test_live_tps_excludes_tool_pauses():
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -1680,20 +1667,13 @@ def test_live_tps_excludes_tool_pauses(monkeypatch):
         prompt = "hi",
     )
 
-    monitor.record_decoded_token(entry_id)
-    clock[0] = 100.5
-    for _ in range(5):
-        monitor.record_decoded_token(entry_id)
+    monitor.set_live_tps(entry_id, 10.0)
     assert monitor.get(entry_id)["tok_per_sec"] == 10.0
 
     monitor.pause_decoding(entry_id)
     assert monitor.get(entry_id)["tok_per_sec"] is None
 
-    clock[0] = 300.0
-    monitor.record_decoded_token(entry_id)
-    clock[0] = 300.5
-    for _ in range(5):
-        monitor.record_decoded_token(entry_id)
+    monitor.set_live_tps(entry_id, 10.0)
     assert monitor.get(entry_id)["tok_per_sec"] == 10.0
 
 

@@ -62,13 +62,19 @@ export function useLiveChatTps(routedThreadId?: string): number | null {
           finish();
           return;
         }
+        const store = useChatRuntimeStore.getState();
         if (sample.tps !== null) {
-          const store = useChatRuntimeStore.getState();
           store.setThreadLiveTps(
             store.runKeyForOwner(threadKey, owner),
             owner,
             monitorId,
             sample.tps,
+          );
+        } else {
+          store.clearThreadLiveTpsSample(
+            store.runKeyForOwner(threadKey, owner),
+            owner,
+            monitorId,
           );
         }
       } catch (error) {

@@ -157,3 +157,16 @@ test("monitor failures clear stale samples before retrying", async () => {
   assert.match(catchBody, /clearThreadLiveTpsSample/);
   assert.match(catchBody, /isPermanentApiMonitorEntryError/);
 });
+
+test("an unavailable running sample clears the previous rate", async () => {
+  const source = await readFile(
+    new URL("../src/features/chat/hooks/use-live-chat-tps.ts", import.meta.url),
+    "utf8",
+  );
+  const sampleStart = source.indexOf("const sample = readLiveChatTpsSample");
+  const catchStart = source.indexOf("} catch (error) {", sampleStart);
+  const sampleBody = source.slice(sampleStart, catchStart);
+
+  assert.match(sampleBody, /if \(sample\.tps !== null\)/);
+  assert.match(sampleBody, /else \{[\s\S]*clearThreadLiveTpsSample/);
+});

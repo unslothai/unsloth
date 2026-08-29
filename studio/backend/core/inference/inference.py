@@ -11,6 +11,7 @@ from peft import PeftModel, PeftModelForCausalLM
 import contextlib
 import json
 import sys
+import time
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
@@ -48,12 +49,63 @@ from core.inference.generation_timing import (
     build_generation_timings,
     with_prefill_boundary_processor,
 )
+from core.inference.live_token_progress import (
+    inherit_live_token_progress,
+    live_token_progress_text,
+)
 from io import StringIO
 import structlog
 from loggers import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def _streamed_token_count(value) -> int:
+    shape = getattr(value, "shape", ())
+    if len(shape) > 1:
+        value = value[0]
+    numel = getattr(value, "numel", None)
+    if callable(numel):
+        return int(numel())
+    try:
+        return len(value)
+    except TypeError:
+        return 1
+
+
+class LiveTextIteratorStreamer(TextIteratorStreamer):
+    """Text streamer that keeps token-id throughput on each decoded fragment."""
+
+    def __init__(self, *args, **kwargs):
+        self.generated_tokens = 0
+        self.first_generated_monotonic = None
+        super().__init__(*args, **kwargs)
+
+    def put(self, value):
+        is_prompt = self.skip_prompt and self.next_tokens_are_prompt
+        if not is_prompt:
+            if self.first_generated_monotonic is None:
+                self.first_generated_monotonic = time.monotonic()
+            self.generated_tokens += _streamed_token_count(value)
+        super().put(value)
+
+    def _with_live_progress(self, text: str):
+        elapsed = (
+            time.monotonic() - self.first_generated_monotonic
+            if self.first_generated_monotonic is not None
+            else None
+        )
+        return live_token_progress_text(
+            text,
+            generated_tokens = self.generated_tokens,
+            elapsed_seconds = elapsed,
+        )
+
+    def on_finalized_text(self, text: str, stream_end: bool = False):
+        self.text_queue.put(self._with_live_progress(text), timeout = self.timeout)
+        if stream_end:
+            self.text_queue.put(self.stop_signal, timeout = self.timeout)
 
 
 class HarmonyTextStreamer:
@@ -93,6 +145,8 @@ class HarmonyTextStreamer:
         self._prompt_len: int = 0
         self._is_first_put: bool = True
         self._stop: bool = False
+        self.generated_tokens: int = 0
+        self.first_generated_monotonic = None
 
         # Stateful channel tracking avoids delta-on-transformed bugs
         self._emitted_think_open: bool = False
@@ -114,12 +168,17 @@ class HarmonyTextStreamer:
         else:
             ids = [value]
 
-        if self._is_first_put and self.skip_prompt:
-            # First call is the full prompt; remember its length.
-            self._prompt_len = len(ids)
-            self._token_ids = list(ids)
+        if self._is_first_put:
             self._is_first_put = False
-            return
+            if self.skip_prompt:
+                # first call is the full prompt; remember its length
+                self._prompt_len = len(ids)
+                self._token_ids = list(ids)
+                return
+
+        if self.first_generated_monotonic is None:
+            self.first_generated_monotonic = time.monotonic()
+        self.generated_tokens += len(ids)
 
         self._token_ids.extend(ids)
 
@@ -127,6 +186,20 @@ class HarmonyTextStreamer:
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
         self._process_incremental(raw)
+
+    def _emit(self, text: str) -> None:
+        elapsed = (
+            time.monotonic() - self.first_generated_monotonic
+            if self.first_generated_monotonic is not None
+            else None
+        )
+        self._queue.put(
+            live_token_progress_text(
+                text,
+                generated_tokens = self.generated_tokens,
+                elapsed_seconds = elapsed,
+            )
+        )
 
     def end(self):
         """Signal generation is complete."""
@@ -138,7 +211,7 @@ class HarmonyTextStreamer:
 
         # Close any open think tags.
         if self._emitted_think_open and not self._emitted_think_close:
-            self._queue.put("</think>")
+            self._emit("</think>")
             self._emitted_think_close = True
 
         self._stop = True
@@ -183,26 +256,26 @@ class HarmonyTextStreamer:
 
             if channel == "analysis":
                 if not self._emitted_think_open:
-                    self._queue.put("<think>")
+                    self._emit("<think>")
                     self._emitted_think_open = True
 
                 new_content = content[self._analysis_emitted :]
                 if new_content:
                     self._analysis_emitted = len(content)
-                    self._queue.put(new_content)
+                    self._emit(new_content)
 
             elif channel in ("final", "assistant"):
                 if self._emitted_think_open and not self._emitted_think_close:
-                    self._queue.put("</think>")
+                    self._emit("</think>")
                     self._emitted_think_close = True
 
                 new_content = content[self._final_emitted :]
                 if new_content:
                     self._final_emitted = len(content)
-                    self._queue.put(new_content)
+                    self._emit(new_content)
 
 
-class ReasoningTextIteratorStreamer(TextIteratorStreamer):
+class ReasoningTextIteratorStreamer(LiveTextIteratorStreamer):
     """TextIteratorStreamer that preserves native channel tokens until parsed."""
 
     def __init__(
@@ -234,7 +307,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         """Queue canonical deltas, closing only on natural stream completion."""
         delta = self._normalizer.feed(text)
         if delta:
-            self.text_queue.put(delta, timeout = self.timeout)
+            self.text_queue.put(self._with_live_progress(delta), timeout = self.timeout)
 
         if stream_end:
             cancelled = self._aborted or (
@@ -242,7 +315,7 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
             )
             tail = self._normalizer.drain() if cancelled else self._normalizer.finish()
             if tail:
-                self.text_queue.put(tail, timeout = self.timeout)
+                self.text_queue.put(self._with_live_progress(tail), timeout = self.timeout)
             self.text_queue.put(self.stop_signal, timeout = self.timeout)
 
 
@@ -1515,7 +1588,7 @@ class InferenceBackend:
                         output, cleaned = self._append_stream_delta(
                             output, new_token, active_stop_token_ids
                         )
-                        yield cleaned
+                        yield inherit_live_token_progress(cleaned, new_token)
             finally:
                 if cancel_event is not None and not generation_complete:
                     cancel_event.set()
@@ -1625,10 +1698,9 @@ class InferenceBackend:
         ).to(model.device)
 
         try:
-            from transformers import TextIteratorStreamer
             from queue import Empty
 
-            streamer = TextIteratorStreamer(
+            streamer = LiveTextIteratorStreamer(
                 raw_tokenizer,
                 skip_prompt = True,
                 skip_special_tokens = True,
@@ -1789,7 +1861,7 @@ class InferenceBackend:
                 )
             except Exception as e:
                 logger.warning(f"HarmonyTextStreamer init failed, falling back: {e}")
-                return TextIteratorStreamer(
+                return LiveTextIteratorStreamer(
                     tokenizer,
                     skip_prompt = skip_prompt,
                     skip_special_tokens = True,
@@ -1811,7 +1883,7 @@ class InferenceBackend:
                 cancel_event = cancel_event,
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
             )
-        return TextIteratorStreamer(
+        return LiveTextIteratorStreamer(
             tokenizer,
             skip_prompt = skip_prompt,
             skip_special_tokens = True,
@@ -1846,7 +1918,7 @@ class InferenceBackend:
                 output, cleaned = self._append_stream_delta(
                     output, new_token, stop_token_ids = stop_token_ids
                 )
-                yield cleaned
+                yield inherit_live_token_progress(cleaned, new_token)
 
     def generate_stream(
         self,
@@ -2010,7 +2082,7 @@ class InferenceBackend:
                         output, cleaned = self._append_stream_delta(
                             output, new_token, active_stop_token_ids
                         )
-                        yield cleaned
+                        yield inherit_live_token_progress(cleaned, new_token)
             finally:
                 # Set cancel_event only on early exit (user cancel), NOT on
                 # normal completion. It's a shared mp.Event; setting it

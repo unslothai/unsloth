@@ -141,6 +141,21 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _token_response(request_id: str, text) -> dict:
+    response = {
+        "type": "token",
+        "request_id": request_id,
+        "text": str(text),
+    }
+    generated_tokens = getattr(text, "generated_tokens", None)
+    tok_per_sec = getattr(text, "tok_per_sec", None)
+    if generated_tokens is not None:
+        response["decoded_tokens"] = generated_tokens
+    if tok_per_sec is not None:
+        response["tok_per_sec"] = tok_per_sec
+    return response
+
+
 def _encode_share_object(obj: Any) -> bytes:
     data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
     if len(data) > _SHARE_OBJECT_MAX_BYTES:
@@ -705,11 +720,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
                 _send_response(
                     resp_queue,
-                    {
-                        "type": "token",
-                        "request_id": request_id,
-                        "text": cumulative_text,
-                    },
+                    _token_response(request_id, cumulative_text),
                 )
         finally:
             close = getattr(generator, "close", None)
@@ -905,11 +916,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
 
             _send_response(
                 resp_queue,
-                {
-                    "type": "token",
-                    "request_id": request_id,
-                    "text": text_chunk,
-                },
+                _token_response(request_id, text_chunk),
             )
 
         _send_response(

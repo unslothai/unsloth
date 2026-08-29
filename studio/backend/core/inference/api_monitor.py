@@ -207,7 +207,6 @@ class ApiMonitorEntry:
     prompt_tok_per_sec: Optional[float] = None
     # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
-    decoded_tokens_observed: int = 0
     stop_reason: Optional[str] = None
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own
     # chunk, so agreement can only be judged across the whole request. Not serialized.
@@ -243,15 +242,6 @@ class ApiMonitorEntry:
             ttft_ms = max(0, int(self.prompt_ms))
         tok_per_sec = self.tok_per_sec
         if (
-            tok_per_sec is None
-            and self.status == "running"
-            and self.decoded_tokens_observed > 1
-            and self.first_decode_monotonic is not None
-        ):
-            gen_s = time.monotonic() - self.first_decode_monotonic
-            if gen_s > 0.05:
-                tok_per_sec = (self.decoded_tokens_observed - 1) / gen_s
-        elif (
             tok_per_sec is None
             and self.completion_tokens
             # The clock starts at the first token, so it spans only the gaps that
@@ -679,17 +669,15 @@ class ApiMonitor:
             if decoded and entry.first_decode_monotonic is None:
                 entry.first_decode_monotonic = now
 
-    def record_decoded_token(self, entry_id: Optional[str]) -> None:
-        if not entry_id:
+    def set_live_tps(self, entry_id: Optional[str], tok_per_sec) -> None:
+        tok_per_sec = _finite_float_or_none(tok_per_sec)
+        if not entry_id or tok_per_sec is None or tok_per_sec <= 0:
             return
-        now = time.monotonic()
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None or entry.status != "running":
                 return
-            if entry.first_decode_monotonic is None:
-                entry.first_decode_monotonic = now
-            entry.decoded_tokens_observed += 1
+            entry.tok_per_sec = tok_per_sec
             entry.updated_at = time.time()
 
     def pause_decoding(self, entry_id: Optional[str]) -> None:
@@ -700,7 +688,6 @@ class ApiMonitor:
             if entry is None or entry.status != "running":
                 return
             entry.first_decode_monotonic = None
-            entry.decoded_tokens_observed = 0
             entry.tok_per_sec = None
             entry.updated_at = time.time()
 
