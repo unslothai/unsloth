@@ -1162,6 +1162,7 @@ export class IncrementalMarkdownCache {
   // read these to hold the rewind path in place.
   private retainedPrefixRebuilds = 0;
   private rewoundCharacters = 0;
+  private hasGlobalLinkReference = false;
   // Bumped only when the Markdown string alone cannot signal a changed render.
   renderGeneration = 0;
 
@@ -1315,6 +1316,11 @@ export class IncrementalMarkdownCache {
     // `"para\r"`, nothing is ever committed, and the whole reply re-repairs and
     // re-lexes on every frame. Normalise first so both sides speak LF.
     const markdown = normalizeLineEndings(rawMarkdown);
+    const globalLinkReference = hasGlobalLinkReference(markdown);
+    if (globalLinkReference !== this.hasGlobalLinkReference) {
+      this.hasGlobalLinkReference = globalLinkReference;
+      this.renderGeneration += 1;
+    }
 
     // Tokens arrive faster than frames, so the coalescer hands the same text to
     // several renders. Nothing about the result can differ, and repeating the
@@ -1339,7 +1345,7 @@ export class IncrementalMarkdownCache {
     // globally scoped definitions must stay in the same rendered document as
     // their uses, so neither construct can retain an independently parsed prefix.
     if (
-      hasGlobalLinkReference(markdown) ||
+      globalLinkReference ||
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired)
     ) {

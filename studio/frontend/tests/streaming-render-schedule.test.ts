@@ -162,9 +162,11 @@ test("link references and definitions stay in one rendered document", () => {
   const usage = `Before [reference][math-ref].\n\n${paragraphs(20)}`;
   const cache = new IncrementalMarkdownCache();
   cache.update(usage);
+  const generation = cache.renderGeneration;
 
   const complete = `${usage}[math-ref]: https://example.com/reference`;
   const render = cache.update(complete);
+  assert.equal(cache.renderGeneration, generation + 1);
   assert.equal(render.markdown, remend(complete));
   assert.deepEqual(render.parseMarkdownIntoBlocks(render.markdown), [
     remend(complete),
