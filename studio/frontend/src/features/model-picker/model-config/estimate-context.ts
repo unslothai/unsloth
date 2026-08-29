@@ -32,7 +32,9 @@ export function resolveEstimateContext(
     // --fit owns the sizing, and a builtin-default preset on a GGUF load. In both,
     // pricing what is loaded RIGHT NOW quotes the OLD fit -- precisely when a
     // context-sensitive setting has just changed and the next fit lands elsewhere.
-    return customContextLength && customContextLength > 0 ? customContextLength : 0;
+    return customContextLength && customContextLength > 0
+      ? customContextLength
+      : 0;
   }
   return customContextLength ?? activeLoadedContext ?? 0;
 }
@@ -68,9 +70,7 @@ export function resolveEstimateContext(
  * per swap and the consequence is a stale byte count on a row already labelled Beta,
  * not an incorrect load. Widening it is not worth a second hash; noting it is.
  */
-export function resolveTokenIdentity(
-  token: string | null | undefined,
-): string {
+export function resolveTokenIdentity(token: string | null | undefined): string {
   if (!token) return "";
   let hash = 5381;
   for (let i = 0; i < token.length; i++) {
@@ -91,4 +91,21 @@ export function resolveEstimateSourceIdentity(
     tokenIdentity,
     nativePathToken ?? null,
   ]);
+}
+
+/**
+ * Whether a prospective load should be priced at all.
+ *
+ * The two arms read `classifiedIsDiffusion` differently on purpose: the probe is GGUF-only, so
+ * GGUF can wait for a definite `false`, while on the MLX arm one may never arrive and waiting
+ * would hide the row.
+ */
+export function shouldRequestMemoryEstimate(opts: {
+  isGguf: boolean;
+  isAppleUnifiedMemory: boolean;
+  classifiedIsDiffusion: boolean | undefined;
+}): boolean {
+  const { isGguf, isAppleUnifiedMemory, classifiedIsDiffusion } = opts;
+  if (isGguf) return classifiedIsDiffusion === false;
+  return isAppleUnifiedMemory && classifiedIsDiffusion !== true;
 }

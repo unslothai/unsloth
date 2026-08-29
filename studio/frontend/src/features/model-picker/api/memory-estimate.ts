@@ -19,7 +19,8 @@ export type MemoryEstimateReason =
 export interface MemoryEstimate {
   available: boolean;
   reason: MemoryEstimateReason | null;
-  /** Files that become resident: weights, projector, drafter. */
+  /** Resident weights, projector and drafter: the files themselves for GGUF, and for MLX what
+   *  they go resident AS. */
   weightsBytes: number;
   /** KV cache at the priced context and slot count. Meaningless unless `kvEstimable`. */
   kvBytes: number;
@@ -69,6 +70,12 @@ export interface MemoryEstimateRequest {
   nativePathToken?: string | null;
   nCtx?: number | null;
   cacheTypeKv?: string | null;
+  /** The context an MLX load opens at. /load reads this rather than nCtx off the non-GGUF
+   *  path, so the estimate prices a length the load never uses without it. */
+  maxSeqLength?: number | null;
+  /** MLX's own KV quantization width, deliberately not cacheTypeKv: llama.cpp's field persists
+   *  in the config of a model that never ran there. */
+  mlxKvBits?: number | null;
   nParallel?: number | null;
   nBatch?: number | null;
   nUbatch?: number | null;
@@ -142,6 +149,8 @@ function estimateRequestBody(
     native_path_lease: nativePathLease,
     n_ctx: payload.nCtx ?? null,
     cache_type_kv: payload.cacheTypeKv ?? null,
+    max_seq_length: payload.maxSeqLength ?? null,
+    mlx_kv_bits: payload.mlxKvBits ?? null,
     n_parallel: payload.nParallel ?? null,
     n_batch: payload.nBatch ?? null,
     n_ubatch: payload.nUbatch ?? null,
@@ -276,7 +285,8 @@ export function resetMemoryEstimateRouteMemo(): void {
 }
 
 /**
- * Price a prospective GGUF load from its header. Allocates nothing, loads nothing.
+ * Price a prospective load before it runs: a GGUF from its header, an MLX repo from safetensors
+ * headers and an unevaluated graph. Loads no model, reads no tensor data.
  *
  * Never throws for a backend answer: every failure -- an absent route, an auth
  * expiry, a 500, a proxy's HTML error page served as 200, a truncated body -- comes

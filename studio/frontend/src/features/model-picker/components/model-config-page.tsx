@@ -75,7 +75,7 @@ import {
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import { type MemoryEstimate } from "../api/memory-estimate";
-import { resolveEstimateContext } from "../model-config/estimate-context";
+import { resolveEstimateContext, shouldRequestMemoryEstimate } from "../model-config/estimate-context";
 import {
   type MemoryFitVerdict,
   formatMemoryGb,
@@ -2810,7 +2810,11 @@ export function ModelConfigPage({
   // then never leaves undefined. Waiting costs a moment of no row; guessing costs a
   // confident wrong number, which is the trade this whole panel is written around.
   const memoryEstimateRequest =
-    target.isGguf && classifiedIsDiffusion === false
+    shouldRequestMemoryEstimate({
+      isGguf: Boolean(target.isGguf),
+      isAppleUnifiedMemory,
+      classifiedIsDiffusion,
+    })
       ? {
           modelPath: target.id,
           ggufVariant: target.ggufVariant ?? null,
@@ -2830,6 +2834,9 @@ export function ModelConfigPage({
               (target.isGguf === true && activePresetSource === "builtin-default"),
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
+          maxSeqLength: target.isGguf ? null : maxSeqLengthValue,
+          // MLX's cache width: a remembered llama.cpp kvCacheDtype does not describe it.
+          mlxKvBits: runtimeConfig.mlxKvBits ?? null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
@@ -3249,24 +3256,29 @@ export function ModelConfigPage({
       )}
 
       <div className="space-y-3.5">
+        {/* Above Context Length on purpose: that is the control moving this number
+            most, and a readout below it is one you go looking for. Outside the GGUF
+            block because an MLX load has a footprint to show and none of the
+            llama-server controls below it -- keyed off the request rather than the
+            format, so the row appears exactly when something was priced. */}
+        {memoryEstimateRequest != null && (
+          <MemoryEstimateRow
+            estimate={memoryEstimate.estimate}
+            loading={memoryEstimate.loading}
+            stale={memoryEstimate.stale}
+            gpuCapacityGb={memoryGpuCapacityGb}
+            totalCapacityGb={memoryTotalCapacityGb}
+            systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
+            freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+            usableSystemRamGb={memoryUsableSystemRamGb}
+            isUnifiedMemory={isAppleUnifiedMemory}
+            singleMemoryPool={singleMemoryPool}
+            expanded={memoryBreakdownOpen}
+            onExpandedChange={setMemoryBreakdownOpen}
+          />
+        )}
         {target.isGguf && (
           <>
-            {/* Above Context Length on purpose: that is the control moving this
-                number most, and a readout below it is one you go looking for. */}
-            <MemoryEstimateRow
-              estimate={memoryEstimate.estimate}
-              loading={memoryEstimate.loading}
-              stale={memoryEstimate.stale}
-              gpuCapacityGb={memoryGpuCapacityGb}
-              totalCapacityGb={memoryTotalCapacityGb}
-              systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
-              freeGpuCapacityGb={memoryFreeGpuCapacityGb}
-              usableSystemRamGb={memoryUsableSystemRamGb}
-              isUnifiedMemory={isAppleUnifiedMemory}
-              singleMemoryPool={singleMemoryPool}
-              expanded={memoryBreakdownOpen}
-              onExpandedChange={setMemoryBreakdownOpen}
-            />
             <div className="space-y-3">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">

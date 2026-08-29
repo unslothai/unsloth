@@ -11261,6 +11261,159 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
     return None
 
 
+# What an MLX estimate prices when the panel names no context: the MLX loader's own default.
+_DEFAULT_MLX_ESTIMATE_CTX = 2048
+
+
+def _mlx_estimate_available() -> bool:
+    """Whether this host would actually run the load through MLX."""
+    try:
+        from utils.mlx_repair import is_apple_silicon, mlx_available
+    except Exception:
+        return False
+    try:
+        return bool(is_apple_silicon() and mlx_available())
+    except Exception:
+        return False
+
+
+def _the_revision_that_loads(snapshots: list) -> list:
+    """Ordered so the revision `main` names is weighed first."""
+    from hub.utils.hf_cache_state import ref_snapshot_dir
+
+    paths = [Path(snapshot) for snapshot in snapshots]
+    if not paths:
+        return paths
+    pinned = ref_snapshot_dir(paths[0].parent.parent)
+    return (
+        [pinned, *(path for path in paths if path.name != pinned.name)]
+        if pinned is not None
+        else paths
+    )
+
+
+def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
+    def _complete(directory: Path, shards) -> bool:
+        named = [
+            (Path(shard).parent, match)
+            for shard in shards
+            if (match := _re.fullmatch(r"(.+)-(\d+)-of-(\d+)\.safetensors", Path(shard).name))
+        ]
+        if not named:
+            return _index_agrees(directory)
+        # Beside the shard that named them, since an index may name a subdirectory.
+        for parent, match in named:
+            stem, total = match.group(1), match.group(3)
+            width, count = len(match.group(2)), int(total)
+            if any(
+                not (parent / f"{stem}-{i:0{width}d}-of-{total}.safetensors").is_file()
+                for i in range(1, count + 1)
+            ):
+                return False
+        return _index_agrees(directory)
+
+    def _index_agrees(directory: Path) -> bool:
+        """Whether an index that describes THIS directory finds all of it here.
+
+        An index overlapping the directory nowhere describes some other snapshot -- a parent's,
+        inherited by a re-upload -- so it is not evidence this download is unfinished.
+        """
+        index = directory / "model.safetensors.index.json"
+        if not index.is_file():
+            return True
+        try:
+            with open(index, encoding = "utf-8") as handle:
+                weight_map = json.load(handle).get("weight_map", {})
+            named = {shard for shard in weight_map.values() if isinstance(shard, str)}
+        except (ValueError, OSError, AttributeError):
+            return True
+        here = {str(path.relative_to(directory)) for path in directory.glob("**/*.safetensors")}
+        return not (named & here) or named <= here
+
+    def _usable(path) -> bool:
+        directory = Path(path)
+        if not directory.is_dir() or not (directory / "config.json").is_file():
+            return False
+        # What the loading package reads, not every safetensors file beside the config.
+        from core.inference.mlx_memory import mlx_shard_files
+
+        try:
+            snapshot = json.loads((directory / "config.json").read_text(encoding = "utf-8"))
+        except Exception:
+            snapshot = None
+        try:
+            shards = mlx_shard_files(
+                str(directory), snapshot if isinstance(snapshot, dict) else None
+            )
+        except Exception:
+            return False
+        if not shards:
+            return False
+        return _complete(directory, shards)
+
+    candidate = getattr(config, "path", None)
+    if candidate and _usable(candidate):
+        return str(candidate)
+    identifier = candidate or getattr(config, "identifier", None)
+    if not identifier or getattr(config, "is_local", False):
+        return None
+    names = [_mlx_load_identifier(str(identifier))]
+    if "/" not in names[0]:
+        names.append(f"unsloth/{names[0]}")
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+        roots = _estimate_hf_cache_roots()
+    except Exception:
+        return None
+    for root in roots or [None]:
+        for name in names:
+            try:
+                snapshots = _iter_hf_cache_snapshots(name, cache_dir = root)
+            except Exception:
+                continue
+            for snapshot in _the_revision_that_loads(list(snapshots)):
+                if _usable(snapshot):
+                    return str(snapshot)
+    return None
+
+
+def _mlx_load_identifier(identifier: str) -> str:
+    """The repository the MLX load would actually open, not the one selected."""
+    try:
+        from unsloth_zoo.mlx.loader import _remap_unsloth_bnb_hub_id_for_mlx
+    except Exception:
+        return identifier
+    try:
+        return _remap_unsloth_bnb_hub_id_for_mlx(identifier, None)[0] or identifier
+    except Exception:
+        return identifier
+
+
+def _mlx_estimate_load_in_4bit(config, request) -> bool:
+    """The 4-bit setting the load resolves, not the one the panel sent."""
+    if not request.load_in_4bit:
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    identifier = getattr(config, "identifier", None)
+    return not _offline_guarded(
+        (identifier, getattr(config, "base_model", None)),
+        latest_tier_active_for,
+        identifier,
+        request.hf_token,
+    )
+
+
+def _mlx_estimate_kv_bits(mlx_kv_bits) -> Optional[int]:
+    if not isinstance(mlx_kv_bits, int) or isinstance(mlx_kv_bits, bool):
+        return None
+    try:
+        from core.inference.mlx_inference import MLX_KV_BITS_CHOICES
+    except Exception:
+        return None
+    return mlx_kv_bits if mlx_kv_bits in MLX_KV_BITS_CHOICES else None
+
+
 def _is_embedding_gguf(config: ModelConfig) -> bool:
     """Whether this GGUF's pooling type makes llama-server launch with --embedding.
 
@@ -15468,17 +15621,16 @@ async def estimate_memory(
     fastapi_request: Request = None,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Price a prospective GGUF load from its header, before anything is allocated.
+    """Price a prospective load from its metadata, before the load allocates anything.
 
-    Reads only GGUF metadata and file sizes, so it is safe to call on every settings
-    change: no model is loaded, no device is touched, nothing is downloaded. A model
-    that is not on this disk answers ``not_downloaded``.
+    Reads GGUF metadata and file sizes -- or, for an MLX repo, safetensors headers and the
+    shapes of an architecture built and never evaluated -- so it is safe to call on every
+    settings change: no model is loaded, no tensor data is read, nothing is downloaded.
 
-    The arithmetic is the loader's own KV, compute-buffer and companion sizing, which
-    is the point. Weights times a constant is fine until the KV cache stops being a
-    rounding error: at 262k tokens the cache can outweigh the weights, and it swings
-    fourfold on the cache dtype alone. Where the header cannot supply the dims this
-    answers ``kv_estimable = false`` rather than quoting an assumed total.
+    The arithmetic is the loader's own KV, compute-buffer and companion sizing. Weights
+    times a constant is fine until the KV cache stops being a rounding error: at 262k
+    tokens the cache can outweigh the weights. Where the metadata cannot supply the dims
+    this answers ``kv_estimable = false`` rather than quoting an assumed total.
     """
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import _effective_tensor_parallel
@@ -15512,10 +15664,6 @@ async def estimate_memory(
     requested_slots = _resolve_parallel_slots(request, fastapi_request)
 
     def _estimate() -> EstimateMemoryResponse:
-        resolved_slots = _effective_parallel_slots(
-            requested_slots,
-            diffusion_kind = False,
-        )
         config = _cached_estimate_config(
             model_identifier,
             request.gguf_variant,
@@ -15527,12 +15675,40 @@ async def estimate_memory(
         if config is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
         if not getattr(config, "is_gguf", False):
-            # Safetensors / MLX allocate on a different plan; the GGUF arithmetic
-            # would be a made-up number in a confident box.
-            return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            # MLX allocates on a different plan, so the GGUF arithmetic would be invented.
+            if not _mlx_estimate_available():
+                return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            if getattr(config, "is_lora", False):
+                # Not the base underneath it either: the adapter's own tensors go resident on top.
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            model_dir = _local_mlx_model_dir(config)
+            if not model_dir:
+                return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+            from core.inference.mlx_memory import mlx_memory_breakdown
+
+            mlx_breakdown = mlx_memory_breakdown(
+                model_dir,
+                # /load takes an MLX context from max_seq_length, so reading anything else prices a length the load never opens at.
+                n_ctx = request.max_seq_length or request.n_ctx or _DEFAULT_MLX_ESTIMATE_CTX,
+                kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_bits),
+                # /load quantizes an unquantized checkpoint by default and does not always honour the request.
+                load_in_4bit = _mlx_estimate_load_in_4bit(config, request),
+            )
+            if mlx_breakdown is None:
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            return EstimateMemoryResponse(
+                **project_estimate_memory_response(
+                    build_memory_estimate(mlx_breakdown, quant_file_bytes = 0)
+                )
+            )
         gguf_path = _local_gguf_main_path(config)
         if not gguf_path:
             return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+        # Asked only once the load is known to be a GGUF one: this walks nine install layouts and can run `llama-server --help` against a ten second timeout.
+        resolved_slots = _effective_parallel_slots(
+            requested_slots,
+            diffusion_kind = False,
+        )
         # Price the files on this disk, not the repository they came from.
         config = _localized_estimate_config(config, gguf_path)
 
