@@ -13,6 +13,8 @@ assigned to a GPU so the cache stays with it).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
@@ -1687,7 +1689,9 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads(monkeypatch):
 
     saved = sys.modules.get("psutil")
     sys.modules["psutil"] = _FakePsutil
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)))
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)), raising = False
+    )
     try:
         assert llama_mod._spilled_decode_threads() == 6, "logical count reached the cost model"
     finally:
@@ -1750,7 +1754,9 @@ def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)))
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)), raising = False
+    )
     assert llama_mod._spilled_decode_threads() == 6
     assert llama_mod._spilled_decode_threads(3) == 3
     assert llama_mod._spilled_decode_threads(3, ["--threads", "4"]) == 4
@@ -1770,7 +1776,9 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)))
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
+    )
     monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 16)
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "4"]) == 4
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"]) is None
@@ -1814,7 +1822,16 @@ def test_inherited_linux_cpu_affinity_declines_spill_pricing(monkeypatch):
     import sys
 
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: {0, 1})
+    monkeypatch.setattr(llama_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        llama_mod.os,
+        "uname",
+        lambda: SimpleNamespace(machine = "x86_64"),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: {0, 1}, raising = False
+    )
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
     assert llama_mod._spilled_decode_threads() is None
 
@@ -1826,6 +1843,16 @@ def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     import core.inference.llama_cpp as llama_mod
 
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    monkeypatch.setattr(llama_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        llama_mod.os,
+        "uname",
+        lambda: SimpleNamespace(machine = "x86_64"),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
+    )
     assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = ["--threads", "16"]) is None
     plan = _plan(
         _Stub(),
@@ -2020,7 +2047,10 @@ def test_linux_hybrid_affinity_probe_failure_matches_physical_fallback(tmp_path,
     def fail_affinity(_pid):
         raise OSError("unavailable")
 
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", fail_affinity)
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", fail_affinity, raising = False)
+    monkeypatch.setattr(
+        llama_mod.os, "sched_setaffinity", lambda _pid, _cpus: None, raising = False
+    )
     assert (
         llama_mod._linux_math_core_count(
             cpu_root,
@@ -2045,13 +2075,15 @@ def test_linux_hybrid_affinity_restore_failure_does_not_escape(tmp_path, monkeyp
     (event_root / "cpu_core" / "cpus").write_text("0-3")
     (event_root / "cpu_atom").mkdir()
     (event_root / "cpu_atom" / "cpus").write_text("4-7")
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(8)))
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(8)), raising = False
+    )
 
     def restore_fails(_pid, cpus):
         if len(cpus) > 1:
             raise OSError("restore failed")
 
-    monkeypatch.setattr(llama_mod.os, "sched_setaffinity", restore_fails)
+    monkeypatch.setattr(llama_mod.os, "sched_setaffinity", restore_fails, raising = False)
     assert (
         llama_mod._linux_math_core_count(
             cpu_root,
@@ -2160,6 +2192,8 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
     import sys
 
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(24)))
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(24)), raising = False
+    )
     monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
     assert llama_mod._spilled_decode_threads() == 12
