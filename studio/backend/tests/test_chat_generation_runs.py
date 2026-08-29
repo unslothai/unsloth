@@ -4,12 +4,17 @@
 import json
 
 import pytest
+from fastapi import HTTPException
 
 from routes.chat_generation_runs import (
     CreateChatGenerationRun,
     _contains_sensitive_key,
     _event_cursor,
+    _require_run,
     _sanitize_request,
+    active_chat_generation_runs,
+    cancel_chat_generation_run,
+    get_chat_generation_run,
 )
 from storage import chat_generation_runs_db as runs_db
 from storage import studio_db
@@ -135,6 +140,26 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         _create(owner = "bob")
     with pytest.raises(runs_db.ChatGenerationConflictError):
         _create(request = _request(max_tokens = 9))
+
+
+def test_public_run_reads_and_cancellation_are_owner_scoped(chat_home):
+    _create(owner = "alice")
+
+    assert get_chat_generation_run("run-1", "alice")["id"] == "run-1"
+    assert [run["id"] for run in active_chat_generation_runs("thread-1", "alice")["runs"]] == [
+        "run-1"
+    ]
+    assert active_chat_generation_runs("thread-1", "bob")["runs"] == []
+    with pytest.raises(HTTPException) as missing:
+        _require_run("run-1", "bob")
+    assert missing.value.status_code == 404
+    with pytest.raises(HTTPException) as hidden:
+        get_chat_generation_run("run-1", "bob")
+    assert hidden.value.status_code == 404
+    with pytest.raises(HTTPException) as denied:
+        cancel_chat_generation_run("run-1", object(), "bob")
+    assert denied.value.status_code == 404
+    assert runs_db.get_run("run-1", "alice")["status"] == "queued"
 
 
 def test_shared_thread_rejects_a_second_subjects_active_generation(chat_home):

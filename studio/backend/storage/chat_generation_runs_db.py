@@ -380,15 +380,21 @@ def get_worker_run(
         conn.close()
 
 
-def list_active(thread_id: str) -> list[dict[str, Any]]:
+def list_active(
+    thread_id: str, owner_subject: str | None = None
+) -> list[dict[str, Any]]:
+    clauses = ["thread_id=?", "status IN ('queued','running','cancelling')"]
+    values: list[Any] = [thread_id]
+    if owner_subject is not None:
+        clauses.append("owner_subject=?")
+        values.append(owner_subject)
     conn = get_connection()
     try:
         rows = conn.execute(
-            """SELECT * FROM chat_generation_runs
-               WHERE thread_id=?
-                 AND status IN ('queued','running','cancelling')
-               ORDER BY created_at, id""",
-            (thread_id,),
+            f"""SELECT * FROM chat_generation_runs
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at, id""",
+            values,
         ).fetchall()
         return [_run_from_row(row) for row in rows]
     finally:
