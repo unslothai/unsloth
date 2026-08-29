@@ -163,6 +163,22 @@ def test_every_playwright_driver_is_invoked_by_ci():
     )
 
 
+def test_mcp_argument_driver_launches_the_managed_studio_python():
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+    )
+    steps = document["jobs"]["ui-smoke"]["steps"]
+    run = next(
+        str(step["run"])
+        for step in steps
+        if step.get("name") == "MCP arguments end to end (Playwright)"
+    )
+    driver = (REPO / "tests" / "studio" / "playwright_mcp_arguments.py").read_text(encoding = "utf-8")
+
+    assert 'export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"' in run
+    assert 'os.environ.get("STUDIO_MCP_PYTHON", sys.executable)' in driver
+
+
 def test_the_exemptions_are_still_exempt_and_still_exist():
     """An exemption that outlives its file, or its reason, quietly shrinks the check."""
     names = {driver.name for driver in DRIVERS}
@@ -233,9 +249,9 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
     # the repo-wide scan above. What the relaxation gives up is the port literal, which
     # this check was never really about; test_indicator_browsers_run_in_parallel.py asserts
     # the ports are distinct, which is the property the number was standing in for.
-    assert (
-        "run-studio-indicator-browser.sh" in runs
-    ), "the ui-indicator job no longer invokes the cross-browser indicator helper at all"
+    assert "run-studio-indicator-browser.sh" in runs, (
+        "the ui-indicator job no longer invokes the cross-browser indicator helper at all"
+    )
     missing = [
         engine
         for engine in ("chromium", "firefox", "webkit")

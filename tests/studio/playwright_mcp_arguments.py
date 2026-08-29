@@ -38,6 +38,7 @@ SOURCE_FIXTURE = (
     / "fixtures"
     / "mcp_argument_echo_server.py"
 )
+MCP_PYTHON = os.environ.get("STUDIO_MCP_PYTHON", sys.executable)
 
 
 def info(message: str) -> None:
@@ -91,6 +92,7 @@ def remove_prior_test_servers(token: str) -> None:
         if server.get("display_name") not in (
             "Playwright argument echo",
             "Playwright imported echo",
+            "Unsloth Docs",
         ):
             continue
         api(
@@ -170,7 +172,7 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     dialog = open_dialog(page)
     dialog.get_by_role("button", name = "Add server").click()
     dialog.locator("#mcp-display-name").fill("Playwright argument echo")
-    dialog.locator("#mcp-url").fill(sys.executable)
+    dialog.locator("#mcp-url").fill(MCP_PYTHON)
     arguments = [
         str(fixture),
         "--flag",
@@ -238,6 +240,7 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     expect(row.get_by_role("button", name = "Refresh tools")).to_be_disabled()
     expect(row.get_by_role("button", name = "Edit server")).to_be_disabled()
     expect(row.get_by_role("button", name = "Delete server")).to_be_disabled()
+    expect(dialog.get_by_role("button", name = "Close")).to_have_count(0)
     screenshot(dialog, "fixed-row-busy")
     release_request(page, held_refresh)
     expect(page.get_by_text('Refreshed "Playwright argument echo" (1 tool)')).to_be_visible(
@@ -249,7 +252,7 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     imported = {
         "mcpServers": {
             "Playwright imported echo": {
-                "command": sys.executable,
+                "command": MCP_PYTHON,
                 "args": [str(fixture), "imported", "", "with spaces", 'say "hello"'],
                 "env": {
                     "UNSLOTH_MCP_ARGUMENT_MARKER": "playwright import",
@@ -321,16 +324,68 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     expect(dialog.get_by_placeholder("Header name")).to_have_value("Authorization")
     expect(oauth).to_be_checked()
     screenshot(dialog, "fixed-http-typing-preserves-credentials")
-    dialog.locator("#mcp-url").fill(sys.executable)
+    address.fill("http")
+    expect(dialog.get_by_role("button", name = "Save changes")).to_be_disabled()
+    expect(dialog.get_by_role("button", name = "Test connection")).to_be_disabled()
+    screenshot(dialog, "fixed-ambiguous-http-save-disabled")
+    address.blur()
+    expect(dialog.get_by_text("Environment variables", exact = True)).to_be_visible()
+    expect(dialog.get_by_placeholder("Variable name")).to_have_count(0)
+    expect(dialog.get_by_role("switch", name = "Use OAuth sign-in")).to_have_count(0)
+    screenshot(dialog, "fixed-ambiguous-http-command-clears-credentials")
+    dialog.locator("#mcp-url").fill(MCP_PYTHON)
     expect(dialog.get_by_text("Environment variables", exact = True)).to_be_visible()
     expect(dialog.get_by_placeholder("Variable name")).to_have_count(0)
     screenshot(dialog, "fixed-transport-credentials-cleared")
     dialog.get_by_role("button", name = "Cancel").click()
 
+    dialog.get_by_role("button", name = "Close").click()
+    composer = page.get_by_role("button", name = "MCP servers")
+    expect(composer).to_be_visible()
+    composer.click()
+    preset = page.get_by_role("menuitem", name = "Unsloth Docs")
+    expect(preset).to_be_enabled()
+    page.wait_for_timeout(250)
+    held_list: list = []
+
+    def hold_first_list(route):
+        if route.request.method == "GET" and not held_list:
+            held_list.append(route)
+        else:
+            route.continue_()
+
+    writes = []
+    page.on(
+        "request",
+        lambda request: (
+            writes.append(request.method)
+            if "/api/mcp/servers/" in request.url and request.method in ("POST", "PUT")
+            else None
+        ),
+    )
+    page.route("**/api/mcp/servers/", hold_first_list)
+    preset.click()
+    expect(preset).to_be_enabled(timeout = 10_000)
+    assert held_list and writes.count("POST") == 1
+    page.get_by_role("menu").screenshot(
+        path = str(ART / f"fixed-composer-preset-settles-locally-{BROWSER}.png")
+    )
+    preset.click()
+    page.wait_for_timeout(500)
+    assert writes.count("POST") == 1
+    assert writes.count("PUT") == 1
+    release_request(page, held_list)
+    page.unroute("**/api/mcp/servers/", hold_first_list)
+    page.get_by_role("menuitem", name = "Manage MCP servers").press("Enter")
+    dialog = page.get_by_role("dialog", name = "MCP Servers")
+    expect(dialog).to_be_visible()
+    expect(dialog.locator("li").filter(has_text = "Unsloth Docs")).to_have_count(1)
+    screenshot(dialog, "fixed-composer-preset-no-duplicate")
+
     row = row_for(dialog, "Playwright argument echo")
     row.get_by_role("button", name = "Delete server").click()
     expect(page.get_by_role("alertdialog", name = "Delete MCP server")).to_be_visible()
-    page.go_back(wait_until = "domcontentloaded")
+    page.goto(BASE + "/hub", wait_until = "domcontentloaded")
     expect(page).to_have_url(BASE + "/hub")
     expect(page.get_by_role("alertdialog", name = "Delete MCP server")).to_have_count(0)
     page.screenshot(path = str(ART / f"fixed-delete-route-closed-{BROWSER}.png"))
@@ -364,6 +419,7 @@ def main() -> int:
         f"localStorage.setItem('unsloth_refresh_token', {json.dumps(session.get('refresh_token', ''))});"
         "localStorage.setItem('unsloth_keyboard_shortcuts', "
         "JSON.stringify({openMcpServers:{primary:'Mod+Alt+KeyM'}}));"
+        "localStorage.setItem('unsloth_chat_mcp_enabled', 'true');"
         "})();"
     )
     install_wall_clock_watchdog(WALL_TIMEOUT_S, label = "mcp-arguments", info = info)
@@ -391,6 +447,7 @@ def main() -> int:
             page.screenshot(path = str(ART / f"fixed-final-{BROWSER}.png"), full_page = True)
             context.close()
             browser.close()
+            remove_prior_test_servers(session["access_token"])
     info("PASS real stdio create, edit, import, probe, persistence, reconnect, and launch")
     return 0
 

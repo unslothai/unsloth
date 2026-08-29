@@ -560,6 +560,9 @@ jobs:
           STUDIO_UI_STRICT: '1'
         run: |
           mkdir -p logs/playwright_mcp_arguments
+          studio_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+          export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"
+          test -x "$STUDIO_MCP_PYTHON"
           python tests/studio/playwright_mcp_arguments.py
 
       - name: Per-chat settings persistence (Playwright)
