@@ -1,20 +1,26 @@
-import type { ChatModelSummary } from "../types/runtime";
+import type { ChatModelRow } from "../types/runtime";
 
 export type QueuedModelCapabilities = Pick<
-  ChatModelSummary,
-  "isVision" | "isGguf" | "isAudio" | "audioType" | "hasAudioInput"
+  ChatModelRow,
+  | "isVision"
+  | "isGguf"
+  | "isMlx"
+  | "isAudio"
+  | "audioType"
+  | "hasAudioInput"
+  | "hasVideoInput"
 >;
 
 /**
  * Give a queued run an accurate private model entry without changing the
  * visible chat's model catalog. Status-derived capabilities override stale
- * catalog values, and a model loaded outside Studio gets a minimal entry.
+ * catalog values, and a model loaded outside Unsloth gets a minimal entry.
  */
 export function mergeQueuedModelCapabilities(
-  models: ChatModelSummary[],
+  models: ChatModelRow[],
   checkpoint: string,
   capabilities: QueuedModelCapabilities | null,
-): ChatModelSummary[] {
+): ChatModelRow[] {
   if (!capabilities) {
     return models;
   }

@@ -7,7 +7,7 @@
 ``locale.getencoding()`` when no ``encoding`` is passed. On Windows that is
 cp1252 (or cp932, cp1251, ... by system locale), not UTF-8, so a chat template,
 model config or path containing ``ä ö ü → 世`` mojibakes or raises
-``UnicodeDecodeError`` mid-load. Studio's files are UTF-8, so say so.
+``UnicodeDecodeError`` mid-load. Unsloth's files are UTF-8, so say so.
 """
 
 from __future__ import annotations
@@ -309,9 +309,14 @@ def _offenders(path: Path) -> list[str]:
 def test_text_io_names_its_encoding(path: Path) -> None:
     offenders = _offenders(path)
     assert not offenders, (
-        "Text I/O without an explicit encoding falls back to the Windows ANSI "
-        'codepage and corrupts non-ASCII (ä ö ü → 世). Pass encoding = "utf-8":\n  '
-        + "\n  ".join(offenders)
+        "Text I/O without an explicit encoding falls back to locale.getencoding(), "
+        "which is the ANSI codepage on Windows (cp1252, cp932, cp1251, ... by system "
+        "locale) and ASCII under a C or POSIX locale on Linux, as containers and CI "
+        "runners routinely have. Either way non-ASCII (ä ö ü → 世) mojibakes or raises "
+        "UnicodeDecodeError.\n\n"
+        "A platform guard above the call does NOT make this safe: the Windows codepage "
+        "is only one of the two ways to get the wrong decoder, and a linux-only path "
+        'still meets the C-locale one. Pass encoding = "utf-8":\n  ' + "\n  ".join(offenders)
     )
 
 
@@ -601,7 +606,7 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
     pid_file = tmp_path / "studio.pid"
     pid_file.write_bytes(b"\x80\xff")
     monkeypatch.setattr(studio_run, "_PID_FILE", pid_file)
-    # _legacy_heir scans the real Studio root, so without this the last assertion asks whether
+    # _legacy_heir scans the real Unsloth root, so without this the last assertion asks whether
     # a server happens to be running on the machine: with one, the record is handed over rather
     # than unlinked. The handoff has its own test below.
     monkeypatch.setattr(studio_run, "_legacy_heir", lambda: None)

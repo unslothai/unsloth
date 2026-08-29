@@ -23,6 +23,7 @@ from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
 from . import config, ingestion, job_leases, store
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -978,6 +979,10 @@ def _scan(
                     continue
                 if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
                     continue
+                # Finder metadata carries the document's extension, and a text parser reads it
+                # with errors="replace", so it would be embedded and cited as a real chunk.
+                if is_appledouble_metadata(Path(full)):
+                    continue
                 st = entry.stat(follow_symlinks = False)
                 from_path = False
                 if st.st_ino in (None, 0):
@@ -1437,6 +1442,7 @@ def _reconcile_folder(job_id: str) -> None:
                 linked_relative_path = rel,
                 model_name = embedding_model,
                 background = False,
+                content_hash = content_hash,
             )
             result = ingestion.get_job_status(ingestion_job)
             if result is None:

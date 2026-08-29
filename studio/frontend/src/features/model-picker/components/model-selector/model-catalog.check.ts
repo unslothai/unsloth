@@ -614,17 +614,19 @@ const hyimage = groupForRepoId(
   IMAGE_CATALOG,
 );
 assert.ok(hyimage);
+// bf16 at both ends now: the QuantStack GGUF that used to be the 24 GB route was unpublished
+// from the Hub, so the group has no quant ladder left. 50 GB still fits a 24 GB card's 61.6 GB
+// budget, so this asserts the group did not silently vanish along with its GGUF.
 assert.equal(
   pickDefaultArtifact(hyimage, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .repoId,
-  "QuantStack/HunyuanImage-2.1-GGUF",
+  "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
 );
 assert.equal(
   pickDefaultArtifact(hyimage, { gpuGb: 141, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,
   "bf16",
 );
-assert.equal(groupForRepoId("QuantStack/HunyuanImage-2.1-GGUF", IMAGE_CATALOG), hyimage);
 // HiDream I1: all three variants group together, a datacenter GPU auto-routes to the Full bf16 (catalog order wins among equal sizes), and 24 GB hides the group.
 const hidream = groupForRepoId("HiDream-ai/HiDream-I1-Full", IMAGE_CATALOG);
 assert.ok(hidream);
@@ -852,6 +854,26 @@ assert.equal(groupForRepoId("unsloth/whisper-large-v3-turbo", AUDIO_CATALOG)?.ta
 assert.equal(groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.task, "stt");
 // A chat model stays unknown to the audio catalog.
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", AUDIO_CATALOG), null);
+// MiniMax Music3 publishes a 67 GB repository, but its official BF16 modular loader
+// fits a 24 GB CUDA card. Download bytes must not become a false OOM badge.
+const minimaxMusic = groupForRepoId("MiniMaxAI/MiniMax-Music3", AUDIO_CATALOG);
+assert.ok(minimaxMusic);
+assert.equal(
+  curatedArtifactFitsDevice(
+    "MiniMaxAI/MiniMax-Music3",
+    AUDIO_CATALOG,
+    { gpuGb: 95, systemRamGb: 0 },
+  ),
+  true,
+);
+assert.equal(
+  curatedArtifactFitsDevice(
+    "MiniMaxAI/MiniMax-Music3",
+    AUDIO_CATALOG,
+    { gpuGb: 23, systemRamGb: 256 },
+  ),
+  false,
+);
 
 // ── groupMatchesQuery ──────────────────────────────────────────────────────────
 

@@ -56,10 +56,21 @@ test("LaTeX inside inline code stays literal whatever follows it", () => {
   assert.equal(preprocessLaTeX(`${span}\n\n\`x\``), `${span}\n\n\`x\``);
 });
 
+test("thematic and setext breaks stop cross-block code spans", () => {
+  for (const boundary of ["***", "---", "==="]) {
+    assert.equal(
+      preprocessLaTeX(`\`open\n${boundary}\n\\(x\\)\``),
+      `\`open\n${boundary}\n$x$\``,
+      boundary,
+    );
+  }
+});
+
 test("ordinary code spans and fences are unchanged", () => {
   // Nothing that was already non-overlapping may move.
   const cases: [string, string][] = [
     ["`costs $5`", "`costs $5`"],
+    ["``a ` \\$x\\$ b``", "``a ` \\$x\\$ b``"],
     ["`costs $5`\n\n`x`", "`costs $5`\n\n`x`"],
     ["```\ncosts $5\n```", "```\ncosts $5\n```"],
     ["```\ncosts $5\n```\n\n`x`", "```\ncosts $5\n```\n\n`x`"],
@@ -67,6 +78,26 @@ test("ordinary code spans and fences are unchanged", () => {
     ["costs $5 outside", "costs \\$5 outside"],
     ["costs $5 outside\n\n`x`", "costs \\$5 outside\n\n`x`"],
     ["```\n`inner`\n```", "```\n`inner`\n```"],
+    ["```tex\n\\(x\\)\n", "```tex\n\\(x\\)\n"],
+    ["```\n    ```\n\\(x\\)\n```", "```\n    ```\n\\(x\\)\n```"],
+    ["- ```\n  \\(x\\)\n  ```", "- ```\n  \\(x\\)\n  ```"],
+    ["> ```\n> \\(x\\)\n> ```", "> ```\n> \\(x\\)\n> ```"],
+    [
+      "- - ```\n    costs $5 and \\(x\\)\n    ```",
+      "- - ```\n    costs $5 and \\(x\\)\n    ```",
+    ],
+    ["```\n- ```\n\\(x\\)\n```", "```\n- ```\n\\(x\\)\n```"],
+    [
+      "- item\n    ~~~tex\n    \\(x\\)\n    ~~~",
+      "- item\n    ~~~tex\n    \\(x\\)\n    ~~~",
+    ],
+    [
+      "- item\n    ```tex\n    \\(x\\)\n    ````",
+      "- item\n    ```tex\n    \\(x\\)\n    ````",
+    ],
+    ["- item\n    ~~~tex\n    \\(x\\)", "- item\n    ~~~tex\n    \\(x\\)"],
+    ["# heading\n    \\(x\\)", "# heading\n    \\(x\\)"],
+    ["# heading\n \t\\(x\\)", "# heading\n \t\\(x\\)"],
     ["`\\(x\\)` and \\(y\\)", "`\\(x\\)` and $y$"],
     ["```\n\\(x\\)\n```\n\nthen \\(y\\)", "```\n\\(x\\)\n```\n\nthen $y$"],
   ];
@@ -77,4 +108,30 @@ test("ordinary code spans and fences are unchanged", () => {
       `changed for ${JSON.stringify(input)}`,
     );
   }
+});
+
+test("fences stop at their Markdown container boundary", () => {
+  const cases: [string, string][] = [
+    ["- ```txt\n  code\noutside \\(x\\)", "- ```txt\n  code\noutside $x$"],
+    ["> ```txt\n> code\noutside \\(x\\)", "> ```txt\n> code\noutside $x$"],
+    [
+      "paragraph\n2. ``` literal\n\\(x\\) after",
+      "paragraph\n2. ``` literal\n$x$ after",
+    ],
+  ];
+
+  for (const [input, expected] of cases) {
+    assert.equal(preprocessLaTeX(input), expected, input);
+  }
+});
+
+test("same-line nested items set the continuation content column", () => {
+  assert.equal(
+    preprocessLaTeX("- - item\n\n      \\(x\\)"),
+    "- - item\n\n      $x$",
+  );
+  assert.equal(
+    preprocessLaTeX("-   - item\n\n        \\(x\\)"),
+    "-   - item\n\n        $x$",
+  );
 });
