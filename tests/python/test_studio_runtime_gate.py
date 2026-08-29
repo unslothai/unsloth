@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from ctypes import wintypes
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,6 +109,90 @@ def test_terminal_stage_holds_the_gate_through_the_clone():
     guard = body.index("with _studio_runtime_launch_guard(", consume)
     stage = body.index("_studio_stage.stage(", guard)
     assert consume < guard < stage
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX orphan process semantics are required")
+def test_staging_cli_keeps_the_gate_after_its_parent_exits(tmp_path):
+    home = tmp_path / "studio"
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    worker_pid = tmp_path / "worker.pid"
+    log = tmp_path / "worker.log"
+    worker = r"""
+import sys
+import time
+from pathlib import Path
+from unsloth_cli.commands import studio
+
+home, ready, release = map(Path, sys.argv[1:4])
+studio.STUDIO_HOME = home
+
+def fake_stage(*args, **kwargs):
+    (home / ".update-stage").mkdir(parents=True, exist_ok=True)
+    ready.write_text("ready", encoding="utf-8")
+    while not release.exists():
+        time.sleep(0.02)
+    return {"backend_version": "test", "root": str(home / ".update-stage")}
+
+studio._studio_stage.stage = fake_stage
+studio._stage_update(local=False, package="unsloth", verbose=False, verify=True)
+"""
+    parent = r"""
+import os
+import subprocess
+import sys
+
+log = open(sys.argv[6], "w", encoding="utf-8")
+child = subprocess.Popen(
+    [sys.executable, "-c", sys.argv[1], *sys.argv[2:5]],
+    start_new_session=True,
+    stdout=log,
+    stderr=subprocess.STDOUT,
+)
+with open(sys.argv[5], "w", encoding="utf-8") as pid_file:
+    pid_file.write(str(child.pid))
+os._exit(0)
+"""
+    env = os.environ.copy()
+    env.pop(gate._RUNTIME_GATE_HANDOFF_ENV, None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            parent,
+            worker,
+            str(home),
+            str(ready),
+            str(release),
+            str(worker_pid),
+            str(log),
+        ],
+        env = env,
+        check = False,
+    )
+    assert result.returncode == 0
+
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), log.read_text(encoding = "utf-8") if log.exists() else ""
+        assert worker_pid.is_file()
+        with pytest.raises(gate.StudioRuntimeGateBusy):
+            with gate.studio_runtime_launch_guard(home):
+                pass
+    finally:
+        release.touch()
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            with gate.studio_runtime_launch_guard(home):
+                break
+        except gate.StudioRuntimeGateBusy:
+            time.sleep(0.02)
+    else:
+        pytest.fail(log.read_text(encoding = "utf-8") if log.exists() else "gate stayed busy")
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX flock is required")

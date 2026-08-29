@@ -20,13 +20,30 @@ pub struct UpdateProcess {
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
 
-/// Whether a staged run owns the child right now. A webview reload loses the
-/// hook's own record of that, and the native side rejects a second one.
+/// report staged work owned by this app or a surviving cli process.
 pub(crate) fn is_staged_update_running(state: &UpdateState) -> bool {
-    state
+    let local = state
         .lock()
         .map(|s| s.child.is_some() && s.staged)
-        .unwrap_or(false)
+        .unwrap_or(false);
+    local || staged_update_is_owned_elsewhere()
+}
+
+pub(crate) fn staged_update_is_owned_elsewhere() -> bool {
+    let home = crate::diagnostics::studio_dir();
+    staged_update_is_owned_elsewhere_at(&home, || {
+        crate::process::with_studio_runtime_launch_guard(|| Ok(()))
+    })
+}
+
+fn staged_update_is_owned_elsewhere_at(
+    home: &std::path::Path,
+    try_gate: impl FnOnce() -> Result<(), String>,
+) -> bool {
+    if !home.join(crate::staged_update::STAGE_DIR).is_dir() {
+        return false;
+    }
+    try_gate().is_err()
 }
 
 pub(crate) fn staged_update_shell_version(state: &UpdateState) -> Option<String> {
@@ -131,6 +148,14 @@ fn configure_staged_update_environment(cmd: &mut Command) {
     }
 }
 
+fn configure_runtime_gate_environment(cmd: &mut Command, kind: &UpdateKind) {
+    if kind.mutates_live_environment() {
+        cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+    } else {
+        cmd.env_remove(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV);
+    }
+}
+
 fn spawn_update(
     bin: &std::path::Path,
     state: &UpdateState,
@@ -184,7 +209,7 @@ fn spawn_update(
     if matches!(kind, UpdateKind::Staged { .. }) {
         configure_staged_update_environment(&mut cmd);
     }
-    cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+    configure_runtime_gate_environment(&mut cmd, kind);
 
     // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
     // which otherwise encodes redirected streams with the locale code page.
@@ -424,22 +449,15 @@ fn run_update(
         }
         result
     };
-    // Update mutates the managed environment for its whole lifetime. This function
-    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
-    //
-    // A staged run holds the same guard: it never writes to the live environment,
-    // but it reads all of it while cloning, and a terminal update or repair running
-    // at the same time would leave the stage a mixed snapshot of two versions that
-    // the CLI probes afterwards cannot see. Only the idle check is skipped, because
-    // a backend serving out of the tree does not stop it being copied. spawn_update
-    // hands the child the gate either way, so without this the child would inherit
-    // a gate nobody holds.
-    let result = crate::process::with_studio_runtime_launch_guard(|| {
-        if kind.mutates_live_environment() {
+    // the staged cli owns the gate so it remains held after a hard desktop exit.
+    let result = if kind.mutates_live_environment() {
+        crate::process::with_studio_runtime_launch_guard(|| {
             crate::process::ensure_managed_environment_is_idle(&bin)?;
-        }
+            run_child()
+        })
+    } else {
         run_child()
-    });
+    };
     // Read only after the guard returned, so both reader threads are joined.
     let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
@@ -808,6 +826,74 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
         }
+    }
+
+    #[test]
+    fn staged_update_child_acquires_its_own_runtime_gate() {
+        use std::ffi::OsStr;
+
+        let mut cmd = Command::new("unused");
+        configure_runtime_gate_environment(
+            &mut cmd,
+            &UpdateKind::Staged {
+                shell_version: None,
+                backend_version: None,
+            },
+        );
+
+        assert!(cmd.get_envs().any(|(key, value)| {
+            key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV) && value.is_none()
+        }));
+    }
+
+    #[test]
+    fn live_update_child_uses_the_parent_runtime_gate() {
+        use std::ffi::OsStr;
+
+        let mut cmd = Command::new("unused");
+        configure_runtime_gate_environment(&mut cmd, &UpdateKind::Backend);
+
+        assert!(cmd.get_envs().any(|(key, value)| {
+            key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV)
+                && value == Some(OsStr::new("1"))
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn surviving_stage_gate_blocks_reopen_until_the_owner_exits() {
+        use std::os::fd::AsRawFd;
+
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(crate::staged_update::STAGE_DIR)).unwrap();
+        let gate_path = home.path().join(".studio-runtime.lock");
+        let owner = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&gate_path)
+            .unwrap();
+        assert_eq!(unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX) }, 0);
+
+        let probe = || {
+            let candidate = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&gate_path)
+                .map_err(|error| error.to_string())?;
+            let result =
+                unsafe { libc::flock(candidate.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result == 0 {
+                unsafe { libc::flock(candidate.as_raw_fd(), libc::LOCK_UN) };
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error().to_string())
+            }
+        };
+
+        assert!(staged_update_is_owned_elsewhere_at(home.path(), probe));
+        drop(owner);
+        assert!(!staged_update_is_owned_elsewhere_at(home.path(), probe));
     }
 
     #[cfg(unix)]

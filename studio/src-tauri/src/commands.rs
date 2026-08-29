@@ -856,7 +856,7 @@ pub async fn start_staged_update(
     {
         return Err("Cannot prepare an update while installation is in progress.".to_string());
     }
-    if update::is_update_running(&update_state) {
+    if update::is_staged_update_running(&update_state) || update::is_update_running(&update_state) {
         return Err("Update is already running.".to_string());
     }
 
@@ -885,8 +885,10 @@ pub fn cancel_staged_update(
     }
     update::record_update_intentional_stop(&update_state, &diagnostics);
     update::stop_update(&update_state)?;
-    staged_update::discard(&diagnostics::studio_dir());
-    Ok(())
+    process::with_studio_runtime_launch_guard(|| {
+        staged_update::discard(&diagnostics::studio_dir());
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -906,8 +908,10 @@ pub fn discard_staged_update(
     if update::is_update_running(&update_state) {
         return Err("Update is already running.".to_string());
     }
-    staged_update::discard(&diagnostics::studio_dir());
-    Ok(())
+    process::with_studio_runtime_launch_guard(|| {
+        staged_update::discard(&diagnostics::studio_dir());
+        Ok(())
+    })
 }
 
 /// Repair a stale managed Unsloth install.
