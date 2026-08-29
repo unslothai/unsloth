@@ -4,6 +4,7 @@
 import { Switch } from "@/components/ui/switch";
 import { formatBytes } from "@/features/hub/lib/format";
 import { useT } from "@/i18n";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { useEffect, useState } from "react";
 import {
   type ModelMemorySettings,
@@ -14,6 +15,8 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+const MODEL_MEMORY_POLL_MS = 5000;
+
 export function ModelMemorySection() {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
@@ -22,29 +25,49 @@ export function ModelMemorySection() {
 
   useEffect(() => {
     let cancelled = false;
-    // Force: mlockApplicable and reloadRequired describe the RUNNING launch, so
-    // a value read before the user loaded a model would keep the panel quiet
-    // about a lock that is being skipped.
-    void loadModelMemorySettings({ force: true })
-      .then((loaded) => {
-        if (cancelled) return;
-        setSettings(loaded);
-        setError(null);
-      })
-      .catch((loadError) => {
-        if (cancelled) return;
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : t("settings.resources.modelMemory.loadError"),
-        );
-      });
-    const unsubscribe = subscribeModelMemorySettings((next) => {
-      if (!cancelled) setSettings(next);
+    let refreshGeneration = 0;
+
+    const refresh = () => {
+      const generation = ++refreshGeneration;
+      void loadModelMemorySettings({ force: true })
+        .then((loaded) => {
+          if (cancelled || generation !== refreshGeneration) return;
+          setSettings(loaded);
+          setError(null);
+        })
+        .catch((loadError) => {
+          if (cancelled || generation !== refreshGeneration) return;
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : t("settings.resources.modelMemory.loadError"),
+          );
+        });
+    };
+
+    refresh();
+    const unsubscribeSettings = subscribeModelMemorySettings((next) => {
+      if (cancelled) return;
+      refreshGeneration += 1;
+      setSettings(next);
+      setError(null);
     });
+    const unsubscribeLifecycle = subscribeModelLifecycle(refresh);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) refresh();
+    }, MODEL_MEMORY_POLL_MS);
+    const onWake = () => {
+      if (!document.hidden) refresh();
+    };
+    window.addEventListener("focus", onWake);
+    document.addEventListener("visibilitychange", onWake);
     return () => {
       cancelled = true;
-      unsubscribe();
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onWake);
+      document.removeEventListener("visibilitychange", onWake);
+      unsubscribeLifecycle();
+      unsubscribeSettings();
     };
   }, [t]);
 
