@@ -8,6 +8,7 @@ import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type { ApiMonitorEntry } from "../types/api";
 
 export const CHAT_MONITOR_ID_RESPONSE_HEADER = "X-Unsloth-Monitor-Id";
+export const CHAT_MONITOR_STATUS_RESPONSE_HEADER = "X-Unsloth-Monitor-Status";
 const API_MONITOR_READ_TIMEOUT_MS = 10_000;
 
 export class ApiMonitorEntryRequestError extends Error {

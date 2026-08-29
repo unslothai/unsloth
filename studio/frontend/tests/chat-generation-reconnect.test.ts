@@ -175,6 +175,74 @@ test("durable follow reconnects for a monitor id without duplicating SSE events"
   assert.deepEqual(sequences, [1, 2]);
 });
 
+test("disabled monitoring keeps one durable event stream open", async () => {
+  let eventRequests = 0;
+  let snapshotRequests = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/events")) {
+      eventRequests += 1;
+      const encoder = new TextEncoder();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                frame(1, "run.started", { status: "running" }, run("running", 1)),
+              ),
+            );
+            timer = setTimeout(() => {
+              controller.enqueue(
+                encoder.encode(
+                  frame(
+                    2,
+                    "run.completed",
+                    { status: "completed" },
+                    run("completed", 2),
+                  ),
+                ),
+              );
+              controller.close();
+            }, 20);
+          },
+          cancel() {
+            if (timer !== undefined) clearTimeout(timer);
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "X-Unsloth-Monitor-Status": "disabled",
+          },
+        },
+      );
+    }
+    snapshotRequests += 1;
+    return new Response(JSON.stringify(run("completed", 2)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const monitorIds: Array<string | null> = [];
+  const sequences: number[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+    monitorIdReconnectMs: 5,
+    onMonitorId: (monitorId) => monitorIds.push(monitorId),
+  })) {
+    if (update.event) sequences.push(update.event.seq);
+  }
+
+  assert.equal(eventRequests, 1);
+  assert.equal(snapshotRequests, 0);
+  assert.deepEqual(monitorIds, [null]);
+  assert.deepEqual(sequences, [1, 2]);
+});
+
 test("reconnect resumes from the applied cursor without duplicate chunks", async () => {
   const eventUrls: string[] = [];
   let follows = 0;

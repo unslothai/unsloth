@@ -401,7 +401,12 @@ def _monitor_header_cors_client(remote_access_state):
     from utils.host_policy import cors_origins_for_mode
 
     async def endpoint(_request):
-        return Response(headers = {"X-Unsloth-Monitor-Id": "opaque-row"})
+        return Response(
+            headers = {
+                "X-Unsloth-Monitor-Id": "opaque-row",
+                "X-Unsloth-Monitor-Status": "disabled",
+            }
+        )
 
     cors_app = Starlette(routes = [Route("/stream", endpoint)])
     cors_app.add_middleware(
@@ -411,7 +416,7 @@ def _monitor_header_cors_client(remote_access_state):
         allow_credentials = True,
         allow_methods = ["*"],
         allow_headers = ["*"],
-        expose_headers = ["X-Unsloth-Monitor-Id"],
+        expose_headers = ["X-Unsloth-Monitor-Id", "X-Unsloth-Monitor-Status"],
         max_age = 60,
     )
     return TestClient(cors_app)
@@ -435,7 +440,9 @@ def test_monitor_header_is_readable_from_tauri_and_dev_origins(origin):
 
     assert response.headers["access-control-allow-origin"] == origin
     assert response.headers["access-control-allow-credentials"] == "true"
-    assert response.headers["access-control-expose-headers"] == "X-Unsloth-Monitor-Id"
+    assert response.headers["access-control-expose-headers"] == (
+        "X-Unsloth-Monitor-Id, X-Unsloth-Monitor-Status"
+    )
 
 
 def test_monitor_header_exposure_does_not_weaken_dynamic_tunnel_origin_gate():
@@ -447,13 +454,17 @@ def test_monitor_header_exposure_does_not_weaken_dynamic_tunnel_origin_gate():
 
     closed = client.get("/stream", headers = {"Origin": origin})
     assert "access-control-allow-origin" not in closed.headers
-    assert closed.headers["access-control-expose-headers"] == "X-Unsloth-Monitor-Id"
+    assert closed.headers["access-control-expose-headers"] == (
+        "X-Unsloth-Monitor-Id, X-Unsloth-Monitor-Status"
+    )
 
     state.cloudflare_url = "https://public.trycloudflare.com"
     published = client.get("/stream", headers = {"Origin": origin})
     assert published.headers["access-control-allow-origin"] == origin
     assert published.headers["access-control-allow-credentials"] == "true"
-    assert published.headers["access-control-expose-headers"] == "X-Unsloth-Monitor-Id"
+    assert published.headers["access-control-expose-headers"] == (
+        "X-Unsloth-Monitor-Id, X-Unsloth-Monitor-Status"
+    )
 
     state.cloudflare_url = None
     revoked = client.get("/stream", headers = {"Origin": origin})
@@ -468,7 +479,9 @@ def test_mounted_cors_policy_only_adds_monitor_response_header_exposure():
         )
     ]
 
-    assert 'expose_headers = ["X-Unsloth-Monitor-Id"]' in mounted
+    assert (
+        'expose_headers = ["X-Unsloth-Monitor-Id", "X-Unsloth-Monitor-Status"]' in mounted
+    )
     assert "allow_origins = _cors_origins" in mounted
     assert "allow_credentials = True" in mounted
     assert 'allow_methods = ["*"]' in mounted

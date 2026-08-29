@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from core.inference.api_monitor import api_monitor
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
@@ -68,6 +69,7 @@ _ENVELOPE_MAX_DEPTH = 64
 _ENVELOPE_MAX_NODES = 20_000
 _ENVELOPE_MAX_JSON_CHARS = 1_000_000
 _MONITOR_ID_RESPONSE_HEADER = "X-Unsloth-Monitor-Id"
+_MONITOR_STATUS_RESPONSE_HEADER = "X-Unsloth-Monitor-Status"
 
 
 class CreateChatGenerationRun(BaseModel):
@@ -367,6 +369,8 @@ async def chat_generation_events(
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     if monitor_id:
         headers[_MONITOR_ID_RESPONSE_HEADER] = monitor_id
+    elif not api_monitor.enabled:
+        headers[_MONITOR_STATUS_RESPONSE_HEADER] = "disabled"
     return StreamingResponse(
         stream(),
         media_type = "text/event-stream",

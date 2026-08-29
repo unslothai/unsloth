@@ -262,6 +262,25 @@ async def test_durable_event_stream_does_not_wait_for_monitor_id(durable_run):
 
 
 @pytest.mark.asyncio
+async def test_durable_event_stream_marks_disabled_monitor(durable_run, monkeypatch):
+    monkeypatch.setattr(run_routes, "api_monitor", SimpleNamespace(enabled = False))
+
+    response = await run_routes.chat_generation_events(
+        "run-1",
+        SimpleNamespace(
+            app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = None)),
+            is_disconnected = AsyncMock(return_value = True),
+        ),
+        after = 0,
+        last_event_id = None,
+        current_subject = "alice",
+    )
+
+    assert "X-Unsloth-Monitor-Id" not in response.headers
+    assert response.headers["X-Unsloth-Monitor-Status"] == "disabled"
+
+
+@pytest.mark.asyncio
 async def test_durable_monitor_id_records_when_monitoring_is_unavailable(durable_run, monkeypatch):
     async def body():
         yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'

@@ -7,7 +7,10 @@ import type {
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
 } from "../types/api";
-import { CHAT_MONITOR_ID_RESPONSE_HEADER } from "./chat-monitor";
+import {
+  CHAT_MONITOR_ID_RESPONSE_HEADER,
+  CHAT_MONITOR_STATUS_RESPONSE_HEADER,
+} from "./chat-monitor";
 
 export type ChatGenerationStatus =
   | "queued"
@@ -329,13 +332,18 @@ async function* streamChatGenerationEvents(
   if (!response.ok) await json(response);
   const monitorId =
     response.headers.get(CHAT_MONITOR_ID_RESPONSE_HEADER)?.trim() || null;
+  const monitorUnavailable =
+    response.headers
+      .get(CHAT_MONITOR_STATUS_RESPONSE_HEADER)
+      ?.trim()
+      .toLowerCase() === "disabled";
   onMonitorId?.(monitorId);
   if (!response.body)
     throw new Error("Chat generation event stream returned no body");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  const monitorReconnectAt = monitorId
+  const monitorReconnectAt = monitorId || monitorUnavailable
     ? null
     : Date.now() + monitorIdReconnectMs;
   try {
