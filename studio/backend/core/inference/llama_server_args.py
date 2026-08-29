@@ -1368,10 +1368,7 @@ def apply_load_mode_policy(
 
 
 def model_memory_suppresses_load_mode(
-    requested_load_mode: Optional[str],
-    *,
-    supports_load_mode: bool,
-    weights_in_host_memory: bool,
+    requested_load_mode: Optional[str], *, supports_load_mode: bool, weights_in_host_memory: bool
 ) -> bool:
     """Whether Model Memory suppressed a per-model mode this build could emit."""
     mode = _normalize_load_mode_value(requested_load_mode)
@@ -1379,7 +1376,6 @@ def model_memory_suppresses_load_mode(
         return False
     try:
         from utils.model_memory_settings import get_model_memory_settings
-
         keep_resident, no_ram_reserve = get_model_memory_settings()
     except Exception:
         return False
@@ -1951,7 +1947,6 @@ def memory_state_satisfies_settings(
     if settings is None:
         try:
             from utils.model_memory_settings import get_model_memory_settings
-
             settings = get_model_memory_settings()
         except Exception:
             return True

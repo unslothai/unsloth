@@ -1364,7 +1364,6 @@ class TestNonReservingLoadModesSurvive:
 
     def test_an_unsupported_mode_does_not_mark_the_policy_active(self, monkeypatch):
         import utils.model_memory_settings as mm
-
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (True, False))
         assert not model_memory_suppresses_load_mode(
             "dio", supports_load_mode = False, weights_in_host_memory = True
@@ -2454,14 +2453,7 @@ class TestVulkanCpuFallbackMemoryPolicy:
         )
         argv = ["llama-server", *managed, *load_mode, *extras]
         assert resolve_effective_memory_state(argv, {}) == (True, False)
-        assert argv[-6:] == [
-            "--gpu-layers",
-            "0",
-            "--fit",
-            "off",
-            "--device",
-            "none",
-        ]
+        assert argv[-6:] == ["--gpu-layers", "0", "--fit", "off", "--device", "none"]
 
     def test_the_fallback_records_policy_before_spawning(self):
         import inspect

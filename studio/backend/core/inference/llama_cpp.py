@@ -21353,9 +21353,9 @@ class LlamaCppBackend:
                 _mem_policy_touched_extras = bool(_mem_scrubbed) or _mem_extras != list(
                     extra_args or []
                 )
-                self._memory_policy_active = bool(
-                    _mem_managed or _load_mode_policy_suppressed
-                ) or _mem_policy_touched_extras
+                self._memory_policy_active = (
+                    bool(_mem_managed or _load_mode_policy_suppressed) or _mem_policy_touched_extras
+                )
                 # What `cmd` itself means, snapshotted before any respawn edits it.
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
                 # and write the policy back; the arch-crash retry (#7624) respawns
