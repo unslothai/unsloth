@@ -283,6 +283,16 @@ def test_direct_split_prefix_matching_follows_the_loader(tmp_path):
     assert [(Path(row.path), row.size_bytes) for row in rows] == [(first, 18)]
 
 
+def test_incomplete_direct_split_is_not_collapsed(tmp_path):
+    root = tmp_path / "direct-model-root"
+    first = _write_gguf(root / "model-Q4_K_M-00001-of-00003.gguf")
+    third = _write_gguf(root / "model-Q4_K_M-00003-of-00003.gguf")
+
+    rows = _custom_rows(root)
+
+    assert {Path(row.path) for row in rows} == {first, third}
+
+
 @pytest.mark.parametrize(
     "names",
     [
