@@ -37,6 +37,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -1375,6 +1376,15 @@ const APP_CLOSING_EVENT: &str = "app-closing";
 /// Takes that overlay back down, for the quits that never reach the exit.
 const APP_CLOSING_CANCELLED_EVENT: &str = "app-closing-cancelled";
 
+/// Tip the renderer to flush debounced chat settings before the backend reap.
+/// Desktop never reliably fires beforeunload; without this, the last preset /
+/// sampling / system-prompt edit inside the debounce window is dropped (#9948).
+const PERSIST_BEFORE_QUIT_EVENT: &str = "persist-before-quit";
+
+/// How long the quit thread yields after `persist-before-quit` so a keepalive
+/// PUT can leave the webview before `stop_backend` closes the port.
+const PERSIST_BEFORE_QUIT_GRACE: Duration = Duration::from_millis(400);
+
 /// Raises the overlay, and retracts it again unless `keep` is called. A guard rather than
 /// paired emits so that every way out of the reap takes it back down, early returns and
 /// unwinds alike, because the app is still there afterwards and an overlay left up would
@@ -1471,6 +1481,12 @@ fn quit_sequence(
     // as long as the user takes to answer it, and the window state that decides this is the
     // one the reap is about to block. A declined quit never asks, which also keeps the
     // blocking visibility read off the path that stays in the app.
+    //
+    // Always tip the renderer before the overlay/reap: close-to-tray hide and a
+    // hidden-window tray Quit never raise the overlay, but still need the settings
+    // flush. The short grace is only for the keepalive PUT to leave the webview.
+    emit(PERSIST_BEFORE_QUIT_EVENT);
+    std::thread::sleep(PERSIST_BEFORE_QUIT_GRACE);
     //
     // `None` is the whole no-op: nothing raised, so nothing to retract on the way out.
     let overlay = cover().then(|| ClosingOverlay::raise(emit));
@@ -2080,6 +2096,9 @@ fn main() {
                 match main_window_close_action(close_to_tray) {
                     MainWindowCloseAction::Hide => {
                         // The tray's Open action and a second app launch restore the window.
+                        // Flush chat settings first: hide does not quit, so quit_sequence
+                        // never runs, and beforeunload is equally missing (#9948).
+                        let _ = window.app_handle().emit(PERSIST_BEFORE_QUIT_EVENT, ());
                         let _ = window.hide();
                     }
                     MainWindowCloseAction::Quit => request_quit(window.app_handle()),
@@ -2546,7 +2565,10 @@ mod tests {
         assert!(quitting);
         // The reap blocks for up to ~15s, so an overlay emitted after it paints too late
         // to cover anything.
-        assert_eq!(events.into_inner(), ["app-closing", "reap"]);
+        assert_eq!(
+            events.into_inner(),
+            ["persist-before-quit", "app-closing", "reap"]
+        );
     }
 
     #[test]
@@ -2566,9 +2588,9 @@ mod tests {
         );
         assert_eq!(
             events.into_inner(),
-            ["reap"],
+            ["persist-before-quit", "reap"],
             "window-close and tray paths can bypass the overlay entirely, and a tray quit with no \
-             window on screen must not emit it"
+             window on screen must not emit it — but settings still need a flush tip"
         );
     }
 
@@ -2631,7 +2653,11 @@ mod tests {
         assert!(unwound.is_err());
         assert_eq!(
             events.into_inner(),
-            ["app-closing", "app-closing-cancelled"],
+            [
+                "persist-before-quit",
+                "app-closing",
+                "app-closing-cancelled"
+            ],
             "a panicking reap leaves the app up, so the overlay cannot cover it"
         );
     }
@@ -2650,10 +2676,11 @@ mod tests {
         }));
 
         assert!(unwound.is_err());
-        assert!(
-            events.into_inner().is_empty(),
-            "nothing was raised, so the unwind has nothing to retract: a cancel here would \
-             be the guard half-armed"
+        assert_eq!(
+            events.into_inner(),
+            ["persist-before-quit"],
+            "nothing was raised for the overlay, so the unwind has nothing to retract: a \
+             cancel here would be the guard half-armed. The settings flush tip still fires."
         );
     }
 

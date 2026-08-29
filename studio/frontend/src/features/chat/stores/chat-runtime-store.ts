@@ -598,6 +598,15 @@ if (typeof window !== "undefined") {
   });
 }
 
+/**
+ * Desktop quit never fires beforeunload/pagehide reliably (see use-tauri-update).
+ * Rust emits app-closing before it reaps the backend — flush here so presets,
+ * sampling, and system prompts land in SQLite before the port goes away (#9948).
+ */
+export function flushChatSettingsForDesktopQuit(): void {
+  flushSettingsOnPageHidden(true);
+}
+
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }

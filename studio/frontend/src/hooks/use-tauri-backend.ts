@@ -26,6 +26,7 @@ import {
   markAppClosing,
   subscribeAppClosing,
 } from "@/components/tauri/closing-signal";
+import { flushChatSettingsForDesktopQuit } from "@/features/chat/stores/chat-runtime-store";
 import {
   INITIAL_STARTUP_MESSAGE,
   SERVER_STARTUP_MESSAGE,
@@ -670,6 +671,12 @@ export function useTauriBackend() {
       // for that, or it reads as a freeze.
       register<void>(APP_CLOSING_EVENT, () => {
         markAppClosing();
+      });
+
+      // Fired ahead of the reap (and on close-to-tray hide). Desktop never gets a
+      // reliable beforeunload, so this is what lands the last settings debounce.
+      register<void>("persist-before-quit", () => {
+        flushChatSettingsForDesktopQuit();
       });
 
       register<void>(APP_CLOSING_CANCELLED_EVENT, () => {
