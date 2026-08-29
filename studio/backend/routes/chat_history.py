@@ -1455,7 +1455,9 @@ async def delete_project(
             wait_for_sessions_idle,
         )
         from storage.studio_db import (
+            _RECORDED_ORPHAN_TOKEN,
             delete_project_workspace,
+            recorded_orphan_evidence_for,
             sandbox_is_referenced_elsewhere,
         )
 
@@ -1518,6 +1520,12 @@ async def delete_project(
                 managed_root_path,
                 shared,
             )
+            recorded_evidence = await run_in_threadpool(
+                recorded_orphan_evidence_for,
+                project_id,
+                managed_root_path,
+                shared,
+            )
             # Once more, next to the delete itself: the record write above is
             # an await, and a project created in that window resolves to this
             # same path.
@@ -1542,6 +1550,11 @@ async def delete_project(
                         shared,
                     )
             else:
+                project["_recordedOrphan"] = _RECORDED_ORPHAN_TOKEN
+                project["workspaceSessionId"] = shared
+                project["_recordedOrphanEvidence"] = (
+                    recorded_evidence.runtime_token if recorded_evidence is not None else None
+                )
                 await run_in_threadpool(delete_project_workspace, project)
                 await run_in_threadpool(
                     forget_orphaned_project_if_gone,

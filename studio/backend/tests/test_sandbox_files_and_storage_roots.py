@@ -4813,7 +4813,7 @@ def test_a_failed_workspace_delete_stays_pending(tmp_path, monkeypatch):
         str(workspace),
     )
 
-    monkeypatch.setattr(studio_db.shutil, "rmtree", lambda *a, **k: None)
+    monkeypatch.setattr(studio_db, "_remove_quarantined_workspace", lambda *a, **k: False)
     tools.collect_orphaned_project_workspaces()
 
     assert workspace.is_dir()

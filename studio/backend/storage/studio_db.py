@@ -167,6 +167,7 @@ class _PreparedProjectWorkspace:
     created_root: bool
     device_id: str
     file_id: str
+    change_time_ns: str
     marker_token: str
 
 
@@ -458,15 +459,40 @@ def _folder_workspace_health(
     return True, None
 
 
-def _ensure_project_workspace(root_path: str) -> str:
+def _ensure_project_workspace(
+    root_path: str,
+    *,
+    expected_device_id: str | None = None,
+    expected_file_id: str | None = None,
+    expected_change_time_ns: str | int | None = None,
+    expected_marker_token: str | None = None,
+    require_identity: bool = False,
+) -> str:
     root = Path(root_path).expanduser()
     try:
+        if require_identity and not root.is_dir():
+            raise OSError("Managed project workspace is unavailable")
         ensure_dir(root.parent)
         root.mkdir(exist_ok = True)
         entry_identity = _workspace_identity(root)
         root_resolved = root.resolve(strict = True)
         if _workspace_identity(root_resolved) != entry_identity:
             raise OSError("Project workspace identity changed")
+        if require_identity:
+            if not all(
+                value is not None
+                for value in (expected_device_id, expected_file_id, expected_marker_token)
+            ):
+                raise OSError("Managed project workspace identity is unavailable")
+            if not _workspace_identity_matches(
+                root_resolved,
+                expected_device_id,
+                expected_file_id,
+                expected_change_time_ns,
+            ):
+                raise OSError("Managed project workspace identity changed")
+            if _read_project_workspace_marker(root_resolved) != str(expected_marker_token):
+                raise OSError("Managed project workspace marker changed")
         for subdir in _PROJECT_WORKSPACE_SUBDIRS:
             child = root_resolved / subdir
             child.mkdir(exist_ok = True)
@@ -481,6 +507,10 @@ def _prepare_project_workspace(
     *,
     require_atomic_ownership: bool = False,
     allow_existing_owned: bool = False,
+    expected_device_id: str | None = None,
+    expected_file_id: str | None = None,
+    expected_change_time_ns: str | int | None = None,
+    expected_marker_token: str | None = None,
 ) -> _PreparedProjectWorkspace:
     """Materialize a managed workspace and bind the directory identity used."""
     root = Path(root_path).expanduser()
@@ -500,7 +530,18 @@ def _prepare_project_workspace(
                 raise _ManagedWorkspaceOccupiedError(str(root))
             if require_atomic_ownership and allow_existing_owned:
                 try:
-                    _read_project_workspace_marker(root)
+                    if not _workspace_identity_matches(
+                        root,
+                        expected_device_id,
+                        expected_file_id,
+                        expected_change_time_ns,
+                    ):
+                        raise OSError("Managed project workspace identity changed")
+                    if (
+                        expected_marker_token is None
+                        or _read_project_workspace_marker(root) != str(expected_marker_token)
+                    ):
+                        raise OSError("Managed project workspace marker changed")
                 except (OSError, UnicodeError) as exc:
                     raise _ManagedWorkspaceOccupiedError(str(root)) from exc
         prepared_path = _ensure_project_workspace(str(root))
@@ -513,6 +554,7 @@ def _prepare_project_workspace(
             created_root = created_root,
             device_id = device_id,
             file_id = file_id,
+            change_time_ns = _workspace_change_time(Path(prepared_path)),
             marker_token = marker_token,
         )
     except Exception as exc:
@@ -528,6 +570,7 @@ def _prepare_project_workspace(
                 created_root = True,
                 device_id = created_identity[0],
                 file_id = created_identity[1],
+                change_time_ns = "",
                 marker_token = marker_token,
             )
             _remove_empty_project_workspace_if_unclaimed(prepared)
@@ -542,6 +585,156 @@ def _prepare_project_workspace(
 
 def _normalized_workspace_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(os.path.expanduser(path)))
+
+
+def _remove_directory_contents_fd(directory_fd: int, root_device_id: int) -> None:
+    """Remove a directory tree through an already-open directory descriptor."""
+    for entry in os.scandir(directory_fd):
+        entry_name = entry.name
+        entry_stat = entry.stat(follow_symlinks = False)
+        if entry_stat.st_dev != root_device_id:
+            raise OSError("Project workspace mount boundary changed during cleanup")
+        if entry.is_dir(follow_symlinks = False):
+            child_flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                child_flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                child_flags |= os.O_NOFOLLOW
+            child_fd = os.open(entry_name, child_flags, dir_fd = directory_fd)
+            try:
+                child_stat = os.fstat(child_fd)
+                if child_stat.st_dev != root_device_id:
+                    raise OSError("Project workspace mount boundary changed during cleanup")
+                if child_stat.st_dev != entry_stat.st_dev or child_stat.st_ino != entry_stat.st_ino:
+                    raise OSError("Project workspace entry changed during cleanup")
+                _remove_directory_contents_fd(child_fd, root_device_id)
+            finally:
+                os.close(child_fd)
+            current_stat = os.stat(entry_name, dir_fd = directory_fd, follow_symlinks = False)
+            if current_stat.st_dev != root_device_id:
+                raise OSError("Project workspace mount boundary changed during cleanup")
+            if current_stat.st_dev != entry_stat.st_dev or current_stat.st_ino != entry_stat.st_ino:
+                raise OSError("Project workspace entry changed during cleanup")
+            os.rmdir(entry_name, dir_fd = directory_fd)
+            continue
+        current_stat = os.stat(entry_name, dir_fd = directory_fd, follow_symlinks = False)
+        if current_stat.st_dev != root_device_id:
+            raise OSError("Project workspace mount boundary changed during cleanup")
+        if current_stat.st_dev != entry_stat.st_dev or current_stat.st_ino != entry_stat.st_ino:
+            raise OSError("Project workspace entry changed during cleanup")
+        os.unlink(entry_name, dir_fd = directory_fd)
+
+
+def _remove_quarantined_workspace(
+    quarantine: Path,
+    expected_device_id: str,
+    expected_file_id: str,
+) -> bool:
+    """Remove a quarantined tree without reopening a replaceable pathname."""
+    if os.name == "nt" or not all(
+        operation in os.supports_dir_fd for operation in (os.open, os.rmdir, os.unlink)
+    ):
+        return False
+    parent_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        parent_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        parent_flags |= os.O_NOFOLLOW
+    parent_fd = os.open(quarantine.parent, parent_flags)
+    directory_fd: int | None = None
+    try:
+        directory_flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            directory_flags |= os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        directory_fd = os.open(quarantine.name, directory_flags, dir_fd = parent_fd)
+        metadata = os.fstat(directory_fd)
+        if (
+            str(metadata.st_dev) != str(expected_device_id)
+            or str(metadata.st_ino) != str(expected_file_id)
+        ):
+            return False
+        _remove_directory_contents_fd(directory_fd, metadata.st_dev)
+        # A path replacement cannot redirect recursive deletion because all
+        # children were removed through directory_fd. Refuse to remove the
+        # top-level name if it no longer denotes the same inode.
+        current_fd = os.open(quarantine.name, directory_flags, dir_fd = parent_fd)
+        try:
+            current_metadata = os.fstat(current_fd)
+            if (
+                current_metadata.st_dev != metadata.st_dev
+                or current_metadata.st_ino != metadata.st_ino
+            ):
+                return False
+        finally:
+            os.close(current_fd)
+        os.rmdir(quarantine.name, dir_fd = parent_fd)
+        return not os.path.lexists(quarantine)
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+        os.close(parent_fd)
+
+
+def _migrate_legacy_managed_workspace_identities(conn: sqlite3.Connection) -> None:
+    """Bind old managed rows or queue their data for durable recovery."""
+    rows = conn.execute(
+        """
+        SELECT id, root_path
+        FROM chat_projects
+        WHERE COALESCE(workspace_kind, 'managed') = 'managed'
+          AND root_path IS NOT NULL
+          AND (
+              root_device_id IS NULL
+              OR root_file_id IS NULL
+              OR root_change_time_ns IS NULL
+              OR root_marker_token IS NULL
+          )
+        """
+    ).fetchall()
+    for row in rows:
+        project_id = str(row["id"])
+        root_path = str(row["root_path"])
+        try:
+            root = Path(root_path).expanduser()
+            if root.is_symlink():
+                raise OSError("Managed project workspace is a link")
+            is_junction = getattr(root, "is_junction", None)
+            if is_junction is not None and is_junction():
+                raise OSError("Managed project workspace is a junction")
+            device_id, file_id = _workspace_identity(root)
+            change_time_ns = _workspace_change_time(root)
+            marker_token = _read_project_workspace_marker(root)
+        except (OSError, UnicodeError, RuntimeError, ValueError):
+            # The old directory remains in place. The legacy path is retained
+            # until ensure_chat_project_workspace writes the existing durable
+            # orphan record, then a fresh root can be allocated safely.
+            conn.execute(
+                """
+                UPDATE chat_projects
+                SET root_path = NULL,
+                    root_device_id = NULL,
+                    root_file_id = NULL,
+                    root_change_time_ns = NULL,
+                    root_marker_token = NULL,
+                    legacy_root_path = COALESCE(legacy_root_path, ?)
+                WHERE id = ?
+                """,
+                (root_path, project_id),
+            )
+            continue
+        conn.execute(
+            """
+            UPDATE chat_projects
+            SET root_device_id = ?,
+                root_file_id = ?,
+                root_change_time_ns = ?,
+                root_marker_token = ?
+            WHERE id = ?
+            """,
+            (device_id, file_id, change_time_ns, marker_token, project_id),
+        )
 
 
 def _restore_quarantined_workspace(quarantine: Path, root: Path) -> None:
@@ -774,7 +967,14 @@ def _delete_project_workspace(project: dict) -> None:
             )
             return
         if not _workspace_identity_matches(
-            root_resolved, expected_device, expected_file, expected_change_time
+            root_resolved,
+            expected_device,
+            expected_file,
+            # A failed quarantine is restored to the same inode, but the
+            # rename changes POSIX ctime. Runtime evidence remains bound to
+            # that inode and marker for a retry in this process; durable
+            # replay still retains the original ctime check.
+            None if runtime_evidence is not None else expected_change_time,
         ):
             logger.warning(
                 "Skipping project workspace delete after identity change %s", root_resolved
@@ -818,7 +1018,45 @@ def _delete_project_workspace(project: dict) -> None:
             root_resolved,
         )
         return
-    shutil.rmtree(root_resolved)
+    if not recorded_orphan:
+        shutil.rmtree(root_resolved)
+        return
+
+    # Move the exact validated directory out of its public name before the
+    # final identity check. A replacement at the original path can then never
+    # become the target of recursive cleanup.
+    quarantine = root_resolved.with_name(
+        f".{root_resolved.name}.delete-{uuid.uuid4().hex}"
+    )
+    moved = False
+    try:
+        os.rename(root_resolved, quarantine)
+        moved = True
+        if not _workspace_identity_matches(
+            # Renaming a directory updates its ctime on POSIX, so the
+            # pre-rename change time is checked above and the post-quarantine
+            # boundary relies on the stable device/file identity.
+            quarantine, expected_device, expected_file
+        ):
+            logger.warning("Skipping project workspace delete after quarantine identity change %s", root_resolved)
+            return
+        try:
+            if expected_marker is not None and _read_project_workspace_marker(quarantine) != expected_marker:
+                logger.warning("Skipping project workspace delete after quarantine marker change %s", root_resolved)
+                return
+        except (OSError, UnicodeError):
+            if expected_marker is not None or runtime_evidence is None:
+                return
+        if not _remove_quarantined_workspace(quarantine, expected_device, expected_file):
+            raise OSError("Project workspace cleanup lacks a safe descriptor boundary")
+        moved = False
+    except FileNotFoundError:
+        return
+    except OSError:
+        logger.warning("Could not quarantine project workspace %s", root_resolved, exc_info = True)
+    finally:
+        if moved:
+            _restore_quarantined_workspace(quarantine, root_resolved)
 
 
 def delete_chat_project_workspace(project: dict) -> None:
@@ -926,6 +1164,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             folder_device_id TEXT,
             folder_file_id TEXT,
             folder_change_time_ns TEXT,
+            root_device_id TEXT,
+            root_file_id TEXT,
+            root_change_time_ns TEXT,
+            root_marker_token TEXT,
+            legacy_root_path TEXT,
             workspace_revision INTEGER NOT NULL DEFAULT 0,
             workspace_session_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
@@ -951,6 +1194,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN folder_file_id TEXT")
     if "folder_change_time_ns" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN folder_change_time_ns TEXT")
+    if "root_device_id" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN root_device_id TEXT")
+    if "root_file_id" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN root_file_id TEXT")
+    if "root_change_time_ns" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN root_change_time_ns TEXT")
+    if "root_marker_token" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN root_marker_token TEXT")
+    if "legacy_root_path" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN legacy_root_path TEXT")
+    _migrate_legacy_managed_workspace_identities(conn)
     if "workspace_revision" not in chat_project_cols:
         conn.execute(
             "ALTER TABLE chat_projects ADD COLUMN workspace_revision INTEGER NOT NULL DEFAULT 0"
@@ -2447,6 +2701,11 @@ def _chat_project_from_row(row: sqlite3.Row, *, probe_workspace: bool = True) ->
             else None
         ),
         "managedRootPath": managed_root_path or None,
+        "_managedRootDeviceId": data.get("root_device_id"),
+        "_managedRootFileId": data.get("root_file_id"),
+        "_managedRootChangeTimeNs": data.get("root_change_time_ns"),
+        "_managedRootMarkerToken": data.get("root_marker_token"),
+        "_legacyManagedRootPath": data.get("legacy_root_path"),
         "workspaceKind": workspace_kind,
         "workspacePath": folder_path if workspace_kind == "folder" else None,
         "workspaceAvailable": workspace_available,
@@ -3230,7 +3489,18 @@ def upsert_chat_project(project: dict) -> dict:
     root_path = existing.get("rootPath") if existing else None
     prepared: _PreparedProjectWorkspace | None = None
     if root_path:
-        root_path = _ensure_project_workspace(root_path)
+        root_path = _ensure_project_workspace(
+            root_path,
+            expected_device_id = existing.get("_managedRootDeviceId") if existing else None,
+            expected_file_id = existing.get("_managedRootFileId") if existing else None,
+            expected_change_time_ns=(
+                existing.get("_managedRootChangeTimeNs") if existing else None
+            ),
+            expected_marker_token=(
+                existing.get("_managedRootMarkerToken") if existing else None
+            ),
+            require_identity = existing is not None,
+        )
     else:
         requested_root = _available_managed_project_root(
             _default_project_root(project), str(project["id"])
@@ -3252,9 +3522,48 @@ def upsert_chat_project(project: dict) -> dict:
                 OSError("Project workspace kept changing during import"),
             )
         root_path = prepared.root_path
-    conn = get_connection()
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     committed = False
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (project["id"],)).fetchone()
+        if current is not None:
+            current_kind = _project_workspace_kind(_chat_project_from_row(current, probe_workspace = False))
+            if current_kind == "folder":
+                conn.execute(
+                    """
+                    UPDATE chat_projects
+                    SET name = ?, instructions = ?, archived = ?,
+                        created_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        project["name"],
+                        project.get("instructions") or "",
+                        1 if project.get("archived") else 0,
+                        int(project["createdAt"]),
+                        int(project["updatedAt"]),
+                        project["id"],
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM chat_projects WHERE id = ?", (project["id"],)
+                ).fetchone()
+                conn.commit()
+                return _chat_project_from_row(row) if row is not None else None
+            if prepared is not None and current["root_path"]:
+                conn.commit()
+                return _chat_project_from_row(current)
+        if prepared is not None:
+            root_device_id = prepared.device_id
+            root_file_id = prepared.file_id
+            root_change_time_ns = prepared.change_time_ns
+            root_marker_token = prepared.marker_token
+        else:
+            root_device_id = existing.get("_managedRootDeviceId") if existing else None
+            root_file_id = existing.get("_managedRootFileId") if existing else None
+            root_change_time_ns = existing.get("_managedRootChangeTimeNs") if existing else None
+            root_marker_token = existing.get("_managedRootMarkerToken") if existing else None
         if existing:
             workspace_session_id = existing.get("workspaceSessionId") or f"project-{project['id']}"
         else:
@@ -3273,15 +3582,26 @@ def upsert_chat_project(project: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_projects
-                (id, name, instructions, root_path, workspace_session_id,
-                 archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    id, name, instructions, root_path,
+                    root_device_id, root_file_id, root_change_time_ns, root_marker_token,
+                    workspace_session_id, archived, created_at, updated_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 instructions = excluded.instructions,
                 root_path = COALESCE(chat_projects.root_path, excluded.root_path),
                 workspace_session_id = COALESCE(
                     chat_projects.workspace_session_id, excluded.workspace_session_id
+                ),
+                root_device_id = COALESCE(chat_projects.root_device_id, excluded.root_device_id),
+                root_file_id = COALESCE(chat_projects.root_file_id, excluded.root_file_id),
+                root_change_time_ns = COALESCE(
+                    chat_projects.root_change_time_ns, excluded.root_change_time_ns
+                ),
+                root_marker_token = COALESCE(
+                    chat_projects.root_marker_token, excluded.root_marker_token
                 ),
                 archived = excluded.archived,
                 created_at = excluded.created_at,
@@ -3292,6 +3612,10 @@ def upsert_chat_project(project: dict) -> dict:
                 project["name"],
                 project.get("instructions") or "",
                 root_path,
+                root_device_id,
+                root_file_id,
+                root_change_time_ns,
+                root_marker_token,
                 workspace_session_id,
                 1 if project.get("archived") else 0,
                 int(project["createdAt"]),
@@ -3301,6 +3625,9 @@ def upsert_chat_project(project: dict) -> dict:
         conn.commit()
         committed = True
         return get_chat_project(project["id"]) or project
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
         if prepared is not None and prepared.created_root and not committed:
@@ -3361,14 +3688,19 @@ def create_chat_project(project: dict) -> dict:
                 """
                 INSERT INTO chat_projects
                     (id, name, instructions, root_path, workspace_kind,
+                     root_device_id, root_file_id, root_change_time_ns, root_marker_token,
                      workspace_session_id, archived, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'managed', ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'managed', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project["id"],
                     project["name"],
                     project.get("instructions") or "",
                     prepared.root_path,
+                    prepared.device_id,
+                    prepared.file_id,
+                    prepared.change_time_ns,
+                    prepared.marker_token,
                     workspace_session_id,
                     1 if project.get("archived") else 0,
                     int(project["createdAt"]),
@@ -3399,7 +3731,12 @@ def create_chat_project(project: dict) -> dict:
     )
 
 
-def _available_managed_project_root(default_root: str, project_id: str) -> str:
+def _available_managed_project_root(
+    default_root: str,
+    project_id: str,
+    *,
+    allow_current_existing: bool = True,
+) -> str:
     """Choose a free managed root without adopting a reserved stranger path."""
     root = Path(default_root)
     conn = get_connection()
@@ -3438,6 +3775,8 @@ def _available_managed_project_root(default_root: str, project_id: str) -> str:
             # Even a marker-shaped directory may belong to a deleted project or
             # an older installation. Only this project's recorded root may be
             # reused; every other existing path is user data at a reserved name.
+            continue
+        if candidate.exists() and key == current_project_root and not allow_current_existing:
             continue
         if candidate.exists() and key == current_project_root:
             try:
@@ -3862,7 +4201,30 @@ def disconnect_chat_project_folder(
         return snapshot
     managed_root_hint = snapshot.get("managedRootPath")
     requested_root = str(managed_root_hint or _default_project_root(snapshot))
-    requested_root = _available_managed_project_root(requested_root, project_id)
+    preserved_identity = (
+        snapshot.get("_managedRootDeviceId"),
+        snapshot.get("_managedRootFileId"),
+        snapshot.get("_managedRootChangeTimeNs"),
+        snapshot.get("_managedRootMarkerToken"),
+    )
+    preserved_root_is_current = False
+    if managed_root_hint and all(value is not None for value in preserved_identity):
+        try:
+            preserved_root_is_current = _workspace_identity_matches(
+                Path(requested_root),
+                preserved_identity[0],
+                preserved_identity[1],
+                preserved_identity[2],
+            ) and _read_project_workspace_marker(Path(requested_root)) == str(
+                preserved_identity[3]
+            )
+        except (OSError, UnicodeError):
+            preserved_root_is_current = False
+    requested_root = _available_managed_project_root(
+        requested_root,
+        project_id,
+        allow_current_existing = preserved_root_is_current,
+    )
     allow_existing_owned = bool(
         managed_root_hint
         and _normalized_workspace_path(str(managed_root_hint))
@@ -3874,10 +4236,16 @@ def disconnect_chat_project_folder(
                 requested_root,
                 require_atomic_ownership = True,
                 allow_existing_owned = allow_existing_owned,
+                expected_device_id = preserved_identity[0],
+                expected_file_id = preserved_identity[1],
+                expected_change_time_ns = preserved_identity[2],
+                expected_marker_token = preserved_identity[3],
             )
         except _ManagedWorkspaceOccupiedError:
             requested_root = _available_managed_project_root(
-                str(managed_root_hint or _default_project_root(snapshot)), project_id
+                str(managed_root_hint or _default_project_root(snapshot)),
+                project_id,
+                allow_current_existing = False,
             )
             allow_existing_owned = bool(
                 managed_root_hint
@@ -3906,12 +4274,22 @@ def disconnect_chat_project_folder(
                 committed = True
                 return _chat_project_from_row(current)
             current_root = current["root_path"]
-            if current_root and _normalized_workspace_path(
-                str(current_root)
-            ) != _normalized_workspace_path(prepared.root_path):
-                raise ChatProjectWorkspaceRevisionConflictError(
-                    "Project workspace changed before this update completed."
-                )
+            if current_root and _normalized_workspace_path(str(current_root)) != _normalized_workspace_path(
+                prepared.root_path
+            ):
+                # A preserved root that failed its identity check is
+                # deliberately replaced with a fresh candidate. Any other
+                # root change is a concurrent mutation and remains fenced by
+                # the workspace revision.
+                if not (
+                    managed_root_hint
+                    and _normalized_workspace_path(str(current_root))
+                    == _normalized_workspace_path(str(managed_root_hint))
+                    and not preserved_root_is_current
+                ):
+                    raise ChatProjectWorkspaceRevisionConflictError(
+                        "Project workspace changed before this update completed."
+                    )
             if not _prepared_workspace_identity_matches(prepared):
                 raise _PreparedProjectWorkspaceChangedError(prepared.root_path)
             if current["folder_path"]:
@@ -3937,6 +4315,10 @@ def disconnect_chat_project_folder(
                 UPDATE chat_projects
                 SET root_path = ?,
                     workspace_kind = 'managed',
+                    root_device_id = ?,
+                    root_file_id = ?,
+                    root_change_time_ns = ?,
+                    root_marker_token = ?,
                     folder_path = NULL,
                     folder_device_id = NULL,
                     folder_file_id = NULL,
@@ -3946,7 +4328,16 @@ def disconnect_chat_project_folder(
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (prepared.root_path, workspace_session_id, int(updated_at), project_id),
+                (
+                    prepared.root_path,
+                    prepared.device_id,
+                    prepared.file_id,
+                    prepared.change_time_ns,
+                    prepared.marker_token,
+                    workspace_session_id,
+                    int(updated_at),
+                    project_id,
+                ),
             )
             row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (project_id,)).fetchone()
             conn.commit()
@@ -4012,28 +4403,115 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
             project.get("workspaceChangeTimeNs"),
         )
         return get_chat_project(id)
-    root_path = project.get("rootPath") or _default_project_root(project)
-    root_path = _ensure_project_workspace(root_path)
-    # a delete running in another threadpool worker can drop the row at any point before the
-    # directory is created, so confirm the project outlived the create rather than trusting a
-    # pre-create snapshot. Removing the directory here is not this function's call: only the
-    # delete path knows whether the user asked to keep the files, and the row may have had a
-    # populated workspace already. An empty directory left behind is the cheaper outcome.
-    project = get_chat_project(id)
-    if project is None:
-        return None
-    if project.get("rootPath") == root_path:
-        return project
-    conn = get_connection()
-    try:
-        conn.execute(
-            "UPDATE chat_projects SET root_path = ? WHERE id = ?",
-            (root_path, id),
+    if project.get("rootPath"):
+        root_path = _ensure_project_workspace(
+            str(project["rootPath"]),
+            expected_device_id = project.get("_managedRootDeviceId"),
+            expected_file_id = project.get("_managedRootFileId"),
+            expected_change_time_ns = project.get("_managedRootChangeTimeNs"),
+            expected_marker_token = project.get("_managedRootMarkerToken"),
+            require_identity = True,
         )
-        conn.commit()
-    finally:
-        conn.close()
-    return get_chat_project(id)
+        # The validation above intentionally happens before this read. If a
+        # concurrent delete won the race, do not return a stale project view.
+        return get_chat_project(id) if root_path else None
+
+    # Rows imported from older versions may not have a managed root yet. Queue
+    # any preserved legacy path in the existing orphan-recovery store, then
+    # claim a fresh directory atomically rather than adopting a foreign path.
+    legacy_root_path = project.get("_legacyManagedRootPath")
+    if legacy_root_path:
+        try:
+            from core.inference.tools import record_orphaned_project
+
+            recorded = record_orphaned_project(
+                id,
+                str(Path(legacy_root_path) / "sandbox"),
+                False,
+                str(legacy_root_path),
+                project.get("workspaceSessionId") or f"project-{id}",
+                recovery_only = True,
+            )
+        except Exception:
+            recorded = False
+            logger.warning("Could not preserve legacy project workspace %s", legacy_root_path)
+        if recorded:
+            conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
+            try:
+                conn.execute(
+                    "UPDATE chat_projects SET legacy_root_path = NULL "
+                    "WHERE id = ? AND root_path IS NULL AND legacy_root_path = ?",
+                    (id, str(legacy_root_path)),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+    requested_root = _available_managed_project_root(_default_project_root(project), id)
+    for _attempt in range(3):
+        try:
+            prepared = _prepare_project_workspace(
+                requested_root,
+                require_atomic_ownership = True,
+            )
+        except _ManagedWorkspaceOccupiedError:
+            requested_root = _available_managed_project_root(_default_project_root(project), id)
+            continue
+        committed = False
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+            if current is None:
+                conn.commit()
+                continue
+            if str(current["workspace_kind"] or "managed") != "managed":
+                conn.commit()
+                return _chat_project_from_row(current)
+            if current["root_path"]:
+                conn.commit()
+                return _chat_project_from_row(current)
+            if not _prepared_workspace_identity_matches(prepared):
+                raise _PreparedProjectWorkspaceChangedError(prepared.root_path)
+            conn.execute(
+                """
+                UPDATE chat_projects
+                SET root_path = ?,
+                    root_device_id = ?,
+                    root_file_id = ?,
+                    root_change_time_ns = ?,
+                    root_marker_token = ?
+                WHERE id = ? AND root_path IS NULL
+                """,
+                (
+                    prepared.root_path,
+                    prepared.device_id,
+                    prepared.file_id,
+                    prepared.change_time_ns,
+                    prepared.marker_token,
+                    id,
+                ),
+            )
+            row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+            conn.commit()
+            committed = True
+            return _chat_project_from_row(row) if row is not None else None
+        except _PreparedProjectWorkspaceChangedError:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            if conn is not None:
+                conn.rollback()
+            raise
+        finally:
+            if conn is not None:
+                conn.close()
+            if prepared.created_root and not committed:
+                _remove_empty_project_workspace_if_unclaimed(prepared)
+    raise ProjectWorkspaceError(
+        requested_root,
+        OSError("Project workspace kept changing during initialization"),
+    )
 
 
 def get_chat_project(id: str) -> Optional[dict]:
@@ -4059,6 +4537,8 @@ def list_chat_projects(include_archived: bool = False) -> list[dict]:
 
 def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
+    recorded_delete_evidence: dict[str, str | None] | None = None
+    recorded_delete_runtime_token: object | None = None
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
@@ -4067,6 +4547,36 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
             conn.rollback()
             return None
         project = _chat_project_from_row(row, probe_workspace = False)
+        if delete_files:
+            managed_root = project.get("managedRootPath")
+            if not managed_root and project.get("workspaceKind", "managed") == "managed":
+                managed_root = project.get("rootPath")
+            if managed_root:
+                (
+                    recorded_delete_evidence,
+                    recorded_delete_runtime_token,
+                ) = capture_recorded_orphan_evidence(
+                    str(project["id"]),
+                    str(managed_root),
+                    str(project.get("workspaceSessionId") or "") or None,
+                )
+        legacy_root = project.get("_legacyManagedRootPath")
+        if legacy_root:
+            from core.inference.tools import record_orphaned_project
+
+            recorded = record_orphaned_project(
+                str(project["id"]),
+                str(Path(legacy_root) / "sandbox"),
+                False,
+                str(legacy_root),
+                str(project.get("workspaceSessionId") or f"project-{project['id']}"),
+                recovery_only = True,
+            )
+            if recorded is not True:
+                raise ProjectWorkspaceError(
+                    str(legacy_root),
+                    OSError("Could not record the legacy project workspace"),
+                )
         if project.get("workspaceKind") == "folder" and project.get("workspacePath"):
             from core.inference.tools import record_orphaned_project
             recorded = record_orphaned_project(
@@ -4123,7 +4633,15 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         conn.commit()
         project = _chat_project_from_row(row)
         if delete_files:
-            _delete_project_workspace(project)
+            delete_target = dict(project)
+            # Immediate cleanup must use the same identity fence as deferred
+            # orphan collection. A replacement directory with the same
+            # project-derived name is not this project's workspace.
+            delete_target["_recordedOrphan"] = _RECORDED_ORPHAN_TOKEN
+            delete_target["_recordedOrphanEvidence"] = (
+                recorded_delete_runtime_token or recorded_delete_evidence
+            )
+            _delete_project_workspace(delete_target)
         # The membership this transaction actually deleted, which is not the
         # caller's earlier listing when a chat was moved in between the two.
         project = dict(project)

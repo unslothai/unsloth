@@ -7516,6 +7516,7 @@ def record_orphaned_project(
     root_path: "str | None" = None,
     session_id: "str | None" = None,
     identity: "tuple[str | None, str | None, str | None] | None" = None,
+    recovery_only: bool = False,
 ) -> bool:
     """Remember where a deleted project's kept workspace lives.
 
@@ -7552,6 +7553,7 @@ def record_orphaned_project(
             "pendingDelete": bool(pending_delete),
             "rootIdentity": root_identity,
             "sessionId": record_session_id,
+            "recoveryOnly": bool(recovery_only),
         },
     )
 
@@ -7841,6 +7843,8 @@ def _recorded_project_workdir(project_id: str, session_id: str | None = None) ->
         return None
     if session_id and record.get("sessionId") != session_id:
         return None
+    if record.get("recoveryOnly") is True:
+        return None
     identity = record.get("rootIdentity")
     if identity:
         if not isinstance(identity, dict):
@@ -7876,6 +7880,9 @@ def _orphaned_project_workdir(project_id: str, session_id: str | None = None) ->
     guess below builds a directory name, so only that needs an id a filename
     can hold.
     """
+    record = _read_orphan_record(_ORPHAN_PROJECT, project_id, session_id)
+    if record and record.get("recoveryOnly") is True:
+        return None
     recorded = _recorded_project_workdir(project_id, session_id)
     if recorded:
         return recorded

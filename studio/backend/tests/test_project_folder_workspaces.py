@@ -422,6 +422,92 @@ def test_managed_workspace_delete_never_follows_a_replacement_symlink(tmp_path):
     assert (victim / "keep.txt").read_text(encoding = "utf-8") == "keep"
 
 
+def test_immediate_managed_delete_rejects_a_replacement_directory(
+    tmp_path, monkeypatch
+):
+    """A same-name directory installed after capture is not ours to remove."""
+    project = _managed_project("project-delete-replacement")
+    managed = studio_db.upsert_chat_project(project)
+    root = Path(managed["managedRootPath"])
+    original = tmp_path / "original-managed"
+
+    original_delete = studio_db._delete_project_workspace
+
+    def replace_before_delete(target):
+        root.rename(original)
+        root.mkdir()
+        (root / "sandbox").mkdir()
+        (root / "replacement.txt").write_text("keep", encoding = "utf-8")
+        original_delete(target)
+
+    monkeypatch.setattr(studio_db, "_delete_project_workspace", replace_before_delete)
+
+    deleted = studio_db.delete_chat_project(project["id"], delete_files = True)
+
+    assert deleted is not None
+    assert root.is_dir()
+    assert (root / "sandbox").is_dir()
+    assert (root / "replacement.txt").read_text(encoding = "utf-8") == "keep"
+    assert original.is_dir()
+
+
+def test_managed_delete_does_not_remove_a_quarantine_replacement(tmp_path, monkeypatch):
+    project = studio_db.upsert_chat_project(_managed_project("project-quarantine-race"))
+    root = Path(project["managedRootPath"])
+    original = tmp_path / "quarantined-original"
+    original_remove = studio_db._remove_directory_contents_fd
+    swapped = False
+
+    def swap_after_quarantine(directory_fd, root_device_id):
+        nonlocal swapped
+        if not swapped:
+            quarantine = next(root.parent.glob(f".{root.name}.delete-*"))
+            quarantine.rename(original)
+            quarantine.mkdir()
+            (quarantine / "sandbox").mkdir()
+            (quarantine / "replacement.txt").write_text("keep", encoding = "utf-8")
+            swapped = True
+        return original_remove(directory_fd, root_device_id)
+
+    monkeypatch.setattr(studio_db, "_remove_directory_contents_fd", swap_after_quarantine)
+
+    studio_db.delete_chat_project(project["id"], delete_files = True)
+
+    assert swapped is True
+    assert (root / "replacement.txt").read_text(encoding = "utf-8") == "keep"
+    assert original.is_dir()
+
+
+def test_quarantine_cleanup_rejects_a_nested_mount_boundary(tmp_path, monkeypatch):
+    root = tmp_path / "quarantine"
+    child = root / "mounted"
+    child.mkdir(parents = True)
+    (child / "keep.txt").write_text("keep", encoding = "utf-8")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    root_fd = os.open(root, flags)
+    original_fstat = os.fstat
+    child_probe = False
+
+    def report_foreign_device(fd):
+        nonlocal child_probe
+        metadata = original_fstat(fd)
+        if not child_probe:
+            child_probe = True
+            values = list(metadata)
+            values[2] += 1
+            return os.stat_result(values)
+        return metadata
+
+    monkeypatch.setattr(os, "fstat", report_foreign_device)
+    try:
+        with pytest.raises(OSError, match = "mount boundary"):
+            studio_db._remove_directory_contents_fd(root_fd, root.stat().st_dev)
+    finally:
+        os.close(root_fd)
+
+    assert (child / "keep.txt").read_text(encoding = "utf-8") == "keep"
+
+
 def test_direct_managed_workspace_delete_rejects_a_forged_orphan_bypass(tmp_path, monkeypatch):
     project = _managed_project("deniedid")
     root = tmp_path / "Managed-deniedid"
@@ -529,6 +615,292 @@ def test_invalid_managed_workspace_marker_is_never_adopted():
     assert (root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).read_text(encoding = "ascii") == (
         "not-a-valid-marker"
     )
+
+
+def test_managed_workspace_rejects_a_same_name_replacement_with_a_copied_marker(tmp_path):
+    project = studio_db.create_chat_project(_managed_project("project-root-identity"))
+    root = Path(project["managedRootPath"])
+    original = tmp_path / "original-managed"
+    marker = (root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).read_text(encoding = "ascii")
+
+    root.rename(original)
+    root.mkdir()
+    (root / "sandbox").mkdir()
+    (root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).write_text(marker, encoding = "ascii")
+
+    with pytest.raises(studio_db.ProjectWorkspaceError, match = "identity changed"):
+        studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert root.is_dir()
+    assert original.is_dir()
+
+
+def test_legacy_managed_workspace_identity_is_bound_during_schema_migration():
+    project = studio_db.create_chat_project(_managed_project("project-legacy-bind"))
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_device_id = NULL, root_file_id = NULL, "
+            "root_change_time_ns = NULL, root_marker_token = NULL WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    studio_db._schema_ready = False
+    migrated = studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert migrated is not None
+    assert migrated["managedRootPath"] == project["managedRootPath"]
+    assert migrated["rootPath"] == project["rootPath"]
+
+
+def test_legacy_managed_workspace_without_marker_gets_fresh_root(tmp_path):
+    project = studio_db.create_chat_project(_managed_project("project-legacy-fresh"))
+    legacy_root = Path(project["managedRootPath"])
+    (legacy_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).unlink()
+    (legacy_root / "legacy-data.txt").write_text("keep", encoding = "utf-8")
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_device_id = NULL, root_file_id = NULL, "
+            "root_change_time_ns = NULL, root_marker_token = NULL WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    studio_db._schema_ready = False
+    migrated = studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert migrated is not None
+    assert Path(migrated["managedRootPath"]) != legacy_root
+    assert (legacy_root / "legacy-data.txt").read_text(encoding = "utf-8") == "keep"
+    assert any(
+        record_id == project["id"] and root == str(legacy_root)
+        for record_id, _workspace, root, _pending, _is_chat in tools.list_orphaned_projects()
+    )
+    assert tools._recorded_project_workdir(project["id"]) is None
+    assert tools._orphaned_project_workdir(project["id"]) is None
+
+
+def test_deleting_a_migrated_legacy_workspace_keeps_its_recovery_record(tmp_path):
+    project = studio_db.create_chat_project(_managed_project("project-legacy-delete"))
+    legacy_root = Path(project["managedRootPath"])
+    (legacy_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).unlink()
+    (legacy_root / "legacy-data.txt").write_text("keep", encoding = "utf-8")
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_device_id = NULL, root_file_id = NULL, "
+            "root_change_time_ns = NULL, root_marker_token = NULL WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    studio_db._schema_ready = False
+    deleted = studio_db.delete_chat_project(project["id"], delete_files = True)
+
+    assert deleted is not None
+    assert (legacy_root / "legacy-data.txt").read_text(encoding = "utf-8") == "keep"
+    assert any(
+        record_id == project["id"] and root == str(legacy_root)
+        for record_id, _workspace, root, _pending, _is_chat in tools.list_orphaned_projects()
+    )
+
+
+def test_unbound_managed_project_allocates_a_fresh_root_without_adopting_foreign_path(
+    tmp_path,
+):
+    project = studio_db.create_chat_project(_managed_project("project-unbound-root"))
+    original = Path(project["managedRootPath"])
+    shutil.rmtree(original)
+    original.mkdir()
+    (original / "foreign.txt").write_text("keep", encoding = "utf-8")
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = NULL, root_device_id = NULL, "
+            "root_file_id = NULL, root_change_time_ns = NULL, root_marker_token = NULL "
+            "WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    initialized = studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert initialized is not None
+    assert Path(initialized["managedRootPath"]) != original
+    assert (original / "foreign.txt").read_text(encoding = "utf-8") == "keep"
+
+
+def test_upsert_persists_identity_for_an_existing_unbound_managed_project():
+    project = studio_db.create_chat_project(_managed_project("project-upsert-unbound"))
+    old_root = Path(project["managedRootPath"])
+    shutil.rmtree(old_root)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = NULL, root_device_id = NULL, "
+            "root_file_id = NULL, root_change_time_ns = NULL, root_marker_token = NULL "
+            "WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    restored = studio_db.upsert_chat_project(_managed_project(project["id"]))
+    root = Path(restored["managedRootPath"])
+    device_id, file_id = studio_db._workspace_identity(root)
+
+    assert restored["_managedRootDeviceId"] == device_id
+    assert restored["_managedRootFileId"] == file_id
+    assert restored["_managedRootChangeTimeNs"] == studio_db._workspace_change_time(root)
+    assert restored["_managedRootMarkerToken"] == studio_db._read_project_workspace_marker(root)
+
+
+def test_upsert_does_not_overwrite_a_concurrent_folder_claim(tmp_path, monkeypatch):
+    project = studio_db.create_chat_project(_managed_project("project-upsert-folder-race"))
+    old_root = Path(project["managedRootPath"])
+    shutil.rmtree(old_root)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = NULL, root_device_id = NULL, "
+            "root_file_id = NULL, root_change_time_ns = NULL, root_marker_token = NULL "
+            "WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    folder = tmp_path / "upsert-claimed-folder"
+    folder.mkdir()
+    original_prepare = studio_db._prepare_project_workspace
+    prepared_candidates = []
+
+    def race_prepare(path, **kwargs):
+        prepared = original_prepare(path, **kwargs)
+        prepared_candidates.append(prepared)
+        claimed = studio_db.claim_chat_project_folder(
+            _folder_claim(project["id"], folder),
+            expected_workspace_revision = project["workspaceRevision"],
+        )
+        assert claimed is not None
+        return prepared
+
+    monkeypatch.setattr(studio_db, "_prepare_project_workspace", race_prepare)
+
+    updated = studio_db.upsert_chat_project(_managed_project(project["id"]))
+
+    assert updated["workspaceKind"] == "folder"
+    assert updated["workspacePath"] == str(folder.resolve())
+    assert prepared_candidates
+    assert not Path(prepared_candidates[0].root_path).exists()
+
+
+def test_unbound_managed_initialization_returns_a_concurrent_binding(tmp_path, monkeypatch):
+    project = studio_db.create_chat_project(_managed_project("project-concurrent-bind"))
+    old_root = Path(project["managedRootPath"])
+    shutil.rmtree(old_root)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = NULL, root_device_id = NULL, "
+            "root_file_id = NULL, root_change_time_ns = NULL, root_marker_token = NULL "
+            "WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    concurrent_root = tmp_path / "concurrent-managed"
+    concurrent = studio_db._prepare_project_workspace(str(concurrent_root))
+    original_prepare = studio_db._prepare_project_workspace
+    prepared_candidates = []
+
+    def race_prepare(path, **kwargs):
+        prepared = original_prepare(path, **kwargs)
+        prepared_candidates.append(prepared)
+        conn = studio_db.get_connection()
+        try:
+            conn.execute(
+                "UPDATE chat_projects SET root_path = ?, root_device_id = ?, root_file_id = ?, "
+                "root_change_time_ns = ?, root_marker_token = ? WHERE id = ?",
+                (
+                    concurrent.root_path,
+                    concurrent.device_id,
+                    concurrent.file_id,
+                    concurrent.change_time_ns,
+                    concurrent.marker_token,
+                    project["id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return prepared
+
+    monkeypatch.setattr(studio_db, "_prepare_project_workspace", race_prepare)
+
+    initialized = studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert initialized is not None
+    assert initialized["managedRootPath"] == concurrent.root_path
+    assert prepared_candidates
+    assert not Path(prepared_candidates[0].root_path).exists()
+
+
+def test_unbound_managed_initialization_does_not_overwrite_a_concurrent_folder_claim(
+    tmp_path, monkeypatch
+):
+    project = studio_db.create_chat_project(_managed_project("project-concurrent-folder"))
+    old_root = Path(project["managedRootPath"])
+    shutil.rmtree(old_root)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = NULL, root_device_id = NULL, "
+            "root_file_id = NULL, root_change_time_ns = NULL, root_marker_token = NULL "
+            "WHERE id = ?",
+            (project["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    folder = tmp_path / "claimed-folder"
+    folder.mkdir()
+    original_prepare = studio_db._prepare_project_workspace
+    prepared_candidates = []
+
+    def race_prepare(path, **kwargs):
+        prepared = original_prepare(path, **kwargs)
+        prepared_candidates.append(prepared)
+        claimed = studio_db.claim_chat_project_folder(
+            _folder_claim(project["id"], folder),
+            expected_workspace_revision = project["workspaceRevision"],
+        )
+        assert claimed is not None
+        return prepared
+
+    monkeypatch.setattr(studio_db, "_prepare_project_workspace", race_prepare)
+
+    initialized = studio_db.ensure_chat_project_workspace(project["id"])
+
+    assert initialized is not None
+    assert initialized["workspaceKind"] == "folder"
+    assert initialized["workspacePath"] == str(folder.resolve())
+    assert prepared_candidates
+    assert not Path(prepared_candidates[0].root_path).exists()
 
 
 def test_concurrent_workspace_marker_publication_is_atomic(tmp_path, monkeypatch):
@@ -677,6 +1049,40 @@ def test_disconnect_skips_a_reserved_root_with_foreign_content(tmp_path, monkeyp
     assert Path(disconnected["managedRootPath"]) != reserved
     assert foreign.read_text(encoding = "utf-8") == "keep"
     assert reserved.is_dir()
+
+
+def test_disconnect_does_not_re_adopt_a_replaced_preserved_root(tmp_path):
+    folder = tmp_path / "repository"
+    folder.mkdir()
+    managed = studio_db.upsert_chat_project(_managed_project("project-preserved-root"))
+    managed_root = Path(managed["managedRootPath"])
+    marker = (managed_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).read_text(
+        encoding = "ascii"
+    )
+    project = studio_db.claim_chat_project_folder(
+        _folder_claim("project-preserved-root", folder),
+        expected_workspace_revision = managed["workspaceRevision"],
+    )
+    replacement = managed_root / "foreign.txt"
+    original = tmp_path / "original-managed"
+    managed_root.rename(original)
+    managed_root.mkdir()
+    (managed_root / "sandbox").mkdir()
+    (managed_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).write_text(
+        marker, encoding = "ascii"
+    )
+    replacement.write_text("keep", encoding = "utf-8")
+
+    disconnected = studio_db.disconnect_chat_project_folder(
+        project["id"],
+        expected_workspace_revision = project["workspaceRevision"],
+        updated_at = 1_700_000_000_002,
+    )
+
+    assert disconnected is not None
+    assert Path(disconnected["managedRootPath"]) != managed_root
+    assert replacement.read_text(encoding = "utf-8") == "keep"
+    assert original.is_dir()
 
 
 def test_new_managed_project_skips_a_preexisting_reserved_root():
