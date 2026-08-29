@@ -1217,6 +1217,29 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
 
 
+def test_whitespace_arguments_keep_a_name_only_opening_separate(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", '{}')]}),
+                _sse({"tool_calls": [_call_delta(0, None, "web_fetch", ' ')]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"b"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    _run(transport, tools = [WEB, FETCH])
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {}),
+        ("web_fetch", {"query": "b"}),
+    ]
+
+
 @pytest.mark.parametrize("late_arguments", ["", '{"query":"first"}'])
 def test_a_delayed_id_adopts_the_idless_call(executed, late_arguments):
     transport = FakeTransport(
@@ -1235,6 +1258,49 @@ def test_a_delayed_id_adopts_the_idless_call(executed, late_arguments):
     lines = _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}]
+    assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == ["call_a"]
+
+
+def test_a_delayed_id_adopts_a_semantically_equal_snapshot(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            _call_delta(
+                                0,
+                                None,
+                                "web_search",
+                                '{ "query": "first", "nested": {"x": 2} }',
+                            )
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            _call_delta(
+                                0,
+                                "call_a",
+                                "web_search",
+                                {"nested": {"x": 2}, "query": "first"},
+                            )
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    lines = _run(transport)
+
+    assert len(executed) == 1
+    assert executed[0]["arguments"] == {"query": "first", "nested": {"x": 2}}
     assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == ["call_a"]
 
 
@@ -1426,3 +1492,48 @@ def test_budget_exhaustion_replays_malformed_arguments_as_valid_json(executed):
     ]
     assert len(replayed_calls) == 2
     assert all(json.loads(call["function"]["arguments"]) for call in replayed_calls)
+
+
+def test_incomplete_split_calls_still_reserve_their_stream_ids(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", '{"query":"a"}')]}),
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", '{"query":')]}),
+                _sse({"tool_calls": [_call_delta(1, None, "web_search", '{"query":"c"}')]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    lines = _run(transport)
+
+    assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == [
+        "tool_call_0",
+        "tool_call_2",
+    ]
+    assert [call["arguments"] for call in executed] == [{"query": "a"}, {"query": "c"}]
+
+
+def test_a_later_name_does_not_activate_a_completed_unnamed_call(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"bad":1}'}}]}),
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", '{"query":"ok"}')]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "ok"})
+    ]

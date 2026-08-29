@@ -15,6 +15,7 @@ import {
   findStreamedToolCallPartIndex,
   fragmentStartsNewToolCall,
   mintStreamedToolCallId,
+  sameJsonDocument,
   splitTopLevelJsonDocuments,
 } from "../src/features/chat/tool-call-id.ts";
 
@@ -72,7 +73,7 @@ function accumulate(
         parts[delayed].toolCallId = partId;
         parts[delayed]._has_stable_id = true;
         usedIds.delete(provisionalId);
-        if (fragment.arguments === parts[delayed].argsText) {
+        if (sameJsonDocument(fragment.arguments, parts[delayed].argsText)) {
           fragment = { ...fragment, arguments: "" };
         }
       } else {
@@ -89,7 +90,7 @@ function accumulate(
     const matched =
       exact !== -1
         ? exact
-        : partId && !fragment.name && !fragment.arguments
+        : partId && !fragment.name && !fragment.arguments.trim()
           ? findOldestUnownedStreamedToolCallPartIndex(parts, fragment.index)
           : findStreamedToolCallPartIndex(parts, partId, fragment.index);
     const matchedPart = matched === -1 ? undefined : parts[matched];
@@ -105,7 +106,7 @@ function accumulate(
       settled?.complete.length === 1 &&
       !settled.tail &&
       Boolean(fragment.name) &&
-      !fragment.arguments
+      !fragment.arguments.trim()
         ? -1
         : matched;
     if (!exactId) {
@@ -136,12 +137,19 @@ function accumulate(
       append(fragment, fragment.arguments, partId);
       continue;
     }
+    const mergedArgsText = parts[target].argsText + fragment.arguments;
+    const mergedDocuments = splitTopLevelJsonDocuments(mergedArgsText);
     parts[target] = {
       ...parts[target],
       ...(partId ? { toolCallId: partId, _has_stable_id: true } : {}),
       ...(fragment.name ? { toolName: fragment.name } : {}),
-      argsText: parts[target].argsText + fragment.arguments,
-      splitTail: false,
+      argsText: mergedArgsText,
+      splitTail:
+        parts[target].splitTail &&
+        !(
+          mergedDocuments.complete.length === 1 &&
+          !mergedDocuments.tail
+        ),
     };
     if (partId) usedIds.add(partId);
   }
@@ -382,6 +390,22 @@ test("a name-only opening does not rename the completed call before it", () => {
   );
 });
 
+test("whitespace arguments still leave a name-only opening separate", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: "{}" },
+    { index: 0, name: "beta", arguments: " " },
+    { index: 0, arguments: '{"b":2}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [
+      ["alpha", "{}"],
+      ["beta", ' {"b":2}'],
+    ],
+  );
+});
+
 test("one fragment can close a call and open the next call", () => {
   const parts = accumulate([
     { index: 0, name: "alpha", arguments: '{"a":' },
@@ -468,6 +492,27 @@ test("a delayed id carrying an exact snapshot does not duplicate the call", () =
   );
 });
 
+test("a delayed id adopts a semantically equal JSON snapshot", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{ "a": 1, "nested": {"x": 2} }' },
+    {
+      id: "call-a",
+      index: 0,
+      name: "alpha",
+      arguments: '{"nested":{"x":2},"a":1}',
+    },
+    { index: 0, name: "beta", arguments: '{"b":2}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [
+      ["call-a", '{ "a": 1, "nested": {"x": 2} }'],
+      ["tool_call_0", '{"b":2}'],
+    ],
+  );
+});
+
 test("a stable id collision mints a distinct stream id", () => {
   const parts = accumulate([
     { index: 0, name: "alpha", arguments: '{"a":1}' },
@@ -489,7 +534,16 @@ test("decoded object arguments preserve their JSON payload", () => {
 
 test("an incomplete split tail is not persisted as a call", () => {
   const parts = accumulate([
+    { id: "call-a", index: 0, name: "alpha", arguments: '{"a":1}{"b":' },
+  ]);
+
+  assert.deepEqual(parts.map((part) => part.argsText), ['{"a":1}']);
+});
+
+test("a delayed id does not make an incomplete split tail persist", () => {
+  const parts = accumulate([
     { index: 0, name: "alpha", arguments: '{"a":1}{"b":' },
+    { id: "call-b", index: 0, name: "alpha", arguments: "" },
   ]);
 
   assert.deepEqual(parts.map((part) => part.argsText), ['{"a":1}']);

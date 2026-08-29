@@ -30,6 +30,47 @@ export interface JsonDocumentSplit {
   tail: string;
 }
 
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJsonValue(value, right[index]))
+    );
+  }
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) {
+    return false;
+  }
+  const leftObject = left as Record<string, unknown>;
+  const rightObject = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftObject);
+  return (
+    leftKeys.length === Object.keys(rightObject).length &&
+    leftKeys.every(
+      (key) =>
+        Object.hasOwn(rightObject, key) &&
+        sameJsonValue(leftObject[key], rightObject[key]),
+    )
+  );
+}
+
+export function sameJsonDocument(left: string, right: string): boolean {
+  try {
+    return sameJsonValue(JSON.parse(left), JSON.parse(right));
+  } catch {
+    return false;
+  }
+}
+
 /** split a stream slot into complete top-level JSON documents and its open tail. */
 export function splitTopLevelJsonDocuments(text: string): JsonDocumentSplit {
   const unsplit = { complete: [], tail: text };
@@ -140,7 +181,10 @@ export function findDelayedStableToolCallPartIndex(
     ) {
       return false;
     }
-    return !argumentsText || part.argsText === argumentsText;
+    return (
+      !argumentsText.trim() ||
+      sameJsonDocument(part.argsText ?? "", argumentsText)
+    );
   });
 }
 

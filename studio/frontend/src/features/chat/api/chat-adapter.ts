@@ -116,6 +116,7 @@ import {
   findStreamedToolCallPartIndex,
   mintStreamedToolCallId,
   resolveToolCallPartId,
+  sameJsonDocument,
   splitTopLevelJsonDocuments,
 } from "../tool-call-id";
 
@@ -6972,7 +6973,10 @@ export function createOpenAIStreamAdapter(
                       stablePartId = resolveToolPartId(stableId);
                       if (
                         rawArgsFragment &&
-                        toolCallParts[delayedIndex].argsText === rawArgsFragment
+                        sameJsonDocument(
+                          toolCallParts[delayedIndex].argsText ?? "",
+                          rawArgsFragment,
+                        )
                       ) {
                         argsFragment = "";
                       }
@@ -7006,6 +7010,7 @@ export function createOpenAIStreamAdapter(
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
+                  const argsFragmentIsBlank = !argsFragment.trim();
                   const exactStableIndex = stablePartId
                     ? toolCallParts.findIndex(
                         (part) => part.toolCallId === stablePartId,
@@ -7014,7 +7019,7 @@ export function createOpenAIStreamAdapter(
                   const existingIndex =
                     exactStableIndex !== -1
                       ? exactStableIndex
-                      : stablePartId && !nameFragment && !argsFragment
+                      : stablePartId && !nameFragment && argsFragmentIsBlank
                         ? findOldestUnownedStreamedToolCallPartIndex(
                             toolCallParts,
                             idx,
@@ -7049,7 +7054,7 @@ export function createOpenAIStreamAdapter(
                     !exactStableMatch &&
                     matchedClosed &&
                     Boolean(nameFragment) &&
-                    !argsFragment
+                    argsFragmentIsBlank
                       ? undefined
                       : matchedPart;
 
@@ -7146,6 +7151,7 @@ export function createOpenAIStreamAdapter(
                     const prevName = existing.toolName ?? "";
                     const nextName = nameFragment || prevName;
                     const merged = (existing.argsText ?? "") + argsFragment;
+                    const mergedDocuments = splitTopLevelJsonDocuments(merged);
                     const parsedArgs = parseStreamedToolCallArgs(merged);
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
@@ -7174,7 +7180,14 @@ export function createOpenAIStreamAdapter(
                           ? { extra_content: prevExtra }
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
-                      _split_tail: undefined,
+                      _split_tail:
+                        (existing as PositionedToolCallPart)._split_tail &&
+                        !(
+                          mergedDocuments.complete.length === 1 &&
+                          !mergedDocuments.tail
+                        )
+                          ? true
+                          : undefined,
                     };
                     toolCallParts[existingIndex] = updated;
                   } else {

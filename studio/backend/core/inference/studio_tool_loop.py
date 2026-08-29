@@ -335,6 +335,13 @@ def _argument_fragment(value: Any) -> str:
     return ""
 
 
+def _same_json_document(left: str, right: str) -> bool:
+    try:
+        return json.loads(left) == json.loads(right)
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+        return False
+
+
 def _delta_text(content: Any) -> str:
     """Text of a content delta, whether it is a plain string or content parts.
 
@@ -590,10 +597,12 @@ class _Turn:
                         )
                     ):
                         continue
-                    if not args_fragment or candidate_function["arguments"] == args_fragment:
+                    if not args_fragment.strip() or _same_json_document(
+                        candidate_function["arguments"], args_fragment
+                    ):
                         key = candidate
                         adopted_stable_id = True
-                        repeated_snapshot = bool(args_fragment)
+                        repeated_snapshot = bool(args_fragment.strip())
                         break
                 open_id = self.by_index.get(key, {}).get("id")
                 if not adopted_stable_id and open_id and open_id != stable_id:
@@ -622,7 +631,7 @@ class _Turn:
                 and not current_tail
                 and not same_stable_call
                 and name_fragment
-                and not args_fragment
+                and not args_fragment.strip()
             ):
                 key = self._new_split_key(index)
                 current = self._new_call(key, index)
@@ -638,7 +647,10 @@ class _Turn:
             complete, tail = _split_top_level_json_documents(combined)
             segments = [*complete, *([tail] if tail else [])]
             if not repeated_snapshot and len(segments) > 1:
-                if not current["function"]["name"]:
+                if (
+                    not current["function"]["name"]
+                    and not (current_complete and not current_tail)
+                ):
                     current["function"]["name"] = name_fragment
                 current["function"]["arguments"] = segments[0]
                 self.incomplete_split_keys.discard(key)
@@ -700,8 +712,6 @@ class _Turn:
             (None, call) for call in self.healed
         ]
         for position, (key, call) in enumerate(ordered_calls):
-            if key in self.incomplete_split_keys:
-                continue
             fallback_id = _mint_streamed_tool_call_id(streamed)
             normalized = _normalized_call(call, fallback_id = fallback_id)
             if normalized is None:
@@ -710,6 +720,8 @@ class _Turn:
             if stream_id in streamed:
                 stream_id = _mint_streamed_tool_call_id(streamed)
             streamed.add(stream_id)
+            if key in self.incomplete_split_keys:
+                continue
             if stream_id != normalized["id"]:
                 normalized["stream_id"] = stream_id
             if normalized["id"] in seen:
