@@ -73,3 +73,14 @@ test("a backend that does not send the field is treated as applicable", async ()
   const settings = await loadModelMemorySettings({ force: true });
   assert.equal(settings.mlockApplicable, true);
 });
+
+test("a non-governed runner does not inherit the GPU-offload reason", async () => {
+  nextBody = {
+    ...BASE,
+    mlock_applicable: false,
+    mlock_skip_reason: "ungoverned",
+  };
+  const settings = await loadModelMemorySettings({ force: true });
+  assert.equal(settings.mlockApplicable, false);
+  assert.equal(settings.mlockSkipReason, "ungoverned");
+});

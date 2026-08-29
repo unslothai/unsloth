@@ -22,6 +22,7 @@ export type ModelMemorySettings = {
    * True with nothing loaded.
    */
   mlockApplicable: boolean;
+  mlockSkipReason?: "full_gpu_offload" | "ungoverned" | null;
   /** A model is loaded whose --mlock state differs from the saved one. */
   reloadRequired: boolean;
   /** Soft RLIMIT_MEMLOCK when finite; null means unlimited or N/A. */
@@ -41,6 +42,8 @@ type ApiModelMemorySettings = {
   mlock_active: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlock_applicable?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlock_skip_reason?: "full_gpu_offload" | "ungoverned" | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   reload_required: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -74,6 +77,9 @@ function fromApi(settings: ApiModelMemorySettings): ModelMemorySettings {
     // Optional on the wire so a frontend newer than its backend does not start
     // claiming every load has nothing to lock.
     mlockApplicable: settings.mlock_applicable ?? true,
+    mlockSkipReason:
+      settings.mlock_skip_reason ??
+      (settings.mlock_applicable === false ? "full_gpu_offload" : null),
     reloadRequired: settings.reload_required,
     memlockLimitBytes: settings.memlock_limit_bytes,
   };

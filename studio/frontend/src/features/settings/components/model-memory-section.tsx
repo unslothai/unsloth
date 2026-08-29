@@ -150,7 +150,7 @@ export function ModelMemorySection() {
   // shown when no-reserve is the only enabled setting or an explicit lock is
   // active, since either case would make this explanation false.
   const mlockNotApplicable =
-    settings?.mlockApplicable === false &&
+    settings?.mlockSkipReason === "full_gpu_offload" &&
     settings.keepResident === true &&
     settings.noRamReserve === false &&
     settings.mlockActive === false;

@@ -1568,14 +1568,26 @@ class TestMlockApplicable:
         _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
         assert rs._model_memory_response().mlock_applicable is True
 
-    def test_a_diffusion_runner_is_applicable(self, monkeypatch):
-        """state None is a runner this policy does not govern. Its placement
-        cannot contradict the settings, so there is nothing to explain."""
+    def test_a_diffusion_runner_reports_ungoverned(self, monkeypatch):
         import routes.settings as rs
 
         backend = _fake_backend(is_active = True, is_loaded = True, _memory_state = None)
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
-        assert rs._model_memory_response().mlock_applicable is True
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is False
+        assert body.mlock_skip_reason == "ungoverned"
+
+    def test_a_discrete_offload_reports_its_reason(self, monkeypatch):
+        import routes.settings as rs
+
+        backend = _fake_backend(
+            is_active = True,
+            is_loaded = True,
+            _memory_state = (False, False),
+            _memory_mlock_applicable = False,
+        )
+        _install_backend(monkeypatch, backend, keep = True, no_res = False)
+        assert rs._model_memory_response().mlock_skip_reason == "full_gpu_offload"
 
 
 class TestModelMemoryResponseSnapshot:

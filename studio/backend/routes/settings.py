@@ -585,6 +585,9 @@ class ModelMemoryResponse(BaseModel):
     # is on, no warning, and no effect. True with nothing loaded, matching
     # mlock_active's convention of reporting the intent until a launch exists.
     mlock_applicable: bool = True
+    # Lets the UI distinguish a full GPU offload from a runner that does not use
+    # llama.cpp memory controls. Optional/defaulted for mixed-version clients.
+    mlock_skip_reason: Optional[Literal["full_gpu_offload", "ungoverned"]] = None
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns
     # that residency will not fully pin a model larger than this. None means
@@ -887,19 +890,29 @@ def _model_memory_mlock_active(want_mlock: bool, placement = None) -> bool:
 def _model_memory_mlock_applicable(placement = None) -> bool:
     """Whether the running launch has anything for page-locking to act on.
 
-    False only for a launch that put every weight on a discrete GPU, which is
-    exactly when the policy skips the lock deliberately. With nothing running
-    there is no launch to describe, so this reports True and the UI says nothing
-    -- same convention as _model_memory_mlock_active. A runner this policy does
-    not govern (state None, e.g. the diffusion runner) also reports True: its
-    placement cannot contradict the settings, so there is nothing to explain.
+    False when the launch has no host weights to lock or does not use llama.cpp
+    memory controls. With nothing running there is no launch to describe, so
+    this reports True, matching _model_memory_mlock_active.
     """
     if placement is None:
         placement = _active_launch_placement()
     state, _policy_active, applicable = placement
-    if state is _NO_LAUNCH or state is None:
+    if state is _NO_LAUNCH:
         return True
+    if state is None:
+        return False
     return applicable
+
+
+def _model_memory_mlock_skip_reason(placement = None):
+    if placement is None:
+        placement = _active_launch_placement()
+    state, _policy_active, applicable = placement
+    if state is None:
+        return "ungoverned"
+    if state is not _NO_LAUNCH and not applicable:
+        return "full_gpu_offload"
+    return None
 
 
 def _model_memory_response() -> ModelMemoryResponse:
@@ -914,6 +927,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
         mlock_applicable = _model_memory_mlock_applicable(placement),
+        mlock_skip_reason = _model_memory_mlock_skip_reason(placement),
         reload_required = _model_memory_reload_required(
             placement,
             (keep_resident, no_ram_reserve),
