@@ -2174,6 +2174,68 @@ def list_chat_threads(
         conn.close()
 
 
+def list_chat_thread_sidebar_summaries(
+    model_type: str | None = None,
+    pair_id: str | None = None,
+    project_id: str | None = None,
+    include_archived: bool = True,
+) -> list[dict]:
+    clauses = []
+    values: list[object] = []
+    if model_type is not None:
+        clauses.append("t.model_type = ?")
+        values.append(model_type)
+    if pair_id is not None:
+        clauses.append("t.pair_id = ?")
+        values.append(pair_id)
+    if project_id is not None:
+        clauses.append("t.project_id = ?")
+        values.append(project_id)
+    if not include_archived:
+        clauses.append("t.archived = 0")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT t.*,
+                   EXISTS(
+                       SELECT 1 FROM chat_messages m WHERE m.thread_id = t.id
+                   ) AS sidebar_has_messages,
+                   EXISTS(
+                       SELECT 1 FROM chat_messages m
+                       WHERE m.thread_id = t.id AND m.role = 'assistant'
+                   ) AS sidebar_has_assistant,
+                   (
+                       SELECT m.metadata_json FROM chat_messages m
+                       WHERE m.thread_id = t.id AND m.role = 'assistant'
+                       ORDER BY m.created_at DESC, m.id DESC
+                       LIMIT 1
+                   ) AS sidebar_last_assistant_metadata_json
+            FROM chat_threads t
+            {where}
+            ORDER BY COALESCE(t.updated_at, t.created_at) DESC, t.created_at DESC
+            """,
+            values,
+        ).fetchall()
+        summaries = []
+        for row in rows:
+            data = dict(row)
+            thread = _chat_thread_from_row(row, include_settings = False)
+            metadata = _json_loads(data.get("sidebar_last_assistant_metadata_json"), None)
+            thread.update(
+                {
+                    "hasMessages": bool(data["sidebar_has_messages"]),
+                    "hasAssistant": bool(data["sidebar_has_assistant"]),
+                    "lastAssistantMetadata": metadata if isinstance(metadata, dict) else None,
+                }
+            )
+            summaries.append(thread)
+        return summaries
+    finally:
+        conn.close()
+
+
 def build_chat_history_export() -> tuple[list[dict], list[dict], list[dict]]:
     """Read projects, threads, and messages from one SQLite snapshot."""
     conn = get_connection()

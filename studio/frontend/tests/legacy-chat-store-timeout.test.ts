@@ -4,8 +4,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ThreadRecord } from "../src/features/chat/types";
+import type {
+  MessageRecord,
+  ThreadRecord,
+  ThreadSidebarSummaryRecord,
+} from "../src/features/chat/types";
+import {
+  selectSidebarLastRequestUsage,
+  selectSidebarLastRequestUsageFromMetadata,
+} from "../src/features/chat/lib/sidebar-last-request-usage.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+type SidebarThread = ThreadRecord & {
+  sidebarLastRequestUsage?: { totalTokens: number };
+};
 
 type Storage = {
   buildStoredChatExport: () => Promise<{
@@ -16,6 +28,8 @@ type Storage = {
   clearStoredChats: () => Promise<{ backend: string; legacy: string }>;
   deleteStoredChatThreads: (ids: string[]) => Promise<string[]>;
   listStoredChatThreads: () => Promise<ThreadRecord[]>;
+  listStoredChatThreadsWithMessages: () => Promise<SidebarThread[]>;
+  listStoredChatThreadsWithSidebarUsage: () => Promise<SidebarThread[]>;
 };
 
 const thread = (id: string): ThreadRecord => ({
@@ -42,6 +56,8 @@ function loadStorage(options: {
   messages?: unknown;
   threads: unknown;
   transaction?: (...args: unknown[]) => Promise<unknown>;
+  listMessages?: (threadId: string) => Promise<MessageRecord[]>;
+  listServerSummaries?: () => Promise<ThreadSidebarSummaryRecord[]>;
   listServerThreads: () => Promise<ThreadRecord[]>;
 }): Storage {
   return loadWithStubs<Storage>(
@@ -58,6 +74,15 @@ function loadStorage(options: {
           sandboxesKept: [],
         }),
         deleteChatThreads: async () => [],
+        getChatThread: async (threadId: string) =>
+          (await options.listServerThreads()).find((row) => row.id === threadId) ??
+          null,
+        listChatMessages: options.listMessages ?? (async () => []),
+        listChatThreadSidebarSummaries:
+          options.listServerSummaries ??
+          (async () => {
+            throw new Error("summary endpoint unavailable");
+          }),
         listChatThreads: options.listServerThreads,
         notifyChatHistoryUpdated: () => {},
       },
@@ -70,7 +95,8 @@ function loadStorage(options: {
         },
       },
       "../lib/sidebar-last-request-usage": {
-        selectSidebarLastRequestUsage: () => null,
+        selectSidebarLastRequestUsage,
+        selectSidebarLastRequestUsageFromMetadata,
       },
       "./chat-thread-tombstones": {
         isChatThreadDeleted: () => false,
@@ -141,6 +167,86 @@ test("readable legacy chats remain available when the server fails", async () =>
   });
 
   assert.deepEqual(await storage.listStoredChatThreads(), [legacy]);
+});
+
+test("sidebar summaries keep empty chats without loading message bodies", async () => {
+  let messageReads = 0;
+  const empty = {
+    ...thread("empty"),
+    hasMessages: false,
+    hasAssistant: false,
+  } satisfies ThreadSidebarSummaryRecord;
+  const used = {
+    ...thread("used"),
+    hasMessages: true,
+    hasAssistant: true,
+    lastAssistantMetadata: {
+      contextUsage: {
+        promptTokens: 10,
+        completionTokens: 2,
+        totalTokens: 12,
+        cachedTokens: 0,
+      },
+    },
+  } satisfies ThreadSidebarSummaryRecord;
+  const storage = loadStorage({
+    threads: { toCollection: () => ({ toArray: async () => [] }) },
+    messages: {
+      where: () => ({ equals: () => ({ toArray: async () => [] }) }),
+    },
+    listMessages: async () => {
+      messageReads += 1;
+      return [];
+    },
+    listServerSummaries: async () => [empty, used],
+    listServerThreads: async () => [empty, used],
+  });
+
+  const all = await storage.listStoredChatThreadsWithSidebarUsage();
+  assert.deepEqual(
+    all.map((row) => [row.id, row.sidebarLastRequestUsage]),
+    [
+      ["empty", undefined],
+      ["used", { totalTokens: 12 }],
+    ],
+  );
+  assert.deepEqual(
+    (await storage.listStoredChatThreadsWithMessages()).map((row) => row.id),
+    ["used"],
+  );
+  assert.equal(messageReads, 0);
+});
+
+test("sidebar fallback derives usage from the newest loaded assistant", async () => {
+  const saved = thread("saved");
+  const assistant: MessageRecord = {
+    id: "assistant",
+    threadId: "saved",
+    role: "assistant",
+    content: [],
+    metadata: {
+      contextUsage: {
+        promptTokens: 20,
+        completionTokens: 5,
+        totalTokens: 25,
+      },
+    },
+    createdAt: 2,
+  };
+  const storage = loadStorage({
+    threads: { toCollection: () => ({ toArray: async () => [] }) },
+    messages: {
+      where: () => ({ equals: () => ({ toArray: async () => [] }) }),
+    },
+    listMessages: async () => [assistant],
+    listServerSummaries: async () => {
+      throw new Error("summary endpoint unavailable");
+    },
+    listServerThreads: async () => [saved],
+  });
+
+  const [row] = await storage.listStoredChatThreadsWithSidebarUsage();
+  assert.deepEqual(row.sidebarLastRequestUsage, { totalTokens: 25 });
 });
 
 test("legacy maintenance operations settle when the store stalls", async () => {

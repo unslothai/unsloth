@@ -25,9 +25,9 @@ import type {
   ModelType,
   ProjectRecord,
   ThreadRecord,
+  ThreadSidebarSummaryRecord,
 } from "../types";
 import type {
-  ApiMonitorEntry,
   ApiMonitorResponse,
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -746,14 +746,14 @@ export async function removeScanFolder(id: number): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
-export async function listChatThreads(
-  args: {
-    modelType?: ModelType;
-    pairId?: string;
-    projectId?: string | null;
-    includeArchived?: boolean;
-  } = {},
-): Promise<ThreadRecord[]> {
+type ChatThreadListArgs = {
+  modelType?: ModelType;
+  pairId?: string;
+  projectId?: string | null;
+  includeArchived?: boolean;
+};
+
+function chatThreadListQuery(args: ChatThreadListArgs): string {
   const params = new URLSearchParams();
   if (args.modelType) params.set("model_type", args.modelType);
   if (args.pairId) params.set("pair_id", args.pairId);
@@ -761,10 +761,29 @@ export async function listChatThreads(
   if (args.includeArchived !== undefined) {
     params.set("include_archived", String(args.includeArchived));
   }
-  const qs = params.toString();
+  return params.toString();
+}
+
+export async function listChatThreads(
+  args: ChatThreadListArgs = {},
+): Promise<ThreadRecord[]> {
+  const qs = chatThreadListQuery(args);
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
   // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
+  return Array.isArray(data.threads) ? data.threads : [];
+}
+
+export async function listChatThreadSidebarSummaries(
+  args: ChatThreadListArgs = {},
+): Promise<ThreadSidebarSummaryRecord[]> {
+  const qs = chatThreadListQuery(args);
+  const response = await authFetch(
+    `/api/chat/threads/sidebar-summaries${qs ? `?${qs}` : ""}`,
+  );
+  const data = await parseJsonOrThrow<{
+    threads: ThreadSidebarSummaryRecord[];
+  }>(response);
   return Array.isArray(data.threads) ? data.threads : [];
 }
 

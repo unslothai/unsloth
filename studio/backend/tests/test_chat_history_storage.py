@@ -237,6 +237,59 @@ def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
     assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-old", "thread-new"]
 
 
+def test_sidebar_summaries_read_only_the_newest_assistant_metadata(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("empty"))
+    studio_db.upsert_chat_thread(_thread("chat"))
+    studio_db.upsert_chat_message(_message("user-1", 10, "hi", thread_id = "chat"))
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-old",
+            "threadId": "chat",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "old"}],
+            "metadata": {"contextUsage": {"totalTokens": 10}},
+            "createdAt": 11,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-new",
+            "threadId": "chat",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "new"}],
+            "metadata": {"contextUsage": {"totalTokens": 20}},
+            "createdAt": 12,
+        }
+    )
+
+    summaries = {row["id"]: row for row in studio_db.list_chat_thread_sidebar_summaries()}
+    assert summaries["empty"]["hasMessages"] is False
+    assert summaries["empty"]["hasAssistant"] is False
+    assert summaries["empty"]["lastAssistantMetadata"] is None
+    assert summaries["chat"]["hasMessages"] is True
+    assert summaries["chat"]["hasAssistant"] is True
+    assert summaries["chat"]["lastAssistantMetadata"] == {
+        "contextUsage": {"totalTokens": 20}
+    }
+
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-malformed",
+            "threadId": "chat",
+            "role": "assistant",
+            "content": [],
+            "metadata": ["invalid"],
+            "createdAt": 13,
+        }
+    )
+    malformed = {
+        row["id"]: row for row in studio_db.list_chat_thread_sidebar_summaries()
+    }["chat"]
+    assert malformed["hasAssistant"] is True
+    assert malformed["lastAssistantMetadata"] is None
+
+
 def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     db_path = studio_db_path()

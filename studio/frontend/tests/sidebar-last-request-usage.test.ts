@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   selectSidebarLastRequestUsage,
+  selectSidebarLastRequestUsageFromMetadata,
 } from "../src/features/chat/lib/sidebar-last-request-usage.ts";
 import type { MessageRecord } from "../src/features/chat/types.ts";
 
@@ -75,6 +76,19 @@ test("keeps valid zeroes and does not require optional cache counters", () => {
   );
 });
 
+test("validates a sidebar summary with the same rules as a saved message", () => {
+  assert.deepEqual(
+    selectSidebarLastRequestUsageFromMetadata({ contextUsage: validUsage }),
+    { totalTokens: 999 },
+  );
+  assert.equal(
+    selectSidebarLastRequestUsageFromMetadata({
+      contextUsage: { promptTokens: 1, totalTokens: 2 },
+    }),
+    undefined,
+  );
+});
+
 test("carries usage only to single sidebar rows, never compare rows", async () => {
   const source = await readFile(
     new URL(
@@ -108,7 +122,8 @@ test("the root-mounted sidebar loads and renders the last-request total", async 
     source.indexOf("\n  return (\n    <Sidebar", rowStart),
   );
 
-  assert.match(loader, /requireMessages: true/);
+  assert.match(loader, /requireMessages: false/);
+  assert.match(loader, /includeLastRequestUsage: true/);
   assert.match(row, /data-testid="sidebar-last-request-usage"/);
   assert.match(row, /item\.lastRequestUsage\.totalTokens/);
   assert.match(row, /formatTokenCountFull/);

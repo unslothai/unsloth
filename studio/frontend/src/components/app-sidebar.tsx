@@ -984,7 +984,8 @@ export function AppSidebar() {
     loaded: chatItemsLoaded,
   } = useChatSidebarItems({
     enabled: !isStudioRoute,
-    requireMessages: true,
+    requireMessages: false,
+    includeLastRequestUsage: true,
   });
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);

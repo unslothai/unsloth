@@ -73,6 +73,12 @@ export interface ThreadRecord {
     | null;
 }
 
+export interface ThreadSidebarSummaryRecord extends ThreadRecord {
+  hasMessages: boolean;
+  hasAssistant: boolean;
+  lastAssistantMetadata?: Record<string, unknown> | null;
+}
+
 export interface MessageRecord {
   id: string;
   threadId: string;

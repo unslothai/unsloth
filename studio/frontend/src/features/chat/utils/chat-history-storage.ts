@@ -14,6 +14,7 @@ import {
   listChatImportLedger,
   listChatMessages,
   listChatProjects,
+  listChatThreadSidebarSummaries,
   listChatThreads,
   notifyChatHistoryUpdated,
   recordChatImportLedger,
@@ -31,9 +32,11 @@ import type {
   ModelType,
   ProjectRecord,
   ThreadRecord,
+  ThreadSidebarSummaryRecord,
 } from "../types";
 import {
   selectSidebarLastRequestUsage,
+  selectSidebarLastRequestUsageFromMetadata,
   type SidebarLastRequestUsage,
 } from "../lib/sidebar-last-request-usage";
 import {
@@ -814,18 +817,23 @@ export async function getStoredChatMessage(
   return matchingLegacyMessage;
 }
 
-export async function listStoredChatThreads(
+async function listStoredChatThreadsFrom(
+  loadBackendThreads: (args: ThreadListArgs) => Promise<ThreadRecord[]>,
   args: ThreadListArgs = {},
+  requireBackend = false,
 ): Promise<ThreadRecord[]> {
   const importGenerationBeforeRead = legacyChatImportGeneration;
   const [legacyThreads, backendResult] = await Promise.all([
     listLegacyThreads(args),
-    listChatThreads(args).then(
+    loadBackendThreads(args).then(
       (threads) => ({ threads }),
       (error: unknown) => ({ error }),
     ),
   ]);
-  if ("error" in backendResult && legacyThreads.length === 0) {
+  if (
+    "error" in backendResult &&
+    (requireBackend || legacyThreads.length === 0)
+  ) {
     throw backendResult.error;
   }
   let backendThreads =
@@ -836,7 +844,7 @@ export async function listStoredChatThreads(
     // already in flight rather than trusting the generation alone
     await Promise.allSettled([...pendingLegacyThreadImports]);
     if (legacyChatImportGeneration !== importGenerationBeforeRead) {
-      backendThreads = await listChatThreads(args).catch(() => backendThreads);
+      backendThreads = await loadBackendThreads(args).catch(() => backendThreads);
     }
   }
   const includeLegacyOnly =
@@ -857,42 +865,76 @@ export async function listStoredChatThreads(
     );
 }
 
+export function listStoredChatThreads(
+  args: ThreadListArgs = {},
+): Promise<ThreadRecord[]> {
+  return listStoredChatThreadsFrom(listChatThreads, args);
+}
+
 export type StoredChatThreadWithSidebarUsage = ThreadRecord & {
   sidebarLastRequestUsage?: SidebarLastRequestUsage;
 };
 
-export async function listStoredChatThreadsWithMessages(
+async function listStoredChatThreadsWithSidebarData(
   args: ThreadListArgs = {},
+  requireMessages: boolean,
 ): Promise<StoredChatThreadWithSidebarUsage[]> {
-  const threads = await listStoredChatThreads(args);
-  if (threads.length === 0) return [];
-  // One batched HTTP call instead of N. Per-thread legacy Dexie fallback
-  // only fires when the batch result is empty.
-  const threadIds = threads.map((t) => t.id);
-  let backendByThread: Map<string, MessageRecord[]>;
+  let threads: ThreadRecord[];
   try {
-    backendByThread = await batchListChatMessages(threadIds);
+    threads = await listStoredChatThreadsFrom(
+      listChatThreadSidebarSummaries,
+      args,
+      true,
+    );
   } catch {
-    backendByThread = new Map();
+    threads = await listStoredChatThreads(args);
   }
+  if (threads.length === 0) return [];
   const entries = await Promise.all(
     threads.map(async (thread) => {
-      const backendMessages = backendByThread.get(thread.id) ?? [];
-      if (backendMessages.length > 0) {
+      if ("hasMessages" in thread && "hasAssistant" in thread) {
+        const summary = thread as ThreadSidebarSummaryRecord;
         return {
           thread: {
             ...thread,
             sidebarLastRequestUsage:
-              selectSidebarLastRequestUsage(backendMessages),
+              summary.hasAssistant
+                ? selectSidebarLastRequestUsageFromMetadata(
+                    summary.lastAssistantMetadata,
+                  )
+                : undefined,
           },
-          hasContent: true,
+          hasContent: summary.hasMessages,
         };
       }
       const legacy = await listStoredChatMessages(thread.id).catch(() => null);
-      return { thread, hasContent: legacy === null || legacy.length > 0 };
+      return {
+        thread: {
+          ...thread,
+          sidebarLastRequestUsage:
+            legacy === null
+              ? undefined
+              : selectSidebarLastRequestUsage(legacy),
+        },
+        hasContent: legacy === null || legacy.length > 0,
+      };
     }),
   );
-  return entries.filter((e) => e.hasContent).map((e) => e.thread);
+  return entries
+    .filter((entry) => !requireMessages || entry.hasContent)
+    .map((entry) => entry.thread);
+}
+
+export function listStoredChatThreadsWithMessages(
+  args: ThreadListArgs = {},
+): Promise<StoredChatThreadWithSidebarUsage[]> {
+  return listStoredChatThreadsWithSidebarData(args, true);
+}
+
+export function listStoredChatThreadsWithSidebarUsage(
+  args: ThreadListArgs = {},
+): Promise<StoredChatThreadWithSidebarUsage[]> {
+  return listStoredChatThreadsWithSidebarData(args, false);
 }
 
 export async function listStoredChatProjects(

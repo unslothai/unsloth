@@ -24,8 +24,8 @@ function isValidOptionalCounter(value: unknown): boolean {
   return value === undefined || isFiniteNonNegativeNumber(value);
 }
 
-function readContextUsage(
-  metadata: MessageRecord["metadata"],
+export function selectSidebarLastRequestUsageFromMetadata(
+  metadata: MessageRecord["metadata"] | null,
 ): SidebarLastRequestUsage | undefined {
   const candidate = metadata?.contextUsage;
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
@@ -55,7 +55,9 @@ export function selectSidebarLastRequestUsage(
 ): SidebarLastRequestUsage | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message.role === "assistant") return readContextUsage(message.metadata);
+    if (message.role === "assistant") {
+      return selectSidebarLastRequestUsageFromMetadata(message.metadata);
+    }
   }
   return undefined;
 }

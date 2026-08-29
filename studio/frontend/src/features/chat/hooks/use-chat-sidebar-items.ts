@@ -14,6 +14,7 @@ import {
   isExpectedBackgroundChatStorageError,
   listStoredChatThreads,
   listStoredChatThreadsWithMessages,
+  listStoredChatThreadsWithSidebarUsage,
   type StoredChatThreadWithSidebarUsage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
@@ -107,11 +108,13 @@ export function useChatSidebarItems(options?: {
   projectId?: string | null;
   enabled?: boolean;
   requireMessages?: boolean;
+  includeLastRequestUsage?: boolean;
 }) {
   const [allThreads, setAllThreads] = useState<StoredChatThreadWithSidebarUsage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const enabled = options?.enabled ?? true;
   const requireMessages = options?.requireMessages ?? true;
+  const includeLastRequestUsage = options?.includeLastRequestUsage ?? false;
 
   useEffect(() => {
     if (!enabled) {
@@ -124,9 +127,11 @@ export function useChatSidebarItems(options?: {
 
     async function doLoad(seq: number) {
       try {
-        const listThreads = requireMessages
-          ? listStoredChatThreadsWithMessages
-          : listStoredChatThreads;
+        const listThreads = includeLastRequestUsage && !requireMessages
+          ? listStoredChatThreadsWithSidebarUsage
+          : requireMessages
+            ? listStoredChatThreadsWithMessages
+            : listStoredChatThreads;
         // includeArchived: archived threads are filtered out of Recents by
         // groupThreads, but the hook still needs them for archivedItems.
         const threads = await listThreads({
@@ -168,7 +173,7 @@ export function useChatSidebarItems(options?: {
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
     };
-  }, [enabled, options?.projectId, requireMessages]);
+  }, [enabled, includeLastRequestUsage, options?.projectId, requireMessages]);
 
   // Memoised for identity as much as for the work. These arrays are the root
   // of every derived sidebar list, so rebuilding them on each render leaves

@@ -59,6 +59,7 @@ from storage.studio_db import (
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
+    list_chat_thread_sidebar_summaries,
     list_chat_threads,
     sync_chat_messages,
     update_chat_project,
@@ -342,6 +343,16 @@ class ChatThreadListResponse(BaseModel):
     threads: list[ChatThread]
 
 
+class ChatThreadSidebarSummary(ChatThread):
+    hasMessages: bool
+    hasAssistant: bool
+    lastAssistantMetadata: Optional[dict[str, Any]] = None
+
+
+class ChatThreadSidebarSummaryResponse(BaseModel):
+    threads: list[ChatThreadSidebarSummary]
+
+
 class ChatProjectListResponse(BaseModel):
     projects: list[ChatProject]
 
@@ -582,6 +593,25 @@ def list_threads(
         include_archived = include_archived,
     )
     return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+
+
+@router.get("/threads/sidebar-summaries", response_model = ChatThreadSidebarSummaryResponse)
+def list_thread_sidebar_summaries(
+    model_type: Optional[str] = Query(None),
+    pair_id: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    include_archived: bool = Query(True),
+    current_subject: str = Depends(get_current_subject),
+):
+    threads = list_chat_thread_sidebar_summaries(
+        model_type = model_type,
+        pair_id = pair_id,
+        project_id = project_id,
+        include_archived = include_archived,
+    )
+    return ChatThreadSidebarSummaryResponse(
+        threads = [ChatThreadSidebarSummary(**thread) for thread in threads]
+    )
 
 
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
