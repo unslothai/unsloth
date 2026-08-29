@@ -3402,8 +3402,8 @@ def _spilled_decode_threads(
 
     A positive override follows the launched command's env, managed-flag, then
     pass-through precedence. Otherwise Studio leaves ``--threads`` unset (see
-    the note next to the flag), and llama.cpp
-    size its pool from ``common_cpu_get_num_math``, which counts physical cores
+    the note next to the flag), and llama.cpp sizes its pool from
+    ``common_cpu_get_num_math``, which counts physical cores
     and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
     hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
     host had twice the cores the child would ever use, and the generation

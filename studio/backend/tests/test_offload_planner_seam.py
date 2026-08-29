@@ -1741,6 +1741,8 @@ def test_thread_overrides_reach_the_cost_model(monkeypatch):
 def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
     import core.inference.llama_cpp as llama_mod
 
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
+
     class _FakePsutil:
         @staticmethod
         def cpu_count(logical = True):
@@ -1764,6 +1766,8 @@ def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
 
 def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     import core.inference.llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
 
     class _SmtHost:
         @staticmethod
