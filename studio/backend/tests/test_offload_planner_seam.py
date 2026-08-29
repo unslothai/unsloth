@@ -1829,9 +1829,7 @@ def test_inherited_linux_cpu_affinity_declines_spill_pricing(monkeypatch):
         lambda: SimpleNamespace(machine = "x86_64"),
         raising = False,
     )
-    monkeypatch.setattr(
-        llama_mod.os, "sched_getaffinity", lambda _pid: {0, 1}, raising = False
-    )
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: {0, 1}, raising = False)
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
     assert llama_mod._spilled_decode_threads() is None
 
@@ -2048,9 +2046,7 @@ def test_linux_hybrid_affinity_probe_failure_matches_physical_fallback(tmp_path,
         raise OSError("unavailable")
 
     monkeypatch.setattr(llama_mod.os, "sched_getaffinity", fail_affinity, raising = False)
-    monkeypatch.setattr(
-        llama_mod.os, "sched_setaffinity", lambda _pid, _cpus: None, raising = False
-    )
+    monkeypatch.setattr(llama_mod.os, "sched_setaffinity", lambda _pid, _cpus: None, raising = False)
     assert (
         llama_mod._linux_math_core_count(
             cpu_root,
