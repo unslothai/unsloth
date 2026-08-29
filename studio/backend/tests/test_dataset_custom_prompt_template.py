@@ -14,6 +14,9 @@ class _Tokenizer:
     chat_template = "{{ messages }}"
     eos_token = "</s>"
 
+    def apply_chat_template(self, conversation, **_kwargs):
+        return "\n".join(f"{turn['role']}: {turn['content']}" for turn in conversation)
+
 
 def _dataset_info(dataset):
     return {
@@ -78,6 +81,99 @@ def test_default_template_is_unchanged_when_parameter_is_omitted():
         "further context. Write a response that appropriately completes the request.\n\n"
         "### Instruction:\nWhat is 2+2?\n\n### Input:\n\n\n### Response:\n4"
     )
+
+
+@pytest.mark.parametrize("include_input", [True, False])
+def test_default_alpaca_path_preserves_rows_columns_and_text_values(include_input):
+    columns = {
+        "instruction": ["first {instruction}\n第二行", "second"],
+        "output": ["answer {output}", "done"],
+        "source_id": [10, 11],
+    }
+    if include_input:
+        columns["input"] = ["context", ""]
+    dataset = Dataset.from_dict(columns)
+
+    result = apply_chat_template_to_dataset(
+        _dataset_info(dataset),
+        _Tokenizer(),
+        batch_size = 2,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    assert len(result["dataset"]) == len(dataset)
+    assert result["dataset"].column_names == dataset.column_names + ["text"]
+    assert list(result["dataset"]["instruction"]) == list(dataset["instruction"])
+    assert list(result["dataset"]["output"]) == list(dataset["output"])
+    assert "first {instruction}\n第二行" in result["dataset"][0]["text"]
+    assert "answer {output}" in result["dataset"][0]["text"]
+    expected_input = "context" if include_input else ""
+    assert f"### Input:\n{expected_input}\n\n### Response:" in result["dataset"][0]["text"]
+
+
+def test_main_entry_point_keeps_default_alpaca_output():
+    dataset = _alpaca_dataset()
+
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen2ForCausalLM",
+        tokenizer = _Tokenizer(),
+        batch_size = 1,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    assert result["detected_format"] == "alpaca"
+    assert result["final_format"] == "alpaca"
+    assert len(result["dataset"]) == 1
+    assert result["dataset"].column_names == dataset.column_names + ["text"]
+    assert result["dataset"][0]["text"].endswith("### Response:\n4")
+
+
+def test_main_entry_point_keeps_raw_text_path_unchanged():
+    dataset = Dataset.from_dict({"body": ["raw one", "raw two"], "id": [1, 2]})
+
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen2ForCausalLM",
+        tokenizer = _Tokenizer(),
+        format_type = "raw",
+    )
+
+    assert result["success"] is True
+    assert result["final_format"] == "raw_text"
+    assert list(result["dataset"]["text"]) == ["raw one", "raw two"]
+    assert len(result["dataset"]) == 2
+
+
+def test_direct_chatml_path_is_unchanged_without_custom_template():
+    dataset = Dataset.from_dict(
+        {
+            "conversations": [
+                [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                ]
+            ],
+            "id": [7],
+        }
+    )
+    dataset_info = {
+        "dataset": dataset,
+        "detected_format": "chatml",
+        "final_format": "chatml_conversations",
+        "chat_column": "conversations",
+        "is_standardized": True,
+        "warnings": [],
+    }
+
+    result = apply_chat_template_to_dataset(dataset_info, _Tokenizer(), num_proc = 1)
+
+    assert result["success"] is True
+    assert result["dataset"][0]["text"] == "user: hello\nassistant: hi"
+    assert result["dataset"].column_names == ["conversations", "id", "text"]
+    assert len(result["dataset"]) == 1
 
 
 @pytest.mark.parametrize(
