@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 import os
 from pathlib import Path
 
@@ -168,3 +169,77 @@ def test_symlinked_variant_stays_grouped_and_loadable(tmp_path):
 
     assert [Path(row.path) for row in rows] == [model]
     assert Path(detect_gguf_model(str(model), model_root = str(root))).samefile(target)
+
+
+def test_loose_gguf_models_stay_separate(tmp_path):
+    root = tmp_path / "root"
+    alpha = _write_gguf(root / "alpha-Q4_K_M.gguf")
+    beta = _write_gguf(root / "beta-Q8_0.gguf")
+
+    assert {Path(row.path) for row in _custom_rows(root)} == {alpha, beta}
+
+
+def test_direct_custom_model_root_keeps_loose_variants(tmp_path):
+    root = tmp_path / "direct-model-root"
+    q4 = _write_gguf(root / "model-Q4_K_M.gguf")
+    q8 = _write_gguf(root / "model-Q8_0.gguf")
+
+    assert {Path(row.path) for row in _custom_rows(root)} == {q4, q8}
+
+
+def test_lmstudio_publisher_model_layout_keeps_its_model_id(tmp_path):
+    root = tmp_path / "lmstudio"
+    model = root / "publisher" / "model"
+    _write_gguf(model / "model-Q4_K_M.gguf")
+    _write_gguf(model / "model-Q8_0.gguf")
+
+    rows = local_inventory._scan_custom_folder(root)
+
+    assert [(Path(row.path), row.model_id) for row in rows] == [(model, "publisher/model")]
+
+
+def test_mixed_gguf_and_safetensors_keep_one_row_per_format(tmp_path):
+    root = tmp_path / "root"
+    model = root / "hybrid"
+    _write_gguf(model / "hybrid-Q4_K_M.gguf")
+    _write_gguf(model / "model.safetensors")
+    (model / "config.json").write_text(json.dumps({"model_type": "llama"}))
+
+    rows = _custom_rows(root)
+
+    assert {(Path(row.path), row.model_format) for row in rows} == {
+        (model, "gguf"),
+        (model, "safetensors"),
+    }
+
+
+def test_incomplete_custom_models_stay_hidden(tmp_path):
+    root = tmp_path / "root"
+    partial = root / "partial"
+    partial.mkdir(parents = True)
+    (partial / "config.json").write_text("{}")
+    _write_gguf(partial / "model.gguf.incomplete")
+    complete = _write_gguf(root / "complete.gguf")
+
+    assert [Path(row.path) for row in _custom_rows(root)] == [complete]
+
+
+def test_mixed_case_gguf_suffixes_stay_grouped(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-Q4_K_M.GGUF")
+    _write_gguf(model / "model-Q8_0.GguF")
+
+    assert [Path(row.path) for row in _custom_rows(root)] == [model]
+
+
+def test_symlinked_model_directory_stays_grouped(tmp_path):
+    real_model = tmp_path / "outside" / "model"
+    _write_gguf(real_model / "model-Q4_K_M.gguf")
+    _write_gguf(real_model / "model-Q8_0.gguf")
+    root = tmp_path / "root"
+    root.mkdir()
+    alias = root / "model-alias"
+    _symlink_dir(alias, real_model)
+
+    assert [Path(row.path) for row in _custom_rows(root)] == [alias]
