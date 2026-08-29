@@ -833,7 +833,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
         const loraThread = threads.find((t) => t.modelType === "lora");
         setBaseThreadId(baseThread?.id);
         setLoraThreadId(loraThread?.id);
-        setPairLoraModelId(loraThread?.modelId ?? baseThread?.modelId);
+        setPairLoraModelId(
+          loraThread?.modelId?.trim() || baseThread?.modelId?.trim() || undefined,
+        );
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {

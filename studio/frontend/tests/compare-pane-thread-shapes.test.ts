@@ -205,5 +205,6 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   assert.ok(chatPageSource.includes("s.loraInventorySettled ? false : null"));
   assert.ok(LORA_PANE_SOURCE.includes("sendUnavailableReason"));
   assert.ok(LORA_PANE_SOURCE.includes("pairLoraModelId !== checkpoint"));
+  assert.ok(LORA_PANE_SOURCE.includes("loraThread?.modelId?.trim() ||"));
   assert.ok(chatPageSource.includes("  return stored.variant;"));
 });
