@@ -208,15 +208,12 @@ def test_workspace_health_does_not_probe_or_touch_the_folder(tmp_path, monkeypat
 
     monkeypatch.setattr(studio_db, "_probe_folder_writable", deny_probe)
 
-    assert (
-        studio_db._ensure_folder_workspace(
-            str(folder),
-            str(metadata.st_dev),
-            str(metadata.st_ino),
-            str(metadata.st_ctime_ns),
-        )
-        == str(folder.resolve())
-    )
+    assert studio_db._ensure_folder_workspace(
+        str(folder),
+        str(metadata.st_dev),
+        str(metadata.st_ino),
+        str(metadata.st_ctime_ns),
+    ) == str(folder.resolve())
     assert calls == []
 
 

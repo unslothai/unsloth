@@ -465,10 +465,14 @@ def _probe_folder_writable(
     if os.name == "nt" or not all(
         operation in os.supports_dir_fd for operation in (os.open, os.unlink)
     ):
-        raise PermissionError("Selected project folder cannot be verified securely on this platform")
+        raise PermissionError(
+            "Selected project folder cannot be verified securely on this platform"
+        )
     directory_flags = os.O_RDONLY
     if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
-        raise PermissionError("Selected project folder cannot be verified securely on this platform")
+        raise PermissionError(
+            "Selected project folder cannot be verified securely on this platform"
+        )
     directory_flags |= os.O_DIRECTORY | os.O_NOFOLLOW
     directory_fd = os.open(resolved, directory_flags)
     try:
