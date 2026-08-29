@@ -1659,7 +1659,7 @@ export const en = {
         desktopCheckingDescription: "This usually takes a few seconds.",
         desktopAvailable: "Desktop app {version} is available",
         desktopAvailableDescription:
-          "Update now and the desktop app will restart when it finishes.",
+          "Update now to prepare it in the background. You keep working and restart when it is ready.",
         desktopExternalServer:
           "Run `unsloth studio update` from the terminal that started your server.",
         desktopManualInstall:
@@ -1669,11 +1669,20 @@ export const en = {
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
           "Unsloth will continue checking automatically.",
+        desktopPreparingDescription:
+          "The update is being prepared in the background. You can keep working.",
+        desktopReadyToRestartDescription:
+          "Everything is ready. Restart to finish installing the update.",
+        desktopReadyToInstallDescription:
+          "The app update is downloaded. Finish updating the backend to install it.",
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
         checking: "Checking...",
+        preparing: "Preparing...",
         updateNow: "Update now",
+        restartToUpdate: "Restart to update",
+        finishUpdate: "Finish update",
         openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",

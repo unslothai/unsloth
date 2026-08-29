@@ -73,6 +73,8 @@ _DISPATCH_DRAIN_TIMEOUT = 5.0
 _AUDIO_GENERATION_TIMEOUT = 900.0
 _AUDIO_GENERATION_BASE_TOKENS = 2048
 AUDIO_GENERATION_MAX_TOKENS = 8192
+MOSS_TTS_MAX_FRAMES = 32768
+MINIMAX_MUSIC_MAX_FRAMES = 9000
 _AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
 # Before audio_started there is nobody to receive the cancel, and a prefill pass (a 3B TTS
 # model on CPU, or OuteTTS's per-token Python repetition penalty) routinely outlasts the
@@ -84,7 +86,11 @@ _AUDIO_CANCEL_TEARDOWN_TIMEOUT = 30.0
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
-def _audio_generation_timeout(max_new_tokens: int, base: Optional[float] = None) -> float:
+def _audio_generation_timeout(
+    max_new_tokens: int,
+    base: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> float:
     """Scale a floor by the requested token count.
 
     ``base`` differs per backend by an order of magnitude: the Transformers subprocess
@@ -97,7 +103,9 @@ def _audio_generation_timeout(max_new_tokens: int, base: Optional[float] = None)
     """
     if base is None:
         base = _AUDIO_GENERATION_TIMEOUT
-    max_new_tokens = min(AUDIO_GENERATION_MAX_TOKENS, max(1, int(max_new_tokens)))
+    if max_tokens is None:
+        max_tokens = AUDIO_GENERATION_MAX_TOKENS
+    max_new_tokens = min(max(1, int(max_tokens)), max(1, int(max_new_tokens)))
     token_scale = max(1.0, max_new_tokens / _AUDIO_GENERATION_BASE_TOKENS)
     return base * token_scale
 
@@ -247,6 +255,10 @@ class InferenceOrchestrator:
         # lane for the whole TTS request so its shared cancel event cannot hit a sibling.
         # Mutated under _dispatcher_lifecycle_lock while holding _gen_lock.
         self._exclusive_tts_pending = False
+        # A live VRAM probe is another exclusive worker command.  Compare-mode
+        # requests bypass _gen_lock, so reserve their admission lane while the
+        # parent asks the idle worker for allocator-owned bytes.
+        self._exclusive_vram_probe_pending = False
 
         # Dispatcher state for compare mode (adapter-controlled requests):
         # bypass _gen_lock, send commands directly, read from per-request
@@ -466,6 +478,82 @@ class InferenceOrchestrator:
         proc = self._proc
         return proc is not None and proc.is_alive()
 
+    def post_handoff_gpu_availability_gb(
+        self,
+    ) -> Optional[tuple[dict[int, float], dict[int, float], dict[int, float]]]:
+        """Atomically snapshot live free, total and disposable-worker VRAM.
+
+        The worker is queried only while idle.  This avoids retaining a load-time
+        allocator value after reset_generation_state() releases cache, and it keeps
+        compare-mode's queue reader from consuming the probe response.  The send
+        lock spans the system and worker reads, so a reset cannot make the same
+        cache bytes appear in both values.
+        """
+        proc = self._proc
+        active = self.active_model_name
+        if proc is None or not proc.is_alive() or not active:
+            return None
+
+        with self._dispatcher_lifecycle_lock:
+            if self._exclusive_tts_pending or getattr(self, "_exclusive_vram_probe_pending", False):
+                return None
+            self._exclusive_vram_probe_pending = True
+        acquired = False
+        try:
+            if not self._wait_dispatcher_idle():
+                return None
+            acquired = self._gen_lock.acquire(timeout = 5.0)
+            if not acquired:
+                return None
+            with self._active_cancel_lock:
+                if self._active_cancel_events:
+                    return None
+            if self._proc is not proc or not proc.is_alive() or self.active_model_name != active:
+                return None
+            request_id = str(uuid.uuid4())
+            with self._send_order_lock:
+                from utils.hardware import get_visible_gpu_utilization
+
+                live_free: dict[int, float] = {}
+                total_by_index: dict[int, float] = {}
+                for device in get_visible_gpu_utilization().get("devices", []):
+                    try:
+                        index = int(device["index"])
+                        total = float(device["vram_total_gb"])
+                        used = float(device["vram_used_gb"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    live_free[index] = max(total - used, 0.0)
+                    total_by_index[index] = total
+                if not live_free:
+                    return None
+                self._send_cmd({"type": "gpu_memory", "request_id": request_id})
+                response = self._wait_response(
+                    "gpu_memory",
+                    timeout = 5.0,
+                    expected_request_id = request_id,
+                )
+            if self._proc is not proc or not proc.is_alive() or self.active_model_name != active:
+                return None
+            reported = response.get("reclaimable_gpu_gb")
+            if not isinstance(reported, dict):
+                return None
+            try:
+                reclaimable = {
+                    int(index): max(float(value), 0.0) for index, value in reported.items()
+                }
+                return live_free, total_by_index, reclaimable
+            except (TypeError, ValueError):
+                return None
+        except Exception as exc:
+            logger.warning("Could not query inference worker GPU memory: %s", exc)
+            return None
+        finally:
+            if acquired:
+                self._gen_lock.release()
+            with self._dispatcher_lifecycle_lock:
+                self._exclusive_vram_probe_pending = False
+
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         with self._subprocess_shutdown_lock:
             return self._shutdown_subprocess_locked(timeout)
@@ -543,6 +631,81 @@ class InferenceOrchestrator:
         self._reset_worker_scoped_state()
         logger.info("Inference subprocess shut down")
         return True
+
+    @staticmethod
+    def _wait_for_worker_vram_settle(
+        since_kill: float,
+        *,
+        expected_free_gb: Optional[dict[int, float]] = None,
+        max_wait: float = 2.0,
+        interval: float = 0.25,
+        tolerance_mib: int = 256,
+    ) -> bool:
+        """Poll cross-platform live telemetry until dead-worker VRAM stabilises."""
+        from utils.hardware import get_visible_gpu_utilization
+
+        if since_kill <= 0:
+            return not expected_free_gb
+        deadline = time.monotonic() + max(max_wait, 0.0)
+
+        def _probe() -> Optional[dict[int, int]]:
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                result: dict[int, int] = {}
+                for device in get_visible_gpu_utilization().get("devices", []):
+                    index = int(device["index"])
+                    total = float(device["vram_total_gb"])
+                    used = float(device["vram_used_gb"])
+                    result[index] = max(int((total - used) * 1024), 0)
+                return result or None
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+
+        previous = _probe()
+        if not previous:
+            return not expected_free_gb
+        expected_mib = {
+            int(index): max(int(float(value) * 1024), 0)
+            for index, value in (expected_free_gb or {}).items()
+        }
+
+        def _threshold_reached(sample: dict[int, int]) -> bool:
+            return bool(expected_mib) and all(
+                sample.get(index, -1) >= required for index, required in expected_mib.items()
+            )
+
+        if _threshold_reached(previous):
+            return True
+        observed_reclaim = False
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(interval, remaining))
+            current = _probe()
+            if not current or current.keys() != previous.keys():
+                return not expected_free_gb
+            if any(
+                current[index] - previous[index]
+                >= max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
+                for index in current
+            ):
+                observed_reclaim = True
+            if _threshold_reached(current):
+                return True
+            stable = all(
+                abs(current[index] - previous[index])
+                < max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
+                for index in current
+            )
+            # Two unchanged low samples can precede delayed driver reclaim.
+            # Stability is meaningful only after an upward release was observed;
+            # otherwise consume the full bounded window.
+            if stable and observed_reclaim and not expected_mib:
+                return True
+            previous = current
+        return not expected_free_gb
 
     def _reset_worker_scoped_state(self) -> None:
         """Drop bookkeeping that only means anything for the worker that just died.
@@ -632,6 +795,7 @@ class InferenceOrchestrator:
         self,
         expected_type: str,
         timeout: float = 300.0,
+        expected_request_id: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Block until a response of the expected type arrives.
@@ -664,7 +828,9 @@ class InferenceOrchestrator:
 
             rtype = resp.get("type", "")
 
-            if rtype == expected_type:
+            if rtype == expected_type and (
+                expected_request_id is None or resp.get("request_id") == expected_request_id
+            ):
                 return resp
 
             if rtype == "error":
@@ -965,7 +1131,11 @@ class InferenceOrchestrator:
             # after the stop, become the resp_queue reader, and consume the
             # worker's "unloaded" reply (unroutable, so dropped) before
             # unload_model's _wait_response sees it -- hanging the unload 300s.
-            if self._unload_pending or self._exclusive_tts_pending:
+            if (
+                self._unload_pending
+                or self._exclusive_tts_pending
+                or getattr(self, "_exclusive_vram_probe_pending", False)
+            ):
                 return False
             if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
                 return False
@@ -1161,7 +1331,8 @@ class InferenceOrchestrator:
                 or not dispatcher_alive
             )
             tts_reserved = self._exclusive_tts_pending
-            blocked = unloading or tts_reserved
+            probe_reserved = getattr(self, "_exclusive_vram_probe_pending", False)
+            blocked = unloading or tts_reserved or probe_reserved
             if not blocked:
                 self._mailboxes[request_id] = mailbox
                 if cancel_event is not None:
@@ -1181,6 +1352,8 @@ class InferenceOrchestrator:
             detail = (
                 "Error: audio generation is in progress"
                 if tts_reserved
+                else "Error: model switch is checking GPU memory"
+                if probe_reserved
                 else "Error: model is being unloaded"
             )
             yield GenStreamError(detail, public = True)
@@ -1367,6 +1540,7 @@ class InferenceOrchestrator:
         mlx_kv_bits: Optional[int] = None,
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
+        post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1441,6 +1615,8 @@ class InferenceOrchestrator:
 
             # Always kill the existing subprocess and spawn fresh: reusing one
             # after unsloth patches torch internals breaks getsource on reload.
+            had_worker_handle = self._proc is not None
+            worker_shutdown_at = 0.0
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
                 time.sleep(0.3)
@@ -1453,8 +1629,31 @@ class InferenceOrchestrator:
                         "The current inference worker did not exit and still holds GPU "
                         "memory; not starting a new model over it. Retry shortly."
                     )
+                worker_shutdown_at = time.monotonic()
             elif self._proc is not None:
                 self._shutdown_subprocess(timeout = 2)
+                if self._proc is None:
+                    worker_shutdown_at = time.monotonic()
+
+            if had_worker_handle or post_handoff_expected_free_gb:
+                expected_free_gb = post_handoff_expected_free_gb
+                if (
+                    expected_free_gb is None
+                    and len(resolved_gpu_ids or ()) == 1
+                    and isinstance(gpu_selection, dict)
+                ):
+                    required_gb = gpu_selection.get("required_gb")
+                    if required_gb is not None:
+                        expected_free_gb = {int(resolved_gpu_ids[0]): float(required_gb)}
+                settled = self._wait_for_worker_vram_settle(
+                    worker_shutdown_at or time.monotonic(),
+                    expected_free_gb = expected_free_gb,
+                )
+                if expected_free_gb is not None and not settled:
+                    raise RuntimeError(
+                        "GPU memory from the previous inference worker was not released; "
+                        "not starting the replacement model. Retry shortly."
+                    )
 
             disable_xet = sub_config.get("disable_xet", False) or (
                 os.environ.get("HF_HUB_DISABLE_XET") == "1"
@@ -2252,7 +2451,8 @@ class InferenceOrchestrator:
         if not self._ensure_subprocess_alive():
             return
         try:
-            self._send_cmd({"type": "reset"})
+            with self._send_order_lock:
+                self._send_cmd({"type": "reset"})
         except RuntimeError:
             pass
 
@@ -2271,6 +2471,9 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        instructions: Optional[str] = None,
+        language: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
 
@@ -2305,11 +2508,25 @@ class InferenceOrchestrator:
 
                 # Bound public API integers before either enqueuing work or
                 # calculating the floating-point watchdog deadline.
+                model_info = self.models.get(expected_model, {})
+                audio_type = model_info.get("audio_type")
+                max_token_ceiling = AUDIO_GENERATION_MAX_TOKENS
+                if audio_type in ("moss_tts_local", "moss_tts_nano"):
+                    try:
+                        detected_context = int(model_info.get("context_length") or 0)
+                    except (TypeError, ValueError):
+                        detected_context = 0
+                    max_token_ceiling = detected_context or MOSS_TTS_MAX_FRAMES
+                elif audio_type == "minimax_music3":
+                    max_token_ceiling = MINIMAX_MUSIC_MAX_FRAMES
                 max_new_tokens = min(
-                    AUDIO_GENERATION_MAX_TOKENS,
+                    max_token_ceiling,
                     max(1, int(max_new_tokens)),
                 )
-                generation_timeout = _audio_generation_timeout(max_new_tokens)
+                generation_timeout = _audio_generation_timeout(
+                    max_new_tokens,
+                    max_tokens = max_token_ceiling,
+                )
                 request_id = str(uuid.uuid4())
 
                 cmd = {
@@ -2325,6 +2542,12 @@ class InferenceOrchestrator:
                 }
                 if use_adapter is not None:
                     cmd["use_adapter"] = use_adapter
+                if instructions is not None:
+                    cmd["instructions"] = instructions
+                if language is not None:
+                    cmd["language"] = language
+                if seed is not None:
+                    cmd["seed"] = int(seed)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id)

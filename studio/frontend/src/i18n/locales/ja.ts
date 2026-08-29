@@ -1639,7 +1639,7 @@ export const ja = {
         desktopCheckingDescription: "通常は数秒で完了します。",
         desktopAvailable: "デスクトップアプリ {version} を利用できます",
         desktopAvailableDescription:
-          "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
+          "今すぐアップデートすると、バックグラウンドで準備されます。作業を続けたまま、準備ができたら再起動してください。",
         desktopExternalServer:
           "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
         desktopManualInstall:
@@ -1650,11 +1650,19 @@ export const ja = {
         desktopCurrent: "デスクトップアプリは最新です",
         desktopCurrentDescription:
           "Unsloth は今後も自動的にアップデートを確認します。",
+        desktopPreparingDescription: "アップデートをバックグラウンドで準備しています。作業を続けられます。",
+        desktopReadyToRestartDescription:
+          "準備が完了しました。再起動するとアップデートのインストールが完了します。",
+        desktopReadyToInstallDescription:
+          "アプリのアップデートをダウンロードしました。インストールするにはバックエンドのアップデートを完了してください。",
         checkForUpdates: "アップデートを確認",
         checkAgain: "もう一度確認",
         retryCheck: "再試行",
         checking: "確認中...",
+        preparing: "準備中...",
         updateNow: "今すぐアップデート",
+        restartToUpdate: "再起動して更新",
+        finishUpdate: "アップデートを完了",
         openReleasePage: "リリースページを開く",
         unknownInstall: "Unsloth がどのようにインストールされたか検出できませんでした。インストーラーまたは PyPI インストールの場合は、上記のコマンドを使用してください。",
         localCheckout:

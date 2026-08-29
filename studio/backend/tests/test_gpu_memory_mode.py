@@ -949,6 +949,16 @@ def test_start_diffusion_server_resets_tensor_parallel():
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
 
 
+@pytest.mark.parametrize(
+    ("parent_ids", "expected"),
+    [([], None), ([2], (2,)), ([0, 1], None)],
+)
+def test_unmasked_child_gpu_map_is_known_only_for_one_gpu(monkeypatch, parent_ids, expected):
+    import utils.hardware as hw
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: parent_ids)
+    assert LlamaCppBackend._unmasked_child_gpu_physical_ids() == expected
+
+
 def _patch_split_pin_env(monkeypatch, *, inherited, reported):
     """Point the pin helper at a fake inherited mask and picker report.
     ``reported`` None = enumeration unavailable (falls back to ascending)."""

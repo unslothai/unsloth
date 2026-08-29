@@ -1463,9 +1463,9 @@ def test_connect_claude_no_launch(fake_studio):
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
-    # Auto-compact window is sized to the loaded model's real context length so the
-    # session compacts before it overflows the local server's (much smaller) window,
-    # and compaction is forced at 90% of it for headroom.
+    # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
+    # window into [100k, that], so the real window has to be pinned as well.
+    _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
@@ -1641,6 +1641,7 @@ def test_connect_claude_compact_window_omitted_without_context(fake_studio, monk
     monkeypatch.setattr(start, "_resolve_model", lambda *a, **k: {"id": "local-model"})
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
+    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in result.output
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in result.output
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in result.output
 

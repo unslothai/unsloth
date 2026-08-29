@@ -261,8 +261,9 @@ _TOOL_CALL_NUDGING_OPTION = typer.Option(
     None,
     "--enable-tool-call-nudging/--disable-tool-call-nudging",
     rich_help_panel = _PANEL_SERVER,
-    help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
-    "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
+    help = "Allow nudge retries when a tool-enabled model stops after promising to act, or a "
+    "passthrough tool signal can't be healed. On by default; when the flag is omitted an "
+    "inherited UNSLOTH_TOOL_CALL_NUDGE is kept, and an explicit request value wins.",
 )
 _REASONING_OPTION = typer.Option(
     None,
@@ -2551,6 +2552,9 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
     }
     window = entry.get("context_length") or entry.get("max_context_length")
     if window:
+        # claude assumes 200k for a model id it does not recognize, and clamps
+        # AUTO_COMPACT_WINDOW to [100k, that]. MAX_CONTEXT_TOKENS sets the window itself.
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
     return env
