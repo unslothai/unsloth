@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 from pathlib import Path
+
+import pytest
 
 from hub.services.models import local_inventory
 from hub.utils import gguf
@@ -21,6 +24,15 @@ def _custom_rows(*roots: Path):
             for row in local_inventory._scan_custom_folder(root)
         )
     return local_inventory._dedupe_local_models(rows)
+
+
+def _symlink_dir(alias: Path, target: Path) -> None:
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks unavailable")
+    try:
+        alias.symlink_to(target, target_is_directory = True)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
 
 
 def test_checkpoint_family_matches_quantized_and_split_variants():
@@ -79,3 +91,33 @@ def test_overlapping_parent_and_model_roots_keep_the_grouped_row(tmp_path):
     _write_gguf(model / "model-Q4_K_M.gguf")
 
     assert [Path(row.path) for row in _custom_rows(root, model)] == [model]
+
+
+def test_symlinked_parent_and_real_model_roots_keep_one_row(tmp_path):
+    real_model = tmp_path / "outside" / "model"
+    _write_gguf(real_model / "model-Q4_K_M.gguf")
+    _write_gguf(real_model / "model-Q8_0.gguf")
+    alias_root = tmp_path / "aliases"
+    alias_root.mkdir()
+    alias_model = alias_root / "model"
+    _symlink_dir(alias_model, real_model)
+
+    rows = _custom_rows(alias_root, real_model)
+
+    assert len(rows) == 1
+    assert Path(rows[0].path).resolve() == real_model.resolve()
+
+
+def test_symlinked_and_real_parent_roots_dedupe_group_rows(tmp_path):
+    real_root = tmp_path / "real"
+    real_model = real_root / "model"
+    _write_gguf(real_model / "model-Q4_K_M.gguf")
+    _write_gguf(real_model / "model-Q8_0.gguf")
+    alias_root = tmp_path / "aliases"
+    alias_root.mkdir()
+    _symlink_dir(alias_root / "model", real_model)
+
+    rows = _custom_rows(real_root, alias_root)
+
+    assert len(rows) == 1
+    assert Path(rows[0].path).resolve() == real_model.resolve()

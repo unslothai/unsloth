@@ -904,9 +904,16 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                     model.format_variant or "",
                 )
             )
+        elif model.source == "custom":
+            key = _local_inventory_id(
+                "custom",
+                model.model_format,
+                _inventory_path_identity(model.path),
+                model.format_variant,
+            )
         else:
             row_key = model.inventory_id or model.id
-            key = f"{row_key}\x00custom" if model.source == "custom" else row_key
+            key = row_key
         existing = deduped.get(key)
         prefer_candidate = existing is None
         if existing is not None:
@@ -924,15 +931,8 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    def _lexical_path_identity(raw_path: str) -> str:
-        try:
-            normalized = normalize_path(raw_path)
-            return os.path.normcase(os.path.abspath(os.path.expanduser(normalized)))
-        except (OSError, UnicodeError, ValueError):
-            return os.path.normcase(raw_path)
-
     grouped_custom_gguf_dirs = {
-        _lexical_path_identity(model.path)
+        _inventory_path_identity(model.path)
         for model in deduped.values()
         if model.source == "custom"
         and model.model_format == "gguf"
@@ -948,7 +948,7 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                 model.source == "custom"
                 and model.model_format == "gguf"
                 and not _safe_is_dir(Path(model.path))
-                and _lexical_path_identity(str(Path(model.path).parent))
+                and _inventory_path_identity(str(Path(model.path).parent))
                 in grouped_custom_gguf_dirs
             )
         }
