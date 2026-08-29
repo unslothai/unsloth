@@ -716,22 +716,28 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
 
 
 def _replay_boundary_whitespace(raw: str, replayed: str) -> str:
-    """Whitespace ``raw`` holds immediately before ``replayed`` begins.
+    """Whitespace to restore in front of ``replayed`` before it merges onto a partial.
 
-    A continuation merges onto the resumed partial with no separator, so this run is
-    all that keeps the partial's last word apart from the first word replayed.
-    ``strip_tool_markup(final = True)`` trims, and after a removed ``[THINK]`` or
-    unpromotable call block that trim is not at index 0, so the leading run of ``raw``
-    reports none. Falls back to that leading run when stripping cut something out of
-    the middle and ``replayed`` is no longer a slice of ``raw``.
+    A continuation merges with no separator, so this run is all that keeps the
+    partial's last word apart from the first word replayed, and
+    ``strip_tool_markup(final = True)`` trims it away. Whatever was removed in front
+    of ``replayed`` leaves it ending the turn, so the run sits right before it;
+    otherwise nothing was removed there and the turn's own leading run is it.
+
+    The remaining case is a turn stripped at both ends, where one space stands in for
+    what was removed. Searching ``raw`` for ``replayed`` would settle it exactly but
+    is not sound: the same prose can sit inside the markup that was stripped out, and
+    matching there reports no boundary at all.
     """
     if not replayed:
         return ""
-    start = raw.rfind(replayed)
-    if start < 0:
-        return raw[: len(raw) - len(raw.lstrip())]
-    head = raw[:start]
-    return head[len(head.rstrip()) :]
+    if raw.endswith(replayed):
+        head = raw[: len(raw) - len(replayed)]
+        return head[len(head.rstrip()) :]
+    leading = raw[: len(raw) - len(raw.lstrip())]
+    if leading or raw.lstrip().startswith(replayed):
+        return leading
+    return " "
 
 
 def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:

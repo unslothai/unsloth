@@ -826,6 +826,11 @@ def test_a_reasoning_only_stall_is_nudged_and_replayed(executed):
             "[THINK]The user wants a search.[/THINK] I will search now.",
             "The answer is not I will search now.",
         ),
+        # Restored as written, not normalised to one space.
+        (
+            "[THINK]The user wants a search.[/THINK]\n\nI will search now.",
+            "The answer is not\n\nI will search now.",
+        ),
         # No markup to remove, so the model's own boundary is already at index 0.
         (" I will search now.", "The answer is not I will search now."),
         # The model wrote none, and inventing one would change what it continued.
@@ -857,6 +862,38 @@ def test_a_continued_stall_keeps_the_boundary_the_model_wrote(executed, stall, m
     second = transport.requests[1]["messages"]
     assert [message["role"] for message in second] == ["user", "assistant", "user"]
     assert second[-2]["content"] == merged
+
+
+def test_the_boundary_survives_prose_repeated_inside_stripped_markup(executed):
+    """The stripped markup can quote the prose back, so the boundary is not searchable.
+
+    Locating the surviving text in the raw turn finds the copy inside the call block
+    here, whose own boundary is the argument quote, and reports no whitespace at all.
+    """
+    stall = (
+        ' I will search now.<tool_call>{"name": "nope", '
+        '"arguments": {"q": "I will search now."}}</tool_call>'
+    )
+    transport = FakeTransport(
+        [
+            [_sse({"content": stall}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(
+        transport,
+        auto_heal = False,
+        nudge_tool_calls = True,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "The answer is not"},
+        ],
+        continue_final_message = True,
+    )
+
+    second = transport.requests[1]["messages"]
+    assert second[-2]["content"] == "The answer is not I will search now."
 
 
 def test_a_markup_only_stall_is_still_not_nudged(executed):
