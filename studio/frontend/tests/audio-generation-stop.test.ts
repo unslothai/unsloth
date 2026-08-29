@@ -76,7 +76,7 @@ test("a saved clip the refresh missed keeps its response audio mounted", () => {
   // player rendered the empty state.
   assert.match(
     source,
-    /const selectClip = useCallback\(\(id: string, keepFallback = false\) => \{[\s\S]*if \(!keepFallback\) setFallbackClip\(null\);/,
+    /const selectClip = useCallback\(\s*\(id: string, keepFallback = false\) => \{[\s\S]*if \(!keepFallback\) setFallbackClip\(null\);/,
   );
   assert.match(source, /saved: true,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
 });
