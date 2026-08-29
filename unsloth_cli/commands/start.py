@@ -2631,7 +2631,7 @@ def _codex_model_catalog(model: dict) -> dict:
         "supports_reasoning_summary_parameter": False,
         "support_verbosity": False,
         "default_verbosity": None,
-        "apply_patch_tool_type": "function",
+        "apply_patch_tool_type": "freeform",
         "truncation_policy": {"mode": "bytes", "limit": 10_000},
         "supports_parallel_tool_calls": False,
         "experimental_supported_tools": [],
