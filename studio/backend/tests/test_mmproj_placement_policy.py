@@ -195,6 +195,52 @@ def test_projector_pinned_to_cpu_when_it_does_not_fit(tmp_path):
     assert cmd[cmd.index("--fit") + 1] == "off"
 
 
+def _tied(backend, mib: int):
+    """Charge the load `mib` MiB of duplicated token_embd, as a tied model does."""
+    backend._tied_output_bytes = lambda _path, _bytes = mib * MIB: _bytes
+    return backend
+
+
+def test_the_projector_probe_prices_the_tied_output_duplicate(tmp_path):
+    """264 MiB of duplicated token_embd is the difference between the two placements.
+
+    The probe must price what the placement it gates prices, term for term.
+    Built from the bare file size it is exactly the duplicate more optimistic:
+    on this card it keeps the projector in VRAM and pays with --fit on, spilling
+    model layers at 8192 context -- the trade this policy exists to refuse.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 9_300, 16_384)])
+    _tied(backend, 264)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--no-mmproj-offload" in cmd
+    assert cmd[cmd.index("--fit") + 1] == "off"
+
+
+def test_the_cpu_pin_takes_out_the_projector_not_the_tied_duplicate(tmp_path):
+    """The pin moves the projector to the host; llama.cpp still duplicates token_embd.
+
+    Re-deriving model_size from the file size to drop the projector drops the
+    duplicate with it, so the context search after a pin goes back to believing
+    in VRAM the load will consume.
+    """
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "charged").mkdir()
+    plain, plain_gguf = _backend(tmp_path / "plain", memory = [(0, 8_692, 16_384)])
+    plain_cmd = _launch(plain, plain_gguf)["cmd"]
+
+    charged, charged_gguf = _backend(tmp_path / "charged", memory = [(0, 8_692, 16_384)])
+    _tied(charged, 264)
+    charged_cmd = _launch(charged, charged_gguf)["cmd"]
+
+    # Both arms pin, so the only thing left that can differ is the budget the
+    # context was chosen against.
+    assert "--no-mmproj-offload" in plain_cmd
+    assert "--no-mmproj-offload" in charged_cmd
+    assert int(charged_cmd[charged_cmd.index("-c") + 1]) < int(plain_cmd[plain_cmd.index("-c") + 1])
+
+
 def test_user_owns_the_placement_when_they_name_either_spelling(tmp_path):
     """llama.cpp is last-wins on the placement pair, so an explicit
     --mmproj-offload must not be raced by the automatic pin."""

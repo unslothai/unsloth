@@ -445,6 +445,7 @@ from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 # Unsloth's Python is, so it must not make the whole models package a hard import dependency.
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
+    is_no_vocab_output_gguf_architecture,
     is_speech_gguf_architecture,
 )
 
@@ -7268,44 +7269,89 @@ class LlamaCppBackend:
         GGUF costs the old, slightly optimistic budget instead of a failed
         launch.
         """
-        # Split GGUF: shard 1 carries the metadata but only its own tensors, and
-        # GGUFReader maps the one path it is given. An ``output.weight`` living
-        # in shard 3 would read as "tied" here and add a duplicate that is not
-        # allocated -- the opposite error, and a much more expensive one on the
-        # very models big enough to be split. Abstain.
-        if _SHARD_FULL_RE.match(Path(model_path).name):
+        # The shard list AND the cache key, from the one function that already
+        # owns "which inodes is this load reading": device and inode, not just
+        # path, so a model rebuilt in place under its old name and size cannot
+        # serve its predecessor's answer. None on any unreadable shard.
+        identity = LlamaCppBackend._gguf_load_source_identity(model_path)
+        if identity is None:
             return 0
-        try:
-            stat = Path(model_path).stat()
-        except OSError:
-            return 0
-        # Keyed on identity, not just path: a model replaced in place keeps its
-        # name, and the context search calls this once per candidate context, so
-        # an uncached read of a 30 GB header would be paid on every step.
-        return LlamaCppBackend._tied_output_bytes_cached(
-            model_path,
-            stat.st_size,
-            stat.st_mtime_ns,
-        )
+        return LlamaCppBackend._tied_output_bytes_cached(identity)
 
     @staticmethod
     @functools.lru_cache(maxsize = 64)
-    def _tied_output_bytes_cached(model_path: str, _size: int, _mtime_ns: int) -> int:
+    def _tied_output_bytes_cached(identity: tuple) -> int:
         try:
-            from gguf import GGUFReader
-
-            reader = GGUFReader(model_path)
+            architecture: Optional[str] = None
             embd = 0
-            for tensor in reader.tensors:
-                name = str(tensor.name)
-                if name == "output.weight":
+            # Every shard, because a split model puts token_embd in shard 1 and
+            # output.weight in the last one: reading shard 1 alone would call
+            # every large tied-or-not model tied. Shards past the first carry a
+            # three-entry KV block, so they scan in microseconds.
+            for position, entry in enumerate(identity):
+                shard_arch, has_output, shard_embd = LlamaCppBackend._gguf_scan_output_tensors(
+                    entry[0]
+                )
+                if has_output:
                     return 0
-                if name == "token_embd.weight":
-                    embd = int(tensor.n_bytes)
+                if position == 0:
+                    architecture = shard_arch
+                if shard_embd:
+                    embd = shard_embd
+            # An encoder-only model has no vocabulary output head at all, so its
+            # missing output.weight is not tying and nothing is duplicated.
+            if is_no_vocab_output_gguf_architecture(architecture):
+                return 0
             return embd
         except Exception as exc:  # noqa: BLE001 - budget must not fail a launch
-            logger.debug("tied-output probe failed for %s (%s)", model_path, exc)
+            logger.debug("tied-output probe failed for %s (%s)", identity, exc)
             return 0
+
+    @staticmethod
+    def _gguf_scan_output_tensors(path: str) -> tuple[Optional[str], bool, int]:
+        """(architecture, ships output.weight, token_embd bytes) from one GGUF header.
+
+        Streams the header instead of building a ``gguf.GGUFReader``, whose
+        ``__init__`` materialises every KV value including the tokenizer
+        vocabulary. That is 12.1 s on gemma-4-E2B-it UD-Q4_K_XL and 6.2 s on the
+        240 MiB gemma-3-270m-it -- the cost tracks vocabulary size, not file size
+        -- against 30-90 ms here for a verdict that matched the reader on every
+        model measured. This runs under ``self._lock`` before llama-server is
+        spawned, so it is a stall on every load, not a background cost.
+        """
+        from gguf.constants import GGML_QUANT_SIZES
+
+        architecture: Optional[str] = None
+        token_embd_bytes = 0
+        with open(path, "rb") as f:
+            if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
+                return None, False, 0
+            f.seek(4, 1)  # version
+            n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                key = f.read(struct.unpack("<Q", f.read(8))[0])
+                value_type = struct.unpack("<I", f.read(4))[0]
+                if key == b"general.architecture" and value_type == 8:
+                    raw = f.read(struct.unpack("<Q", f.read(8))[0])
+                    architecture = raw.decode("utf-8", "replace")
+                    continue
+                LlamaCppBackend._gguf_skip_value(f, value_type)
+            for _ in range(n_tensors):
+                name = f.read(struct.unpack("<Q", f.read(8))[0])
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
+                ggml_type = struct.unpack("<I", f.read(4))[0]
+                f.seek(8, 1)  # data offset
+                if name == b"output.weight":
+                    return architecture, True, 0
+                if name == b"token_embd.weight":
+                    # Quantised rows are stored in blocks, so the element count
+                    # is not the byte count. GGML_QUANT_SIZES comes from the
+                    # pinned gguf package rather than a table here, so a new
+                    # quant type cannot silently size to zero.
+                    block, block_bytes = GGML_QUANT_SIZES[ggml_type]
+                    token_embd_bytes = math.prod(dims) // block * block_bytes
+        return architecture, False, token_embd_bytes
 
     @staticmethod
     def _installed_ggml_backends(binary: Optional[str] = None) -> frozenset[str]:
@@ -17869,7 +17915,14 @@ class LlamaCppBackend:
                     # card cannot hold. 264 MiB on gemma-4-E2B UD-Q4_K_XL and
                     # 924 MiB on gemma-4-31B UD-Q4_K_XL, against files of 3037
                     # and 17951 MiB.
-                    model_size = gguf_size + mmproj_size + self._tied_output_bytes(model_path)
+                    #
+                    # Bound once and used by every site that prices the weights,
+                    # because the two that re-derive them from gguf_size -- the
+                    # projector-placement probe below and the pin it can trigger
+                    # -- would otherwise each drop the correction again on
+                    # exactly the tied vision models it was measured on.
+                    weights_size = gguf_size + self._tied_output_bytes(model_path)
+                    model_size = weights_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
                     # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
@@ -18616,7 +18669,10 @@ class LlamaCppBackend:
                         # including the drop probe below: it sees the lighter footprint
                         # and gives the drafter up only if the pin was not enough.
                         mmproj_size = 0
-                        model_size = gguf_size
+                        # weights_size, not gguf_size: the pin moves the projector
+                        # to the host, it does not stop llama.cpp duplicating
+                        # token_embd into VRAM.
+                        model_size = weights_size
                         # What the startup-recovery pin reports, so a CPU-resident
                         # projector is announced whether it was predicted or salvaged;
                         # otherwise image encoding just gets mysteriously slower. After
@@ -18697,7 +18753,7 @@ class LlamaCppBackend:
                             else min(self._MMPROJ_FIT_FLOOR_CTX, effective_ctx)
                         )
                         _mm_need = (
-                            gguf_size
+                            weights_size
                             + mmproj_size
                             + _compute_buffer_pipeline
                             + self._CUDA_CONTEXT_RESERVE_BYTES
