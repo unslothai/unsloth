@@ -492,8 +492,7 @@ export interface CachedGgufRepo {
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
-  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded quant; optional for older backends. */
   last_modified?: number;
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
@@ -603,6 +602,7 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
 }
 
@@ -635,11 +635,11 @@ export interface CachedModelRepo {
   /** Weights format; "adapter" is a LoRA with no base weights of its own.
    * Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
-   * newest-first. Optional for older-backend compatibility. */
+  /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
+  /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
   /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;

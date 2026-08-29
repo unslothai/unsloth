@@ -692,7 +692,7 @@ export const hi = {
         sectionTitle: "मॉडल ऑटो-स्विच (OpenAI API)",
         enable: "अनुरोध के अनुसार मॉडल बदलें",
         enableDescription:
-          "API अनुरोध में दिए गए डाउनलोड किए गए GGUF को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
+          "API अनुरोध में दिए गए डाउनलोड किए गए मॉडल को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
         idleUnload: "निष्क्रिय ऑटो-अनलोड",
         idleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद VRAM खाली करें। 0 पर मॉडल लोड रहता है; न्यूनतम 60 सेकंड।",
@@ -1385,6 +1385,13 @@ export const hi = {
         collapseByDefaultDescription:
           "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
       },
+      currentDate: {
+        label: "मॉडल को आज की तारीख बताएँ",
+        description:
+          "प्रॉम्प्ट में मौजूदा तारीख जोड़ें ताकि वेब सर्च और Deep Research मॉडल की ट्रेनिंग कटऑफ मान लेने के बजाय हाल के स्रोत खोजें।",
+        loadError: "मौजूदा तारीख की सेटिंग्स लोड नहीं हो सकीं",
+        saveError: "मौजूदा तारीख की सेटिंग्स अपडेट नहीं हो सकीं",
+      },
       tools: {
         collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
@@ -1407,6 +1414,11 @@ export const hi = {
         blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
         blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
         blockedBannerAction: "इस Canvas के लिए अनुमति दें",
+        blockedTitle: "Canvas नेटवर्क एक्सेस बंद है",
+        blockedHint:
+          "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
+        blockedSettingsAction: "सेटिंग्स खोलें",
+        blockedDismiss: "खारिज करें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",

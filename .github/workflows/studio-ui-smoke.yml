@@ -550,6 +550,21 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: MCP arguments end to end (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_mcp_arguments
+          STUDIO_UI_STRICT: '1'
+        run: |
+          mkdir -p logs/playwright_mcp_arguments
+          studio_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+          export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"
+          test -x "$STUDIO_MCP_PYTHON"
+          python tests/studio/playwright_mcp_arguments.py
+
       - name: Per-chat settings persistence (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -633,6 +648,20 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
+
+      - name: Tool activity collapse regression (Playwright)
+        if: matrix.shard == 'extra'
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm install -g npm@^11 --no-fund --no-audit
+            V=$(npm -v)
+            case "$V" in
+              11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+              *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+            esac
+            npm --prefix studio/frontend ci --strict-allow-scripts --no-fund --no-audit
+          fi
+          python tests/studio/playwright_tool_activity.py --json
 
       # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
       # each other: the suppression sets in loggers/handlers.py and the poll cadences in
@@ -805,6 +834,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_mcp_arguments
             logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner

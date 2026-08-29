@@ -1906,19 +1906,20 @@ export function AppSidebar() {
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
-  // One box for every row pill, so a hover pill has the same edges wherever it
-  // lands. Rows outside the list scroller add the rail width it does not lose,
-  // so both end on the same edge whether or not the scrollbar takes space.
-  // Logical sides, since the rail is on the inline end and moves under rtl.
+  // Navigation rows share one box, so a hover pill has the same edges wherever
+  // it lands. Rows outside the list scroller add the rail width it does not
+  // lose, so both end on the same edge whether or not the scrollbar takes
+  // space. Logical sides, since the rail moves under rtl.
   const rowPadding = usesDesktopTitlebar
     ? "ps-[5px] pe-[calc(var(--sidebar-rail,0px)+5px)]"
     : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
 
-  // Inside it the rail already sits in that space, so this is just the gap
-  // between a pill and the scrollbar, matched to the gap on the other side.
-  const scrollRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
+  // Inside the scroller the rail already occupies that space. The profile
+  // footer also uses this padding deliberately: its width is independent of
+  // whether the unrelated recent-chat list currently has a scrollbar.
+  const unrailedRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
-  // Header actions end where a hovered row's "…" does: scrollRowPadding + the
+  // Header actions end where a hovered row's "…" does: unrailedRowPadding + the
   // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
   const headerRightPadding = usesDesktopTitlebar
     ? "sidebar-sticky-label-desktop"
@@ -3653,7 +3654,7 @@ export function AppSidebar() {
           data-tour="navbar"
           className={cn(
             "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
-            scrollRowPadding,
+            unrailedRowPadding,
           )}
         >
 
@@ -3842,7 +3843,7 @@ export function AppSidebar() {
                 })}
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className={scrollRowPadding}>
+                <SidebarGroupContent className={unrailedRowPadding}>
                   <SidebarMenu>
                     {sortedPinnedChatItems.map((item, index) =>
                       renderChatSidebarItem(
@@ -3902,7 +3903,7 @@ export function AppSidebar() {
                   </button>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className={scrollRowPadding}>
+                  <SidebarGroupContent className={unrailedRowPadding}>
                     <SidebarMenu>
                       {visibleProjectRecords.map((project, projectIndex) => {
                         const projectChats =
@@ -4143,7 +4144,7 @@ export function AppSidebar() {
                 </button>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className={scrollRowPadding}>
+                <SidebarGroupContent className={unrailedRowPadding}>
                   <SidebarMenu>
                     {sortedRecentChatItems.map((item, index) =>
                       renderChatSidebarItem(
@@ -4186,7 +4187,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className={scrollRowPadding}>
+              <SidebarGroupContent className={unrailedRowPadding}>
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active job only while the "Current Run"
@@ -4278,8 +4279,9 @@ export function AppSidebar() {
       <SidebarFooter
         className={cn(
           "relative pb-[11px] group-data-[collapsible=icon]:px-0",
-          // Same box as the rows above.
-          rowPadding,
+          // The profile is outside the recent-chat scroller and keeps its full
+          // width when that scroller gains or loses a scrollbar.
+          unrailedRowPadding,
           // pt-[3px] cancels the profile button's -3px margin, so the 8px
           // above it is whatever sits over the footer edge (the fade plateau,
           // or the list's pb-2 once the fade is hidden) and 8px sits below.
