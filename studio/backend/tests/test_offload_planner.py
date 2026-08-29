@@ -500,6 +500,36 @@ def test_per_device_selection_cannot_drop_cache_remainder_from_the_pool():
     assert not plan.changed or plan.vram_bytes <= 90
 
 
+def test_output_device_shortfall_can_reach_the_lm_head_rung():
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 3,
+        n_attention_layers = 3,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = 0)
+            for i, size in enumerate([100, 100, 10])
+        ),
+        lm_head_bytes = 100,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [100, 20],
+        1024,
+        1,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [1, 1],
+    )
+
+    assert plan.spilled_blocks == (0,)
+    assert plan.spilled_lm_head is True
+    assert plan.vram_bytes <= 120
+
+
 def test_a_full_spill_is_checked_per_device_not_assumed():
     """A full spill used to be waved through on the theory that "every device
     keeps its layer share". It does keep its ROW share -- llama.cpp splits rows

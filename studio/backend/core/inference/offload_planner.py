@@ -679,6 +679,7 @@ def _select_blocks_per_device(
     *,
     quantised: bool,
     kv_bytes_floor: int,
+    spill_lm_head: bool = False,
     split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Optional[list[BlockLayout]]:
@@ -687,7 +688,7 @@ def _select_blocks_per_device(
         opts,
         n_ctx,
         set(),
-        False,
+        spill_lm_head,
         vram_bytes_per_device,
         quantised = quantised,
         kv_bytes_floor = kv_bytes_floor,
@@ -720,7 +721,7 @@ def _select_blocks_per_device(
             opts,
             n_ctx,
             {block.index for block in chosen},
-            False,
+            spill_lm_head,
             vram_bytes_per_device,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
@@ -801,6 +802,36 @@ def _plan_at(
             kv_layer_weights = kv_layer_weights,
         )
         if uneven is not None:
+            if opts.allow_lm_head_spill and layout.lm_head_bytes:
+                with_head = _select_blocks_per_device(
+                    layout,
+                    opts,
+                    n_ctx,
+                    vram_bytes_per_device,
+                    quantised = quantised,
+                    kv_bytes_floor = kv_bytes_floor,
+                    spill_lm_head = True,
+                    split_weights_per_device = split_weights_per_device,
+                    kv_layer_weights = kv_layer_weights,
+                )
+                if with_head is not None:
+                    with_head_freed = sum(block.spillable_bytes for block in with_head)
+                    with_head_freed += layout.lm_head_bytes
+                    if needed - with_head_freed <= budget:
+                        return _finish(
+                            layout,
+                            opts,
+                            n_ctx,
+                            with_head,
+                            True,
+                            host_ram_bytes,
+                            quantised = quantised,
+                            kv_bytes_floor = kv_bytes_floor,
+                            reason = (
+                                "spilled the output head after its device could not cover "
+                                "the local shortfall with FFN blocks alone"
+                            ),
+                        )
             return Plan(
                 n_ctx = n_ctx,
                 reason = (
