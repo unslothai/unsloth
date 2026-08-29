@@ -18,6 +18,40 @@ function repoKey(repoId: string | null | undefined): string | null {
   return repoId?.trim().toLowerCase() || null;
 }
 
+type PartialFormatFamily = "gguf" | "model";
+
+function partialFormatFamily(
+  modelFormat: CachedInventoryRow["modelFormat"],
+): PartialFormatFamily | null {
+  if (modelFormat === "unknown") return null;
+  return modelFormat === "gguf" ? "gguf" : "model";
+}
+
+function addPartialFormatFamily(
+  familiesByRepo: Map<string, Set<PartialFormatFamily>>,
+  repoId: string | null | undefined,
+  modelFormat: CachedInventoryRow["modelFormat"],
+): void {
+  const repo = repoKey(repoId);
+  const family = partialFormatFamily(modelFormat);
+  if (!repo || !family) return;
+  const families = familiesByRepo.get(repo) ?? new Set<PartialFormatFamily>();
+  families.add(family);
+  familiesByRepo.set(repo, families);
+}
+
+function knownFamiliesMatchUnknownPartial(
+  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport">,
+  families: ReadonlySet<PartialFormatFamily> | undefined,
+): boolean {
+  if (!families?.size) return false;
+  if (families.size > 1) return true;
+  // snapshot partials carry a transport; gguf partials do not.
+  return row.partialTransport
+    ? families.has("model")
+    : families.has("gguf");
+}
+
 export function findCompleteHfCacheLocalRow(
   cachedRow: CachedInventoryRow,
   localRows: readonly LocalInventoryRow[],
@@ -101,27 +135,37 @@ export function dedupeSameSourceHubCacheRows({
   localRows: LocalInventoryRow[];
 } {
   const uniqueCachedRows = dedupeCachedRows(cachedRows);
-  const completeCachedRepos = new Set<string>();
-  const partialKnownFormatRepos = new Set<string>();
+  const completeCachedFormatFamilies = new Map<
+    string,
+    Set<PartialFormatFamily>
+  >();
+  const partialFormatFamilies = new Map<string, Set<PartialFormatFamily>>();
   for (const row of uniqueCachedRows) {
     if (row.partial && row.modelFormat !== "unknown") {
-      const repo = repoKey(row.repoId);
-      if (repo) partialKnownFormatRepos.add(repo);
+      addPartialFormatFamily(
+        partialFormatFamilies,
+        row.repoId,
+        row.modelFormat,
+      );
     }
     if (row.partial) {
       continue;
     }
-    const repo = repoKey(row.repoId);
-    if (repo) {
-      completeCachedRepos.add(repo);
-    }
+    addPartialFormatFamily(
+      completeCachedFormatFamilies,
+      row.repoId,
+      row.modelFormat,
+    );
   }
 
   const completeHfCacheLocalKeys = new Set<string>();
   for (const row of localRows) {
     if (row.partial && row.modelFormat !== "unknown") {
-      const repo = repoKey(row.repoId);
-      if (repo) partialKnownFormatRepos.add(repo);
+      addPartialFormatFamily(
+        partialFormatFamilies,
+        row.repoId,
+        row.modelFormat,
+      );
     }
     if (row.source !== "hf_cache" || row.partial) {
       continue;
@@ -139,7 +183,7 @@ export function dedupeSameSourceHubCacheRows({
       !row.liveDownload &&
       row.modelFormat === "unknown" &&
       repo &&
-      partialKnownFormatRepos.has(repo)
+      knownFamiliesMatchUnknownPartial(row, partialFormatFamilies.get(repo))
     ) {
       return false;
     }
@@ -168,14 +212,17 @@ export function dedupeSameSourceHubCacheRows({
         row.partial &&
         row.modelFormat === "unknown" &&
         repo &&
-        partialKnownFormatRepos.has(repo)
+        knownFamiliesMatchUnknownPartial(row, partialFormatFamilies.get(repo))
       ) {
         return false;
       }
       if (
         row.modelFormat === "unknown" &&
         repo &&
-        completeCachedRepos.has(repo)
+        knownFamiliesMatchUnknownPartial(
+          row,
+          completeCachedFormatFamilies.get(repo),
+        )
       ) {
         return false;
       }

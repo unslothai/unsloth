@@ -107,7 +107,10 @@ function resolveInventorySelection(
   });
 }
 
-function buildUnknownHfCacheRow(repoId: string) {
+function buildUnknownHfCacheRow(
+  repoId: string,
+  partialTransport: string | null = null,
+) {
   return buildLocalInventoryRows([
     {
       id: repoId,
@@ -119,6 +122,8 @@ function buildUnknownHfCacheRow(repoId: string) {
       model_id: repoId,
       model_format: "unknown",
       partial: true,
+      partial_transport: partialTransport,
+      partial_resumable: partialTransport !== null,
     },
   ])[0];
 }
@@ -246,7 +251,7 @@ test("keeps an unclassified local HF-cache partial selected across GGUF resume a
 
 test("keeps an unclassified local HF-cache partial selected across safetensors resume and cancel", () => {
   const repoId = "Org/Partial-Model";
-  const local = buildUnknownHfCacheRow(repoId);
+  const local = buildUnknownHfCacheRow(repoId, "http");
   const live = {
     ...buildCachedInventoryRow(
       {
@@ -282,9 +287,44 @@ test("keeps an unclassified local HF-cache partial selected across safetensors r
   });
 });
 
+for (const { partialTransport, unrelatedFormat } of [
+  { partialTransport: null, unrelatedFormat: "safetensors" as const },
+  { partialTransport: "http", unrelatedFormat: "gguf" as const },
+]) {
+  test(`keeps an unclassified partial beside an unrelated ${unrelatedFormat} job`, () => {
+    const repoId = "Org/Hybrid-Partial";
+    const local = buildUnknownHfCacheRow(repoId, partialTransport);
+    const live = {
+      ...buildCachedInventoryRow(
+        {
+          repo_id: repoId,
+          model_format: unrelatedFormat,
+          size_bytes: 50,
+          partial: true,
+          optimistic: true,
+        },
+        unrelatedFormat,
+      ),
+      liveDownload: true,
+    };
+
+    assert.ok(local);
+    const inventory = dedupeSameSourceHubCacheRows({
+      cachedRows: [live],
+      localRows: [local],
+    });
+    assert.deepEqual(inventory.cachedRows, [live]);
+    assert.deepEqual(inventory.localRows, [local]);
+    assert.deepEqual(resolveInventorySelection(inventory, local.id), {
+      selectedId: local.id,
+      hiddenByFilters: false,
+    });
+  });
+}
+
 test("keeps an unclassified local HF-cache partial selected when safetensors completes", () => {
   const repoId = "Org/Partial-Model";
-  const local = buildUnknownHfCacheRow(repoId);
+  const local = buildUnknownHfCacheRow(repoId, "http");
   const complete = buildCachedInventoryRow(
     {
       repo_id: repoId,
@@ -322,6 +362,32 @@ test("keeps an unclassified local HF-cache partial selected when safetensors com
     localRows: [local],
   });
   assert.deepEqual(resolveInventorySelection(reverted, complete.id), {
+    selectedId: local.id,
+    hiddenByFilters: false,
+  });
+});
+
+test("keeps an unclassified GGUF partial when an unrelated safetensors job completes", () => {
+  const repoId = "Org/Hybrid-Complete";
+  const local = buildUnknownHfCacheRow(repoId);
+  const complete = buildCachedInventoryRow(
+    {
+      repo_id: repoId,
+      model_format: "safetensors",
+      size_bytes: 100,
+      partial: false,
+    },
+    "safetensors",
+  );
+
+  assert.ok(local);
+  const inventory = dedupeSameSourceHubCacheRows({
+    cachedRows: [complete],
+    localRows: [local],
+  });
+  assert.deepEqual(inventory.cachedRows, [complete]);
+  assert.deepEqual(inventory.localRows, [local]);
+  assert.deepEqual(resolveInventorySelection(inventory, local.id), {
     selectedId: local.id,
     hiddenByFilters: false,
   });
