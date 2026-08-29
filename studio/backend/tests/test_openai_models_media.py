@@ -497,6 +497,31 @@ def test_custom_stt_scan_keeps_only_complete_servable_whisper_repos(monkeypatch)
     assert len(calls) == 1
 
 
+def test_concurrent_custom_stt_requests_share_one_inventory_scan(monkeypatch):
+    from hub.services.models import cache_inventory
+
+    calls = []
+    ready = threading.Barrier(2)
+
+    def _scan():
+        calls.append(True)
+        time.sleep(0.02)
+        return []
+
+    monkeypatch.setattr(cache_inventory, "_scan_cached_models", _scan)
+    inf._CUSTOM_STT_CACHE.update(at = None, ids = ())
+
+    def _build():
+        ready.wait()
+        return inf._downloaded_custom_stt_ids(1234.0)
+
+    with ThreadPoolExecutor(max_workers = 2) as pool:
+        results = [future.result() for future in (pool.submit(_build), pool.submit(_build))]
+
+    assert results == [(), ()]
+    assert calls == [True]
+
+
 def test_a_whisper_id_cached_only_for_whisper_cpp_is_not_advertised(monkeypatch):
     """/v1/audio/transcriptions never selects the GGML engine on its own.
 

@@ -23192,30 +23192,33 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
 
 
 _CUSTOM_STT_CACHE: dict = {"at": None, "ids": ()}
+_CUSTOM_STT_CACHE_LOCK = threading.Lock()
 
 
 def _downloaded_custom_stt_ids(catalog_at: Optional[float]) -> tuple[str, ...]:
     if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
         return _CUSTOM_STT_CACHE["ids"]
-    from core.inference import stt_sidecar
-    from hub.services.models.cache_inventory import _scan_cached_models
-
-    try:
-        ids = tuple(
-            sorted(
-                row["repo_id"]
-                for row in _scan_cached_models()
-                if row.get("task") == _STT_MODEL_TASK
-                and not row.get("partial")
-                and isinstance(row.get("repo_id"), str)
-                and stt_sidecar.is_model_downloaded(row["repo_id"])
+    with _CUSTOM_STT_CACHE_LOCK:
+        if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+            return _CUSTOM_STT_CACHE["ids"]
+        from core.inference import stt_sidecar
+        from hub.services.models.cache_inventory import _scan_cached_models
+        try:
+            ids = tuple(
+                sorted(
+                    row["repo_id"]
+                    for row in _scan_cached_models()
+                    if row.get("task") == _STT_MODEL_TASK
+                    and not row.get("partial")
+                    and isinstance(row.get("repo_id"), str)
+                    and stt_sidecar.is_model_downloaded(row["repo_id"])
+                )
             )
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("custom stt cache scan unavailable for /v1/models: %s", exc)
-        ids = ()
-    _CUSTOM_STT_CACHE.update(at = catalog_at, ids = ids)
-    return ids
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("custom stt cache scan unavailable for /v1/models: %s", exc)
+            ids = ()
+        _CUSTOM_STT_CACHE.update(at = catalog_at, ids = ids)
+        return ids
 
 
 def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list[dict]:
