@@ -77,6 +77,7 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
 
@@ -787,7 +788,10 @@ const MarkdownTextImpl = () => {
             key={`${messageId}:${incrementalCache.renderGeneration}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+            parseMarkdownIntoBlocksFn={
+              incrementalRender?.parseMarkdownIntoBlocks ??
+              parseMarkdownIntoRenderableBlocks
+            }
             isAnimating={isStreaming}
             animated={STREAMDOWN_IMMEDIATE_UPDATES}
             plugins={STREAMDOWN_PLUGINS}

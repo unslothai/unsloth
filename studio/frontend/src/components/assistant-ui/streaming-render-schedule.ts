@@ -69,9 +69,21 @@ const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
+const LINK_REFERENCE_RE =
+  /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
+
+function hasGlobalLinkReference(markdown: string): boolean {
+  return LINK_REFERENCE_RE.test(markdown) && LINK_DEFINITION_RE.test(markdown);
+}
+
+export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
+  return hasGlobalLinkReference(markdown)
+    ? [markdown]
+    : parseMarkdownIntoBlocks(markdown);
+}
 
 // Where remend believes the emphasis scan sits with respect to math.
 //
@@ -1155,7 +1167,7 @@ export class IncrementalMarkdownCache {
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
     ...this.committedBlocks,
-    ...parseMarkdownIntoBlocks(markdown),
+    ...parseMarkdownIntoRenderableBlocks(markdown),
   ];
 
   // Streamdown memoises the whole component on the Markdown string and ignores
@@ -1324,10 +1336,10 @@ export class IncrementalMarkdownCache {
     const repaired =
       this.repairOpenFence() ?? repairTail(this.tail, this.context);
 
-    // Streamdown deliberately turns a repaired document containing footnotes
-    // into one block so definitions can resolve references anywhere in the
-    // document. Such a construct is globally scoped and cannot retain a prefix.
+    // globally scoped definitions must stay in the same rendered document as
+    // their uses, so neither construct can retain an independently parsed prefix.
     if (
+      hasGlobalLinkReference(markdown) ||
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired)
     ) {

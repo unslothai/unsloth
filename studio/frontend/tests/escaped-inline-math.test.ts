@@ -7,6 +7,7 @@ import { createMathPlugin } from "@streamdown/math";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
+import { parseMarkdownIntoRenderableBlocks } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import {
   looksLikeEscapedInlineMath,
   normalizeEscapedInlineMath,
@@ -26,6 +27,7 @@ function render(
       {
         mode,
         plugins: { math },
+        parseMarkdownIntoBlocksFn: parseMarkdownIntoRenderableBlocks,
       },
       preprocessLaTeX(
         normalizeEscapedMath ? normalizeEscapedInlineMath(markdown) : markdown,
@@ -111,10 +113,10 @@ test("escaped candidates cannot consume nested Markdown", () => {
     String.raw`Before \$x + [y](https://e.test)\$ then \$z\$`,
     String.raw`Before \$x_ + [y][ref]\$ then \$z\$
 
-[ref]: https://e.test`,
+[ref]: https://example.com/reference`,
     String.raw`Before \$x_ + [y][]\$ then \$z\$
 
-[y]: https://e.test`,
+[y]: https://example.com/reference`,
     String.raw`Before \$x + <code>y</code>\$ then \$z\$`,
   ]) {
     assert.deepEqual(annotations(render(markdown)), ["z"], markdown);
@@ -122,7 +124,7 @@ test("escaped candidates cannot consume nested Markdown", () => {
 
   const referenceLink = render(String.raw`Before \$x_ + [y][ref]\$ then \$z\$
 
-[ref]: https://e.test`);
+[ref]: https://example.com/reference`);
   assert.ok(referenceLink.includes('data-streamdown="link"'));
   assert.ok(referenceLink.includes(">y</button>"));
 });
