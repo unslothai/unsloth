@@ -40,6 +40,7 @@ from utils.utils import hf_env_offline
 # torch, and routes/inference.py imports this module at startup only for GenStream*.
 DownloadStallError: type
 MONITOR_TOKEN_CALLBACK_STATS_KEY = "_monitor_token_callback"
+MONITOR_TURN_END_CALLBACK_STATS_KEY = "_monitor_turn_end_callback"
 
 
 def __getattr__(name: str):
@@ -2146,10 +2147,12 @@ class InferenceOrchestrator:
             # later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
             turn_stats: dict = {}
+            on_turn_end = None
             if isinstance(stats_holder, dict):
                 on_token = stats_holder.get(MONITOR_TOKEN_CALLBACK_STATS_KEY)
                 if callable(on_token):
                     turn_stats[MONITOR_TOKEN_CALLBACK_STATS_KEY] = on_token
+                on_turn_end = stats_holder.get(MONITOR_TURN_END_CALLBACK_STATS_KEY)
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
@@ -2205,6 +2208,11 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = _summed_tool_loop_stats(
                         stats_holder.get("stats"), turn_stats.get("stats")
                     )
+                if callable(on_turn_end):
+                    try:
+                        on_turn_end()
+                    except Exception:
+                        logger.warning("Failed to close a live generation turn", exc_info = True)
 
         initial = list(messages)
         if system_prompt:

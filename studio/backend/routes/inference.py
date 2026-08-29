@@ -77,6 +77,7 @@ from core.inference.orchestrator import (
     GenStreamError,
     GenStreamErrorRaised,
     MONITOR_TOKEN_CALLBACK_STATS_KEY,
+    MONITOR_TURN_END_CALLBACK_STATS_KEY,
     MINIMAX_MUSIC_MAX_FRAMES,
     MOSS_TTS_MAX_FRAMES,
     _summed_tool_loop_stats,
@@ -5271,7 +5272,10 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
 def _monitor_safetensors_stats_holder(monitor_id: Optional[str]) -> dict:
     if not monitor_id:
         return {}
-    return {MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: api_monitor.record_decoded_token(monitor_id)}
+    return {
+        MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: api_monitor.record_decoded_token(monitor_id),
+        MONITOR_TURN_END_CALLBACK_STATS_KEY: lambda: api_monitor.pause_decoding(monitor_id),
+    }
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:

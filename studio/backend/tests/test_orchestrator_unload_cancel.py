@@ -262,7 +262,10 @@ def test_consume_token_stream_reports_each_worker_token():
 
 
 def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
-    from core.inference.orchestrator import MONITOR_TOKEN_CALLBACK_STATS_KEY
+    from core.inference.orchestrator import (
+        MONITOR_TOKEN_CALLBACK_STATS_KEY,
+        MONITOR_TURN_END_CALLBACK_STATS_KEY,
+    )
     from core.inference import safetensors_agentic
 
     o = _bare_orchestrator()
@@ -279,7 +282,10 @@ def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
 
     monkeypatch.setattr(o, "generate_chat_response", generate_chat_response)
     monkeypatch.setattr(safetensors_agentic, "run_safetensors_tool_loop", run_tool_loop)
-    stats_holder = {MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: observed.append("token")}
+    stats_holder = {
+        MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: observed.append("token"),
+        MONITOR_TURN_END_CALLBACK_STATS_KEY: lambda: observed.append("turn_end"),
+    }
 
     events = list(
         o.generate_chat_completion_with_tools(
@@ -290,7 +296,7 @@ def test_safetensors_tool_loop_forwards_live_token_callback(monkeypatch):
     )
 
     assert events == [{"type": "content", "text": "answer"}]
-    assert observed == ["token"]
+    assert observed == ["token", "turn_end"]
     assert stats_holder["stats"]["usage"]["completion_tokens"] == 1
 
 

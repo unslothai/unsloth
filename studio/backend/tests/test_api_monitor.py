@@ -1667,6 +1667,36 @@ def test_running_decoded_tokens_report_live_tps(monkeypatch):
     assert monitor.get(entry_id)["tok_per_sec"] is None
 
 
+def test_live_tps_excludes_tool_pauses(monkeypatch):
+    import core.inference.api_monitor as m
+
+    clock = [100.0]
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    monitor.record_decoded_token(entry_id)
+    clock[0] = 100.5
+    for _ in range(5):
+        monitor.record_decoded_token(entry_id)
+    assert monitor.get(entry_id)["tok_per_sec"] == 10.0
+
+    monitor.pause_decoding(entry_id)
+    assert monitor.get(entry_id)["tok_per_sec"] is None
+
+    clock[0] = 300.0
+    monitor.record_decoded_token(entry_id)
+    clock[0] = 300.5
+    for _ in range(5):
+        monitor.record_decoded_token(entry_id)
+    assert monitor.get(entry_id)["tok_per_sec"] == 10.0
+
+
 def test_a_stop_reason_written_after_finish_escapes_the_clearing():
     # Why every route records the reason before finish(): the settle runs once, at the
     # terminal transition, so a later write would put a natural stop reason back onto a

@@ -692,6 +692,18 @@ class ApiMonitor:
             entry.decoded_tokens_observed += 1
             entry.updated_at = time.time()
 
+    def pause_decoding(self, entry_id: Optional[str]) -> None:
+        if not entry_id:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.status != "running":
+                return
+            entry.first_decode_monotonic = None
+            entry.decoded_tokens_observed = 0
+            entry.tok_per_sec = None
+            entry.updated_at = time.time()
+
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
             return
