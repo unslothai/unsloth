@@ -2588,7 +2588,7 @@ def _merge_codex_config(existing: str, base: str) -> str:
 # Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
-_CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 151, 0)
+_CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
 
 
 def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]:
@@ -2618,7 +2618,8 @@ def _codex_supports_model_catalog() -> bool:
 def _codex_supports_patch_line_endings() -> bool:
     executable = _which_with_install_dirs("codex")
     if executable is None:
-        return False
+        # A normal launch installs Codex after this check; no-launch may run elsewhere.
+        return True
     version = _codex_executable_version(executable)
     return version is not None and version >= _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION
 

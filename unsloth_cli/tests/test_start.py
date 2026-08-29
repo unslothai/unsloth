@@ -978,7 +978,9 @@ def test_codex_model_catalog_version_gate(monkeypatch, version, expected):
 @pytest.mark.parametrize(
     ("version", "expected"),
     [
-        ("codex-cli 0.150.0", False),
+        ("codex-cli 0.147.0", False),
+        ("codex-cli 0.148.0", True),
+        ("codex-cli 0.150.0", True),
         ("codex-cli 0.151.0", True),
         ("codex-cli 1.0.0", True),
     ],
@@ -987,6 +989,11 @@ def test_codex_patch_line_endings_version_gate(monkeypatch, version, expected):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
     assert start._codex_supports_patch_line_endings() is expected
+
+
+def test_codex_patch_line_endings_assumes_current_when_not_installed(monkeypatch):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    assert start._codex_supports_patch_line_endings() is True
 
 
 def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
