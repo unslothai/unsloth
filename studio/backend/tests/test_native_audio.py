@@ -563,6 +563,76 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
     assert entry["pipeline"] is pipeline
 
 
+def test_higgs_tts3_loader_uses_the_approved_codec_target_and_token(monkeypatch):
+    seen = {}
+
+    class Parameter:
+        frozen = False
+
+        def requires_grad_(self, value):
+            self.frozen = not value
+
+    class Codec:
+        parameter = Parameter()
+
+        def to(self, device):
+            seen["codec_device"] = device
+            return self
+
+        def eval(self):
+            seen["codec_eval"] = True
+            return self
+
+        def parameters(self):
+            return [self.parameter]
+
+    codec = Codec()
+
+    class Model:
+        config = SimpleNamespace(sample_rate = 24000)
+
+        def to(self, device):
+            seen["model_device"] = device
+            return self
+
+        def eval(self):
+            return self
+
+        def get_audio_codec(self):
+            raise AssertionError("the zero-argument publisher loader drops the token")
+
+    def load_codec(source, **kwargs):
+        seen["codec_load"] = (source, kwargs)
+        return codec
+
+    monkeypatch.setattr(
+        "core.inference.native_audio._higgs_tts3_codec_target",
+        lambda *_args: "acme/private-higgs3-codec",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoModel = SimpleNamespace(from_pretrained = load_codec),
+            AutoModelForCausalLM = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: Model()),
+            AutoTokenizer = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: object()),
+        ),
+    )
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cuda"
+    backend._dtype = lambda: torch.bfloat16
+    backend._token_kwargs = lambda _token: {"token": "secret"}
+
+    entry = {}
+    backend._load_higgs_tts3(entry, "/models/higgs3", "secret", True)
+    source, kwargs = seen["codec_load"]
+    assert source == "acme/private-higgs3-codec"
+    assert kwargs["token"] == "secret" and kwargs["trust_remote_code"] is True
+    assert kwargs["dtype"] is torch.float32
+    assert entry["model"]._audio_codec is codec
+    assert codec.parameter.frozen and seen["codec_device"] == "cuda" and seen["codec_eval"]
+
+
 def test_minimax_requires_a_separate_description():
     backend = _backend("minimax_music3", pipeline = object(), sample_rate = 44100)
     with pytest.raises(RuntimeError, match = "music description"):

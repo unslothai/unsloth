@@ -889,9 +889,11 @@ class NativeAudioBackend:
     def _load_higgs_tts3(
         self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
     ) -> None:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+        from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
         token_kwargs = self._token_kwargs(hf_token)
+        codec_source = _higgs_tts3_codec_target(source, hf_token)
         tokenizer = AutoTokenizer.from_pretrained(source, **token_kwargs)
         model = AutoModelForCausalLM.from_pretrained(
             source,
@@ -900,7 +902,16 @@ class NativeAudioBackend:
             **token_kwargs,
         )
         model = self._move(model)
-        model.get_audio_codec()
+        codec = AutoModel.from_pretrained(
+            codec_source,
+            trust_remote_code = trust_remote_code,
+            dtype = torch.float32,
+            **token_kwargs,
+        )
+        codec = self._move(codec)
+        for parameter in codec.parameters():
+            parameter.requires_grad_(False)
+        model._audio_codec = codec
         sample_rate = int(getattr(model.config, "sample_rate", 24000))
         entry.update(model = model, processor = tokenizer, sample_rate = sample_rate)
 
