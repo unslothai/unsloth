@@ -57,6 +57,7 @@ NATIVE_AUDIO_MODEL_TYPES = {
 
 NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values())
 REMOTE_CODE_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano", "higgs_tts3"))
+PYTHON310_AUDIO_TYPES = frozenset(("higgs_tts2", "higgs_tts3", "minimax_music3"))
 MOSS_LOCAL_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 MOSS_NANO_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 MOSS_NANO_TEXT_TEMPERATURE = 1.5
@@ -549,6 +550,9 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
         raise ValueError("A model repository is required.")
     local_checkpoint = Path(normalized).expanduser().exists()
     audio_type = _native_audio_type(normalized)
+    if audio_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):
+        family = "Higgs TTS" if audio_type.startswith("higgs_") else "MiniMax Music 3"
+        raise ValueError(f"{family} requires Python 3.10 or newer in Studio.")
     if local_checkpoint and audio_type is None:
         return {
             "entries": [],

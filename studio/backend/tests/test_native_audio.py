@@ -240,6 +240,21 @@ def test_higgs_tts2_download_plan_includes_audio_tokenizer(monkeypatch):
     assert [entry["repo_id"] for entry in plan["entries"]] == calls
 
 
+@pytest.mark.parametrize(
+    ("repo", "message"),
+    (
+        ("bosonai/higgs-tts-2-3b-base", "Higgs TTS"),
+        ("multimodalart/higgs-audio-v3-tts-4b-transformers", "Higgs TTS"),
+        ("MiniMaxAI/MiniMax-Music3", "MiniMax Music 3"),
+    ),
+)
+def test_python39_refuses_unsupported_audio_before_download_planning(monkeypatch, repo, message):
+    monkeypatch.setattr("core.inference.native_audio.sys.version_info", (3, 9, 20))
+
+    with pytest.raises(ValueError, match = rf"{message} requires Python 3\.10"):
+        native_audio_download_plan(repo)
+
+
 def test_moss_kv_memory_uses_full_published_context(tmp_path):
     (tmp_path / "config.json").write_text(
         json.dumps(
