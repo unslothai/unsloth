@@ -144,7 +144,10 @@ def test_video_joins_the_projector_requirement_before_switching():
     cannot serve it either. Audio already votes here."""
     source = _inference_source()
     start = source.index("_needs_image = bool(_pre_parsed[2])")
-    block = source[start : start + 400]
+    # 600, not 400: the block gained explanatory comments and a widened
+    # _needs_image derivation, which pushed the modality votes past the old
+    # window while leaving the wiring itself intact.
+    block = source[start : start + 600]
     assert "payload.audio_base64" in block
     assert "payload.video_base64" in block
 
