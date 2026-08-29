@@ -2015,6 +2015,66 @@ def test_linux_hybrid_unpinnable_cpu_matches_llama_physical_fallback(tmp_path):
     )
 
 
+def test_linux_hybrid_affinity_probe_failure_matches_physical_fallback(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(8):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-3")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("4-7")
+
+    def fail_affinity(_pid):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", fail_affinity)
+    assert (
+        llama_mod._linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+            probe_affinity = True,
+        )
+        == 8
+    )
+
+
+def test_linux_hybrid_affinity_restore_failure_does_not_escape(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(8):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-3")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("4-7")
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(8)))
+
+    def restore_fails(_pid, cpus):
+        if len(cpus) > 1:
+            raise OSError("restore failed")
+
+    monkeypatch.setattr(llama_mod.os, "sched_setaffinity", restore_fails)
+    assert (
+        llama_mod._linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+            probe_affinity = True,
+        )
+        == 2
+    )
+
+
 def test_linux_hybrid_with_unreadable_core_mask_is_conservative(tmp_path):
     from core.inference.llama_cpp import _linux_math_core_count
 

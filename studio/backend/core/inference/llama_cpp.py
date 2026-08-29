@@ -3342,6 +3342,7 @@ def _linux_math_core_count(
     vendor_id: Optional[str] = None,
     event_source_root: Path = Path("/sys/bus/event_source/devices"),
     pinnable_cpus: Optional[set[int]] = None,
+    probe_affinity: Optional[bool] = None,
 ) -> Optional[int]:
     """Linux x86 cores useful to llama.cpp's default math pool.
 
@@ -3408,12 +3409,18 @@ def _linux_math_core_count(
             result = 0
             cpu = 0
             saved_affinity: Optional[set[int]] = None
-            probe_affinity = pinnable_cpus is None and cpu_root == Path("/sys/devices/system/cpu")
-            if probe_affinity and hasattr(os, "sched_getaffinity"):
+            should_probe = pinnable_cpus is None and (
+                cpu_root == Path("/sys/devices/system/cpu")
+                if probe_affinity is None
+                else probe_affinity
+            )
+            if should_probe:
+                if not hasattr(os, "sched_getaffinity") or not hasattr(os, "sched_setaffinity"):
+                    return physical_count
                 try:
                     saved_affinity = os.sched_getaffinity(0)
                 except OSError:
-                    pass
+                    return physical_count
             try:
                 while cpu < native_count:
                     if online_cpus and cpu not in online_cpus:
@@ -3433,7 +3440,10 @@ def _linux_math_core_count(
                 return result or physical_count
             finally:
                 if saved_affinity is not None:
-                    os.sched_setaffinity(0, saved_affinity)
+                    try:
+                        os.sched_setaffinity(0, saved_affinity)
+                    except OSError:
+                        pass
 
         core_mask = cpu_list(event_source_root / "cpu_core" / "cpus")
         atom_path = event_source_root / "cpu_atom"
