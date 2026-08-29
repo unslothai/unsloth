@@ -3,9 +3,11 @@
 
 """Regression coverage for the deprecated custom prompt template parameter."""
 
+import pytest
 from datasets import Dataset
 
 from utils.datasets.chat_templates import apply_chat_template_to_dataset
+from utils.datasets.dataset_utils import format_and_template_dataset
 
 
 class _Tokenizer:
@@ -60,3 +62,30 @@ def test_default_template_is_unchanged_when_parameter_is_omitted():
         "further context. Write a response that appropriately completes the request.\n\n"
         "### Instruction:\nWhat is 2+2?\n\n### Input:\n\n\n### Response:\n4"
     )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"format_type": "raw"},
+        {"is_vlm": True},
+    ],
+)
+def test_main_entry_point_rejects_custom_templates_before_every_format_branch(options):
+    dataset = _alpaca_dataset()
+
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen2ForCausalLM",
+        tokenizer = _Tokenizer(),
+        custom_prompt_template = "{instruction}",
+        **options,
+    )
+
+    assert result["success"] is False
+    assert "deprecated and unsupported" in result["errors"][0]
+    assert result["dataset"] is dataset
+    assert result["detected_format"] == "unknown"
+    assert result["final_format"] == "unknown"
+    assert result["requires_manual_mapping"] is False

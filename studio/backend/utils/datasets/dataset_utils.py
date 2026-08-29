@@ -35,6 +35,7 @@ from .format_conversion import (
     convert_sharegpt_with_images_to_vlm_format,
 )
 from .chat_templates import (
+    _custom_prompt_template_error,
     apply_chat_template_to_dataset,
     get_dataset_info_summary,
     get_tokenizer_chat_template,
@@ -912,6 +913,21 @@ def format_and_template_dataset(
             "summary": Human-readable summary
         }
     """
+
+    custom_prompt_error = _custom_prompt_template_error(custom_prompt_template)
+    if custom_prompt_error:
+        return {
+            "dataset": dataset,
+            "detected_format": "unknown",
+            "final_format": "unknown",
+            "chat_column": None,
+            "is_vlm": is_vlm,
+            "success": False,
+            "requires_manual_mapping": False,
+            "warnings": [],
+            "errors": [custom_prompt_error],
+            "summary": None,
+        }
 
     # VLM FLOW
     if is_vlm:
