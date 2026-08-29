@@ -1783,6 +1783,22 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) == 8
 
 
+def test_default_thread_override_uses_native_logical_count(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _SmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 16 if logical else 8
+
+    import sys
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 2)
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) is None
+
+
 def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     import core.inference.llama_cpp as llama_mod
 
@@ -1833,6 +1849,91 @@ def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):
         (cpu_path / "cpu_capacity").write_text(str(capacity))
 
     assert _linux_math_core_count(tmp_path, logical_cpus = 32, vendor_id = "GenuineIntel") == 8
+
+
+def test_linux_hybrid_pmu_excludes_efficiency_cores_without_capacity(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    sibling_sets = [f"{core},{core + 4}" for core in range(4)]
+    sibling_sets.extend(f"{core},{core + 4}" for core in range(4))
+    sibling_sets.extend(str(cpu) for cpu in range(8, 16))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-7")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("8-15")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 4
+    )
+
+
+def test_linux_hybrid_with_unreadable_core_mask_is_conservative(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(4):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_atom").mkdir(parents = True)
+    (event_root / "cpu_atom" / "cpus").write_text("2-3")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 1
+    )
+
+
+def test_linux_hybrid_with_only_efficiency_cores_matches_llama_fallback(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(4):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("0-3")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 4
+    )
+
+
+def test_linux_topology_ignores_python_cpu_count_override(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    for cpu in range(4):
+        cpu_path = tmp_path / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 2)
+
+    assert llama_mod._linux_math_core_count(tmp_path, vendor_id = "AuthenticAMD") == 4
 
 
 def test_linux_amd_capacity_classes_keep_all_physical_cores(tmp_path):

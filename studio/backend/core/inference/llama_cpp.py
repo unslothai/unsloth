@@ -3340,16 +3340,16 @@ def _linux_math_core_count(
     cpu_root: Path = Path("/sys/devices/system/cpu"),
     logical_cpus: Optional[int] = None,
     vendor_id: Optional[str] = None,
+    event_source_root: Path = Path("/sys/bus/event_source/devices"),
 ) -> Optional[int]:
     """Linux x86 cores useful to llama.cpp's default math pool.
 
-    ``thread_siblings`` mirrors llama.cpp's physical-core count. A heterogeneous
-    ``cpu_capacity`` set identifies the Intel performance cores its hybrid-x86
-    CPUID path keeps while it skips the efficiency cores. AMD capacity classes
-    do not trigger that llama.cpp branch, so they retain every physical core.
+    ``thread_siblings`` mirrors llama.cpp's physical-core count. Intel's hybrid
+    PMU masks identify performance cores on kernels without ``cpu_capacity``;
+    heterogeneous capacity remains the fallback. AMD capacity classes do not
+    trigger llama.cpp's hybrid CPUID branch, so they retain every physical core.
     """
-    count = os.cpu_count() if logical_cpus is None else logical_cpus
-    if not count or count < 1:
+    if logical_cpus is not None and logical_cpus < 1:
         return None
     if vendor_id is None:
         try:
@@ -3363,7 +3363,8 @@ def _linux_math_core_count(
             vendor_id = ""
     siblings: list[str] = []
     capacities: list[Optional[int]] = []
-    for cpu in range(count):
+    cpu = 0
+    while logical_cpus is None or cpu < logical_cpus:
         cpu_path = cpu_root / f"cpu{cpu}"
         try:
             sibling_set = (cpu_path / "topology" / "thread_siblings").read_text().strip()
@@ -3376,21 +3377,51 @@ def _linux_math_core_count(
             capacities.append(int((cpu_path / "cpu_capacity").read_text().strip()))
         except (OSError, ValueError):
             capacities.append(None)
+        cpu += 1
     if not siblings:
         return None
-    if (
-        vendor_id == "GenuineIntel"
-        and all(capacity is not None for capacity in capacities)
-        and len(set(capacities)) > 1
-    ):
-        fastest = max(capacity for capacity in capacities if capacity is not None)
-        return len(
-            {
-                sibling_set
-                for sibling_set, capacity in zip(siblings, capacities)
-                if capacity == fastest
+    if vendor_id == "GenuineIntel":
+        def cpu_list(path: Path) -> Optional[set[int]]:
+            try:
+                raw = path.read_text().strip()
+                if not raw:
+                    return set()
+                result: set[int] = set()
+                for part in raw.split(","):
+                    bounds = [int(value) for value in part.split("-")]
+                    if len(bounds) == 1 and bounds[0] >= 0:
+                        result.add(bounds[0])
+                    elif len(bounds) == 2 and 0 <= bounds[0] <= bounds[1]:
+                        result.update(range(bounds[0], bounds[1] + 1))
+                    else:
+                        return None
+                return result
+            except (OSError, ValueError):
+                return None
+
+        core_mask = cpu_list(event_source_root / "cpu_core" / "cpus")
+        atom_path = event_source_root / "cpu_atom"
+        lowpower_path = event_source_root / "cpu_lowpower"
+        hybrid_pmu = atom_path.exists() or lowpower_path.exists()
+        if core_mask:
+            p_core_siblings = {
+                sibling_set for index, sibling_set in enumerate(siblings) if index in core_mask
             }
-        )
+            return len(p_core_siblings) or 1
+        if hybrid_pmu:
+            atom_mask = cpu_list(atom_path / "cpus") or cpu_list(lowpower_path / "cpus")
+            if core_mask == set() and atom_mask:
+                return len(set(siblings))
+            return 1
+        if all(capacity is not None for capacity in capacities) and len(set(capacities)) > 1:
+            fastest = max(capacity for capacity in capacities if capacity is not None)
+            return len(
+                {
+                    sibling_set
+                    for sibling_set, capacity in zip(siblings, capacities)
+                    if capacity == fastest
+                }
+            )
     return len(set(siblings))
 
 
@@ -3433,11 +3464,15 @@ def _spilled_decode_threads(
         except (TypeError, ValueError):
             continue
     physical: Optional[int] = None
+    logical: Optional[int] = None
     if sys.platform.startswith("linux") and os.uname().machine.lower() in ("x86_64", "amd64"):
         physical = _linux_math_core_count()
     try:
+        import psutil
+        answer = psutil.cpu_count(logical = True)
+        if answer and answer > 0:
+            logical = int(answer)
         if physical is None:
-            import psutil
             answer = psutil.cpu_count(logical = False)
             if answer and answer > 0:
                 physical = int(answer)
@@ -3448,7 +3483,7 @@ def _spilled_decode_threads(
         physical = logical if logical and logical <= 4 else (logical // 2 if logical else 4)
     if requested is None:
         return physical
-    actual = requested if requested > 0 else (os.cpu_count() or physical)
+    actual = requested if requested > 0 else (logical or os.cpu_count() or physical)
     if actual > physical:
         return None
     return max(1, actual)
