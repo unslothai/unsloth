@@ -413,10 +413,28 @@ async function syncInferenceStatusToStore(options?: {
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
-    const [listRes, statusRes, lorasRes, idleUnloadArmed] = await Promise.all([
+    const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
       getInferenceStatus(),
-      includeLoras ? listLoras() : Promise.resolve(null),
+      // Settled from this request alone. Read out of the aggregate below, a sibling
+      // rejection discarded a good list yet still marked the inventory settled, so a
+      // resident LoRA classified as a base model and pinned a new pair generalized.
+      includeLoras
+        ? listLoras().then(
+            (lorasRes) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                setLoras(lorasRes.loras.map(toLoraSummary));
+              }
+              return lorasRes;
+            },
+            (error) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                useChatRuntimeStore.setState({ loraInventorySettled: true });
+              }
+              throw error;
+            },
+          )
+        : Promise.resolve(null),
       options?.preserveIdleUnloaded
         ? readIdleUnloadArmed()
         : Promise.resolve(false),
@@ -426,12 +444,7 @@ async function syncInferenceStatusToStore(options?: {
     // before writing backend state back -- cancelLoading already cleared it.
     // Same for a refresh that a later one has already superseded: its answer
     // describes a moment that has passed.
-    if (signal?.aborted) return;
-
-    if (lorasRes && !loraSuperseded()) {
-      setLoras(lorasRes.loras.map(toLoraSummary));
-    }
-    if (superseded()) return;
+    if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelRow));
 
@@ -521,12 +534,9 @@ async function syncInferenceStatusToStore(options?: {
     }
   } catch (error) {
     // A superseded refresh reports nothing, or a stale failure would raise a
-    // toast about a read whose answer would have been discarded anyway.
-    if (signal?.aborted) return;
-    if (includeLoras && !loraSuperseded()) {
-      useChatRuntimeStore.setState({ loraInventorySettled: true });
-    }
-    if (superseded()) return;
+    // toast about a read whose answer would have been discarded anyway. The LoRA
+    // inventory settles from its own request above, never from a sibling's failure.
+    if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
