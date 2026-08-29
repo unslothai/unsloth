@@ -389,6 +389,19 @@ def test_loaded_non_gguf_media_stays_listed_when_discovery_misses_it(monkeypatch
     assert resident_answers_media_request(resident["text-to-image"], model["id"], owner = DIFFUSION)
 
 
+def test_edit_only_resident_missing_from_discovery_is_not_advertised(monkeypatch):
+    resident = {
+        "text-to-image": {
+            "loaded": True,
+            "repo_id": "org/qwen-image-edit",
+            "model_kind": "pipeline",
+            "workflows": ["edit"],
+        }
+    }
+    _catalog(monkeypatch, [], resident, picks = {})
+    assert asyncio.run(inf._openai_catalog_objects()) == []
+
+
 def _stt(
     monkeypatch,
     *,
