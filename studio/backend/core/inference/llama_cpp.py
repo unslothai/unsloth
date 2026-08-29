@@ -3357,7 +3357,7 @@ def _linux_math_core_count(
         try:
             vendor_match = re.search(
                 r"^vendor_id\s*:\s*(\S+)",
-                Path("/proc/cpuinfo").read_text(),
+                Path("/proc/cpuinfo").read_text(encoding = "utf-8"),
                 flags = re.MULTILINE,
             )
             vendor_id = vendor_match.group(1) if vendor_match else ""
@@ -3369,14 +3369,20 @@ def _linux_math_core_count(
     while logical_cpus is None or cpu < logical_cpus:
         cpu_path = cpu_root / f"cpu{cpu}"
         try:
-            sibling_set = (cpu_path / "topology" / "thread_siblings").read_text().strip()
+            sibling_set = (
+                (cpu_path / "topology" / "thread_siblings")
+                .read_text(encoding = "utf-8")
+                .strip()
+            )
         except OSError:
             break
         if not sibling_set:
             break
         siblings.append(sibling_set)
         try:
-            capacities.append(int((cpu_path / "cpu_capacity").read_text().strip()))
+            capacities.append(
+                int((cpu_path / "cpu_capacity").read_text(encoding = "utf-8").strip())
+            )
         except (OSError, ValueError):
             capacities.append(None)
         cpu += 1
@@ -3386,7 +3392,7 @@ def _linux_math_core_count(
 
         def cpu_list(path: Path) -> Optional[set[int]]:
             try:
-                raw = path.read_text().strip()
+                raw = path.read_text(encoding = "utf-8").strip()
                 if not raw:
                     return set()
                 result: set[int] = set()
