@@ -86,6 +86,10 @@ fn read_journal(path: &Path) -> Option<ActivationJournal> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
+pub(crate) fn pending_versions(home: &Path) -> Option<StagedVersions> {
+    read_journal(&home.join(PREV_DIR).join(PENDING_MARKER)).map(|journal| journal.versions)
+}
+
 fn write_journal(path: &Path, journal: &ActivationJournal) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?;
     write_atomic(path, &body)
@@ -581,6 +585,7 @@ mod tests {
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert_eq!(tag(&home.join(PREV_DIR), "unsloth_studio"), "old");
         assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
+        assert_eq!(pending_versions(&home), Some(versions(Some("0.1.900-beta"))));
         assert!(!home.join(STAGE_DIR).exists());
         assert_eq!(status(&home).state, "none");
         cleanup(home);

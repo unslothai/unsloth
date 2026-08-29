@@ -3530,6 +3530,20 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
+fn pending_backend_matches(
+    required: Option<&str>,
+    readiness: &crate::desktop_backend_owner::OwnedBackendReadiness,
+    observed: Option<&str>,
+) -> bool {
+    let Some(required) = required else {
+        return true;
+    };
+    matches!(
+        readiness,
+        crate::desktop_backend_owner::OwnedBackendReadiness::Ready
+    ) && observed == Some(required)
+}
+
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
@@ -3540,6 +3554,10 @@ async fn validate_candidate_port(
     deadline: std::time::Instant,
 ) {
     let started = std::time::Instant::now();
+    let pending = crate::staged_update::pending_versions(&diagnostics::studio_dir());
+    let pending_backend_version = pending
+        .as_ref()
+        .map(|versions| versions.backend_version.as_str());
     let owner = {
         let proc = match state.lock() {
             Ok(proc) => proc,
@@ -3576,13 +3594,32 @@ async fn validate_candidate_port(
         }
         attempts += 1;
         let ok = if let Some(owner) = owner.clone() {
-            matches!(
-                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
-                    .await,
-                crate::desktop_backend_owner::OwnedBackendProbe::Verified(
-                    crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
-                ) if verified_port == port
+            match crate::desktop_backend_owner::probe_owned_backend_state(
+                owner,
+                Some(port),
+                pending_backend_version.is_some(),
             )
+            .await
+            {
+                crate::desktop_backend_owner::OwnedBackendProbe::Verified(
+                    crate::desktop_backend_owner::VerifiedOwnedBackend {
+                        port: verified_port,
+                        readiness,
+                        backend_version,
+                        ..
+                    },
+                ) => {
+                    verified_port == port
+                        && pending_backend_matches(
+                            pending_backend_version,
+                            &readiness,
+                            backend_version.as_deref(),
+                        )
+                }
+                _ => false,
+            }
+        } else if pending_backend_version.is_some() {
+            false
         } else {
             generic_backend_health_ok(port).await
         };
@@ -5709,6 +5746,34 @@ mod managed_cli_working_dir_tests {
             backend_args(8888),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
+    }
+
+    #[test]
+    fn pending_activation_requires_the_ready_exact_backend_version() {
+        use crate::desktop_backend_owner::OwnedBackendReadiness;
+
+        assert!(pending_backend_matches(
+            None,
+            &OwnedBackendReadiness::Ready,
+            None
+        ));
+        assert!(pending_backend_matches(
+            Some("2026.9.1"),
+            &OwnedBackendReadiness::Ready,
+            Some("2026.9.1")
+        ));
+        assert!(!pending_backend_matches(
+            Some("2026.9.1"),
+            &OwnedBackendReadiness::Ready,
+            Some("2026.8.4")
+        ));
+        assert!(!pending_backend_matches(
+            Some("2026.9.1"),
+            &OwnedBackendReadiness::Stale {
+                reason: "desktop_backend_version_too_old".to_string()
+            },
+            Some("2026.9.1")
+        ));
     }
 
     // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:
