@@ -1221,8 +1221,8 @@ def test_whitespace_arguments_keep_a_name_only_opening_separate(executed):
     transport = FakeTransport(
         [
             [
-                _sse({"tool_calls": [_call_delta(0, None, "web_search", '{}')]}),
-                _sse({"tool_calls": [_call_delta(0, None, "web_fetch", ' ')]}),
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", "{}")]}),
+                _sse({"tool_calls": [_call_delta(0, None, "web_fetch", " ")]}),
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"b"}'}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
@@ -1537,6 +1537,4 @@ def test_a_later_name_does_not_activate_a_completed_unnamed_call(executed):
     assert [(call["name"], call["arguments"]) for call in executed] == [
         ("web_search", {"query": "ok"})
     ]
-    assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == [
-        "tool_call_1"
-    ]
+    assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == ["tool_call_1"]

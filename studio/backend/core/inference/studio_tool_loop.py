@@ -647,10 +647,7 @@ class _Turn:
             complete, tail = _split_top_level_json_documents(combined)
             segments = [*complete, *([tail] if tail else [])]
             if not repeated_snapshot and len(segments) > 1:
-                if (
-                    not current["function"]["name"]
-                    and not (current_complete and not current_tail)
-                ):
+                if not current["function"]["name"] and not (current_complete and not current_tail):
                     current["function"]["name"] = name_fragment
                 current["function"]["arguments"] = segments[0]
                 self.incomplete_split_keys.discard(key)
@@ -714,11 +711,7 @@ class _Turn:
         for position, (key, call) in enumerate(ordered_calls):
             fallback_id = _mint_streamed_tool_call_id(streamed)
             raw_call_id = call.get("id")
-            stream_id = (
-                raw_call_id
-                if isinstance(raw_call_id, str) and raw_call_id
-                else fallback_id
-            )
+            stream_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id else fallback_id
             if key is not None:
                 if stream_id in streamed:
                     stream_id = _mint_streamed_tool_call_id(streamed)
