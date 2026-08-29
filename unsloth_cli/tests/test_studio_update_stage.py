@@ -75,6 +75,26 @@ def test_make_relocatable_does_not_duplicate_the_flag(tmp_path):
     assert (venv / "pyvenv.cfg").read_text(encoding = "utf-8").count("relocatable") == 1
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shebangs")
+def test_make_relocatable_rewrites_shell_wrapper_for_path_with_spaces(tmp_path):
+    venv = _make_venv(tmp_path / "stage with spaces")
+    script = venv / "bin" / "pip"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"'''exec' '{venv}/bin/python' \"$0\" \"$@\"\n"
+        "' '''\n"
+        "print('pip')\n",
+        encoding = "utf-8",
+    )
+
+    assert _studio_stage.make_relocatable(venv) == 2
+
+    text = script.read_text(encoding = "utf-8")
+    assert text.startswith(_studio_stage.RELOCATABLE_SHEBANG)
+    assert str(venv) not in text
+    assert text.endswith("print('pip')\n")
+
+
 def test_clone_tree_copies_symlinks_as_symlinks(tmp_path):
     source = tmp_path / "src"
     (source / "bin").mkdir(parents = True)
@@ -178,12 +198,45 @@ def test_stage_refuses_when_the_previous_stage_could_not_be_cleared(monkeypatch,
 def test_child_environment_points_the_staged_cli_at_the_stage_root(monkeypatch, tmp_path):
     monkeypatch.setenv("VIRTUAL_ENV", "/elsewhere")
     monkeypatch.setenv("PYTHONHOME", "/elsewhere")
+    monkeypatch.setenv("PYTHONPATH", "/foreign/checkout")
 
     env = _studio_stage.child_environment(tmp_path)
 
     assert env[_studio_stage.STAGE_ROOT_ENV] == str(tmp_path)
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONHOME" not in env
+    assert "PYTHONPATH" not in env
+
+
+def test_staged_python_commands_use_isolated_mode(monkeypatch, tmp_path):
+    venv = _make_venv(tmp_path)
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, cwd, env):
+        commands.append(command)
+        return type("Result", (), {"returncode": 0, "stdout": "2026.9.1\n", "stderr": ""})()
+
+    monkeypatch.setattr(_studio_stage, "_run", fake_run)
+    _studio_stage.installed_version(venv, {})
+    _studio_stage.probe_cli(venv, {})
+
+    assert all(command[1] == "-I" for command in commands)
+
+
+def test_nested_update_uses_isolated_mode(monkeypatch, tmp_path):
+    _make_venv(tmp_path)
+    captured: dict = {}
+
+    def fake_call(command, *, cwd, env):
+        captured.update(command = command, cwd = cwd, env = env)
+        return 0
+
+    monkeypatch.setenv("PYTHONPATH", "/foreign/checkout")
+    monkeypatch.setattr(_studio_stage.subprocess, "call", fake_call)
+
+    assert _studio_stage.run_staged_update(tmp_path, ["--verbose"]) == 0
+    assert captured["command"][1:3] == ["-I", "-X"]
+    assert "PYTHONPATH" not in captured["env"]
 
 
 def test_update_stage_flag_refuses_local(monkeypatch):

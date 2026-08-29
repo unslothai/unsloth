@@ -76,6 +76,17 @@ def _is_venv_python_shebang(first_line: bytes) -> bool:
     return b"/bin/python" in target and not target.startswith(b"/usr/bin/env")
 
 
+def _is_venv_python_shell_wrapper(lines: list[bytes]) -> bool:
+    return (
+        len(lines) >= 3
+        and lines[0] == b"#!/bin/sh"
+        and lines[1].startswith(b"'''exec' ")
+        and b"/bin/python" in lines[1]
+        and b'"$0" "$@"' in lines[1]
+        and lines[2] == b"' '''"
+    )
+
+
 def make_relocatable(venv: Path) -> int:
     cfg = venv / "pyvenv.cfg"
     lines = cfg.read_text(encoding = "utf-8").splitlines()
@@ -89,10 +100,17 @@ def make_relocatable(venv: Path) -> int:
         if script.is_symlink() or not script.is_file():
             continue
         data = script.read_bytes()
-        first_line, newline, rest = data.partition(b"\n")
-        if not newline or not _is_venv_python_shebang(first_line):
+        lines = data.splitlines(keepends = True)
+        if not lines:
             continue
-        script.write_bytes(RELOCATABLE_SHEBANG.encode("utf-8") + rest)
+        first_line = lines[0].rstrip(b"\r\n")
+        if _is_venv_python_shebang(first_line):
+            body = b"".join(lines[1:])
+        elif _is_venv_python_shell_wrapper([line.rstrip(b"\r\n") for line in lines[:3]]):
+            body = b"".join(lines[3:])
+        else:
+            continue
+        script.write_bytes(RELOCATABLE_SHEBANG.encode("utf-8") + body)
         rewritten += 1
     return rewritten
 
@@ -116,6 +134,7 @@ def installed_version(venv: Path, env: dict[str, str]) -> str:
     result = _run(
         [
             str(venv_python(venv)),
+            "-I",
             "-c",
             "import importlib.metadata as m; print(m.version('unsloth'))",
         ],
@@ -130,7 +149,7 @@ def installed_version(venv: Path, env: dict[str, str]) -> str:
 
 def probe_cli(venv: Path, env: dict[str, str]) -> None:
     result = _run(
-        [str(venv_python(venv)), "-X", "utf8", "-m", "unsloth_cli", "-h"],
+        [str(venv_python(venv)), "-I", "-X", "utf8", "-m", "unsloth_cli", "-h"],
         cwd = venv.parent,
         env = env,
     )
@@ -170,13 +189,14 @@ def child_environment(root: Path) -> dict[str, str]:
     env = dict(os.environ)
     env[STAGE_ROOT_ENV] = str(root)
     env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
     env.pop("VIRTUAL_ENV", None)
     return env
 
 
 def run_staged_update(root: Path, args: list[str]) -> int:
     python = venv_python(root / VENV_NAME)
-    command = [str(python), "-X", "utf8", "-m", "unsloth_cli", "studio", "update", *args]
+    command = [str(python), "-I", "-X", "utf8", "-m", "unsloth_cli", "studio", "update", *args]
     return subprocess.call(command, cwd = str(root), env = child_environment(root))
 
 
