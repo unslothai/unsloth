@@ -89,6 +89,8 @@ test("a pair holding both shapes resolves from its own shape, not the freshest r
     first: "model1-thread",
     second: "model2-thread",
   });
+  assert.equal(compareVariantForPair(threads, true), "general");
+  assert.equal(compareVariantForPair(threads, false), "general");
 });
 
 test("a complete LoRA shape wins over an interrupted generalized write", () => {
