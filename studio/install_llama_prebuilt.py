@@ -6895,6 +6895,32 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
     return True
 
 
+def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
+    """Whether ``install_dir`` holds a llama.cpp the setup scripts would run.
+
+    Structural completeness is not enough to keep a tree instead of source
+    building: setup.sh reports exit 0 as "prebuilt installed and validated" and
+    only its exit-2 recovery re-checks the binaries, so an ``exists()`` pass hands
+    back a tree its own ``-x`` reuse gate would have rejected. Same checks
+    ``existing_install_matches_choice`` makes before reusing a tree, minus the
+    release fingerprint: what is kept here is deliberately an older build.
+    """
+    if not _install_tree_is_usable(install_dir, host):
+        return False
+    runtime_dir = install_runtime_dir(install_dir, host)
+    ext = ".exe" if host.is_windows else ""
+    binaries = [runtime_dir / f"llama-{name}{ext}" for name in ("server", "quantize")]
+    if not all(os.access(binary, os.X_OK) for binary in binaries):
+        return False
+    try:
+        # Each is a no-op off its own platform, so both are called unconditionally.
+        preflight_linux_installed_binaries(binaries, install_dir, host)
+        preflight_macos_installed_binaries(binaries, install_dir, host)
+    except Exception:
+        return False
+    return True
+
+
 def existing_install_matches_choice(
     install_dir: Path,
     host: HostInfo,
@@ -8129,7 +8155,7 @@ def install_prebuilt(
             not preserve_backend
             and not explicit_version_request
             and host is not None
-            and _install_tree_is_usable(install_dir, host)
+            and _existing_install_runs(install_dir, host)
         ):
             log("prebuilt update unavailable; keeping the existing complete install")
             log(f"prebuilt update reason: {exc}")

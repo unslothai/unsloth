@@ -5516,7 +5516,7 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
-def _complete_existing_llama_install(tmp_path):
+def _complete_existing_llama_install(tmp_path, *, executable = True):
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = install_dir / "build" / "bin"
     runtime_dir.mkdir(parents = True)
@@ -5538,6 +5538,9 @@ def _complete_existing_llama_install(tmp_path):
             )
         else:
             path.write_text("", encoding = "utf-8")
+            # setup.sh's own reuse gate is `-x`, so a tree kept instead of source
+            # built has to clear it too; parametrised to cover the tree that does not.
+            os.chmod(path, 0o755 if executable else 0o644)
     return install_dir
 
 
@@ -5554,6 +5557,52 @@ def test_release_listing_failure_keeps_a_complete_existing_install(tmp_path, mon
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
+    assert (install_dir / "llama-server").exists()
+
+
+def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path, monkeypatch):
+    """A tree setup.sh would refuse to reuse must not be reported as installed.
+
+    Exit 2 hands the decision to setup.sh, whose reuse gate is
+    `-x build/bin/llama-server`; exit 0 is announced as "prebuilt installed and
+    validated" and re-checks nothing. So the keep path owes the same check.
+    """
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    install_dir = _complete_existing_llama_install(tmp_path, executable = False)
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+    assert (install_dir / "llama-server").exists()
+
+
+def test_release_listing_failure_does_not_keep_an_unloadable_install(tmp_path, monkeypatch):
+    """Executable is not runnable: a binary whose link graph is broken source builds."""
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "linux_missing_libraries", lambda *a, **k: ["libcuda.so.1"]
+    )
+
+    install_dir = _complete_existing_llama_install(tmp_path)
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
     assert (install_dir / "llama-server").exists()
 
 
