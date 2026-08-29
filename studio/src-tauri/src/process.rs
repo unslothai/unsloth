@@ -3628,20 +3628,24 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
-fn pending_backend_matches(
+fn pending_backend_validation(
     required: Option<&str>,
     readiness: &crate::desktop_backend_owner::OwnedBackendReadiness,
     observed: Option<&str>,
-) -> bool {
+    torch_warm_in_progress: bool,
+) -> (bool, bool) {
     let Some(required) = required else {
-        return true;
+        return (true, false);
     };
-    matches!(
-        readiness,
-        crate::desktop_backend_owner::OwnedBackendReadiness::Ready
-    ) && observed.is_some_and(|observed| {
-        crate::desktop_update_policy::compare_versions(observed, required) >= 0
-    })
+    let accepted = !torch_warm_in_progress
+        && matches!(
+            readiness,
+            crate::desktop_backend_owner::OwnedBackendReadiness::Ready
+        )
+        && observed.is_some_and(|observed| {
+            crate::desktop_update_policy::compare_versions(observed, required) >= 0
+        });
+    (accepted, !accepted && !torch_warm_in_progress)
 }
 
 fn staged_probe_requires_immediate_rejection(reason: &str) -> bool {
@@ -3723,13 +3727,24 @@ async fn validate_candidate_port(
         }
         attempts += 1;
         let (ok, reject_staged) = if let Some(owner) = owner.clone() {
-            match crate::desktop_backend_owner::probe_owned_backend_state(
-                owner,
-                Some(port),
-                pending_backend_version.is_some(),
-            )
-            .await
-            {
+            let (probe, torch_warm_in_progress) = if pending_backend_version.is_some() {
+                crate::desktop_backend_owner::probe_owned_backend_state_for_staged_activation(
+                    owner,
+                    Some(port),
+                )
+                .await
+            } else {
+                (
+                    crate::desktop_backend_owner::probe_owned_backend_state(
+                        owner,
+                        Some(port),
+                        false,
+                    )
+                    .await,
+                    false,
+                )
+            };
+            match probe {
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
                     crate::desktop_backend_owner::VerifiedOwnedBackend {
                         port: verified_port,
@@ -3739,15 +3754,16 @@ async fn validate_candidate_port(
                     },
                 ) => {
                     let owned_port = verified_port == port;
-                    let version_matches = pending_backend_matches(
+                    let (version_matches, reject_version) = pending_backend_validation(
                         pending_backend_version,
                         &readiness,
                         backend_version.as_deref(),
+                        torch_warm_in_progress,
                     );
                     if owned_port && version_matches {
                         validated_backend_version = backend_version;
                     }
-                    (owned_port && version_matches, owned_port && !version_matches)
+                    (owned_port && version_matches, owned_port && reject_version)
                 }
                 crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable {
                     reason, ..
@@ -6111,33 +6127,63 @@ mod managed_cli_working_dir_tests {
     fn pending_activation_requires_a_ready_backend_at_or_above_the_required_version() {
         use crate::desktop_backend_owner::OwnedBackendReadiness;
 
-        assert!(pending_backend_matches(
-            None,
-            &OwnedBackendReadiness::Ready,
-            None
-        ));
-        assert!(pending_backend_matches(
-            Some("2026.9.1"),
-            &OwnedBackendReadiness::Ready,
-            Some("2026.9.1")
-        ));
-        assert!(!pending_backend_matches(
-            Some("2026.9.1"),
-            &OwnedBackendReadiness::Ready,
-            Some("2026.8.4")
-        ));
-        assert!(pending_backend_matches(
-            Some("2026.9.1"),
-            &OwnedBackendReadiness::Ready,
-            Some("2026.9.2")
-        ));
-        assert!(!pending_backend_matches(
-            Some("2026.9.1"),
-            &OwnedBackendReadiness::Stale {
-                reason: "desktop_backend_version_too_old".to_string()
-            },
-            Some("2026.9.1")
-        ));
+        assert_eq!(
+            pending_backend_validation(None, &OwnedBackendReadiness::Ready, None, false),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.1"),
+                false
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.8.4"),
+                false
+            ),
+            (false, true)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.2"),
+                false
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Stale {
+                    reason: "desktop_backend_version_too_old".to_string()
+                },
+                Some("2026.9.1"),
+                false
+            ),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn pending_activation_waits_for_authenticated_backend_warmup() {
+        use crate::desktop_backend_owner::OwnedBackendReadiness;
+
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.1"),
+                true
+            ),
+            (false, false)
+        );
     }
 
     #[test]
