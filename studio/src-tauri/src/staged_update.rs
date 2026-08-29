@@ -171,19 +171,31 @@ fn remove_stale_trash(home: &Path) {
     });
 }
 
-pub(crate) fn confirm_activated(home: &Path) {
+pub(crate) fn confirm_activated(home: &Path, observed_backend_version: &str) -> bool {
     let prev = home.join(PREV_DIR);
     let Some(versions) = read_versions(&prev.join(PENDING_MARKER)) else {
-        return;
+        return false;
     };
+    if crate::desktop_update_policy::compare_versions(
+        observed_backend_version,
+        &versions.backend_version,
+    ) < 0
+    {
+        warn!(
+            "[staged-update] backend {} is older than staged runtime {}",
+            observed_backend_version, versions.backend_version
+        );
+        return false;
+    }
     if let Err(error) = write_versions(&prev.join(CONFIRMED_MARKER), &versions) {
         warn!("[staged-update] could not confirm activated runtime: {error}");
-        return;
+        return false;
     }
     info!("[staged-update] backend healthy, dropping previous runtime");
     std::thread::spawn(move || {
         remove_confirmed_previous(&prev);
     });
+    true
 }
 
 fn remove_confirmed_previous(prev: &Path) {
@@ -206,6 +218,28 @@ fn remove_confirmed_previous(prev: &Path) {
 
 fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
     roll_back_unconfirmed_with(home, live_tree_in_use(home))
+}
+
+pub(crate) fn roll_back_failed_activation(
+    home: &Path,
+) -> Result<Option<StagedVersions>, String> {
+    let versions = pending_versions(home);
+    if versions.is_none() || live_tree_in_use(home) {
+        return Ok(None);
+    }
+    roll_back_unconfirmed_with(home, false)?;
+    Ok(versions)
+}
+
+pub(crate) fn recover_failed_activation(
+    home: &Path,
+    restart: impl FnOnce(),
+) -> Result<bool, String> {
+    if roll_back_failed_activation(home)?.is_none() {
+        return Ok(false);
+    }
+    restart();
+    Ok(true)
 }
 
 fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
@@ -651,13 +685,50 @@ mod tests {
     }
 
     #[test]
+    fn failed_activation_rolls_back_once_without_waiting_for_an_app_relaunch() {
+        let home = temp_home("same-launch-rollback");
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(None));
+        activate_ready(&home, "0.1.900-beta").unwrap();
+
+        let restarts = std::cell::Cell::new(0);
+        assert!(recover_failed_activation(&home, || restarts.set(restarts.get() + 1)).unwrap());
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        assert!(home.join(FAILED_MARKER).is_file());
+        assert!(!recover_failed_activation(&home, || restarts.set(restarts.get() + 1)).unwrap());
+        assert_eq!(restarts.get(), 1);
+        cleanup(home);
+    }
+
+    #[test]
+    fn failed_activation_waits_until_the_live_runtime_is_unused() {
+        let home = temp_home("same-launch-live");
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(None));
+        activate_ready(&home, "0.1.900-beta").unwrap();
+        let me = std::process::id();
+        fs::write(
+            home.join(format!("studio-starting-{me}.marker")),
+            format!("{me}\n"),
+        )
+        .unwrap();
+
+        let restarts = std::cell::Cell::new(0);
+        assert!(!recover_failed_activation(&home, || restarts.set(1)).unwrap());
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
+        assert_eq!(restarts.get(), 0);
+        cleanup(home);
+    }
+
+    #[test]
     fn confirmation_drops_the_previous_runtime_and_the_next_launch_keeps_the_new_one() {
         let home = temp_home("confirm");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         reconcile_at_launch(&home, "0.1.900-beta");
 
-        confirm_activated(&home);
+        assert!(confirm_activated(&home, "2026.9.1"));
         for _ in 0..50 {
             if !home.join(PREV_DIR).exists() {
                 break;
@@ -668,6 +739,26 @@ mod tests {
 
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert_eq!(status(&home).state, "none");
+        cleanup(home);
+    }
+
+    #[test]
+    fn an_older_backend_cannot_confirm_a_newer_activation() {
+        let home = temp_home("confirm-version");
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(None));
+        activate_ready(&home, "0.1.900-beta").unwrap();
+
+        assert!(!confirm_activated(&home, "2026.8.4"));
+        assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
+        assert_eq!(tag(&home.join(PREV_DIR), "unsloth_studio"), "old");
+        assert!(confirm_activated(&home, "2026.9.2"));
+        for _ in 0..50 {
+            if !home.join(PREV_DIR).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         cleanup(home);
     }
 

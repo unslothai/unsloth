@@ -350,7 +350,12 @@ pub async fn start_server(
     info!("start_server command called with port {}", port);
 
     let diagnostics_state = diagnostics.inner().clone();
-    let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
+    let generation = match process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)
+    {
+        Ok(generation) => generation,
+        Err(_error) if process::request_staged_rollback_restart(&app, &state) => return Ok(()),
+        Err(error) => return Err(error),
+    };
 
     // Spawn health watchdog for the owned backend — detects
     // deadlocks and hangs that stdout-based crash detection misses.
@@ -385,7 +390,12 @@ pub async fn start_managed_server(
 
     let started = Instant::now();
     let diagnostics_state = diagnostics.inner().clone();
-    let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
+    let generation = match process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)
+    {
+        Ok(generation) => generation,
+        Err(_error) if process::request_staged_rollback_restart(&app, &state) => return Ok(()),
+        Err(error) => return Err(error),
+    };
 
     info!(
         "start_managed_server spawned generation={} in {}ms",
@@ -2263,7 +2273,10 @@ async fn health_watchdog(
                     "missing_validated_port",
                 );
                 error!("Health watchdog: backend never reported a validated port, killing and declaring dead");
-                let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
+                let stopped = process::stop_backend(&state, &shutdown, Some(&diagnostics));
+                if stopped.is_ok() && process::request_staged_rollback_restart(&app, &state) {
+                    break;
+                }
                 let _ = app.emit("server-crashed", ());
                 break;
             }
@@ -2386,7 +2399,10 @@ async fn health_watchdog(
                 } else {
                     error!("Health watchdog: backend unresponsive, killing and declaring dead");
                     // Kill the zombie process so retry can start fresh
-                    let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
+                    let stopped = process::stop_backend(&state, &shutdown, Some(&diagnostics));
+                    if stopped.is_ok() && process::request_staged_rollback_restart(&app, &state) {
+                        break;
+                    }
                 }
                 let _ = app.emit("server-crashed", ());
                 break;

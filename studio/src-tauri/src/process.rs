@@ -3401,6 +3401,7 @@ pub fn start_backend(
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3408,6 +3409,7 @@ pub fn start_backend(
                 stdout,
                 &app_handle,
                 &state_clone,
+                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 false,
@@ -3420,6 +3422,7 @@ pub fn start_backend(
     if let Some(stderr) = stderr {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3427,6 +3430,7 @@ pub fn start_backend(
                 stderr,
                 &app_handle,
                 &state_clone,
+                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 true,
@@ -3437,6 +3441,26 @@ pub fn start_backend(
     }
 
     Ok(generation)
+}
+
+pub(crate) fn request_staged_rollback_restart(app: &AppHandle, state: &BackendState) -> bool {
+    let home = diagnostics::studio_dir();
+    match with_studio_runtime_launch_guard(|| {
+        if state
+            .lock()
+            .map(|process| process.has_owned_backend())
+            .unwrap_or(true)
+        {
+            return Ok(false);
+        }
+        crate::staged_update::recover_failed_activation(&home, || app.request_restart())
+    }) {
+        Ok(recovered) => recovered,
+        Err(error) => {
+            error!("Staged backend rollback failed: {error}");
+            false
+        }
+    }
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
@@ -3541,12 +3565,15 @@ fn pending_backend_matches(
     matches!(
         readiness,
         crate::desktop_backend_owner::OwnedBackendReadiness::Ready
-    ) && observed == Some(required)
+    ) && observed.is_some_and(|observed| {
+        crate::desktop_update_policy::compare_versions(observed, required) >= 0
+    })
 }
 
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
+    shutdown: ShutdownFlag,
     diagnostics_state: DiagnosticsState,
     session_id: String,
     generation: u64,
@@ -3585,6 +3612,7 @@ async fn validate_candidate_port(
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let mut verified_late = false;
+    let mut validated_backend_version = None;
     let valid = loop {
         // Before the probe, not just after a failed one: the announcement
         // itself can arrive past the deadline on a very slow start, and the
@@ -3593,7 +3621,7 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
-        let ok = if let Some(owner) = owner.clone() {
+        let (ok, reject_staged) = if let Some(owner) = owner.clone() {
             match crate::desktop_backend_owner::probe_owned_backend_state(
                 owner,
                 Some(port),
@@ -3609,20 +3637,34 @@ async fn validate_candidate_port(
                         ..
                     },
                 ) => {
-                    verified_port == port
-                        && pending_backend_matches(
-                            pending_backend_version,
-                            &readiness,
-                            backend_version.as_deref(),
-                        )
+                    let owned_port = verified_port == port;
+                    let version_matches = pending_backend_matches(
+                        pending_backend_version,
+                        &readiness,
+                        backend_version.as_deref(),
+                    );
+                    if owned_port && version_matches {
+                        validated_backend_version = backend_version;
+                    }
+                    (owned_port && version_matches, owned_port && !version_matches)
                 }
-                _ => false,
+                crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable { .. }
+                    if pending_backend_version.is_some() => (false, true),
+                _ => (false, false),
             }
         } else if pending_backend_version.is_some() {
-            false
+            (false, true)
         } else {
-            generic_backend_health_ok(port).await
+            (generic_backend_health_ok(port).await, false)
         };
+        if reject_staged {
+            warn!("Staged backend failed authenticated version validation");
+            let stopped = stop_backend(&state, &shutdown, Some(&diagnostics_state));
+            if stopped.is_err() || !request_staged_rollback_restart(&app, &state) {
+                let _ = app.emit("server-crashed", ());
+            }
+            return;
+        }
         if ok {
             // A probe that started in time can still finish late. Emitting
             // server-port after the watchdog's server-start-timeout strands the
@@ -3694,6 +3736,23 @@ async fn validate_candidate_port(
         }
     };
 
+    let activation_confirmed = if should_emit && pending_backend_version.is_some() {
+        validated_backend_version.as_deref().is_some_and(|version| {
+            crate::staged_update::confirm_activated(&diagnostics::studio_dir(), version)
+        })
+    } else {
+        true
+    };
+    if should_emit && !activation_confirmed {
+        if let Ok(mut proc) = state.lock() {
+            if proc.generation == generation && proc.port == Some(port) {
+                proc.port = None;
+            }
+        }
+        warn!("Staged backend confirmation changed during validation");
+        return;
+    }
+
     info!(
         "Validated backend port candidate {} valid={} emit={} in {}ms",
         port,
@@ -3706,7 +3765,6 @@ async fn validate_candidate_port(
         diagnostics::record_backend_port(&diagnostics_state, &session_id, port);
         info!("Validated backend port: {}", port);
         let _ = app.emit("server-port", port);
-        crate::staged_update::confirm_activated(&diagnostics::studio_dir());
     }
 }
 
@@ -3817,6 +3875,7 @@ fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
     state: &BackendState,
+    shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
     backend_log: &BackendLog,
     is_stderr: bool,
@@ -3886,12 +3945,14 @@ fn read_output_stream<R: std::io::Read>(
                 if let Some(port) = candidate_port {
                     let app_handle = app.clone();
                     let state_clone = Arc::clone(state);
+                    let shutdown_clone = Arc::clone(shutdown);
                     let diagnostics_clone = diagnostics_state.clone();
                     let session_id = backend_log.session_id.clone();
                     tauri::async_runtime::spawn(async move {
                         validate_candidate_port(
                             app_handle,
                             state_clone,
+                            shutdown_clone,
                             diagnostics_clone,
                             session_id,
                             generation,
@@ -4001,6 +4062,9 @@ fn read_output_stream<R: std::io::Read>(
             );
         }
         if emit_crash {
+            if request_staged_rollback_restart(app, state) {
+                return;
+            }
             error!("Backend process stdout closed unexpectedly (crash detected)");
             let _ = app.emit("server-crashed", ());
         }
@@ -5749,7 +5813,7 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
-    fn pending_activation_requires_the_ready_exact_backend_version() {
+    fn pending_activation_requires_a_ready_backend_at_or_above_the_required_version() {
         use crate::desktop_backend_owner::OwnedBackendReadiness;
 
         assert!(pending_backend_matches(
@@ -5766,6 +5830,11 @@ mod managed_cli_working_dir_tests {
             Some("2026.9.1"),
             &OwnedBackendReadiness::Ready,
             Some("2026.8.4")
+        ));
+        assert!(pending_backend_matches(
+            Some("2026.9.1"),
+            &OwnedBackendReadiness::Ready,
+            Some("2026.9.2")
         ));
         assert!(!pending_backend_matches(
             Some("2026.9.1"),
