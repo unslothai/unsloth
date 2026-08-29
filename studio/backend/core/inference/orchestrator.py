@@ -371,6 +371,25 @@ class InferenceOrchestrator:
             self._top_models_started = True
         threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
 
+    def set_parallel_slots(self, n_parallel) -> int:
+        """Change how many replies the loaded model decodes at once."""
+        from core.inference.llama_server_args import clamp_parallel_slots
+
+        slots = clamp_parallel_slots(n_parallel)
+        entry = self.models.get(self.active_model_name or "")
+        if entry is not None:
+            entry["parallel_slots"] = slots
+        return slots
+
+    @property
+    def effective_parallel_slots(self) -> int:
+        """Replies the loaded model decodes at once."""
+        from core.inference.llama_server_args import PARALLEL_DEFAULT
+
+        entry = self.models.get(self.active_model_name or "") or {}
+        slots = entry.get("parallel_slots")
+        return slots if isinstance(slots, int) and slots > 0 else PARALLEL_DEFAULT
+
     @property
     def default_models(self) -> list[str]:
         self._refresh_static_models_if_stale()
@@ -1580,12 +1599,19 @@ class InferenceOrchestrator:
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
         on_prior_worker_released: Optional[Callable[[], None]] = None,
+        n_parallel: Optional[int] = None,
     ) -> bool:
         """Load a model for inference.
 
         Always spawns a fresh subprocess per load for a clean interpreter (no
         stale unsloth patches, torch.compile caches, or getsource failures).
+
+        ``n_parallel`` is how many replies this load may decode at once, the same
+        request field a GGUF load takes for llama-server's slots.
         """
+        from core.inference.llama_server_args import clamp_parallel_slots
+
+        parallel_slots = clamp_parallel_slots(n_parallel)
         from utils.transformers_version import needs_transformers_5
 
         from utils.hf_xet_fallback import DownloadStallError
@@ -1805,6 +1831,7 @@ class InferenceOrchestrator:
                     self.models[self.active_model_name] = _mirrored_model_entry(
                         model_info, model_name
                     )
+                    self.models[self.active_model_name]["parallel_slots"] = parallel_slots
                     # Lets the already-loaded shortcut tell a CPU request from the GPU
                     # model it would otherwise report as satisfied. Native audio only:
                     # marking anything else tells training a GPU model holds no VRAM.

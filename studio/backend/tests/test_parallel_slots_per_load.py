@@ -569,3 +569,12 @@ def test_training_guard_keeps_slots_for_an_unclassified_gguf(monkeypatch, tmp_pa
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = None)
     many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = None)
     assert many > one
+
+
+def test_the_unsloth_load_hands_its_requested_slots_to_the_runtime():
+    """`n_parallel` reaches the non-GGUF load too, not only llama-server's."""
+    load_impl = _load_impl_source()
+    call = load_impl.index("asyncio.to_thread(\n                backend.load_model,")
+    kwargs = load_impl[call : load_impl.index("\n            )", call)]
+    assert "n_parallel = request.n_parallel" in kwargs
+    assert "clamp_parallel_slots" not in load_impl

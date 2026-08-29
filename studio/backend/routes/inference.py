@@ -13495,6 +13495,7 @@ async def _load_model_impl(
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
+                backend.set_parallel_slots(request.n_parallel)
                 # A no-op Unsloth load of a preview-owned checkpoint still claims it.
                 _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
@@ -14176,6 +14177,7 @@ async def _load_model_impl(
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
+                n_parallel = request.n_parallel,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
@@ -24273,18 +24275,9 @@ async def produce_openai_chat_completions(
                             _msg["tool_calls"] = _tcs[:1]
                 return _msg, _finish, stats_holder.get("stats")
 
-            # How many replies decode at once, the default parallel width the
-            # GGUF path serves concurrent requests at. A turn asking for more
-            # choices than that is served in several commands, so the replies in
-            # flight never outnumber it however large `n` is -- every row holds a
-            # KV cache of its own, and asking for all 128 at once would fail a
-            # model that answers the same turn a few choices at a time. Not the
-            # launch's --parallel: that sizes llama-server's slots and is ignored
-            # for the models served here, so a GGUF setting would decide how a
-            # safetensors turn is answered.
             from core.inference.llama_server_args import PARALLEL_DEFAULT
 
-            _width = PARALLEL_DEFAULT
+            _width = getattr(backend, "effective_parallel_slots", PARALLEL_DEFAULT)
             if _n > 1 and _width > 1 and payload.use_adapter is None and not cancel_event.is_set():
                 for _start in range(0, _n, _width):
                     if cancel_event.is_set():

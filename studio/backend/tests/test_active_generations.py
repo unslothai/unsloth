@@ -274,15 +274,28 @@ def test_tracked_cancel_shares_its_event_with_the_registry():
         tracker.__exit__(None, None, None)
 
 
-def _stub_load_route(monkeypatch, *, active_model_name):
+def _stub_load_route(
+    monkeypatch,
+    *,
+    active_model_name,
+    backend = None,
+):
     """Point POST /load at an in-memory safetensors backend.
 
     active_model_name == the requested path makes the request idempotent, so
-    _load_model_impl takes its already_loaded fast return.
+    _load_model_impl takes its already_loaded fast return. The backend is a real
+    orchestrator with nothing running, so the route reaches its actual methods.
     """
     from types import SimpleNamespace
 
     import routes.inference as inf_mod
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    if backend is None:
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        backend.active_model_name = active_model_name
+        backend.models = {}
 
     monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", lambda: None)
     monkeypatch.setattr(inf_mod, "validate_extra_args", lambda args: [])
@@ -305,11 +318,7 @@ def _stub_load_route(monkeypatch, *, active_model_name):
         },
     )
     monkeypatch.setattr(inf_mod, "_resolve_loaded_trust_remote_code", lambda *a, **k: False)
-    monkeypatch.setattr(
-        inf_mod,
-        "get_inference_backend",
-        lambda: SimpleNamespace(active_model_name = active_model_name, models = {}),
-    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
@@ -2853,3 +2862,4 @@ def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
     [row] = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
     assert row["ttft_ms"] is not None
     assert row["stop_reason"] == "tool_calls"
+
