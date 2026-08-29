@@ -361,8 +361,13 @@ if __name__ == "__main__":
 
 
 def _sft_config():
-    trl_module = pytest.importorskip("trl")
-    return trl_module.SFTConfig
+    pytest.importorskip("trl")
+    # Not `trl.SFTConfig`: on Apple Silicon the `import unsloth` in tests/conftest.py
+    # rebinds that name to the MLX training config, which carries none of SFTConfig's
+    # fields. The module the dataclass is defined in still holds the real one.
+    from trl.trainer.sft_config import SFTConfig
+
+    return SFTConfig
 
 
 class _RecordingTrainer:
@@ -433,6 +438,20 @@ def test_untouched_config_values_keep_what_the_caller_set(tmp_path):
     trainer = Trainer(model = _Bare(), args = config, packing = True)
 
     assert trainer.args.max_length == 777
+
+
+def test_a_kwarg_neither_side_takes_is_reported_not_swallowed(tmp_path):
+    """`max_seq_length` was the SFTTrainer kwarg every unsloth notebook passed, and
+    trl 0.20 removed it from SFTConfig. It is now on neither the trainer nor the
+    config, so it has to be reported the way an unexpected keyword normally is.
+    Sorted in with the config kwargs it was dropped without a word, and the run
+    trained at the default length instead of the one that was asked for."""
+    Trainer, config_class = _wrapped_recording()
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+    assert "max_seq_length" not in {f.name for f in dataclasses.fields(config_class)}
+
+    with pytest.raises(TypeError, match = "max_seq_length"):
+        Trainer(model = _Bare(), args = config, max_seq_length = 2048)
 
 
 def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):

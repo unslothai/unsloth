@@ -756,7 +756,15 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 elif key in moved_params or key in config_fields:
                     additional_config_kwargs[key] = value
                 else:
-                    additional_config_kwargs[key] = value
+                    # Neither side has this name, and the branch below only copies
+                    # across the keys the config recognises, so sorting it in with
+                    # the config kwargs dropped it in silence. `max_seq_length` is
+                    # the case that bites: every older notebook passes it here, trl
+                    # 0.20 removed it from SFTConfig, and the run then trained at
+                    # the default length instead of the one that was asked for.
+                    # Leave it on the trainer call so it is reported the way an
+                    # unexpected keyword normally is.
+                    trainer_kwargs[key] = value
 
             config_dict.update(additional_config_kwargs)
 
