@@ -833,7 +833,7 @@ def _active_launch_placement():
         return _NO_LAUNCH, False, True
 
 
-def _model_memory_reload_required(placement = None) -> bool:
+def _model_memory_reload_required(placement = None, settings = None) -> bool:
     """True when the loaded process's memory placement contradicts the settings.
 
     Compares the state the child ACTUALLY launched with -- env defaults plus
@@ -857,7 +857,12 @@ def _model_memory_reload_required(placement = None) -> bool:
     # the reload path can never disagree.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+    return not memory_state_satisfies_settings(
+        state,
+        policy_active,
+        mlock_applicable,
+        settings,
+    )
 
 
 def _model_memory_mlock_active(want_mlock: bool, placement = None) -> bool:
@@ -909,7 +914,10 @@ def _model_memory_response() -> ModelMemoryResponse:
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
         mlock_applicable = _model_memory_mlock_applicable(placement),
-        reload_required = _model_memory_reload_required(placement),
+        reload_required = _model_memory_reload_required(
+            placement,
+            (keep_resident, no_ram_reserve),
+        ),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
 

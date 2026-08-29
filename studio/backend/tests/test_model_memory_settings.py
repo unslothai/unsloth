@@ -1587,6 +1587,26 @@ class TestModelMemoryResponseSnapshot:
         assert body.no_ram_reserve is False
         assert body.mlock_active is True
 
+    def test_reload_uses_the_same_settings_pair(self, monkeypatch):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(rs, "get_model_memory_settings", lambda: (True, False))
+        monkeypatch.setattr(
+            rs,
+            "_active_launch_placement",
+            lambda: ((False, False), False, True),
+        )
+
+        def stale_getter():
+            raise AssertionError("the response must not re-read settings")
+
+        monkeypatch.setattr(mm, "get_model_memory_settings", stale_getter)
+        body = rs._model_memory_response()
+        assert body.keep_resident is True
+        assert body.no_ram_reserve is False
+        assert body.reload_required is True
+
 
 class TestFitOnRetryReArmsResidency:
     """The --fit on fallback fires exactly when the full-offload prediction that

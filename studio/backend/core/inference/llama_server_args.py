@@ -1575,6 +1575,7 @@ def memory_state_satisfies_settings(
     state: Optional[tuple[bool, bool]],
     policy_active: bool = False,
     mlock_applicable: bool = True,
+    settings: Optional[tuple[bool, bool]] = None,
 ) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
@@ -1600,15 +1601,19 @@ def memory_state_satisfies_settings(
     """
     if state is None:
         return True
-    try:
-        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
-    except Exception:
-        return True
+    if settings is None:
+        try:
+            from utils.model_memory_settings import get_model_memory_settings
+
+            settings = get_model_memory_settings()
+        except Exception:
+            return True
+    keep_resident, no_ram_reserve = settings
     mlock, reserves_ram = state
-    if get_no_ram_reserve():
+    if no_ram_reserve:
         # mlock_applicable only excuses a MISSING lock; a live reservation
         # still has to go, wherever the weights are.
         return not (mlock or reserves_ram)
-    if get_keep_resident():
+    if keep_resident:
         return mlock or not mlock_applicable
     return not policy_active
