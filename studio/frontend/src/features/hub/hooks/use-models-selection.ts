@@ -70,6 +70,7 @@ export function useModelsSelection({
   filteredDiscoverRows,
   filteredCachedRows,
   filteredLocalRows,
+  downloadedReady,
   results,
   accessToken,
   online,
@@ -82,6 +83,7 @@ export function useModelsSelection({
   filteredDiscoverRows: DiscoverRow[];
   filteredCachedRows: CachedInventoryRow[];
   filteredLocalRows: LocalInventoryRow[];
+  downloadedReady: boolean;
   results: HfModelResult[];
   accessToken: string | undefined;
   online: boolean;
@@ -155,6 +157,7 @@ export function useModelsSelection({
     () =>
       resolveDownloadedSelection({
         selectedId: downloadedSelectedId,
+        inventoryReady: downloadedReady,
         cachedRows,
         localRows,
         filteredCachedRows,
@@ -162,6 +165,7 @@ export function useModelsSelection({
       }),
     [
       cachedRows,
+      downloadedReady,
       downloadedSelectedId,
       filteredCachedRows,
       filteredLocalRows,

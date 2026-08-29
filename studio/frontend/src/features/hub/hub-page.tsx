@@ -1152,6 +1152,7 @@ export function ModelsPage() {
     filteredDiscoverRows: selectionFilteredDiscoverRows,
     filteredCachedRows,
     filteredLocalRows,
+    downloadedReady,
     results: selectionResults,
     accessToken: apiHfToken,
     online,

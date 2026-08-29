@@ -419,17 +419,22 @@ export function resolveDiscoverSelection({
 
 export function resolveDownloadedSelection({
   selectedId,
+  inventoryReady = true,
   cachedRows,
   localRows,
   filteredCachedRows,
   filteredLocalRows,
 }: {
   selectedId: string | null;
+  inventoryReady?: boolean;
   cachedRows: readonly CachedInventoryRow[];
   localRows: readonly LocalInventoryRow[];
   filteredCachedRows: readonly CachedInventoryRow[];
   filteredLocalRows: readonly LocalInventoryRow[];
 }): SelectionResolution {
+  if (!inventoryReady) {
+    return { selectedId, hiddenByFilters: false };
+  }
   const cachedById = cachedIdMap(cachedRows);
   const localById = localIdMap(localRows);
   const filteredCachedIds = idSet(filteredCachedRows);

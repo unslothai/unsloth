@@ -393,6 +393,54 @@ test("keeps an unclassified GGUF partial when an unrelated safetensors job compl
   });
 });
 
+test("waits for local inventory before resolving an unknown selection", () => {
+  const repoId = "Org/Refresh-Race";
+  const selectedId = `hf_cache:unknown:${encodeURIComponent(repoId)}`;
+  const live = {
+    ...buildCachedInventoryRow(
+      {
+        repo_id: repoId,
+        model_format: "safetensors",
+        size_bytes: 50,
+        partial: true,
+        optimistic: true,
+      },
+      "safetensors",
+    ),
+    liveDownload: true,
+  };
+
+  assert.deepEqual(
+    resolveDownloadedSelection({
+      selectedId,
+      inventoryReady: false,
+      cachedRows: [live],
+      localRows: [],
+      filteredCachedRows: [live],
+      filteredLocalRows: [],
+    }),
+    { selectedId, hiddenByFilters: false },
+  );
+
+  const local = buildUnknownHfCacheRow(repoId);
+  assert.ok(local);
+  const settled = dedupeSameSourceHubCacheRows({
+    cachedRows: [live],
+    localRows: [local],
+  });
+  assert.deepEqual(
+    resolveDownloadedSelection({
+      selectedId,
+      inventoryReady: true,
+      cachedRows: settled.cachedRows,
+      localRows: settled.localRows,
+      filteredCachedRows: settled.cachedRows,
+      filteredLocalRows: settled.localRows,
+    }),
+    { selectedId: local.id, hiddenByFilters: false },
+  );
+});
+
 for (const modelFormat of ["adapter", "checkpoint"] as const) {
   test(`keeps a provisional download selected when it becomes ${modelFormat}`, () => {
     const repoId = `Org/${modelFormat}`;
