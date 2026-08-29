@@ -108,7 +108,6 @@ class ChatGenerationSupervisor:
         self._active_registrations: dict[str, active_generations.ActiveGeneration] = {}
         self._activities: dict[str, InferenceActivityReservation] = {}
         self._monitor_ids: dict[str, str | None] = {}
-        self._monitor_ready: dict[str, asyncio.Event] = {}
         self._monitor_cleanup: dict[str, asyncio.TimerHandle] = {}
         self._shutdown_runs: set[str] = set()
         self._stopping = False
@@ -118,24 +117,17 @@ class ChatGenerationSupervisor:
         if cleanup is not None:
             cleanup.cancel()
         self._monitor_ids.pop(run_id, None)
-        self._monitor_ready[run_id] = asyncio.Event()
 
     def _publish_monitor_correlation(self, run_id: str, value: object) -> None:
         monitor_id = str(value or "").strip()
         self._monitor_ids[run_id] = monitor_id or None
-        self._monitor_ready.setdefault(run_id, asyncio.Event()).set()
 
     def _drop_monitor_correlation(self, run_id: str) -> None:
         self._monitor_cleanup.pop(run_id, None)
         self._monitor_ids.pop(run_id, None)
-        self._monitor_ready.pop(run_id, None)
 
-    async def wait_monitor_id(self, run_id: str) -> str | None:
-        """Return the active run's volatile monitor id once response headers exist."""
-        ready = self._monitor_ready.get(run_id)
-        if ready is None:
-            return self._monitor_ids.get(run_id)
-        await ready.wait()
+    def monitor_id(self, run_id: str) -> str | None:
+        """Return correlation already published without delaying an event subscriber."""
         return self._monitor_ids.get(run_id)
 
     def _ensure_reservation(
@@ -486,9 +478,6 @@ class ChatGenerationSupervisor:
                 )
             pending = []
         finally:
-            ready = self._monitor_ready.get(run_id)
-            if ready is not None and not ready.is_set():
-                self._publish_monitor_correlation(run_id, None)
             if next_raw_task is not None:
                 if not next_raw_task.done():
                     next_raw_task.cancel()

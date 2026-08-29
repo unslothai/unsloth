@@ -79,6 +79,7 @@ const TERMINAL_STATUSES = new Set<ChatGenerationStatus>([
   "completed",
   "failed",
 ]);
+const MONITOR_ID_RECONNECT_MS = 1500;
 
 export class ChatGenerationApiError extends Error {
   readonly status: number;
@@ -319,23 +320,43 @@ async function* streamChatGenerationEvents(
   after: number,
   signal?: AbortSignal,
   onMonitorId?: (monitorId: string | null) => void,
+  monitorIdReconnectMs = MONITOR_ID_RECONNECT_MS,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
     `/api/inference/chat-runs/${encodeURIComponent(id)}/events?after=${Math.max(0, after)}`,
     { method: "POST", headers: { accept: "text/event-stream" }, signal },
   );
   if (!response.ok) await json(response);
-  onMonitorId?.(
-    response.headers.get(CHAT_MONITOR_ID_RESPONSE_HEADER)?.trim() || null,
-  );
+  const monitorId =
+    response.headers.get(CHAT_MONITOR_ID_RESPONSE_HEADER)?.trim() || null;
+  onMonitorId?.(monitorId);
   if (!response.body)
     throw new Error("Chat generation event stream returned no body");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const monitorReconnectAt = monitorId
+    ? null
+    : Date.now() + monitorIdReconnectMs;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const next = reader.read();
+      const result =
+        monitorReconnectAt === null
+          ? await next
+          : await Promise.race([
+              next,
+              new Promise<null>((resolve) => {
+                timeout = setTimeout(
+                  () => resolve(null),
+                  Math.max(0, monitorReconnectAt - Date.now()),
+                );
+              }),
+            ]);
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (result === null) return;
+      const { done, value } = result;
       buffer += decoder.decode(value, { stream: !done });
       buffer = buffer.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -370,9 +391,10 @@ export async function* followChatGenerationRun(
     replayFrom?: number;
     signal?: AbortSignal;
     onMonitorId?: (monitorId: string | null) => void;
+    monitorIdReconnectMs?: number;
   } = {},
 ): AsyncGenerator<ChatGenerationRunUpdate> {
-  const { replayFrom, signal, onMonitorId } = options;
+  const { replayFrom, signal, onMonitorId, monitorIdReconnectMs } = options;
   let run = options.initialRun;
   let failures = 0;
   while (!(run || signal?.aborted)) {
@@ -398,6 +420,7 @@ export async function* followChatGenerationRun(
         cursor,
         signal,
         onMonitorId,
+        monitorIdReconnectMs,
       )) {
         if (event.seq <= cursor) continue;
         cursor = event.seq;

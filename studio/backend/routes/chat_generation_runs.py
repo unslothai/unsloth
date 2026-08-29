@@ -317,7 +317,7 @@ async def chat_generation_events(
     cursor = _event_cursor(after, last_event_id)
     app_state = getattr(getattr(request, "app", None), "state", None)
     supervisor = getattr(app_state, "chat_generation_supervisor", None)
-    monitor_id = await supervisor.wait_monitor_id(run_id) if supervisor is not None else None
+    monitor_id = supervisor.monitor_id(run_id) if supervisor is not None else None
 
     async def stream():
         nonlocal cursor

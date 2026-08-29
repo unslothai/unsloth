@@ -127,6 +127,54 @@ test("durable follow captures the exact monitor id from the event response", asy
   assert.deepEqual(monitorIds, ["monitor-123"]);
 });
 
+test("durable follow reconnects for a monitor id without duplicating SSE events", async () => {
+  let eventRequests = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/events")) {
+      eventRequests += 1;
+      if (eventRequests === 1) {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  frame(1, "run.started", { status: "running" }, run("running", 1)),
+                ),
+              );
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return sse(
+        [frame(2, "run.completed", { status: "completed" }, run("completed", 2))],
+        { "X-Unsloth-Monitor-Id": "monitor-delayed" },
+      );
+    }
+    return new Response(JSON.stringify(run("running", 1)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const monitorIds: Array<string | null> = [];
+  const sequences: number[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+    monitorIdReconnectMs: 5,
+    onMonitorId: (monitorId) => monitorIds.push(monitorId),
+  })) {
+    if (update.event) sequences.push(update.event.seq);
+  }
+
+  assert.equal(eventRequests, 2);
+  assert.deepEqual(monitorIds, [null, "monitor-delayed"]);
+  assert.deepEqual(sequences, [1, 2]);
+});
+
 test("reconnect resumes from the applied cursor without duplicate chunks", async () => {
   const eventUrls: string[] = [];
   let follows = 0;
