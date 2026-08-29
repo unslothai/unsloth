@@ -803,6 +803,31 @@ def _scan_custom_folder(
                 selectable.append(model)
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
+
+    # The generic pass treats an immediate child directory containing GGUFs as
+    # one model whose files are quant variants.  The LM Studio compatibility
+    # pass can interpret the same directory as a publisher and publish those
+    # files again as separate models.  Keep compatibility rows only where the
+    # generic scan did not already claim their containing model directory.
+    grouped_gguf_dirs = {
+        Path(model.path)
+        for model in selectable
+        if model.source != "lmstudio"
+        and model.model_format == "gguf"
+        and not model.partial
+        and _safe_is_dir(Path(model.path))
+    }
+    if grouped_gguf_dirs:
+        selectable = [
+            model
+            for model in selectable
+            if not (
+                model.source == "lmstudio"
+                and model.model_format == "gguf"
+                and not _safe_is_dir(Path(model.path))
+                and Path(model.path).parent in grouped_gguf_dirs
+            )
+        ]
     remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
     if remaining > 0:
         selectable.extend(scan_ollama_dir(folder_path, limit = remaining))

@@ -244,6 +244,73 @@ def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path)
     assert local_inventory._scan_custom_folder(root) == []
 
 
+def test_custom_inventory_groups_nested_gguf_files_once(tmp_path):
+    """A model folder is one picker row whose GGUF files are its variants.
+
+    The generic custom-folder scan already publishes that directory.  The LM
+    Studio compatibility pass must not also publish every GGUF inside it as a
+    second top-level model.
+    """
+    root = tmp_path / "hub"
+    model_dir = root / "qwen38-27b-qat"
+    model_dir.mkdir(parents = True)
+    for quant in ("q2_0", "q3_m"):
+        (model_dir / f"qwen38-27b-qat-{quant}.gguf").write_bytes(b"GGUF")
+
+    rows = local_inventory._scan_custom_folder(root)
+
+    assert [Path(row.path) for row in rows] == [model_dir]
+
+
+def test_custom_inventory_keeps_lmstudio_publisher_model_layout(tmp_path):
+    root = tmp_path / "lmstudio"
+    model_dir = root / "publisher" / "model"
+    model_dir.mkdir(parents = True)
+    (model_dir / "model-q4_k_m.gguf").write_bytes(b"GGUF")
+
+    rows = local_inventory._scan_custom_folder(root)
+
+    assert [(Path(row.path), row.model_id) for row in rows] == [
+        (model_dir, "publisher/model")
+    ]
+
+
+def test_custom_inventory_keeps_file_row_beneath_partial_group(tmp_path, monkeypatch):
+    root = tmp_path / "hub"
+    model_dir = root / "model"
+    model_dir.mkdir(parents = True)
+    model_file = model_dir / "model-q4_k_m.gguf"
+    model_file.write_bytes(b"GGUF")
+    partial_group = model_common._local_model_info(
+        scan_path = model_dir,
+        load_path = model_dir,
+        source = "hf_cache",
+        model_format = "gguf",
+        model_id = "publisher/model",
+        partial = True,
+    )
+    complete_file = model_common._local_model_info(
+        scan_path = model_file,
+        load_path = model_file,
+        source = "lmstudio",
+        model_format = "gguf",
+    )
+    monkeypatch.setattr(local_inventory, "_scan_models_dir", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        local_inventory,
+        "_scan_hf_cache",
+        lambda *_a, **_kw: [partial_group],
+    )
+    monkeypatch.setattr(
+        local_inventory,
+        "_scan_lmstudio_dir",
+        lambda *_a, **_kw: [complete_file],
+    )
+    monkeypatch.setattr(local_inventory, "scan_ollama_dir", lambda *_a, **_kw: [])
+
+    assert local_inventory._scan_custom_folder(root) == [partial_group, complete_file]
+
+
 def test_unregistered_variant_identity_stays_scan_relative(tmp_path):
     from utils.models.model_config import list_local_gguf_variants
 
