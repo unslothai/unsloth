@@ -536,6 +536,40 @@ def test_the_per_device_check_charges_each_secondary_pipeline_reserve():
     assert above is None
 
 
+def test_an_empty_secondary_still_has_to_fit_its_fixed_reserves():
+    layout = uneven_layout()
+    spilled = {b.index for b in layout.blocks}
+    pipeline_reserve = GIB
+    opts = PlanOptions(overhead_bytes_per_device = 0, pipeline_overhead_bytes = pipeline_reserve)
+
+    below = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        True,
+        [4 * GIB, pipeline_reserve - 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1000, 1],
+    )
+    exact = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        True,
+        [4 * GIB, pipeline_reserve],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1000, 1],
+    )
+
+    assert _device_slots(layout.n_layers + 1, [1000, 1])[1] == []
+    assert below is not None and "device 1" in below
+    assert exact is None
+
+
 def test_multi_gpu_credit_sums():
     layout = q2_layout()
     assert (
