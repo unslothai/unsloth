@@ -25,6 +25,7 @@ _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 apply_model_memory_policy = _lsa.apply_model_memory_policy
 memory_state_satisfies_settings = _lsa.memory_state_satisfies_settings
+model_memory_suppresses_load_mode = _lsa.model_memory_suppresses_load_mode
 resolve_effective_memory_state = _lsa.resolve_effective_memory_state
 scrub_memory_env = _lsa.scrub_memory_env
 
@@ -1345,6 +1346,28 @@ class TestNonReservingLoadModesSurvive:
         managed, out = policy(True, False, ["--load-mode", "dio"], supports_load_mode = True)
         assert managed == ["--load-mode", "mmap+mlock"]
         assert out == []
+
+    def test_a_suppressed_per_model_mode_marks_the_policy_active(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        assert model_memory_suppresses_load_mode(
+            "none", supports_load_mode = True, weights_in_host_memory = True
+        )
+        assert not model_memory_suppresses_load_mode(
+            "dio", supports_load_mode = True, weights_in_host_memory = True
+        )
+        assert not memory_state_satisfies_settings(
+            (False, False), True, True, settings = (False, False)
+        )
+
+    def test_an_unsupported_mode_does_not_mark_the_policy_active(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (True, False))
+        assert not model_memory_suppresses_load_mode(
+            "dio", supports_load_mode = False, weights_in_host_memory = True
+        )
 
 
 def _fake_backend(**attrs):

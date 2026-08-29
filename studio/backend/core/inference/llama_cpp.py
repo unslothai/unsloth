@@ -72,6 +72,7 @@ from core.inference.llama_server_args import (
     extra_args_disable_mmproj,
     fit_is_enabled_in,
     memory_state_satisfies_settings,
+    model_memory_suppresses_load_mode,
     fit_is_effectively_on,
     resolve_effective_memory_state,
     scrub_denied_env,
@@ -18922,6 +18923,11 @@ class LlamaCppBackend:
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = load_mode,
                 )
+                _load_mode_policy_suppressed = model_memory_suppresses_load_mode(
+                    load_mode,
+                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    weights_in_host_memory = _mem_host_resident,
+                )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
                 self._memory_mlock_applicable = _mem_host_resident
@@ -19057,7 +19063,9 @@ class LlamaCppBackend:
                 _mem_policy_touched_extras = bool(_mem_scrubbed) or _mem_extras != list(
                     extra_args or []
                 )
-                self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
+                self._memory_policy_active = bool(
+                    _mem_managed or _load_mode_policy_suppressed
+                ) or _mem_policy_touched_extras
                 # What `cmd` itself means, snapshotted before any respawn edits it.
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
                 # and write the policy back; the arch-crash retry (#7624) respawns

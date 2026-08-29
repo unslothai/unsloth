@@ -1249,6 +1249,28 @@ def apply_load_mode_policy(
     return ["--load-mode", mode], tokens
 
 
+def model_memory_suppresses_load_mode(
+    requested_load_mode: Optional[str],
+    *,
+    supports_load_mode: bool,
+    weights_in_host_memory: bool,
+) -> bool:
+    """Whether Model Memory suppressed a per-model mode this build could emit."""
+    mode = _normalize_load_mode_value(requested_load_mode)
+    if not mode or (not supports_load_mode and mode not in _LEGACY_LOAD_MODE_FLAGS):
+        return False
+    try:
+        from utils.model_memory_settings import get_model_memory_settings
+
+        keep_resident, no_ram_reserve = get_model_memory_settings()
+    except Exception:
+        return False
+    return bool(
+        (keep_resident and not no_ram_reserve and weights_in_host_memory)
+        or (no_ram_reserve and mode in _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES)
+    )
+
+
 def _normalize_load_mode_value(value: Optional[str]) -> str:
     """Canonical --load-mode, or "" for "no opinion" (unset, auto, unknown)."""
     mode = (value or "").strip().lower()
