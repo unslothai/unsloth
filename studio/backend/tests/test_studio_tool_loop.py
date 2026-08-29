@@ -1454,9 +1454,7 @@ def test_a_fresh_stable_multi_document_delta_keeps_id_on_first_call(executed):
         if message.get("role") == "assistant"
         for call in message.get("tool_calls") or []
     ]
-    assert replayed_calls[0]["extra_content"] == {
-        "google": {"thought_signature": "SIG-A"}
-    }
+    assert replayed_calls[0]["extra_content"] == {"google": {"thought_signature": "SIG-A"}}
     assert "extra_content" not in replayed_calls[1]
 
 
