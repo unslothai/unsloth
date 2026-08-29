@@ -1009,8 +1009,6 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
-        # The route imports these by name at module scope, so patch them there.
-        monkeypatch.setattr(rs, "should_mlock", lambda: keep and not no_res)
         monkeypatch.setattr(rs, "get_model_memory_settings", lambda: (keep, no_res))
         monkeypatch.setattr(rs, "memlock_limit_bytes", lambda: 8 * 1024 * 1024)
         return rs._model_memory_response()
@@ -1054,8 +1052,9 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         resp = self._response(True, False, self._backend(False, False), monkeypatch)
         assert resp.mlock_active is True
 
-    def test_no_ram_reserve_still_wins(self, monkeypatch):
-        resp = self._response(True, True, self._backend(True, True), monkeypatch)
+    def test_no_ram_reserve_launch_reports_no_lock(self, monkeypatch):
+        backend = self._backend(True, True, state = (False, False))
+        resp = self._response(True, True, backend, monkeypatch)
         assert resp.mlock_active is False
         assert resp.memlock_limit_bytes is None
 
