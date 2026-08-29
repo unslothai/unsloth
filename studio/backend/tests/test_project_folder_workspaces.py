@@ -422,9 +422,7 @@ def test_managed_workspace_delete_never_follows_a_replacement_symlink(tmp_path):
     assert (victim / "keep.txt").read_text(encoding = "utf-8") == "keep"
 
 
-def test_direct_managed_workspace_delete_rejects_a_forged_orphan_bypass(
-    tmp_path, monkeypatch
-):
+def test_direct_managed_workspace_delete_rejects_a_forged_orphan_bypass(tmp_path, monkeypatch):
     project = _managed_project("deniedid")
     root = tmp_path / "Managed-deniedid"
     (root / "sandbox").mkdir(parents = True)
@@ -760,14 +758,14 @@ def test_folder_change_route_releases_the_retired_session(tmp_path):
     changed = chat_history.change_project_folder(
         project["id"],
         chat_history.ProjectFolderMutation(
-            nativePathLease=_sign_folder(
+            nativePathLease = _sign_folder(
                 second,
-                operation="set-project-workspace",
-                path_kind="project-workspace",
+                operation = "set-project-workspace",
+                path_kind = "project-workspace",
             ),
-            expectedWorkspaceRevision=project["workspaceRevision"],
+            expectedWorkspaceRevision = project["workspaceRevision"],
         ),
-        current_subject="tester",
+        current_subject = "tester",
     )
 
     assert changed.workspacePath == str(second.resolve())
@@ -783,9 +781,9 @@ def test_disconnect_route_releases_the_retired_session(tmp_path):
     disconnected = chat_history.disconnect_project_folder(
         project["id"],
         chat_history.DisconnectProjectFolderRequest(
-            expectedWorkspaceRevision=project["workspaceRevision"]
+            expectedWorkspaceRevision = project["workspaceRevision"]
         ),
-        current_subject="tester",
+        current_subject = "tester",
     )
 
     assert disconnected.workspaceKind == "managed"
@@ -808,7 +806,9 @@ def test_deleted_folder_project_records_its_external_workspace(tmp_path):
     folder = tmp_path / "external-project"
     folder.mkdir()
     try:
-        project = studio_db.claim_chat_project_folder(_folder_claim("project-delete-folder", folder))
+        project = studio_db.claim_chat_project_folder(
+            _folder_claim("project-delete-folder", folder)
+        )
         deleted = studio_db.delete_chat_project(project["id"])
         assert deleted is not None
         record = tools._read_orphan_record(tools._ORPHAN_PROJECT, project["id"])

@@ -1405,7 +1405,6 @@ async def delete_project(
         )
     if project.get("workspaceKind") == "folder" and project.get("workspacePath"):
         from core.inference.tools import project_session_id, record_orphaned_project
-
         recorded = await run_in_threadpool(
             record_orphaned_project,
             project_id,

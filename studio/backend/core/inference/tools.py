@@ -7450,7 +7450,9 @@ _MAX_ORPHAN_RECORDS = 10_000
 
 
 def _orphan_record_name(
-    kind: str, record_id: str, session_id: str | None = None
+    kind: str,
+    record_id: str,
+    session_id: str | None = None,
 ) -> str:
     """The filename for one folder incarnation.
 
@@ -7466,7 +7468,9 @@ def _orphan_record_name(
 
 
 def _read_orphan_record(
-    kind: str, record_id: str, session_id: str | None = None
+    kind: str,
+    record_id: str,
+    session_id: str | None = None,
 ) -> "dict | None":
     """Read one incarnation, with legacy-id fallback for old records."""
     import json as _json
@@ -7597,7 +7601,9 @@ def _forget_orphan_record_file(path: str) -> None:
 
 
 def forget_orphaned_project(
-    project_id: str, is_chat: bool = False, session_id: str | None = None
+    project_id: str,
+    is_chat: bool = False,
+    session_id: str | None = None,
 ) -> None:
     """Drop one incarnation, or all records for an id when no session is known."""
     if not project_id:
@@ -7800,7 +7806,9 @@ def collect_orphaned_project_workspaces() -> None:
 
 
 def finish_workspace_delete_when_idle(
-    project_id: str, timeout: float = 600.0, session_id: str | None = None
+    project_id: str,
+    timeout: float = 600.0,
+    session_id: str | None = None,
 ) -> "threading.Thread":
     """Wait out the tool call still using a workspace, then delete it.
 
@@ -7822,9 +7830,7 @@ def finish_workspace_delete_when_idle(
     return thread
 
 
-def _recorded_project_workdir(
-    project_id: str, session_id: str | None = None
-) -> "str | None":
+def _recorded_project_workdir(project_id: str, session_id: str | None = None) -> "str | None":
     """The kept workspace of a deleted project, wherever the user put it.
 
     By key: a resolve happens on every tool call for such a project, and no
@@ -7842,7 +7848,6 @@ def _recorded_project_workdir(
         identity_root = record.get("rootPath") or record.get("path")
         try:
             from storage.studio_db import _workspace_identity_matches
-
             identity_matches = bool(
                 identity_root
                 and _workspace_identity_matches(
@@ -7864,9 +7869,7 @@ def _recorded_project_workdir(
     return path if os.path.isdir(path) else None
 
 
-def _orphaned_project_workdir(
-    project_id: str, session_id: str | None = None
-) -> "str | None":
+def _orphaned_project_workdir(project_id: str, session_id: str | None = None) -> "str | None":
     """A deleted project's workspace, when its files were kept.
 
     The record answers for any id, since it is keyed by a digest. Only the
@@ -7965,7 +7968,6 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
 def _project_id_for_workspace_session(session_id: str) -> str | None:
     try:
         from storage.studio_db import project_id_for_workspace_session
-
         project_id = project_id_for_workspace_session(session_id)
         if project_id:
             return project_id
@@ -9178,7 +9180,6 @@ def project_session_id(project_id: str) -> str:
     """
     try:
         from storage.studio_db import get_chat_project
-
         project = get_chat_project(str(project_id))
         if project and project.get("workspaceSessionId"):
             return str(project["workspaceSessionId"])

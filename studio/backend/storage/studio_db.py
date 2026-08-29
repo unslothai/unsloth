@@ -110,9 +110,7 @@ _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _PROJECT_WORKSPACE_IDENTITY_FILE = ".unsloth-project-workspace"
 _PROJECT_WORKSPACE_KINDS = frozenset({"managed", "folder"})
 _RECORDED_ORPHAN_TOKEN = object()
-_RECORDED_ORPHAN_EVIDENCE: dict[
-    tuple[str, str, str | None], "_RecordedOrphanEvidence"
-] = {}
+_RECORDED_ORPHAN_EVIDENCE: dict[tuple[str, str, str | None], "_RecordedOrphanEvidence"] = {}
 _RECORDED_ORPHAN_EVIDENCE_LOCK = threading.Lock()
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
 
@@ -333,7 +331,9 @@ def _normalized_orphan_root(path: str) -> str:
 
 
 def capture_recorded_orphan_evidence(
-    project_id: str, root_path: str | None, session_id: str | None = None
+    project_id: str,
+    root_path: str | None,
+    session_id: str | None = None,
 ) -> tuple[dict[str, str | None] | None, object | None]:
     """Capture identity proof before a managed root is detached from its row.
 
@@ -384,7 +384,9 @@ def capture_recorded_orphan_evidence(
 
 
 def recorded_orphan_evidence_for(
-    project_id: str, root_path: str | None, session_id: str | None = None
+    project_id: str,
+    root_path: str | None,
+    session_id: str | None = None,
 ):
     if not project_id or not root_path:
         return None
@@ -397,8 +399,11 @@ def recorded_orphan_evidence_for(
         else:
             matches = [
                 value
-                for (recorded_project, recorded_root, _recorded_session), value in
-                _RECORDED_ORPHAN_EVIDENCE.items()
+                for (
+                    recorded_project,
+                    recorded_root,
+                    _recorded_session,
+                ), value in _RECORDED_ORPHAN_EVIDENCE.items()
                 if recorded_project == str(project_id) and recorded_root == normalized_root
             ]
             evidence = matches[0] if len(matches) == 1 else None
@@ -771,11 +776,18 @@ def _delete_project_workspace(project: dict) -> None:
         if not _workspace_identity_matches(
             root_resolved, expected_device, expected_file, expected_change_time
         ):
-            logger.warning("Skipping project workspace delete after identity change %s", root_resolved)
+            logger.warning(
+                "Skipping project workspace delete after identity change %s", root_resolved
+            )
             return
         try:
-            if expected_marker is not None and _read_project_workspace_marker(root_resolved) != expected_marker:
-                logger.warning("Skipping project workspace delete after marker change %s", root_resolved)
+            if (
+                expected_marker is not None
+                and _read_project_workspace_marker(root_resolved) != expected_marker
+            ):
+                logger.warning(
+                    "Skipping project workspace delete after marker change %s", root_resolved
+                )
                 return
         except (OSError, UnicodeError):
             if expected_marker is not None or runtime_evidence is None:
@@ -959,9 +971,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Keep project ids tied to every workspace incarnation. A deleted project
     # can be recreated with the same client id, but old tool/session cards must
     # never resolve into the new workspace.
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS chat_project_incarnations (id TEXT PRIMARY KEY)"
-    )
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_project_incarnations (id TEXT PRIMARY KEY)")
     conn.execute(
         "INSERT OR IGNORE INTO chat_project_incarnations (id) SELECT id FROM chat_projects"
     )
@@ -3416,13 +3426,11 @@ def _available_managed_project_root(default_root: str, project_id: str) -> str:
     readable = re.sub(r"[^A-Za-z0-9_-]+", "-", str(project_id))[:8].strip("-_") or "project"
     digest = hashlib.sha256(str(project_id).encode("utf-8")).hexdigest()[:12]
     suffix_name = f"{readable}-{digest}"
-    prefix = root.name[: -(len(suffix_name) + 1)] if root.name.endswith(f"-{suffix_name}") else root.name
+    prefix = (
+        root.name[: -(len(suffix_name) + 1)] if root.name.endswith(f"-{suffix_name}") else root.name
+    )
     for index in range(1, 10001):
-        candidate = (
-            root
-            if index == 1
-            else root.with_name(f"{prefix}-{index}-{suffix_name}")
-        )
+        candidate = root if index == 1 else root.with_name(f"{prefix}-{index}-{suffix_name}")
         key = _normalized_workspace_path(str(candidate))
         if key in claimed and key != current_project_root:
             continue
@@ -3536,7 +3544,10 @@ def _missing_paths_overlap_below_aliases(left: str, right: str) -> bool:
 
 
 def _workspace_paths_overlap(
-    first: str | None, second: str | None, *, check_descendants: bool = False
+    first: str | None,
+    second: str | None,
+    *,
+    check_descendants: bool = False,
 ) -> bool:
     """Compare workspace paths, aliases, and descendant mount points."""
     if not first or not second:
@@ -3574,9 +3585,17 @@ def _workspace_paths_overlap(
             right_dir = right_raw if os.path.isdir(right_raw) else None
             if _missing_paths_overlap_below_aliases(left_raw, right_raw):
                 return True
-            if left_dir and os.path.exists(right_raw) and _directory_tree_contains_identity(left_dir, right_raw):
+            if (
+                left_dir
+                and os.path.exists(right_raw)
+                and _directory_tree_contains_identity(left_dir, right_raw)
+            ):
                 return True
-            if right_dir and os.path.exists(left_raw) and _directory_tree_contains_identity(right_dir, left_raw):
+            if (
+                right_dir
+                and os.path.exists(left_raw)
+                and _directory_tree_contains_identity(right_dir, left_raw)
+            ):
                 return True
         return False
     except (OSError, RuntimeError, TypeError):
@@ -3592,10 +3611,7 @@ def _reject_folder_workspace_overlap(
 ) -> None:
     try:
         from core.inference.tools import sandbox_root
-
-        if _workspace_paths_overlap(
-            folder_path, sandbox_root(), check_descendants = True
-        ):
+        if _workspace_paths_overlap(folder_path, sandbox_root(), check_descendants = True):
             raise ProjectWorkspaceOverlapError(
                 "The selected folder overlaps Studio's chat sandbox root"
             )
@@ -3617,9 +3633,7 @@ def _reject_folder_workspace_overlap(
             continue
         if _workspace_paths_overlap(
             row["root_path"], folder_path, check_descendants = True
-        ) or _workspace_paths_overlap(
-            row["folder_path"], folder_path, check_descendants = True
-        ):
+        ) or _workspace_paths_overlap(row["folder_path"], folder_path, check_descendants = True):
             raise ProjectWorkspaceOverlapError(
                 "The selected folder overlaps another project's workspace"
             )
@@ -3669,14 +3683,12 @@ def claim_chat_project_folder(
             old_path = current["folder_path"]
             old_change_time = current["folder_change_time_ns"]
             if old_path and (
-                _normalized_workspace_path(str(old_path))
-                != _normalized_workspace_path(folder_path)
+                _normalized_workspace_path(str(old_path)) != _normalized_workspace_path(folder_path)
                 or old_change_time is not None
                 and str(old_change_time) != str(change_time_ns)
             ):
                 try:
                     from core.inference.tools import record_orphaned_project
-
                     record_orphaned_project(
                         project_id,
                         str(old_path),
@@ -3704,7 +3716,9 @@ def claim_chat_project_folder(
         overlap_exclude = (
             identity_owner["id"]
             if current is None and reuse_existing_identity and identity_owner is not None
-            else project_id if current is not None else None
+            else project_id
+            if current is not None
+            else None
         )
         _reject_folder_workspace_overlap(
             conn,
@@ -3713,10 +3727,9 @@ def claim_chat_project_folder(
         )
 
         if current is None and identity_owner is not None and reuse_existing_identity:
-            if (
-                identity_owner["folder_change_time_ns"] is not None
-                and str(identity_owner["folder_change_time_ns"]) != str(change_time_ns)
-            ):
+            if identity_owner["folder_change_time_ns"] is not None and str(
+                identity_owner["folder_change_time_ns"]
+            ) != str(change_time_ns):
                 raise ProjectWorkspaceOverlapError(
                     "The selected folder identity changed since it was connected"
                 )
@@ -3893,9 +3906,9 @@ def disconnect_chat_project_folder(
                 committed = True
                 return _chat_project_from_row(current)
             current_root = current["root_path"]
-            if current_root and _normalized_workspace_path(str(current_root)) != _normalized_workspace_path(
-                prepared.root_path
-            ):
+            if current_root and _normalized_workspace_path(
+                str(current_root)
+            ) != _normalized_workspace_path(prepared.root_path):
                 raise ChatProjectWorkspaceRevisionConflictError(
                     "Project workspace changed before this update completed."
                 )
@@ -3904,7 +3917,6 @@ def disconnect_chat_project_folder(
             if current["folder_path"]:
                 try:
                     from core.inference.tools import record_orphaned_project
-
                     record_orphaned_project(
                         project_id,
                         str(current["folder_path"]),
@@ -4057,7 +4069,6 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         project = _chat_project_from_row(row, probe_workspace = False)
         if project.get("workspaceKind") == "folder" and project.get("workspacePath"):
             from core.inference.tools import record_orphaned_project
-
             recorded = record_orphaned_project(
                 str(project["id"]),
                 str(project["workspacePath"]),
