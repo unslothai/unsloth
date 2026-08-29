@@ -6626,7 +6626,7 @@ const ComposerRightControls: FC<{
       onStopClick?.();
       return;
     }
-    stopChatThread(activeThreadId);
+    if (!stopChatThread(activeThreadId)) onStopClick?.();
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">

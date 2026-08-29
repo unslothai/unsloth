@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const RECOVERY_STOP_DISPATCH =
-  /if \(isQueueRunning\) \{[\s\S]*?return;[\s\S]*?stopChatThread\(activeThreadId\);/;
+  /if \(!stopChatThread\(activeThreadId\)\) onStopClick\?\.\(\);/;
 
 test("durable reload recovery owns captures and finishes live TPS", async () => {
   const source = await readFile(
@@ -40,7 +40,7 @@ test("durable reload recovery owns captures and finishes live TPS", async () => 
   );
 });
 
-test("the visible Stop button cancels the recovered server run", async () => {
+test("the visible Stop button cancels recovered and unresolved runs", async () => {
   const source = await readFile(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
     "utf8",
@@ -52,6 +52,6 @@ test("the visible Stop button cancels the recovered server run", async () => {
   assert.match(
     controls,
     RECOVERY_STOP_DISPATCH,
-    "assistant-ui cannot cancel a recovery follower; Stop must also dispatch its server handle",
+    "Stop must dispatch a recovered server handle or fall back to assistant-ui before a thread id exists",
   );
 });
