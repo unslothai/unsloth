@@ -649,9 +649,7 @@ class _Turn:
             same_stable_call = exact_stable_id or adopted_stable_id
             current_complete: list[str] = []
             current_tail = current["function"]["arguments"]
-            if name_fragment and (
-                not args_fragment.strip() or not current["function"]["name"]
-            ):
+            if name_fragment and (not args_fragment.strip() or not current["function"]["name"]):
                 current_complete, current_tail = _split_top_level_json_documents(current_tail)
             if (
                 current_complete
