@@ -23507,6 +23507,12 @@ def _openai_model_objects() -> list[dict]:
         _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
         if _native_ctx is not None:
             entry["native_context_length"] = _native_ctx
+        # The same gate /v1/audio/speech applies: _audio_type alone also matches whisper
+        # (ASR) and audio_vlm (Gemma 3n chat), which that route rejects with a 400.
+        if getattr(llama_backend, "_is_audio", False) and (
+            getattr(llama_backend, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
+        ):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     # Check Unsloth backend
@@ -23531,6 +23537,12 @@ def _openai_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
+        if (
+            not model_info.get("is_mlx")
+            and model_info.get("is_audio")
+            and (model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES)
+        ):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     return models
@@ -23601,6 +23613,264 @@ def _catalog_lock() -> asyncio.Lock:
         return lock
 
 
+def _classified_catalog(models: list) -> list:
+    from hub.services.models.catalog_classification import _local_model_classification
+
+    classified = []
+    for model in models:
+        if getattr(model, "task", None) is None and hasattr(model, "model_copy"):
+            try:
+                task, audio_type = _local_model_classification(model)
+                model = model.model_copy(update = {"task": task, "audio_type": audio_type})
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "model task classification failed for %s: %s", getattr(model, "id", "?"), exc
+                )
+        classified.append(model)
+    return classified
+
+
+_MEDIA_MODEL_TASKS = ("text-to-image", "text-to-video")
+_STT_MODEL_TASK = "automatic-speech-recognition"
+_TTS_MODEL_TASK = "text-to-speech"
+
+
+def _media_owner(task: str) -> str:
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    return DIFFUSION if task == "text-to-image" else VIDEO
+
+
+def _resident_media_status(task: str) -> Optional[dict]:
+    from core.inference.media_keepwarm import engine_if_imported
+    try:
+        engine = engine_if_imported(_media_owner(task))
+        status = engine.status() if engine is not None else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("%s status unavailable for /v1/models: %s", task, exc)
+        return None
+    return status if status and status.get("loaded") else None
+
+
+_MEDIA_PICK_CACHE: dict = {"at": None, "picks": {}}
+_MEDIA_PICK_CACHE_LOCK = threading.Lock()
+
+
+def _validated_media_picks(catalog_at: float) -> dict:
+    """The (id, pick) rows per task, rebuilt only when the shared catalog scan is replaced.
+
+    Each media index keeps its own short TTL and its own ``collect_local_models`` walk, so
+    resolving them per request made an otherwise-cached /v1/models pay two extra full
+    scans. The Settings usage examples poll this endpoint, so that cost repeats.
+    """
+    if _MEDIA_PICK_CACHE["at"] == catalog_at:
+        return _MEDIA_PICK_CACHE["picks"]
+    with _MEDIA_PICK_CACHE_LOCK:
+        if _MEDIA_PICK_CACHE["at"] == catalog_at:
+            return _MEDIA_PICK_CACHE["picks"]
+        from core.inference.media_locality import is_edit_only, missing_download_bytes
+        from core.inference.media_model_index import (
+            available_media_model_ids,
+            resolve_local_media_model,
+        )
+
+        picks: dict = {}
+        for task in _MEDIA_MODEL_TASKS:
+            rows = []
+            for model_id in available_media_model_ids(task):
+                pick = resolve_local_media_model(model_id, task = task)
+                if pick is None:
+                    continue
+                # The local catalog tags an instruction-editing checkpoint text-to-image, but it
+                # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
+                # is refused by /v1/images/generations too.
+                if task == "text-to-image" and is_edit_only(pick):
+                    continue
+                try:
+                    local = missing_download_bytes(_media_owner(task), pick) == 0
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("media locality unavailable for %s: %s", model_id, exc)
+                    local = False
+                rows.append((model_id, pick, local))
+            picks[task] = rows
+        _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
+        return picks
+
+
+def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list[dict]:
+    """Downloaded image/video models, as the generation resolver actually sees them.
+
+    Built from the media index rather than the raw catalog, because that index is what
+    /v1/images/generations and /v1/videos resolve a name against: it drops partial pulls,
+    directories no loader can open, and builds a sibling quant cannot be told apart from.
+    Anything it rejects would be advertised here and then answered with model_not_found.
+
+    Residency goes through ``resident_is_pick`` for the same reason. A standalone GGUF
+    loads with its parent directory as the model path and an HF cache repo with its
+    snapshot directory, so comparing the public id or the catalog's own path reports the
+    resident model as unloaded. Residency is read per request; only the scan is cached.
+    """
+    from core.inference.media_model_index import (
+        partition_matches,
+        resident_is_gguf,
+        satisfied_by,
+    )
+    from hub.utils.gguf import extract_quant_token
+
+    display_by_id: dict[str, str] = {}
+    for info in catalog:
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        display = getattr(info, "display_name", None)
+        if cid and display:
+            display_by_id.setdefault(cid, display)
+
+    picks_by_task = _validated_media_picks(catalog_at)
+    objects: list[dict] = []
+    for task in _MEDIA_MODEL_TASKS:
+        status = _resident_media_status(task)
+        for model_id, pick, local in picks_by_task.get(task, ()):
+            loaded = bool(status) and satisfied_by(status, model_id, pick)
+            if not loaded and not local:
+                continue
+            obj = {
+                "id": model_id,
+                "object": "model",
+                "created": created,
+                "owned_by": _OWNED_BY,
+                "task": task,
+                "loaded": loaded,
+            }
+            quant = (status.get("gguf_variant") if loaded else None) or (
+                extract_quant_token(pick.gguf_filename) if pick.gguf_filename else None
+            )
+            if quant:
+                obj["quant"] = quant
+            display = display_by_id.get(model_id)
+            if display:
+                obj["display_name"] = display
+            objects.append(obj)
+        resident_id = str((status or {}).get("repo_id") or "").strip()
+        resident_workflows = (status or {}).get("workflows") or ()
+        if (
+            status
+            and resident_id
+            and not resident_is_gguf(status)
+            and partition_matches(status)
+            and (
+                task != "text-to-image" or not resident_workflows or "txt2img" in resident_workflows
+            )
+            and public_model_id(resident_id) == resident_id
+            and not any(obj["id"].lower() == resident_id.lower() for obj in objects)
+        ):
+            objects.append(
+                {
+                    "id": resident_id,
+                    "object": "model",
+                    "created": created,
+                    "owned_by": _OWNED_BY,
+                    "task": task,
+                    "loaded": True,
+                }
+            )
+    return objects
+
+
+_CUSTOM_STT_CACHE: dict = {"at": None, "ids": ()}
+_CUSTOM_STT_CACHE_LOCK = threading.Lock()
+
+
+def _downloaded_custom_stt_ids(catalog_at: Optional[float]) -> tuple[str, ...]:
+    if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+        return _CUSTOM_STT_CACHE["ids"]
+    with _CUSTOM_STT_CACHE_LOCK:
+        if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+            return _CUSTOM_STT_CACHE["ids"]
+        from core.inference import stt_sidecar
+        from hub.services.models.cache_inventory import _scan_cached_models
+
+        try:
+            ids = tuple(
+                sorted(
+                    row["repo_id"]
+                    for row in _scan_cached_models()
+                    if row.get("task") == _STT_MODEL_TASK
+                    and not row.get("partial")
+                    and isinstance(row.get("repo_id"), str)
+                    and stt_sidecar.is_model_downloaded(row["repo_id"])
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("custom stt cache scan unavailable for /v1/models: %s", exc)
+            ids = ()
+        _CUSTOM_STT_CACHE.update(at = catalog_at, ids = ids)
+        return ids
+
+
+def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list[dict]:
+    """Downloaded speech-to-text models this endpoint's own route can actually serve.
+
+    /v1/audio/transcriptions resolves an id to an engine by itself: only the mtmd ids are
+    forced, and everything else lands on Transformers. So a curated Whisper id cached only
+    for whisper.cpp is not servable here (the route loads the absent Transformers snapshot
+    and 409s), and neither engine can serve anything while its runtime is missing (501).
+    Both engines are therefore gated on their own availability, and residency is read only
+    from the engines this route can select.
+    """
+    try:
+        from core.inference import stt_mtmd_sidecar, stt_sidecar
+
+        whisper_ready = stt_sidecar.is_available()
+        mtmd_ready = stt_mtmd_sidecar.is_available()
+        loaded = set()
+        if whisper_ready:
+            whisper_loaded = stt_sidecar.get_stt_sidecar().loaded_model
+            loaded.add(stt_sidecar.STT_MODELS.get(whisper_loaded, whisper_loaded))
+        if mtmd_ready:
+            loaded.add(stt_mtmd_sidecar.get_mtmd_stt_sidecar().loaded_model)
+        loaded -= {None}
+
+        ids: list[str] = []
+        if whisper_ready:
+            ids.extend(
+                repo_id
+                for model_id, repo_id in stt_sidecar.STT_MODELS.items()
+                if stt_sidecar.is_model_downloaded(model_id)
+            )
+            ids.extend(
+                model_id
+                for model_id in _downloaded_custom_stt_ids(catalog_at)
+                if model_id not in ids
+            )
+        if mtmd_ready:
+            ids.extend(
+                model_id
+                for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+                if stt_mtmd_sidecar.is_model_downloaded(model_id)
+            )
+        # A custom Whisper repo the route can still reload by name while it is resident.
+        ids.extend(sorted(model_id for model_id in loaded if model_id not in ids))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("stt models unavailable for /v1/models: %s", exc)
+        return []
+    objects = []
+    for model_id in ids:
+        obj = {
+            "id": model_id,
+            "object": "model",
+            "created": created,
+            "owned_by": _OWNED_BY,
+            "task": _STT_MODEL_TASK,
+            "loaded": model_id in loaded,
+        }
+        spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model_id)
+        if spec is not None:
+            from hub.utils.gguf import extract_quant_token
+            quant = extract_quant_token(spec.model_file)
+            if quant:
+                obj["quant"] = quant
+        objects.append(obj)
+    return objects
+
+
 async def _cached_local_catalog() -> list:
     """Locally available models (models dir + HF caches + LM Studio + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
@@ -23622,7 +23892,7 @@ async def _cached_local_catalog() -> list:
         try:
             from routes.models import collect_local_models
             _CATALOG_CACHE["models"] = await asyncio.to_thread(
-                collect_local_models, Path("./models").resolve()
+                lambda: _classified_catalog(collect_local_models(Path("./models").resolve()))
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
@@ -23638,9 +23908,17 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
     from disk. Module scope, and always called through ``asyncio.to_thread``: the file
     checks stat many files and the residency check reads the inference singleton."""
     from core.inference.local_model_resolver import local_load_dir, local_servable_model
+    from hub.services.models.catalog_classification import _UNSUPPORTED_DIFFUSION_TASK
 
     rows = []
     for info in catalog:
+        if getattr(info, "task", None) in (
+            *_MEDIA_MODEL_TASKS,
+            _STT_MODEL_TASK,
+            _TTS_MODEL_TASK,
+            _UNSUPPORTED_DIFFUSION_TASK,
+        ):
+            continue
         servable = local_servable_model(info)
         if servable is None:
             continue
@@ -23668,6 +23946,8 @@ async def _openai_catalog_objects() -> list[dict]:
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
+    orchestrator = _peek_inference_backend()
+    resident_id = _orchestrator_public_model_id(orchestrator) if orchestrator else None
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
@@ -23676,7 +23956,6 @@ async def _openai_catalog_objects() -> list[dict]:
         if not cid or cid in by_id:
             continue
         if loaded and not is_gguf:
-            resident_id = _orchestrator_public_model_id(get_inference_backend())
             if resident_id in by_id:
                 continue
         obj = {
@@ -23698,6 +23977,15 @@ async def _openai_catalog_objects() -> list[dict]:
         if display:
             obj["display_name"] = display
         by_id[cid] = obj
+
+    media = await asyncio.to_thread(
+        lambda: (
+            _media_model_objects(catalog, _created, _CATALOG_CACHE["at"])
+            + _stt_model_objects(_created, _CATALOG_CACHE["at"])
+        )
+    )
+    for obj in media:
+        by_id.setdefault(obj["id"], obj)
 
     return list(by_id.values())
 
