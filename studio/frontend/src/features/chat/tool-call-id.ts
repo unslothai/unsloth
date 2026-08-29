@@ -19,6 +19,8 @@ export function resolveToolCallPartId(
 
 export interface StreamedToolCallPart {
   toolCallId: string;
+  toolName?: string;
+  argsText?: string;
   _delta_index?: number;
   _has_stable_id?: boolean;
 }
@@ -119,6 +121,27 @@ export function findOldestUnownedStreamedToolCallPartIndex(
     (part) =>
       part._delta_index === deltaIndex && part._has_stable_id !== true,
   );
+}
+
+export function findDelayedStableToolCallPartIndex(
+  parts: readonly StreamedToolCallPart[],
+  deltaIndex: number | undefined,
+  name: string,
+  argumentsText: string,
+): number {
+  if (deltaIndex === undefined) {
+    return -1;
+  }
+  return parts.findIndex((part) => {
+    if (
+      part._delta_index !== deltaIndex ||
+      part._has_stable_id === true ||
+      (name && part.toolName && part.toolName !== name)
+    ) {
+      return false;
+    }
+    return !argumentsText || part.argsText === argumentsText;
+  });
 }
 
 /**

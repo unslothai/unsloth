@@ -324,6 +324,17 @@ def _mint_streamed_tool_call_id(taken: set[str]) -> str:
     return f"tool_call_{index}"
 
 
+def _argument_fragment(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+        except (TypeError, ValueError, RecursionError):
+            pass
+    return ""
+
+
 def _delta_text(content: Any) -> str:
     """Text of a content delta, whether it is a plain string or content parts.
 
@@ -555,28 +566,37 @@ class _Turn:
             function = function if isinstance(function, dict) else {}
             name_fragment = function.get("name")
             name_fragment = name_fragment if isinstance(name_fragment, str) else ""
-            args_fragment = function.get("arguments")
-            args_fragment = args_fragment if isinstance(args_fragment, str) else ""
+            args_fragment = _argument_fragment(function.get("arguments"))
             # continue whichever call owns this index now: index restarts at 0
             # for every tool round, so after a fork the bare argument fragments
             # belong to the newer call.
             key: Any = self.open_key_by_index.get(index, index)
             stable_id = call_id if isinstance(call_id, str) and call_id else ""
+            adopted_stable_id = False
+            repeated_snapshot = False
             if stable_id in self.key_by_call_id:
                 key = self.key_by_call_id[stable_id]
-            elif stable_id and not name_fragment and not args_fragment:
-                key = next(
-                    (
-                        candidate
-                        for candidate in self.order
-                        if self.by_index[candidate].get("_delta_index") == index
-                        and not self.by_index[candidate].get("id")
-                    ),
-                    key,
-                )
             elif stable_id:
+                for candidate in self.order:
+                    candidate_call = self.by_index[candidate]
+                    candidate_function = candidate_call["function"]
+                    if (
+                        candidate_call.get("_delta_index") != index
+                        or candidate_call.get("id")
+                        or (
+                            name_fragment
+                            and candidate_function["name"]
+                            and candidate_function["name"] != name_fragment
+                        )
+                    ):
+                        continue
+                    if not args_fragment or candidate_function["arguments"] == args_fragment:
+                        key = candidate
+                        adopted_stable_id = True
+                        repeated_snapshot = bool(args_fragment)
+                        break
                 open_id = self.by_index.get(key, {}).get("id")
-                if open_id and open_id != stable_id:
+                if not adopted_stable_id and open_id and open_id != stable_id:
                     # Two distinct calls reported at the same index. Merging them
                     # concatenates their argument JSON into one unparseable blob
                     # and loses an intent, so key the second on its own id.
@@ -593,13 +613,14 @@ class _Turn:
                 # reorder parallel calls against what the model actually sent.
             current = self.by_index[key]
             exact_stable_id = bool(stable_id and current.get("id") == stable_id)
+            same_stable_call = exact_stable_id or adopted_stable_id
             current_complete, current_tail = _split_top_level_json_documents(
                 current["function"]["arguments"]
             )
             if (
                 current_complete
                 and not current_tail
-                and not exact_stable_id
+                and not same_stable_call
                 and name_fragment
                 and not args_fragment
             ):
@@ -610,10 +631,13 @@ class _Turn:
                 current["id"] = stable_id
                 self.key_by_call_id[stable_id] = key
             extra = raw_call.get("extra_content")
-            combined = current["function"]["arguments"] + args_fragment
+            had_existing_arguments = bool(current["function"]["arguments"])
+            combined = current["function"]["arguments"] + (
+                "" if repeated_snapshot else args_fragment
+            )
             complete, tail = _split_top_level_json_documents(combined)
             segments = [*complete, *([tail] if tail else [])]
-            if not exact_stable_id and len(segments) > 1:
+            if not repeated_snapshot and len(segments) > 1:
                 if not current["function"]["name"]:
                     current["function"]["name"] = name_fragment
                 current["function"]["arguments"] = segments[0]
@@ -623,7 +647,7 @@ class _Turn:
                     split_call = self._new_call(split_key, index)
                     split_call["function"]["name"] = name_fragment or current["function"]["name"]
                     split_call["function"]["arguments"] = segment
-                    if segment_index == 0 and stable_id:
+                    if segment_index == 0 and stable_id and had_existing_arguments:
                         current["id"] = ""
                         split_call["id"] = stable_id
                         self.key_by_call_id[stable_id] = split_key
@@ -683,7 +707,11 @@ class _Turn:
             if normalized is None:
                 continue
             stream_id = normalized["id"]
+            if stream_id in streamed:
+                stream_id = _mint_streamed_tool_call_id(streamed)
             streamed.add(stream_id)
+            if stream_id != normalized["id"]:
+                normalized["stream_id"] = stream_id
             if normalized["id"] in seen:
                 # The client keyed the card it painted on the id the provider
                 # streamed, so keep that one for the events aimed at the card.
@@ -1237,13 +1265,14 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
+            decision = controller.prepare_call(call)
             if not unlimited and remaining <= 0:
                 # Budget spent. Answer the model so it stops asking, but never
                 # execute: the cap is a safety limit, not a hint to the provider.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
                     tool_call_id = call.get("stream_id") or call["id"],
-                    arguments = call.get("arguments"),
+                    arguments = decision.tool_start_payload()["arguments"],
                     result = _TOOL_BUDGET_EXHAUSTED,
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
@@ -1253,13 +1282,7 @@ async def stream_with_studio_tools(
                 # further down, so this one would arrive as an orphan
                 # role="tool" message and OpenAI, Anthropic and Gemini all
                 # reject that history instead of answering.
-                exhausted_call: dict[str, Any] = {
-                    "id": call["id"],
-                    "type": "function",
-                    # Copied: the normalized call also carries a parsed
-                    # arguments dict that must not reach the provider.
-                    "function": dict(call["function"]),
-                }
+                exhausted_call = decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if isinstance(exhausted_extra, dict) and exhausted_extra:
                     exhausted_call["extra_content"] = exhausted_extra
@@ -1273,7 +1296,6 @@ async def stream_with_studio_tools(
                     }
                 )
                 continue
-            decision = controller.prepare_call(call)
             # The frontend groups a round's reasoning by this id
             # (codexLocalToolRoundId), so every tool card the loop emits has to
             # carry it, not just the budget-exhausted one built by hand above.
@@ -1315,6 +1337,7 @@ async def stream_with_studio_tools(
             name = decision.tool_name
             arguments = decision.arguments
             call_id = decision.tool_call_id
+            frontend_call_id = call.get("stream_id") or call_id
             needs_confirmation = (
                 confirm_tool_calls and not bypass_permissions and permission_mode != "off"
             )
@@ -1326,6 +1349,7 @@ async def stream_with_studio_tools(
             )
 
             start_event = decision.tool_start_event()
+            start_event["tool_call_id"] = frontend_call_id
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
             denied = False
@@ -1374,7 +1398,7 @@ async def stream_with_studio_tools(
                     {
                         "type": "tool_end",
                         "tool_name": name,
-                        "tool_call_id": call_id,
+                        "tool_call_id": frontend_call_id,
                         "result": TOOL_REJECTED_MESSAGE,
                         "provenance": decision.provenance,
                     }
@@ -1433,7 +1457,7 @@ async def stream_with_studio_tools(
             tool_stream = stream_tool_execution(
                 _invoke,
                 tool_name = name,
-                tool_call_id = call_id,
+                tool_call_id = frontend_call_id,
                 cancel_event = cancel_event,
             )
             outcome: dict[str, Any] = {}
@@ -1490,7 +1514,9 @@ async def stream_with_studio_tools(
             executed_any = True
             # Opens the post-tool phase; carried-over stall text would eat its nudge.
             last_reprompt_text = ""
-            yield _sse(completion.tool_end_event())
+            end_event = completion.tool_end_event()
+            end_event["tool_call_id"] = frontend_call_id
+            yield _sse(end_event)
             tool_messages.append(completion.tool_message())
 
         # An empty status clears the badge between iterations.

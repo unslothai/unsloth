@@ -4,9 +4,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toolCallReplayArguments } from "../src/features/chat/tool-call-arguments.ts";
+import {
+  streamedToolCallArguments,
+  toolCallReplayArguments,
+} from "../src/features/chat/tool-call-arguments.ts";
 import {
   type StreamedToolCallPart,
+  findDelayedStableToolCallPartIndex,
   findOldestUnownedStreamedToolCallPartIndex,
   findStreamedToolCallPartIndex,
   fragmentStartsNewToolCall,
@@ -21,19 +25,24 @@ interface DeltaFragment {
   arguments: string;
 }
 
+type AccumulatedPart = StreamedToolCallPart & {
+  argsText: string;
+  toolName?: string;
+  splitTail?: boolean;
+};
+
 /** Accumulate `delta.tool_calls[]` fragments the way the chat adapter does. */
 function accumulate(
   fragments: DeltaFragment[],
-): (StreamedToolCallPart & { argsText: string; toolName?: string })[] {
-  const parts: (StreamedToolCallPart & {
-    argsText: string;
-    toolName?: string;
-  })[] = [];
+): AccumulatedPart[] {
+  const parts: AccumulatedPart[] = [];
   const usedIds = new Set<string>();
+  const providerIds = new Map<string, string>();
   const append = (
     fragment: DeltaFragment,
     argsText: string,
     id = fragment.id,
+    splitTail = false,
   ) => {
     parts.push({
       toolCallId:
@@ -42,22 +51,50 @@ function accumulate(
       argsText,
       ...(id ? { _has_stable_id: true } : {}),
       ...(fragment.index !== undefined ? { _delta_index: fragment.index } : {}),
+      ...(splitTail ? { splitTail: true } : {}),
     });
     usedIds.add(parts[parts.length - 1].toolCallId);
   };
-  for (const fragment of fragments) {
-    const exact = fragment.id
-      ? parts.findIndex((part) => part.toolCallId === fragment.id)
+  for (const rawFragment of fragments) {
+    let fragment = rawFragment;
+    let partId = fragment.id ? providerIds.get(fragment.id) : undefined;
+    if (fragment.id && !partId) {
+      const providerId = fragment.id;
+      const delayed = findDelayedStableToolCallPartIndex(
+        parts,
+        fragment.index,
+        fragment.name ?? "",
+        fragment.arguments,
+      );
+      if (delayed !== -1) {
+        const provisionalId = parts[delayed].toolCallId;
+        partId = providerId;
+        parts[delayed].toolCallId = partId;
+        parts[delayed]._has_stable_id = true;
+        usedIds.delete(provisionalId);
+        if (fragment.arguments === parts[delayed].argsText) {
+          fragment = { ...fragment, arguments: "" };
+        }
+      } else {
+        partId = usedIds.has(providerId)
+          ? mintStreamedToolCallId(parts, fragment.index, usedIds)
+          : providerId;
+      }
+      providerIds.set(providerId, partId);
+      usedIds.add(partId);
+    }
+    const exact = partId
+      ? parts.findIndex((part) => part.toolCallId === partId)
       : -1;
     const matched =
       exact !== -1
         ? exact
-        : fragment.id && !fragment.name && !fragment.arguments
+        : partId && !fragment.name && !fragment.arguments
           ? findOldestUnownedStreamedToolCallPartIndex(parts, fragment.index)
-          : findStreamedToolCallPartIndex(parts, fragment.id, fragment.index);
+          : findStreamedToolCallPartIndex(parts, partId, fragment.index);
     const matchedPart = matched === -1 ? undefined : parts[matched];
     const exactId = Boolean(
-      fragment.id && matchedPart?.toolCallId === fragment.id,
+      partId && matchedPart?.toolCallId === partId,
     );
     const settled = matchedPart
       ? splitTopLevelJsonDocuments(matchedPart.argsText)
@@ -86,25 +123,29 @@ function accumulate(
           append(
             fragment,
             segment,
-            segmentIndex === 0 ? fragment.id : undefined,
+            segmentIndex === 0
+              ? partId
+              : mintStreamedToolCallId(parts, fragment.index, usedIds),
+            Boolean(split.tail && segment === split.tail),
           );
         }
         continue;
       }
     }
     if (target === -1) {
-      append(fragment, fragment.arguments);
+      append(fragment, fragment.arguments, partId);
       continue;
     }
     parts[target] = {
       ...parts[target],
-      ...(fragment.id ? { toolCallId: fragment.id, _has_stable_id: true } : {}),
+      ...(partId ? { toolCallId: partId, _has_stable_id: true } : {}),
       ...(fragment.name ? { toolName: fragment.name } : {}),
       argsText: parts[target].argsText + fragment.arguments,
+      splitTail: false,
     };
-    if (fragment.id) usedIds.add(fragment.id);
+    if (partId) usedIds.add(partId);
   }
-  return parts;
+  return parts.filter((part) => !part.splitTail);
 }
 
 test("tool rounds that both reuse index 0 stay separate calls", () => {
@@ -368,6 +409,25 @@ test("one fresh fragment can contain several complete calls", () => {
   assert.equal(new Set(parts.map((part) => part.toolCallId)).size, 3);
 });
 
+test("a fresh multi-document fragment keeps its stable id on the first call", () => {
+  const parts = accumulate([
+    {
+      id: "call-a",
+      index: 0,
+      name: "alpha",
+      arguments: '{"a":1}{"b":2}',
+    },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [
+      ["call-a", '{"a":1}'],
+      ["tool_call_0", '{"b":2}'],
+    ],
+  );
+});
+
 test("delayed ids claim same-index calls in announcement order", () => {
   const parts = accumulate([
     { index: 0, name: "alpha", arguments: '{"a":1}' },
@@ -390,4 +450,47 @@ test("minted ids never reuse an adopted or stable id", () => {
   const parts = [{ toolCallId: "stable" }, { toolCallId: "tool_call_1" }];
 
   assert.equal(mintStreamedToolCallId(parts, 0, reserved), "tool_call_3");
+});
+
+test("a delayed id carrying an exact snapshot does not duplicate the call", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"a":1}' },
+    { id: "call-a", index: 0, name: "alpha", arguments: '{"a":1}' },
+    { index: 0, name: "beta", arguments: '{"b":2}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [
+      ["call-a", '{"a":1}'],
+      ["tool_call_0", '{"b":2}'],
+    ],
+  );
+});
+
+test("a stable id collision mints a distinct stream id", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"a":1}' },
+    { id: "tool_call_0", index: 1, name: "beta", arguments: '{"b":2}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => part.toolCallId),
+    ["tool_call_0", "tool_call_1"],
+  );
+});
+
+test("decoded object arguments preserve their JSON payload", () => {
+  assert.equal(
+    streamedToolCallArguments({ query: "雪", nested: [1, { ok: true }] }),
+    '{"query":"雪","nested":[1,{"ok":true}]}',
+  );
+});
+
+test("an incomplete split tail is not persisted as a call", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"a":1}{"b":' },
+  ]);
+
+  assert.deepEqual(parts.map((part) => part.argsText), ['{"a":1}']);
 });

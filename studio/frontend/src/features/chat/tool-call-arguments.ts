@@ -35,3 +35,17 @@ export function toolCallReplayArguments(
   }
   return JSON.stringify(args ?? {}) ?? "{}";
 }
+
+export function streamedToolCallArguments(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || typeof value !== "object") {
+    return "";
+  }
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
