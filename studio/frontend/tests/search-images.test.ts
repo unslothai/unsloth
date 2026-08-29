@@ -39,9 +39,7 @@ const OTHER = { ...ENTRY, id: "abcdef012345", title: "Labrador" };
 const KNOWN = new Set([ENTRY.id, OTHER.id]);
 
 const adapterSource = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
+  fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
   "utf8",
 );
 
@@ -50,9 +48,7 @@ function liftAdapterFunction(opener: string): string {
   assert.ok(start >= 0, `${opener} is no longer defined in chat-adapter.ts`);
   const end = adapterSource.indexOf("\n}", start);
   assert.ok(end > start, `could not find the end of ${opener}`);
-  return adapterSource
-    .slice(start, end + 2)
-    .replace("export function", "function");
+  return adapterSource.slice(start, end + 2).replace("export function", "function");
 }
 
 const privateContentPredicateJs = ts.transpileModule(
@@ -90,9 +86,7 @@ test("private message history blocks automatic image lookup", () => {
     messagesUsePrivateContent([
       {
         role: "user",
-        content: [
-          { type: "image", image: "data:image/png;base64,cHJpdmF0ZQ==" },
-        ],
+        content: [{ type: "image", image: "data:image/png;base64,cHJpdmF0ZQ==" }],
       },
     ]),
     true,
@@ -342,9 +336,7 @@ test("placeSubjectImages never splits a list item a model wrapped over lines", (
     "4. **Golden Retriever:** Known for being gentle, patient, and\ndevoted, making them excellent family companions.\n5. **Poodle:** Clever.";
   const out = placeSubjectImages(wrapped, images, false);
   assert.ok(
-    out.includes(
-      "patient, and\ndevoted, making them excellent family companions.",
-    ),
+    out.includes("patient, and\ndevoted, making them excellent family companions."),
     "the sentence must stay intact",
   );
   // Its own block, indented to the item's content column so the list keeps numbering.
@@ -363,10 +355,7 @@ test("placeSubjectImages respects tokens the model placed, streaming, and code",
   // Named only inside code, or not named at all: nothing is inserted anywhere.
   const code = "```\nGerman Shepherd\n```";
   assert.equal(placeSubjectImages(code, images, false), code);
-  assert.equal(
-    placeSubjectImages("Nothing here", images, false),
-    "Nothing here",
-  );
+  assert.equal(placeSubjectImages("Nothing here", images, false), "Nothing here");
   // Entries without a subject (web_search images) are never auto-placed.
   assert.equal(
     placeSubjectImages("Labrador", new Map([[ENTRY.id, ENTRY]]), false),
@@ -386,24 +375,15 @@ test("placeSubjectImages respects tokens the model placed, streaming, and code",
 
 test("answerTextFromParts keeps the answer and drops reasoning", () => {
   const parts = [
-    {
-      type: "reasoning",
-      text: "1. **Analyze the Request:** plan\n2. **Pick a tool:** web",
-    },
+    { type: "reasoning", text: "1. **Analyze the Request:** plan\n2. **Pick a tool:** web" },
     { type: "text", text: "1. **Labrador Retriever:** friendly." },
     { type: "tool-call", toolName: "web_search" },
     { type: "text", text: "2. **Poodle:** clever." },
   ];
   const answer = answerTextFromParts(parts);
-  assert.equal(
-    answer,
-    "1. **Labrador Retriever:** friendly.\n\n2. **Poodle:** clever.",
-  );
+  assert.equal(answer, "1. **Labrador Retriever:** friendly.\n\n2. **Poodle:** clever.");
   // The reasoning list must never become a subject to illustrate.
-  assert.deepEqual(extractListSubjects(answer), [
-    "Labrador Retriever",
-    "Poodle",
-  ]);
+  assert.deepEqual(extractListSubjects(answer), ["Labrador Retriever", "Poodle"]);
   assert.equal(answerTextFromParts([{ type: "reasoning", text: "x" }]), "");
 });
 
@@ -432,9 +412,7 @@ test("extractListSubjects reads the lead of each listed item", () => {
   assert.deepEqual(extractListSubjects("Dogs are great. Cats too."), []);
   // Section labels are skipped; procedures and code answers are never illustrated.
   assert.deepEqual(
-    extractListSubjects(
-      "- **Pros:** fast\n- **Cons:** pricey\n- **Honda Civic:** a\n- **Mazda 3:** b",
-    ),
+    extractListSubjects("- **Pros:** fast\n- **Cons:** pricey\n- **Honda Civic:** a\n- **Mazda 3:** b"),
     ["Honda Civic", "Mazda 3"],
   );
   // A mostly-step list is a procedure and is never illustrated.
@@ -475,16 +453,8 @@ test("the inline card is block-level, so a list item cannot flow text around it"
   const wrapper = /data-search-image=\{entry\.id\}/.test(source)
     ? source.slice(source.indexOf("if (!entry) return null;"))
     : "";
-  assert.match(
-    wrapper,
-    /className="[^"]*\bflex\b/,
-    "wrapper must not be inline",
-  );
-  assert.match(
-    wrapper,
-    /empty:hidden/,
-    "an unloaded card must not leave a gap",
-  );
+  assert.match(wrapper, /className="[^"]*\bflex\b/, "wrapper must not be inline");
+  assert.match(wrapper, /empty:hidden/, "an unloaded card must not leave a gap");
 });
 
 test("searchResultText reaches the citations inside an image-bearing result", () => {
@@ -492,10 +462,7 @@ test("searchResultText reaches the citations inside an image-bearing result", ()
   assert.equal(searchResultText(blocks), blocks);
   // The shape that used to make the whole Sources row vanish.
   assert.equal(searchResultText({ text: blocks, webImages: [ENTRY] }), blocks);
-  assert.equal(
-    searchResultText({ text: "t", images: [{ data: "", mimeType: "" }] }),
-    "",
-  );
+  assert.equal(searchResultText({ text: "t", images: [{ data: "", mimeType: "" }] }), "");
   assert.equal(searchResultText(undefined), "");
 });
 
@@ -523,10 +490,7 @@ test("placeSubjectImages illustrates a subject once per message", () => {
     "A Pug is small.\n\n[[img:cccccccccccc]]",
   );
   // The later text part sees what the earlier one already named, so it adds nothing.
-  assert.equal(
-    placeSubjectImages("The Pug again.", images, false, first),
-    "The Pug again.",
-  );
+  assert.equal(placeSubjectImages("The Pug again.", images, false, first), "The Pug again.");
 });
 
 test("equal text parts derive preceding text from the current part position", () => {
@@ -551,10 +515,7 @@ test("a token in a later text part prevents an earlier duplicate card", () => {
   const images = new Map([[pug.id, pug]]);
   const first = "A Pug is small.";
   const later = "Here it is.\n\n[[img:cccccccccccc]]";
-  assert.equal(
-    placeSubjectImages(first, images, false, "", [first, later]),
-    first,
-  );
+  assert.equal(placeSubjectImages(first, images, false, "", [first, later]), first);
   const codeOnly = "```\n[[img:cccccccccccc]]\n```";
   assert.equal(
     placeSubjectImages(first, images, false, "", [first, codeOnly]),
@@ -562,17 +523,13 @@ test("a token in a later text part prevents an earlier duplicate card", () => {
   );
   const unclosedFence = `${first}\n\n\`\`\``;
   assert.equal(
-    placeSubjectImages(unclosedFence, images, false, "", [
-      unclosedFence,
-      later,
-    ]),
+    placeSubjectImages(unclosedFence, images, false, "", [unclosedFence, later]),
     unclosedFence,
   );
 });
 
 test("missingListSubjects matches coverage on word boundaries", () => {
-  const answer =
-    "1. **Caterpillar:** a\n2. **Catalina Island:** b\n3. **Pug:** c";
+  const answer = "1. **Caterpillar:** a\n2. **Catalina Island:** b\n3. **Pug:** c";
   const covered = (subject: string) => [
     {
       type: "tool-call",
@@ -694,16 +651,11 @@ test("stripSearchImageTokens takes the tokens and their blank line", () => {
   assert.equal(stripSearchImageTokens("[[img:nothex]]"), "[[img:nothex]]");
   // Two cards in a row collapse to one gap, not three blank lines.
   assert.equal(
-    stripSearchImageTokens(
-      "A\n\n[[img:0123456789ab]]\n\n[[img:abcdef012345]]\n\nB",
-    ),
+    stripSearchImageTokens("A\n\n[[img:0123456789ab]]\n\n[[img:abcdef012345]]\n\nB"),
     "A\n\nB",
   );
   // Inline, and inside code — the same rule rewriteSearchImageTokens follows.
-  assert.equal(
-    stripSearchImageTokens("see [[img:0123456789ab]] here"),
-    "see  here",
-  );
+  assert.equal(stripSearchImageTokens("see [[img:0123456789ab]] here"), "see  here");
   assert.equal(
     stripSearchImageTokens("```\n[[img:0123456789ab]]\n```"),
     "```\n[[img:0123456789ab]]\n```",
@@ -715,13 +667,9 @@ test("placeSubjectImages steps past a subject that code mentions first", () => {
   const images = new Map([[go.id, go]]);
   // The first occurrence is inside code, which shows no card. Abandoning the subject
   // there dropped the picture for the prose item that names it further down.
-  const text =
-    "Run `Go` first.\n\n1. **Go:** compiled and fast\n2. **Rust:** strict";
+  const text = "Run `Go` first.\n\n1. **Go:** compiled and fast\n2. **Rust:** strict";
   const out = placeSubjectImages(text, images, false);
-  assert.ok(
-    out.includes("Run `Go` first."),
-    "the snippet must stay as written",
-  );
+  assert.ok(out.includes("Run `Go` first."), "the snippet must stay as written");
   assert.ok(out.includes("compiled and fast\n\n   [[img:cccccccccccc]]"));
 });
 
@@ -729,12 +677,7 @@ test("placeSubjectImages ignores an earlier part that only named a subject in co
   const go = { ...ENTRY, id: "cccccccccccc", subject: "Go" };
   const images = new Map([[go.id, go]]);
   // A code-only mention earlier carries no card, so it must not suppress this one.
-  const out = placeSubjectImages(
-    "Go is compiled.",
-    images,
-    false,
-    "Type `Go` to start.",
-  );
+  const out = placeSubjectImages("Go is compiled.", images, false, "Type `Go` to start.");
   assert.equal(out, "Go is compiled.\n\n[[img:cccccccccccc]]");
   // A real earlier mention still wins: one card per message.
   assert.equal(
@@ -748,13 +691,9 @@ test("placeSubjectImages still places a subject whose token only sits in code", 
   const images = new Map([[pug.id, pug]]);
   // rewriteSearchImageTokens leaves a token inside a fence alone, so it renders no
   // picture; counting it as "already placed" meant the answer showed nothing at all.
-  const text =
-    "Here is the token:\n\n```\n[[img:cccccccccccc]]\n```\n\nThe Pug is small.";
+  const text = "Here is the token:\n\n```\n[[img:cccccccccccc]]\n```\n\nThe Pug is small.";
   const out = placeSubjectImages(text, images, false);
-  assert.ok(
-    out.includes("```\n[[img:cccccccccccc]]\n```"),
-    "the fence stays as written",
-  );
+  assert.ok(out.includes("```\n[[img:cccccccccccc]]\n```"), "the fence stays as written");
   assert.ok(
     out.endsWith("The Pug is small.\n\n[[img:cccccccccccc]]"),
     `a real card must still be placed, got ${JSON.stringify(out)}`,
@@ -786,10 +725,7 @@ test("a token from an earlier turn is unresolvable in the message that repeats i
     {
       type: "tool-call",
       toolName: "web_search",
-      result: {
-        text: `- [[img:${ENTRY.id}]] ${ENTRY.title}`,
-        webImages: [ENTRY],
-      },
+      result: { text: `- [[img:${ENTRY.id}]] ${ENTRY.title}`, webImages: [ENTRY] },
     },
   ];
   const repeatText = `Here it is again:\n\n[[img:${ENTRY.id}]]`;
@@ -806,9 +742,7 @@ test("a token from an earlier turn is unresolvable in the message that repeats i
 
 test("replayed assistant text carries no image tokens", () => {
   assert.equal(
-    sanitizeAssistantReplayText(
-      `The retriever:\n\n[[img:${ENTRY.id}]]\n\nand more.`,
-    ),
+    sanitizeAssistantReplayText(`The retriever:\n\n[[img:${ENTRY.id}]]\n\nand more.`),
     "The retriever:\n\nand more.",
   );
   // The audio placeholder this shares the chokepoint with is untouched.
@@ -840,10 +774,7 @@ test("a replayed web_search result carries no image tokens either", () => {
 // the way the sibling store tests do.
 const storeSource = readFileSync(
   fileURLToPath(
-    new URL(
-      "../src/features/chat/stores/chat-runtime-store.ts",
-      import.meta.url,
-    ),
+    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
   ),
   "utf8",
 );
@@ -894,10 +825,7 @@ test("the run flushes those settings after it hydrates and before it sends", () 
   );
   // After, not before: a setting changed while the initial GET was still out is
   // held back and only reaches the debounce when hydration replays it.
-  assert.ok(
-    hydrate > 0 && hydrate < start,
-    "the flush must follow the hydrate",
-  );
+  assert.ok(hydrate > 0 && hydrate < start, "the flush must follow the hydrate");
   // Awaited, not fired and forgotten, or the run races the patch it just sent.
   assert.match(
     adapterSource.slice(start - 6, start + 34),
@@ -1001,8 +929,7 @@ test("the web search card survives a query that is not a string", () => {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText,
   ) as (args: unknown, coerce: typeof toolArgText) => [string, string];
-  const derive = (args: unknown): [string, string] =>
-    derived(args, toolArgText);
+  const derive = (args: unknown): [string, string] => derived(args, toolArgText);
   assert.deepEqual(derive({ query: 42 }), ["42", ""]);
   assert.deepEqual(derive({ query: null, url: 7 }), ["", "7"]);
   assert.deepEqual(derive({}), ["", ""]);
@@ -1014,10 +941,7 @@ test("a thumbnail response that lands after the id changed is ignored", () => {
   // the effect has no reason to run again: a skeleton that never resolves.
   const source = readFileSync(
     fileURLToPath(
-      new URL(
-        "../src/components/assistant-ui/search-image.tsx",
-        import.meta.url,
-      ),
+      new URL("../src/components/assistant-ui/search-image.tsx", import.meta.url),
     ),
     "utf8",
   );
@@ -1033,6 +957,7 @@ test("a thumbnail response that lands after the id changed is ignored", () => {
     "the not-ok branch must check the abort like the success branch does",
   );
 });
+
 
 // A voice note or a clip is the user's own content in the sense the text-attachment rule
 // already covers, and the answer's subjects go to external image engines. Both arrive
@@ -1053,10 +978,7 @@ test("an audio or video input blocks automatic image lookup", () => {
           },
         ],
       },
-      {
-        role: "user",
-        content: [{ type: "text", text: "list what it mentions" }],
-      },
+      { role: "user", content: [{ type: "text", text: "list what it mentions" }] },
     ]),
     true,
     "a recording the user attached must not have its subjects searched for",
@@ -1079,9 +1001,7 @@ test("an audio or video input blocks automatic image lookup", () => {
         attachments: [
           {
             type: "file",
-            content: [
-              { type: "file", data: "cHJpdmF0ZQ==", mimeType: "video/mp4" },
-            ],
+            content: [{ type: "file", data: "cHJpdmF0ZQ==", mimeType: "video/mp4" }],
           },
         ],
       },
@@ -1093,10 +1013,7 @@ test("an audio or video input blocks automatic image lookup", () => {
   // is still a clip, and failing open on it is the wrong way round.
   assert.equal(
     messagesUsePrivateContent([
-      {
-        role: "user",
-        content: [{ type: "audio", audio: { data: "", format: "wav" } }],
-      },
+      { role: "user", content: [{ type: "audio", audio: { data: "", format: "wav" } }] },
     ]),
     true,
     "an audio part with an unusable payload is still private",
@@ -1104,10 +1021,7 @@ test("an audio or video input blocks automatic image lookup", () => {
   // The complement: a plain typed question is what the lookup exists for.
   assert.equal(
     messagesUsePrivateContent([
-      {
-        role: "user",
-        content: [{ type: "text", text: "name three dog breeds" }],
-      },
+      { role: "user", content: [{ type: "text", text: "name three dog breeds" }] },
     ]),
     false,
     "an ordinary text turn must still be eligible",
@@ -1116,10 +1030,7 @@ test("an audio or video input blocks automatic image lookup", () => {
   // it already decides those on their text.
   assert.equal(
     messagesUsePrivateContent([
-      {
-        role: "user",
-        content: [{ type: "file", data: "eA==", mimeType: "application/pdf" }],
-      },
+      { role: "user", content: [{ type: "file", data: "eA==", mimeType: "application/pdf" }] },
     ]),
     false,
     "the video test is on the mime type, not on being a file part",
