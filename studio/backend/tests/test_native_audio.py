@@ -136,13 +136,7 @@ def test_local_higgs_companion_metadata_drives_security_and_download_plans(
 
 def test_higgs2_audio_tokenizer_config_takes_runtime_precedence(tmp_path):
     (tmp_path / "processor_config.json").write_text(
-        json.dumps(
-            {
-                "audio_tokenizer": {
-                    "audio_tokenizer_name_or_path": "acme/processor-codec"
-                }
-            }
-        ),
+        json.dumps({"audio_tokenizer": {"audio_tokenizer_name_or_path": "acme/processor-codec"}}),
         encoding = "utf-8",
     )
     (tmp_path / "audio_tokenizer_config.json").write_text(
@@ -156,9 +150,7 @@ def test_higgs2_audio_tokenizer_config_takes_runtime_precedence(tmp_path):
     ]
 
 
-@pytest.mark.parametrize(
-    "metadata_file", ("processor_config.json", "audio_tokenizer_config.json")
-)
+@pytest.mark.parametrize("metadata_file", ("processor_config.json", "audio_tokenizer_config.json"))
 def test_oversized_higgs_companion_metadata_fails_closed(tmp_path, metadata_file):
     (tmp_path / "config.json").write_text(
         json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"

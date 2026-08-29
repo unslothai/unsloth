@@ -48,13 +48,10 @@ def _ensure_backend_on_path() -> None:
 
 
 def _native_audio_security_targets_or_error(
-    model_name: str,
-    hf_token: str | None,
-    resp_queue: Any,
+    model_name: str, hf_token: str | None, resp_queue: Any
 ) -> list[str] | None:
     try:
         from core.inference.native_audio import native_audio_security_targets
-
         return native_audio_security_targets(model_name, hf_token = hf_token)
     except Exception as exc:
         _send_response(

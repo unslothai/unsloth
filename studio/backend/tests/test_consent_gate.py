@@ -763,9 +763,7 @@ class TestStructuredFindingsForDialog:
             json.dumps({"padding": "x" * 1_000_000}), encoding = "utf-8"
         )
         monkeypatch.setattr(models_route, "is_local_path", lambda *_args: True)
-        monkeypatch.setattr(
-            security, "load_scan_target", lambda target, subdirs: (target, subdirs)
-        )
+        monkeypatch.setattr(security, "load_scan_target", lambda target, subdirs: (target, subdirs))
 
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
