@@ -164,6 +164,48 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     }
 
 
+def _patch_inventory_roots(monkeypatch, tmp_path, lm_dirs, custom_folders):
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: list(lm_dirs))
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: list(custom_folders))
+
+
+def test_collect_local_models_collapses_a_custom_folder_overlapping_lmstudio(monkeypatch, tmp_path):
+    # #9164: registering the LM Studio models tree (or a parent of it) as a custom
+    # scan folder re-found what the LM Studio scanner already listed, and the
+    # (id, source) dedup keys kept both rows: the same path twice, once as
+    # "lmstudio" and once as "custom".
+    lm_root = tmp_path / "lmstudio" / "models"
+    model_dir = lm_root / "unsloth" / "gpt-oss-20b-GGUF"
+    model_dir.mkdir(parents = True)
+    (model_dir / "model-Q4_K_M.gguf").write_bytes(b"gguf-payload")
+
+    _patch_inventory_roots(monkeypatch, tmp_path, [lm_root], [{"path": str(lm_root)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    matches = [row for row in rows if row.path == str(model_dir)]
+    assert [(row.source, row.path) for row in matches] == [("lmstudio", str(model_dir))]
+
+
+def test_collect_local_models_keeps_custom_rows_for_distinct_paths(monkeypatch, tmp_path):
+    # The custom-source keys exist so a second physical copy of the same repo
+    # still shows; collapsing by path must not eat that row.
+    custom_root = tmp_path / "custom"
+    model_dir = custom_root / "MyModel"
+    model_dir.mkdir(parents = True)
+    (model_dir / "model.safetensors").write_bytes(b"safetensors-payload")
+
+    _patch_inventory_roots(monkeypatch, tmp_path, [], [{"path": str(custom_root)}])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+    matches = [row for row in rows if row.path == str(model_dir)]
+    assert [(row.source, row.path) for row in matches] == [("custom", str(model_dir))]
+
+
 def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     # Total and stable on hostile input is the whole contract here; the exact
     # string is platform-dependent. POSIX realpath() rejects an embedded NUL with

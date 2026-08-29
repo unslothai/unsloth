@@ -1169,8 +1169,34 @@ def collect_local_models(
         if prefer_model:
             deduped[key] = model
 
-    models = sorted(
+    # A physical directory can only be one model. A custom folder pointing into
+    # a tree a native scanner already covers (LM Studio, Ollama) re-finds the
+    # same path, and the (id, source) keys above kept both rows — the same model
+    # listed twice (#9164). Collapse by canonical path; the native scanner's
+    # attribution wins, and a custom entry survives only for paths no native
+    # source already covers (the distinct-copy case the keys above protect).
+    def _canonical_model_path(model: LocalModelInfo) -> Optional[str]:
+        try:
+            return os.path.normcase(os.path.realpath(os.path.expanduser(str(model.path))))
+        except (OSError, UnicodeError, ValueError):
+            return None
+
+    seen_paths: set[str] = set()
+    collapsed: List[LocalModelInfo] = []
+    natives_first = sorted(
         deduped.values(),
+        key = lambda model: model.source == "custom",
+    )
+    for model in natives_first:
+        path_key = _canonical_model_path(model)
+        if path_key is not None:
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
+        collapsed.append(model)
+
+    models = sorted(
+        collapsed,
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
