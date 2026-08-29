@@ -254,7 +254,7 @@ def test_custom_inventory_groups_nested_gguf_files_once(tmp_path):
     root = tmp_path / "hub"
     model_dir = root / "qwen38-27b-qat"
     model_dir.mkdir(parents = True)
-    for quant in ("q2_0", "q3_m"):
+    for quant in ("q2_0", "q3_k_m"):
         (model_dir / f"qwen38-27b-qat-{quant}.gguf").write_bytes(b"GGUF")
 
     rows = local_inventory._scan_custom_folder(root)

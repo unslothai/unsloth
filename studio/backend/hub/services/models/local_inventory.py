@@ -22,7 +22,7 @@ from hub.storage.scan_folders import (
     list_scan_folders,
     remove_scan_folder,
 )
-from hub.utils import download_manifest, inventory_scan as hf_cache_scan
+from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
 from hub.utils.paths import (
     hf_default_cache_dir,
     legacy_hf_cache_dir,
@@ -804,30 +804,53 @@ def _scan_custom_folder(
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
 
-    # The generic pass treats an immediate child directory containing GGUFs as
-    # one model whose files are quant variants.  The LM Studio compatibility
-    # pass can interpret the same directory as a publisher and publish those
-    # files again as separate models.  Keep compatibility rows only where the
-    # generic scan did not already claim their containing model directory.
     grouped_gguf_dirs = {
-        Path(model.path)
+        _inventory_path_identity(model.path)
         for model in selectable
         if model.source != "lmstudio"
         and model.model_format == "gguf"
         and not model.partial
         and _safe_is_dir(Path(model.path))
     }
-    if grouped_gguf_dirs:
-        selectable = [
-            model
-            for model in selectable
-            if not (
-                model.source == "lmstudio"
+    lmstudio_files_by_parent: dict[str, list[Path]] = {}
+    for model in selectable:
+        path = Path(model.path)
+        if (
+            model.source == "lmstudio"
+            and model.model_format == "gguf"
+            and not _safe_is_dir(path)
+        ):
+            lmstudio_files_by_parent.setdefault(
+                _inventory_path_identity(str(path.parent)), []
+            ).append(path)
+
+    grouped_decisions: dict[str, bool] = {}
+    for parent, files in lmstudio_files_by_parent.items():
+        if parent not in grouped_gguf_dirs:
+            continue
+        families = {gguf.gguf_checkpoint_family(path.name) for path in files}
+        variant_keys = [gguf.gguf_variant_key(path.name) for path in files]
+        grouped_decisions[parent] = (
+            len(files) == 1
+            or (None not in families and len(families) == 1)
+            or all(gguf.is_h3_denoiser_variant_key(key) for key in variant_keys)
+        )
+
+    if grouped_decisions:
+        filtered: list[LocalModelInfo] = []
+        for model in selectable:
+            path = Path(model.path)
+            is_dir = _safe_is_dir(path)
+            identity = _inventory_path_identity(str(path if is_dir else path.parent))
+            keep_group = grouped_decisions.get(identity)
+            if (
+                keep_group is not None
                 and model.model_format == "gguf"
-                and not _safe_is_dir(Path(model.path))
-                and Path(model.path).parent in grouped_gguf_dirs
-            )
-        ]
+                and ((is_dir and not keep_group) or (not is_dir and keep_group))
+            ):
+                continue
+            filtered.append(model)
+        selectable = filtered
     remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
     if remaining > 0:
         selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
