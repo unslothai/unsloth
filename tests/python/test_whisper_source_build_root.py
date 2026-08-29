@@ -34,7 +34,7 @@ def test_source_build_uses_the_staged_managed_root(tmp_path):
         "    shift\n"
         "  done\n"
         '  mkdir -p "$build/bin"\n'
-        '  printf \'#!/bin/sh\\nexit 0\\n\' > "$build/bin/whisper-server"\n'
+        "  printf '#!/bin/sh\\nexit 0\\n' > \"$build/bin/whisper-server\"\n"
         '  chmod +x "$build/bin/whisper-server"\n'
         "fi\n",
         encoding = "utf-8",
