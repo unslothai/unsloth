@@ -219,7 +219,12 @@ import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
-import { resolveComparePaneThreadId } from "./utils/compare-pane-threads";
+import {
+  type CompareVariant,
+  compareVariantForPair,
+  pairHasGeneralThreads,
+  resolveComparePaneThreadId,
+} from "./utils/compare-pane-threads";
 import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
@@ -552,6 +557,51 @@ function useIsLoraCompare(): boolean {
   });
 }
 
+/** `null` while the pair is still being read, so neither component hydrates first. */
+function useCompareVariant(pairId: string): CompareVariant | null {
+  const checkpointIsLora = useIsLoraCompare();
+  const [stored, setStored] = useState<{
+    pairId: string;
+    isGeneralPair: boolean;
+  }>();
+
+  // Re-read on the checkpoint flip, not just on the pair: a generalized pair's own
+  // first send writes its model1/model2 rows and then loads model 2, so the rows and
+  // the flip that would hand the pair to the adapter path arrive together. Freezing
+  // the first answer instead is not an option either, since `loras` hydrates after
+  // first paint and a real LoRA compare reads as generalized until it lands.
+  useEffect(() => {
+    let isActive = true;
+    const keep = (previous: typeof stored, isGeneralPair: boolean) => ({
+      pairId,
+      // Sticky per pair: once seen as generalized it stays that way, so a read that
+      // races the row write cannot hand the pair over on the next flip.
+      isGeneralPair:
+        isGeneralPair ||
+        (previous?.pairId === pairId && previous.isGeneralPair),
+    });
+    listStoredChatThreads({ pairId })
+      .then((threads) => {
+        if (!isActive) return;
+        setStored((prev) => keep(prev, pairHasGeneralThreads(threads)));
+      })
+      .catch((error) => {
+        // Unreadable storage falls through to the checkpoint rather than holding
+        // the panes blank; the pane resolvers make the same call and fail too.
+        if (isActive) setStored((prev) => keep(prev, false));
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [pairId, checkpointIsLora]);
+
+  if (stored?.pairId !== pairId) return null;
+  return compareVariantForPair(stored.isGeneralPair, checkpointIsLora);
+}
+
 const CompareContent = memo(function CompareContent({
   pairId,
   projectId,
@@ -575,9 +625,11 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  const compareVariant = useCompareVariant(pairId);
 
-  return isLoraCompare ? (
+  if (compareVariant === null) return <></>;
+
+  return compareVariant === "lora" ? (
     <LoraCompareContent
       pairId={pairId}
       onExitCompare={onExitCompare}
@@ -766,8 +818,11 @@ const LoraCompareContent = memo(function LoraCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setBaseThreadId(resolveComparePaneThreadId(threads, "base", "model1"));
-        setLoraThreadId(resolveComparePaneThreadId(threads, "lora", "model2"));
+        // No model1/model2 fallback: useCompareVariant never routes a generalized
+        // pair here, so adopting one could only mislabel it and write adapter
+        // answers into its histories.
+        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
+        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
