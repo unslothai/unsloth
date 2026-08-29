@@ -1935,8 +1935,6 @@ fn main() {
 
             initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
-            // Past the single-instance gate, so this process owns the studio dir.
-            desktop_updater::discard_stale_bundle();
             staged_update::reconcile_at_launch(
                 &diagnostics::studio_dir(),
                 &app.package_info().version.to_string(),
