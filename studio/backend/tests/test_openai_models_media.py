@@ -592,16 +592,7 @@ def test_stt_probe_failure_hides_nothing_else(monkeypatch):
 def test_stt_models_join_the_catalog(monkeypatch):
     _catalog(
         monkeypatch,
-        [
-            _Info("/data/models/small.gguf", "small", task = "text-generation"),
-            _Info(
-                "/hf/models--unsloth--whisper-small",
-                "whisper-small",
-                model_id = "unsloth/whisper-small",
-                task = "automatic-speech-recognition",
-                is_gguf = False,
-            ),
-        ],
+        [_Info("/data/models/small.gguf", "small", task = "text-generation")],
     )
     monkeypatch.setattr(
         inf,

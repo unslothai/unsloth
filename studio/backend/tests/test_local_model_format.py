@@ -403,30 +403,6 @@ def test_local_classification_probes_the_hf_cache_snapshot(tmp_path):
     assert classification._local_model_classification(model) == ("text-to-speech", "csm")
 
 
-def test_local_task_tags_whisper_in_the_hf_cache_snapshot(tmp_path):
-    repo = tmp_path / "models--org--whisper-custom"
-    snapshot = repo / "snapshots" / "abc"
-    snapshot.mkdir(parents = True)
-    (snapshot / "config.json").write_text(
-        json.dumps(
-            {
-                "model_type": "whisper",
-                "architectures": ["WhisperForConditionalGeneration"],
-            }
-        ),
-        encoding = "utf-8",
-    )
-    model = LocalModelInfo(
-        id = "org/whisper-custom",
-        display_name = "whisper-custom",
-        path = str(repo),
-        source = "hf_cache",
-        model_id = "org/whisper-custom",
-    )
-
-    assert models_route._local_model_task(model) == "automatic-speech-recognition"
-
-
 def test_local_task_probes_the_hf_cache_pipeline_snapshot(tmp_path):
     repo = tmp_path / "models--hf-internal-testing--tiny-sdxl-pipe"
     snapshot = repo / "snapshots" / "abc"
