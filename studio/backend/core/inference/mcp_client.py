@@ -27,6 +27,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
+_WINDOWS_BATCH_UNSAFE_ARGUMENT_CHARS = frozenset('&|<>^()%!"\r\n')
 
 # A failed probe isn't cached (a recovered server must come back), but it's
 # recorded so a down server isn't re-probed -- and the chat send re-hung for
@@ -385,9 +386,11 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
             raise ValueError(
                 f"Cannot launch {executable!r} without its Node executable and npm CLI script"
             )
-        if suffix in {".cmd", ".bat"} and len(parts) > 1:
+        if suffix in {".cmd", ".bat"} and any(
+            _WINDOWS_BATCH_UNSAFE_ARGUMENT_CHARS.intersection(argument) for argument in parts[1:]
+        ):
             raise ValueError(
-                "Windows batch launchers cannot preserve MCP command arguments; "
+                "Windows batch launchers cannot safely preserve these MCP command arguments; "
                 "invoke the executable directly, or use node.exe with the JavaScript entry point"
             )
     return [executable, *parts[1:]]

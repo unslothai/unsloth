@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -144,4 +145,25 @@ def test_stdio_arguments_survive_real_crud_import_probe_and_launch(tmp_path, mon
     ) == {
         "arguments": imported_arguments,
         "marker": "import value",
+    }
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "requires Windows batch launch semantics")
+@pytest.mark.timeout(45)
+def test_safe_arguments_survive_a_real_windows_batch_launcher(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    launcher = tmp_path / "mcp-server-example.cmd"
+    launcher.write_text(
+        f'@echo off\r\n"{sys.executable}" "{FIXTURE}" %*\r\n',
+        encoding = "utf-8",
+    )
+    arguments = ["--port", "3000", r"C:\Users\me\data", "a b", ""]
+    url = routes_mcp.encode_stdio_command(
+        McpStdioCommand(command = str(launcher), arguments = arguments),
+        current_subject = "u",
+    ).url
+
+    assert _launched_state(url, {"UNSLOTH_MCP_ARGUMENT_MARKER": "batch"}) == {
+        "arguments": arguments,
+        "marker": "batch",
     }

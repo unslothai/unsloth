@@ -206,17 +206,31 @@ def test_windows_stdio_argv_rejects_batch_when_cli_is_unknown(monkeypatch, tmp_p
         mcp_client._stdio_argv(["npx", "package"], {"PATH": str(tmp_path)})
 
 
-def test_windows_stdio_argv_rejects_other_batch_arguments(monkeypatch, tmp_path):
+@pytest.mark.parametrize("argument", ["%TOKEN%", "a&b", "x|y", 'say "hello"', "(group)"])
+def test_windows_stdio_argv_rejects_unsafe_batch_arguments(argument, monkeypatch, tmp_path):
     batch = tmp_path / "mcp-server-example.cmd"
     batch.write_text("")
     monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
     monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
 
-    with pytest.raises(ValueError, match = "cannot preserve MCP command arguments"):
+    with pytest.raises(ValueError, match = "cannot safely preserve these MCP command arguments"):
         mcp_client._stdio_argv(
-            ["mcp-server-example", "%TOKEN%", "a&b", "x|y"],
+            ["mcp-server-example", argument],
             {"PATH": str(tmp_path)},
         )
+
+
+def test_windows_stdio_argv_keeps_safe_batch_arguments(monkeypatch, tmp_path):
+    batch = tmp_path / "mcp-server-example.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+    arguments = ["--port", "3000", r"C:\Users\me\data", "a b", ""]
+
+    assert mcp_client._stdio_argv(["mcp-server-example", *arguments], {"PATH": str(tmp_path)}) == [
+        str(batch),
+        *arguments,
+    ]
 
 
 def test_windows_stdio_argv_keeps_argument_free_batch(monkeypatch, tmp_path):
