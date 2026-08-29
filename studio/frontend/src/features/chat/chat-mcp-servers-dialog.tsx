@@ -142,6 +142,31 @@ function transportFromAddress(
   return "stdio";
 }
 
+function formWithAddress(
+  form: FormState,
+  url: string,
+  preservePartialHttp: boolean,
+): FormState {
+  const transport = transportFromAddress(
+    url,
+    preservePartialHttp ? form.credentialTransport : null,
+  );
+  const nextCredentialTransport =
+    transport === "unknown" ? form.credentialTransport : transport;
+  const transportChanged =
+    transport !== "unknown" &&
+    form.credentialTransport !== null &&
+    form.credentialTransport !== transport;
+  return {
+    ...form,
+    url,
+    transport,
+    headers: transportChanged ? [] : form.headers,
+    credentialTransport: nextCredentialTransport,
+    useOauth: transport === "stdio" ? false : form.useOauth,
+  };
+}
+
 function isValidAddress(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;
@@ -543,9 +568,9 @@ export function ChatMcpServersDialog({
   }
 
   function handleOpenChange(next: boolean) {
-    // Encoding can still be cancelled; once CRUD is in flight, dismissal
-    // cannot undo it and must wait for the authoritative refresh.
-    if (!next && saving && !codecPending) return;
+    // once crud starts, dismissal must wait for the authoritative refresh
+    if (!next && ((saving && !codecPending) || busyIdsRef.current.size > 0))
+      return;
     if (!next) {
       formGenerationRef.current += 1;
       actionGenerationRef.current += 1;
@@ -579,7 +604,7 @@ export function ChatMcpServersDialog({
   }
 
   async function testConnection() {
-    if (!form.url.trim()) {
+    if (!form.url.trim() || form.transport === "unknown") {
       toast.error("Enter an http(s):// URL or a local command first");
       return;
     }
@@ -630,7 +655,7 @@ export function ChatMcpServersDialog({
       toast.error("Display name is required");
       return;
     }
-    if (!form.url.trim()) {
+    if (!form.url.trim() || form.transport === "unknown") {
       toast.error("URL or command is required");
       return;
     }
@@ -856,7 +881,7 @@ export function ChatMcpServersDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-w-2xl"
-        showCloseButton={!(saving && !codecPending)}
+        showCloseButton={!(saving && !codecPending) && busyIds.size === 0}
         aria-busy={decodingCommand}
       >
         <DialogHeader>
@@ -922,28 +947,14 @@ export function ChatMcpServersDialog({
                 onChange={(e) => {
                   const url = e.target.value;
                   setCodecError(null);
-                  setForm((prev) => {
-                    const transport = transportFromAddress(
-                      url,
-                      prev.credentialTransport,
-                    );
-                    const nextCredentialTransport =
-                      transport === "unknown"
-                        ? prev.credentialTransport
-                        : transport;
-                    const transportChanged =
-                      transport !== "unknown" &&
-                      prev.credentialTransport !== null &&
-                      prev.credentialTransport !== transport;
-                    return {
-                      ...prev,
-                      url,
-                      transport,
-                      headers: transportChanged ? [] : prev.headers,
-                      credentialTransport: nextCredentialTransport,
-                      useOauth: transport === "stdio" ? false : prev.useOauth,
-                    };
-                  });
+                  setForm((prev) => formWithAddress(prev, url, true));
+                }}
+                onBlur={() => {
+                  setForm((prev) =>
+                    prev.transport === "unknown" && prev.url.trim()
+                      ? formWithAddress(prev, prev.url, false)
+                      : prev,
+                  );
                 }}
                 placeholder={
                   addressIsCommand
@@ -1051,7 +1062,10 @@ export function ChatMcpServersDialog({
                 size="sm"
                 onClick={testConnection}
                 disabled={
-                  formPending || codecError !== null || !form.url.trim()
+                  formPending ||
+                  codecError !== null ||
+                  form.transport === "unknown" ||
+                  !form.url.trim()
                 }
               >
                 {testing ? <Spinner /> : null}
@@ -1067,7 +1081,11 @@ export function ChatMcpServersDialog({
                 </Button>
                 <Button
                   onClick={submitForm}
-                  disabled={formPending || codecError !== null}
+                  disabled={
+                    formPending ||
+                    codecError !== null ||
+                    form.transport === "unknown"
+                  }
                 >
                   {saving ? <Spinner /> : null}
                   {view.kind === "edit" ? "Save changes" : "Add server"}

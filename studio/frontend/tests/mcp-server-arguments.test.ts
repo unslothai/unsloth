@@ -131,7 +131,7 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
   assert.match(dialog, /const addressIsCommand = form\.transport === "stdio"/);
   assert.match(
     dialog,
-    /const transport = transportFromAddress\(\s*url,\s*prev\.credentialTransport,\s*\)/,
+    /function formWithAddress[\s\S]*transportFromAddress\([\s\S]*preservePartialHttp \? form\.credentialTransport : null[\s\S]*headers: transportChanged \? \[\] : form\.headers/,
   );
   assert.match(
     dialog,
@@ -169,7 +169,7 @@ test("the dialog wires backend codec calls, stale guards, and a stdio-only edito
   assert.match(dialog, /Add local arguments in the Arguments rows/);
   assert.match(
     dialog,
-    /const transportChanged =[\s\S]*prev\.credentialTransport !== transport;[\s\S]*headers: transportChanged \? \[\] : prev\.headers/,
+    /setForm\(\(prev\) => formWithAddress\(prev, url, true\)\)/,
   );
   assert.doesNotMatch(dialog, /form\.url\.(?:split|join)\s*\(/);
   assert.doesNotMatch(dialog, /form\.arguments[^;\n]*\.join\s*\(/);
@@ -241,7 +241,7 @@ test("a decode error is announced and executable edits unlock manual recovery", 
 
   assert.match(
     dialog,
-    /id="mcp-url"[\s\S]*?onChange=\{\(e\) => \{[\s\S]*?setCodecError\(null\)[\s\S]*?transport,/,
+    /id="mcp-url"[\s\S]*?onChange=\{\(e\) => \{[\s\S]*?setCodecError\(null\)[\s\S]*?formWithAddress/,
   );
   assert.match(
     dialog,
@@ -257,7 +257,7 @@ test("a decode error is announced and executable edits unlock manual recovery", 
   );
   assert.match(
     dialog,
-    /disabled=\{\s*formPending \|\|\s*codecError !== null \|\|\s*!form\.url\.trim\(\)/,
+    /disabled=\{\s*formPending \|\|\s*codecError !== null \|\|\s*form\.transport === "unknown" \|\|\s*!form\.url\.trim\(\)/,
   );
 });
 
@@ -294,10 +294,7 @@ test("pending MCP actions remain keyed to their own server", () => {
     "utf8",
   );
   const composer = readFileSync(
-    new URL(
-      "../src/features/chat/mcp-composer-button.tsx",
-      import.meta.url,
-    ),
+    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
     "utf8",
   );
 
@@ -314,7 +311,7 @@ test("pending MCP actions remain keyed to their own server", () => {
   );
 });
 
-test("dialog closure is blocked only after a save mutation starts", () => {
+test("dialog closure is blocked while a CRUD mutation is in flight", () => {
   const dialog = readFileSync(
     new URL(
       "../src/features/chat/chat-mcp-servers-dialog.tsx",
@@ -330,12 +327,12 @@ test("dialog closure is blocked only after a save mutation starts", () => {
 
   assert.match(
     closeHandler,
-    /if \(!next && saving && !codecPending\) return;[\s\S]*if \(!next\) \{[\s\S]*formGenerationRef\.current \+= 1;/,
+    /if \(!next && \(\(saving && !codecPending\) \|\| busyIdsRef\.current\.size > 0\)\)[\s\S]*return;[\s\S]*if \(!next\) \{[\s\S]*formGenerationRef\.current \+= 1;/,
     "the in-flight mutation guard must run before close invalidates the form generation",
   );
   assert.match(
     dialog,
-    /<DialogContent[\s\S]*?showCloseButton=\{!\(saving && !codecPending\)\}[\s\S]*?>/,
+    /<DialogContent[\s\S]*?showCloseButton=\{!\(saving && !codecPending\) && busyIds\.size === 0\}[\s\S]*?>/,
     "the built-in close control must disappear during the same mutation window",
   );
   assert.match(
@@ -347,6 +344,34 @@ test("dialog closure is blocked only after a save mutation starts", () => {
     dialog,
     /async function encodeStdioForGeneration[\s\S]*setCodecPending\(true\);[\s\S]*await encodeMcpStdioCommand/,
     "codec encoding remains distinguishable so it can still be cancelled before CRUD starts",
+  );
+});
+
+test("composer applies mutation responses before releasing each preset", () => {
+  const composer = readFileSync(
+    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    composer,
+    /const applyServer = useCallback[\s\S]*setServers\(\(current\)[\s\S]*candidate\.id === server\.id/,
+  );
+  assert.match(
+    composer,
+    /applyServer\(\s*await createMcpServer\([\s\S]*pendingUrlsRef\.current\.delete\(norm\)/,
+  );
+  assert.match(
+    composer,
+    /applyServer\(\s*await updateMcpServer\([\s\S]*pendingUrlsRef\.current\.delete\(norm\)/,
+  );
+  assert.match(
+    composer,
+    /const \[serversLoaded, setServersLoaded\] = useState\(false\)[\s\S]*setServers\(rows\);\s*setServersLoaded\(true\)/,
+  );
+  assert.match(
+    composer,
+    /disabled=\{\s*!serversLoaded \|\| pendingUrls\.has\(normalizeMcpUrl\(opts\.url\)\)/,
   );
 });
 

@@ -110,6 +110,7 @@ export function McpComposerButton({
   const dialogOpen = useMcpServersDialogStore((s) => s.open);
   const setDialogOpen = useMcpServersDialogStore((s) => s.setOpen);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [serversLoaded, setServersLoaded] = useState(false);
   const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -132,12 +133,25 @@ export function McpComposerButton({
         });
         if (listRefreshGenerationRef.current !== generation) return;
         setServers(rows);
+        setServersLoaded(true);
       } catch {
         // Keep prior state if the list call fails.
       }
     },
     [],
   );
+
+  const applyServer = useCallback((server: McpServerConfig) => {
+    setServers((current) => {
+      const index = current.findIndex(
+        (candidate) => candidate.id === server.id,
+      );
+      if (index === -1) return [...current, server];
+      return current.map((candidate) =>
+        candidate.id === server.id ? server : candidate,
+      );
+    });
+  }, []);
 
   useEffect(() => {
     const unsubscribe = subscribeToMcpServerMutationSettlements((epoch) => {
@@ -188,20 +202,26 @@ export function McpComposerButton({
         // Reuse the already-loaded row, else create one.
         if (args.existing) {
           if (!args.existing.is_enabled) {
-            await updateMcpServer(args.existing.id, { isEnabled: true });
+            applyServer(
+              await updateMcpServer(args.existing.id, { isEnabled: true }),
+            );
           }
         } else {
-          await createMcpServer({
-            displayName: args.displayName,
-            url: args.url,
-            isEnabled: true,
-          });
+          applyServer(
+            await createMcpServer({
+              displayName: args.displayName,
+              url: args.url,
+              isEnabled: true,
+            }),
+          );
         }
         setMcpEnabledForChat(true);
         // Search servers turn off the built-in Web Search to avoid overlap.
         if (args.disablesWebSearch) setToolsEnabled(false);
       } else if (args.existing) {
-        await updateMcpServer(args.existing.id, { isEnabled: false });
+        applyServer(
+          await updateMcpServer(args.existing.id, { isEnabled: false }),
+        );
       }
     } catch (err) {
       toast.error("Failed to update MCP server", {
@@ -228,7 +248,7 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      disabled={pendingUrls.has(normalizeMcpUrl(opts.url))}
+      disabled={!serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
         void toggleServer({
