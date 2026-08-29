@@ -78,6 +78,9 @@ export async function updateStoredChatThread(
 export async function listStoredChatThreadsWithMessages(): Promise<StubThread[]> {
   return [];
 }
+export async function listStoredChatThreadsWithSidebarUsage(): Promise<StubThread[]> {
+  return [];
+}
 export async function deleteStoredChatThreads(): Promise<void> {}
 export function isExpectedBackgroundChatStorageError(): boolean {
   return false;
