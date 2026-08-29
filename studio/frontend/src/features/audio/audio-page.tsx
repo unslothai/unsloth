@@ -212,15 +212,22 @@ type RemoteCodeApproval = {
 function Field({
   label,
   hint,
+  htmlFor,
   children,
 }: {
   label: string;
   hint?: string;
+  htmlFor: string;
   children: ReactNode;
 }) {
   return (
     <div className="grid gap-1.5">
-      <span className="text-ui-13 font-medium text-foreground">{label}</span>
+      <label
+        className="text-ui-13 font-medium text-foreground"
+        htmlFor={htmlFor}
+      >
+        {label}
+      </label>
       {children}
       {hint ? (
         <p className="text-ui-11p5 leading-snug text-muted-foreground">
@@ -325,7 +332,9 @@ export function AudioPage({
     setTemperature(value);
   }, []);
   const [maxTokens, setMaxTokens] = useState(2048);
-  const [mossMaxSeconds, setMossMaxSeconds] = useState(MOSS_TTS_DEFAULT_SECONDS);
+  const [mossMaxSeconds, setMossMaxSeconds] = useState(
+    MOSS_TTS_DEFAULT_SECONDS,
+  );
   const [minimaxMaxSeconds, setMinimaxMaxSeconds] = useState(
     MINIMAX_MUSIC_DEFAULT_SECONDS,
   );
@@ -589,7 +598,10 @@ export function AudioPage({
     const selected = selectedSttRepoRef.current;
     const claim = sttLoadedByThisPage.current;
     const owned =
-      sttReady && selected !== null && claim !== null && claim === sttLoadedModel;
+      sttReady &&
+      selected !== null &&
+      claim !== null &&
+      claim === sttLoadedModel;
     const forget = () => {
       deferredSttLoad.current = null;
       selectedSttRepoRef.current = null;
@@ -800,13 +812,16 @@ export function AudioPage({
   /** `keepFallback` is for the one case where the id is not in `clips` yet: the server
    *  persisted the clip but this refresh missed it, so the response audio has to stay
    *  mounted or the player falls through to the empty state. */
-  const selectClip = useCallback((id: string, keepFallback = false) => {
-    galleryCache.selectedId = id;
-    setSelectedId(id);
-    if (!keepFallback) setFallbackClip(null);
-    const clip = galleryCache.clips.find((candidate) => candidate.id === id);
-    if (clip) void ensureClipSrc(clip);
-  }, [ensureClipSrc]);
+  const selectClip = useCallback(
+    (id: string, keepFallback = false) => {
+      galleryCache.selectedId = id;
+      setSelectedId(id);
+      if (!keepFallback) setFallbackClip(null);
+      const clip = galleryCache.clips.find((candidate) => candidate.id === id);
+      if (clip) void ensureClipSrc(clip);
+    },
+    [ensureClipSrc],
+  );
 
   // --- Model selection ----------------------------------------------------
 
@@ -1009,10 +1024,15 @@ export function AudioPage({
     pendingStagedTtsLoad.current = null;
     stagedTtsLoadDeferred.current = false;
   }, []);
+  const invalidatePendingTtsSelection = useCallback(() => {
+    ttsPickGeneration.current += 1;
+    pendingRoutedTtsPick.current = null;
+    invalidatePendingStagedTts();
+  }, [invalidatePendingStagedTts]);
   const transitionMode = useCallback(
     (nextMode: CreateMode) => {
       if (nextMode === mode) {
-        if (nextMode === "transcribe") invalidatePendingStagedTts();
+        if (nextMode === "transcribe") invalidatePendingTtsSelection();
         return true;
       }
       if (!canTransitionAudioMode(busyRef.current)) {
@@ -1022,7 +1042,7 @@ export function AudioPage({
         return false;
       }
 
-      if (nextMode === "transcribe") invalidatePendingStagedTts();
+      if (nextMode === "transcribe") invalidatePendingTtsSelection();
       if (busyRef.current === "generating") generateAbort.current?.abort();
       stopAndDiscardRecording();
       setMode(nextMode);
@@ -1057,7 +1077,7 @@ export function AudioPage({
       return true;
     },
     [
-      invalidatePendingStagedTts,
+      invalidatePendingTtsSelection,
       mode,
       releaseTranscribeSelection,
       stopAndDiscardRecording,
@@ -1811,10 +1831,9 @@ export function AudioPage({
     try {
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
-        max_tokens:
-          musicGeneration
-            ? minimaxMusicFramesForSeconds(minimaxMaxSeconds)
-            : mossFrameLimit !== null
+        max_tokens: musicGeneration
+          ? minimaxMusicFramesForSeconds(minimaxMaxSeconds)
+          : mossFrameLimit !== null
             ? mossTtsFramesForSeconds(mossMaxSeconds, mossFrameLimit)
             : maxTokens,
         ...(instructionsKind !== null && instructions
@@ -1870,7 +1889,8 @@ export function AudioPage({
       generateAbort.current = null;
       busyRef.current = null;
       setBusy(null);
-      if (activeRef.current) replayQueuedTtsPick();
+      if (activeRef.current && modeRef.current === "speak")
+        replayQueuedTtsPick();
     }
   }, [
     prompt,
@@ -2115,7 +2135,9 @@ export function AudioPage({
         // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
         // GET and returns the cache without calling setClips, which left the deleted clip
         // on screen against an object URL that has already been revoked.
-        galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
+        galleryCache.clips = galleryCache.clips.filter(
+          (clip) => clip.id !== id,
+        );
         setClips(galleryCache.clips);
         if (galleryCache.selectedId === id) {
           galleryCache.selectedId = null;
@@ -2226,7 +2248,10 @@ export function AudioPage({
             .filter(
               (lora) =>
                 !isMac ||
-                trainedTtsCheckpointIsRunnableOnMac(lora.audio_type, lora.export_type),
+                trainedTtsCheckpointIsRunnableOnMac(
+                  lora.audio_type,
+                  lora.export_type,
+                ),
             )
             // The GGUF flag matters: GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has
             // no CSM decoder, so a csm LoRA exported to GGUF fails at load. Without it the
@@ -2430,6 +2455,7 @@ export function AudioPage({
               <>
                 <Field
                   label={musicGeneration ? "Lyrics" : "Text"}
+                  htmlFor="audio-prompt"
                   hint={
                     musicGeneration
                       ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery on the right."
@@ -2437,6 +2463,7 @@ export function AudioPage({
                   }
                 >
                   <Textarea
+                    id="audio-prompt"
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     placeholder={
@@ -2463,8 +2490,10 @@ export function AudioPage({
                           ? "Optional Higgs TTS 2 scene guidance such as room acoustics, recording conditions, or background ambience."
                           : "Optional MOSS Local guidance such as speaking style, emotion, pace, or delivery."
                     }
+                    htmlFor="audio-instructions"
                   >
                     <Textarea
+                      id="audio-instructions"
                       value={audioInstructions}
                       onChange={(event) =>
                         setAudioInstructions(event.target.value)
@@ -2483,9 +2512,11 @@ export function AudioPage({
                 {mossLocalGeneration ? (
                   <Field
                     label="Language"
+                    htmlFor="audio-language"
                     hint="Optional, but MOSS Local v1.5 recommends a language tag when known (for example English, Arabic, or French)."
                   >
                     <Input
+                      id="audio-language"
                       value={audioLanguage}
                       onChange={(event) => setAudioLanguage(event.target.value)}
                       placeholder="English"
@@ -2549,6 +2580,7 @@ export function AudioPage({
               <>
                 <Field
                   label="Microphone"
+                  htmlFor="audio-record"
                   hint={
                     recordingSupported
                       ? "Record a clip and it is transcribed when you stop."
@@ -2556,6 +2588,7 @@ export function AudioPage({
                   }
                 >
                   <Button
+                    id="audio-record"
                     variant={isRecording ? "destructive" : "secondary"}
                     disabled={
                       !recordingSupported ||
@@ -2577,9 +2610,11 @@ export function AudioPage({
                 </Field>
                 <Field
                   label="Audio file"
+                  htmlFor="audio-file"
                   hint="Or transcribe an existing recording (wav, mp3, m4a, webm…)."
                 >
                   <input
+                    id="audio-file"
                     type="file"
                     accept="audio/*"
                     disabled={
@@ -2823,7 +2858,9 @@ export function AudioPage({
                         <button
                           type="button"
                           onClick={() => selectClip(clip.id)}
-                          aria-current={clip.id === selectedId ? "true" : undefined}
+                          aria-current={
+                            clip.id === selectedId ? "true" : undefined
+                          }
                           className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                         >
                           <HugeiconsIcon
