@@ -84,6 +84,12 @@ function accumulate(
       continue;
     }
     if ("toolStart" in event) {
+      // The loop runs a call only once the provider turn is over, so tool_start
+      // is a round boundary too, and the one a provider that omits
+      // finish_reason still gives us.
+      for (const part of parts) {
+        if (withheld(part)) retired.add(part.toolCallId);
+      }
       const at = parts.findIndex((part) => part.toolCallId === event.toolStart);
       if (at !== -1) {
         parts[at] = {
@@ -723,8 +729,6 @@ test("a withheld split tail does not take the next round's arguments", () => {
   const parts = accumulate(
     [
       { index: 0, name: "web_search", arguments: '{"a":1}{"b":' },
-      { toolStart: "tool_call_0" },
-      { toolEnd: "tool_call_0" },
       { finishReason: "tool_calls" },
       { index: 0, name: "web_search", arguments: '{"query":"second"}' },
     ],
@@ -733,6 +737,29 @@ test("a withheld split tail does not take the next round's arguments", () => {
 
   // tool_call_1 is the withheld tail: its spelling stays spoken for, which is
   // what keeps the next round on the tool_call_2 the backend mints for it.
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [
+      ["tool_call_0", '{"a":1}'],
+      ["tool_call_2", '{"query":"second"}'],
+    ],
+  );
+});
+
+// The backend consumes each turn's [DONE] and runs the turn whether or not the
+// provider ever sent a finish_reason, so the boundary cannot depend on that
+// field alone. tool_start is emitted only after the turn, so it stands in.
+test("a withheld split tail is retired without a finish_reason", () => {
+  const parts = accumulate(
+    [
+      { index: 0, name: "web_search", arguments: '{"a":1}{"b":' },
+      { toolStart: "tool_call_0" },
+      { toolEnd: "tool_call_0" },
+      { index: 0, name: "web_search", arguments: '{"query":"second"}' },
+    ],
+    true,
+  );
+
   assert.deepEqual(
     parts.map((part) => [part.toolCallId, part.argsText]),
     [

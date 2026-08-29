@@ -6492,6 +6492,12 @@ export function createOpenAIStreamAdapter(
                   toolEvent.provenance,
                 );
                 if (toolEvent.type === "tool_start") {
+                  // The loop only runs a call once the provider turn is over, so
+                  // this is the boundary a provider that omits finish_reason
+                  // never gives us. Hosted tool events arrive on the same shape
+                  // but come from providers that stamp real ids, which never
+                  // split.
+                  retireWithheldSplitCalls();
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const approvalId = (toolEvent.approval_id as string) || "";
@@ -6909,6 +6915,8 @@ export function createOpenAIStreamAdapter(
                 codexRoundToolCallIds = [];
                 // The provider turn is over, so the backend now decides which
                 // split calls it withholds. Retire them before the next round.
+                // Not the only boundary: a provider may omit finish_reason and
+                // the backend runs the turn anyway, so tool_start retires too.
                 retireWithheldSplitCalls();
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
