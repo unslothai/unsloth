@@ -204,6 +204,8 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
     chatPageSource.includes("if (stored?.pairId === pairId) return;"),
   );
   assert.ok(chatPageSource.includes("if (variant === null) return;"));
+  assert.doesNotMatch(chatPageSource, /\.catch\(\(error\) => \{[^}]*settle\(\[\]\)/s);
+  assert.ok(chatPageSource.includes("setStorageRetry({ pairId, count: 1 })"));
   assert.ok(chatPageSource.includes("s.residentCheckpoint === undefined"));
   assert.ok(chatPageSource.includes("activeModel?.isLora"));
   assert.ok(chatPageSource.includes("modelIdsMatch(model.id, cp)"));
@@ -218,5 +220,7 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   assert.ok(LORA_PANE_SOURCE.includes("requireStableCheckpoint={true}"));
   assert.ok(sharedComposerSource.includes("submittedCompareCheckpoint"));
   assert.ok(sharedComposerSource.includes("liveRuntime.modelLoading"));
+  assert.ok(sharedComposerSource.includes("reservePreStreamRun(handle.threadIds()"));
+  assert.ok(sharedComposerSource.includes("threadIds: getThreadIds"));
   assert.ok(chatPageSource.includes("  return stored.variant;"));
 });

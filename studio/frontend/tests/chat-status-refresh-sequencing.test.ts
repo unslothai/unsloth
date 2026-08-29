@@ -31,27 +31,38 @@ const SYNC = SOURCE.slice(
 
 test("every refresh takes a generation, and the newest one wins", () => {
   assert.match(SOURCE, /let syncGeneration = 0;/);
+  assert.match(SOURCE, /let loraSyncGeneration = 0;/);
   assert.match(SYNC, /const generation = \+\+syncGeneration;/);
   assert.match(SYNC, /const superseded = \(\) => generation !== syncGeneration;/);
 });
 
-test("a superseded refresh writes nothing back to the store", () => {
+test("a superseded refresh writes no stale model or status state", () => {
   const guard = SYNC.slice(0, SYNC.indexOf("setModels("));
   assert.match(
     guard,
-    /if \(signal\?\.aborted \|\| superseded\(\)\) return;/,
-    "the check must sit between the await and the first write",
+    /if \(superseded\(\)\) return;/,
+    "the check must sit before model and status writes",
   );
 });
 
 test("a superseded refresh does not report its failure either", () => {
   const catchBlock = SYNC.slice(SYNC.indexOf("} catch (error) {"));
-  assert.match(catchBlock, /if \(signal\?\.aborted \|\| superseded\(\)\) return;/);
+  assert.match(catchBlock, /if \(superseded\(\)\) return;/);
   // Otherwise a read nobody would have applied still raises a toast.
   assert.ok(
     catchBlock.indexOf("superseded()") < catchBlock.indexOf("toast.error"),
     "the guard must precede the error toast",
   );
+});
+
+test("a status-only refresh cannot suppress the current lora inventory", () => {
+  assert.match(
+    SYNC,
+    /const loraGeneration = includeLoras \? \+\+loraSyncGeneration : null;/,
+  );
+  assert.match(SYNC, /if \(lorasRes && !loraSuperseded\(\)\)/);
+  const catchBlock = SYNC.slice(SYNC.indexOf("} catch (error) {"));
+  assert.match(catchBlock, /if \(includeLoras && !loraSuperseded\(\)\)/);
 });
 
 test("the eviction branch is behind the same guard", () => {

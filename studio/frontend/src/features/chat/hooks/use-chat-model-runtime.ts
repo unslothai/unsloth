@@ -383,6 +383,7 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
 // last and re-pin the model the newer one had just seen released, leaving chat
 // claiming a model that 400s on send until the load finally settled.
 let syncGeneration = 0;
+let loraSyncGeneration = 0;
 let lastIdleUnloadArmed = false;
 
 async function readIdleUnloadArmed(): Promise<boolean> {
@@ -404,7 +405,10 @@ async function syncInferenceStatusToStore(options?: {
   const includeLoras = options?.includeLoras ?? true;
   // Last issued wins: it read the freshest status, whichever answers first.
   const generation = ++syncGeneration;
+  const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
   const superseded = () => generation !== syncGeneration;
+  const loraSuperseded = () =>
+    loraGeneration !== null && loraGeneration !== loraSyncGeneration;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
@@ -422,12 +426,14 @@ async function syncInferenceStatusToStore(options?: {
     // before writing backend state back -- cancelLoading already cleared it.
     // Same for a refresh that a later one has already superseded: its answer
     // describes a moment that has passed.
-    if (signal?.aborted || superseded()) return;
+    if (signal?.aborted) return;
 
-    setModels(listRes.models.map(toChatModelRow));
-    if (lorasRes) {
+    if (lorasRes && !loraSuperseded()) {
       setLoras(lorasRes.loras.map(toLoraSummary));
     }
+    if (superseded()) return;
+
+    setModels(listRes.models.map(toChatModelRow));
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
@@ -516,10 +522,11 @@ async function syncInferenceStatusToStore(options?: {
   } catch (error) {
     // A superseded refresh reports nothing, or a stale failure would raise a
     // toast about a read whose answer would have been discarded anyway.
-    if (signal?.aborted || superseded()) return;
-    if (includeLoras) {
+    if (signal?.aborted) return;
+    if (includeLoras && !loraSuperseded()) {
       useChatRuntimeStore.setState({ loraInventorySettled: true });
     }
+    if (superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);

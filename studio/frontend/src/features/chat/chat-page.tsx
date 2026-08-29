@@ -575,10 +575,16 @@ function useCompareVariant(pairId: string): CompareVariant | null {
     pairId: string;
     variant: CompareVariant;
   }>();
+  const [storageRetry, setStorageRetry] = useState<{
+    pairId: string;
+    count: number;
+  }>();
+  const retryCount = storageRetry?.pairId === pairId ? storageRetry.count : 0;
 
   useEffect(() => {
     if (stored?.pairId === pairId) return;
     let isActive = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const settle = (threads: ThreadRecord[]) => {
       if (!isActive) return;
       const variant = compareVariantForPair(threads, checkpointIsLora);
@@ -594,17 +600,22 @@ function useCompareVariant(pairId: string): CompareVariant | null {
     listStoredChatThreads({ pairId })
       .then(settle)
       .catch((error) => {
-        // Unreadable storage falls through to the checkpoint rather than holding
-        // the panes blank; the pane resolvers make the same call and fail too.
-        settle([]);
-        if (!isExpectedBackgroundChatStorageError(error)) {
-          throw error;
+        if (!isActive || isExpectedBackgroundChatStorageError(error)) return;
+        if (retryCount === 0) {
+          retryTimer = setTimeout(() => {
+            if (isActive) setStorageRetry({ pairId, count: 1 });
+          }, 250);
+          return;
         }
+        toast.error("Could not load comparison history", {
+          description: error instanceof Error ? error.message : "Storage failed",
+        });
       });
     return () => {
       isActive = false;
+      if (retryTimer !== null) clearTimeout(retryTimer);
     };
-  }, [pairId, checkpointIsLora, stored?.pairId]);
+  }, [pairId, checkpointIsLora, retryCount, stored?.pairId]);
 
   if (stored?.pairId !== pairId) return null;
   return stored.variant;

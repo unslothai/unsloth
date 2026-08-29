@@ -57,7 +57,11 @@ import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
-import { cancelPreStreamRunReservations } from "./utils/pre-stream-run-reservation";
+import {
+  cancelPreStreamRunReservations,
+  releasePreStreamRunReservation,
+  reservePreStreamRun,
+} from "./utils/pre-stream-run-reservation";
 import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
@@ -192,6 +196,7 @@ export interface CompareHandle {
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
+  threadIds: () => string[];
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
@@ -389,6 +394,16 @@ export function RegisterCompareHandle({
       return;
     }
     const currentHandles = handlesRef.current;
+    const getThreadIds = () => {
+      const itemState = aui.threadListItem().getState();
+      return Array.from(
+        new Set(
+          [itemState.id, itemState.remoteId].filter(
+            (id): id is string => Boolean(id),
+          ),
+        ),
+      );
+    };
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
@@ -411,18 +426,12 @@ export function RegisterCompareHandle({
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
+      threadIds: getThreadIds,
       waitForRunEnd: () =>
         new Promise<void>((resolve, reject) => {
           const runtime =
             aui.threads().__internal_getAssistantRuntime?.();
-          const itemState = aui.threadListItem().getState();
-          const threadIds = Array.from(
-            new Set(
-              [itemState.id, itemState.remoteId].filter(
-                (id): id is string => Boolean(id),
-              ),
-            ),
-          );
+          const threadIds = getThreadIds();
           let thread = null;
           for (const threadId of threadIds) {
             try {
@@ -1867,8 +1876,29 @@ export function SharedComposer({
         });
         return;
       }
+      const handles = Object.values(handlesRef.current);
+      const reservations: symbol[] = [];
+      if (requireStableCheckpoint) {
+        for (const handle of handles) {
+          const token = reservePreStreamRun(handle.threadIds(), {
+            usesLocalModel: true,
+            cancel: () => handle.cancel(),
+          });
+          if (!token) {
+            for (const reservation of reservations) {
+              releasePreStreamRunReservation(reservation);
+            }
+            resetPromptQueue();
+            toast.error("Compare unavailable", {
+              description: "A comparison run is already starting.",
+            });
+            return;
+          }
+          reservations.push(token);
+        }
+      }
       clearSubmittedDraft();
-      for (const handle of Object.values(handlesRef.current)) {
+      for (const handle of handles) {
         handle.append(content);
       }
     }
