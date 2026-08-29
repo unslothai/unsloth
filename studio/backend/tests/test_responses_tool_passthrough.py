@@ -50,6 +50,7 @@ from models.inference import (
     ResponsesFunctionTool,
     ResponsesInputMessage,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputTextContent,
@@ -68,6 +69,7 @@ from routes.inference import (
     _extract_response_format,
     _extract_responses_reasoning,
     _normalise_responses_input,
+    _responses_custom_tool_input,
     _responses_tool_output_content,
     _responses_non_streaming,
     _responses_stream,
@@ -891,6 +893,51 @@ class TestChatToolCallsToResponsesOutput:
         )
         assert items[0]["arguments"] == ""
 
+    def test_apply_patch_function_is_restored_to_a_custom_tool_call(self):
+        patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
+        items = _chat_tool_calls_to_responses_output(
+            [
+                {
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {
+                        "name": "apply_patch",
+                        "arguments": json.dumps({"input": patch}),
+                    },
+                }
+            ],
+            {"apply_patch"},
+        )
+
+        assert items[0]["type"] == "custom_tool_call"
+        assert items[0]["call_id"] == "call_patch"
+        assert items[0]["name"] == "apply_patch"
+        assert items[0]["input"] == patch
+
+    def test_regular_function_named_apply_patch_stays_a_function_call(self):
+        items = _chat_tool_calls_to_responses_output(
+            [
+                {
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {"name": "apply_patch", "arguments": '{"path":"x"}'},
+                }
+            ]
+        )
+
+        assert items[0]["type"] == "function_call"
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected"),
+        [
+            ('{"input":"patch"', '{"input":"patch"'),
+            ('{"other":"value"}', '{"other":"value"}'),
+            (None, ""),
+        ],
+    )
+    def test_malformed_custom_arguments_are_not_hidden(self, arguments, expected):
+        assert _responses_custom_tool_input(arguments) == expected
+
 
 # =====================================================================
 # Non-streaming Responses adapter
@@ -910,7 +957,7 @@ class TestResponsesNonStreamingAdapter:
     ):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request):
+        async def fake_chat_completions(chat_req, request, current_subject = None):
             return JSONResponse(
                 content = {
                     "model": "test-model",
@@ -947,6 +994,34 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][1]["content"][0]["text"] == "33"
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
+
+    def test_apply_patch_function_becomes_a_custom_tool_call(self, monkeypatch):
+        patch = "*** Begin Patch\n*** Add File: nested/a.txt\n+ok\n*** End Patch"
+        payload = ResponsesRequest(
+            input = "edit the file",
+            tools = [{"type": "custom", "name": "apply_patch"}],
+        )
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": json.dumps({"input": patch}),
+                        },
+                    }
+                ],
+            },
+            payload = payload,
+        )
+
+        assert len(body["output"]) == 1
+        assert body["output"][0]["type"] == "custom_tool_call"
+        assert body["output"][0]["input"] == patch
 
     def test_unclosed_think_block_extracts_as_reasoning(self):
         reasoning, visible = _extract_responses_reasoning(
@@ -2075,6 +2150,17 @@ class TestResponsesOutputFunctionCall:
         assert d["call_id"] == "call_1"
         assert d["status"] == "completed"
         assert d["id"].startswith("fc_")
+
+    def test_custom_tool_call_construction(self):
+        call = ResponsesOutputCustomToolCall(
+            call_id = "call_patch",
+            name = "apply_patch",
+            input = "*** Begin Patch\n*** End Patch",
+        ).model_dump()
+
+        assert call["type"] == "custom_tool_call"
+        assert call["id"].startswith("ctc_")
+        assert call["status"] == "completed"
 
     def test_response_with_tool_call_output(self):
         resp = ResponsesResponse(
