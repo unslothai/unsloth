@@ -57,6 +57,7 @@ def _tool(name: str, description: str = "") -> dict:
 
 
 WEB = _tool("web_search")
+FETCH = _tool("web_fetch")
 PY = _tool("python")
 
 
@@ -216,6 +217,51 @@ def test_structured_call_executes_and_continues(executed):
     follow_up = transport.requests[1]["messages"]
     assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
     assert follow_up[-1]["content"] == "RESULT<web_search>"
+
+
+@pytest.mark.parametrize("count", [2, 3, 4, 8])
+def test_idless_parallel_calls_reusing_index_zero_execute_separately(executed, count):
+    calls = [
+        {
+            "index": 0,
+            "function": {
+                "name": "web_fetch" if position % 2 == 0 else "web_search",
+                "arguments": json.dumps({"query": f"request-{position}"}),
+            },
+        }
+        for position in range(count)
+    ]
+    transport = FakeTransport(
+        [
+            [*[_sse({"tool_calls": [call]}) for call in calls], _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    lines = _run(transport, tools = [WEB, FETCH])
+
+    assert [call["arguments"] for call in executed] == [
+        {"query": f"request-{position}"} for position in range(count)
+    ]
+    starts = _events(lines, "tool_start")
+    ends = _events(lines, "tool_end")
+    assert len(starts) == len(ends) == count
+    assert [event["tool_call_id"] for event in starts] == [
+        f"tool_call_{position}" for position in range(count)
+    ]
+    replayed = transport.requests[1]["messages"]
+    replayed_calls = [
+        call
+        for message in replayed
+        if message.get("role") == "assistant"
+        for call in message.get("tool_calls") or []
+    ]
+    assert len(replayed_calls) == count
+    assert len({call["id"] for call in replayed_calls}) == count
+    assert [json.loads(call["function"]["arguments"]) for call in replayed_calls] == [
+        {"query": f"request-{position}"} for position in range(count)
+    ]
 
 
 def test_a_conversation_search_here_gets_the_active_branch(executed):
