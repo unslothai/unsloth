@@ -6,14 +6,14 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  applySidebarAssistantUsageUpdate,
+  newestSidebarAssistantUsageUpdate,
   selectSidebarLastRequestUsage,
   selectSidebarLastRequestUsageFromMetadata,
 } from "../src/features/chat/lib/sidebar-last-request-usage.ts";
 import type { MessageRecord } from "../src/features/chat/types.ts";
 
-function assistant(
-  contextUsage: unknown,
-): MessageRecord {
+function assistant(contextUsage: unknown): MessageRecord {
   return {
     id: crypto.randomUUID(),
     threadId: "thread",
@@ -43,7 +43,10 @@ test("uses the server total from the newest chronological assistant request", ()
 
 test("does not fall back when the newest assistant request is partial or legacy", () => {
   assert.equal(
-    selectSidebarLastRequestUsage([assistant(validUsage), assistant(undefined)]),
+    selectSidebarLastRequestUsage([
+      assistant(validUsage),
+      assistant(undefined),
+    ]),
     undefined,
   );
   assert.equal(
@@ -63,7 +66,10 @@ test("rejects invalid required and present cache counters", () => {
     { ...validUsage, cachedTokens: -1 },
     { ...validUsage, cacheWriteTokens: "1" },
   ]) {
-    assert.equal(selectSidebarLastRequestUsage([assistant(invalid)]), undefined);
+    assert.equal(
+      selectSidebarLastRequestUsage([assistant(invalid)]),
+      undefined,
+    );
   }
 });
 
@@ -87,6 +93,35 @@ test("validates a sidebar summary with the same rules as a saved message", () =>
     }),
     undefined,
   );
+});
+
+test("immediately clears and replaces usage only for the changed thread", () => {
+  const threads = [
+    { id: "a", sidebarLastRequestUsage: { totalTokens: 100 } },
+    { id: "b", sidebarLastRequestUsage: { totalTokens: 200 } },
+  ];
+  const partial = applySidebarAssistantUsageUpdate(
+    threads,
+    newestSidebarAssistantUsageUpdate("a", [assistant(undefined)]),
+  );
+
+  assert.equal(partial[0].sidebarLastRequestUsage, undefined);
+  assert.deepEqual(partial[1].sidebarLastRequestUsage, { totalTokens: 200 });
+
+  const completed = applySidebarAssistantUsageUpdate(
+    partial,
+    newestSidebarAssistantUsageUpdate("a", [assistant(validUsage)]),
+  );
+  assert.deepEqual(completed[0].sidebarLastRequestUsage, { totalTokens: 999 });
+  assert.deepEqual(completed[1].sidebarLastRequestUsage, { totalTokens: 200 });
+});
+
+test("a synced thread with no assistant clears its saved usage", () => {
+  const update = newestSidebarAssistantUsageUpdate("thread", [
+    { ...assistant(validUsage), role: "user" },
+  ]);
+
+  assert.deepEqual(update, { threadId: "thread", hasAssistant: false });
 });
 
 test("carries usage only to single sidebar rows, never compare rows", async () => {

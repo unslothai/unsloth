@@ -8,6 +8,12 @@ export type SidebarLastRequestUsage = {
   totalTokens: number;
 };
 
+export type SidebarAssistantUsageUpdate = {
+  threadId: string;
+  hasAssistant: boolean;
+  metadata?: MessageRecord["metadata"] | null;
+};
+
 type ContextUsageRecord = {
   promptTokens?: unknown;
   completionTokens?: unknown;
@@ -60,4 +66,36 @@ export function selectSidebarLastRequestUsage(
     }
   }
   return undefined;
+}
+
+export function newestSidebarAssistantUsageUpdate(
+  threadId: string,
+  messages: readonly MessageRecord[],
+): SidebarAssistantUsageUpdate {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant") {
+      return {
+        threadId,
+        hasAssistant: true,
+        metadata: message.metadata,
+      };
+    }
+  }
+  return { threadId, hasAssistant: false };
+}
+
+export function applySidebarAssistantUsageUpdate<
+  T extends { id: string; sidebarLastRequestUsage?: SidebarLastRequestUsage },
+>(threads: readonly T[], update: SidebarAssistantUsageUpdate): T[] {
+  return threads.map((thread) =>
+    thread.id === update.threadId
+      ? {
+          ...thread,
+          sidebarLastRequestUsage: update.hasAssistant
+            ? selectSidebarLastRequestUsageFromMetadata(update.metadata ?? null)
+            : undefined,
+        }
+      : thread,
+  );
 }

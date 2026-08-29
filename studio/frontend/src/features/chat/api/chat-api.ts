@@ -20,6 +20,10 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import {
+  type SidebarAssistantUsageUpdate,
+  newestSidebarAssistantUsageUpdate,
+} from "../lib/sidebar-last-request-usage";
 import type {
   MessageRecord,
   ModelType,
@@ -43,13 +47,13 @@ import type {
 } from "../types/api";
 import { publishChatHistoryRevision } from "../utils/chat-history-revision";
 import { CHAT_MONITOR_ID_RESPONSE_HEADER } from "./chat-monitor";
+import { maxTokensIsTheLimit } from "./generation-length.ts";
 import {
   type GgufVariantsRequestOptions,
   ggufVariantsQuery,
   runBoundedVariantsRequest,
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
-import { maxTokensIsTheLimit } from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
@@ -59,6 +63,7 @@ export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 export type ChatHistoryUpdatedDetail = {
   thread?: ThreadRecord;
   coalesce?: boolean;
+  sidebarAssistant?: SidebarAssistantUsageUpdate;
 };
 
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
@@ -1162,7 +1167,16 @@ export async function saveChatMessage(
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
   // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
   // edit is one deliberate change and publishes at once.
-  notifyChatHistoryUpdated({ coalesce: options.coalesce === true });
+  const coalesce = options.coalesce === true;
+  notifyChatHistoryUpdated({
+    coalesce,
+    sidebarAssistant:
+      coalesce && savedMessage.role === "assistant"
+        ? newestSidebarAssistantUsageUpdate(savedMessage.threadId, [
+            savedMessage,
+          ])
+        : undefined,
+  });
   return savedMessage;
 }
 
@@ -1186,7 +1200,13 @@ export async function syncChatMessages(
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   // Pruning is how a message is deleted, which no other tab should keep matching for a
   // whole unrelated generation. Without it this is the batched streaming autosave.
-  notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
+  notifyChatHistoryUpdated({
+    coalesce: options.pruneMissing !== true,
+    sidebarAssistant: newestSidebarAssistantUsageUpdate(
+      threadId,
+      data.messages,
+    ),
+  });
   return data.messages;
 }
 
@@ -1672,7 +1692,8 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } })
+          .usage;
         if (typeof parsedUsage?.prompt_tokens === "number") {
           promptTokens = parsedUsage.prompt_tokens;
         }

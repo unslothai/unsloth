@@ -4,30 +4,34 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
+  type ChatHistoryUpdatedDetail,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
 import { useChatArtifactsStore } from "../artifacts/store";
+import {
+  type SidebarLastRequestUsage,
+  applySidebarAssistantUsageUpdate,
+} from "../lib/sidebar-last-request-usage";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
+  type StoredChatThreadWithSidebarUsage,
   deleteStoredChatThreads,
   isExpectedBackgroundChatStorageError,
   listStoredChatThreads,
   listStoredChatThreadsWithMessages,
   listStoredChatThreadsWithSidebarUsage,
-  type StoredChatThreadWithSidebarUsage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
-import type { SidebarLastRequestUsage } from "../lib/sidebar-last-request-usage";
-import { clearComposerDraft } from "../utils/composer-draft";
-import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
-import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
+import { clearComposerDraft } from "../utils/composer-draft";
+import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
 import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
+import { stopChatThread } from "../utils/stop-chat-thread";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -110,7 +114,9 @@ export function useChatSidebarItems(options?: {
   requireMessages?: boolean;
   includeLastRequestUsage?: boolean;
 }) {
-  const [allThreads, setAllThreads] = useState<StoredChatThreadWithSidebarUsage[]>([]);
+  const [allThreads, setAllThreads] = useState<
+    StoredChatThreadWithSidebarUsage[]
+  >([]);
   const [loaded, setLoaded] = useState(false);
   const enabled = options?.enabled ?? true;
   const requireMessages = options?.requireMessages ?? true;
@@ -127,11 +133,12 @@ export function useChatSidebarItems(options?: {
 
     async function doLoad(seq: number) {
       try {
-        const listThreads = includeLastRequestUsage && !requireMessages
-          ? listStoredChatThreadsWithSidebarUsage
-          : requireMessages
-            ? listStoredChatThreadsWithMessages
-            : listStoredChatThreads;
+        const listThreads =
+          includeLastRequestUsage && !requireMessages
+            ? listStoredChatThreadsWithSidebarUsage
+            : requireMessages
+              ? listStoredChatThreadsWithMessages
+              : listStoredChatThreads;
         // includeArchived: archived threads are filtered out of Recents by
         // groupThreads, but the hook still needs them for archivedItems.
         const threads = await listThreads({
@@ -154,7 +161,14 @@ export function useChatSidebarItems(options?: {
       }
     }
 
-    function load() {
+    function load(event: Event) {
+      const sidebarAssistant = (event as CustomEvent<ChatHistoryUpdatedDetail>)
+        .detail?.sidebarAssistant;
+      if (includeLastRequestUsage && sidebarAssistant) {
+        setAllThreads((threads) =>
+          applySidebarAssistantUsageUpdate(threads, sidebarAssistant),
+        );
+      }
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       pendingTimer = setTimeout(() => {
         pendingTimer = null;
