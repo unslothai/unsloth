@@ -550,6 +550,18 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: MCP arguments end to end (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_mcp_arguments
+          STUDIO_UI_STRICT: '1'
+        run: |
+          mkdir -p logs/playwright_mcp_arguments
+          python tests/studio/playwright_mcp_arguments.py
+
       - name: Per-chat settings persistence (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -819,6 +831,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_mcp_arguments
             logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner

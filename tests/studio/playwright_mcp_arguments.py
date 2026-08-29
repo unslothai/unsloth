@@ -148,6 +148,18 @@ def delay_real_response(seconds: float):
     return handler
 
 
+def hold_next_request(page, pattern: str) -> list:
+    held: list = []
+    page.route(pattern, lambda route: held.append(route), times = 1)
+    return held
+
+
+def release_request(page, held: list) -> None:
+    page.wait_for_timeout(50)
+    assert len(held) == 1
+    held[0].continue_()
+
+
 def run(page, launch_log: Path, fixture: Path) -> None:
     page.goto(BASE + "/hub", wait_until = "domcontentloaded")
     page.goto(BASE + "/chat", wait_until = "domcontentloaded")
@@ -220,7 +232,14 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     dialog.get_by_role("button", name = "Cancel").click()
     row = row_for(dialog, "Playwright argument echo")
     launches_before_refresh = len(launch_log.read_text(encoding = "utf-8").splitlines())
-    row.get_by_role("button", name = "Refresh tools").click()
+    held_refresh = hold_next_request(page, "**/api/mcp/servers/*/refresh")
+    row.get_by_role("button", name = "Refresh tools").click(no_wait_after = True)
+    expect(row.get_by_role("switch", name = "Enable server")).to_be_disabled()
+    expect(row.get_by_role("button", name = "Refresh tools")).to_be_disabled()
+    expect(row.get_by_role("button", name = "Edit server")).to_be_disabled()
+    expect(row.get_by_role("button", name = "Delete server")).to_be_disabled()
+    screenshot(dialog, "fixed-row-busy")
+    release_request(page, held_refresh)
     expect(page.get_by_text('Refreshed "Playwright argument echo" (1 tool)')).to_be_visible(
         timeout = 30_000
     )
@@ -239,6 +258,7 @@ def run(page, launch_log: Path, fixture: Path) -> None:
             }
         }
     }
+    held_import = hold_next_request(page, "**/api/mcp/servers/import")
     dialog.locator('input[type="file"]').set_input_files(
         {
             "name": "mcp-config.json",
@@ -246,7 +266,15 @@ def run(page, launch_log: Path, fixture: Path) -> None:
             "buffer": json.dumps(imported).encode(),
         }
     )
-    expect(page.get_by_text("1 added")).to_be_visible(timeout = 10_000)
+    expect(dialog.get_by_role("button", name = "Import")).to_be_disabled()
+    expect(dialog.get_by_role("button", name = "Add server")).to_be_disabled()
+    dialog.get_by_role("button", name = "Close").click()
+    dialog = open_dialog(page)
+    expect(dialog.get_by_role("button", name = "Import")).to_be_disabled()
+    expect(dialog.get_by_role("button", name = "Add server")).to_be_disabled()
+    screenshot(dialog, "fixed-import-reopened-busy")
+    release_request(page, held_import)
+    expect(dialog.get_by_role("button", name = "Import")).to_be_enabled(timeout = 10_000)
     imported_row = row_for(dialog, "Playwright imported echo")
     imported_row.get_by_role("button", name = "Edit server").click()
     assert_arguments(dialog, [str(fixture), "imported", "", "with spaces", 'say "hello"'])
@@ -283,6 +311,16 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     dialog.get_by_role("button", name = "Add header").click()
     dialog.get_by_placeholder("Header name").fill("Authorization")
     dialog.get_by_placeholder("Header value").fill("Bearer remote-secret")
+    oauth = dialog.get_by_role("switch", name = "Use OAuth sign-in")
+    oauth.click()
+    expect(oauth).to_be_checked()
+    address = dialog.locator("#mcp-url")
+    address.fill("")
+    address.press_sequentially("https://example.org/mcp")
+    expect(dialog.get_by_placeholder("Header name")).to_have_count(1)
+    expect(dialog.get_by_placeholder("Header name")).to_have_value("Authorization")
+    expect(oauth).to_be_checked()
+    screenshot(dialog, "fixed-http-typing-preserves-credentials")
     dialog.locator("#mcp-url").fill(sys.executable)
     expect(dialog.get_by_text("Environment variables", exact = True)).to_be_visible()
     expect(dialog.get_by_placeholder("Variable name")).to_have_count(0)
