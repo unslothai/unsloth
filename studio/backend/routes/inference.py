@@ -23173,9 +23173,7 @@ def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list
             and not resident_is_gguf(status)
             and partition_matches(status)
             and (
-                task != "text-to-image"
-                or not resident_workflows
-                or "txt2img" in resident_workflows
+                task != "text-to-image" or not resident_workflows or "txt2img" in resident_workflows
             )
             and public_model_id(resident_id) == resident_id
             and not any(obj["id"].lower() == resident_id.lower() for obj in objects)
