@@ -14,6 +14,7 @@ import {
   findOldestUnownedStreamedToolCallPartIndex,
   findStreamedToolCallPartIndex,
   fragmentStartsNewToolCall,
+  mergeStreamedToolCallName,
   mintStreamedToolCallId,
   sameJsonDocument,
   splitTopLevelJsonDocuments,
@@ -70,9 +71,16 @@ function accumulate(
       if (delayed !== -1) {
         const provisionalId = parts[delayed].toolCallId;
         partId = providerId;
+        const displaced = parts.findIndex(
+          (part, index) => index !== delayed && part.toolCallId === partId,
+        );
+        if (displaced !== -1 && provisionalId !== partId) {
+          parts[displaced].toolCallId = provisionalId;
+        } else {
+          usedIds.delete(provisionalId);
+        }
         parts[delayed].toolCallId = partId;
         parts[delayed]._has_stable_id = true;
-        usedIds.delete(provisionalId);
         if (sameJsonDocument(fragment.arguments, parts[delayed].argsText)) {
           fragment = { ...fragment, arguments: "" };
         }
@@ -105,6 +113,7 @@ function accumulate(
       !exactId &&
       settled?.complete.length === 1 &&
       !settled.tail &&
+      Boolean(matchedPart?.toolName) &&
       Boolean(fragment.name) &&
       !fragment.arguments.trim()
         ? -1
@@ -142,7 +151,10 @@ function accumulate(
     parts[target] = {
       ...parts[target],
       ...(partId ? { toolCallId: partId, _has_stable_id: true } : {}),
-      ...(fragment.name ? { toolName: fragment.name } : {}),
+      toolName: mergeStreamedToolCallName(
+        parts[target].toolName ?? "",
+        fragment.name ?? "",
+      ),
       argsText: mergedArgsText,
       splitTail:
         parts[target].splitTail &&
@@ -547,4 +559,75 @@ test("a delayed id does not make an incomplete split tail persist", () => {
   ]);
 
   assert.deepEqual(parts.map((part) => part.argsText), ['{"a":1}']);
+});
+
+test("fragmented names still match a delayed stable id", () => {
+  const parts = accumulate([
+    { index: 0, name: "web", arguments: '{"query":"' },
+    { index: 0, name: "_search", arguments: 'value"}' },
+    {
+      index: 0,
+      id: "call-search",
+      name: "web_search",
+      arguments: '{"query":"value"}',
+    },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.toolName, part.argsText]),
+    [["call-search", "web_search", '{"query":"value"}']],
+  );
+});
+
+test("delayed adoption retargets a displaced provisional id", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"query":"first"}' },
+    { index: 0, name: "beta", arguments: '{"query":"second"}' },
+    {
+      index: 0,
+      id: "tool_call_1",
+      name: "alpha",
+      arguments: '{"query":"first"}',
+    },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [
+      ["tool_call_1", '{"query":"first"}'],
+      ["tool_call_0", '{"query":"second"}'],
+    ],
+  );
+});
+
+test("a late name attaches to its argument-only call", () => {
+  const parts = accumulate([
+    { index: 0, arguments: '{"query":"late-name"}' },
+    { index: 0, name: "web_search", arguments: "" },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [["web_search", '{"query":"late-name"}']],
+  );
+});
+
+test("delayed ids ignore completed calls from earlier rounds", () => {
+  const parts: StreamedToolCallPart[] = [
+    {
+      toolCallId: "tool_call_0",
+      toolName: "alpha",
+      argsText: '{"query":"old"}',
+      result: "done",
+      _delta_index: 0,
+    },
+    {
+      toolCallId: "tool_call_1",
+      toolName: "alpha",
+      argsText: '{"query":"new"}',
+      _delta_index: 0,
+    },
+  ];
+
+  assert.equal(findDelayedStableToolCallPartIndex(parts, 0, "", ""), 1);
 });

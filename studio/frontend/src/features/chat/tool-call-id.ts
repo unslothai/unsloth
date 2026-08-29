@@ -21,6 +21,7 @@ export interface StreamedToolCallPart {
   toolCallId: string;
   toolName?: string;
   argsText?: string;
+  result?: unknown;
   _delta_index?: number;
   _has_stable_id?: boolean;
 }
@@ -69,6 +70,14 @@ export function sameJsonDocument(left: string, right: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function mergeStreamedToolCallName(
+  current: string,
+  fragment: string,
+): string {
+  if (!fragment) return current;
+  return fragment.startsWith(current) ? fragment : current + fragment;
 }
 
 /** split a stream slot into complete top-level JSON documents and its open tail. */
@@ -177,6 +186,7 @@ export function findDelayedStableToolCallPartIndex(
     if (
       part._delta_index !== deltaIndex ||
       part._has_stable_id === true ||
+      part.result !== undefined ||
       (name && part.toolName && part.toolName !== name)
     ) {
       return false;

@@ -114,6 +114,7 @@ import {
   findOldestUnownedStreamedToolCallPartIndex,
   findDelayedStableToolCallPartIndex,
   findStreamedToolCallPartIndex,
+  mergeStreamedToolCallName,
   mintStreamedToolCallId,
   resolveToolCallPartId,
   sameJsonDocument,
@@ -6971,16 +6972,32 @@ export function createOpenAIStreamAdapter(
                       const provisionalPartId =
                         toolCallParts[delayedIndex].toolCallId;
                       stablePartId = resolveToolPartId(stableId);
+                      const displacedIndex = toolCallParts.findIndex(
+                        (part, partIndex) =>
+                          partIndex !== delayedIndex &&
+                          part.toolCallId === stablePartId,
+                      );
                       if (
-                        rawArgsFragment &&
-                        sameJsonDocument(
-                          toolCallParts[delayedIndex].argsText ?? "",
-                          rawArgsFragment,
-                        )
+                        displacedIndex !== -1 &&
+                        provisionalPartId !== stablePartId
                       ) {
-                        argsFragment = "";
-                      }
-                      if (provisionalPartId !== stablePartId) {
+                        toolCallParts[displacedIndex] = {
+                          ...toolCallParts[displacedIndex],
+                          toolCallId: provisionalPartId,
+                        };
+                        toolPartIdByBackendId.set(
+                          provisionalPartId,
+                          provisionalPartId,
+                        );
+                        codexRoundToolCallIds = codexRoundToolCallIds.map(
+                          (callId) =>
+                            callId === provisionalPartId
+                              ? stablePartId as string
+                              : callId === stablePartId
+                                ? provisionalPartId
+                                : callId,
+                        );
+                      } else if (provisionalPartId !== stablePartId) {
                         toolPartIdByBackendId.delete(provisionalPartId);
                         streamedToolCallIds.delete(provisionalPartId);
                         codexRoundToolCallIds = codexRoundToolCallIds.map(
@@ -6990,12 +7007,27 @@ export function createOpenAIStreamAdapter(
                               : callId,
                         );
                       }
+                      toolCallParts[delayedIndex] = {
+                        ...toolCallParts[delayedIndex],
+                        toolCallId: stablePartId,
+                        _has_stable_id: true,
+                      };
+                      if (
+                        rawArgsFragment &&
+                        sameJsonDocument(
+                          toolCallParts[delayedIndex].argsText ?? "",
+                          rawArgsFragment,
+                        )
+                      ) {
+                        argsFragment = "";
+                      }
                     } else if (streamedToolCallIds.has(stableId)) {
                       stablePartId = mintStreamedToolCallId(
                         toolCallParts,
                         idx,
                         streamedToolCallIds,
                       );
+                      toolPartIdByBackendId.set(stableId, stablePartId);
                       toolPartIdByBackendId.set(stablePartId, stablePartId);
                     } else {
                       stablePartId = resolveToolPartId(stableId);
@@ -7053,6 +7085,7 @@ export function createOpenAIStreamAdapter(
                     matchedPart !== undefined &&
                     !exactStableMatch &&
                     matchedClosed &&
+                    Boolean(matchedPart.toolName) &&
                     Boolean(nameFragment) &&
                     argsFragmentIsBlank
                       ? undefined
@@ -7149,7 +7182,10 @@ export function createOpenAIStreamAdapter(
                   }
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    const nextName = nameFragment || prevName;
+                    const nextName = mergeStreamedToolCallName(
+                      prevName,
+                      nameFragment,
+                    );
                     const merged = (existing.argsText ?? "") + argsFragment;
                     const mergedDocuments = splitTopLevelJsonDocuments(merged);
                     const parsedArgs = parseStreamedToolCallArgs(merged);
