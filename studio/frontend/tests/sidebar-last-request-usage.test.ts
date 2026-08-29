@@ -13,14 +13,20 @@ import {
 } from "../src/features/chat/lib/sidebar-last-request-usage.ts";
 import type { MessageRecord } from "../src/features/chat/types.ts";
 
-function assistant(contextUsage: unknown): MessageRecord {
+let nextCreatedAt = 0;
+
+function assistant(
+  contextUsage: unknown,
+  overrides: Partial<MessageRecord> = {},
+): MessageRecord {
   return {
     id: crypto.randomUUID(),
     threadId: "thread",
     role: "assistant",
     content: [],
-    createdAt: Date.now(),
+    createdAt: ++nextCreatedAt,
     metadata: contextUsage === undefined ? undefined : { contextUsage },
+    ...overrides,
   };
 }
 
@@ -33,12 +39,21 @@ const validUsage = {
 };
 
 test("uses the server total from the newest chronological assistant request", () => {
-  const selected = selectSidebarLastRequestUsage([
-    assistant({ ...validUsage, totalTokens: 150 }),
-    assistant(validUsage),
-  ]);
+  const older = assistant({ ...validUsage, totalTokens: 150 });
+  const newer = assistant(validUsage);
+  const selected = selectSidebarLastRequestUsage([newer, older]);
 
   assert.deepEqual(selected, { totalTokens: 999 });
+});
+
+test("breaks equal timestamps by message id", () => {
+  assert.deepEqual(
+    selectSidebarLastRequestUsage([
+      assistant({ ...validUsage, totalTokens: 150 }, { createdAt: 1, id: "a" }),
+      assistant(validUsage, { createdAt: 1, id: "b" }),
+    ]),
+    { totalTokens: 999 },
+  );
 });
 
 test("does not fall back when the newest assistant request is partial or legacy", () => {

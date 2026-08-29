@@ -59,29 +59,40 @@ export function selectSidebarLastRequestUsageFromMetadata(
 export function selectSidebarLastRequestUsage(
   messages: readonly MessageRecord[],
 ): SidebarLastRequestUsage | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role === "assistant") {
-      return selectSidebarLastRequestUsageFromMetadata(message.metadata);
+  const message = newestAssistantMessage(messages);
+  return message
+    ? selectSidebarLastRequestUsageFromMetadata(message.metadata)
+    : undefined;
+}
+
+function newestAssistantMessage(
+  messages: readonly MessageRecord[],
+): MessageRecord | undefined {
+  let newest: MessageRecord | undefined;
+  for (const message of messages) {
+    if (
+      message.role === "assistant" &&
+      (!newest ||
+        message.createdAt > newest.createdAt ||
+        (message.createdAt === newest.createdAt && message.id > newest.id))
+    ) {
+      newest = message;
     }
   }
-  return undefined;
+  return newest;
 }
 
 export function newestSidebarAssistantUsageUpdate(
   threadId: string,
   messages: readonly MessageRecord[],
 ): SidebarAssistantUsageUpdate {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role === "assistant") {
-      return {
-        threadId,
-        hasAssistant: true,
-        metadata: message.metadata,
-      };
-    }
-  }
+  const message = newestAssistantMessage(messages);
+  if (message)
+    return {
+      threadId,
+      hasAssistant: true,
+      metadata: message.metadata,
+    };
   return { threadId, hasAssistant: false };
 }
 
