@@ -16,7 +16,7 @@ export type SelectionResolution = {
 
 export type SelectionUrlSync =
   | { action: "select"; selectedId: string | null }
-  | { action: "replace"; selectedId: string }
+  | { action: "replace"; selectedId: string; preserveGgufFile: boolean }
   | null;
 
 export function resolveSelectionUrlSync({
@@ -24,11 +24,13 @@ export function resolveSelectionUrlSync({
   urlModel,
   selectionInputId,
   resolvedSelectedId,
+  resolvedModelFormat,
 }: {
   isDiscoverTab: boolean;
   urlModel: string | null;
   selectionInputId: string | null;
   resolvedSelectedId: string | null;
+  resolvedModelFormat: CachedInventoryRow["modelFormat"] | null;
 }): SelectionUrlSync {
   if (urlModel !== selectionInputId) {
     return { action: "select", selectedId: urlModel };
@@ -38,7 +40,18 @@ export function resolveSelectionUrlSync({
     resolvedSelectedId &&
     resolvedSelectedId !== urlModel
   ) {
-    return { action: "replace", selectedId: resolvedSelectedId };
+    const resolvedFormat =
+      resolvedModelFormat ??
+      parseCacheSelectionIdentity(resolvedSelectedId)?.modelFormat ??
+      null;
+    return {
+      action: "replace",
+      selectedId: resolvedSelectedId,
+      preserveGgufFile:
+        resolvedFormat === "gguf" ||
+        (resolvedFormat === "unknown" &&
+          parseCacheSelectionIdentity(urlModel ?? "")?.modelFormat === "gguf"),
+    };
   }
   return null;
 }
@@ -213,6 +226,23 @@ function resolveCurrentSelection(
     : null;
 }
 
+function isProvisionalFormatCompatible(
+  provisional: CachedInventoryRow["modelFormat"],
+  current: CachedInventoryRow["modelFormat"],
+): boolean {
+  if (current === "unknown") {
+    return true;
+  }
+  if (provisional === "safetensors") {
+    return (
+      current === "safetensors" ||
+      current === "adapter" ||
+      current === "checkpoint"
+    );
+  }
+  return current === provisional;
+}
+
 function resolveFormatTransition(
   id: string | null,
   cachedRows: readonly CachedInventoryRow[],
@@ -236,8 +266,12 @@ function resolveFormatTransition(
   );
   if (identity.source === "download") {
     return resolveCurrentSelection(
-      matchingCached,
-      matchingLocal,
+      matchingCached.filter((row) =>
+        isProvisionalFormatCompatible(identity.modelFormat, row.modelFormat),
+      ),
+      matchingLocal.filter((row) =>
+        isProvisionalFormatCompatible(identity.modelFormat, row.modelFormat),
+      ),
       filteredCachedIds,
       filteredLocalIds,
       localRows,

@@ -1225,6 +1225,7 @@ export function ModelsPage() {
       urlModel,
       selectionInputId,
       resolvedSelectedId: selectedId,
+      resolvedModelFormat: selectedModel?.modelFormat ?? null,
     });
     if (sync?.action === "select") {
       setSelected(sync.selectedId);
@@ -1234,7 +1235,7 @@ export function ModelsPage() {
         search: (prev) => ({
           ...prev,
           model: sync.selectedId,
-          file: undefined,
+          file: sync.preserveGgufFile ? prev.file : undefined,
         }),
         replace: true,
       });
@@ -1243,6 +1244,7 @@ export function ModelsPage() {
     isDiscoverTab,
     navigate,
     selectedId,
+    selectedModel?.modelFormat,
     selectionInputId,
     setSelected,
     urlModel,

@@ -660,8 +660,13 @@ test("commits a resolved identity before another format appears", () => {
       urlModel: unknownId,
       selectionInputId: unknownId,
       resolvedSelectedId: firstResolution.selectedId,
+      resolvedModelFormat: safetensors.modelFormat,
     }),
-    { action: "replace", selectedId: safetensors.id },
+    {
+      action: "replace",
+      selectedId: safetensors.id,
+      preserveGgufFile: false,
+    },
   );
 
   assert.deepEqual(
@@ -676,6 +681,81 @@ test("commits a resolved identity before another format appears", () => {
   );
 });
 
+test("preserves a GGUF file while canonicalizing its selection ID", () => {
+  const repoId = "Org/GGUF-Model";
+
+  assert.deepEqual(
+    resolveSelectionUrlSync({
+      isDiscoverTab: false,
+      urlModel: optimisticInventoryId("gguf", repoId),
+      selectionInputId: optimisticInventoryId("gguf", repoId),
+      resolvedSelectedId: cachedInventoryId("gguf", repoId),
+      resolvedModelFormat: "gguf",
+    }),
+    {
+      action: "replace",
+      selectedId: cachedInventoryId("gguf", repoId),
+      preserveGgufFile: true,
+    },
+  );
+
+  assert.deepEqual(
+    resolveSelectionUrlSync({
+      isDiscoverTab: false,
+      urlModel: optimisticInventoryId("gguf", repoId),
+      selectionInputId: optimisticInventoryId("gguf", repoId),
+      resolvedSelectedId: repoId,
+      resolvedModelFormat: "unknown",
+    }),
+    {
+      action: "replace",
+      selectedId: repoId,
+      preserveGgufFile: true,
+    },
+  );
+});
+
+test("does not move a provisional selection to an incompatible format", () => {
+  const repoId = "Org/Hybrid-Provisional";
+  const gguf = buildCachedInventoryRow(
+    {
+      repo_id: repoId,
+      model_format: "gguf",
+      size_bytes: 100,
+    },
+    "gguf",
+  );
+  const safetensors = buildCachedInventoryRow(
+    {
+      repo_id: repoId,
+      model_format: "safetensors",
+      size_bytes: 100,
+    },
+    "safetensors",
+  );
+
+  assert.deepEqual(
+    resolveDownloadedSelection({
+      selectedId: optimisticInventoryId("gguf", repoId),
+      cachedRows: [safetensors],
+      localRows: [],
+      filteredCachedRows: [safetensors],
+      filteredLocalRows: [],
+    }),
+    { selectedId: null, hiddenByFilters: false },
+  );
+  assert.deepEqual(
+    resolveDownloadedSelection({
+      selectedId: optimisticInventoryId("safetensors", repoId),
+      cachedRows: [gguf],
+      localRows: [],
+      filteredCachedRows: [gguf],
+      filteredLocalRows: [],
+    }),
+    { selectedId: null, hiddenByFilters: false },
+  );
+});
+
 test("applies URL navigation before rewriting a resolved selection", () => {
   assert.deepEqual(
     resolveSelectionUrlSync({
@@ -683,6 +763,7 @@ test("applies URL navigation before rewriting a resolved selection", () => {
       urlModel: "cache:gguf:Org%2FNext",
       selectionInputId: "cache:gguf:Org%2FPrevious",
       resolvedSelectedId: "cache:gguf:Org%2FPrevious",
+      resolvedModelFormat: "gguf",
     }),
     { action: "select", selectedId: "cache:gguf:Org%2FNext" },
   );
@@ -695,6 +776,7 @@ test("adopts a raw selection after its URL navigation lands", () => {
       urlModel: "Org/Legacy-Model",
       selectionInputId: null,
       resolvedSelectedId: null,
+      resolvedModelFormat: null,
     }),
     { action: "select", selectedId: "Org/Legacy-Model" },
   );
