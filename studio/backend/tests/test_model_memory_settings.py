@@ -1555,6 +1555,40 @@ class TestMlockApplicable:
         assert rs._model_memory_response().mlock_applicable is True
 
 
+class TestModelMemoryResponseSnapshot:
+    def test_the_launch_placement_is_read_once(self, monkeypatch):
+        import routes.settings as rs
+
+        reads = 0
+
+        def placement():
+            nonlocal reads
+            reads += 1
+            return (False, False), False, False
+
+        monkeypatch.setattr(rs, "_active_launch_placement", placement)
+        monkeypatch.setattr(rs, "get_model_memory_settings", lambda: (True, False))
+        body = rs._model_memory_response()
+        assert reads == 1
+        assert body.mlock_active is False
+        assert body.mlock_applicable is False
+        assert body.reload_required is False
+
+    def test_lock_intent_comes_from_the_same_settings_pair(self, monkeypatch):
+        import routes.settings as rs
+
+        monkeypatch.setattr(rs, "get_model_memory_settings", lambda: (True, False))
+        monkeypatch.setattr(
+            rs,
+            "_active_launch_placement",
+            lambda: (rs._NO_LAUNCH, False, True),
+        )
+        body = rs._model_memory_response()
+        assert body.keep_resident is True
+        assert body.no_ram_reserve is False
+        assert body.mlock_active is True
+
+
 class TestFitOnRetryReArmsResidency:
     """The --fit on fallback fires exactly when the full-offload prediction that
     suppressed the lock turns out to be wrong, so the retry must re-apply it."""
