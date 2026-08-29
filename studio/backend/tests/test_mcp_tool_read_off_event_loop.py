@@ -152,7 +152,7 @@ def test_the_cached_row_and_tools_are_one_snapshot_during_an_edit(monkeypatch):
     monkeypatch.setattr(mcp_routes.mcp_servers_db, "update_server", _update_server)
     monkeypatch.setattr(mcp_routes, "invalidate_tool_cache", _invalidate)
     monkeypatch.setattr(mcp_routes, "close_stdio_sessions", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(mcp_routes, "_row_to_response", lambda row: row)
+    monkeypatch.setattr(mcp_routes, "_row_to_response", lambda row, **_kwargs: row)
 
     async def _read_snapshot():
         async with mcp_client.mcp_server_snapshot_guard():
@@ -200,7 +200,7 @@ def test_queued_updates_recheck_the_stdio_api_key_gate(monkeypatch):
     monkeypatch.setattr(mcp_routes.mcp_servers_db, "update_server", _update_server)
     monkeypatch.setattr(mcp_routes, "invalidate_tool_cache", lambda _server_id: None)
     monkeypatch.setattr(mcp_routes, "close_stdio_sessions", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(mcp_routes, "_row_to_response", lambda row: row)
+    monkeypatch.setattr(mcp_routes, "_row_to_response", lambda row, **_kwargs: row)
 
     async def _drive():
         async with mcp_client.mcp_server_snapshot_guard():

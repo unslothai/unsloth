@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio-owned tool execution loop, shared by every external provider transport.
+"""Unsloth-owned tool execution loop, shared by every external provider transport.
 
 The loop owns the parts that do not depend on how bytes reach the provider:
 turn cycling, the tool budget, the approval handshake, local execution through
@@ -55,7 +55,7 @@ from typing import Any, Protocol
 
 from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
-from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
+from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
@@ -64,6 +64,7 @@ from core.inference.tool_call_parser import (
     reprompt_to_act_message,
     strip_tool_markup,
 )
+from core.tool_healing import _think_spans_outside_tool_markup
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
@@ -74,6 +75,7 @@ from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
     accepts_kwarg,
     accepts_output_callback,
+    search_images_kwargs,
     stream_tool_execution,
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
@@ -87,19 +89,19 @@ from state.tool_approvals import (
 
 
 _TOOL_BUDGET_EXHAUSTED = (
-    "Studio did not execute this tool call because the per-message tool-call limit was reached. "
+    "Unsloth did not execute this tool call because the per-message tool-call limit was reached. "
     "Continue with the available results and answer without calling another tool."
 )
 
-_TOOL_DISABLED = "Studio did not execute this tool call because the tool is disabled."
+_TOOL_DISABLED = "Unsloth did not execute this tool call because the tool is disabled."
 
 _TOOL_CANCELLED = (
-    "Studio stopped this tool call before it returned, so there is no result. "
+    "Unsloth stopped this tool call before it returned, so there is no result. "
     "The tool may have already done part of its work."
 )
 
 _TOOL_TRUNCATED = (
-    "Studio did not execute this tool call because the provider stopped mid-call at its "
+    "Unsloth did not execute this tool call because the provider stopped mid-call at its "
     "output limit."
 )
 
@@ -107,9 +109,9 @@ _TOOL_TRUNCATED = (
 # from the provider's own tool_calls delta, so it needs a short result; the long
 # model-facing nudge stays in the conversation.
 _TOOL_SKIPPED = {
-    "duplicate": "Studio did not run this call because an identical one had already completed.",
+    "duplicate": "Unsloth did not run this call because an identical one had already completed.",
     "disabled": _TOOL_DISABLED,
-    "render_html_repeat": "Studio did not run this call because render_html already ran.",
+    "render_html_repeat": "Unsloth did not run this call because render_html already ran.",
 }
 
 # Verbatim from the local loops: the last pass answers instead of asking for more.
@@ -231,7 +233,7 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     if not isinstance(function, dict):
         return None
     if not isinstance(call_id, str) or not call_id:
-        # The id is Studio's correlation key, not the model's contract. Several
+        # The id is Unsloth's correlation key, not the model's contract. Several
         # OpenAI-compatible servers omit it; dropping the call lost a real
         # request with no error, so mint one instead.
         call_id = fallback_id
@@ -306,7 +308,7 @@ class ToolLoopTransport(Protocol):
     # structured delta.tool_calls. Codex never does; a self-hosted GGUF often does.
     heals_text_tool_calls: bool
 
-    # Whether the transport already stripped Studio's control vocabulary from
+    # Whether the transport already stripped Unsloth's control vocabulary from
     # every raw upstream line. A transport that has not is sanitized here; one
     # that has must not be sanitized twice, because by this point its own
     # synthesized frames (a provider-hosted image result, say) are indis-
@@ -346,6 +348,8 @@ class ToolLoopPolicy:
     rag_scope: dict[str, Any] | None
     # None means "follow the process default"; False disables text-form healing.
     auto_heal: bool | None = None
+    # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
+    nudge_tool_calls: bool | None = None
 
 
 @dataclass
@@ -372,7 +376,7 @@ class _Turn:
 
         These reach the client as their own frames but are not part of the
         assistant message this loop replays, so the follow-up request would lose
-        whatever the provider just produced. Studio's own events carry a
+        whatever the provider just produced. Unsloth's own events carry a
         top-level ``type``, so ``_toolEvent`` is unambiguously the provider's.
 
         Both halves matter: ``tool_end`` generally omits ``tool_name``, and for
@@ -711,6 +715,10 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     conversation.append({"role": "user", "content": content})
 
 
+def _leading_whitespace(text: str) -> str:
+    return text[: len(text) - len(text.lstrip())]
+
+
 def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
     try:
         return next(generator)
@@ -757,7 +765,7 @@ async def stream_with_studio_tools(
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
 ) -> AsyncIterator[str]:
-    """Stream a provider, execute requested Studio tools, continue to a final answer."""
+    """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
     # Kept before the loop appends anything: this is the branch the request is on.
     request_branch = list(run.messages)
@@ -1040,28 +1048,60 @@ async def stream_with_studio_tools(
             # gets one nudge to actually do it, the same recovery the local loops
             # give a stalled small model, then the answer stands as written.
             visible_answer = "".join(turn.text)
+            # Classify the same text the retry replays, as the local loops do
+            # (_reprompt_intent_text). A turn that is nothing but an unpromotable call
+            # block strips to "", leaving no assistant turn to append and no promise to
+            # continue from, so nudging on the raw text replayed it as user -> user.
+            # Untrimmed: a continuation merges with no separator, so the whitespace a
+            # removed span exposed is all that keeps the partial's last word apart from
+            # the first word replayed, and "not" + " able" is not "notable".
+            stripped_answer = strip_tool_markup(
+                visible_answer,
+                final = True,
+                trim = False,
+                enabled_tool_names = allowed_tool_names,
+            )
+            replayable_answer = stripped_answer.strip()
+            boundary = _leading_whitespace(stripped_answer)
+            if not replayable_answer:
+                # A reasoning-only stall announces the plan inside the think block
+                # and nowhere else. _reprompt_intent_text falls back to that block
+                # rather than dropping the turn, so match it, and replay what was
+                # classified. Ordering matters: the fallback runs on the stripped
+                # text, so a turn that is only an unpromotable call block has no
+                # think span, stays empty, and still does not get nudged.
+                replayable_answer = "\n".join(
+                    visible_answer[start:end]
+                    for start, end in _think_spans_outside_tool_markup(visible_answer)
+                ).strip()
+                # Only a removed leading [THINK] block empties the strip while leaving a
+                # think span, so the block opens after the turn's own leading run.
+                boundary = _leading_whitespace(visible_answer)
+            if replayable_answer:
+                replayable_answer = boundary + replayable_answer
             if (
                 tools_available
+                and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
-                and is_short_intent_without_action(visible_answer)
-                and not is_reprompt_repeat(visible_answer, last_reprompt_text)
+                and is_short_intent_without_action(replayable_answer)
+                and not is_reprompt_repeat(replayable_answer, last_reprompt_text)
             ):
                 reprompts += 1
-                last_reprompt_text = visible_answer
+                last_reprompt_text = replayable_answer
                 stalled_hosted = turn.hosted_replay_text()
-                if stalled_hosted:
-                    # A hosted tool did run, the model just did not go on to ask
-                    # for a local one. The replay below never happens on this
-                    # path, so the reprompted request would be told to continue
-                    # from output it can no longer see.
+                stalled_content = (
+                    f"{replayable_answer}\n\n{stalled_hosted}"
+                    if replayable_answer and stalled_hosted
+                    else replayable_answer or stalled_hosted
+                )
+                if stalled_content:
+                    # The retry must see the assistant turn it is being asked to
+                    # continue from. Without this, plain prose stalls are replayed
+                    # as user -> user and the provider answers from scratch.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
-                        "content": (
-                            f"{visible_answer}\n\n{stalled_hosted}"
-                            if visible_answer
-                            else stalled_hosted
-                        ),
+                        "content": stalled_content,
                     }
                     if turn.reasoning_extra:
                         # Gemini 3 stows the text part's thoughtSignature here
@@ -1141,7 +1181,7 @@ async def stream_with_studio_tools(
                 # a repeated call is exactly the one this loop renames above.
                 #
                 # Only for a tool the user DID enable. A call for something
-                # outside the catalog is not a tool of Studio's that declined to
+                # outside the catalog is not a tool of Unsloth's that declined to
                 # run, it is a name this install never offered, and giving it a
                 # card would advertise a tool the user switched off. That one is
                 # answered in the conversation only.
@@ -1151,7 +1191,7 @@ async def stream_with_studio_tools(
                     tool_name = decision.tool_name,
                     tool_call_id = call.get("stream_id") or decision.tool_call_id,
                     arguments = decision.arguments,
-                    result = _TOOL_SKIPPED.get(decision.action, "Studio did not run this call."),
+                    result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
                     provenance = decision.provenance,
                 ):
                     yield card_line
@@ -1258,7 +1298,7 @@ async def stream_with_studio_tools(
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
-                # And a budget, so the tool's clamp is not skipped. Studio cannot measure
+                # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure
                 # an external model's window, and a custom OpenAI-compatible endpoint can
                 # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
                 # replayed on every later call. Unmeasurable means one recall's worth.
@@ -1277,6 +1317,7 @@ async def stream_with_studio_tools(
                         pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for

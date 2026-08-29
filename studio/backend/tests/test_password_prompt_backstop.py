@@ -219,8 +219,8 @@ def test_gate_runs_before_server_bind_in_source():
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     gate_call = src.index("_pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(")
     thread_start = src.index("thread.start()")
-    tunnel_start = src.index('start_studio_tunnel(port, managed_by = "launch")')
     callback_bind = src.index("set_studio_tunnel_url_callback(")
+    tunnel_start = src.index("start_studio_tunnel(", callback_bind)
     assert gate_call < thread_start < callback_bind < tunnel_start
     assert "_cloudflare_url = start_studio_tunnel" not in src
     # The fail-closed branch exits before any server exists.

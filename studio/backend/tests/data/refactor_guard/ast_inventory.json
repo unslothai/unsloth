@@ -44,10 +44,22 @@
       "ParavirtualPlacement": {
         "kind": "class"
       },
+      "_AMD_SMI_TOTAL_TOLERANCE": {
+        "kind": "assign"
+      },
+      "_ANCHOR_ARGS_CHARS": {
+        "kind": "assign"
+      },
+      "_ANCHOR_TEXT_CHARS": {
+        "kind": "assign"
+      },
       "_ANSWER_PIVOT": {
         "kind": "assign"
       },
       "_APPLE_UNIFIED_MEMORY_FRACTION": {
+        "kind": "assign"
+      },
+      "_AUTO_OFFLOAD_CTX": {
         "kind": "assign"
       },
       "_BIG_ENDIAN_GGUF_FILENAME_RE": {
@@ -59,7 +71,16 @@
       "_CANONICAL_SPEC_MODES": {
         "kind": "assign"
       },
+      "_CGROUP_ROOT": {
+        "kind": "assign"
+      },
       "_CHAT_LOADS_IN_FLIGHT": {
+        "kind": "assign"
+      },
+      "_CONTINUE_AFTER_LENGTH_STATUS": {
+        "kind": "assign"
+      },
+      "_CONTINUE_TRUNCATED_ANSWER_STATUS": {
         "kind": "assign"
       },
       "_CPU_DEVICE_VALUES": {
@@ -110,7 +131,22 @@
       "_DRAFTER_KINDS": {
         "kind": "assign"
       },
+      "_DRAFT_GPU_LAYER_FLAGS": {
+        "kind": "assign"
+      },
+      "_FAILURE_QUOTE_CHARS": {
+        "kind": "assign"
+      },
+      "_FAILURE_SCAN_TAIL_CHARS": {
+        "kind": "assign"
+      },
       "_FINAL_ANSWER_SIGNAL": {
+        "kind": "assign"
+      },
+      "_FIT_FLOOR_MIN_CTX": {
+        "kind": "assign"
+      },
+      "_FIT_MIN_CTX": {
         "kind": "assign"
       },
       "_FORCED_PLAN_INTENT": {
@@ -131,6 +167,9 @@
       "_GGUF_REHEARSAL_ARGS_RE": {
         "kind": "assign"
       },
+      "_GGUF_UINT_WIDTHS": {
+        "kind": "assign"
+      },
       "_GPU_DEVICE_PREFIXES": {
         "kind": "assign"
       },
@@ -140,10 +179,22 @@
       "_GPU_OFFLOAD_OVERRIDE_FLAGS": {
         "kind": "assign"
       },
+      "_HF_DRAFT_FLAGS": {
+        "kind": "assign"
+      },
+      "_HOST_RAM_HEADROOM_MIB": {
+        "kind": "assign"
+      },
       "_IGPU_HOST_RESERVE_MIB": {
         "kind": "assign"
       },
+      "_IMATRIX_TOKEN_RE": {
+        "kind": "assign"
+      },
       "_INKLING_REASONING_EFFORT": {
+        "kind": "assign"
+      },
+      "_INSTALLER_WRAPPER_RE": {
         "kind": "assign"
       },
       "_LEGACY_SPEC_MODE_MAP": {
@@ -164,16 +215,43 @@
       "_LLAMA_ARG_TRUE_VALUES": {
         "kind": "assign"
       },
+      "_LLAMA_FIT_TARGET_DEFAULT_MIB": {
+        "kind": "assign"
+      },
       "_LOADS_IN_FLIGHT": {
         "kind": "assign"
       },
       "_LOADS_IN_FLIGHT_LOCK": {
         "kind": "assign"
       },
+      "_LOCAL_DRAFT_FLAGS": {
+        "kind": "assign"
+      },
       "_LlamaStreamCancelled": {
         "kind": "class"
       },
+      "_MAX_IDENTICAL_TOOL_RESULTS": {
+        "kind": "assign"
+      },
+      "_MAX_LENGTH_CONTINUATIONS": {
+        "kind": "assign"
+      },
       "_MAX_TOOL_CALLS_PER_TURN": {
+        "kind": "assign"
+      },
+      "_MIN_USEFUL_RESULT_TOKENS": {
+        "kind": "assign"
+      },
+      "_MISS": {
+        "kind": "assign"
+      },
+      "_MMPROJ_OFFLOAD_ENV_VAR": {
+        "kind": "assign"
+      },
+      "_MMPROJ_OFFLOAD_FLAGS": {
+        "kind": "assign"
+      },
+      "_MMPROJ_OFFLOAD_NEG_ENV_VAR": {
         "kind": "assign"
       },
       "_MTP_MIN_SIZE_B": {
@@ -194,7 +272,16 @@
       "_PERMANENT_HUB_ERRORS": {
         "kind": "assign"
       },
+      "_PROC_ROOT": {
+        "kind": "assign"
+      },
+      "_PROC_SELF_CGROUP": {
+        "kind": "assign"
+      },
       "_PROVISIONAL_ARGS_MIN_CHARS": {
+        "kind": "assign"
+      },
+      "_QWEN38_MODEL_RE": {
         "kind": "assign"
       },
       "_REASONING_EFFORT_SCALE": {
@@ -207,6 +294,9 @@
         "kind": "assign"
       },
       "_SHARD_RE": {
+        "kind": "assign"
+      },
+      "_SIDECAR_ADAPTER_FLAGS": {
         "kind": "assign"
       },
       "_SPEC_ENV_VARS": {
@@ -222,6 +312,15 @@
         "kind": "assign"
       },
       "_SWA_PATTERN_SOURCE_RE": {
+        "kind": "assign"
+      },
+      "_TARGET_KV_EXCLUDES_NEXTN_ARCHS": {
+        "kind": "assign"
+      },
+      "_TARGET_ROLLBACK_SPEC_TYPES": {
+        "kind": "assign"
+      },
+      "_TENSOR_SPLIT_FLAGS": {
         "kind": "assign"
       },
       "_TEXT_TOOL_GEMMA_RE": {
@@ -242,10 +341,28 @@
       "_UNRECOVERABLE_LOCAL_ERRNOS": {
         "kind": "assign"
       },
+      "_VALID_CACHE_TYPES": {
+        "kind": "assign"
+      },
+      "_VALID_KV_CACHE_TYPES": {
+        "kind": "assign"
+      },
+      "_VRAM_FLOOR_RESERVE_MIB": {
+        "kind": "assign"
+      },
       "_VULKAN_DIFFUSION_GPU_IDS_ERROR": {
         "kind": "assign"
       },
+      "_WINDOW_NOTICE_MARKER": {
+        "kind": "assign"
+      },
       "_accumulated_spec_types": {
+        "kind": "def"
+      },
+      "_active_vram_fraction": {
+        "kind": "def"
+      },
+      "_anchor_text": {
         "kind": "def"
       },
       "_apply_igpu_host_reserve_mib": {
@@ -254,13 +371,40 @@
       "_arch_aliases": {
         "kind": "def"
       },
+      "_archive_and_recall": {
+        "kind": "def"
+      },
+      "_archive_branch_transcript": {
+        "kind": "def"
+      },
+      "_archive_content_on_branch": {
+        "kind": "def"
+      },
+      "_archive_is_degraded": {
+        "kind": "def"
+      },
+      "_archive_message_text": {
+        "kind": "def"
+      },
       "_args_place_tensors_on_cpu": {
         "kind": "def"
       },
       "_auto_mode_drops_mtp": {
         "kind": "def"
       },
+      "_backend_supports_tools": {
+        "kind": "def"
+      },
       "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_branch_boundary": {
+        "kind": "def"
+      },
+      "_branch_boundary_anchor": {
+        "kind": "def"
+      },
+      "_branch_non_system": {
         "kind": "def"
       },
       "_build_ngram_mod_flags": {
@@ -287,6 +431,12 @@
       "_cached_variant_resolution": {
         "kind": "def"
       },
+      "_cached_variant_sizes": {
+        "kind": "def"
+      },
+      "_can_reset_epoch": {
+        "kind": "def"
+      },
       "_canonicalize_spec_mode": {
         "kind": "def"
       },
@@ -299,6 +449,9 @@
       "_companion_snapshot_sibling": {
         "kind": "def"
       },
+      "_conversation_recall_reserve": {
+        "kind": "def"
+      },
       "_cpu_runtime_owner_alive": {
         "kind": "def"
       },
@@ -306,6 +459,9 @@
         "kind": "def"
       },
       "_diffusion_manual_ngl": {
+        "kind": "def"
+      },
+      "_draft_is_split_across_host": {
         "kind": "def"
       },
       "_drafter_path_kind": {
@@ -323,10 +479,22 @@
       "_emitted_n_batch": {
         "kind": "def"
       },
+      "_env_asks_for_the_native_context": {
+        "kind": "def"
+      },
+      "_env_fixes_gpu_layers": {
+        "kind": "def"
+      },
       "_env_main_cache_type_for_budget": {
         "kind": "def"
       },
+      "_env_mmproj_offload_value": {
+        "kind": "def"
+      },
       "_env_places_tensors_on_cpu": {
+        "kind": "def"
+      },
+      "_env_sets_mmproj_offload": {
         "kind": "def"
       },
       "_extra_args_device": {
@@ -341,6 +509,9 @@
       "_extra_args_draft_device_pin": {
         "kind": "def"
       },
+      "_extra_args_draft_gpu_layers": {
+        "kind": "def"
+      },
       "_extra_args_draft_offloaded_to_cpu": {
         "kind": "def"
       },
@@ -350,7 +521,16 @@
       "_extra_args_main_device": {
         "kind": "def"
       },
+      "_extra_args_mmproj_offload_value": {
+        "kind": "def"
+      },
       "_extra_args_mtp_draft_path": {
+        "kind": "def"
+      },
+      "_extra_args_mtp_draft_source": {
+        "kind": "def"
+      },
+      "_extra_args_n_parallel": {
         "kind": "def"
       },
       "_extra_args_n_ubatch": {
@@ -371,10 +551,19 @@
       "_extra_args_set_any_flag": {
         "kind": "def"
       },
+      "_extra_args_set_mmproj_offload": {
+        "kind": "def"
+      },
       "_extra_args_set_spec_type": {
         "kind": "def"
       },
       "_extra_args_spec_draft_n_max": {
+        "kind": "def"
+      },
+      "_extra_args_split_mode": {
+        "kind": "def"
+      },
+      "_extra_args_tensor_split": {
         "kind": "def"
       },
       "_extract_model_size_b": {
@@ -387,6 +576,12 @@
         "kind": "def"
       },
       "_finalize_reasoning_only_cumulative": {
+        "kind": "def"
+      },
+      "_fit_context": {
+        "kind": "def"
+      },
+      "_fit_with_instruction_pins": {
         "kind": "def"
       },
       "_flash_attn_enabled_from_args": {
@@ -440,6 +635,9 @@
       "_hub_download_in_flight": {
         "kind": "def"
       },
+      "_inject_recall": {
+        "kind": "def"
+      },
       "_is_big_endian_gguf_path": {
         "kind": "def"
       },
@@ -461,6 +659,9 @@
       "_is_gemma_mtp_name": {
         "kind": "def"
       },
+      "_is_installer_entrypoint": {
+        "kind": "def"
+      },
       "_is_mtp_model_name": {
         "kind": "def"
       },
@@ -474,6 +675,12 @@
         "kind": "def"
       },
       "_is_root_dflash_drafter_path": {
+        "kind": "def"
+      },
+      "_is_window_notice": {
+        "kind": "def"
+      },
+      "_keeps_compaction_boundary": {
         "kind": "def"
       },
       "_kv_bytes_per_elem": {
@@ -497,13 +704,25 @@
       "_load_swa_cache": {
         "kind": "def"
       },
+      "_loader_path_var": {
+        "kind": "def"
+      },
+      "_memory_tool_withheld": {
+        "kind": "def"
+      },
       "_metal_device_is_paravirtual": {
         "kind": "def"
       },
       "_mla_mtp_auto_enabled": {
         "kind": "def"
       },
+      "_mmproj_env_is_audio_only": {
+        "kind": "def"
+      },
       "_native_linux_system_rocm_lib_dirs": {
+        "kind": "def"
+      },
+      "_normalized_load_mode": {
         "kind": "def"
       },
       "_pad_kv_cells": {
@@ -527,7 +746,13 @@
       "_period_from_layer_types": {
         "kind": "def"
       },
+      "_pick_dspark": {
+        "kind": "def"
+      },
       "_pick_mmproj": {
+        "kind": "def"
+      },
+      "_pick_mtp": {
         "kind": "def"
       },
       "_pipeline_parallel_disabled_by_args": {
@@ -536,10 +761,28 @@
       "_planned_main_cache_types": {
         "kind": "def"
       },
+      "_planned_scratch_cache_type": {
+        "kind": "def"
+      },
+      "_prefix_user_text": {
+        "kind": "def"
+      },
+      "_prepend_loader_dir": {
+        "kind": "def"
+      },
       "_probe_dns_dead": {
         "kind": "def"
       },
       "_quant_label_for_endian": {
+        "kind": "def"
+      },
+      "_recall_top_k": {
+        "kind": "def"
+      },
+      "_records_boundary": {
+        "kind": "def"
+      },
+      "_report_live_llama_timings": {
         "kind": "def"
       },
       "_resolve_llama_binary": {
@@ -554,6 +797,15 @@
       "_resolve_swa_pattern": {
         "kind": "def"
       },
+      "_resolve_variant_gguf_files": {
+        "kind": "def"
+      },
+      "_resolved_mmproj_offload": {
+        "kind": "def"
+      },
+      "_retrieval_budget": {
+        "kind": "assign"
+      },
       "_save_swa_cache": {
         "kind": "def"
       },
@@ -564,6 +816,12 @@
         "kind": "def"
       },
       "_should_suppress_forced_no_tool_output": {
+        "kind": "def"
+      },
+      "_sidecar_adapter_bytes": {
+        "kind": "def"
+      },
+      "_sidecar_adapter_paths": {
         "kind": "def"
       },
       "_snapshot_dir_of": {
@@ -578,7 +836,16 @@
       "_source_declares_option": {
         "kind": "def"
       },
+      "_split_mode_confines_to_one_device": {
+        "kind": "def"
+      },
+      "_sticky_compaction_boundary": {
+        "kind": "def"
+      },
       "_strip_flag_pairs": {
+        "kind": "def"
+      },
+      "_subsequence_index": {
         "kind": "def"
       },
       "_swa_cache_path": {
@@ -594,6 +861,12 @@
         "kind": "def"
       },
       "_sweep_abandoned_cpu_runtimes": {
+        "kind": "def"
+      },
+      "_vram_reserve_floor_mib": {
+        "kind": "def"
+      },
+      "_vram_usable_mib": {
         "kind": "def"
       },
       "_with_gguf_load_marker": {
@@ -660,8 +933,14 @@
       "_TOOL_CALL_NAME_RE": {
         "kind": "assign"
       },
+      "_TOOL_SIGNAL_OVERLAP": {
+        "kind": "assign"
+      },
       "_UNRESTRICTED_REHEARSAL_RE": {
         "kind": "assign"
+      },
+      "_accepts_kwarg": {
+        "kind": "def"
       },
       "_accepts_output_callback": {
         "kind": "def"
@@ -684,6 +963,9 @@
       "_earliest_tool_signal": {
         "kind": "def"
       },
+      "_first_detected_tool_name": {
+        "kind": "def"
+      },
       "_has_genuine_tool_signal": {
         "kind": "def"
       },
@@ -700,6 +982,9 @@
         "kind": "def"
       },
       "_reprompt_intent_text": {
+        "kind": "def"
+      },
+      "_search_images_kwargs": {
         "kind": "def"
       },
       "_status_for_tool": {
@@ -1032,6 +1317,9 @@
         "kind": "assign"
       },
       "_KIMI_SECTION_END": {
+        "kind": "assign"
+      },
+      "_LENGTH_PROGRESS_TAIL_CHARS": {
         "kind": "assign"
       },
       "_LLAMA3_BARE_JSON_SENTINELS": {
@@ -1383,6 +1671,11 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "continue_after_length_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": ""
+      },
       "has_tool_signal": {
         "decorators": [],
         "kind": "def",
@@ -1408,10 +1701,25 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
       },
+      "reasoning_cap_spent_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "max_tokens: Optional[int]=None"
+      },
+      "repeated_result_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tool_name: str, times: int, last_result: str"
+      },
       "reprompt_to_act_message": {
         "decorators": [],
         "kind": "def",
         "signature": "tool_hint: str"
+      },
+      "starved_result_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tool_name: str, result: str"
       },
       "strip_leading_bare_json_call": {
         "decorators": [],
@@ -1431,7 +1739,17 @@
       "strip_tool_markup": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, *, final: bool=False, enabled_tool_names: Optional[set]=None"
+        "signature": "text: str, *, final: bool=False, trim: bool=True, enabled_tool_names: Optional[set]=None"
+      },
+      "thinking_exhausted_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "context_length: Optional[int]=None"
+      },
+      "unfinished_thought_progress": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "reasoning: str"
       }
     }
   },

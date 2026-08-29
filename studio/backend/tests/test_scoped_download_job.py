@@ -25,7 +25,7 @@ if _BACKEND_DIR not in sys.path:
 
 from fastapi import HTTPException
 
-from hub.schemas.downloads import DownloadModelRequest
+from hub.schemas.downloads import DownloadModelRequest, DownloadStartResponse
 from hub.services import download_lifecycle
 from hub.services.models import downloads as dl
 from hub.utils.paths import is_valid_gguf_variant
@@ -162,6 +162,40 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
             dl.download_model_response(_request(files = [FILES[1], FILES[0], FILES[0]]))
         )
         assert same["accepted"] is True and same["job_key"] == key
+    finally:
+        dl._registry.set_job(key, "complete")
+
+
+def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
+    # A second client starting the same download is accepted and gets the live job's
+    # transport, which reads exactly like a fresh Xet start. Only this flag separates
+    # them, and the Unsloth download notice keys off it.
+    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+
+    repo = "unsloth/attach-flag-probe"
+    key = dl._download_job_key(repo, dl._scope_variant("diffusion"))
+    try:
+        started = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
+        assert started["accepted"] is True and started["attached"] is False
+
+        attached = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
+        assert attached["accepted"] is True and attached["attached"] is True
+        assert attached["job_key"] == key
+
+        # The route declares response_model, which drops any key the schema does
+        # not name, so the flag has to survive that too or it never ships.
+        assert DownloadStartResponse(**attached).model_dump()["attached"] is True
+        assert DownloadStartResponse(**started).model_dump()["attached"] is False
+
+        # A rejection that is not adoptable (cross-variant conflict, delete in
+        # progress) joined nothing, so it must not claim it attached.
+        monkeypatch.setattr(dl._registry, "claim", lambda *a, **k: (False, "repository_owned"))
+        monkeypatch.setattr(dl._registry, "adoptable", lambda *a, **k: False)
+        refused = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
+        assert refused["accepted"] is False and refused["attached"] is False
     finally:
         dl._registry.set_job(key, "complete")
 

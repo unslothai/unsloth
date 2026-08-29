@@ -5,7 +5,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
-import { type FC, useCallback, useEffect, useState } from "react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -21,7 +21,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useShortcut } from "@/features/settings";
 
+import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
   type McpServerConfig,
   createMcpServer,
@@ -29,7 +31,9 @@ import {
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
@@ -103,28 +107,82 @@ export function McpComposerButton({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
 
   const [servers, setServers] = useState<McpServerConfig[]>([]);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const dialogOpen = useMcpServersDialogStore((s) => s.open);
+  const setDialogOpen = useMcpServersDialogStore((s) => s.setOpen);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+  const [serversLoaded, setServersLoaded] = useState(false);
+  const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const pendingUrlsRef = useRef(new Set<string>());
   const [hintKey, setHintKey] = useState<string | null>(null);
+  const listRefreshGenerationRef = useRef(0);
+  const hasLoadedServerSnapshotRef = useRef(false);
 
   // Grey out only when a loaded model lacks tool support; with no model yet,
   // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
-  const refresh = useCallback(async () => {
-    try {
-      const rows = await listMcpServers();
-      setServers(rows);
-    } catch {
-      // Keep prior state if the list call fails.
-    }
+  const refresh = useCallback(
+    async (waitForPendingMutations = true, minimumMutationEpoch = 0) => {
+      const generation = listRefreshGenerationRef.current + 1;
+      listRefreshGenerationRef.current = generation;
+      setServersLoaded(false);
+      try {
+        const rows = await listMcpServers({
+          waitForPendingMutations,
+          minimumMutationEpoch,
+        });
+        if (listRefreshGenerationRef.current !== generation) return;
+        setServers(rows);
+        hasLoadedServerSnapshotRef.current = true;
+        setServersLoaded(true);
+      } catch {
+        if (
+          listRefreshGenerationRef.current === generation &&
+          hasLoadedServerSnapshotRef.current
+        ) {
+          setServersLoaded(true);
+        }
+      }
+    },
+    [],
+  );
+
+  const applyServer = useCallback((server: McpServerConfig) => {
+    setServers((current) => {
+      const index = current.findIndex(
+        (candidate) => candidate.id === server.id,
+      );
+      if (index === -1) return [...current, server];
+      return current.map((candidate) =>
+        candidate.id === server.id ? server : candidate,
+      );
+    });
   }, []);
 
-  // Load the server list on mount and whenever the menu opens.
   useEffect(() => {
-    void refresh();
+    const unsubscribe = subscribeToMcpServerMutationSettlements((epoch) => {
+      void refresh(false, epoch);
+    });
+    return () => {
+      unsubscribe();
+      listRefreshGenerationRef.current += 1;
+    };
   }, [refresh]);
+
+  // Load the server list on mount, and again when the dialog closes: it can
+  // be opened from the chord as well as from this menu.
+  useEffect(() => {
+    if (dialogOpen) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refresh();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh, dialogOpen]);
 
   const enabledUrls = new Set(
     servers.filter((s) => s.is_enabled).map((s) => normalizeMcpUrl(s.url)),
@@ -144,35 +202,42 @@ export function McpComposerButton({
     disablesWebSearch?: boolean;
   }) {
     const norm = normalizeMcpUrl(args.url);
-    if (pendingUrl === norm) return; // guard rapid double-clicks
-    setPendingUrl(norm);
+    if (pendingUrlsRef.current.has(norm)) return; // guard rapid double-clicks
+    pendingUrlsRef.current.add(norm);
+    setPendingUrls(new Set(pendingUrlsRef.current));
     try {
       if (args.checked) {
         // Reuse the already-loaded row, else create one.
         if (args.existing) {
           if (!args.existing.is_enabled) {
-            await updateMcpServer(args.existing.id, { isEnabled: true });
+            applyServer(
+              await updateMcpServer(args.existing.id, { isEnabled: true }),
+            );
           }
         } else {
-          await createMcpServer({
-            displayName: args.displayName,
-            url: args.url,
-            isEnabled: true,
-          });
+          applyServer(
+            await createMcpServer({
+              displayName: args.displayName,
+              url: args.url,
+              isEnabled: true,
+            }),
+          );
         }
         setMcpEnabledForChat(true);
         // Search servers turn off the built-in Web Search to avoid overlap.
         if (args.disablesWebSearch) setToolsEnabled(false);
       } else if (args.existing) {
-        await updateMcpServer(args.existing.id, { isEnabled: false });
+        applyServer(
+          await updateMcpServer(args.existing.id, { isEnabled: false }),
+        );
       }
-      await refresh();
     } catch (err) {
       toast.error("Failed to update MCP server", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setPendingUrl(null);
+      pendingUrlsRef.current.delete(norm);
+      setPendingUrls(new Set(pendingUrlsRef.current));
     }
   }
 
@@ -191,7 +256,7 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      disabled={pendingUrl === normalizeMcpUrl(opts.url)}
+      disabled={!serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
         void toggleServer({
@@ -257,11 +322,13 @@ export function McpComposerButton({
                 aria-label="Turn off MCP"
                 tabIndex={-1}
                 onPointerDown={(e) => {
-                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  if (e.currentTarget.closest('[data-pill-compact="true"]'))
+                    return;
                   e.stopPropagation();
                 }}
                 onClick={(e) => {
-                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  if (e.currentTarget.closest('[data-pill-compact="true"]'))
+                    return;
                   e.stopPropagation();
                   setMcpEnabledForChat(false);
                 }}
@@ -345,14 +412,36 @@ export function McpComposerButton({
           </TooltipContent>
         </Tooltip>
       )}
-      <ChatMcpServersDialog
-        open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          // Resync after managing servers.
-          if (!next) void refresh();
-        }}
-      />
     </>
+  );
+}
+
+/**
+ * The dialog itself, plus the chord that opens it, mounted for the chat rather
+ * than for the pill above: MCP ships off and the pill only renders once it is
+ * on, so anything living there is out of the shortcut's reach.
+ */
+export function McpServersDialogMount() {
+  const open = useMcpServersDialogStore((s) => s.open);
+  const setOpen = useMcpServersDialogStore((s) => s.setOpen);
+  // Not gated on tool support: this is where servers are configured, and a
+  // model that cannot use them yet is the usual reason to come here.
+  const chatActive = useChatActive();
+  useShortcut("openMcpServers", () => setOpen(true), { enabled: chatActive });
+  // Leaving the chat closes it for good rather than parking it: the flag
+  // outlives this subtree, so a dialog left open would come back on the next
+  // visit as a ghost of the last one.
+  useEffect(() => {
+    if (!chatActive && open) setOpen(false);
+  }, [chatActive, open, setOpen]);
+  // Going off-route is not the only way to leave. Logout, or a session that
+  // expires, moves the root to /login and takes this whole subtree with it, so
+  // no chatActive=false render ever happens and the flag above survives to
+  // reopen the dialog on the next visit. Close on the way out as well.
+  useEffect(() => {
+    return () => useMcpServersDialogStore.getState().setOpen(false);
+  }, []);
+  return (
+    <ChatMcpServersDialog open={chatActive && open} onOpenChange={setOpen} />
   );
 }

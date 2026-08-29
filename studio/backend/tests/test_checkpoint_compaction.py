@@ -280,7 +280,7 @@ def test_a_multiline_instruction_survives_being_read_back():
     ]
     assert checkpoint._block_items(checkpoint.render_checkpoint([nested])) == [nested]
 
-    # A flat block, no continuation indent, still reads line by line. It carries Studio's
+    # A flat block, no continuation indent, still reads line by line. It carries Unsloth's
     # own header, which is what marks a block as ours; a foreign one is not read at all.
     flat = (
         checkpoint._OPEN
@@ -515,7 +515,7 @@ def test_a_process_with_tools_disabled_never_resets(monkeypatch):
 
 
 def _memory_tool_branch():
-    """A Studio branch as the client replays it after ONE search_conversation call."""
+    """An Unsloth branch as the client replays it after ONE search_conversation call."""
     return [
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "what did I say about the dataset?"},
@@ -570,7 +570,7 @@ def test_studios_own_memory_history_does_not_steal_the_request_from_the_context_
     )
 
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
-    assert inference_route._only_studio_memory_tool_history(payload) is True
+    assert inference_route._only_studio_tool_history(payload) is True
 
 
 def test_a_real_client_tool_loop_still_takes_the_passthrough():
@@ -590,10 +590,10 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
         stream = True,
     )
 
-    assert inference_route._only_studio_memory_tool_history(payload) is False
+    assert inference_route._only_studio_tool_history(payload) is False
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is True
 
-    # And a client catalog alongside Studio's own history is still the client's request.
+    # And a client catalog alongside Unsloth's own history is still the client's request.
     with_catalog = ChatCompletionRequest(
         model = "local",
         messages = _memory_tool_branch(),
@@ -607,8 +607,69 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
             }
         ],
     )
-    assert inference_route._only_studio_memory_tool_history(with_catalog) is False
+    assert inference_route._only_studio_tool_history(with_catalog) is False
     assert inference_route._takes_tool_passthrough(with_catalog, _ToolCapableBackend()) is True
+
+
+def test_marked_python_history_keeps_compaction_on_the_fitted_path():
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    branch = _memory_tool_branch()
+    branch[2]["tool_calls"][0]["function"]["name"] = "python"
+    branch[3]["name"] = "python"
+    payload = ChatCompletionRequest(
+        model = "local",
+        messages = branch,
+        thread_id = "thread-1",
+        enable_tools = False,
+        studio_tool_history = True,
+        context_overflow = "truncate_oldest",
+        context_policy = "rolling",
+        compaction_headroom_ratio = 0.0,
+        stream = True,
+    )
+
+    assert inference_route._only_studio_tool_history(payload) is True
+    assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
+    assert inference_route._rolling_context_policy(payload) == "truncate_oldest"
+    assert inference_route._request_context_policy(payload) == "rolling"
+    assert inference_route._request_compaction_headroom_ratio(payload) == 0.0
+
+    empty = ChatCompletionRequest(
+        model = "local",
+        messages = [{"role": "user", "content": "hello"}],
+        studio_tool_history = True,
+    )
+    assert inference_route._only_studio_tool_history(empty) is False
+
+
+def test_the_count_request_declares_the_studio_tool_history_marker():
+    """The context-usage bar prices the same prompt only if it routes the same way.
+
+    `ChatCountTokensRequest` sets `extra = "allow"`, so an undeclared marker arrives
+    uncoerced: the JSON string "false" would reach `_only_studio_tool_history` as a truthy
+    value and move the count onto the Unsloth tool path the completion never takes.
+    """
+    from models.inference import ChatCountTokensRequest
+    from routes import inference as inference_route
+
+    branch = _memory_tool_branch()
+    branch[2]["tool_calls"][0]["function"]["name"] = "python"
+    branch[3]["name"] = "python"
+
+    payload = ChatCountTokensRequest(model = "local", messages = branch, studio_tool_history = True)
+    assert payload.studio_tool_history is True
+    assert inference_route._only_studio_tool_history(payload) is True
+    assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
+
+    denied = ChatCountTokensRequest(model = "local", messages = branch, studio_tool_history = "false")
+    assert denied.studio_tool_history is False
+    assert inference_route._only_studio_tool_history(denied) is False
+
+    unset = ChatCountTokensRequest(model = "local", messages = branch)
+    assert unset.studio_tool_history is None
+    assert inference_route._only_studio_tool_history(unset) is False
 
 
 def test_can_reset_false_replays_an_epoch_but_never_starts_one():
@@ -762,11 +823,21 @@ def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
     reset = routes_mod._apply_compaction_nudge("base.", tools, checkpoint_fitted = True)
     assert routes_mod._CHECKPOINT_SESSION_NUDGE in reset
 
+    import types
+
+    rolling_override = routes_mod._apply_compaction_nudge(
+        "base.",
+        tools,
+        checkpoint_fitted = True,
+        payload = types.SimpleNamespace(context_policy = "rolling"),
+    )
+    assert routes_mod._CHECKPOINT_SESSION_NUDGE not in rolling_override
+
 
 def test_a_request_that_withdrew_the_tool_loop_never_resets(monkeypatch):
     """The process policy is not the only way `search_conversation` fails to arrive.
 
-    Studio honours `tool_choice: "none"` twice over: the tool loop is suppressed, and the
+    Unsloth honours `tool_choice: "none"` twice over: the tool loop is suppressed, and the
     request is excluded from the checkpoint repair that otherwise re-admits
     search_conversation alone. A caller that sets it sets it every turn, so a reset would
     hide the dropped turns behind a tool that never arrives. Same refusal as
@@ -798,7 +869,7 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
     assert body.count("tools_withheld = tools_withheld") == 2
 
-    route = inspect.getsource(routes_mod.openai_chat_completions)
+    route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes that
     # make the loop unusable once opened.
     assert "tools_withheld = _tool_loop_unusable" in route
@@ -856,7 +927,7 @@ def test_the_memory_tool_override_needs_a_request_that_can_actually_reset(monkey
     import routes.inference as routes_mod
 
     monkeypatch.setattr(routes_mod, "_thread_has_conversation_archive", lambda _tid: True)
-    monkeypatch.setattr(routes_mod, "_checkpoint_needs_search", lambda: True)
+    monkeypatch.setattr(routes_mod, "_checkpoint_needs_search", lambda *_a, **_k: True)
 
     payload = types.SimpleNamespace(
         enabled_tools = [],
@@ -879,8 +950,8 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
     """Two Retry siblings can carry byte-identical replies with only one having reset.
 
     The exact-text filter keeps both, and taking the first match reopened the tool loop on
-    the branch that never reset. Where the text cannot separate them, leave the request as
-    it was, as the sticky boundary's `min(boundaries)` does; this pins that agreement.
+    the branch that never reset. Once the siblings also disagree on policy, neither boundary
+    is safe to replay: checkpoint cannot inherit rolling, and rolling cannot inherit checkpoint.
     """
     import sys
     import types
@@ -931,11 +1002,12 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 
     branch = [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
 
-    # Only the abandoned sibling reset, so the shallower (never-reset) boundary is
-    # replayed and no epoch is in force on this branch.
+    # Only the abandoned sibling reset, so byte-identical rows of mixed policy make
+    # either policy refit.
     _install(_rows(True))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 6
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", branch, context_policy = "rolling") == 0
 
     # Neither reset: unchanged, and still no loop.
     _install(_rows(False))
@@ -1124,13 +1196,16 @@ def test_the_loop_is_only_reopened_for_a_request_that_can_actually_compact():
 
     import routes.inference as routes_mod
 
-    route = inspect.getsource(routes_mod.openai_chat_completions)
+    route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     gate = route.split("if (\n            not use_tools", 1)[1].split("use_tools = True", 1)[0]
-    assert "_checkpoint_needs_search()" in gate
-    assert "_thread_has_conversation_archive" in gate
-    assert "_rolling_context_policy(payload) is not None" in gate
+    assert "_checkpoint_recall_may_enable_tools(payload)" in gate
     # And the request must be able to USE the loop once it opens, not merely open it.
     assert "_tool_loop_unusable" in gate
+
+    helper = inspect.getsource(routes_mod._checkpoint_recall_may_enable_tools)
+    assert "_checkpoint_needs_search(payload)" in helper
+    assert "_thread_has_conversation_archive" in helper
+    assert "_rolling_context_policy(payload) is not None" in helper
 
 
 def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
@@ -1145,7 +1220,7 @@ def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
 
     import routes.inference as routes_mod
 
-    route = inspect.getsource(routes_mod.openai_chat_completions)
+    route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     predicate = route.split("_tool_loop_unusable = (", 1)[1].split("\n    )", 1)[0]
 
     assert "_client_disabled_tool_calls" in predicate
@@ -1183,6 +1258,108 @@ def test_only_truncate_oldest_is_a_policy_that_can_reset(requested, expected, mo
     payload = types.SimpleNamespace(context_overflow = requested)
 
     assert routes_mod._rolling_context_policy(payload) == expected
+
+
+def test_a_request_can_force_rolling_when_checkpoint_is_the_process_default(monkeypatch):
+    """Studio's sliding-window control must not need UNSLOTH_CONTEXT_POLICY=rolling."""
+    from core.inference import llama_cpp
+
+    seen = {}
+
+    def _rolling(messages, **kwargs):
+        seen["rolling"] = True
+        seen["headroom"] = kwargs.get("headroom_ratio")
+        return messages, None
+
+    monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: True)
+    monkeypatch.setattr(llama_cpp, "fit_rolling_context", _rolling)
+    llama_cpp._fit_context(
+        [{"role": "user", "content": "hi"}],
+        context_length = 4096,
+        max_tokens = 128,
+        count_tokens = count,
+        can_reset = True,
+        context_policy = "rolling",
+        headroom_ratio = 0.0,
+    )
+
+    assert seen == {"rolling": True, "headroom": 0.0}
+
+
+def test_request_compaction_overrides_are_optional():
+    import types
+
+    import routes.inference as routes_mod
+
+    empty = types.SimpleNamespace()
+    assert routes_mod._request_context_policy(empty) is None
+    assert routes_mod._request_compaction_headroom_ratio(empty) is None
+
+    payload = types.SimpleNamespace(
+        context_policy = "rolling",
+        compaction_headroom_ratio = 0.1,
+    )
+    assert routes_mod._request_context_policy(payload) == "rolling"
+    assert routes_mod._request_compaction_headroom_ratio(payload) == 0.1
+    assert routes_mod._request_context_policy(types.SimpleNamespace(context_policy = "nope")) is None
+
+
+def test_checkpoint_needs_search_follows_the_request_policy(monkeypatch):
+    """Tool admission must use the same override `_fit_context` does.
+
+    With UNSLOTH_CONTEXT_POLICY=rolling, a Studio (or API) request that sends
+    context_policy=checkpoint still resets; the search tool and nudge have to
+    follow, or a tools-off chat archives history it can never retrieve.
+    """
+    import types
+
+    import routes.inference as routes_mod
+
+    monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: False)
+    assert routes_mod._checkpoint_needs_search() is False
+    assert (
+        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy = "rolling"))
+        is False
+    )
+    assert (
+        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy = "checkpoint"))
+        is True
+    )
+
+    monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: True)
+    assert routes_mod._checkpoint_needs_search() is True
+    assert (
+        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy = "rolling"))
+        is False
+    )
+
+
+def test_a_checkpoint_request_override_still_admits_the_memory_tool(monkeypatch):
+    import asyncio
+    import types
+
+    import routes.inference as routes_mod
+
+    monkeypatch.setattr(routes_mod, "_thread_has_conversation_archive", lambda _tid: True)
+    monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: False)
+
+    def _names(context_policy):
+        payload = types.SimpleNamespace(
+            enabled_tools = [],
+            rag_scope = None,
+            thread_id = "t1",
+            bypass_permissions = False,
+            context_policy = context_policy,
+        )
+        tools = asyncio.run(
+            routes_mod._select_request_tools(
+                payload, tools_on = False, mcp_allowed = False, checkpoint_fitted = True
+            )
+        )
+        return [tool["function"]["name"] for tool in tools]
+
+    assert _names("checkpoint") == ["search_conversation"]
+    assert "search_conversation" not in _names("rolling")
 
 
 def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_nothing(monkeypatch):
@@ -1239,8 +1416,8 @@ def _stub_studio_db(monkeypatch, messages):
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
 
 
-def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkeypatch):
-    """The escape hatch has to escape the depth too, not just the reset.
+def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch):
+    """A policy switch has to discard the old depth, not just select another fitter.
 
     A checkpoint boundary is the depth of a RESET, affordable only because the block is
     rebuilt on every replay. Under `UNSLOTH_CONTEXT_POLICY=rolling` neither `_fit_context`
@@ -1274,6 +1451,10 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
     assert llama_cpp._sticky_compaction_boundary("t1") == 18
+    assert llama_cpp._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 18
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", context_policy = "rolling") == 0
+    ), "a request that forces rolling must not replay a reset-sized checkpoint cut"
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
     assert (
@@ -1287,6 +1468,249 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
         "boundary_messages": 6,
     }
     assert llama_cpp._sticky_compaction_boundary("t1") == 6
+    assert llama_cpp._sticky_compaction_boundary("t1", context_policy = "rolling") == 6
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 0
+    ), "a checkpoint request must start a new epoch instead of reusing a rolling boundary"
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    switched_boundary = llama_cpp._sticky_compaction_boundary("t1")
+    assert (
+        switched_boundary == 0
+    ), "a rolling boundary must not suppress the first checkpoint reset and recall"
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    _, truncation = llama_cpp._fit_context(
+        _thread() + [{"role": "user", "content": "continue"}],
+        context_length = 1200,
+        max_tokens = 200,
+        count_tokens = count,
+        can_reset = True,
+        sticky_dropped = switched_boundary,
+        context_policy = "checkpoint",
+    )
+    assert truncation["checkpoint_started"] is True
+
+
+def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypatch):
+    """`UNSLOTH_CONTEXT_POLICY=checkpoint` is not the same as "this fit will reset".
+
+    `_can_reset_epoch` refuses whenever the model's template cannot render tools, the tool
+    loop is off, or the archive is unavailable, and those requests compact through
+    `fit_rolling_context` and record a rolling boundary. Rejecting a rolling boundary on
+    the process policy alone therefore threw it away on every later turn for exactly those
+    threads: the boundary slid again, which is the thing `sticky_dropped` exists to stop.
+    The rolling boundary is only unsafe where `fit_checkpoint_context` would read it as an
+    epoch already in force and skip the reset's recall.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 6
+    ), "a fit that stays rolling must replay the boundary rolling recorded"
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+    ), "a fit that may reset must start a new epoch instead of reusing a rolling boundary"
+
+    # A reset-sized boundary is still refused under rolling whatever the request may do,
+    # because nothing rebuilds the block that made the depth affordable.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": True,
+        "boundary_messages": 18,
+        "checkpoint": True,
+    }
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+
+
+def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
+    """Replaying an epoch requires an epoch, and only the recorded policy says there is one.
+
+    A request that may not reset still takes the checkpoint REPLAY branch under a
+    checkpoint policy, so a rolling-origin count handed to `fit_checkpoint_context` reads
+    as an epoch already in force: the fit returns `checkpoint_started` false, and
+    `_archive_and_recall` reads that as "already recalled" and injects nothing. Measured at
+    context_length 1800 with a stored boundary of 30, the reply lost the archived turns the
+    rolling fallback would have pulled back.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+
+    messages = [{"role": "system", "content": "standing instruction " * 20}]
+    for index in range(20):
+        messages.append({"role": "user", "content": f"q{index} " * 120})
+        messages.append({"role": "assistant", "content": f"a{index} " * 120})
+    messages.append({"role": "user", "content": "latest question"})
+
+    def _fit(sticky_is_checkpoint):
+        _, truncation = llama_cpp._fit_context(
+            list(messages),
+            context_length = 1800,
+            max_tokens = 100,
+            count_tokens = count,
+            can_reset = False,
+            sticky_dropped = 30,
+            context_policy = "checkpoint",
+            sticky_is_checkpoint = sticky_is_checkpoint,
+        )
+        return truncation or {}
+
+    rolling_origin = _fit(False)
+    assert rolling_origin.get("checkpoint") is None
+    assert (
+        bool(rolling_origin.get("checkpoint_started", True)) is True
+    ), "a rolling boundary replayed as an epoch suppresses the inline recall"
+
+    # A real epoch still replays, block and all, and still reports no NEW reset.
+    checkpoint_origin = _fit(True)
+    assert checkpoint_origin.get("checkpoint") is True
+    assert checkpoint_origin.get("checkpoint_started") is False
+
+
+def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (6, False)
+
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": True,
+        "boundary_messages": 18,
+        "checkpoint": True,
+    }
+    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (18, True)
+    assert llama_cpp._sticky_compaction_state("t1", can_reset = True) == (18, True)
+
+    # No thread, no row, no boundary: never a claim that a checkpoint recorded one.
+    assert llama_cpp._sticky_compaction_state(None) == (0, False)
+
+
+def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
+    """The "When context fills" ratio has to do something on an already-compacted chat.
+
+    Phase one of `fit_rolling_context` re-applies the saved count before anything else and
+    stops as soon as the result fits, so a boundary cut under a different ratio replays in
+    full and the phase that reads the new one never runs. Moving the setting either way
+    would then change nothing at all.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {
+                "custom": {
+                    "contextTruncation": {
+                        "fits": True,
+                        "boundary_messages": 12,
+                        "boundary_headroom_ratio": 0.25,
+                    }
+                }
+            },
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.05) == 0
+    ), "a boundary cut with more extra trim than this request wants must be recomputed"
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 0
+    ), "no extra trim has to hand back what the 25% cut took"
+
+    # And the same the other way. Phase one stops as soon as the replayed cut fits, so a
+    # DEEPER setting is just as inert if the old boundary is allowed to stand: measured on
+    # a 121-message transcript at context_length 1600, a stored boundary of 86 gave
+    # `dropped 86` under 0.05 and under 0.25 alike.
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 0
+
+    # The ratio it was cut under still replays: this refuses a CHANGE, not every row.
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
+
+    # Rows saved before the ratio was recorded replay exactly as they did.
+    del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+
+    # A checkpoint reset ignores headroom, so its depth is never refused over the ratio.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": True,
+        "boundary_messages": 12,
+        "boundary_headroom_ratio": 0.25,
+        "checkpoint": True,
+    }
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+
+
+def test_the_recorded_boundary_carries_the_ratio_that_cut_it():
+    from core.inference import llama_cpp
+
+    before = [{"role": "user", "content": f"q{i}"} for i in range(6)]
+    fitted = before[4:]
+
+    assert llama_cpp._boundary_metadata(fitted, before)["boundary_headroom_ratio"] == 0.25
+    assert llama_cpp._boundary_metadata(fitted, before, 0.05)["boundary_headroom_ratio"] == 0.05
+    # Out-of-range values are clamped by the same gate the fit uses, never stored raw.
+    assert llama_cpp._boundary_metadata(fitted, before, 5.0)["boundary_headroom_ratio"] == 0.9
+
+
+def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
+    """Recording a rescue's depth must not make it sticky.
+
+    Two different questions. "What did this fit evict?" places the compaction notice, and
+    a rescue has a real answer worth persisting. "Which boundary should the next request
+    re-apply?" is the one a missed reply reserve makes unsafe, and it is decided here, on
+    `fits` alone -- so the depth can be honest without the replay becoming wrong.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 6
+
+    # The same depth, from a fit that missed the reply reserve: not replayed.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": False,
+        "dropped_messages": 6,
+        "boundary_messages": 6,
+    }
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0
 
 
 def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch):
@@ -1642,10 +2066,10 @@ def test_a_caller_owned_carried_forward_tag_is_left_alone():
     """The delimiter is prompt text, and prompt text belongs to whoever wrote it.
 
     A caller whose own system prompt happens to use `<carried_forward>` had that section
-    read as Studio's block: stripped on every reset, its bullet lines reintroduced further
+    read as Unsloth's block: stripped on every reset, its bullet lines reintroduced further
     down as lower-authority quoted USER history, and anything not bullet-shaped deleted
     outright. Silently rewriting a caller's system policy is worse than carrying nothing,
-    so the block is recognised by the header Studio itself writes, not by the tag alone.
+    so the block is recognised by the header Unsloth itself writes, not by the tag alone.
     """
     caller = (
         "You are a support agent.\n"
@@ -1665,7 +2089,7 @@ def test_a_caller_owned_carried_forward_tag_is_left_alone():
     assert (
         "Escalate refunds over 500 dollars." in system
     ), "non-bullet lines of the caller's section were deleted"
-    # And Studio's own block is still appended, and still read back on the next reset.
+    # And Unsloth's own block is still appended, and still read back on the next reset.
     assert system.count("<carried_forward>") == 2
     assert "STATUS::ZQXVARA123-ALPHA" in system
     assert checkpoint._block_items(
@@ -1783,7 +2207,7 @@ def test_a_reset_that_no_longer_holds_stops_reopening_the_tool_loop(monkeypatch)
 
     Reload a checkpointed thread with a bigger window and the whole branch fits again, so
     the fit stops replaying the boundary and records no checkpoint. Scanning back to an
-    older reset then forced the Studio tool loop open on every later turn, overriding
+    older reset then forced the Unsloth tool loop open on every later turn, overriding
     enable_tools = false, and with it the n > 1 and non-streaming guards, to repair a
     compaction that no longer exists.
     """
@@ -1981,6 +2405,208 @@ def test_a_short_correction_survives_a_long_earlier_instruction():
     assert items[-1] == "Actually make it Tetris", "the correction must read as current"
 
 
+def _user_turns(*texts):
+    """One user turn per text, each answered, as a real thread arrives."""
+    messages = []
+    for text in texts:
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "ok"},
+        ]
+    return messages
+
+
+def test_the_opening_request_is_never_carried_without_the_turn_that_follows_it():
+    """The reservation used to spend its slot on the abandoned request and let the slot
+    cap drop the correction to it, which is the exact statement of the task the
+    reservation exists to prevent.
+
+    "Build Flappy Bird", "Actually build Tetris instead", "Add music" at max_items 2
+    carried ["Build Flappy Bird", "Add music"]: the model is told to build the game the
+    user walked away from, and to add music to it.
+    """
+    messages = _user_turns("Build Flappy Bird", "Actually build Tetris instead", "Add music")
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
+
+    assert "Build Flappy Bird" not in items, "the abandoned request must not be carried alone"
+    assert items == ["Actually build Tetris instead", "Add music"]
+
+
+def test_a_correction_is_not_buried_by_the_increments_that_follow_it():
+    """The same bug with room to spare: nine turns into eight slots dropped the ONE turn
+    that changed direction, since the reservation is spent before the walk reaches it.
+
+    The measured output was ["Build Flappy Bird", "Add feature 1" ... "Add feature 7"].
+    """
+    messages = _user_turns(
+        "Build Flappy Bird",
+        "Actually build Tetris instead",
+        *[f"Add feature {index}" for index in range(1, 8)],
+    )
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+
+    assert "Actually build Tetris instead" in items, "the correction must survive"
+    assert items.index("Build Flappy Bird") < items.index("Actually build Tetris instead")
+    # Paid for by the OLDEST turn, so the newest increments are all still there.
+    assert items[-1] == "Add feature 7"
+
+
+def test_the_opening_task_survives_a_long_run_of_increments_with_no_correction():
+    """The case the reservation was added for, which the pair must not regress: a real
+    session states the task once at the front and then says nothing but increments, so a
+    plain newest-first walk carries eight ways to change a game it never names."""
+    messages = _user_turns(
+        "Build a Flappy Bird game",
+        *[f"increment {index}" for index in range(1, 20)],
+    )
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+
+    assert items[0] == "Build a Flappy Bird game", "the statement of the task must survive"
+    assert items[-1] == "increment 19", "and so must the newest increment"
+
+
+def test_the_opening_pair_is_taken_whole_or_not_at_all():
+    """The boundary of the rule. The pair needs two slots behind the newest usable turn,
+    so three slots is where it starts fitting. At two it is abandoned rather than
+    half-taken, because half of it is the abandoned request without its correction.
+    """
+    messages = _user_turns(
+        "Build Flappy Bird",
+        "Actually build Tetris instead",
+        "Add feature 1",
+        "Add feature 2",
+    )
+
+    two = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
+    three = carried_forward_items(messages, max_tokens = 4096, max_items = 3)
+
+    # Two slots: the plain newest-first walk decides. Nothing wrong, only missing.
+    assert two == ["Add feature 1", "Add feature 2"]
+    # Three: the opening request and the correction to it, plus the newest turn.
+    assert three == ["Build Flappy Bird", "Actually build Tetris instead", "Add feature 2"]
+
+
+def test_a_token_budget_too_small_for_the_pair_keeps_the_correction():
+    """The same both-or-neither rule against the token cap rather than the slot cap.
+
+    A budget with room for the newest turn and ONE of the two opening turns used to buy
+    the abandoned request, because the reservation was charged first.
+    """
+    opening = (
+        "Build a Flappy Bird game in a single HTML file with canvas rendering, gravity, "
+        "pipes and a score counter."
+    )
+    correction = (
+        "Actually scrap that and build Tetris instead, same single HTML file, no "
+        "libraries at all."
+    )
+    messages = _user_turns(opening, correction, "add music")
+
+    # 45 tokens: the newest turn (10) plus either opening turn (34 or 30), never both.
+    items = carried_forward_items(messages, max_tokens = 45)
+
+    assert items == [correction, "add music"]
+
+
+def test_abandoning_the_reservation_does_not_reselect_the_opening_on_its_own():
+    """The fallback walk must exclude the opening turn, or it recreates the bug.
+
+    Abandoning the reservation is not enough on its own: the plain newest-first fallback
+    simply picked the opening up again whenever it was the cheaper of the two. A 10-token
+    "Build Tetris", a 27-token correction and a 17-token newest turn under a 40-token
+    budget carried ["Build Tetris", "Add music ..."] -- the abandoned game with the
+    correction to it dropped, which is the bug this pass exists to fix, reached by another
+    route.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+    newest = "Add music and a score counter to it now."
+    messages = _user_turns(opening, correction, newest)
+
+    items = carried_forward_items(messages, max_tokens = 40)
+
+    assert opening not in items, "the abandoned opening must not come back through the fallback"
+    assert items == [newest]
+
+
+def test_a_successor_nobody_could_afford_does_not_empty_the_block():
+    """The boundary of that exclusion, and the reason it is not unconditional.
+
+    When the successor costs more than the whole budget, no ordering carries it and there
+    was never a pair to take. Dropping the opening then buys nothing, because on these
+    threads the opening is the only affordable turn: the campaign's headline case is a
+    43-token standing instruction followed by eight 160-token sections under a 100-token
+    budget, and excluding the opening sends the block out EMPTY, which is the failure the
+    whole pass exists to stop.
+
+    The same shape with a correction (a 10-token opening, a 56-token correction and a
+    60-token newest turn under a 50-token cap) is indistinguishable from it by anything
+    but the English, so the two get the same answer and it is this one.
+    """
+    instruction = {"role": "user", "content": INSTRUCTION}
+    sections = []
+    for index in range(8):
+        sections += [
+            {"role": "user", "content": f"Section {index}. " + "x" * 600},
+            {"role": "assistant", "content": f"Section {index} noted."},
+        ]
+
+    assert carried_forward_items([instruction, *sections], max_tokens = 100) == [INSTRUCTION]
+
+    opening = "Build Tetris"
+    unaffordable = "Actually build Flappy Bird instead " + "x " * 80
+    newest = "Add music " + "y " * 100
+    items = carried_forward_items(_user_turns(opening, unaffordable, newest), max_tokens = 50)
+
+    assert items == [opening]
+
+
+def test_a_newer_restatement_still_wins_when_the_reserved_pair_fills_the_cap():
+    """Position is meaning, so it is read off the transcript, not off the walk.
+
+    The reserved pair can fill the slot cap before the walk reaches a newer copy of an
+    instruction at all, and the surviving copy then rendered at the position of the older
+    one: "metric", "imperial", "metric", "add a table" at max_items 3 came back as metric,
+    imperial, table, and the header's later-wins rule told the model imperial was current
+    at the moment the user had just restored metric.
+    """
+    messages = _user_turns(
+        "Use metric units",
+        "Use imperial units",
+        "Use metric units",
+        "Add a table",
+    )
+
+    items = carried_forward_items(messages, max_items = 3)
+
+    assert items == ["Use imperial units", "Use metric units", "Add a table"]
+    assert items.index("Use imperial units") < items.index("Use metric units")
+
+
+def test_an_opening_turn_with_nothing_after_it_is_still_reserved():
+    """Nothing can be hidden behind a turn that nothing followed, so the pair rule costs
+    the single-turn thread nothing: the reservation still applies at a cap of one."""
+    messages = [
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "sure"},
+    ]
+
+    items = _select_items(
+        messages,
+        max_tokens = 4096,
+        max_items = 1,
+        min_chars = 0,
+        reserve_oldest = True,
+    )
+
+    assert items == [INSTRUCTION]
+
+
 def test_a_nudge_is_still_excluded_without_the_length_floor():
     """`_CONTINUATIONS`, not the character count, is what keeps filler out."""
     messages = [
@@ -1995,3 +2621,247 @@ def test_a_nudge_is_still_excluded_without_the_length_floor():
     items = carried_forward_items(messages, max_tokens = 4096)
 
     assert items == [INSTRUCTION]
+
+
+def test_the_carried_opening_pair_survives_the_next_compaction():
+    """The pair rule has to hold on the MERGED path, not only on the fresh walk.
+
+    The block arrives in the system turn (the ordinary case in a tool loop, and on every
+    request of an epoch already in force) holding the opening request and the correction
+    to it. The turns that produced them are long gone, so the merge is the only copy. The
+    plain newest-first re-cap then spent the budget on the increments evicted since,
+    skipped the long correction for cost, and STILL afforded the short opening: measured
+    at a 4096-token context, the block came back as "Build Flappy Bird" plus four Tetris
+    increments, which is the abandoned-request-plus-increments output the pair exists to
+    prevent, reached one compaction later.
+    """
+    opening = "Build Flappy Bird in one HTML file."
+    correction = (
+        "Actually scrap Flappy Bird and build Tetris instead: same single HTML file, no "
+        "libraries at all, keyboard controls for rotate and drop, a next-piece preview, a "
+        "score counter that scales with the number of lines cleared at once, and a pause key. "
+        "Keep the whole thing under three hundred lines and comment the collision routine. "
+        "Use a ten by twenty well, the standard seven tetrominoes with the standard colours, "
+        "wall kicks on rotation, a hold slot that can only be used once per piece, a ghost "
+        "piece showing where the current one will land, gravity that speeds up every ten "
+        "lines, and a game over overlay with the final score and a restart button. Draw "
+        "everything on a canvas element, no DOM nodes for the board, and keep the render loop "
+        "on requestAnimationFrame rather than a timer."
+    )
+    increments = [
+        "Add background music and a mute toggle in the corner, and make the score font bigger "
+        "so it can be read from across the room during a demo.",
+        "Give the well a subtle grid so the columns are easy to count, and dim the ghost piece "
+        "a little more than it is now, it reads as a real piece.",
+        "Add a short sound for a line clear and a different one for a tetris, generated with "
+        "the WebAudio oscillator so there are no asset files to ship.",
+        "Remember the high score in localStorage and show it beside the current score, and "
+        "make the restart button focusable so the keyboard alone can replay.",
+    ]
+    block = checkpoint.render_checkpoint([opening, correction])
+    assert checkpoint._block_items(block) == [opening, correction]
+
+    messages = [{"role": "system", "content": "you are helpful\n\n" + block}]
+    for text in increments:
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "Done. " + "d " * 1400},
+        ]
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 2000}]
+
+    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    assert correction in items, "the correction must not be dropped while the opening stays"
+    assert items.index(opening) < items.index(correction)
+    # Paid by the OLDEST increment, as the fresh walk pays, so the newest direction stays.
+    assert items[-1] == increments[-1]
+    assert increments[0] not in items
+
+
+def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():
+    """When the merged budget cannot hold the pair, half of it is still the bug.
+
+    Same shape as `test_abandoning_the_reservation_does_not_reselect_the_opening_on_its
+    _own`, one compaction later: a 10-token "Build Tetris", its 27-token correction and a
+    17-token increment under a 40-token budget re-capped to ["Build Tetris", the
+    increment], the abandoned game with its correction dropped. The merge must reach the
+    same answer the fresh walk does, which is to drop the opening and keep the newest.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+    newest = "Add music and a score counter to it now."
+
+    merged = checkpoint._recap([opening, correction, newest], max_tokens = 40, max_items = 8, carried = 2)
+
+    assert merged == [newest], "the abandoned opening must not outlive the correction"
+    assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens = 40)
+    # Never at the cost of the newest direction: the pair is reserved BEHIND the newest
+    # affordable item, so the newest is taken before the pair is priced.
+    assert newest in merged
+
+
+def test_the_merged_recap_never_empties_a_block_it_could_have_filled():
+    """The both-or-neither rule must not answer "neither" with nothing left to say.
+
+    A block holding only the pair, re-capped under a budget that no longer holds both (the
+    user switched to a shorter context mid-thread), still goes out with one of them: the
+    correction where the correction is affordable, and the opening where it is not, which
+    is the `_takeable` escape hatch the fresh walk already had.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+
+    assert checkpoint._recap([opening, correction], max_tokens = 30, max_items = 8, carried = 2) == [
+        correction
+    ]
+    assert checkpoint._recap([opening, correction], max_tokens = 20, max_items = 8, carried = 2) == [
+        opening
+    ]
+
+
+def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
+    """The unit is the BLOCK, so a one-bullet block is never held to a partner.
+
+    A block with a single bullet says nothing about what followed that instruction, and a
+    rule that reached past it into the freshly evicted turns for a partner would invent a
+    relationship the transcript never had, then drop the bullet whenever the invented
+    partner did not fit. That bullet is the only copy of it left anywhere in the request.
+    """
+    carried = (
+        "Build Tetris as a single HTML file with canvas rendering, keyboard controls for "
+        "rotate, drop and hold, a next piece preview, a ghost piece, a pause key and a "
+        "score counter, and keep the whole thing under three hundred lines so it stays "
+        "readable in one screen of a review."
+    )
+    spec = (
+        "Here is the spec for the scoring rules, please follow it exactly and do not round "
+        "anything off. A single line is one hundred points, a double is three hundred, a "
+        "triple is five hundred and a tetris is eight hundred, all multiplied by the "
+        "current level. A soft drop adds one point per cell travelled and a hard drop adds "
+        "two points per cell. Back to back tetrises get a fifty percent bonus on the second "
+        "and every one after it, and a combo adds fifty points per chained clear on top of "
+        "that. The level goes up every ten lines cleared and the gravity interval shortens "
+        "by ten percent each level, down to a floor of fifty milliseconds, and the level "
+        "number is shown beside the score at all times so the player can see when the next "
+        "speed up is due to arrive. A perfect clear is worth two thousand points at level "
+        "one and scales with the level like everything else, a t spin single is eight "
+        "hundred, a t spin double is twelve hundred and a t spin triple is sixteen hundred, "
+        "and every one of those is announced in the corner for one second so the player "
+        "learns which move earned which score."
+    )
+    newest = (
+        "Add background music with a mute toggle in the corner, a short sound for a line "
+        "clear and a different one for a tetris, all generated with the WebAudio oscillator "
+        "so there are no asset files to ship with the page. The music should start muted on "
+        "first load, remember the mute state in localStorage and fade rather than cut when "
+        "it is toggled off."
+    )
+    block = checkpoint.render_checkpoint([carried])
+    messages = [{"role": "system", "content": "you are helpful\n\n" + block}]
+    messages += _user_turns(spec, newest)
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 6000}]
+
+    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    # 358 tokens: the newest turn (94) and the carried bullet (75), never the 279-token
+    # spec. Pairing the bullet with the spec would drop it too.
+    assert items == [carried, newest]
+
+
+def _restated_correction_block():
+    """A VALID block whose bullets are not [opening, successor, ...].
+
+    The user restated the correction after an intervening rule, and the block renders each
+    item at its newest copy, so the correction sits behind the rule that came between it
+    and the opening. Nothing here is malformed: the fresh walk reserved the pair and took
+    it whole, and this is what that looks like once rendered.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build a Flappy Bird clone instead, please now."
+    intervening = "Dark theme"
+    newest = "Add music!"
+    prior = carried_forward_items(
+        _user_turns(opening, correction, intervening, correction, newest), max_tokens = 60
+    )
+    assert prior == [opening, intervening, correction, newest]
+    return opening, correction, prior
+
+
+def test_a_correction_restated_out_of_order_is_not_dropped_by_the_merge():
+    """The merge must not decide which bullets were the pair by counting from the front.
+
+    The block reads [opening, intervening rule, correction, newest], so reserving its
+    first TWO bullets reserves the opening and the intervening rule and lets the walk drop
+    the correction: measured at a 60-token budget with two 10-token instructions evicted
+    since, the block came back as "Build Tetris", "Dark theme", "Add music!", "Add a
+    menu", "Add a timer" -- the abandoned game carried, the correction to it gone, and
+    WORSE than no reservation at all, which keeps the correction here.
+    """
+    opening, correction, prior = _restated_correction_block()
+    messages = [
+        {"role": "system", "content": "you are helpful\n\n" + checkpoint.render_checkpoint(prior)}
+    ]
+    for text in ("Add a menu", "Add a timer"):
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "ok. " + "r " * 260},
+        ]
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 600}]
+
+    fitted, truncation = _fit(messages, context_length = 800, max_tokens = 200)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    assert items == ["Dark theme", correction, "Add music!", "Add a timer"]
+    assert opening not in items, "the abandoned request must not outlive its correction"
+    # Paid for by an older increment, never by the newest direction the user gave.
+    assert items[-1] == "Add a timer"
+
+
+def test_the_merge_never_states_the_abandoned_task_whichever_bullet_corrects_it():
+    """The invariant, stated without naming the successor: the block's first bullet is
+    never carried while any affordable bullet beside it is dropped.
+
+    Both positional readings fail this on their own. The plain newest-first re-cap keeps
+    the cheap opening and the cheap intervening rule and drops the 25-token correction
+    ("Build Tetris", "Dark theme", "Add music!" plus three increments at a 60-token
+    budget), and reserving the first two bullets does the same thing one increment
+    earlier. Holding the block WHOLE or dropping its first bullet needs neither reading.
+    """
+    opening, correction, prior = _restated_correction_block()
+    fresh = ["Add a menu", "Add a timer", "Add a pause"]
+
+    merged = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8, carried = len(prior))
+
+    assert merged == ["Dark theme", correction, "Add music!", fresh[-1]]
+    assert opening not in merged, "the abandoned request must not outlive its correction"
+    # Never at the cost of the newest direction, and never empty.
+    assert merged[-1] == fresh[-1]
+    # The plain walk is no safe fallback: it states the abandoned task itself, so "stop
+    # reserving on the merged path" would not have fixed this.
+    plain = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8)
+    assert opening in plain and correction not in plain
+
+
+def test_holding_the_block_whole_does_not_freeze_it_on_the_first_epoch():
+    """The unit is reserved BEHIND the newest usable item and abandoned when it will not
+    fit whole, so a block cannot take every slot forever and starve the newer rules.
+
+    Without that the merge would be sticky-oldest: eight carried bullets would hold all
+    eight slots on every later compaction and no instruction the user gave afterwards
+    could ever enter the block the model is shown.
+    """
+    block = [f"standing rule {index} " + "w " * 20 for index in range(1, 5)]
+    seen_rounds = []
+    for round_index in range(1, 7):
+        fresh = [f"new rule {round_index}{side} " + "w " * 20 for side in ("a", "b")]
+        block = checkpoint._recap(block + fresh, max_tokens = 200, max_items = 8, carried = len(block))
+        assert block[-1] == fresh[-1], "the newest rule is always carried"
+        seen_rounds.append(sum(1 for item in block if item.startswith("standing rule")))
+
+    assert seen_rounds[0] == 4, "the carried block survives while it fits"
+    assert seen_rounds[-1] == 0, "and ages out instead of holding every slot forever"

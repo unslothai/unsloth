@@ -5,8 +5,10 @@
 
 All off by default so existing API behavior is unchanged:
 - ``openai_api_auto_switch_model``: when on, a ``/v1`` request whose ``model``
-  names a downloaded local GGUF different from the loaded one transparently
-  loads it before serving (llama-swap-style). Unknown names pass through.
+  names a downloaded local model different from the loaded one transparently
+  loads it before serving (llama-swap-style). Covers GGUF through llama.cpp and
+  non-GGUF weights (safetensors, MLX) through the inference orchestrator.
+  Unknown names pass through.
 - ``openai_api_auto_download_model``: when on, a ``/v1`` request naming an
   undownloaded GGUF repo starts a background download instead of failing.
   Gated on auto-switch, which is what serves the model once it lands.
@@ -721,13 +723,26 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # (_resolve_inherited_extra_args); the stripper is imported rather than mirrored so
         # the two paths cannot drift over which flag belongs to which group -- the allow-list
         # this module stays out of is validate_extra_args, which remains the caller's job.
-        from core.inference.llama_server_args import strip_shadowing_flags
+        from core.inference.llama_server_args import (
+            matches_explicit_ctx_override,
+            strip_shadowing_flags,
+        )
+
+        # Context's load-time value is a VRAM-fit target, not an allocation, so a
+        # MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold
+        # and survives; /props then publishes what was really allocated. Stale and
+        # malformed flags are still stripped. The test lives beside the stripper
+        # because /load's inheritance path asks it too and must not drift.
+        matching_explicit_ctx = matches_explicit_ctx_override(
+            kwargs["llama_extra_args"], kwargs.get("max_seq_length")
+        )
+
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],
             # Only the groups this override actually supplies, as the route gates on its
             # request's set fields: a flag with no first-class field behind it is the user's
             # only way to set that knob and still passes through.
-            strip_context = "max_seq_length" in kwargs,
+            strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
@@ -995,6 +1010,26 @@ def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
             return None
         repo = base
     return repo.strip().casefold(), quant.strip().casefold()
+
+
+def is_cache_load_path_key(model_id: str) -> bool:
+    """True when ``model_id`` spells a cached quant as the path a load actually opens.
+
+    The two spellings of one cached repo are not interchangeable in a lookup:
+    ``override_lookup_candidates`` tries the load path before the advertised repo id,
+    so of a pair only the path row is ever read and the repo-id row sits dormant. A
+    caller choosing between stored rows has to know which side it is holding, and
+    ``cached_repo_alias_keys`` deliberately does not say, since it answers "the other
+    spelling" in either direction.
+
+    Lives here for the reason the rest of the resolution does: the ordering rule is
+    this module's, and a second copy of it would drift.
+    """
+    from core.inference.model_ids import hf_cache_repo_id
+
+    split = split_quant_suffix(model_id)
+    base = split[0] if split else model_id
+    return hf_cache_repo_id(base) is not None
 
 
 def cached_repo_alias_keys(model_id: str) -> list[str]:
