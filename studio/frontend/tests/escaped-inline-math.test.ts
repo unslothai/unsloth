@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 import {
   looksLikeEscapedInlineMath,
-  remarkEscapedInlineMath,
+  normalizeEscapedInlineMath,
 } from "../src/lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
@@ -18,7 +18,7 @@ const math = createMathPlugin({ singleDollarTextMath: true });
 function render(
   markdown: string,
   mode: "static" | "streaming" = "static",
-  escapedMath = true,
+  normalizeEscapedMath = true,
 ): string {
   return renderToStaticMarkup(
     React.createElement(
@@ -26,9 +26,10 @@ function render(
       {
         mode,
         plugins: { math },
-        remarkPlugins: escapedMath ? [remarkEscapedInlineMath] : [],
       },
-      preprocessLaTeX(markdown),
+      preprocessLaTeX(
+        normalizeEscapedMath ? normalizeEscapedInlineMath(markdown) : markdown,
+      ),
     ),
   );
 }
@@ -150,17 +151,48 @@ test("adjacent escaped spans remain separate math nodes", () => {
   assert.deepEqual(annotations(render(String.raw`\$a\$\$b\$`)), ["a", "b"]);
 });
 
+test("escaped display delimiters remain literal", () => {
+  const markdown = String.raw`\$\$x^2\$\$`;
+  assert.equal(normalizeEscapedInlineMath(markdown), markdown);
+  assert.deepEqual(annotations(render(markdown)), []);
+});
+
+test("escaped currency inside a braced math command is not a closer", () => {
+  const markdown = String.raw`\$\text{Revenue: \$5}\$`;
+  assert.equal(
+    normalizeEscapedInlineMath(markdown),
+    String.raw`$\text{Revenue: {\char"24}5}$`,
+  );
+  const html = render(markdown);
+  assert.deepEqual(annotations(html), [
+    String.raw`\text{Revenue: {\char&quot;24}5}`,
+  ]);
+  assert.ok(html.includes("<mtext>Revenue:\u00a0$5</mtext>"));
+  assert.ok(!html.includes("katex-error"));
+});
+
+test("less-than signs remain valid inside TeX text", () => {
+  const html = render(String.raw`\$\text{x<y}\$`);
+  assert.deepEqual(annotations(html), [
+    String.raw`\text{x{\char&quot;3C}y}`,
+  ]);
+  assert.match(html, /<mtext>x&lt;y<\/mtext>/);
+  assert.ok(!html.includes("katex-error"));
+});
+
 test("escaped dollars inside existing math stay inside that math", () => {
   const exactBoundary = String.raw`\text{Revenue: \$USD\$}`.padEnd(200, "x");
   const cases = [
     String.raw`$\text{Revenue: \$USD\$}$`,
     `$${exactBoundary}$`,
-    String.raw`\(\text{Revenue: \$USD\$}\)`,
+    String.raw`\(\text{Revenue: \$x\$}\)`,
     String.raw`$$
 \text{Revenue: \$USD\$}
 $$`,
+    String.raw`\[a + \$x\$\]`,
   ];
   for (const markdown of cases) {
+    assert.equal(normalizeEscapedInlineMath(markdown), markdown);
     assert.equal(render(markdown), render(markdown, "static", false), markdown);
   }
 });

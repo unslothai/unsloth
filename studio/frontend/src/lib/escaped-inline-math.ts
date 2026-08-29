@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type {
-  CompileContext,
-  Extension as FromMarkdownExtension,
+import {
+  type CompileContext,
+  type Extension as FromMarkdownExtension,
+  fromMarkdown,
 } from "mdast-util-from-markdown";
-import type { InlineMath } from "mdast-util-math";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { type InlineMath, mathFromMarkdown } from "mdast-util-math";
+import { gfm } from "micromark-extension-gfm";
+import { math } from "micromark-extension-math";
 import type {
   Construct,
   Extension as MicromarkExtension,
@@ -14,22 +18,12 @@ import type {
   TokenizeContext,
   Tokenizer,
 } from "micromark-util-types";
-import type { Plugin } from "unified";
 
 declare module "micromark-util-types" {
   interface TokenTypeMap {
     escapedMathText: "escapedMathText";
     escapedMathTextData: "escapedMathTextData";
     escapedMathTextSequence: "escapedMathTextSequence";
-  }
-}
-
-declare module "unified" {
-  interface Data {
-    micromarkExtensions?: MicromarkExtension[];
-    fromMarkdownExtensions?: Array<
-      FromMarkdownExtension[] | FromMarkdownExtension
-    >;
   }
 }
 
@@ -49,12 +43,33 @@ const SIMPLE_EXPRESSION_RE = new RegExp(
   String.raw`^${SIMPLE_OPERAND}(?:\s*[=+\-<>/*]\s*${SIMPLE_OPERAND})+$`,
 );
 const SIMPLE_FUNCTION_RE = /^[a-zA-Z]\([a-zA-Z0-9]\)$/;
+const COMMAND_RE = /^[a-zA-Z]+/;
 const MARKDOWN_INLINE_BOUNDARY_RE = /`|!?\[[^\]\n]*\]\(|<\/?[a-zA-Z][^>\n]*>/;
 const HTML_LITERAL_TAG_RE = /^<\/?(code|pre|textarea)(?:\s[^>]*)?\s*\/?>$/i;
+const TEXT_COMMANDS = new Set([
+  "emph",
+  "hbox",
+  "mbox",
+  "operatorname",
+  "text",
+  "textbf",
+  "textit",
+  "textmd",
+  "textnormal",
+  "textrm",
+  "textsc",
+  "textsf",
+  "textsl",
+  "texttt",
+  "textup",
+]);
 const htmlLiteralStates = new WeakMap<
   TokenizeContext,
   { eventIndex: number; openTags: string[] }
 >();
+type LatexBracketState = { eventIndex: number; openDelimiters: string[] };
+const latexBracketStates = new WeakMap<TokenizeContext, LatexBracketState>();
+const escapedMathNodes = new WeakSet<object>();
 
 function isInHtmlLiteral(context: TokenizeContext): boolean {
   let state = htmlLiteralStates.get(context);
@@ -85,6 +100,39 @@ function isInHtmlLiteral(context: TokenizeContext): boolean {
   return state.openTags.length > 0;
 }
 
+function updateLatexBracketState(
+  state: LatexBracketState,
+  source: string,
+): void {
+  if (source === "\\(" || source === "\\[") {
+    state.openDelimiters.push(source[1]);
+    return;
+  }
+  if (source === "\\)" || source === "\\]") {
+    const opening = state.openDelimiters.lastIndexOf(
+      source === "\\)" ? "(" : "[",
+    );
+    if (opening >= 0) {
+      state.openDelimiters.length = opening;
+    }
+  }
+}
+
+function isInLatexBracketMath(context: TokenizeContext): boolean {
+  let state = latexBracketStates.get(context);
+  if (!state || state.eventIndex > context.events.length) {
+    state = { eventIndex: 0, openDelimiters: [] };
+  }
+  for (; state.eventIndex < context.events.length; state.eventIndex += 1) {
+    const [phase, token] = context.events[state.eventIndex];
+    if (phase === "exit" && token.type === "characterEscape") {
+      updateLatexBracketState(state, context.sliceSerialize(token));
+    }
+  }
+  latexBracketStates.set(context, state);
+  return state.openDelimiters.length > 0;
+}
+
 /** deliberately conservative: ambiguous prose remains literal. */
 export function looksLikeEscapedInlineMath(body: string): boolean {
   const value = body.trim();
@@ -109,12 +157,111 @@ function appendCode(value: string, code: number): string {
   return `${value}${String.fromCodePoint(code)}`;
 }
 
+function braceBalance(value: string): number {
+  let depth = 0;
+  let escaped = false;
+  for (const character of value) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      if (depth === 0) {
+        return -1;
+      }
+      depth -= 1;
+    }
+  }
+  return depth;
+}
+
+type MathBodyProtection = {
+  readonly parts: string[];
+  readonly textGroups: boolean[];
+  textCommandPending: boolean;
+};
+
+function consumeMathCommand(
+  value: string,
+  index: number,
+  state: MathBodyProtection,
+): number {
+  if (value[index + 1] === "$") {
+    state.parts.push(String.raw`{\char"24}`);
+    state.textCommandPending = false;
+    return index + 1;
+  }
+  const command = COMMAND_RE.exec(value.slice(index + 1))?.[0];
+  if (command) {
+    state.parts.push(`\\${command}`);
+    state.textCommandPending = TEXT_COMMANDS.has(command);
+    return index + command.length;
+  }
+  state.parts.push(value.slice(index, index + 2));
+  state.textCommandPending = false;
+  return index + 1;
+}
+
+function consumeMathCharacter(
+  value: string,
+  index: number,
+  state: MathBodyProtection,
+): number {
+  const character = value[index];
+  if (character === "\\") {
+    return consumeMathCommand(value, index, state);
+  }
+  if (character === "{") {
+    state.textGroups.push(
+      state.textCommandPending || state.textGroups.at(-1) === true,
+    );
+    state.textCommandPending = false;
+  } else if (character === "}") {
+    state.textGroups.pop();
+    state.textCommandPending = false;
+  } else if (character === "<") {
+    state.parts.push(
+      state.textGroups.at(-1) === true
+        ? String.raw`{\char"3C}`
+        : String.raw`\lt `,
+    );
+    state.textCommandPending = false;
+    return index;
+  } else if (character.trim() !== "") {
+    state.textCommandPending = false;
+  }
+  state.parts.push(character);
+  return index;
+}
+
+function protectMathBody(value: string): string {
+  const state: MathBodyProtection = {
+    parts: [],
+    textGroups: [],
+    textCommandPending: false,
+  };
+  for (let index = 0; index < value.length; index += 1) {
+    index = consumeMathCharacter(value, index, state);
+  }
+  return state.parts.join("");
+}
+
 const tokenizeEscapedMath: Tokenizer = function (effects, ok, nok) {
   let body = "";
   let pending: Token;
 
   const start: State = (code) => {
-    if (code !== BACKSLASH || isInHtmlLiteral(this)) {
+    const previousToken = this.events.at(-1)?.[1];
+    if (
+      code !== BACKSLASH ||
+      isInHtmlLiteral(this) ||
+      isInLatexBracketMath(this) ||
+      (this.previous === DOLLAR && previousToken?.type !== TOKEN)
+    ) {
       return nok(code);
     }
     effects.enter(TOKEN);
@@ -158,6 +305,14 @@ const tokenizeEscapedMath: Tokenizer = function (effects, ok, nok) {
   const closingDollar: State = (code) => {
     if (code === DOLLAR) {
       effects.consume(code);
+      if (braceBalance(body) > 0) {
+        pending.type = DATA_TOKEN;
+        body += "\\$";
+        if (body.length > MAX_BODY_LENGTH) {
+          return nok(code);
+        }
+        return data;
+      }
       return finish;
     }
     pending.type = DATA_TOKEN;
@@ -170,6 +325,7 @@ const tokenizeEscapedMath: Tokenizer = function (effects, ok, nok) {
 
   const finish: State = (code) => {
     if (
+      braceBalance(body) !== 0 ||
       MARKDOWN_INLINE_BOUNDARY_RE.test(body) ||
       !looksLikeEscapedInlineMath(body)
     ) {
@@ -204,6 +360,7 @@ const escapedMathFromMarkdown: FromMarkdownExtension = {
           hChildren: [],
         },
       } satisfies InlineMath;
+      escapedMathNodes.add(node);
       this.enter(node, token);
       this.buffer();
     },
@@ -233,13 +390,87 @@ const escapedMathFromMarkdown: FromMarkdownExtension = {
   },
 };
 
-/** parse model-emitted `\$…\$` as math only in markdown text contexts. */
-export const remarkEscapedInlineMath: Plugin<[]> = function () {
-  const data = this.data();
-  const micromarkExtensions = data.micromarkExtensions ?? [];
-  const fromMarkdownExtensions = data.fromMarkdownExtensions ?? [];
-  data.micromarkExtensions = micromarkExtensions;
-  data.fromMarkdownExtensions = fromMarkdownExtensions;
-  micromarkExtensions.push(escapedMathSyntax);
-  fromMarkdownExtensions.push(escapedMathFromMarkdown);
+type MarkdownNode = {
+  readonly type: string;
+  readonly value?: string;
+  readonly position?: {
+    readonly start: { readonly offset?: number };
+    readonly end: { readonly offset?: number };
+  };
+  readonly children?: readonly MarkdownNode[];
 };
+
+type EscapedMathRange = {
+  readonly start: number;
+  readonly end: number;
+  readonly value: string;
+};
+
+function escapedMathRanges(markdown: string): EscapedMathRange[] {
+  const tree = fromMarkdown(markdown, {
+    extensions: [
+      gfm(),
+      math({ singleDollarTextMath: true }),
+      escapedMathSyntax,
+    ],
+    mdastExtensions: [
+      gfmFromMarkdown(),
+      mathFromMarkdown(),
+      escapedMathFromMarkdown,
+    ],
+  }) as MarkdownNode;
+  const ranges: EscapedMathRange[] = [];
+  const pending = [tree];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (!node) {
+      continue;
+    }
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (
+      node.type === "inlineMath" &&
+      escapedMathNodes.has(node) &&
+      node.value !== undefined &&
+      start !== undefined &&
+      end !== undefined
+    ) {
+      ranges.push({ start, end, value: node.value });
+    }
+    if (node.children) {
+      pending.push(...node.children);
+    }
+  }
+  return ranges.sort((left, right) => left.start - right.start);
+}
+
+/** normalize model-emitted `\$…\$` before currency and streaming repair. */
+export function normalizeEscapedInlineMath(markdown: string): string {
+  if (!markdown.includes("\\$")) {
+    return markdown;
+  }
+  const ranges = escapedMathRanges(markdown);
+  if (ranges.length === 0) {
+    return markdown;
+  }
+
+  const parts: string[] = [];
+  let offset = 0;
+  let previousCharacter = "";
+  const append = (value: string): void => {
+    if (previousCharacter === "$" && value.startsWith("$")) {
+      parts.push(" ");
+    }
+    parts.push(value);
+    if (value.length > 0) {
+      previousCharacter = value.at(-1) ?? "";
+    }
+  };
+  for (const range of ranges) {
+    append(markdown.slice(offset, range.start));
+    append(`$${protectMathBody(range.value)}$`);
+    offset = range.end;
+  }
+  append(markdown.slice(offset));
+  return parts.join("");
+}

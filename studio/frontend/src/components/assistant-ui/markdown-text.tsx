@@ -24,7 +24,7 @@ import {
   searchImagesSignature,
 } from "@/features/chat/search-images/search-images";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { remarkEscapedInlineMath } from "@/lib/escaped-inline-math";
+import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
@@ -86,9 +86,6 @@ const code = createCodePlugin({
 });
 const STREAMDOWN_PLUGINS = { code, math, mermaid } satisfies NonNullable<
   StreamdownProps["plugins"]
->;
-const STREAMDOWN_REMARK_PLUGINS = [remarkEscapedInlineMath] satisfies NonNullable<
-  StreamdownProps["remarkPlugins"]
 >;
 const STREAMDOWN_CONTROLS = {
   code: false,
@@ -739,19 +736,21 @@ const MarkdownTextImpl = () => {
     () =>
       stabilizeStreamingMarkdown(
         preprocessLaTeX(
-          rewriteSearchImageTokens(
-            placeSubjectImages(
-              // No images means nothing to hold back, not even a trailing `[`.
-              holdBackPartialSearchImageToken(
-                displayText,
-                isStreaming && searchImages.size > 0,
+          normalizeEscapedInlineMath(
+            rewriteSearchImageTokens(
+              placeSubjectImages(
+                // no images means nothing to hold back, including a trailing bracket.
+                holdBackPartialSearchImageToken(
+                  displayText,
+                  isStreaming && searchImages.size > 0,
+                ),
+                searchImages,
+                isStreaming,
+                precedingText,
+                messageTexts,
               ),
               searchImages,
-              isStreaming,
-              precedingText,
-              messageTexts,
             ),
-            searchImages,
           ),
         ),
         isStreaming,
@@ -792,7 +791,6 @@ const MarkdownTextImpl = () => {
             isAnimating={isStreaming}
             animated={STREAMDOWN_IMMEDIATE_UPDATES}
             plugins={STREAMDOWN_PLUGINS}
-            remarkPlugins={STREAMDOWN_REMARK_PLUGINS}
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
             urlTransform={safeMarkdownUrl}

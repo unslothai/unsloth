@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
-import { remarkEscapedInlineMath } from "../src/lib/escaped-inline-math.ts";
+import { normalizeEscapedInlineMath } from "../src/lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
@@ -20,7 +20,7 @@ function renderResponse(
   cache = new IncrementalMarkdownCache(),
 ): string {
   const processed = stabilizeStreamingMarkdown(
-    preprocessLaTeX(source),
+    preprocessLaTeX(normalizeEscapedInlineMath(source)),
     isStreaming,
   );
   const incremental = isStreaming ? cache.update(processed) : null;
@@ -33,7 +33,6 @@ function renderResponse(
         parseMarkdownIntoBlocksFn: incremental?.parseMarkdownIntoBlocks,
         isAnimating: isStreaming,
         plugins: { math },
-        remarkPlugins: [remarkEscapedInlineMath],
       },
       incremental?.markdown ?? processed,
     ),
@@ -156,4 +155,46 @@ test("long existing display math renders as one intact KaTeX node", () => {
   assert.equal(html.match(/application\/x-tex/g)?.length, 1);
   assert.ok(html.includes(`${displayBody}</annotation>`));
   assert.ok(!html.includes("katex-error"));
+});
+
+test("normalization precedes streaming repair and currency escaping", () => {
+  const cases = [
+    {
+      markdown: String.raw`value \$v_{s}\$`,
+      annotation: "v_{s}",
+    },
+    {
+      markdown: String.raw`comparison \$x<y\$`,
+      annotation: String.raw`x\lt y`,
+    },
+  ];
+  for (const isStreaming of [false, true]) {
+    for (const { markdown, annotation } of cases) {
+      const html = renderResponse(markdown, isStreaming);
+      assert.ok(
+        html.includes(
+          `<annotation encoding="application/x-tex">${annotation}</annotation>`,
+        ),
+        `${markdown} in ${isStreaming ? "streaming" : "completed"} mode`,
+      );
+      assert.ok(!html.includes("katex-error"));
+      if (markdown.includes("x<y")) {
+        assert.ok(html.includes("<mo>&lt;</mo>"));
+      }
+    }
+
+    const subscript = renderResponse(String.raw`value \$v_{s}\$`, isStreaming);
+    const withoutAnnotation = subscript.replace(
+      /<annotation encoding="application\/x-tex">.*?<\/annotation>/g,
+      "",
+    );
+    assert.ok(!withoutAnnotation.includes("_"));
+
+    const currency = renderResponse(
+      "The package is $5 + a $10 add-on",
+      isStreaming,
+    );
+    assert.equal(currency.match(/application\/x-tex/g)?.length ?? 0, 0);
+    assert.ok(currency.includes("$5 + a $10 add-on"));
+  }
 });
