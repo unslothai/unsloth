@@ -554,13 +554,30 @@ async def ensure_subscription_models(provider_id: str) -> set[str]:
     return set()
 
 
-def _quota_metadata(response: httpx.Response) -> dict[str, Any]:
+def _retry_after_ms_seconds(response: httpx.Response) -> str | None:
+    """``retry-after-ms`` as whole seconds. The client's own backoff already reads this header,
+    so dropping it here left only it honoured and the caller's retry guessing."""
+    raw = response.headers.get("retry-after-ms")
+    if not raw:
+        return None
+    try:
+        return str(max(0.0, float(raw) / 1000.0))
+    except ValueError:
+        return None
+
+
+def _quota_metadata(response: httpx.Response, *, terminal: bool = False) -> dict[str, Any]:
     values = {
-        "retry_after": response.headers.get("retry-after"),
+        "retry_after": response.headers.get("retry-after") or _retry_after_ms_seconds(response),
         "requests_reset": response.headers.get("x-ratelimit-reset-requests"),
         "tokens_reset": response.headers.get("x-ratelimit-reset-tokens"),
     }
-    return {key: value for key, value in values.items() if value}
+    metadata = {key: value for key, value in values.items() if value}
+    if terminal:
+        # Exhausted, not throttled. Both leave as a 429, so without this a client waits out
+        # a delay that no wait can clear.
+        metadata["terminal"] = True
+    return metadata
 
 
 async def _upstream_error_detail(response: httpx.Response) -> str | None:
@@ -583,6 +600,23 @@ async def _upstream_error_detail(response: httpx.Response) -> str | None:
     if not isinstance(detail, str):
         return None
     return " ".join(detail.split())[:500] or None
+
+
+async def _upstream_error_code(response: httpx.Response) -> str | None:
+    """The structured error's code or type. _upstream_error_detail prefers the display message
+    and drops these, which hides a terminal code behind a generic "slow down" sentence."""
+    try:
+        # Same read-then-parse as the sibling above, so this does not depend on being called
+        # after it. A body whose read already failed raises StreamError, not HTTPError.
+        await response.aread()
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError, httpx.HTTPError, httpx.StreamError, AttributeError):
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code") or error.get("type")
+    return code if isinstance(code, str) and code.strip() else None
 
 
 async def _wait_for_cancel(cancel_event: threading.Event) -> None:
@@ -736,9 +770,10 @@ async def _validated_stream_response(
                         status = 401,
                         metadata = {"access_token": token},
                     )
-                retryable = response.status_code in _RETRYABLE_STATUSES and not _is_terminal_quota(
-                    detail
+                terminal_quota = _is_terminal_quota(detail) or _is_terminal_quota(
+                    await _upstream_error_code(response)
                 )
+                retryable = response.status_code in _RETRYABLE_STATUSES and not terminal_quota
                 if retryable and attempt < _MAX_TRANSIENT_RETRIES:
                     await _retry_pause(_retry_delay_seconds(response, attempt), cancel_event)
                     if cancel_event is not None and cancel_event.is_set():
@@ -749,7 +784,7 @@ async def _validated_stream_response(
                     raise CodexQuotaError(
                         "ChatGPT subscription quota is temporarily unavailable.",
                         status = 429,
-                        metadata = _quota_metadata(response),
+                        metadata = _quota_metadata(response, terminal = terminal_quota),
                     )
                 suffix = f" {detail}" if detail else ""
                 raise CodexTransportError(

@@ -6,6 +6,7 @@ import {
   applyActiveModelStatusToStore,
   getInferenceStatus,
   isExternalModelId,
+  isSpeechOnlyStatus,
   listGgufVariants,
   resolveInferenceCheckpointId,
   useChatModelRuntime,
@@ -400,6 +401,8 @@ export function ModelsPage() {
   const activeGgufContextLength = useChatRuntimeStore(
     (s) => s.ggufContextLength,
   );
+  const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
+    useState(false);
   // Live settings of the loaded model, so its page shows what it is running with.
   const { config: activeModelConfig } = useActiveModelConfig();
   // Shared with the chat model selector: list only models sized for this device.
@@ -441,7 +444,12 @@ export function ModelsPage() {
         adoptResidentModelStatus(
           {
             // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
-            checkpointId: resolveInferenceCheckpointId(status),
+            // Null for a speech model: this page is the other writer of params.checkpoint,
+            // so adopting one here made it the chat model just as the mount sync did.
+            checkpointId: isSpeechOnlyStatus(status)
+              ? null
+              : resolveInferenceCheckpointId(status),
+            speechOnly: isSpeechOnlyStatus(status),
             ggufVariant: status.gguf_variant ?? null,
           },
           {
@@ -476,11 +484,15 @@ export function ModelsPage() {
 
   // Mount, then whenever this tab could have missed an API-driven switch. Re-reading is safe.
   useEffect(() => {
-    void refreshResidentModelStatus();
+    let active = true;
+    void refreshResidentModelStatus().finally(() => {
+      if (active) setInitialResidentStatusSettled(true);
+    });
     const unsubscribe = subscribeResidentStatusRefresh(
       refreshResidentModelStatus,
     );
     return () => {
+      active = false;
       // A response still in flight adopts nothing once the Hub is gone.
       residentStatusSeq.current += 1;
       unsubscribe();
@@ -785,10 +797,29 @@ export function ModelsPage() {
     availableSet,
     partialSet,
     downloadedReady,
+    inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
   } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
+
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      reloadReadySent.current ||
+      !initialResidentStatusSettled ||
+      (isDiscoverTab ? isLoading : !inventorySettled)
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [
+    initialResidentStatusSettled,
+    inventorySettled,
+    isDiscoverTab,
+    isLoading,
+  ]);
 
   const modelDiscoveryInventorySignature = useMemo(
     () => discoveryInventorySignature(effectiveCachedRows, effectiveLocalRows),
@@ -1263,8 +1294,12 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.round(gpu.memoryTotalGb)} GiB`
+    ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
     : "Unavailable";
+  const gpuSharedLabel =
+    gpu.available && gpu.memorySharedGb > 0
+      ? `${Math.round(gpu.memorySharedGb)} GiB`
+      : null;
   const ramLabel =
     gpu.systemRamTotalGb > 0
       ? `${Math.round(gpu.systemRamTotalGb)} GiB`
@@ -1906,6 +1941,7 @@ export function ModelsPage() {
           localCount={visibleLocalCount}
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
+          gpuSharedLabel={gpuSharedLabel}
           ramLabel={ramLabel}
           coreLabel={coreLabel}
           activeCheckpoint={activeCheckpoint}

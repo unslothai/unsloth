@@ -7,7 +7,7 @@
 #
 # Why a separate workflow:
 #   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 17
+#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 21
 #     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
 #     historically excluded with their GPU siblings); pulling them out into
 #     a sibling job keeps the existing 760-passed baseline stable while we
@@ -145,6 +145,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: consolidated
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -406,7 +407,7 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
-        # The Studio file runs here rather than in studio-backend-ci, which
+        # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
         # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases
@@ -445,7 +446,8 @@ jobs:
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
             tests/test_raw_text_json_loading.py \
-            tests/test_map_eos_token.py
+            tests/test_map_eos_token.py \
+            tests/test_apertus_instruct_mapping.py
           # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
           # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
           # monkeypatches that name, so it no longer needs flash_attn on this runner.
@@ -2318,7 +2320,7 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
-          echo "  - 17 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 21 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
           echo "  - 168 dataset_num_proc worker-bound guards (#2693)"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
@@ -2365,6 +2367,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: llama-cpp-smoke
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt

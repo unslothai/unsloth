@@ -31,6 +31,48 @@ DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
 
 
 @dataclass(frozen = True)
+class LoadIdentity:
+    """What a caller's derived request parameters depend on, as one comparable value.
+
+    ``repo_id`` alone is not one: /images/load takes ``base_repo`` and ``family_override``
+    independently of the path, so a local checkpoint reloads as a different model while the
+    path stays put, and the images route derives steps/guidance from ``base_repo`` and its
+    edit-only verdict from the family (#9448). Loads agreeing on all three derive identical
+    parameters, which is exactly when accepting one for the other is correct.
+
+    A type rather than a tuple, so pinning a bare repo id compares unequal and is refused
+    instead of matching some other shape by accident.
+    """
+
+    repo_id: str
+    base_repo: str
+    family: str
+
+
+def load_identity(repo_id, base_repo, family) -> LoadIdentity:
+    """``LoadIdentity`` for one load. None and "" describe the same absent field."""
+    return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
+class DiffusionModelReplacedError(RuntimeError):
+    """Both engines' ``generate`` refusing a ``LoadIdentity`` that is no longer loaded.
+
+    Keeps a caller's per-model steps/guidance and workflow verdict, taken from an earlier
+    ``status()`` read, off a model they never validated (#9448). Here rather than in
+    ``diffusion`` so the native engine can raise it without importing the torch backend.
+    """
+
+    def __init__(self, expected: LoadIdentity, actual: LoadIdentity):
+        super().__init__(
+            f"The image model was replaced while this request waited "
+            f"(expected {expected.repo_id!r}, loaded {actual.repo_id!r}); "
+            "retry with fresh parameters."
+        )
+        self.expected = expected
+        self.actual = actual
+
+
+@dataclass(frozen = True)
 class DiffusionFamily:
     name: str
     pipeline_class: str
@@ -76,7 +118,7 @@ class DiffusionFamily:
     # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
     # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
     # that asks for it by name and the old one to every build that does not. That is what lets a
-    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # rotated (v2) checkpoint ship without regressing an already-installed Unsloth, which would
     # otherwise refuse the v2 tag and fall all the way back to the dense download.
     # A row may also be (scheme, task, filename), which names the artifact for ONE task and beats
     # the task-agnostic row; see ``family_prequant_filename``.
@@ -92,7 +134,7 @@ class DiffusionFamily:
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
-    # True when Studio can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up front.
+    # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up front.
     trainable: bool = False
     # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA prequant repo, then bf16). Surfaced by the Train UI.
     train_base_repos: tuple[str, ...] = field(default_factory = tuple)
@@ -424,7 +466,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 
 
 def trainable_family_names() -> tuple[str, ...]:
-    """Names of families Studio can train a LoRA on, in registry order."""
+    """Names of families Unsloth can train a LoRA on, in registry order."""
     return tuple(fam.name for fam in _FAMILIES if fam.trainable)
 
 
@@ -435,13 +477,13 @@ IDEOGRAM4_FAMILY_NAME = "ideogram-4"
 LUMINA2_FAMILY_NAME = "lumina-2"
 
 
-# Models Studio deliberately does NOT support, reason surfaced verbatim in the load error, keyed by lowercase repo-id substring. The bar is a diffusers pipeline.
+# Models Unsloth deliberately does NOT support, reason surfaced verbatim in the load error, keyed by lowercase repo-id substring. The bar is a diffusers pipeline.
 _EXCLUDED_MODELS: tuple[tuple[str, str], ...] = (
     (
         # "-3" scoped so a future HunyuanImage 2.x with a diffusers pipeline falls through normally.
         "hunyuanimage-3",
         "HunyuanImage-3.0 has no diffusers pipeline (it is an 80B autoregressive MoE "
-        "that requires trust_remote_code), so Studio does not support it.",
+        "that requires trust_remote_code), so Unsloth does not support it.",
     ),
 )
 
@@ -536,7 +578,7 @@ def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
     """The ``_class_name`` the diffusers pipeline saved at ``path`` declares, or None.
 
     Size-capped and schema-free: neither a listing nor a load may be held up by whatever a scan
-    folder contains. ``_class_name`` is a LIST for a remote-code community pipeline, which Studio
+    folder contains. ``_class_name`` is a LIST for a remote-code community pipeline, which Unsloth
     cannot load, so only a plain string answers.
 
     ``utf-8-sig`` because PowerShell writes JSON with a BOM and a hand-authored index is ordinary

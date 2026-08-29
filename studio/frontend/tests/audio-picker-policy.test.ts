@@ -6,12 +6,16 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  audioPipelineTagFor,
+  nativeAudioCheckpointIsLoadable,
   audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   macTtsHubRowIsRunnable,
+  localAudioRowIsUndecodableGguf,
+  speechGgufIsUndecodable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
   taskCatalogFormatMatches,
@@ -296,7 +300,7 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
   );
   // Llasa was in this list and should not have been. It speaks XCodec2, which
   // AudioCodecManager cannot decode and _AUDIO_TOKEN_PATTERNS cannot even recognise, so
-  // probing a running Studio reports unsloth/Llasa-1B as is_audio=false. Admitting the row
+  // probing a running Unsloth reports unsloth/Llasa-1B as is_audio=false. Admitting the row
   // produced a model that loaded and then failed at generation.
   assert.equal(
     communityAudioRowIsRunnable({
@@ -513,6 +517,64 @@ test("only speech repos the runtime can serve are routed to the Audio page", () 
   );
 });
 
+test("a cached speech GGUF no backend can decode is not listed at all", () => {
+  assert.match(
+    pickerSource,
+    /cachedGguf\.filter\([\s\S]*passesTaskGate\([\s\S]*audioPickIsRoutable\(\{[\s\S]*isGguf: true/,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "ggml-org/sesame-csm-1b-GGUF",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+    }),
+    false,
+  );
+});
+
+test("a speech GGUF found on the filesystem is gated like a cached one", () => {
+  // The backend tags llama-csm as text-to-speech wherever it is discovered, so every
+  // filesystem list has to ask the same policy the cached GGUF list does.
+  for (const rows of [
+    "lmStudioModels",
+    "localDirModels",
+    "customFolderModels",
+  ]) {
+    assert.match(
+      pickerSource,
+      new RegExp(
+        `${rows}\\.filter\\([\\s\\S]*?audioPickIsRoutable\\(\\{`,
+      ),
+      `${rows} must apply the speech gate`,
+    );
+  }
+});
+
+test("a local CSM GGUF is unroutable even though it was found on disk", () => {
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/models/sesame-csm-1b-GGUF/csm-1b-Q4_K_M.gguf",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      isLocalCheckpoint: true,
+    }),
+    false,
+  );
+  // A Transformers CSM checkpoint still runs, so local provenance keeps routing it.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/outputs/csm-1b-finetune",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: false,
+      isLocalCheckpoint: true,
+    }),
+    true,
+  );
+});
+
 test("an unroutable speech pick is refused instead of loaded into chat", () => {
   assert.match(
     pickerSource,
@@ -520,19 +582,208 @@ test("an unroutable speech pick is refused instead of loaded into chat", () => {
   );
 });
 
-test("a local Whisper checkpoint is not advertised as a routable ASR row", () => {
+test("fine-tuned audio rows receive only runnable pipeline tags", () => {
   // The STT sidecar's resolve_model_id takes a curated key or an owner/model Hub id, so a
   // filesystem path 422s. Routing one from the picker advertised a row that cannot load.
+  assert.equal(audioPipelineTagFor("whisper", true), undefined);
+  assert.equal(audioPipelineTagFor("moss_tts_local", true), "text-to-speech");
+  // Native runtimes reject adapter-only checkpoints; merged exports remain runnable.
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, true), undefined);
+  assert.equal(audioPipelineTagFor("moss_tts_local", true, false), "text-to-speech");
+  assert.match(
+    pickerSource,
+    /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true, isLora\)/,
+  );
+});
+
+test("adapter-only native audio checkpoints are hidden from the runnable picker", () => {
+  assert.equal(nativeAudioCheckpointIsLoadable("moss_tts_local", "adapter"), false);
+  assert.equal(nativeAudioCheckpointIsLoadable("higgs_tts2", "merged"), true);
+  assert.equal(nativeAudioCheckpointIsLoadable("snac", "adapter"), true);
+  assert.match(
+    pickerSource,
+    /fineTunedRows[\s\S]*nativeAudioCheckpointIsLoadable\(m\.audioType, m\.exportType\)/,
+  );
+});
+
+test("an arch-tasked speech GGUF routes by detected codec", () => {
+  const parkedUnderOrpheus = {
+    id: "/models/orpheus/custom.gguf",
+    task: "text-to-speech",
+    isGguf: true,
+    isCurated: false,
+  };
+  assert.equal(audioPickIsRoutable(parkedUnderOrpheus), true);
+  assert.equal(
+    audioPickIsRoutable({
+      ...parkedUnderOrpheus,
+      taskFromGgufArch: true,
+      audioType: "csm",
+    }),
+    false,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      ...parkedUnderOrpheus,
+      isCurated: true,
+      taskFromGgufArch: true,
+      audioType: "csm",
+    }),
+    false,
+  );
+  // The same speech task is runnable when the backend's GGUF classifier identifies
+  // the ordinary-llama Orpheus build and records its SNAC decoder.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "someone/orpheus-3b-custom-GGUF",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      taskFromGgufArch: true,
+      audioType: "snac",
+    }),
+    true,
+  );
+  // Older backends have no provenance field, so their speech GGUF rows remain fail-closed.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "/models/orpheus/custom.gguf",
+      task: "text-to-speech",
+      isGguf: true,
+      isCurated: false,
+      taskFromGgufArch: true,
+    }),
+    false,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "unsloth/csm-1b",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: true,
+      taskFromGgufArch: true,
+    }),
+    true,
+  );
+});
+
+test("a renamed cached TTS checkpoint routes on its detected codec", () => {
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: false,
+      id: "someone/renamed-checkpoint",
+      audioType: "snac",
+    }),
+    true,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: true,
+      id: "someone/renamed-checkpoint",
+      audioType: "csm",
+    }),
+    false,
+  );
+});
+
+test("every filesystem list passes the arch-tasked flag, not just the policy call", () => {
+  // The policy is only as good as its call sites: a list that asks without the flag gets
+  // the name heuristic back and re-opens the hole this gate exists to close.
+  const callSites = pickerSource.match(/taskFromGgufArch: true/g) ?? [];
+  assert.equal(callSites.length, 4);
+});
+
+test("a Windows path is judged like its posix equivalent", () => {
+  // The separator class carries a backslash: these predicates are handed local checkpoint
+  // paths, and on Windows the same file arrives as C:\models\csm-1b\model.gguf, which a
+  // posix-only class reads as one long segment and clears.
+  for (const id of [
+    "/models/csm-1b/model.gguf",
+    "C:\\models\\csm-1b\\model.gguf",
+    "C:\\Users\\me\\models\\csm\\q8.gguf",
+  ]) {
+    assert.equal(
+      speechGgufIsUndecodable({ isGguf: true, id }),
+      true,
+      `${id} must be undecodable`,
+    );
+    assert.equal(
+      audioPickIsRoutable({
+        id,
+        task: "text-to-speech",
+        isGguf: true,
+        isCurated: false,
+        isLocalCheckpoint: true,
+      }),
+      false,
+      `${id} must not route`,
+    );
+  }
+  // Still no false positive on a name that merely contains the letters.
+  assert.equal(
+    speechGgufIsUndecodable({ isGguf: true, id: "C:\\models\\csmith-7b\\q8.gguf" }),
+    false,
+  );
+});
+
+test("a csm checkpoint exported to GGUF is not offered anywhere", () => {
+  // audioType is read off the checkpoint by the backend, so it is authoritative even where
+  // nothing in the path says csm. llama.cpp has no CSM decoder, whatever the container.
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", exportType: "gguf" }),
+    true,
+  );
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", isDirectGguf: true }),
+    true,
+  );
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "CSM", exportType: "gguf" }),
+    true,
+  );
+  // A csm LoRA or merged safetensors checkpoint still runs on the Transformers path.
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", exportType: "merged" }),
+    false,
+  );
+  assert.equal(
+    localAudioRowIsUndecodableGguf({ audioType: "csm", exportType: "lora" }),
+    false,
+  );
+  // The codecs llama.cpp DOES decode keep their GGUF exports.
+  for (const audioType of ["snac", "bicodec", "dac"]) {
+    assert.equal(
+      localAudioRowIsUndecodableGguf({ audioType, exportType: "gguf" }),
+      false,
+      audioType,
+    );
+  }
+});
+
+test("the fine-tuned section applies the undecodable-GGUF gate", () => {
+  assert.match(
+    pickerSource,
+    /loraModels[\s\S]{0,400}?localAudioRowIsUndecodableGguf\(\{/,
+  );
+});
+
+test("the audio page asks the GGUF-aware TTS predicate for trained rows", () => {
+  // GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has no CSM decoder. Calling
+  // isTtsAudioType without the flag answered off the wider Transformers list and offered
+  // a csm GGUF export that fails at load.
   const source = readFileSync(
     new URL(
-      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      "../src/features/audio/audio-page.tsx",
       import.meta.url,
     ),
     "utf8",
   );
   assert.match(
     source,
-    /if \(audioType === "whisper"\)\s*\n?\s*return isLocalCheckpoint \? undefined : "automatic-speech-recognition";/,
+    /isTtsAudioType\(\s*lora\.audio_type,\s*lora\.export_type === "gguf",?\s*\)/,
   );
-  assert.match(source, /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true\)/);
 });
