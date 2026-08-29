@@ -22,7 +22,7 @@ def _stub_env(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
 
 
 def test_protocol_lists_and_calls_local_agent():
@@ -211,11 +211,17 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "32768")
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", bypass)
+    settings_path = tmp_path / "settings-private.json"
+    monkeypatch.setenv(bridge._CLAUDE_SUBAGENT_SETTINGS_ENV, str(settings_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "cloud-key")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cloud-oauth")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
+    monkeypatch.setattr(
+        bridge,
+        "_claude_flags",
+        lambda model, settings = None: ["--settings", settings],
+    )
 
     class Process:
         pid = 1234
@@ -237,6 +243,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert bridge.run_local_agent("reply exactly LOCAL_OK") == "LOCAL_OK"
     command = captured["command"]
     assert command[:3] == ["/usr/local/bin/claude", "--model", "unsloth/model-GGUF:Q4_K_M"]
+    assert command[command.index("--settings") + 1] == str(settings_path)
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
     disallowed = command[command.index("--disallowedTools") + 1]
@@ -253,10 +260,62 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
     assert child_env["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-test"
     assert child_env["ANTHROPIC_MODEL"] == "unsloth/model-GGUF:Q4_K_M"
+    assert child_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "32768"
     assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "32768"
     assert child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "90"
     assert "ANTHROPIC_API_KEY" not in child_env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
+
+
+def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
+    # inherited provider selectors must not override the local endpoint (#9864).
+    captured = {}
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", "http://127.0.0.1:8888")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_API_KEY", "sk-unsloth-test")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
+    monkeypatch.setenv("ANTHROPIC_UNIX_SOCKET", "/tmp/remote-claude.sock")
+    monkeypatch.setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_BASE_URL", "https://gateway.azure-api.net/anthropic")
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "corp-foundry")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
+
+    class Process:
+        pid = 1234
+        returncode = 0
+
+        def communicate(self, timeout):
+            return json.dumps({"is_error": False, "result": "LOCAL_OK"}), ""
+
+        def poll(self):
+            return self.returncode
+
+    def popen(command, **kwargs):
+        captured.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", popen)
+    assert bridge.run_local_agent("reply exactly LOCAL_OK") == "LOCAL_OK"
+    child_env = captured["env"]
+    assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
+    for name in (
+        "ANTHROPIC_UNIX_SOCKET",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "ANTHROPIC_FOUNDRY_RESOURCE",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+        "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+        "CLAUDE_CODE_USE_MANTLE",
+    ):
+        assert child_env.get(name, "") == "", name
 
 
 def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
@@ -267,7 +326,7 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: [])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: [])
 
     class Process:
         pid = 1234
@@ -301,7 +360,7 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model: [])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: [])
     cancel_event = bridge.threading.Event()
     stopped = []
 

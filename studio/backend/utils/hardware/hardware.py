@@ -4301,6 +4301,7 @@ def auto_select_gpu_ids(
     target_modules: Optional[list] = None,
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
+    required_override_gb: Optional[float] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
@@ -4311,18 +4312,26 @@ def auto_select_gpu_ids(
         metadata["selection_mode"] = "non_accelerator"
         return None, metadata
 
-    required_gb, estimate_metadata = estimate_required_model_memory_gb(
-        model_name,
-        hf_token = hf_token,
-        training_type = training_type,
-        load_in_4bit = load_in_4bit,
-        batch_size = batch_size,
-        max_seq_length = max_seq_length,
-        lora_rank = lora_rank,
-        target_modules = target_modules,
-        gradient_checkpointing = gradient_checkpointing,
-        optimizer = optimizer,
-    )
+    if required_override_gb is None:
+        required_gb, estimate_metadata = estimate_required_model_memory_gb(
+            model_name,
+            hf_token = hf_token,
+            training_type = training_type,
+            load_in_4bit = load_in_4bit,
+            batch_size = batch_size,
+            max_seq_length = max_seq_length,
+            lora_rank = lora_rank,
+            target_modules = target_modules,
+            gradient_checkpointing = gradient_checkpointing,
+            optimizer = optimizer,
+        )
+    else:
+        required_gb = float(required_override_gb)
+        estimate_metadata = {
+            "mode": "inference" if training_type is None else "training",
+            "model_size_source": "override",
+            "required_gb": round(required_gb, 3),
+        }
     metadata.update(estimate_metadata)
     parent_visible_spec = _get_parent_visible_gpu_spec()
     metadata["parent_cuda_visible_devices"] = parent_visible_spec["raw"]
@@ -4451,6 +4460,7 @@ def prepare_gpu_selection(
     target_modules: Optional[list] = None,
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
+    required_override_gb: Optional[float] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     """Resolve which physical GPUs to use for a model load.
 
@@ -4492,6 +4502,7 @@ def prepare_gpu_selection(
         target_modules = target_modules,
         gradient_checkpointing = gradient_checkpointing,
         optimizer = optimizer,
+        required_override_gb = required_override_gb,
     )
     return selected_gpu_ids, metadata
 

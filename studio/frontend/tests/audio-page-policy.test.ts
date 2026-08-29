@@ -11,8 +11,14 @@ import {
   expectedGgufDownloadBytes,
   isTtsAudioType,
   macTtsPickAction,
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_FRAMES,
+  MINIMAX_MUSIC_MAX_SECONDS,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
+  minimaxMusicFramesForSeconds,
+  nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
   resolveSttLoadedModel,
@@ -61,6 +67,50 @@ test("TTS load context matches the advertised generation ceiling", () => {
   assert.match(audioPageSource, /const TTS_MAX_TOKENS = 8192/);
   assert.match(audioPageSource, /max_seq_length: TTS_MAX_TOKENS/);
   assert.match(audioPageSource, /label="Max tokens"[\s\S]*max=\{TTS_MAX_TOKENS\}/);
+});
+
+test("MiniMax duration converts seconds to the official frame budget", () => {
+  assert.equal(MINIMAX_MUSIC_FRAMES_PER_SECOND, 25);
+  assert.equal(MINIMAX_MUSIC_DEFAULT_SECONDS, 30);
+  assert.equal(MINIMAX_MUSIC_MAX_FRAMES, 9000);
+  assert.equal(MINIMAX_MUSIC_MAX_SECONDS, 360);
+  assert.equal(
+    minimaxMusicFramesForSeconds(MINIMAX_MUSIC_DEFAULT_SECONDS),
+    750,
+  );
+  assert.equal(minimaxMusicFramesForSeconds(1.99), 49);
+  assert.equal(minimaxMusicFramesForSeconds(1.16), 29);
+  assert.equal(minimaxMusicFramesForSeconds(360), 9000);
+  assert.equal(minimaxMusicFramesForSeconds(999), 9000);
+  assert.equal(minimaxMusicFramesForSeconds(0), 1);
+  for (let frames = 1; frames <= MINIMAX_MUSIC_MAX_FRAMES; frames += 1) {
+    assert.equal(
+      minimaxMusicFramesForSeconds(frames / MINIMAX_MUSIC_FRAMES_PER_SECOND),
+      frames,
+    );
+  }
+});
+
+test("native audio instruction fields match the runtime payload contract", () => {
+  assert.equal(nativeAudioInstructionsKind("higgs_tts2"), "scene");
+  assert.equal(nativeAudioInstructionsKind("moss_tts_local"), "style");
+  assert.equal(nativeAudioInstructionsKind("minimax_music3"), "music");
+  assert.equal(nativeAudioInstructionsKind("higgs_tts3"), null);
+  assert.equal(nativeAudioInstructionsKind("moss_tts_nano"), null);
+  assert.equal(nativeAudioInstructionsKind(null), null);
+});
+
+test("Audio sends model-specific duration and instruction payloads", () => {
+  assert.match(
+    audioPageSource,
+    /musicGeneration\s*\? minimaxMusicFramesForSeconds\(minimaxMaxSeconds\)/,
+  );
+  assert.match(audioPageSource, /max=\{MINIMAX_MUSIC_MAX_SECONDS\}/);
+  assert.match(
+    audioPageSource,
+    /instructionsKind !== null && instructions[\s\S]*audio_instructions: instructions/,
+  );
+  assert.match(audioPageSource, /\? "Scene description"/);
 });
 
 test("Mac rejects safetensors-only TTS and redirects sibling families", () => {
@@ -454,13 +504,10 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
   assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
 });
 
-test("macOS hides trained TTS checkpoints that are not GGUF", () => {
-  // MLX has no TTS decoder, so a LoRA or merged safetensors row deterministically fails
-  // with "not supported on the MLX backend yet". The catalog rows are already filtered to
-  // families with a GGUF sibling; these have none.
+test("the trained-model list applies the native-aware macOS policy", () => {
   assert.match(
     audioPageSource,
-    /\.filter\(\(lora\) => !isMac \|\| lora\.export_type === "gguf"\)/,
+    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(lora\.audio_type, lora\.export_type\)/,
   );
 });
 

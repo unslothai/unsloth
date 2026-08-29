@@ -6999,6 +6999,38 @@ def test_h3_begin_generate_reuses_preflight_resolved_references(monkeypatch):
     assert len(resolve_calls) == 2
 
 
+def test_a_v1_videos_job_id_stays_out_of_the_replayable_worker_kwargs(monkeypatch):
+    """begin_generate's worker kwargs must stay a valid generate() call.
+
+    The /v1/videos job id is worker bookkeeping, not a generation input, so it rides on the
+    thread target beside job_token. Putting it in kwargs made every caller that replays them
+    -- the H3 preflight reuse path does -- raise TypeError on an unexpected keyword."""
+    import core.inference.video as video_mod
+
+    backend = _h3_ref_backend(monkeypatch, [])
+    expected = object()
+    captured = {}
+
+    class _DeferredThread:
+        def __init__(self, *, target, kwargs, daemon):
+            captured.update(target = target, kwargs = kwargs, daemon = daemon)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(backend, "_resolve_references", lambda *a, **k: expected)
+    monkeypatch.setattr(backend, "_state_device_target", lambda _state: None)
+    monkeypatch.setattr(video_mod.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(backend, "_generate_h3_native", lambda **kwargs: kwargs["references"])
+
+    backend.begin_generate(prompt = "p", video_id = "video_abc123")
+
+    assert "video_id" not in captured["kwargs"]
+    assert captured["target"].keywords["video_id"] == "video_abc123"
+    # The replay the H3 preflight path performs must still be accepted.
+    assert backend.generate(**captured["kwargs"]) is expected
+
+
 def test_h3_native_refuses_a_later_video_soundtrack_after_a_silent_video(monkeypatch):
     pytest.importorskip("av")
     backend = _h3_ref_backend(monkeypatch, [])

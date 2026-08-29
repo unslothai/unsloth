@@ -665,7 +665,7 @@ export const it = {
         sectionTitle: "Cambio automatico del modello (API OpenAI)",
         enable: "Cambia modello in base alla richiesta",
         enableDescription:
-          "Carica un GGUF già scaricato indicato in una richiesta API prima di rispondere. Disattivato per impostazione predefinita.",
+          "Carica un modello già scaricato indicato in una richiesta API prima di rispondere. Disattivato per impostazione predefinita.",
         autoDownload: "Scarica i modelli mancanti",
         autoDownloadDescription:
           "Scarica un GGUF indicato in una richiesta API se non è ancora presente. Chiunque abbia una chiave API potrà così consumare spazio su disco e banda.",
@@ -1384,6 +1384,13 @@ export const it = {
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
       },
+      currentDate: {
+        label: "Comunica al modello la data di oggi",
+        description:
+          "Aggiunge la data corrente al prompt in modo che la ricerca web e Deep Research cerchino fonti recenti invece di basarsi sulla data di fine addestramento del modello.",
+        loadError: "Impossibile caricare le impostazioni della data corrente",
+        saveError: "Impossibile aggiornare le impostazioni della data corrente",
+      },
       tools: {
         collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
         collapseByDefaultDescription:
@@ -1406,6 +1413,11 @@ export const it = {
         blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
         blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
         blockedBannerAction: "Consenti per questo Canvas",
+        blockedTitle: "L'accesso alla rete del Canvas è disattivato",
+        blockedHint:
+          "Attiva “{setting}” in Impostazioni → Chat per consentire ai Canvas di caricare risorse esterne, oppure consentilo solo per questo Canvas.",
+        blockedSettingsAction: "Apri impostazioni",
+        blockedDismiss: "Ignora",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",
@@ -1670,7 +1682,7 @@ export const it = {
         desktopAvailable:
           "È disponibile la versione {version} dell'app desktop",
         desktopAvailableDescription:
-          "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
+          "Aggiorna ora per prepararlo in background. Puoi continuare a lavorare e riavviare quando è pronto.",
         desktopExternalServer:
           "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
         desktopManualInstall:
@@ -1681,11 +1693,20 @@ export const it = {
         desktopCurrent: "L'app desktop è aggiornata",
         desktopCurrentDescription:
           "Unsloth continuerà a verificare automaticamente la disponibilità di aggiornamenti.",
+        desktopPreparingDescription:
+          "L'aggiornamento viene preparato in background. Puoi continuare a lavorare.",
+        desktopReadyToRestartDescription:
+          "È tutto pronto. Riavvia per completare l'installazione dell'aggiornamento.",
+        desktopReadyToInstallDescription:
+          "L'aggiornamento dell'app è stato scaricato. Completa l'aggiornamento del backend per installarlo.",
         checkForUpdates: "Verifica aggiornamenti",
         checkAgain: "Verifica di nuovo",
         retryCheck: "Riprova",
         checking: "Verifica in corso...",
+        preparing: "Preparazione...",
         updateNow: "Aggiorna ora",
+        restartToUpdate: "Riavvia per aggiornare",
+        finishUpdate: "Completa aggiornamento",
         openReleasePage: "Apri la pagina della release",
         unknownInstall:
           "Impossibile rilevare come è stato installato Unsloth. Per installazioni tramite installer o PyPI, usa i comandi sopra.",

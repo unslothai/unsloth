@@ -24,7 +24,14 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
-from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import (
+    BATCH_MAX,
+    BATCH_MIN,
+    CACHE_RAM_MAX_MIB,
+    CTX_CHECKPOINTS_MAX,
+    PARALLEL_MAX,
+    PARALLEL_MIN,
+)
 from loggers import get_logger
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
@@ -423,7 +430,15 @@ class ChatPresetLoadConfig(BaseModel):
     # preset carrying a loadConfig, including one that only pinned nParallel.
     nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    # Same forbid trap as nBatch/nUbatch: normalizePresetLoadConfig always emits these
+    # keys (null included). Without them, saving a named system-prompt preset that
+    # carries any loadConfig 400s the whole customPresets write (#9879).
+    loadMode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = None
+    specDraftCacheDtype: Optional[str] = None
+    ctxCheckpoints: NotABoolean = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    cacheRam: NotABoolean = Field(default = None, ge = -1, le = CACHE_RAM_MAX_MIB)
     tensorParallel: Optional[bool] = None
+    disableVision: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
