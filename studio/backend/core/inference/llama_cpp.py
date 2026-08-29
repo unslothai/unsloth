@@ -24456,6 +24456,28 @@ class LlamaCppBackend:
             # identity, so a recycled pid is never signalled either way.
             _killed_pid = getattr(self._process, "pid", None)
             _exited = getattr(self._process, "poll", lambda: None)() is not None
+            # Windows: Popen.terminate() alone has left llama-server.exe holding
+            # the mmap'd GGUF (Shareable ~model size) after /unload (#9790). The
+            # lifetime helper's taskkill /T /F is the same path terminate_all uses.
+            if (
+                terminable
+                and _killed_pid is not None
+                and not _exited
+                and sys.platform == "win32"
+            ):
+                try:
+                    from utils.process_lifetime import terminate_pid
+                    terminate_pid(_killed_pid, timeout = 5.0)
+                except Exception as e:
+                    logger.warning(
+                        f"Windows tree-kill of llama-server pid {_killed_pid} failed: {e}"
+                    )
+                _exited = getattr(self._process, "poll", lambda: None)() is not None
+                if not _exited:
+                    logger.warning(
+                        f"llama-server pid {_killed_pid} still alive after unload kill; "
+                        "keeping pidfile for the next startup reap"
+                    )
             if _killed_pid is not None and _exited:
                 try:
                     from utils.process_lifetime import forget_pid
@@ -24463,7 +24485,11 @@ class LlamaCppBackend:
                 except Exception:
                     pass
             self._process = None
-            self._clear_server_pid()
+            # Only drop the pidfile once the child is gone. Clearing it while the
+            # process still holds the mmap leaves an orphan with no recorded pid
+            # for the next launch to reap (#9790).
+            if _exited or _killed_pid is None:
+                self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
             self._healthy = False
