@@ -1775,9 +1775,28 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "4"]) == 4
-    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"]) == 8
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"]) is None
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) is None
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"]) is None
+    monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 8)
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) == 8
-    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"]) == 8
+
+
+def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    assert _plan(
+        _Stub(),
+        free_mib = 14 * 1024,
+        extra_args = ["--threads", "16"],
+    ) is None
+    plan = _plan(
+        _Stub(),
+        free_mib = 14 * 1024,
+        extra_args = ["--threads", "4"],
+    )
+    assert plan is not None and plan.spills_anything
 
 
 def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):

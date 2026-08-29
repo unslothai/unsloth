@@ -3396,13 +3396,15 @@ def _linux_math_core_count(
 def _spilled_decode_threads(
     n_threads: Optional[int] = None,
     extra_args: Optional[Iterable[str]] = None,
-) -> int:
+) -> Optional[int]:
     """How many threads the spilled-decode cost model should price.
 
     A positive override follows the launched command's managed-flag, then
     pass-through precedence. An inherited ``LLAMA_ARG_THREADS`` is ignored here
     because Studio removes it before spawn whenever argv has no thread flag; if
-    argv does have one, that later flag wins. Otherwise llama.cpp sizes its pool from
+    argv does have one, that later flag wins. Explicit SMT oversubscription
+    cannot be represented by this physical-core model and returns ``None`` so
+    the caller can decline. Otherwise llama.cpp sizes its pool from
     ``common_cpu_get_num_math``, which counts physical cores
     and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
     hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
@@ -3441,9 +3443,12 @@ def _spilled_decode_threads(
     if physical is None:
         logical = os.cpu_count()
         physical = logical if logical and logical <= 4 else (logical // 2 if logical else 4)
-    if requested is not None and requested > 0:
-        return min(requested, physical)
-    return physical
+    if requested is None:
+        return physical
+    actual = requested if requested > 0 else (os.cpu_count() or physical)
+    if actual > physical:
+        return None
+    return max(1, actual)
 
 
 def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
@@ -25187,6 +25192,16 @@ class LlamaCppBackend:
             return None
         extra_gpu_bytes += sidecar_bytes
 
+        decode_threads = _spilled_decode_threads(
+            inputs.get("n_threads"),
+            extra_args,
+        )
+        if decode_threads is None:
+            logger.debug(
+                "Tensor spill: declined, explicit decode threads exceed physical cores"
+            )
+            return None
+
         return plan_placement(
             layout,
             vram_per_device,
@@ -25221,10 +25236,7 @@ class LlamaCppBackend:
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.
                 host = HostProfile(
-                    threads = _spilled_decode_threads(
-                        inputs.get("n_threads"),
-                        extra_args,
-                    ),
+                    threads = decode_threads,
                     # Wired, not defaulted. On a unified-memory APU the credited
                     # "VRAM" IS system RAM, so an -ot spill frees no device memory
                     # and only buys the CPU backend's slower read path. The planner
