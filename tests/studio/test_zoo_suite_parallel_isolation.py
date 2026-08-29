@@ -165,6 +165,24 @@ def test_the_serial_rerun_is_not_itself_parallel(path: str, reason: str) -> None
     )
 
 
+def test_the_serial_reruns_tolerate_an_empty_collection() -> None:
+    """One process per file turns pytest's exit 5 into a job failure unless handled.
+
+    test_moe_bnb4bit_per_expert_conversions.py skips itself at module level on
+    transformers 4.57.6: pytest prints "1 skipped" and returns 5, because nothing was
+    collected. The shared invocation this replaced never saw it -- one skip among the
+    session's other tests, exit 0 -- so the split has to keep that verdict.
+    """
+    for path, _ in ISOLATED:
+        assert "_keep" in _zoo_serial(path), (
+            f"the rerun of {path} feeds its status straight into rc, so a module-level "
+            f"skip (pytest exit 5, nothing collected) fails the whole job"
+        )
+    assert 'if [ "$1" = 5 ]' in WORKFLOW.read_text(
+        encoding = "utf-8"
+    ), "the isolated rerun no longer tolerates pytest's no-tests-collected exit"
+
+
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_does_not_share_its_rerun(path: str, reason: str) -> None:
     """One process each, because they contaminate each other as well as the suite.

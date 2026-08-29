@@ -19,9 +19,11 @@ blockA="$(awk '
     /_STUDIO_HOME_IS_CUSTOM=true/ {seen=1}
     seen && /^fi$/ {exit}
 ' "$SETUP")"
-# Block B: _STUDIO_HOME_IS_CUSTOM -> _NODE_PARENT -> NODE_DIR.
+# Block B: STAGE_ROOT / _STUDIO_HOME_IS_CUSTOM -> _NODE_PARENT -> NODE_DIR. Anchored on
+# the staging branch, which #9890 put in front of the custom-home one; anchoring on the
+# latter stopped matching and this file exited on its own extraction check.
 blockB="$(awk '
-    /^if \[ "\$_STUDIO_HOME_IS_CUSTOM" = true \]; then/ {grab=1}
+    /^if \[ -n "\$STAGE_ROOT" \]; then/ {grab=1}
     grab {print}
     /^NODE_DIR="\$_NODE_PARENT\/node"/ {exit}
 ' "$SETUP")"
@@ -30,9 +32,16 @@ SNIP="$blockA"$'\n'"$blockB"$'\n''echo "$NODE_DIR"'
 # Self-validate the extraction so a future setup.sh refactor fails loudly here.
 case "$blockA" in *"_STUDIO_HOME_IS_CUSTOM=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'NODE_DIR="$_NODE_PARENT/node"'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
+# Every branch, not just the last: an anchor that still matches while a branch moved out
+# of the snippet would leave that branch untested and this file green.
+case "$blockB" in *'_NODE_PARENT="$RUNTIME_ROOT"'*) : ;; *) echo "FAIL: blockB lost the staging branch"; exit 1 ;; esac
+case "$blockB" in *'_NODE_PARENT="$STUDIO_HOME"'*) : ;; *) echo "FAIL: blockB lost the custom-home branch"; exit 1 ;; esac
 
-node_dir_for() { # HOME UNSLOTH_STUDIO_HOME STUDIO_HOME
-    env -i HOME="$1" UNSLOTH_STUDIO_HOME="$2" STUDIO_HOME="$3" PATH="$PATH" \
+# The staging root goes in as UNSLOTH_STUDIO_STAGE_ROOT, not STAGE_ROOT: block A derives
+# STAGE_ROOT and RUNTIME_ROOT from it, so a pre-set STAGE_ROOT is simply overwritten.
+node_dir_for() { # HOME UNSLOTH_STUDIO_HOME STUDIO_HOME [UNSLOTH_STUDIO_STAGE_ROOT]
+    env -i HOME="$1" UNSLOTH_STUDIO_HOME="$2" STUDIO_HOME="$3" \
+        UNSLOTH_STUDIO_STAGE_ROOT="${4:-}" PATH="$PATH" \
         bash -c "$SNIP" 2>/dev/null | tail -1
 }
 
@@ -53,6 +62,9 @@ check "UNSLOTH_STUDIO_HOME wins over STUDIO_HOME" "$CUSTOM/node" "$(node_dir_for
 check "legacy-valued override -> ~/.unsloth/node sibling" "$FAKEHOME/.unsloth/node" "$(node_dir_for "$FAKEHOME" "$LEGACY" "")"
 # 5. No override -> ~/.unsloth/node
 check "no override -> ~/.unsloth/node" "$FAKEHOME/.unsloth/node" "$(node_dir_for "$FAKEHOME" "" "")"
+# 6. Staging outranks a custom home: the staged tree is built under the stage root.
+check "staging root -> <stage>/node" "$T/stage/node" \
+    "$(node_dir_for "$FAKEHOME" "$CUSTOM" "" "$T/stage")"
 
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "All checks passed"
