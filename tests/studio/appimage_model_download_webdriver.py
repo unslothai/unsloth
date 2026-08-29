@@ -155,15 +155,27 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(raw)))
                     self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
-                    self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HF-Token")
+                    self.send_header("Access-Control-Allow-Headers", self.allowed_headers())
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     self.end_headers()
                     self.wfile.write(raw)
 
+                def allowed_headers(self):
+                    # Echo what the preflight asked for instead of naming headers. A fixed
+                    # list silently kills every authenticated fetch the moment the app adds
+                    # a header: X-Unsloth-Timezone (#8879) is not in "Authorization,
+                    # Content-Type, X-HF-Token", so the preflight failed, the request never
+                    # reached this server, and the webview rendered the TypeError as
+                    # "Unsloth isn't running -- please relaunch it." on every model row.
+                    # Only health and liveness kept working, because they send neither a
+                    # token nor a custom header and so need no preflight.
+                    asked = self.headers.get("Access-Control-Request-Headers")
+                    return asked or "Authorization, Content-Type, X-HF-Token"
+
                 def do_OPTIONS(self):
                     self.send_response(204)
                     self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
-                    self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HF-Token")
+                    self.send_header("Access-Control-Allow-Headers", self.allowed_headers())
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     self.end_headers()
 
