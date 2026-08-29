@@ -2231,9 +2231,7 @@ def list_chat_thread_sidebar_summaries(
                     "hasMessages": bool(data["sidebar_has_messages"]),
                     "hasAssistant": bool(data["sidebar_has_assistant"]),
                     "lastAssistantId": data.get("sidebar_last_assistant_id"),
-                    "lastAssistantCreatedAt": data.get(
-                        "sidebar_last_assistant_created_at"
-                    ),
+                    "lastAssistantCreatedAt": data.get("sidebar_last_assistant_created_at"),
                     "lastAssistantMetadata": metadata if isinstance(metadata, dict) else None,
                 }
             )

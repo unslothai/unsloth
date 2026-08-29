@@ -102,7 +102,11 @@ class LiveTextIteratorStreamer(TextIteratorStreamer):
             elapsed_seconds = elapsed,
         )
 
-    def on_finalized_text(self, text: str, stream_end: bool = False):
+    def on_finalized_text(
+        self,
+        text: str,
+        stream_end: bool = False,
+    ):
         self.text_queue.put(self._with_live_progress(text), timeout = self.timeout)
         if stream_end:
             self.text_queue.put(self.stop_signal, timeout = self.timeout)
