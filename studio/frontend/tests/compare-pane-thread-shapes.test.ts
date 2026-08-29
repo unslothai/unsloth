@@ -7,8 +7,7 @@ import test from "node:test";
 import type { ModelType, ThreadRecord } from "../src/features/chat/types.ts";
 import {
   compareVariantForPair,
-  pairHasGeneralThreads,
-  resolveComparePaneThreadId,
+  resolveComparePaneThreadIds,
 } from "../src/features/chat/utils/compare-pane-threads.ts";
 
 const chatPageSource = readFileSync(
@@ -44,10 +43,9 @@ test("a generalized pair never reaches the adapter-toggle path", () => {
     ["model1", 20],
     ["model2", 10],
   ]);
-  assert.equal(pairHasGeneralThreads(threads), true);
   // Loading model 2, a LoRA export, is what used to swap the component mid-session.
-  assert.equal(compareVariantForPair(true, true), "general");
-  assert.equal(compareVariantForPair(true, false), "general");
+  assert.equal(compareVariantForPair(threads, true), "general");
+  assert.equal(compareVariantForPair(threads, false), "general");
 });
 
 test("a LoRA pair follows the loaded checkpoint, as it always has", () => {
@@ -55,17 +53,15 @@ test("a LoRA pair follows the loaded checkpoint, as it always has", () => {
     ["base", 20],
     ["lora", 10],
   ]);
-  assert.equal(pairHasGeneralThreads(threads), false);
-  assert.equal(compareVariantForPair(false, true), "lora");
+  assert.equal(compareVariantForPair(threads, true), "lora");
   // No LoRA loaded: the adapter toggle would answer both panes from the same
   // weights, so the generalized panes take it and show their model selectors.
-  assert.equal(compareVariantForPair(false, false), "general");
+  assert.equal(compareVariantForPair(threads, false), "general");
 });
 
 test("a pair with no threads yet follows the loaded checkpoint", () => {
-  assert.equal(pairHasGeneralThreads([]), false);
-  assert.equal(compareVariantForPair(false, true), "lora");
-  assert.equal(compareVariantForPair(false, false), "general");
+  assert.equal(compareVariantForPair([], true), "lora");
+  assert.equal(compareVariantForPair([], false), "general");
 });
 
 test("the generalized panes recover a LoRA pair", () => {
@@ -73,14 +69,11 @@ test("the generalized panes recover a LoRA pair", () => {
     ["base", 20],
     ["lora", 10],
   ]);
-  assert.equal(
-    resolveComparePaneThreadId(threads, "model1", "base"),
-    "base-thread",
-  );
-  assert.equal(
-    resolveComparePaneThreadId(threads, "model2", "lora"),
-    "lora-thread",
-  );
+  assert.deepEqual(resolveComparePaneThreadIds(threads), {
+    shape: "lora",
+    first: "base-thread",
+    second: "lora-thread",
+  });
 });
 
 test("a pair holding both shapes resolves from its own shape, not the freshest row", () => {
@@ -91,14 +84,11 @@ test("a pair holding both shapes resolves from its own shape, not the freshest r
     ["base", 20],
     ["model1", 10],
   ]);
-  assert.equal(
-    resolveComparePaneThreadId(threads, "model1", "base"),
-    "model1-thread",
-  );
-  assert.equal(
-    resolveComparePaneThreadId(threads, "model2", "lora"),
-    "model2-thread",
-  );
+  assert.deepEqual(resolveComparePaneThreadIds(threads), {
+    shape: "general",
+    first: "model1-thread",
+    second: "model2-thread",
+  });
 });
 
 test("the LoRA panes adopt no generalized thread", () => {

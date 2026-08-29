@@ -1,15 +1,40 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelType, ThreadRecord } from "../types";
+import type { ThreadRecord } from "../types";
 
 export type CompareVariant = "general" | "lora";
+export type CompareThreadShape = CompareVariant;
 
-/** A pair the generalized compare saved, whatever else it also holds. */
-export function pairHasGeneralThreads(threads: ThreadRecord[]): boolean {
-  return threads.some(
-    (t) => t.modelType === "model1" || t.modelType === "model2",
-  );
+export type ComparePaneThreadIds = {
+  shape: CompareThreadShape | null;
+  first: string | undefined;
+  second: string | undefined;
+};
+
+function threadId(
+  threads: ThreadRecord[],
+  modelType: string,
+): string | undefined {
+  return threads.find((thread) => thread.modelType === modelType)?.id;
+}
+
+/** Pick one persisted shape for both panes so interrupted writes cannot splice pairs. */
+export function resolveComparePaneThreadIds(
+  threads: ThreadRecord[],
+): ComparePaneThreadIds {
+  const model1 = threadId(threads, "model1");
+  const model2 = threadId(threads, "model2");
+  const base = threadId(threads, "base");
+  const lora = threadId(threads, "lora");
+
+  if ((model1 && model2) || ((model1 || model2) && !(base && lora))) {
+    return { shape: "general", first: model1, second: model2 };
+  }
+  if (base || lora) {
+    return { shape: "lora", first: base, second: lora };
+  }
+  return { shape: null, first: undefined, second: undefined };
 }
 
 /**
@@ -23,25 +48,9 @@ export function pairHasGeneralThreads(threads: ThreadRecord[]): boolean {
  * toggle would warn "model is not a PeftModel" and answer both panes identically.
  */
 export function compareVariantForPair(
-  isGeneralPair: boolean,
+  threads: ThreadRecord[],
   checkpointIsLora: boolean,
 ): CompareVariant {
-  return !isGeneralPair && checkpointIsLora ? "lora" : "general";
-}
-
-/**
- * The generalized panes still recover a base/lora pair reopened with a plain
- * checkpoint loaded (#5910), hence the alias. Two lookups, not one predicate over
- * both: `listStoredChatThreads` sorts updatedAt-descending, so a single find
- * returns the freshest row and can pair the panes across two comparison runs.
- */
-export function resolveComparePaneThreadId(
-  threads: ThreadRecord[],
-  native: ModelType,
-  alias: ModelType,
-): string | undefined {
-  return (
-    threads.find((t) => t.modelType === native)?.id ??
-    threads.find((t) => t.modelType === alias)?.id
-  );
+  const { shape } = resolveComparePaneThreadIds(threads);
+  return shape !== "general" && checkpointIsLora ? "lora" : "general";
 }

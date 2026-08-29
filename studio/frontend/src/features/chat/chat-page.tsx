@@ -218,12 +218,11 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
-import type { ChatView, MessageRecord } from "./types";
+import type { ChatView, MessageRecord, ThreadRecord } from "./types";
 import {
   type CompareVariant,
   compareVariantForPair,
-  pairHasGeneralThreads,
-  resolveComparePaneThreadId,
+  resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
 import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
@@ -573,27 +572,30 @@ function useCompareVariant(pairId: string): CompareVariant | null {
   // first paint and a real LoRA compare reads as generalized until it lands.
   useEffect(() => {
     let isActive = true;
-    const settle = (isGeneralPair: boolean) =>
+    const settle = (threads: ThreadRecord[]) =>
       setStored((previous) => {
         // Sticky per pair: once seen as generalized it stays that way, so a read
         // that races the row write cannot hand the pair over on the next flip.
         const general =
-          isGeneralPair ||
+          resolveComparePaneThreadIds(threads).shape === "general" ||
           (previous?.pairId === pairId && previous.isGeneralPair);
         return {
           pairId,
           isGeneralPair: general,
-          variant: compareVariantForPair(general, checkpointIsLora),
+          variant: compareVariantForPair(
+            general ? threads : [],
+            checkpointIsLora,
+          ),
         };
       });
     listStoredChatThreads({ pairId })
       .then((threads) => {
-        if (isActive) settle(pairHasGeneralThreads(threads));
+        if (isActive) settle(threads);
       })
       .catch((error) => {
         // Unreadable storage falls through to the checkpoint rather than holding
         // the panes blank; the pane resolvers make the same call and fail too.
-        if (isActive) settle(false);
+        if (isActive) settle([]);
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
@@ -1058,12 +1060,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setModel1ThreadId(
-          resolveComparePaneThreadId(threads, "model1", "base"),
-        );
-        setModel2ThreadId(
-          resolveComparePaneThreadId(threads, "model2", "lora"),
-        );
+        const pair = resolveComparePaneThreadIds(threads);
+        setModel1ThreadId(pair.first);
+        setModel2ThreadId(pair.second);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
