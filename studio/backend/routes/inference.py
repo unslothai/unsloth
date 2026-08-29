@@ -1831,9 +1831,7 @@ def _openai_llama_admission_media_tokens(
 
 
 def _openai_llama_admission_prompt_tokens(
-    payload,
-    *,
-    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    payload, *, image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
 ) -> Optional[int]:
     """KV the request already carries, in tokens, or None when it cannot be sized.
 
@@ -1939,10 +1937,7 @@ _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS = 256
 
 
 def _openai_llama_uncapped_max_tokens(
-    payload,
-    *,
-    request: Optional[Request],
-    llama_backend,
+    payload, *, request: Optional[Request], llama_backend
 ) -> Optional[int]:
     """The cap to give a request that names none, so it does not reserve the whole cache.
 

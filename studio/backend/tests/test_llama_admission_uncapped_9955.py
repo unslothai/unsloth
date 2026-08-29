@@ -35,7 +35,11 @@ SLOTS = 6
 SHARE = CTX // SLOTS
 
 
-def _backend(context_length = CTX, slots = SLOTS, total = None):
+def _backend(
+    context_length = CTX,
+    slots = SLOTS,
+    total = None,
+):
     return SimpleNamespace(
         context_length = context_length,
         effective_parallel_slots = slots,
