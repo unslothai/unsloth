@@ -219,6 +219,7 @@ import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import { resolveComparePaneThreadId } from "./utils/compare-pane-threads";
 import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
@@ -765,20 +766,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        // Both persisted shapes: a pair saved by the generalized compare
-        // stores model1/model2, and this component can be swapped in over it
-        // once the async LoRA list marks the loaded checkpoint as a LoRA.
-        // Matching only base/lora blanked both panes for that pair (#9823).
-        setBaseThreadId(
-          threads.find(
-            (t) => t.modelType === "base" || t.modelType === "model1",
-          )?.id,
-        );
-        setLoraThreadId(
-          threads.find(
-            (t) => t.modelType === "lora" || t.modelType === "model2",
-          )?.id,
-        );
+        setBaseThreadId(resolveComparePaneThreadId(threads, "base", "model1"));
+        setLoraThreadId(resolveComparePaneThreadId(threads, "lora", "model2"));
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -1006,14 +995,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
       .then((threads) => {
         if (!isActive) return;
         setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
+          resolveComparePaneThreadId(threads, "model1", "base"),
         );
         setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
+          resolveComparePaneThreadId(threads, "model2", "lora"),
         );
       })
       .catch((error) => {
