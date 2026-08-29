@@ -1594,6 +1594,49 @@ def test_repeated_text_on_one_parent_chain_uses_only_the_newest_state(monkeypatc
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
 
+def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monkeypatch):
+    """An edited request proves its common prefix, not the old branch after the edit."""
+    from core.inference import checkpoint, llama_cpp
+    from core.rag import conversation_archive
+    from routes import inference as inference_routes
+
+    rows = [
+        {"id": "user-1", "parentId": None, "role": "user", "content": "First task."},
+        {
+            "id": "assistant-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": "The common-prefix reply.",
+            "metadata": {"generationStatus": "completed"},
+        },
+        {
+            "id": "user-old",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": "The question before it was edited.",
+        },
+        {
+            "id": "assistant-old",
+            "parentId": "user-old",
+            "role": "assistant",
+            "content": "An unmatched old-branch reply.",
+            "metadata": _checkpoint_metadata(12),
+        },
+    ]
+    branch = [
+        {"role": "user", "content": "First task."},
+        {"role": "assistant", "content": "The common-prefix reply."},
+        {"role": "user", "content": "The edited replacement question."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    # Archive callers retain their historical fallback; only authoritative reads trim.
+    assert conversation_archive._active_chain(rows, branch) == rows
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
 @pytest.mark.parametrize(
     ("metadata", "expected"),
     [

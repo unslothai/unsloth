@@ -698,7 +698,7 @@ def _branch_seed(
     *,
     require_unique: bool = False,
 ) -> Optional[str]:
-    """Which stored leaf the REQUEST is on, by matching its text. None when nothing does.
+    """Which stored endpoint the REQUEST proves by matching text. None when no row matches.
 
     The newest stored row is not the branch the request is on. Switching to a sibling,
     continuing there and switching back leaves the abandoned branch holding the greatest
@@ -747,6 +747,7 @@ def _branch_seed(
         # A capped search cannot prove that an unvisited sibling does not tie the winner.
         return None
     best = None
+    best_matched = None
     best_score = 0
     best_tied = False
     # Rendered once per STORED ROW, not per leaf: `_as_wire` expands a row the same way
@@ -767,6 +768,7 @@ def _branch_seed(
         # neither side is a subsequence of the other.
         cursor = 0
         score = 0
+        last_matched = None
         for record in _walk_from(by_id, parent_of, leaf):
             for text in _texts_of(record):
                 spots = where.get(text) if text else None
@@ -776,15 +778,19 @@ def _branch_seed(
                 if index < len(spots):
                     cursor = spots[index] + 1
                     score += 1
+                    last_matched = record.get("id")
         if score > best_score:
             best, best_score = leaf, score
+            best_matched = last_matched
             best_tied = False
         elif require_unique and score == best_score and score > 0:
             best_tied = True
         if best_score >= len(wanted) and not require_unique:
             # Every message the request carries is on this chain; nothing can beat it.
             break
-    return None if require_unique and best_tied else best
+    if require_unique:
+        return None if best_tied else best_matched
+    return best
 
 
 def _active_chain(
@@ -811,7 +817,8 @@ def _active_chain(
     before that column, so the previous row stands in for it, which is exactly a flat list
     when nothing branches. ``fallback=False`` lets callers decline when the request cannot
     seed a chain instead of silently reading the newest stored sibling. ``require_unique``
-    likewise declines when indistinguishable leaves tie for the best branch match.
+    likewise declines when indistinguishable leaves tie for the best branch match and trims
+    the winner after the last stored row the request actually matched.
     """
     if not messages:
         return []
