@@ -215,9 +215,7 @@ def _higgs_tts2_codec_target(model_name: str, hf_token: Optional[str] = None) ->
 
 def _higgs_tts3_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve the codec source that the Higgs TTS 3 remote model will load."""
-    model_config = _read_audio_metadata(
-        model_name, "config.json", hf_token, reject_oversized = True
-    )
+    model_config = _read_audio_metadata(model_name, "config.json", hf_token, reject_oversized = True)
     candidate = model_config.get("audio_tokenizer_id")
     if isinstance(candidate, str) and candidate.strip():
         return candidate.strip()
