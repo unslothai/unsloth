@@ -1054,6 +1054,133 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
         return True
 
 
+def _archive_branch_chain(
+    messages: list[dict], branch_messages: Optional[list[dict]]
+) -> Optional[list[dict]]:
+    """The stored parent chain selected by this wire branch, when ancestry can prove one."""
+    if not branch_messages:
+        return None
+    try:
+        from core.rag import conversation_archive
+        chain = conversation_archive._active_chain(
+            messages,
+            branch_messages,
+            fallback = False,
+            require_unique = True,
+        )
+        return chain or None
+    except Exception:
+        return None
+
+
+def _archive_as_wire(messages: Optional[list[dict]]) -> list[dict]:
+    """Project persisted rows and wire messages into boundary-counting wire units."""
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive._as_wire(list(messages or ()))
+    except Exception:
+        return list(messages or ())
+
+
+class _CompactionBranchState(NamedTuple):
+    message: dict
+    truncation: Optional[dict]
+    recorded: int
+
+
+def _compaction_branch_states(
+    stored: list[dict], branch_messages: Optional[list[dict]] = None
+) -> list[_CompactionBranchState]:
+    """Newest authoritative compaction state(s) on one request branch.
+
+    Multiple rows are returned only when Retry siblings are textually indistinguishable;
+    consumers must then choose the conservative result across all of them.
+    """
+    # Assistant messages only: against every role a short abandoned reply ("Done") rides
+    # in on a live user message that merely contains it ("not done yet").
+    branch = _archive_branch_transcript(branch_messages, ("assistant",))
+    if branch_messages and not branch:
+        # A branch with no reply of its own has no boundary to restore.
+        return []
+
+    chain = _archive_branch_chain(stored, branch_messages)
+    candidates = [
+        message
+        for message in reversed(chain if chain is not None else stored)
+        if message.get("role") == "assistant"
+        and (chain is not None or _archive_content_on_branch(message.get("content"), branch))
+    ]
+    if not candidates:
+        return []
+
+    # The text fallback has to narrow Retry substring collisions before metadata is
+    # interpreted. Otherwise an abandoned exact "Done" can be accepted based on a live
+    # "Not done yet" row that merely contains it.
+    if chain is None:
+        live = set(branch or ())
+        exact = [
+            message
+            for message in candidates
+            if _archive_message_text(message.get("content")) in live
+        ]
+        if exact:
+            candidates = exact
+
+    # A completed row with no truncation state means the whole branch fit and ends the old
+    # epoch, including a response completed at its output cap (`incomplete.reason=length`).
+    # Only active or aborted rows without valid state are placeholders. The custom shape is
+    # Studio's persisted metadata; top-level fields are server-managed rows.
+    states = []
+    for message in candidates:
+        metadata = message.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        custom = metadata.get("custom")
+        custom = custom if isinstance(custom, dict) else {}
+        truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+
+        recorded = None
+        if isinstance(truncation, dict):
+            raw_recorded = truncation.get("boundary_messages")
+            if raw_recorded is None:
+                raw_recorded = truncation.get("dropped_messages")
+            if raw_recorded is not None:
+                try:
+                    recorded = max(0, int(raw_recorded or 0))
+                except (TypeError, ValueError):
+                    pass
+        if recorded is None:
+            # Deep Research runs in isolated `research:<run-id>` inference state. Its
+            # server-managed parent-thread row reports the research lifecycle, not whether
+            # the parent chat fit, so it cannot end that chat's checkpoint epoch.
+            research_row = (
+                metadata.get("serverManaged")
+                and metadata.get("researchRunId")
+                and metadata.get("researchStatus")
+            )
+            if research_row:
+                continue
+            status = metadata.get("generationStatus") or custom.get("generationStatus")
+            incomplete = metadata.get("incomplete") or custom.get("incomplete")
+            reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+            active = status in {"queued", "running", "cancelling"}
+            aborted = status in {"cancelled", "failed"} or reason in {"cancelled", "interrupted"}
+            if active or (status != "completed" and aborted):
+                continue
+            states.append(_CompactionBranchState(message, None, 0))
+            continue
+        states.append(_CompactionBranchState(message, truncation, recorded))
+
+    if not states:
+        return []
+    if chain is not None:
+        # Parent ancestry orders repeated text on one linear history unambiguously.
+        return states[:1]
+    newest = _archive_message_text(states[0].message.get("content"))
+    return [
+        state for state in states if _archive_message_text(state.message.get("content")) == newest
+    ]
+
+
 def _sticky_compaction_state(
     thread_id: Optional[str],
     branch_messages: Optional[list[dict]] = None,
@@ -1085,57 +1212,21 @@ def _sticky_compaction_state(
     try:
         from storage import studio_db
 
-        # The stored rows are the whole DAG, so the newest assistant turn can belong to a
-        # sibling branch left by Retry, whose boundary is sized for history this branch
-        # does not have. Skip rows the request's own messages do not contain.
-        # Assistant messages only: the rows being checked are assistant replies, and
-        # against every role a short abandoned one ("Done") rides in on a live user
-        # message that merely contains it ("not done yet"), taking its boundary with it.
-        _branch = _archive_branch_transcript(branch_messages, ("assistant",))
-        if branch_messages and not _branch:
-            # A branch with no reply of its own has no boundary to restore.
-            return 0, False
-        candidates = [
-            message
-            for message in reversed(studio_db.list_chat_messages(thread_id) or [])
-            if message.get("role") == "assistant"
-            and _archive_content_on_branch(message.get("content"), _branch)
-        ]
-        if not candidates:
+        stored = list(studio_db.list_chat_messages(thread_id) or [])
+        states = _compaction_branch_states(stored, branch_messages)
+        if not states:
             return 0, False
 
-        # The newest on-branch assistant turn decides, except that the branch check is
-        # textual, so two Retry siblings that both read "Done" are indistinguishable here
-        # and the first match could apply a much deeper branch's boundary. Where the text
-        # cannot separate them, take the SMALLEST boundary: too small costs one extra
-        # compaction, too large evicts live history.
-        # That check is also a substring test (an archived turn is matched against
-        # fragments of itself), so an abandoned "Done" can ride in on a live "Not done
-        # yet" and then decide the boundary alone. Prefer exact matches where any exist.
-        _live = set(_branch or ())
-        _exact = [
-            message
-            for message in candidates
-            if _archive_message_text(message.get("content")) in _live
-        ]
-        if _exact:
-            candidates = _exact
-
-        newest = _archive_message_text(candidates[0].get("content"))
         boundaries = []
         origins = []
-        for message in candidates:
-            if _archive_message_text(message.get("content")) != newest:
-                continue
-            metadata = message.get("metadata") or {}
-            if not isinstance(metadata, dict):
+        branch_wire = _archive_as_wire(branch_messages)
+        for state in states:
+            truncation = state.truncation
+            recorded = state.recorded
+            if truncation is None:
                 return 0, False
-            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
-                "contextTruncation"
-            )
-            if not isinstance(truncation, dict):
-                return 0, False
-            # Only a fit that SUCCEEDED describes a boundary worth restoring.
+            # Only a fit that SUCCEEDED describes a boundary worth restoring. Unlike a
+            # missing record above, an explicit failed fit remains authoritative.
             if not truncation.get("fits"):
                 return 0, False
             # A boundary is valid only under the fit that will consume it, and the two
@@ -1171,18 +1262,14 @@ def _sticky_compaction_state(
             # rows saved before the ratio was recorded, which keep replaying as they did.
             if not recorded_checkpoint:
                 recorded_ratio = truncation.get("boundary_headroom_ratio")
-                if (
-                    recorded_ratio is not None
-                    and abs(float(recorded_ratio) - requested_ratio) > 1e-9
-                ):
+                try:
+                    if (
+                        recorded_ratio is not None
+                        and abs(float(recorded_ratio) - requested_ratio) > 1e-9
+                    ):
+                        return 0, False
+                except (TypeError, ValueError):
                     return 0, False
-            # Counted against the request's own transcript, which is what it is applied
-            # to. `dropped_messages` is the fallback for turns saved before that was
-            # recorded: equal for a single fit, too large for a turn that refit often.
-            recorded = truncation.get("boundary_messages")
-            if recorded is None:
-                recorded = truncation.get("dropped_messages")
-            recorded = max(0, int(recorded or 0))
             # A count is only valid against the transcript it was counted on. Deleting an
             # already-evicted turn shortens the front, and replaying the count then evicts
             # that many LIVE messages instead. Re-derive it from the anchor's position on
@@ -1190,8 +1277,8 @@ def _sticky_compaction_state(
             # (a repeated text, an edited turn) must not deepen the cut.
             anchor = truncation.get("boundary_anchor")
             if isinstance(anchor, str) and anchor:
-                for index, message in enumerate(_branch_non_system(branch_messages)):
-                    if _anchor_text(message) == anchor[:_ANCHOR_TEXT_CHARS]:
+                for index, branch_message in enumerate(_branch_non_system(branch_wire)):
+                    if _anchor_text(branch_message) == anchor[:_ANCHOR_TEXT_CHARS]:
                         recorded = min(recorded, index)
                         break
             boundaries.append(recorded)

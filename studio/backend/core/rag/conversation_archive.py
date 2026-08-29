@@ -690,7 +690,14 @@ def _walk_from(by_id: dict, parent_of: dict, leaf) -> list[dict]:
     return chain
 
 
-def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> Optional[str]:
+def _branch_seed(
+    messages: list[dict],
+    by_id: dict,
+    parent_of: dict,
+    branch,
+    *,
+    require_unique: bool = False,
+) -> Optional[str]:
     """Which stored leaf the REQUEST is on, by matching its text. None when nothing does.
 
     The newest stored row is not the branch the request is on. Switching to a sibling,
@@ -736,8 +743,12 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
         key = lambda identifier: order.get(identifier, -1),
         reverse = True,
     )
+    if require_unique and len(leaves) > _BRANCH_SEED_MAX_LEAVES:
+        # A capped search cannot prove that an unvisited sibling does not tie the winner.
+        return None
     best = None
     best_score = 0
+    best_tied = False
     # Rendered once per STORED ROW, not per leaf: `_as_wire` expands a row the same way
     # whichever chain it is walked in.
     rendered: dict = {}
@@ -767,13 +778,22 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
                     score += 1
         if score > best_score:
             best, best_score = leaf, score
-        if best_score >= len(wanted):
+            best_tied = False
+        elif require_unique and score == best_score and score > 0:
+            best_tied = True
+        if best_score >= len(wanted) and not require_unique:
             # Every message the request carries is on this chain; nothing can beat it.
             break
-    return best
+    return None if require_unique and best_tied else best
 
 
-def _active_chain(messages: list[dict], branch = None) -> list[dict]:
+def _active_chain(
+    messages: list[dict],
+    branch = None,
+    *,
+    fallback: bool = True,
+    require_unique: bool = False,
+) -> list[dict]:
     """The rows on ONE branch, oldest first, rather than the whole stored DAG.
 
     `list_chat_messages` is an unfiltered SELECT ordered by time, but a thread is a tree:
@@ -789,7 +809,9 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
     Walked newest leaf back to root, the same shape the frontend's `orderBySelectedBranch`
     uses to decide what the model is actually shown. `parent_id` is missing on rows written
     before that column, so the previous row stands in for it, which is exactly a flat list
-    when nothing branches.
+    when nothing branches. ``fallback=False`` lets callers decline when the request cannot
+    seed a chain instead of silently reading the newest stored sibling. ``require_unique``
+    likewise declines when indistinguishable leaves tie for the best branch match.
     """
     if not messages:
         return []
@@ -804,11 +826,15 @@ def _active_chain(messages: list[dict], branch = None) -> list[dict]:
         parent_of[identifier] = message.get("parentId") or message.get("parent_id") or previous
         previous = identifier
     if not by_id:
-        return list(messages)
+        return list(messages) if fallback else []
     # The request's own branch when it can be found, the newest row when it cannot: empty
     # positions empty every seat and send every turn to MAX + 1, which is worse than
     # reading the wrong branch.
-    seed = _branch_seed(messages, by_id, parent_of, branch) or messages[-1].get("id")
+    seed = _branch_seed(messages, by_id, parent_of, branch, require_unique = require_unique)
+    if seed is None:
+        if not fallback:
+            return []
+        seed = messages[-1].get("id")
     return _walk_from(by_id, parent_of, seed) or list(messages)
 
 
