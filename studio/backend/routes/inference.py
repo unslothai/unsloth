@@ -24587,7 +24587,14 @@ def _responses_custom_tool_names(tools: Optional[list[dict]]) -> set[str]:
 
 
 def _responses_apply_patch_description(tool: dict) -> str:
-    description = "Edit files by passing one complete patch in the input field."
+    description = (
+        "Edit files by passing one complete patch in the input field. "
+        "Every added content line must start with +. Example:\n"
+        "*** Begin Patch\n"
+        "*** Add File: path/to/file.txt\n"
+        "+first line\n"
+        "*** End Patch"
+    )
     format_spec = tool.get("format")
     if isinstance(format_spec, dict) and isinstance(format_spec.get("definition"), str):
         description += "\n\nThe input must match this Lark grammar:\n" + format_spec["definition"]

@@ -289,7 +289,12 @@ class TestToolsTranslation:
                 "function": {
                     "name": "apply_patch",
                     "description": (
-                        "Edit files by passing one complete patch in the input field.\n\n"
+                        "Edit files by passing one complete patch in the input field. "
+                        "Every added content line must start with +. Example:\n"
+                        "*** Begin Patch\n"
+                        "*** Add File: path/to/file.txt\n"
+                        "+first line\n"
+                        "*** End Patch\n\n"
                         "The input must match this Lark grammar:\n"
                         + grammar
                     ),
