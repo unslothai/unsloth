@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
-import { UNFORGETTABLE_SEARCH_KEYS } from "../unforgettable/studio-ui";
+import { UNFORGETTABLE_SEARCH_KEYS } from "../unforgettable/studio-ui.ts";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
 /**
