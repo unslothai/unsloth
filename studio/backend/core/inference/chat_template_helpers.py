@@ -223,6 +223,11 @@ _TTS_MARKUP_BY_CODEC = {
     ),
     # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
     "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
+    # minimax wraps lyrics with chatml, caption, lyric, and audio stream boundaries.
+    "minimax_music3": re.compile(
+        r"<(?=\|(?:im_(?:start|end)|caption_(?:start|end)|lyrics_(?:start|end)"
+        r"|audio_(?:start|end|cfg))\|>)"
+    ),
     # MOSS Local and Nano wrap client text in a user_inst block inside a ChatML turn.
     # The remaining sentinels are codec placeholders accepted by their processors.
     "moss_tts_local": _MOSS_TTS_MARKUP,

@@ -1210,10 +1210,12 @@ class NativeAudioBackend:
         self, entry, lyrics, instructions, max_new_tokens, seed, cancel_event
     ):
         import torch
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
 
         prompt = str(instructions or "").strip()
         if not prompt:
             raise RuntimeError("MiniMax Music 3 requires a music description in addition to lyrics")
+        lyrics = neutralize_tts_prompt_text(lyrics, "minimax_music3")
         generator = None
         if seed is not None:
             generator = torch.Generator(self.device).manual_seed(int(seed))

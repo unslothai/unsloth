@@ -2426,6 +2426,20 @@ def test_param_alias_xml_delimiters_are_neutralized(marker):
                 "<|video_pad|>",
             ],
         ),
+        (
+            "minimax_music3",
+            [
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|caption_start|>",
+                "<|caption_end|>",
+                "<|lyrics_start|>",
+                "<|lyrics_end|>",
+                "<|audio_start|>",
+                "<|audio_end|>",
+                "<|audio_cfg|>",
+            ],
+        ),
     ],
 )
 def test_tts_breaks_the_active_codec_delimiters(codec, delimiters):
