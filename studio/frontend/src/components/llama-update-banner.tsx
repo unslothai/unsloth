@@ -185,8 +185,12 @@ export function LlamaUpdateBanner({
               </span>
             </p>
             <p className="mt-1 text-ui-11 text-muted-foreground/70">
-              {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
-              after update
+              {sizeLabel
+                ? `${sizeLabel} download · `
+                : status?.source_refresh
+                  ? "Rebuilds llama.cpp from source · "
+                  : ""}
+              No restart needed after update
             </p>
           </div>
         </div>

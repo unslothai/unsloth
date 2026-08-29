@@ -15,8 +15,9 @@ Design notes:
   old). The UI shows the "Update llama.cpp" affordance on update_available.
 - The install is slow (download + extract + validate), so it runs on a daemon
   thread; callers poll get_update_status() for the job state.
-- Everything fails open: a missing marker / offline GitHub / source build just
-  reports update_available=False and never blocks the app.
+- Everything fails open: a missing marker / offline GitHub never blocks the app.
+  Managed source builds with no matching prebuilt still offer a refresh when
+  git HEAD (or the installed build number) is behind the source-build tip.
 - The mechanics (managed-root resolution, local-link detection, the resolve
   probe, the streamed installer run) live in utils.prebuilt.update_flow; this
   module keeps the llama policy and the job dict its callers poll.
@@ -124,6 +125,7 @@ def _installer_script() -> Optional[Path]:
 # Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
 # ask the installer whether an official prebuilt now exists for this host.
 _resolve_memo: dict = {}
+_resolve_source_memo: dict = {}
 
 
 def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]:
@@ -136,6 +138,144 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
         installer_script = lambda: _installer_script(),
         log_message = "llama update: resolve-prebuilt failed",
     )
+
+
+def _resolve_source_build_for_host(*, force_refresh: bool = False) -> Optional[dict]:
+    """Run install_llama_prebuilt.py --resolve-source-build (no download).
+
+    Returns the source plan dict (source_ref, source_url, ...) or None. Used when
+    no prebuilt matches this host so a managed source tree can still be offered
+    a refresh against the tip the installer would compile."""
+    return _flow.resolve_prebuilt_for_host(
+        force_refresh = force_refresh,
+        memo = _resolve_source_memo,
+        installer_script = lambda: _installer_script(),
+        log_message = "llama update: resolve-source-build failed",
+        mode = ("--resolve-source-build", "latest"),
+    )
+
+
+def _git_rev(cwd: Path, rev: str) -> Optional[str]:
+    """Best-effort ``git rev-parse``; None when git/rev is unavailable."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", rev],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = (proc.stdout or "").strip()
+    return sha or None
+
+
+def _managed_source_git_behind(
+    install_root: Path,
+    *,
+    desired_ref: str,
+    force_fetch: bool,
+) -> Optional[tuple[bool, str, str]]:
+    """Return ``(behind, installed_short, desired_short)`` for a git checkout.
+
+    None when ``install_root`` is not a git tree or SHAs cannot be resolved.
+    A shallow ``git fetch`` runs only when ``force_fetch`` is set so routine
+    status polls stay offline-friendly."""
+    if not (install_root / ".git").exists():
+        return None
+    if force_fetch:
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(install_root),
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    desired_ref,
+                ],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 120,
+            )
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: source git fetch failed", error = str(exc))
+    head = _git_rev(install_root, "HEAD")
+    remote = (
+        _git_rev(install_root, "FETCH_HEAD")
+        or _git_rev(install_root, f"origin/{desired_ref}")
+        or _git_rev(install_root, desired_ref)
+    )
+    if not head or not remote:
+        return None
+    return (head != remote, head[:7], remote[:7])
+
+
+def _source_build_refresh_when_no_prebuilt(
+    binary: str, *, force_refresh: bool
+) -> Optional[dict]:
+    """Offer refreshing a managed source tree when no prebuilt matches the host.
+
+    Blackwell / other hosts that fall back to compiling llama.cpp previously got
+    ``supported=False`` and no Update button, so Desktop upgrades left a stale
+    binary that could not load new GGUF architectures. Compare git HEAD (preferred)
+    or the installed build number against the installer's source-build tip."""
+    install_root = _llama_install_root(binary)
+    if install_root is None:
+        return None
+    plan = _resolve_source_build_for_host(force_refresh = force_refresh)
+    desired_ref = "master"
+    latest_display = "latest"
+    latest_build = None
+    if plan:
+        desired_ref = str(
+            plan.get("source_ref") or plan.get("compatibility_upstream_tag") or "master"
+        )
+        latest_display = desired_ref
+        latest_build = parse_base_build(desired_ref)
+
+    installed_build = _installed_build_number(binary)
+    installed_tag = f"b{installed_build}" if installed_build else None
+    git_info = _managed_source_git_behind(
+        install_root, desired_ref = desired_ref, force_fetch = force_refresh
+    )
+    if git_info is not None:
+        behind, head_short, remote_short = git_info
+        installed_tag = installed_tag or head_short
+        if behind:
+            latest_display = remote_short
+        update_available = behind
+    elif installed_build is None or latest_build is None:
+        # Unknown versions (involuntary source build with no usable --version /
+        # offline resolver): still offer refresh so an upgrade can recover.
+        update_available = True
+    else:
+        update_available = installed_build < latest_build
+
+    with _job_lock:
+        job = dict(_job)
+    return {
+        "supported": True,
+        "update_available": update_available,
+        "stale": False,
+        "installed_tag": installed_tag,
+        "latest_tag": latest_display,
+        "published_repo": DEFAULT_PUBLISHED_REPO,
+        "installed_at_utc": None,
+        "age_days": None,
+        "source_build": True,
+        "source_refresh": True,
+        "update_size_bytes": None,
+        "job": job,
+    }
 
 
 def _installed_build_number(binary: Optional[str]) -> Optional[int]:
@@ -218,10 +358,14 @@ def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
 def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     """Update status for a markerless (source-build) install: offer the official
     prebuilt when one exists for this host and is newer than the installed
-    binary. None -> caller falls through to the no-marker default (unsupported)."""
+    binary. When no prebuilt matches, offer a managed source-tree refresh
+    instead (see ``_source_build_refresh_when_no_prebuilt``). None -> caller
+    falls through to the no-marker default (unsupported)."""
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
-        return None
+        return _source_build_refresh_when_no_prebuilt(
+            binary, force_refresh = force_refresh
+        )
     # llama_tag is the upstream bNNNN base whose numeric part matches the build
     # field in --version; release_tag is the full tag, either a same-base mix
     # (bNNNN-mix-<sha>) or a fork wrapper (e.g. v1.0). Compare the numeric base
@@ -283,6 +427,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
+        "source_refresh": False,
         "update_size_bytes": update_size_bytes,
         "job": job,
     }
@@ -891,8 +1036,9 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         }
     else:
         # Source build / custom path: only proceed when the same detection logic
-        # would offer the update (prebuilt exists, install is behind, root is
-        # manageable), so a direct POST cannot downgrade a newer source build.
+        # would offer the update (prebuilt exists and install is behind, or a
+        # managed source refresh is offered), so a direct POST cannot downgrade
+        # a newer source build.
         src = _source_build_status(binary, force_refresh = True) if binary else None
         if src is None:
             return {
@@ -902,7 +1048,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
                     "reason": "no_prebuilt_available",
                     "message": (
                         "No official llama.cpp prebuilt is available for this host, "
-                        "so the source build cannot be swapped automatically."
+                        "and this install is not a managed source tree Unsloth can "
+                        "refresh automatically."
                     ),
                 },
             }
@@ -914,20 +1061,29 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
                     "reason": "up_to_date",
                     "message": (
                         "The installed llama.cpp build is already at or newer than the "
-                        "latest prebuilt."
+                        "latest available build."
                     ),
                 },
             }
         res = _resolve_prebuilt_for_host()
         install_dir = _llama_install_root(binary)
-        repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
-        from_tag = None
-        asset = (res or {}).get("asset")
+        repo = (
+            src.get("published_repo")
+            or (res or {}).get("repo")
+            or DEFAULT_PUBLISHED_REPO
+        )
+        from_tag = src.get("installed_tag")
+        # Source refresh with no matching prebuilt: leave asset unset so the
+        # installer falls through to compiling the resolved source plan.
+        asset = None
+        if res and res.get("prebuilt_available") and not src.get("source_refresh"):
+            asset = res.get("asset")
         # A source build records no choice, so there is nothing to preserve here.
         llama_backend = None
         rocm_gfx = None
-        # No pin: source-build detection resolves via --resolve-prebuilt latest,
-        # the same resolver the unpinned apply uses, so the two already agree.
+        # No pin: source-build detection resolves via --resolve-prebuilt latest
+        # (or --resolve-source-build for refresh), the same resolver the unpinned
+        # apply uses, so the two already agree.
         pin_release_tag = None
 
     if install_dir is None:

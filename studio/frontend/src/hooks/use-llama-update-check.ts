@@ -47,6 +47,8 @@ export interface LlamaUpdateStatus {
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
+  // Managed source tree refresh (no matching prebuilt for this host).
+  source_refresh?: boolean;
   job: LlamaUpdateJob;
 }
 
@@ -103,6 +105,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
+    source_refresh: s.source_refresh === true,
     job: parseJob(s.job),
   };
 }

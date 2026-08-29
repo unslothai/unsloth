@@ -162,8 +162,8 @@ def _prebuilt(
 
 
 def test_status_no_marker_no_prebuilt(monkeypatch, tmp_path):
-    # No marker AND no prebuilt available for the host -> unsupported (the genuine
-    # source-build-with-nothing-to-offer case).
+    # No marker AND no prebuilt, and the binary is not under a managed llama.cpp
+    # tree -> unsupported (nothing Unsloth can refresh).
     binary = tmp_path / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")  # no marker file alongside
@@ -173,6 +173,132 @@ def test_status_no_marker_no_prebuilt(monkeypatch, tmp_path):
     assert st["supported"] is False
     assert st["update_available"] is False
     assert st["installed_tag"] is None
+
+
+def test_status_managed_source_offers_refresh_when_no_prebuilt(monkeypatch, tmp_path):
+    # Managed source tree (path contains llama.cpp/) with no matching prebuilt:
+    # still offer Update so Desktop upgrades can refresh a stale involuntary
+    # source build (e.g. Blackwell).
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _no_prebuilt(monkeypatch)
+    monkeypatch.setattr(
+        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+            "source_ref": "b11000",
+            "compatibility_upstream_tag": "b11000",
+        }
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9000)
+    monkeypatch.setattr(
+        upd, "_managed_source_git_behind",
+        lambda *a, **k: None,
+    )
+    st = upd.get_update_status()
+    assert st["supported"] is True
+    assert st["update_available"] is True
+    assert st["source_build"] is True
+    assert st["source_refresh"] is True
+    assert st["latest_tag"] == "b11000"
+    assert st["installed_tag"] == "b9000"
+
+
+def test_status_managed_source_git_behind_offers_refresh(monkeypatch, tmp_path):
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _no_prebuilt(monkeypatch)
+    monkeypatch.setattr(
+        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+            "source_ref": "master",
+        }
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 11000)
+    monkeypatch.setattr(
+        upd,
+        "_managed_source_git_behind",
+        lambda *a, **k: (True, "c1d0e7a", "d7bd3bf"),
+    )
+    st = upd.get_update_status()
+    assert st["update_available"] is True
+    assert st["source_refresh"] is True
+    assert st["installed_tag"] == "b11000"
+    assert st["latest_tag"] == "d7bd3bf"
+
+
+def test_status_managed_source_git_current_no_refresh(monkeypatch, tmp_path):
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _no_prebuilt(monkeypatch)
+    monkeypatch.setattr(
+        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+            "source_ref": "master",
+        }
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 11000)
+    monkeypatch.setattr(
+        upd,
+        "_managed_source_git_behind",
+        lambda *a, **k: (False, "d7bd3bf", "d7bd3bf"),
+    )
+    st = upd.get_update_status()
+    assert st["supported"] is True
+    assert st["update_available"] is False
+    assert st["source_refresh"] is True
+
+
+def test_start_update_managed_source_refresh_runs_installer(monkeypatch, tmp_path):
+    # No prebuilt asset, but managed source refresh is offered: apply still
+    # invokes the installer so it can fall through to compiling from source.
+    install_dir = tmp_path / "llama.cpp"
+    binary = install_dir / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    _no_prebuilt(monkeypatch)
+    monkeypatch.setattr(
+        upd, "_resolve_source_build_for_host", lambda *, force_refresh = False: {
+            "source_ref": "b11000",
+        }
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
+    monkeypatch.setattr(upd, "_managed_source_git_behind", lambda *a, **k: None)
+
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = "version: 0.3.0-dev (build 1, commit deadbee)\n"
+
+    def _fake_run(cmd, **kwargs):
+        return _Proc()
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, "b11000")
+
+    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
+    _patch_installer_popen(monkeypatch, on_start = _on_start)
+
+    res = upd.start_update()
+    assert res["started"] is True, res
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert "cmd" in captured
+    cmd = captured["cmd"]
+    assert "--install-dir" in cmd and str(install_dir) in cmd
+    assert "--llama-tag" in cmd and "latest" in cmd
+    assert "--published-release-tag" not in cmd
 
 
 def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):
