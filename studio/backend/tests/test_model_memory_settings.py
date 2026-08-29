@@ -1465,10 +1465,38 @@ class TestMlockActiveReporting:
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         assert rs._model_memory_response().mlock_active is True
 
-    def test_no_reserve_still_vetoes_it_outright(self, monkeypatch):
+    def test_a_users_own_mlock_is_reported_with_the_toggle_off(self, monkeypatch):
         import routes.settings as rs
 
-        backend = _fake_backend(is_active = True, is_loaded = True, _memory_state = (True, False))
+        backend = _fake_backend(
+            is_active = True,
+            is_loaded = True,
+            _memory_state = resolve_effective_memory_state(["--mlock"], {}),
+            _memory_policy_active = False,
+        )
+        _install_backend(monkeypatch, backend, keep = False, no_res = False)
+        body = rs._model_memory_response()
+        assert body.mlock_active is True
+        assert body.memlock_limit_bytes == mm_settings.memlock_limit_bytes()
+
+    def test_a_saved_veto_does_not_rewrite_the_running_child(self, monkeypatch):
+        import routes.settings as rs
+
+        backend = _fake_backend(
+            is_active = True,
+            is_loaded = True,
+            _memory_state = (True, False),
+            _memory_policy_active = True,
+        )
+        _install_backend(monkeypatch, backend, keep = True, no_res = True)
+        body = rs._model_memory_response()
+        assert body.mlock_active is True
+        assert body.reload_required is True
+
+    def test_no_reserve_launch_reports_no_lock(self, monkeypatch):
+        import routes.settings as rs
+
+        backend = _fake_backend(is_active = True, is_loaded = True, _memory_state = (False, False))
         _install_backend(monkeypatch, backend, keep = True, no_res = True)
         assert rs._model_memory_response().mlock_active is False
 

@@ -870,11 +870,9 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     otherwise would warn about ulimit -l for a lock nobody took. A user's own
     --mlock counts, since the resolver reads the launched argv.
     """
-    if not want_mlock:
-        return False
     state, _policy_active, _applicable = _active_launch_placement()
     if state is _NO_LAUNCH:
-        return True
+        return want_mlock
     return bool(state and state[0])
 
 
