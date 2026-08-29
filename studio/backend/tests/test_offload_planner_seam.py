@@ -1792,7 +1792,23 @@ def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):
         capacity = 1024 if cpu < 16 else 512
         (cpu_path / "cpu_capacity").write_text(str(capacity))
 
-    assert _linux_math_core_count(tmp_path, logical_cpus = 32) == 8
+    assert _linux_math_core_count(tmp_path, logical_cpus = 32, vendor_id = "GenuineIntel") == 8
+
+
+def test_linux_amd_capacity_classes_keep_all_physical_cores(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    for cpu in range(24):
+        cpu_path = tmp_path / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(str(cpu))
+        (cpu_path / "cpu_capacity").write_text("1024" if cpu < 8 else "512")
+
+    assert _linux_math_core_count(
+        tmp_path,
+        logical_cpus = 24,
+        vendor_id = "AuthenticAMD",
+    ) == 24
 
 
 @pytest.mark.parametrize(

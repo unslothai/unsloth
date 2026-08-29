@@ -3338,16 +3338,28 @@ _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
 def _linux_math_core_count(
     cpu_root: Path = Path("/sys/devices/system/cpu"),
     logical_cpus: Optional[int] = None,
+    vendor_id: Optional[str] = None,
 ) -> Optional[int]:
     """Linux x86 cores useful to llama.cpp's default math pool.
 
     ``thread_siblings`` mirrors llama.cpp's physical-core count. A heterogeneous
-    ``cpu_capacity`` set identifies the performance cores its hybrid-x86 CPUID
-    path keeps while it skips the efficiency cores.
+    ``cpu_capacity`` set identifies the Intel performance cores its hybrid-x86
+    CPUID path keeps while it skips the efficiency cores. AMD capacity classes
+    do not trigger that llama.cpp branch, so they retain every physical core.
     """
     count = os.cpu_count() if logical_cpus is None else logical_cpus
     if not count or count < 1:
         return None
+    if vendor_id is None:
+        try:
+            vendor_match = re.search(
+                r"^vendor_id\s*:\s*(\S+)",
+                Path("/proc/cpuinfo").read_text(),
+                flags = re.MULTILINE,
+            )
+            vendor_id = vendor_match.group(1) if vendor_match else ""
+        except OSError:
+            vendor_id = ""
     siblings: list[str] = []
     capacities: list[Optional[int]] = []
     for cpu in range(count):
@@ -3365,7 +3377,11 @@ def _linux_math_core_count(
             capacities.append(None)
     if not siblings:
         return None
-    if all(capacity is not None for capacity in capacities) and len(set(capacities)) > 1:
+    if (
+        vendor_id == "GenuineIntel"
+        and all(capacity is not None for capacity in capacities)
+        and len(set(capacities)) > 1
+    ):
         fastest = max(capacity for capacity in capacities if capacity is not None)
         return len(
             {
