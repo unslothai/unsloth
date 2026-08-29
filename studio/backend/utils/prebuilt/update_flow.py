@@ -53,6 +53,47 @@ class InstallerExit(RuntimeError):
         self.returncode = returncode
 
 
+_PREBUILT_FALLBACK_PREFIX = "[llama-prebuilt] prebuilt fallback reason:"
+_PREBUILT_FAILED_PREFIX = "[llama-prebuilt] prebuilt install failed:"
+
+
+def _installer_actionable_detail(lines: list[str]) -> str | None:
+    """Pull a short, user-facing reason out of installer stdout.
+
+    The installer logs the real failure before dumping a long system report
+  (Windows PATH lines, nvidia-smi, etc.). A raw tail of stdout therefore hides
+    rate-limit and network errors behind noise (#9970).
+    """
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(_PREBUILT_FALLBACK_PREFIX):
+            return stripped[len(_PREBUILT_FALLBACK_PREFIX) :].strip()
+        if stripped.startswith(_PREBUILT_FAILED_PREFIX):
+            return stripped[len(_PREBUILT_FAILED_PREFIX) :].strip()
+    for line in lines:
+        stripped = line.strip()
+        if "GitHub API returned 403" in stripped or "rate limit exceeded" in stripped.lower():
+            return stripped
+    return None
+
+
+def format_installer_failure_message(returncode: int, lines: list[str]) -> str:
+    """Build an installer failure message that prefers actionable lines over tail noise."""
+    detail = _installer_actionable_detail(lines)
+    if detail:
+        lowered = detail.lower()
+        if "github api returned 403" in lowered or "rate limit" in lowered:
+            return (
+                f"installer exited {returncode}: GitHub API rate limit exceeded while "
+                "fetching llama.cpp releases. Set GH_TOKEN or GITHUB_TOKEN to avoid "
+                "GitHub API rate limits."
+            )
+        clipped = detail if len(detail) <= 1500 else detail[:1497] + "..."
+        return f"installer exited {returncode}: {clipped}"
+    tail = "".join(lines).strip()[-1500:]
+    return f"installer exited {returncode}: {tail or 'no output'}"
+
+
 JOB_IDLE = "idle"
 JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
@@ -410,8 +451,7 @@ def stream_installer(
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
     if returncode != 0:
-        tail = "".join(tail_lines).strip()[-1500:]
-        raise InstallerExit(returncode, f"installer exited {returncode}: {tail or 'no output'}")
+        raise InstallerExit(returncode, format_installer_failure_message(returncode, tail_lines))
 
 
 def _new_phase_record(spec: dict) -> dict:

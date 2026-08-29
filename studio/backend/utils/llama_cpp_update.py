@@ -66,6 +66,8 @@ _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
 _EXIT_NO_SPACE = 4
 # A concrete backend selection could not be satisfied.
 _EXIT_BACKEND_UNAVAILABLE = 5
+# Prebuilt path failed; setup scripts source-build, but the in-app updater cannot.
+_EXIT_FALLBACK = 2
 
 
 class _LlamaPhaseError(RuntimeError):
@@ -749,6 +751,26 @@ def _run_llama_phase(
             raise _LlamaPhaseError(
                 f"Could not install the {backend_label} llama.cpp build on this machine. "
                 "The installed backend was kept.",
+                reload_required = model_was_active,
+            ) from exc
+        if exc.returncode == _EXIT_FALLBACK:
+            message = str(exc)
+            lowered = message.lower()
+            if (
+                "github api returned 403" in lowered
+                or "rate limit" in lowered
+                or "gh_token" in lowered
+            ):
+                logger.warning("llama update: GitHub rate limit")
+                raise _LlamaPhaseError(
+                    "Could not update llama.cpp: GitHub is rate-limiting release downloads. "
+                    "Set GH_TOKEN or GITHUB_TOKEN in your environment and try again.",
+                    reload_required = model_was_active,
+                ) from exc
+            logger.warning("llama update: prebuilt fallback", error = message)
+            detail = message.split(": ", 1)[-1] if ": " in message else message
+            raise _LlamaPhaseError(
+                f"Could not update llama.cpp from the prebuilt bundle. {detail}",
                 reload_required = model_was_active,
             ) from exc
         logger.warning("llama update: failed", error = str(exc))

@@ -665,6 +665,35 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     assert "boom" in (job["error"] or "")
 
 
+def test_start_update_rate_limit_reports_actionable_error(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    lines = [
+        "[llama-prebuilt] prebuilt fallback reason: failed to inspect published "
+        "releases in unslothai/llama.cpp: GitHub API returned 403 for "
+        "https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b9518; "
+        "set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits\n",
+        "windows_runtime_dirs=C:\\\\very\\\\long\\\\path\n",
+    ]
+    _patch_installer_popen(monkeypatch, returncode = 2, lines = lines)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "error"
+    assert "GH_TOKEN" in (job["error"] or "")
+    assert "windows_runtime_dirs" not in (job["error"] or "")
+
+
 # --- installer-argument construction (mirrors the post-#5963 setup scripts) ---
 
 
