@@ -7,7 +7,10 @@ import { toast } from "@/lib/toast";
 
 import { DOWNLOAD_KIND } from "./constants";
 import { downloadManager } from "./download-manager-controller";
-import { scopedVariant } from "./download-manager-types";
+import {
+  scopedDownloadInventoryKind,
+  scopedVariant,
+} from "./download-manager-types";
 import { useRepoDownload } from "./use-repo-download";
 
 /** One repo of a staged plan: the exact files to fetch and their declared size. */
@@ -15,7 +18,7 @@ export interface StagedDownloadEntry {
   repoId: string;
   files: string[];
   bytes: number;
-  /** Set when this entry is a single-file GGUF checkpoint. Informational: it is fetched as a scoped job like every other entry. */
+  /** Selected single-file checkpoint name. May be GGUF or safetensors. */
   ggufFilename?: string | null;
   /** True for the entry whose repo is the one the user picked; the rest of the plan is companion repos it needs. The stager is the only place that knows this, so it travels with the job for surfaces that label the two differently. */
   checkpoint?: boolean;
@@ -110,7 +113,7 @@ export function useStagedDownload({
         kind: DOWNLOAD_KIND.MODEL,
         repoId: current.repoId,
         variant: activeVariant,
-        inventoryKind: current.ggufFilename ? "gguf" : "model",
+        inventoryKind: scopedDownloadInventoryKind(current.files),
         expectedBytes: current.bytes,
         scopeId,
         files: current.files,

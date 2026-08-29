@@ -47,6 +47,23 @@ test("recovers scoped inventory format from backend files", () => {
   assert.equal(scopedDownloadInventoryKind(undefined), "model");
 });
 
+test("classifies staged single-file checkpoints from their file set", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/hub/download-manager/use-staged-download.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf-8",
+  );
+  assert.match(
+    source,
+    /inventoryKind: scopedDownloadInventoryKind\(current\.files\)/,
+  );
+  assert.doesNotMatch(source, /inventoryKind: current\.ggufFilename/);
+});
+
 test("infers missing scoped request formats during adoption", () => {
   assert.equal(
     downloadRequestInventoryKind({
