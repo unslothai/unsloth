@@ -128,10 +128,32 @@ class ContextPolicy(Enum):
 class SpillOrder(Enum):
     """Which blocks to spill when only some are needed.
 
-    UNMEASURED: every -ot measurement so far spilled all blocks or none, so the
-    ordering is justified by byte-minimality alone, not by benchmark. Contiguous
-    runs may schedule better (adjacent host blocks can merge into one graph
-    split), which would favour FRONT/BACK over LARGEST. Hence configurable.
+    MEASURED, over 41 spilled cells that ran both LARGEST_FIRST and BACK_FIRST
+    (non-spilled controls excluded, where the two orders are trivially equal):
+
+        median contig / largest-first   1.007
+        MoE (n=29)                      1.007
+        dense (n=12)                    1.009
+        better by more than 3%          4 of 41
+        WORSE by more than 3%           0 of 41
+        range                           0.991 to 1.079
+
+    The useful part is the SHAPE rather than the median. Contiguous never costs
+    more than 3% and occasionally pays up to 1.079, on both MoE and dense, across
+    five hosts. So the case for BACK_FIRST is an ASYMMETRY argument -- it is
+    close to free and sometimes wins -- and not an effect-size one.
+
+    One cell shows 1.22x (gemma-31B Q2 at 16 GiB, replicated on two runs). That
+    is an outlier and not the effect: the same model one VRAM level down measures
+    exactly 1.000. It is recorded here because it was briefly mistaken for the
+    effect size, which is the error this docstring now exists to prevent.
+
+    The default stays LARGEST_FIRST pending its own change: byte-minimality is a
+    guarantee, +0.7% is a measurement, and swapping a guarantee for an average
+    deserves a commit that argues for it rather than a drive-by.
+
+    An earlier version of this docstring said UNMEASURED, which was true when
+    every -ot run spilled all blocks or none. It is no longer true.
     """
 
     # Best-fit-decreasing: fewest blocks AND least overshoot. Overshoot is real
