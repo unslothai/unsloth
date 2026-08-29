@@ -3643,6 +3643,33 @@ fn pending_backend_matches(
     })
 }
 
+fn staged_probe_requires_immediate_rejection(reason: &str) -> bool {
+    matches!(
+        reason,
+        "desktop_protocol_incompatible"
+            | "desktop_auth_unsupported"
+            | "desktop_manageability_unsupported"
+            | "desktop_backend_ownership_unsupported"
+            | "desktop_auth_secret_missing"
+            | "desktop_auth_secret_rejected"
+            | "desktop_auth_token_rejected"
+            | "desktop_auth_token_response_invalid"
+            | "desktop_backend_version_invalid"
+    )
+}
+
+fn roll_back_rejected_staged_backend(
+    app: &AppHandle,
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    diagnostics_state: &DiagnosticsState,
+) {
+    let stopped = stop_backend(state, shutdown, Some(diagnostics_state));
+    if stopped.is_err() || !request_staged_rollback_restart(app, state) {
+        let _ = app.emit("server-crashed", ());
+    }
+}
+
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
@@ -3721,8 +3748,11 @@ async fn validate_candidate_port(
                     }
                     (owned_port && version_matches, owned_port && !version_matches)
                 }
-                crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable { .. }
-                    if pending_backend_version.is_some() => (false, true),
+                crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable {
+                    reason, ..
+                } if pending_backend_version.is_some() => {
+                    (false, staged_probe_requires_immediate_rejection(&reason))
+                }
                 _ => (false, false),
             }
         } else if pending_backend_version.is_some() {
@@ -3732,10 +3762,7 @@ async fn validate_candidate_port(
         };
         if reject_staged {
             warn!("Staged backend failed authenticated version validation");
-            let stopped = stop_backend(&state, &shutdown, Some(&diagnostics_state));
-            if stopped.is_err() || !request_staged_rollback_restart(&app, &state) {
-                let _ = app.emit("server-crashed", ());
-            }
+            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
             return;
         }
         if ok {
@@ -3767,6 +3794,14 @@ async fn validate_candidate_port(
     };
 
     if !valid {
+        if pending_backend_version.is_some()
+            && crate::staged_update::pending_versions(&diagnostics::studio_dir()).is_some()
+            && std::time::Instant::now() >= deadline
+        {
+            warn!("Staged backend validation timed out");
+            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
+            return;
+        }
         if verified_late {
             warn!(
                 "Backend port {} verified after the start deadline; not emitting",
@@ -6102,6 +6137,36 @@ mod managed_cli_working_dir_tests {
             },
             Some("2026.9.1")
         ));
+    }
+
+    #[test]
+    fn pending_activation_retries_transient_authenticated_probe_failures() {
+        for reason in [
+            "desktop_login_probe_failed",
+            "desktop_auth_secret_probe_failed",
+            "desktop_auth_secret_probe_http_500 Internal Server Error",
+            "desktop_auth_health_unverified",
+            "error sending request for url",
+        ] {
+            assert!(!staged_probe_requires_immediate_rejection(reason));
+        }
+    }
+
+    #[test]
+    fn pending_activation_rejects_completed_incompatibility_evidence() {
+        for reason in [
+            "desktop_protocol_incompatible",
+            "desktop_auth_unsupported",
+            "desktop_manageability_unsupported",
+            "desktop_backend_ownership_unsupported",
+            "desktop_auth_secret_missing",
+            "desktop_auth_secret_rejected",
+            "desktop_auth_token_rejected",
+            "desktop_auth_token_response_invalid",
+            "desktop_backend_version_invalid",
+        ] {
+            assert!(staged_probe_requires_immediate_rejection(reason));
+        }
     }
 
     // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:
