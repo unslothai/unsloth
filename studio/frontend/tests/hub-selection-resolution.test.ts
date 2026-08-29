@@ -386,6 +386,47 @@ test("ignores malformed unclassified HF-cache selection IDs", () => {
   );
 });
 
+test("keeps a raw legacy HF-cache ID attached after deduplication", () => {
+  const repoId = "Org/Legacy-Model";
+  const local = buildLocalInventoryRows([
+    {
+      id: repoId,
+      load_id: repoId,
+      display_name: "Legacy-Model",
+      path: "/cache/models--Org--Legacy-Model",
+      source: "hf_cache",
+      model_id: repoId,
+      model_format: "safetensors",
+      partial: true,
+    },
+  ])[0];
+  const live = {
+    ...buildCachedInventoryRow(
+      {
+        repo_id: repoId,
+        model_format: "safetensors",
+        size_bytes: 50,
+        partial: true,
+        optimistic: true,
+      },
+      "safetensors",
+    ),
+    liveDownload: true,
+  };
+
+  assert.ok(local);
+  assert.equal(local.id, repoId);
+  const resumed = dedupeSameSourceHubCacheRows({
+    cachedRows: [live],
+    localRows: [local],
+  });
+  assert.deepEqual(resumed.localRows, []);
+  assert.deepEqual(resolveInventorySelection(resumed, local.id), {
+    selectedId: live.id,
+    hiddenByFilters: false,
+  });
+});
+
 test("does not bridge unclassified identities across cache source kinds", () => {
   const repoId = "Org/Shared-Identity";
   const local = buildUnknownHfCacheRow(repoId);

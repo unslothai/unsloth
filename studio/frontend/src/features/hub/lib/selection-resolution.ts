@@ -258,6 +258,35 @@ function resolveFormatTransition(
   );
 }
 
+function resolveRawRepoTransition(
+  id: string | null,
+  cachedRows: readonly CachedInventoryRow[],
+  localRows: readonly LocalInventoryRow[],
+  filteredCachedIds: ReadonlySet<string>,
+  filteredLocalIds: ReadonlySet<string>,
+): SelectionResolution | null {
+  const segments = id?.trim().split("/") ?? [];
+  if (
+    segments.length !== 2 ||
+    segments.some((segment) => !segment) ||
+    id?.includes(":") ||
+    id?.includes("\\")
+  ) {
+    return null;
+  }
+  const repoKey = segments.join("/").toLowerCase();
+  return resolveCurrentSelection(
+    cachedRows.filter((row) => inventoryRepoKey(row) === repoKey),
+    localRows.filter(
+      (row) =>
+        row.source === "hf_cache" && inventoryRepoKey(row) === repoKey,
+    ),
+    filteredCachedIds,
+    filteredLocalIds,
+    localRows,
+  );
+}
+
 function resolveDownloadedId(
   id: string | null,
   cachedById: ReadonlyMap<string, CachedInventoryRow>,
@@ -343,6 +372,13 @@ export function resolveDownloadedSelection({
       localRows,
     ) ??
     resolveFormatTransition(
+      selectedId,
+      cachedRows,
+      localRows,
+      filteredCachedIds,
+      filteredLocalIds,
+    ) ??
+    resolveRawRepoTransition(
       selectedId,
       cachedRows,
       localRows,
