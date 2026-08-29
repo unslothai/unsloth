@@ -181,16 +181,8 @@ def test_public_exports_keep_deprecated_positional_parameter_slots():
     apply_parameters = list(inspect.signature(apply_chat_template_to_dataset).parameters)
     main_parameters = list(inspect.signature(format_and_template_dataset).parameters)
 
-    assert apply_parameters[2:5] == [
-        "model_name",
-        "custom_prompt_template",
-        "add_eos_token",
-    ]
-    assert main_parameters[8:11] == [
-        "dataset_name",
-        "custom_prompt_template",
-        "add_eos_token",
-    ]
+    assert apply_parameters[2:5] == ["model_name", "custom_prompt_template", "add_eos_token"]
+    assert main_parameters[8:11] == ["dataset_name", "custom_prompt_template", "add_eos_token"]
 
     dataset = _alpaca_dataset()
     with pytest.deprecated_call(match = "cannot persist a matching template"):
