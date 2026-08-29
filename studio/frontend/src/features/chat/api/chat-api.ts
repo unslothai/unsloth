@@ -16,7 +16,10 @@ import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
-import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
+import {
+  withModelLoadNotice,
+  withModelUnloadNotice,
+} from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
   ModelType,
@@ -398,12 +401,14 @@ export async function fetchGgufStagedMetadata(payload: {
 }
 
 export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
-  const response = await authFetch("/api/inference/unload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+  return withModelUnloadNotice("chat", payload.model_path, async () => {
+    const response = await authFetch("/api/inference/unload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await parseJsonOrThrow<unknown>(response, "Model unload");
   });
-  await parseJsonOrThrow<unknown>(response, "Model unload");
 }
 
 /**
