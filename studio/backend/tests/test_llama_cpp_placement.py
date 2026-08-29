@@ -2189,9 +2189,9 @@ def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypat
 
     cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
 
-    assert _unmapped_tokens(cmd) == list(extra_args), (
-        f"the fitting load lost the mode it asked for: {cmd}"
-    )
+    assert _unmapped_tokens(cmd) == list(
+        extra_args
+    ), f"the fitting load lost the mode it asked for: {cmd}"
     assert backend.last_load_warning is None
 
 
@@ -2934,9 +2934,9 @@ def test_the_override_note_reaches_the_warning_the_route_returns(tmp_path, monke
     assert any(msg and "does not fit in GPU memory" in msg for msg in seen), seen
     warning = backend.last_load_warning or ""
     assert "unified-memory APU" in warning, warning
-    assert "memory mapping instead" in warning, (
-        f"the override never reached the warning the route returns: {warning}"
-    )
+    assert (
+        "memory mapping instead" in warning
+    ), f"the override never reached the warning the route returns: {warning}"
 
 
 def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, monkeypatch):
@@ -3046,9 +3046,9 @@ def test_the_text_only_fallback_reprices_the_projector_it_dropped(tmp_path, monk
     assert "--mmproj" in captured["cmds"][0], captured["cmds"][0]
     assert "--mmproj" not in captured["cmds"][-1], captured["cmds"][-1]
     warning = backend.last_load_warning or ""
-    assert "unified-memory APU" not in warning, (
-        f"the response still warns about a shortfall the resident model does not have: {warning}"
-    )
+    assert (
+        "unified-memory APU" not in warning
+    ), f"the response still warns about a shortfall the resident model does not have: {warning}"
     if unmapped:
         # The one thing that IS still true of the running child.
         assert "memory mapping instead" in warning, warning
@@ -3145,16 +3145,16 @@ def test_a_rejected_load_leaves_the_resident_advisory_alone(tmp_path, monkeypatc
         GgufLoadIntent(gguf_path = str(gguf), model_identifier = "other"),
         load_cancel_event = cancelled,
     )
-    assert backend.last_load_warning == warned, (
-        f"the cancelled load retired the resident advisory: {backend.last_load_warning}"
-    )
+    assert (
+        backend.last_load_warning == warned
+    ), f"the cancelled load retired the resident advisory: {backend.last_load_warning}"
 
     # 3. ...and the already_loaded fast path still carries it, which is what the route
     # reads for memory_warning on a repeat /load.
     assert backend.load_model(GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test"))
-    assert backend.last_load_warning == warned, (
-        f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
-    )
+    assert (
+        backend.last_load_warning == warned
+    ), f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
 
 
 # ── Repricing after an auto-selected Vulkan backend is replayed on CPU ─────────
@@ -3267,9 +3267,9 @@ def test_a_model_that_fits_vram_but_not_ram_is_warned_once_it_lands_on_cpu(tmp_p
     _launch_with_vulkan_cpu_replay(backend, gguf)
 
     warning = backend.last_load_warning or ""
-    assert "does not fit in GPU memory" in warning, (
-        f"the CPU-only child pages the whole model from disk and says nothing about it: {warning!r}"
-    )
+    assert (
+        "does not fit in GPU memory" in warning
+    ), f"the CPU-only child pages the whole model from disk and says nothing about it: {warning!r}"
     assert "About 20 GB" in warning, warning
 
 
@@ -3285,9 +3285,9 @@ def test_a_gpu_placement_warning_does_not_survive_onto_the_cpu_child(tmp_path, m
     _launch_with_vulkan_cpu_replay(backend, gguf)
 
     warning = backend.last_load_warning or ""
-    assert "About 20 GB" in warning, (
-        f"the CPU-only child still reports the dead GPU placement's spill: {warning!r}"
-    )
+    assert (
+        "About 20 GB" in warning
+    ), f"the CPU-only child still reports the dead GPU placement's spill: {warning!r}"
     assert "About 12 GB" not in warning, warning
 
 
@@ -3349,12 +3349,12 @@ def test_a_replay_that_loses_its_vram_is_repaged_before_it_spawns(
     captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = extra_args)
 
     gpu_attempt, replay = captured["cmds"][0], captured["cmds"][-1]
-    assert _unmapped_tokens(gpu_attempt) == list(extra_args), (
-        f"the fitting GPU launch lost the mode it asked for: {gpu_attempt}"
-    )
-    assert not _unmapped_tokens(replay), (
-        f"the CPU replay holds the whole model in host RAM unmapped: {replay}"
-    )
+    assert _unmapped_tokens(gpu_attempt) == list(
+        extra_args
+    ), f"the fitting GPU launch lost the mode it asked for: {gpu_attempt}"
+    assert not _unmapped_tokens(
+        replay
+    ), f"the CPU replay holds the whole model in host RAM unmapped: {replay}"
     # The advisory has to describe the child that is running: the whole model against
     # host RAM, and the override that is why it can page at all.
     warning = backend.last_load_warning or ""
@@ -3379,9 +3379,9 @@ def test_a_replay_the_host_can_actually_hold_keeps_the_mode_it_was_asked_for(
     captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = extra_args)
 
     replay = captured["cmds"][-1]
-    assert _unmapped_tokens(replay) == list(extra_args), (
-        f"the CPU replay lost the mode the user asked for: {replay}"
-    )
+    assert _unmapped_tokens(replay) == list(
+        extra_args
+    ), f"the CPU replay lost the mode the user asked for: {replay}"
     assert backend.last_load_warning is None, backend.last_load_warning
 
 
@@ -3487,9 +3487,9 @@ def test_an_unmapped_load_is_priced_against_the_cards_the_pin_left_it(
     cmd = result["cmd"]
 
     assert cmd, "the pinned unmapped load never spawned llama-server"
-    assert not _unmapped_tokens(cmd), (
-        f"the child still loads unmapped, priced against a card the pin hid: {cmd}"
-    )
+    assert not _unmapped_tokens(
+        cmd
+    ), f"the child still loads unmapped, priced against a card the pin hid: {cmd}"
     assert "memory mapping instead" in (backend.last_load_warning or "")
 
 
@@ -3542,9 +3542,9 @@ def test_a_restored_cpu_fallback_is_priced_against_host_ram(tmp_path, monkeypatc
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     warning = backend.last_load_warning or ""
-    assert "20 GB" in warning, (
-        f"a restored CPU-only session reported nothing about paging the model: {warning!r}"
-    )
+    assert (
+        "20 GB" in warning
+    ), f"a restored CPU-only session reported nothing about paging the model: {warning!r}"
 
 
 def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkeypatch):
