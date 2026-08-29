@@ -8,6 +8,7 @@ import pytest
 
 from hub.services.models import local_inventory
 from hub.utils import gguf
+from utils.models.model_config import detect_gguf_model, _find_local_gguf_by_variant
 
 
 def _write_gguf(path: Path, size: int = 4) -> Path:
@@ -35,6 +36,15 @@ def _symlink_dir(alias: Path, target: Path) -> None:
         pytest.skip(f"symlink creation unavailable: {error}")
 
 
+def _symlink_file(alias: Path, target: Path) -> None:
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks unavailable")
+    try:
+        alias.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+
+
 def test_checkpoint_family_matches_quantized_and_split_variants():
     assert gguf.gguf_checkpoint_family("model-a-Q4_K_M.gguf") == "model-a"
     assert gguf.gguf_checkpoint_family("model-a-Q8_0.gguf") == "model-a"
@@ -58,10 +68,16 @@ def test_checkpoint_family_normalizes_quant_directories_and_windows_separators()
 def test_same_checkpoint_quantizations_use_one_grouped_row(tmp_path):
     root = tmp_path / "root"
     model = root / "model-a"
-    _write_gguf(model / "model-a-Q4_K_M.gguf")
-    _write_gguf(model / "model-a-Q8_0.gguf")
+    q4 = _write_gguf(model / "model-a-Q4_K_M.gguf", 8)
+    q8 = _write_gguf(model / "model-a-Q8_0.gguf", 16)
 
     assert [Path(row.path) for row in _custom_rows(root)] == [model]
+    variants, _ = gguf.list_local_gguf_variants(str(model), model_root = str(root))
+    assert {variant.quant for variant in variants} == {"Q4_K_M", "Q8_0"}
+    assert Path(detect_gguf_model(str(model), model_root = str(root))) == q8
+    assert Path(
+        _find_local_gguf_by_variant(str(model), "Q4_K_M", model_root = str(root))
+    ) == q4
 
 
 def test_distinct_checkpoints_sharing_a_quant_use_file_rows(tmp_path):
@@ -121,3 +137,34 @@ def test_symlinked_and_real_parent_roots_dedupe_group_rows(tmp_path):
 
     assert len(rows) == 1
     assert Path(rows[0].path).resolve() == real_model.resolve()
+
+
+def test_split_gguf_shards_stay_grouped(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-Q4_K_M-00001-of-00002.gguf")
+    _write_gguf(model / "model-Q4_K_M-00002-of-00002.gguf")
+
+    assert [Path(row.path) for row in _custom_rows(root)] == [model]
+
+
+def test_minimax_h3_partitions_stay_grouped(tmp_path):
+    root = tmp_path / "root"
+    model = root / "minimax-h3"
+    _write_gguf(model / "minimax_h3_fl2va-Q4_K_M.gguf")
+    _write_gguf(model / "minimax_h3_ref2va-Q4_K_M.gguf")
+
+    assert [Path(row.path) for row in _custom_rows(root)] == [model]
+
+
+def test_symlinked_variant_stays_grouped_and_loadable(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    target = _write_gguf(tmp_path / "outside" / "model-Q4_K_M.gguf")
+    model.mkdir(parents = True)
+    _symlink_file(model / target.name, target)
+
+    rows = _custom_rows(root)
+
+    assert [Path(row.path) for row in rows] == [model]
+    assert Path(detect_gguf_model(str(model), model_root = str(root))).samefile(target)
