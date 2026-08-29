@@ -17,7 +17,7 @@ const {
   cachedInventoryId,
   optimisticInventoryId,
 } = await import("../src/features/hub/inventory/view-models.ts");
-const { resolveDownloadedSelection } = await import(
+const { resolveDownloadedSelection, resolveSelectionUrlSync } = await import(
   "../src/features/hub/lib/selection-resolution.ts"
 );
 
@@ -623,5 +623,67 @@ test("does not carry HF-cache selection across model formats", () => {
       filteredLocalRows: [local],
     }),
     { selectedId: null, hiddenByFilters: false },
+  );
+});
+
+test("commits a resolved identity before another format appears", () => {
+  const repoId = "Org/Hybrid-After-Completion";
+  const unknownId = `hf_cache:unknown:${encodeURIComponent(repoId)}`;
+  const safetensors = buildCachedInventoryRow(
+    {
+      repo_id: repoId,
+      model_format: "safetensors",
+      size_bytes: 100,
+    },
+    "safetensors",
+  );
+  const gguf = buildCachedInventoryRow(
+    {
+      repo_id: repoId,
+      model_format: "gguf",
+      size_bytes: 100,
+    },
+    "gguf",
+  );
+
+  const firstResolution = resolveDownloadedSelection({
+    selectedId: unknownId,
+    cachedRows: [safetensors],
+    localRows: [],
+    filteredCachedRows: [safetensors],
+    filteredLocalRows: [],
+  });
+  assert.equal(firstResolution.selectedId, safetensors.id);
+  assert.deepEqual(
+    resolveSelectionUrlSync({
+      isDiscoverTab: false,
+      urlModel: unknownId,
+      selectionInputId: unknownId,
+      resolvedSelectedId: firstResolution.selectedId,
+    }),
+    { action: "replace", selectedId: safetensors.id },
+  );
+
+  assert.deepEqual(
+    resolveDownloadedSelection({
+      selectedId: safetensors.id,
+      cachedRows: [safetensors, gguf],
+      localRows: [],
+      filteredCachedRows: [safetensors, gguf],
+      filteredLocalRows: [],
+    }),
+    { selectedId: safetensors.id, hiddenByFilters: false },
+  );
+});
+
+test("applies URL navigation before rewriting a resolved selection", () => {
+  assert.deepEqual(
+    resolveSelectionUrlSync({
+      isDiscoverTab: false,
+      urlModel: "cache:gguf:Org%2FNext",
+      selectionInputId: "cache:gguf:Org%2FPrevious",
+      resolvedSelectedId: "cache:gguf:Org%2FPrevious",
+    }),
+    { action: "select", selectedId: "cache:gguf:Org%2FNext" },
   );
 });

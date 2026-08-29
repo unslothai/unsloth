@@ -14,6 +14,35 @@ export type SelectionResolution = {
   hiddenByFilters: boolean;
 };
 
+export type SelectionUrlSync =
+  | { action: "select"; selectedId: string | null }
+  | { action: "replace"; selectedId: string }
+  | null;
+
+export function resolveSelectionUrlSync({
+  isDiscoverTab,
+  urlModel,
+  selectionInputId,
+  resolvedSelectedId,
+}: {
+  isDiscoverTab: boolean;
+  urlModel: string | null;
+  selectionInputId: string | null;
+  resolvedSelectedId: string | null;
+}): SelectionUrlSync {
+  if (urlModel !== selectionInputId) {
+    return { action: "select", selectedId: urlModel };
+  }
+  if (
+    !isDiscoverTab &&
+    resolvedSelectedId &&
+    resolvedSelectedId !== urlModel
+  ) {
+    return { action: "replace", selectedId: resolvedSelectedId };
+  }
+  return null;
+}
+
 function idSet(rows: readonly { id: string }[]): Set<string> {
   return new Set(rows.map((row) => row.id));
 }
