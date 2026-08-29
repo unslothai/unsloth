@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """
-The unsloth_zoo suite runs in parallel, minus two files that must not share a worker.
+The unsloth_zoo suite runs in parallel, minus the files that must not share a worker.
 
 Measured on a staging runner, whole suite, all three matrix cells:
 
@@ -50,11 +50,11 @@ are different:
   picks this up next should not start from the shim docstring -- I did, and it is a
   dead end.
 
-So the pair is ignored from the parallel pass and run again in a process of their
-own. That pairing is the thing this file guards, because half of it is silent:
-drop the serial pass and the ignores simply delete 51 tests from CI while the job
-stays green. That is strictly worse than the 14 failures, which at least announce
-themselves.
+So each is ignored from the parallel pass and run again in a process of its own --
+its own, not one shared by all of them, since they contaminate each other too. That
+pairing is the thing this file guards, because half of it is silent: drop the serial
+pass and the ignores simply delete the tests from CI while the job stays green. That
+is strictly worse than the failures, which at least announce themselves.
 
 Same shape as test_backend_ci_parallel_isolation for studio-backend-ci, and for the
 same reason: an ignore and its serial rerun are two edits held together by nothing.
@@ -82,6 +82,18 @@ ISOLATED = [
     # them commented "within the unmeasurable window". Under four workers it reported
     # "no progress for 0s" -- nothing stalled, the test was descheduled.
     ("tests/test_hf_xet_fallback.py", "sub-second wall-clock margins under CPU contention"),
+    # The MLX trio. test_mlx_generate.py's shim is the shared cause: it lands in
+    # sys.modules at import time, which un-skips the neftune file (45 skips become
+    # NotImplementedError out of the stub) and breaks the transformers patching the
+    # gemma3 file asserts on. Under xdist that shim reaches them through a worker; in a
+    # shared serial rerun it reaches them directly, which is why each gets its own
+    # process below rather than a seat in one.
+    ("tests/test_mlx_neftune_quant_map.py", "the mlx shim un-skips it and the stub then raises"),
+    ("tests/test_mlx_gated_delta_vjp.py", "the mlx shim changes which backend it exercises"),
+    (
+        "tests/test_gemma3_forced_float32_boundary_dtype.py",
+        "the mlx shim leaves patch_Gemma3MLP unable to install its forward",
+    ),
 ]
 
 # The zoo suite is the only pytest run in this workflow driven out of the cloned zoo
@@ -110,11 +122,10 @@ def _zoo_parallel() -> str:
     return hits[0]
 
 
-def _zoo_serial() -> str:
-    hits = [c for c in _commands() if "-n 4" not in c and all(path in c for path, _ in ISOLATED)]
-    assert (
-        len(hits) == 1
-    ), f"expected exactly one serial rerun naming both isolated files, found {len(hits)}"
+def _zoo_serial(path: str) -> str:
+    """The rerun command for one isolated file. One file per command, on purpose."""
+    hits = [c for c in _commands() if "-n 4" not in c and path in c]
+    assert len(hits) == 1, f"expected exactly one serial rerun naming {path}, found {len(hits)}"
     return hits[0]
 
 
@@ -139,17 +150,33 @@ def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str)
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_still_runs_serially(path: str, reason: str) -> None:
     """The silent half. An ignore with no rerun deletes the tests and stays green."""
-    assert path in _zoo_serial(), (
+    assert path in _zoo_serial(path), (
         f"{path} is ignored from the parallel run but never run again. Its tests are "
         f"simply not executed, and nothing else in CI would say so."
     )
 
 
-def test_the_serial_rerun_is_not_itself_parallel() -> None:
-    """Rerunning the pair under xdist would reproduce exactly what it exists to avoid."""
-    assert "-n " not in _zoo_serial(), (
-        "the serial rerun of the isolated files passes -n, which puts them back in the "
-        "parallel session whose ordering is what breaks them"
+@pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
+def test_the_serial_rerun_is_not_itself_parallel(path: str, reason: str) -> None:
+    """Rerunning these under xdist would reproduce exactly what it exists to avoid."""
+    assert "-n " not in _zoo_serial(path), (
+        f"the serial rerun of {path} passes -n, which puts it back in the parallel "
+        f"session whose ordering is what breaks it"
+    )
+
+
+@pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
+def test_an_isolated_file_does_not_share_its_rerun(path: str, reason: str) -> None:
+    """One process each, because they contaminate each other as well as the suite.
+
+    Sharing one rerun process cost 14 failures and 6 errors on the cloned zoo at
+    52aff0d, all of them gone when each file got its own process.
+    """
+    cmd = _zoo_serial(path)
+    others = [other for other, _ in ISOLATED if other != path and other in cmd]
+    assert not others, (
+        f"{path} shares its rerun process with {others}. These files are isolated "
+        f"because they cannot share a process, and that includes each other."
     )
 
 
