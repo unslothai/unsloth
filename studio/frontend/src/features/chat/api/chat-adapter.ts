@@ -111,6 +111,7 @@ import {
   toolCallReplayArguments,
 } from "../tool-call-arguments";
 import {
+  bindStreamedToolCallBackendIds,
   findOldestUnownedStreamedToolCallPartIndex,
   findDelayedStableToolCallPartIndex,
   findStreamedToolCallPartIndex,
@@ -7027,8 +7028,11 @@ export function createOpenAIStreamAdapter(
                         idx,
                         streamedToolCallIds,
                       );
-                      toolPartIdByBackendId.set(stableId, stablePartId);
-                      toolPartIdByBackendId.set(stablePartId, stablePartId);
+                      bindStreamedToolCallBackendIds(
+                        toolPartIdByBackendId,
+                        stableId,
+                        stablePartId,
+                      );
                     } else {
                       stablePartId = resolveToolPartId(stableId);
                     }

@@ -10,6 +10,7 @@ import {
 } from "../src/features/chat/tool-call-arguments.ts";
 import {
   type StreamedToolCallPart,
+  bindStreamedToolCallBackendIds,
   findDelayedStableToolCallPartIndex,
   findOldestUnownedStreamedToolCallPartIndex,
   findStreamedToolCallPartIndex,
@@ -535,6 +536,17 @@ test("a stable id collision mints a distinct stream id", () => {
     parts.map((part) => part.toolCallId),
     ["tool_call_0", "tool_call_1"],
   );
+
+  const backendIds = new Map([["tool_call_0", "tool_call_0"]]);
+  bindStreamedToolCallBackendIds(
+    backendIds,
+    "tool_call_0",
+    "tool_call_1",
+  );
+  assert.deepEqual([...backendIds], [
+    ["tool_call_0", "tool_call_0"],
+    ["tool_call_1", "tool_call_1"],
+  ]);
 });
 
 test("decoded object arguments preserve their JSON payload", () => {

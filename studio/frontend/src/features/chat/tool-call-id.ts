@@ -17,6 +17,15 @@ export function resolveToolCallPartId(
   return partId;
 }
 
+export function bindStreamedToolCallBackendIds(
+  ids: Map<string, string>,
+  providerId: string,
+  streamId: string,
+): void {
+  if (!ids.has(providerId)) ids.set(providerId, streamId);
+  ids.set(streamId, streamId);
+}
+
 export interface StreamedToolCallPart {
   toolCallId: string;
   toolName?: string;
