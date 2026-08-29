@@ -357,8 +357,7 @@ def _same_json_value(left: Any, right: Any) -> bool:
         return False
     if isinstance(left, list):
         return len(left) == len(right) and all(
-            _same_json_value(left_item, right_item)
-            for left_item, right_item in zip(left, right)
+            _same_json_value(left_item, right_item) for left_item, right_item in zip(left, right)
         )
     if isinstance(left, dict):
         return left.keys() == right.keys() and all(
