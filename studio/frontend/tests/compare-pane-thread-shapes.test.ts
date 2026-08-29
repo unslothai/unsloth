@@ -130,6 +130,30 @@ test("one surviving legacy pane stays in its persisted shape", () => {
   });
 });
 
+test("the freshest row wins only within the selected shape", () => {
+  const [model2] = storedPair([["model2", 10]]);
+  const threads: ThreadRecord[] = [
+    {
+      ...model2,
+      id: "fresh-model1",
+      modelType: "model1",
+      updatedAt: 30,
+    },
+    {
+      ...model2,
+      id: "old-model1",
+      modelType: "model1",
+      updatedAt: 20,
+    },
+    model2,
+  ];
+  assert.deepEqual(resolveComparePaneThreadIds(threads), {
+    shape: "general",
+    first: "fresh-model1",
+    second: "model2-thread",
+  });
+});
+
 test("the LoRA panes adopt no generalized thread", () => {
   assert.ok(
     LORA_PANE_SOURCE.includes('threads.find((t) => t.modelType === "base")'),
