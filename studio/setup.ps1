@@ -2803,6 +2803,8 @@ try {
 
 if ($LongPathsEnabled) {
     step "long paths" "enabled"
+} elseif ($StageRoot) {
+    step "long paths" "disabled; unchanged during staging" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
@@ -2866,14 +2868,19 @@ if (-not $HasGit) {
         if ($_prForce -match '^\d+$' -and [int]$_prForce -gt 0) { $gitNeeded = $true }
         if ($_llamaSrc -ne "https://github.com/ggml-org/llama.cpp") { $gitNeeded = $true }
     }
-    Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        try {
-            Invoke-SetupCommand { winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
-            Refresh-Environment
-            $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
-        } catch { }
+    if ($gitNeeded -and $StageRoot) {
+        Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
+    }
+    if ($gitNeeded) {
+        Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
+        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+        if ($HasWinget) {
+            try {
+                Invoke-SetupCommand { winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                Refresh-Environment
+                $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+            } catch { }
+        }
     }
     if (-not $HasGit) {
         if ($gitNeeded) {
@@ -4979,7 +4986,7 @@ if ($script:UnslothVerbose) {
 
 # Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
 # paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
-if ($LongPathsEnabled) {
+if ($StageRoot -or $LongPathsEnabled) {
     $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"
 } else {
     $TorchCacheDir = "C:\tc"

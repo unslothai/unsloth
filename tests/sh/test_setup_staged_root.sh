@@ -71,6 +71,10 @@ check "setup.sh stages the managed Node runtime" \
     "$(has "$SETUP_SH" '_NODE_PARENT="$RUNTIME_ROOT"')"
 check "setup.sh stages llama.cpp and whisper.cpp" \
     "$(has "$SETUP_SH" 'UNSLOTH_HOME="$RUNTIME_ROOT"')"
+check "setup.sh forwards the staged helper root to whisper.cpp source builds" \
+    "$(has "$SETUP_SH" 'env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"')"
+check "whisper.cpp source builds honor the managed helper root" \
+    "$(has "$SCRIPT_DIR/../../scripts/build_whisper_cpp.sh" '${UNSLOTH_HOME:-}')"
 check "setup.sh does not install global uv while staging" \
     "$(has "$SETUP_SH" 'step "uv" "using pip inside the staged environment"')"
 check "setup.ps1 stages the managed Node runtime" \
@@ -81,6 +85,12 @@ check "setup.ps1 does not persist User PATH while staging" \
     "$(has "$SETUP_PS1" 'Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue')"
 check "setup.ps1 leaves vcredist unchanged while staging" \
     "$(has "$SETUP_PS1" 'step "vcredist" "missing; unchanged during staging"')"
+check "setup.ps1 leaves long-path policy unchanged while staging" \
+    "$(has "$SETUP_PS1" 'step "long paths" "disabled; unchanged during staging"')"
+check "setup.ps1 does not install Git while staging" \
+    "$(has "$SETUP_PS1" 'Background staging cannot install Git; retry with the foreground updater.')"
+check "setup.ps1 keeps the staging compiler cache under the stage root" \
+    "$(has "$SETUP_PS1" 'if ($StageRoot -or $LongPathsEnabled) {')"
 
 # ── the staged activation cannot dot-source a copied Activate script ──
 # A venv copied out of $STUDIO_HOME still names the original root in its activate
