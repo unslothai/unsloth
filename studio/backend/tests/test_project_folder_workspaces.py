@@ -422,9 +422,7 @@ def test_managed_workspace_delete_never_follows_a_replacement_symlink(tmp_path):
     assert (victim / "keep.txt").read_text(encoding = "utf-8") == "keep"
 
 
-def test_immediate_managed_delete_rejects_a_replacement_directory(
-    tmp_path, monkeypatch
-):
+def test_immediate_managed_delete_rejects_a_replacement_directory(tmp_path, monkeypatch):
     """A same-name directory installed after capture is not ours to remove."""
     project = _managed_project("project-delete-replacement")
     managed = studio_db.upsert_chat_project(project)
@@ -713,9 +711,7 @@ def test_deleting_a_migrated_legacy_workspace_keeps_its_recovery_record(tmp_path
     )
 
 
-def test_unbound_managed_project_allocates_a_fresh_root_without_adopting_foreign_path(
-    tmp_path,
-):
+def test_unbound_managed_project_allocates_a_fresh_root_without_adopting_foreign_path(tmp_path):
     project = studio_db.create_chat_project(_managed_project("project-unbound-root"))
     original = Path(project["managedRootPath"])
     shutil.rmtree(original)
@@ -1056,9 +1052,7 @@ def test_disconnect_does_not_re_adopt_a_replaced_preserved_root(tmp_path):
     folder.mkdir()
     managed = studio_db.upsert_chat_project(_managed_project("project-preserved-root"))
     managed_root = Path(managed["managedRootPath"])
-    marker = (managed_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).read_text(
-        encoding = "ascii"
-    )
+    marker = (managed_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).read_text(encoding = "ascii")
     project = studio_db.claim_chat_project_folder(
         _folder_claim("project-preserved-root", folder),
         expected_workspace_revision = managed["workspaceRevision"],
@@ -1068,9 +1062,7 @@ def test_disconnect_does_not_re_adopt_a_replaced_preserved_root(tmp_path):
     managed_root.rename(original)
     managed_root.mkdir()
     (managed_root / "sandbox").mkdir()
-    (managed_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).write_text(
-        marker, encoding = "ascii"
-    )
+    (managed_root / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).write_text(marker, encoding = "ascii")
     replacement.write_text("keep", encoding = "utf-8")
 
     disconnected = studio_db.disconnect_chat_project_folder(
