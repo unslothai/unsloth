@@ -31,7 +31,7 @@ use process::new_backend_state;
 use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,9 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
+
+#[cfg(target_os = "macos")]
+const STAGED_ROLLBACK_RELAUNCH_FLAG: &str = "--staged-rollback-relaunch-wait";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 
@@ -1799,7 +1802,71 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+#[cfg(target_os = "macos")]
+fn staged_rollback_relaunch_args(args: &[OsString]) -> Option<(u32, &[OsString])> {
+    if args.first()?.as_os_str() != OsStr::new(STAGED_ROLLBACK_RELAUNCH_FLAG) {
+        return None;
+    }
+    let parent = args.get(1)?.to_str()?.parse().ok()?;
+    Some((parent, &args[2..]))
+}
+
+#[cfg(target_os = "macos")]
+fn detached_relaunch_command(binary: impl AsRef<OsStr>) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = std::process::Command::new(binary);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn run_staged_rollback_relaunch_helper() -> bool {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let Some((parent, original_args)) = staged_rollback_relaunch_args(&args) else {
+        return false;
+    };
+    for _ in 0..1200 {
+        if !desktop_backend_owner::pid_is_not_dead(parent) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if desktop_backend_owner::pid_is_not_dead(parent) {
+        eprintln!("staged rollback relaunch timed out waiting for the previous app");
+        return true;
+    }
+    match std::env::current_exe()
+        .and_then(|binary| detached_relaunch_command(binary).args(original_args).spawn())
+    {
+        Ok(_) => {}
+        Err(error) => eprintln!("staged rollback relaunch failed: {error}"),
+    }
+    true
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn schedule_staged_rollback_relaunch(app: &tauri::AppHandle) -> Result<(), String> {
+    let binary = tauri::process::current_binary(&app.env()).map_err(|error| error.to_string())?;
+    detached_relaunch_command(binary)
+        .arg(STAGED_ROLLBACK_RELAUNCH_FLAG)
+        .arg(std::process::id().to_string())
+        .args(std::env::args_os().skip(1))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn main() {
+    #[cfg(target_os = "macos")]
+    if run_staged_rollback_relaunch_helper() {
+        return;
+    }
+
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
@@ -2090,6 +2157,23 @@ mod tests {
         assert!(take_in_app_relaunch_marker(dir.path()));
         assert!(!take_in_app_relaunch_marker(dir.path()));
         assert!(!in_app_relaunch_marker_path(dir.path()).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_rollback_relaunch_helper_removes_its_private_arguments() {
+        let args = vec![
+            OsString::from(STAGED_ROLLBACK_RELAUNCH_FLAG),
+            OsString::from("123"),
+            OsString::from("--hidden"),
+            OsString::from("file.gguf"),
+        ];
+
+        let (parent, original) = staged_rollback_relaunch_args(&args).unwrap();
+
+        assert_eq!(parent, 123);
+        assert_eq!(original, &args[2..]);
+        assert!(staged_rollback_relaunch_args(&args[2..]).is_none());
     }
 
     #[test]

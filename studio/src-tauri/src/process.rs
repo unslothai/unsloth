@@ -3442,7 +3442,7 @@ pub fn start_backend(
 
 pub(crate) fn request_staged_rollback_restart(app: &AppHandle, state: &BackendState) -> bool {
     let home = diagnostics::studio_dir();
-    match with_studio_runtime_launch_guard(|| {
+    let recovered = match with_studio_runtime_launch_guard(|| {
         if state
             .lock()
             .map(|process| process.has_owned_backend())
@@ -3450,14 +3450,28 @@ pub(crate) fn request_staged_rollback_restart(app: &AppHandle, state: &BackendSt
         {
             return Ok(false);
         }
-        crate::staged_update::recover_failed_activation(&home, || app.request_restart())
+        crate::staged_update::recover_failed_activation(&home, || {})
     }) {
         Ok(recovered) => recovered,
         Err(error) => {
             error!("Staged backend rollback failed: {error}");
             false
         }
+    };
+    if !recovered {
+        return false;
     }
+    #[cfg(target_os = "macos")]
+    match crate::schedule_staged_rollback_relaunch(app) {
+        Ok(()) => app.exit(0),
+        Err(error) => {
+            error!("Could not schedule staged rollback relaunch: {error}");
+            app.request_restart();
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    app.request_restart();
+    true
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
