@@ -1222,20 +1222,8 @@ def test_a_delayed_id_adopts_the_idless_call(executed, late_arguments):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            _call_delta(0, None, "web_search", '{"query":"first"}')
-                        ]
-                    }
-                ),
-                _sse(
-                    {
-                        "tool_calls": [
-                            _call_delta(0, "call_a", "web_search", late_arguments)
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", '{"query":"first"}')]}),
+                _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", late_arguments)]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -1274,10 +1262,7 @@ def test_delayed_named_ids_adopt_parallel_calls_in_order(executed):
 
     lines = _run(transport, tools = [WEB, FETCH])
 
-    assert [call["arguments"] for call in executed] == [
-        {"query": "first"},
-        {"query": "second"},
-    ]
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
     assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == [
         "call_a",
         "call_b",
@@ -1314,10 +1299,7 @@ def test_a_fresh_stable_multi_document_delta_keeps_id_on_first_call(executed):
         "call_a",
         "tool_call_0",
     ]
-    assert [call["arguments"] for call in executed] == [
-        {"query": "first"},
-        {"query": "second"},
-    ]
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
 
 
 def test_stream_and_replay_ids_stay_unique_when_provider_ids_collide(executed):
@@ -1360,9 +1342,7 @@ def test_reloaded_ids_do_not_rename_frontend_events(executed):
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [
-                _call_delta(0, "tool_call_0", "web_search", '{"query":"old"}')
-            ],
+            "tool_calls": [_call_delta(0, "tool_call_0", "web_search", '{"query":"old"}')],
         },
         {
             "role": "tool",
@@ -1375,13 +1355,7 @@ def test_reloaded_ids_do_not_rename_frontend_events(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            _call_delta(0, None, "web_search", '{"query":"new"}')
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", '{"query":"new"}')]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -1408,13 +1382,7 @@ def test_decoded_object_arguments_execute_unchanged(executed):
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            _call_delta(0, None, "web_search", {"query": "decoded"})
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [_call_delta(0, None, "web_search", {"query": "decoded"})]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
