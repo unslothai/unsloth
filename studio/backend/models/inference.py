@@ -1301,18 +1301,19 @@ class _InferenceRuntimeFields(BaseModel):
     requested_parallel_slots: Optional[int] = Field(
         None,
         description = (
-            "Parallel decode slots the load was invoked with (per-load "
-            "n_parallel, else the server-wide --parallel default). None for "
-            "non-GGUF loads and for the diffusion runner, which ignores "
-            "--parallel."
+            "Replies the load was invoked with (per-load n_parallel, else the "
+            "default; for GGUF, the server-wide --parallel set at launch). None "
+            "for the diffusion runner, which ignores --parallel."
         ),
     )
     parallel_slots: Optional[int] = Field(
         None,
         description = (
-            "Serving slots the active llama-server actually runs (--parallel "
-            "after any fit-time slot reduction). None for non-GGUF loads and "
-            "for the diffusion runner, which ignores --parallel."
+            "Replies the loaded model actually decodes at once. For GGUF these "
+            "are llama-server's --parallel slots after any fit-time reduction; "
+            "elsewhere it is 1 when the runtime has no batched generation, or "
+            "its settings rule it out. None for the diffusion runner, which "
+            "ignores --parallel, and when the runtime did not say."
         ),
     )
     requested_n_batch: Optional[int] = Field(

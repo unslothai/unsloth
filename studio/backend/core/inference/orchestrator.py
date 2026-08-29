@@ -1832,6 +1832,7 @@ class InferenceOrchestrator:
                         model_info, model_name
                     )
                     self.models[self.active_model_name]["parallel_slots"] = parallel_slots
+                    self.models[self.active_model_name]["can_batch"] = model_info.get("can_batch")
                     # Lets the already-loaded shortcut tell a CPU request from the GPU
                     # model it would otherwise report as satisfied. Native audio only:
                     # marking anything else tells training a GPU model holds no VRAM.

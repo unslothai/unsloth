@@ -524,11 +524,10 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedNParallel === null || hydratingExistingModel) && {
         loadedNParallel: status.requested_parallel_slots,
       }),
-    // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends
-    // it. /status omits the echo for non-GGUF and nulls it for diffusion, so an absent field
-    // on a GGUF means an older backend.
+    // A slotless load must not keep the previous model's baseline, since the rollback
+    // re-sends it. /status nulls the echo for a load that decodes one reply at a time.
     ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+      status.requested_parallel_slots === null && {
         loadedNParallel: null,
       }),
     // Per-model: a change underneath this tab blanks the control like performLoad's cross-model

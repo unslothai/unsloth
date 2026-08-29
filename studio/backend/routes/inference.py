@@ -6419,6 +6419,14 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
+def _unsloth_slot_fields(model_info: dict) -> dict:
+    """The width a non-GGUF load committed, for the replies that report it."""
+    slots = model_info.get("parallel_slots")
+    batches = model_info.get("can_batch")
+    effective = None if slots is None or batches is None else (slots if batches else 1)
+    return {"requested_parallel_slots": slots, "parallel_slots": effective}
+
+
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     """Runtime state shared by load, dedupe, and status; duplicates echo active settings."""
     fields = {
@@ -13530,6 +13538,7 @@ async def _load_model_impl(
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
+                    **_unsloth_slot_fields(_model_info),
                     mlx_kv_bits = _model_info.get("mlx_kv_bits"),
                     mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
@@ -14295,6 +14304,7 @@ async def _load_model_impl(
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
             is_mlx = bool(_model_info.get("is_mlx", False)),
+            **_unsloth_slot_fields(_model_info),
             mlx_kv_bits = _model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
@@ -16415,6 +16425,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             audio_type = audio_type,
             has_audio_input = has_audio_input,
             is_mlx = bool(model_info.get("is_mlx", False)),
+            **_unsloth_slot_fields(model_info),
             mlx_kv_bits = model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),

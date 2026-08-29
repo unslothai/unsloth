@@ -1783,7 +1783,9 @@ export function useChatModelRuntime() {
               mlx_kv_bits: loadMlxKvBits ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
-              // GGUF-only: slots mean nothing for a transformers load.
+              // The control lives in the GGUF advanced settings, so it holds no
+              // count a non-GGUF load could have meant. That load takes the
+              // width through the API instead.
               n_parallel: isGguf ? loadNParallel : null,
               // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
               // so neither a transformers load nor a diffusion GGUF carries them.
@@ -1896,8 +1898,10 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed: non-GGUF never sends them and diffusion ignores --parallel,
-            // so a click-time count would mint a phantom override.
+            // Slots the load actually committed. Neither this form nor diffusion
+            // sends a count, so a click-time count on either would mint a phantom
+            // override a saved preset carries onto a GGUF. What a non-GGUF load
+            // committed through the API is read back from the response instead.
             const committedSlots =
               (loadResponse.is_gguf ?? false) &&
               !(loadResponse.is_diffusion ?? false)

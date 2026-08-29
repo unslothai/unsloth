@@ -487,6 +487,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
+                "can_batch": _load_can_batch(backend),
             }
             _bm = getattr(backend, "models", {}) or {}
             _entry = (
@@ -813,6 +814,12 @@ def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
             "error": "Counting is not supported on the transformers backend.",
         },
     )
+
+def _load_can_batch(backend) -> bool:
+    """Whether this load can serve several replies in one command at all."""
+    probe = getattr(backend, "batch_unavailable_reason", None)
+    return callable(probe) and probe([{}, {}]) is None
+
 
 def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Answer one command with several replies, tagging each event with its row."""

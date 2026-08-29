@@ -578,3 +578,46 @@ def test_the_unsloth_load_hands_its_requested_slots_to_the_runtime():
     kwargs = load_impl[call : load_impl.index("\n            )", call)]
     assert "n_parallel = request.n_parallel" in kwargs
     assert "clamp_parallel_slots" not in load_impl
+
+
+def test_every_non_gguf_load_reply_carries_the_width_it_committed():
+    """No branch may answer a load without saying what width it is running at."""
+    import ast
+
+    tree = ast.parse((Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8"))
+    replies = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "LoadResponse"
+    ]
+    non_gguf = [
+        node
+        for node in replies
+        if not any(
+            keyword.arg == "is_gguf" and getattr(keyword.value, "value", None) is True
+            for keyword in node.keywords
+        )
+    ]
+    assert len(replies) == 3 and len(non_gguf) == 2
+    for node in non_gguf:
+        spread = [
+            keyword.value
+            for keyword in node.keywords
+            if keyword.arg is None and isinstance(keyword.value, ast.Call)
+        ]
+        widths = [
+            call for call in spread if getattr(call.func, "id", None) == "_unsloth_slot_fields"
+        ]
+        assert widths, f"a LoadResponse at line {node.lineno} reports no width"
+        mirrors = {
+            getattr(inner.func.value, "id", None)
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "get"
+            and isinstance(inner.func.value, ast.Name)
+        }
+        for call in widths:
+            assert [getattr(arg, "id", None) for arg in call.args] and (
+                getattr(call.args[0], "id", None) in mirrors
+            ), f"the width at line {node.lineno} is read from {ast.dump(call)}"

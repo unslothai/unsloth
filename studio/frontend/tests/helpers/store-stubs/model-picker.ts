@@ -12,3 +12,7 @@ export function currentRuntimePerModelConfig(): Record<string, unknown> {
 export function perModelConfigsEqual(): boolean {
   return true;
 }
+
+export function resolveResidentInitialConfig(): null {
+  return null;
+}
