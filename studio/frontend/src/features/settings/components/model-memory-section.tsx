@@ -70,7 +70,8 @@ function isRefreshCurrent(
 export function ModelMemorySection() {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -81,7 +82,7 @@ export function ModelMemorySection() {
       await refreshModelMemoryState(
         () => isRefreshCurrent(cancelled, refreshGeneration, generation),
         setSettings,
-        setError,
+        setLoadError,
         t("settings.resources.modelMemory.loadError"),
       );
     });
@@ -91,7 +92,7 @@ export function ModelMemorySection() {
       if (cancelled) return;
       refreshGeneration += 1;
       setSettings(next);
-      setError(null);
+      setLoadError(null);
     });
     const unsubscribeLifecycle = subscribeModelLifecycle(refresh);
     const timer = window.setInterval(() => {
@@ -116,13 +117,13 @@ export function ModelMemorySection() {
     patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
   ) => {
     setIsSaving(true);
-    setError(null);
+    setSaveError(null);
     try {
       setSettings(await updateModelMemorySettings(patch));
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
+    } catch (saveFailure) {
+      setSaveError(
+        saveFailure instanceof Error
+          ? saveFailure.message
           : t("settings.resources.modelMemory.saveError"),
       );
     } finally {
@@ -153,6 +154,7 @@ export function ModelMemorySection() {
     settings.keepResident === true &&
     settings.noRamReserve === false &&
     settings.mlockActive === false;
+  const error = saveError ?? loadError;
 
   return (
     <SettingsSection title={t("settings.resources.modelMemory.title")}>
