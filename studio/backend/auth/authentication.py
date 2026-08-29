@@ -27,6 +27,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 X_API_KEY_HEADER = "x-api-key"
+X_API_KEY_HEADER_NAME = X_API_KEY_HEADER.encode("ascii")
 NOT_AUTHENTICATED_DETAIL = "Not authenticated"
 
 # internal schemes, never sent by a client: no token at all, and a token to ignore if unusable
@@ -185,7 +186,12 @@ class _BearerOrKeyless(HTTPBearer):
             )
         if usable_bearer:
             return HTTPAuthorizationCredentials(scheme = scheme, credentials = token)
-        return await super().__call__(request)
+        has_x_api_key = any(
+            bytes(name).lower() == X_API_KEY_HEADER_NAME for name, _value in raw_headers
+        )
+        if has_x_api_key:
+            return None
+        return await strict_bearer_security(request)
 
 
 # scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
@@ -194,6 +200,7 @@ security = _BearerOrKeyless(
     scheme_name = "HTTPBearer",
 )  # Reads Authorization: Bearer <token>
 x_api_key_security = APIKeyHeader(name = X_API_KEY_HEADER, auto_error = False)
+strict_bearer_security = HTTPBearer(auto_error = True, scheme_name = "HTTPBearer")
 
 
 def _get_secret_for_subject(subject: str) -> str:
