@@ -3335,6 +3335,48 @@ _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
 
 
+def _linux_math_core_count(
+    cpu_root: Path = Path("/sys/devices/system/cpu"),
+    logical_cpus: Optional[int] = None,
+) -> Optional[int]:
+    """Linux x86 cores useful to llama.cpp's default math pool.
+
+    ``thread_siblings`` mirrors llama.cpp's physical-core count. A heterogeneous
+    ``cpu_capacity`` set identifies the performance cores its hybrid-x86 CPUID
+    path keeps while it skips the efficiency cores.
+    """
+    count = os.cpu_count() if logical_cpus is None else logical_cpus
+    if not count or count < 1:
+        return None
+    siblings: list[str] = []
+    capacities: list[Optional[int]] = []
+    for cpu in range(count):
+        cpu_path = cpu_root / f"cpu{cpu}"
+        try:
+            sibling_set = (cpu_path / "topology" / "thread_siblings").read_text().strip()
+        except OSError:
+            break
+        if not sibling_set:
+            break
+        siblings.append(sibling_set)
+        try:
+            capacities.append(int((cpu_path / "cpu_capacity").read_text().strip()))
+        except (OSError, ValueError):
+            capacities.append(None)
+    if not siblings:
+        return None
+    if all(capacity is not None for capacity in capacities) and len(set(capacities)) > 1:
+        fastest = max(capacity for capacity in capacities if capacity is not None)
+        return len(
+            {
+                sibling_set
+                for sibling_set, capacity in zip(siblings, capacities)
+                if capacity == fastest
+            }
+        )
+    return len(set(siblings))
+
+
 def _spilled_decode_threads(
     n_threads: Optional[int] = None,
     extra_args: Optional[Iterable[str]] = None,
@@ -3351,9 +3393,10 @@ def _spilled_decode_threads(
     host had twice the cores the child would ever use, and the generation
     penalty came out about half of what a spill really costs there.
 
-    psutil is already a dependency of this backend (studio/backend/run.py). Its
-    failure fallback matches llama.cpp: keep up to four logical CPUs, otherwise
-    halve them, and use four when no logical count is available.
+    Linux x86 reads the same sibling topology as llama.cpp and uses the kernel's
+    capacity classes for hybrid CPUs. psutil is the cross-platform fallback. If
+    neither can answer, match llama.cpp's last resort: keep up to four logical
+    CPUs, otherwise halve them, and use four when no logical count is available.
     """
     source_env = os.environ if env is None else env
     requested: Optional[int] = None
@@ -3376,11 +3419,14 @@ def _spilled_decode_threads(
         except (TypeError, ValueError):
             continue
     physical: Optional[int] = None
+    if sys.platform.startswith("linux") and os.uname().machine.lower() in ("x86_64", "amd64"):
+        physical = _linux_math_core_count()
     try:
-        import psutil
-        answer = psutil.cpu_count(logical = False)
-        if answer and answer > 0:
-            physical = int(answer)
+        if physical is None:
+            import psutil
+            answer = psutil.cpu_count(logical = False)
+            if answer and answer > 0:
+                physical = int(answer)
     except Exception:
         pass
     if physical is None:

@@ -1675,6 +1675,7 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads(monkeypatch):
     """
     import core.inference.llama_cpp as llama_mod
 
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
     assert llama_mod._spilled_decode_threads() >= 1
 
     class _FakePsutil:
@@ -1776,3 +1777,52 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"], env = {}) == 8
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"], env = {}) == 8
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"], env = {}) == 8
+
+
+def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    sibling_sets = [f"{core},{core + 8}" for core in range(8)]
+    sibling_sets.extend(f"{core},{core + 8}" for core in range(8))
+    sibling_sets.extend(str(cpu) for cpu in range(16, 32))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = tmp_path / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(sibling_set)
+        capacity = 1024 if cpu < 16 else 512
+        (cpu_path / "cpu_capacity").write_text(str(capacity))
+
+    assert _linux_math_core_count(tmp_path, logical_cpus = 32) == 8
+
+
+@pytest.mark.parametrize(
+    ("sibling_sets", "expected"),
+    [
+        (["0,4", "1,5", "2,6", "3,7", "0,4", "1,5", "2,6", "3,7"], 4),
+        ([str(cpu) for cpu in range(8)], 8),
+    ],
+)
+def test_linux_smt_and_non_smt_core_counts(tmp_path, sibling_sets, expected):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = tmp_path / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(sibling_set)
+
+    assert _linux_math_core_count(tmp_path, logical_cpus = len(sibling_sets)) == expected
+
+
+def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _PhysicalHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 24 if logical else 12
+
+    import sys
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
+    monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
+    assert llama_mod._spilled_decode_threads(env = {}) == 12
