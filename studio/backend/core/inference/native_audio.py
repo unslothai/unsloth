@@ -104,15 +104,29 @@ _MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
 )
 _MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
 _MOSS_NANO_SAVE_LOCK = threading.Lock()
+_MAX_AUDIO_METADATA_BYTES = 1_000_000
 
 
-def _read_local_audio_metadata(path: Path, filename: str) -> dict[str, Any]:
+class _AudioMetadataTooLarge(ValueError):
+    pass
+
+
+def _read_local_audio_metadata(
+    path: Path,
+    filename: str,
+    *,
+    reject_oversized: bool = False,
+) -> dict[str, Any]:
     metadata_path = path / filename
     if not metadata_path.is_file():
         return {}
     with metadata_path.open("rb") as handle:
-        raw = handle.read(1_000_001)
-    if len(raw) > 1_000_000:
+        raw = handle.read(_MAX_AUDIO_METADATA_BYTES + 1)
+    if len(raw) > _MAX_AUDIO_METADATA_BYTES:
+        if reject_oversized:
+            raise _AudioMetadataTooLarge(
+                f"{filename} exceeds the {_MAX_AUDIO_METADATA_BYTES}-byte security inspection limit."
+            )
         return {}
     value = json.loads(raw.decode("utf-8-sig"))
     return value if isinstance(value, dict) else {}
@@ -122,6 +136,8 @@ def _read_audio_metadata(
     model_name: str,
     filename: str,
     hf_token: Optional[str] = None,
+    *,
+    reject_oversized: bool = False,
 ) -> dict[str, Any]:
     """Read one bounded metadata file from a local checkpoint or Hub repo."""
     normalized = str(model_name or "").strip()
@@ -132,7 +148,11 @@ def _read_audio_metadata(
         if path.is_file():
             path = path.parent
         if path.is_dir():
-            return _read_local_audio_metadata(path, filename)
+            return _read_local_audio_metadata(
+                path,
+                filename,
+                reject_oversized = reject_oversized,
+            )
 
         from huggingface_hub import hf_hub_download
         from utils.hf_cache_settings import active_hf_hub_cache
@@ -145,7 +165,13 @@ def _read_audio_metadata(
                 cache_dir = active_hf_hub_cache(),
             )
         )
-        return _read_local_audio_metadata(metadata_path.parent, metadata_path.name)
+        return _read_local_audio_metadata(
+            metadata_path.parent,
+            metadata_path.name,
+            reject_oversized = reject_oversized,
+        )
+    except _AudioMetadataTooLarge:
+        raise
     except Exception as exc:
         logger.debug(
             "Could not read native audio metadata %s from %s: %s", filename, normalized, exc
@@ -155,8 +181,10 @@ def _read_audio_metadata(
 
 def _moss_local_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve and freeze the codec source the publisher processor will load."""
-    processor_config = _read_audio_metadata(model_name, "processor_config.json", hf_token)
-    model_config = _read_audio_metadata(model_name, "config.json", hf_token)
+    processor_config = _read_audio_metadata(
+        model_name, "processor_config.json", hf_token, reject_oversized = True
+    )
+    model_config = _read_audio_metadata(model_name, "config.json", hf_token, reject_oversized = True)
     nested = processor_config.get("audio_tokenizer")
     candidates = (
         processor_config.get("audio_tokenizer_name_or_path"),
@@ -171,7 +199,9 @@ def _moss_local_codec_target(model_name: str, hf_token: Optional[str] = None) ->
 
 def _higgs_tts2_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve the codec source that the Higgs TTS 2 processor will load."""
-    processor_config = _read_audio_metadata(model_name, "processor_config.json", hf_token)
+    processor_config = _read_audio_metadata(
+        model_name, "processor_config.json", hf_token, reject_oversized = True
+    )
     nested = processor_config.get("audio_tokenizer")
     candidates = (
         processor_config.get("audio_tokenizer_name_or_path"),
@@ -185,7 +215,9 @@ def _higgs_tts2_codec_target(model_name: str, hf_token: Optional[str] = None) ->
 
 def _higgs_tts3_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve the codec source that the Higgs TTS 3 remote model will load."""
-    model_config = _read_audio_metadata(model_name, "config.json", hf_token)
+    model_config = _read_audio_metadata(
+        model_name, "config.json", hf_token, reject_oversized = True
+    )
     candidate = model_config.get("audio_tokenizer_id")
     if isinstance(candidate, str) and candidate.strip():
         return candidate.strip()

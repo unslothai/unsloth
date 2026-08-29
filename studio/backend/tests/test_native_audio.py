@@ -134,6 +134,22 @@ def test_local_higgs_companion_metadata_drives_security_and_download_plans(
     assert [entry["repo_id"] for entry in plan["entries"]] == [codec]
 
 
+def test_oversized_higgs_companion_metadata_fails_closed(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"
+    )
+    metadata = {
+        "audio_tokenizer": {"audio_tokenizer_name_or_path": "acme/unapproved-codec"},
+        "padding": "x" * 1_000_000,
+    }
+    (tmp_path / "processor_config.json").write_text(json.dumps(metadata), encoding = "utf-8")
+
+    with pytest.raises(ValueError, match = "security inspection limit"):
+        native_audio_security_targets(str(tmp_path), "higgs_tts2")
+    with pytest.raises(ValueError, match = "security inspection limit"):
+        native_audio_download_plan(str(tmp_path))
+
+
 def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch):
     siblings = [
         SimpleNamespace(rfilename = "modular_model_index.json", size = 10),
