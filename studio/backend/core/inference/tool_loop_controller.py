@@ -190,10 +190,17 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
+    # Response-scoped card id for a provider call that had no id.
+    stream_call_id: str = ""
     key: str = ""
     provenance: dict[str, Any] = field(default_factory = dict)
     status_text: str = ""
     noop_result: str = ""
+
+    @property
+    def card_call_id(self) -> str:
+        """The id every client-visible event for this call must carry."""
+        return self.stream_call_id or self.tool_call_id
 
     @property
     def should_execute(self) -> bool:
@@ -232,7 +239,7 @@ class ToolCallDecision:
         arguments = {"raw": fragment} if fragment is not None else self.arguments
         return {
             "tool_name": self.tool_name,
-            "tool_call_id": self.tool_call_id,
+            "tool_call_id": self.card_call_id,
             "arguments": arguments,
             "provenance": self.provenance,
         }
@@ -282,7 +289,7 @@ class ToolCallCompletion:
         """Build the payload fields for a real tool_end event."""
         return {
             "tool_name": self.decision.tool_name,
-            "tool_call_id": self.decision.tool_call_id,
+            "tool_call_id": self.decision.card_call_id,
             "result": self.result,
             "provenance": self.decision.provenance,
         }
@@ -723,6 +730,7 @@ class ToolLoopController:
             tool_name = tool_name,
             arguments = coerced.arguments,
             tool_call_id = str(tool_call.get("id") or ""),
+            stream_call_id = str(tool_call.get("card_id") or ""),
             key = key,
             provenance = provenance,
             status_text = status_for_tool(tool_name, coerced.arguments),

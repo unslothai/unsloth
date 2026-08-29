@@ -269,6 +269,95 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     return normalized
 
 
+class _ArgumentBoundaries:
+    """Find adjacent JSON documents without rescanning prior fragments.
+
+    Malformed arguments are left whole rather than split into more bad calls.
+    """
+
+    __slots__ = ("depth", "in_string", "escaped", "start", "closed", "invalid", "scanned")
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.in_string = False
+        self.escaped = False
+        self.start = -1
+        self.closed = False
+        self.invalid = False
+        # Exposed for deterministic complexity tests.
+        self.scanned = 0
+
+    def feed(self, text: str, position: int) -> list[int]:
+        """Offsets in ``text`` at or after ``position`` that open another call."""
+        if self.invalid:
+            return []
+        boundaries: list[int] = []
+        for index in range(position, len(text)):
+            self.scanned += 1
+            character = text[index]
+            if self.in_string:
+                if self.escaped:
+                    self.escaped = False
+                elif character == "\\":
+                    self.escaped = True
+                elif character == '"':
+                    self.in_string = False
+                continue
+            if self.depth == 0:
+                if character.isspace():
+                    continue
+                if character not in "{[":
+                    self.invalid = True
+                    return []
+                if self.closed:
+                    boundaries.append(index)
+                    self.closed = False
+                self.start = index
+                self.depth = 1
+                continue
+            if character == '"':
+                self.in_string = True
+            elif character in "{[":
+                self.depth += 1
+            elif character in "}]":
+                self.depth -= 1
+                if self.depth == 0:
+                    try:
+                        # Parsing also rejects mismatched delimiters.
+                        json.loads(text[self.start : index + 1])
+                    except (TypeError, ValueError, RecursionError):
+                        self.invalid = True
+                        return []
+                    self.closed = True
+        return boundaries
+
+    def holds_one_complete_document(self) -> bool:
+        return self.closed and self.depth == 0 and not self.invalid
+
+    def is_open(self) -> bool:
+        """Whether a document has begun here and has not finished."""
+        return self.depth > 0
+
+    def rebase(self) -> None:
+        """Reset offsets after moving the scan to a split call."""
+        self.start = 0
+
+
+_EMPTY_BOUNDARIES = _ArgumentBoundaries()
+
+
+def _mint_streamed_tool_call_id(taken: set[str], index: Any) -> str:
+    """Mirror the frontend's ``tool_call_<n>`` minting."""
+    if isinstance(index, int) and not isinstance(index, bool):
+        preferred = f"tool_call_{index}"
+        if preferred not in taken:
+            return preferred
+    next_free = 0
+    while f"tool_call_{next_free}" in taken:
+        next_free += 1
+    return f"tool_call_{next_free}"
+
+
 def _delta_text(content: Any) -> str:
     """Text of a content delta, whether it is a plain string or content parts.
 
@@ -360,6 +449,10 @@ class _Turn:
     # call key each delta index maps to: the index itself until a second call
     # forks off it, then (index, call_id).
     open_key_by_index: dict[int, Any] = field(default_factory = dict)
+    # Live JSON-boundary scan per call, so the arguments are read once per turn.
+    boundaries: dict[Any, "_ArgumentBoundaries"] = field(default_factory = dict)
+    # Only split calls are withheld when their JSON is unfinished.
+    split_keys: set[Any] = field(default_factory = set)
     last_index: int | None = None
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
@@ -503,14 +596,81 @@ class _Turn:
             current = self.by_index[key]
             if isinstance(call_id, str) and call_id:
                 current["id"] = call_id
+            function = raw_call.get("function")
+            name_fragment = function.get("name") if isinstance(function, dict) else None
+            if not isinstance(name_fragment, str):
+                name_fragment = None
+            argument_fragment = (
+                function.get("arguments") if isinstance(function, dict) else None
+            )
+            if not isinstance(argument_fragment, str):
+                argument_fragment = None
+
+            scan = self.boundaries.get(key)
+            if scan is None:
+                scan = _ArgumentBoundaries()
+                self.boundaries[key] = scan
+
+            # Id-less calls sharing an index are separated at JSON boundaries.
+            # Scan every stream so a late id does not invalidate the state.
+            segments: list[str] = []
+            split_carries_the_scan = False
+            if argument_fragment:
+                position = len(current["function"]["arguments"])
+                current["function"]["arguments"] += argument_fragment
+                argument_fragment = None
+                buffer = current["function"]["arguments"]
+                cuts = scan.feed(buffer, position)
+                if cuts and not (isinstance(call_id, str) and call_id):
+                    edges = [0, *cuts, len(buffer)]
+                    segments = [buffer[a:b] for a, b in zip(edges, edges[1:])]
+                    split_carries_the_scan = True
+            elif (
+                name_fragment
+                and not (isinstance(call_id, str) and call_id)
+                # An unnamed call claims the next name itself.
+                and current["function"]["name"]
+                and scan.holds_one_complete_document()
+            ):
+                # A name after a finished named call opens the next call.
+                segments = [current["function"]["arguments"], ""]
+
+            if segments:
+                # Segment 0 stays on the current call and must not remain nameless.
+                if name_fragment and not current["function"]["name"]:
+                    current["function"]["name"] = name_fragment
+                inherited = current["function"]["name"]
+                current["function"]["arguments"] = segments[0]
+                closed = _ArgumentBoundaries()
+                closed.closed = True
+                self.boundaries[key] = closed
+                for segment in segments[1:]:
+                    key = (index, "split", len(self.order))
+                    self.by_index[key] = {
+                        "id": "",
+                        "type": "function",
+                        "function": {
+                            "name": name_fragment or inherited,
+                            "arguments": segment,
+                        },
+                    }
+                    self.order.append(key)
+                    self.split_keys.add(key)
+                    self.open_key_by_index[index] = key
+                    current = self.by_index[key]
+                # Only the final segment can still be open.
+                if split_carries_the_scan:
+                    scan.rebase()
+                    self.boundaries[key] = scan
+                else:
+                    self.boundaries[key] = _ArgumentBoundaries()
+                argument_fragment = None
+
             extra = raw_call.get("extra_content")
             if isinstance(extra, dict) and extra:
-                # Gemini 3 stows this call's thoughtSignature here, and the
-                # native translator rejects a replayed functionCall without it.
-                # Per call, so it cannot ride along on the delta-level slot.
+                # Apply per-call metadata after splitting so it follows the new call.
                 current["extra_content"] = {**current.get("extra_content", {}), **extra}
-            function = raw_call.get("function")
-            if isinstance(function, dict):
+            if name_fragment:
                 # Two provider dialects, and picking either one alone breaks the
                 # other. llama-server re-sends the whole name as it grows ("web"
                 # then "web_search"), so appending yields "webweb_search".
@@ -519,32 +679,59 @@ class _Turn:
                 # check and the call silently never runs. A fragment that already
                 # starts with what we have is the whole name resent; anything
                 # else continues it.
-                fragment = function.get("name")
-                if isinstance(fragment, str) and fragment:
-                    accumulated = current["function"]["name"]
-                    if fragment.startswith(accumulated):
-                        current["function"]["name"] = fragment
-                    else:
-                        current["function"]["name"] = accumulated + fragment
-                if isinstance(function.get("arguments"), str):
-                    current["function"]["arguments"] += function["arguments"]
+                accumulated = current["function"]["name"]
+                if name_fragment.startswith(accumulated):
+                    current["function"]["name"] = name_fragment
+                else:
+                    current["function"]["name"] = accumulated + name_fragment
+            if argument_fragment is not None:
+                current["function"]["arguments"] += argument_fragment
 
-    def calls(self, taken: set[str] | None = None) -> list[dict[str, Any]]:
+    def assign_card_ids(self, streamed: set[str]) -> None:
+        """Assign frontend card ids, including for truncated turns."""
+        for key in self.order:
+            call = self.by_index[key]
+            if call.get("card_id"):
+                continue
+            raw_id = call.get("id")
+            if isinstance(raw_id, str) and raw_id:
+                streamed.add(raw_id)
+                continue
+            index = key[0] if isinstance(key, tuple) else key
+            call["card_id"] = _mint_streamed_tool_call_id(streamed, index)
+            streamed.add(call["card_id"])
+
+    def calls(
+        self,
+        taken: set[str] | None = None,
+        streamed: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Every call this turn produced, with ids unique across the whole run.
 
         ``taken`` carries the ids already used by earlier turns. A provider that
         restarts its numbering each turn, and the healer (which always mints
         call_0 first), would otherwise put two different results under one id in
         the conversation replayed upstream.
+
+        ``streamed`` reserves card ids across every round of this response.
         """
         seen: set[str] = taken if taken is not None else set()
+        self.assign_card_ids(streamed if streamed is not None else set())
         out: list[dict[str, Any]] = []
-        for position, call in enumerate(
-            [self.by_index[key] for key in self.order] + list(self.healed)
-        ):
+        ordered: list[tuple[Any, dict[str, Any]]] = [
+            (key, self.by_index[key]) for key in self.order
+        ] + [(None, call) for call in self.healed]
+        for position, (key, call) in enumerate(ordered):
+            if key in self.split_keys and self.boundaries.get(key, _EMPTY_BOUNDARIES).is_open():
+                # Provider-opened malformed calls retain the existing coercion path.
+                continue
             normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
             if normalized is None:
                 continue
+            # Conversation ids are global; card ids restart with each response.
+            card_id = call.get("card_id")
+            if card_id:
+                normalized["card_id"] = card_id
             if normalized["id"] in seen:
                 # The client keyed the card it painted on the id the provider
                 # streamed, so keep that one for the events aimed at the card.
@@ -814,6 +1001,8 @@ async def stream_with_studio_tools(
     last_reprompt_text = ""
     provider_turns = 0
     used_call_ids: set[str] = _replayed_call_ids(conversation)
+    # Card ids span every provider round in this response.
+    streamed_call_ids: set[str] = set()
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
@@ -1005,14 +1194,10 @@ async def stream_with_studio_tools(
                 turn.text.append(span)
                 yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
         if truncated:
-            # The other half of the same problem. A call the provider streamed as
-            # a tool_calls delta was relayed as it arrived, so the client already
-            # has a card for it, and refusing to run it leaves that card open for
-            # the rest of the response. Close it the way every other unrun call
-            # is closed. Structured only: a healed call was never streamed, and
-            # the span released just above is what tells the user about that one.
+            # Structured calls already painted cards, so close them without running.
+            turn.assign_card_ids(streamed_call_ids)
             for raw_call in turn.by_index.values():
-                truncated_id = raw_call.get("id")
+                truncated_id = raw_call.get("card_id") or raw_call.get("id")
                 function = raw_call.get("function")
                 name = function.get("name") if isinstance(function, dict) else None
                 if not isinstance(truncated_id, str) or not truncated_id:
@@ -1024,8 +1209,6 @@ async def stream_with_studio_tools(
                 for card_line in _unrun_call_card(
                     tool_name = name,
                     tool_call_id = truncated_id,
-                    # The arguments are cut off mid-write, so there is nothing
-                    # well formed to show; the result says what happened.
                     arguments = {},
                     result = _TOOL_TRUNCATED,
                     provenance = _unrun_provenance(name, round_id + 1),
@@ -1037,7 +1220,11 @@ async def stream_with_studio_tools(
         # so the scraped web text in its prompts cannot reach python or terminal,
         # so a naive or compromised endpoint echoing a call back must not be able
         # to execute it here.
-        calls = [] if (truncated or tool_choice == "none") else turn.calls(used_call_ids)
+        calls = (
+            []
+            if (truncated or tool_choice == "none")
+            else turn.calls(used_call_ids, streamed_call_ids)
+        )
         if not calls:
             # No tool this turn. A model that only said what it was about to do
             # gets one nudge to actually do it, the same recovery the local loops
@@ -1098,7 +1285,9 @@ async def stream_with_studio_tools(
                 # execute: the cap is a safety limit, not a hint to the provider.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
-                    tool_call_id = call.get("stream_id") or call["id"],
+                    tool_call_id = (
+                        call.get("card_id") or call.get("stream_id") or call["id"]
+                    ),
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
@@ -1153,7 +1342,9 @@ async def stream_with_studio_tools(
                     continue
                 for card_line in _unrun_call_card(
                     tool_name = decision.tool_name,
-                    tool_call_id = call.get("stream_id") or decision.tool_call_id,
+                    tool_call_id = (
+                        call.get("card_id") or call.get("stream_id") or decision.tool_call_id
+                    ),
                     arguments = decision.arguments,
                     result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
                     provenance = decision.provenance,
@@ -1170,7 +1361,8 @@ async def stream_with_studio_tools(
 
             name = decision.tool_name
             arguments = decision.arguments
-            call_id = decision.tool_call_id
+            # Visible events use the response-scoped card id.
+            call_id = decision.card_call_id
             needs_confirmation = (
                 confirm_tool_calls and not bypass_permissions and permission_mode != "off"
             )
@@ -1240,8 +1432,10 @@ async def stream_with_studio_tools(
                     "name": name,
                     "content": TOOL_REJECTED_MESSAGE,
                 }
-                if call_id:
-                    denied_message["tool_call_id"] = call_id
+                # Replayed upstream, so it pairs with the assistant call by the
+                # conversation identity rather than by the card's.
+                if decision.tool_call_id:
+                    denied_message["tool_call_id"] = decision.tool_call_id
                 tool_messages.append(denied_message)
                 # A denial is an answer, not a stall: never nudge after one.
                 reprompts = max_reprompts

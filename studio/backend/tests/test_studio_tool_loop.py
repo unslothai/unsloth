@@ -1169,3 +1169,697 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+
+
+FETCH = _tool("web_fetch")
+
+
+def test_id_less_parallel_calls_at_one_index_stay_separate(executed):
+    """Recover id-less parallel calls collapsed onto index 0 (#9807)."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_fetch",
+                                    "arguments": '{"query":"first"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"second"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_fetch",
+                                    "arguments": '{"query":"third"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [WEB, FETCH])
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_fetch", {"query": "first"}),
+        ("web_search", {"query": "second"}),
+        ("web_fetch", {"query": "third"}),
+    ]
+
+
+def test_id_less_arguments_still_accumulate_across_fragments(executed):
+    """The boundary must not cut a call whose JSON is still being streamed."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"first"}'}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_fetch",
+                                    "arguments": '{"query":"second"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [WEB, FETCH])
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"}),
+        ("web_fetch", {"query": "second"}),
+    ]
+
+
+def test_an_id_less_name_opens_the_next_call_once_the_slot_closed(executed):
+    """A name after a completed call opens the next call."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"first"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_fetch"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": '{"query":"second"}'}}
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [WEB, FETCH])
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"}),
+        ("web_fetch", {"query": "second"}),
+    ]
+
+
+def test_a_name_resent_as_it_grows_still_names_one_call(executed):
+    """A resent growing name remains on one call."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web"}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": '{"query":"first"}'}}
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"})
+    ]
+
+
+def test_one_fragment_holding_two_documents_is_two_named_calls(executed):
+    """Both calls split from one named fragment keep the name."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"first"}{"query":"second"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"}),
+        ("web_search", {"query": "second"}),
+    ]
+
+
+def test_a_complete_document_followed_by_an_open_one_keeps_both(executed):
+    """A split keeps both the completed call and its streamed tail."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"first"}{"query":',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"second"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"}),
+        ("web_search", {"query": "second"}),
+    ]
+
+
+def test_arguments_streamed_before_the_name_stay_with_their_call(executed):
+    """A late name stays with its preceding arguments."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": '{"query":"first"}'}}
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"})
+    ]
+
+
+def test_balanced_text_that_is_not_json_is_never_split(executed):
+    """Balanced malformed text remains one call."""
+    turn = loop_mod._Turn()
+    turn.merge_structured(
+        [{"index": 0, "function": {"name": "web_search", "arguments": "{bad}{worse}"}}]
+    )
+
+    assert [call["function"]["arguments"] for call in turn.by_index.values()] == [
+        "{bad}{worse}"
+    ]
+
+
+def test_a_long_argument_is_read_once_not_once_per_fragment():
+    """Count scanned characters instead of timing the implementation."""
+    opening = '{"code":"'
+    body = "x" * (64 * 1024)
+    turn = loop_mod._Turn()
+    turn.merge_structured(
+        [{"index": 0, "function": {"name": "python", "arguments": opening}}]
+    )
+    for at in range(0, len(body), 1024):
+        turn.merge_structured(
+            [{"index": 0, "function": {"arguments": body[at : at + 1024]}}]
+        )
+
+    assert turn.boundaries[0].scanned == len(opening) + len(body)
+
+
+def test_a_call_split_off_mid_document_keeps_accumulating(executed):
+    """A boundary scan follows the call split from its original slot."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"first"}{"query":',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"second"}'}}]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"third"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [call["arguments"] for call in executed] == [
+        {"query": "first"},
+        {"query": "second"},
+        {"query": "third"},
+    ]
+
+
+def test_a_provider_that_stops_mid_document_does_not_run_the_tail(executed):
+    """Run the completed call but not its unfinished split tail."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"first"}{"query":',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "first"}]
+
+
+def test_id_less_calls_carry_the_card_id_the_client_painted(executed):
+    """Id-less calls use the card ids the client minted."""
+    turn = loop_mod._Turn()
+    for query in ("first", "second", "third"):
+        turn.merge_structured(
+            [
+                {
+                    "index": 0,
+                    "function": {"name": "web_search", "arguments": '{"query":"%s"}' % query},
+                }
+            ]
+        )
+
+    assert [call["card_id"] for call in turn.calls()] == [
+        "tool_call_0",
+        "tool_call_1",
+        "tool_call_2",
+    ]
+
+
+def test_parallel_indices_keep_the_client_s_per_index_card_id(executed):
+    """The client names the first call at an index ``tool_call_<index>``."""
+    turn = loop_mod._Turn()
+    turn.merge_structured(
+        [{"index": 1, "function": {"name": "web_search", "arguments": '{"query":"only"}'}}]
+    )
+
+    assert [call["card_id"] for call in turn.calls()] == ["tool_call_1"]
+
+
+def test_a_provider_id_still_owns_its_card(executed):
+    """A stream that carries ids is untouched: no card id is invented for it."""
+    turn = loop_mod._Turn()
+    turn.merge_structured(
+        [
+            {
+                "index": 0,
+                "id": "call_abc",
+                "function": {"name": "web_search", "arguments": '{"query":"only"}'},
+            }
+        ]
+    )
+
+    calls = turn.calls()
+    assert [call["id"] for call in calls] == ["call_abc"]
+    assert "card_id" not in calls[0]
+
+
+def test_a_lone_unfinished_call_the_provider_opened_itself_still_runs(executed):
+    """Only split calls are withheld for unfinished JSON."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": "{not json at all",
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+
+
+def _id_less_call(query):
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "function": {"name": "web_search", "arguments": '{"query":"%s"}' % query},
+                }
+            ]
+        }
+    )
+
+
+def _event_ids(lines, kind):
+    return [event.get("tool_call_id") for event in _events(lines, kind)]
+
+
+def test_id_less_calls_address_their_events_to_the_painted_card(executed):
+    """Execution events address the provisional id-less cards."""
+    transport = FakeTransport(
+        [
+            [
+                _id_less_call("first"),
+                _id_less_call("second"),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [
+        {"query": "first"},
+        {"query": "second"},
+    ]
+    assert _event_ids(lines, "tool_start") == ["tool_call_0", "tool_call_1"]
+    assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
+
+
+def test_a_second_round_keeps_numbering_where_the_first_stopped(executed):
+    """Card-id numbering spans every round of one response."""
+    transport = FakeTransport(
+        [
+            [_id_less_call("first"), _sse(finish = "tool_calls"), _DONE],
+            [_id_less_call("second"), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [
+        {"query": "first"},
+        {"query": "second"},
+    ]
+    assert _event_ids(lines, "tool_start") == ["tool_call_0", "tool_call_1"]
+    assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
+
+
+def test_the_replayed_call_and_its_result_pair_on_the_conversation_id(executed):
+    """Replay uses the conversation id while events use the card id."""
+    transport = FakeTransport(
+        [
+            [_id_less_call("first"), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    follow_up = transport.requests[1]["messages"]
+    assistant = follow_up[-2]
+    tool_result = follow_up[-1]
+    replayed = [entry["id"] for entry in assistant["tool_calls"]]
+    assert len(replayed) == 1
+    assert tool_result["tool_call_id"] == replayed[0]
+    assert _event_ids(lines, "tool_start") == ["tool_call_0"]
+
+
+def test_a_provider_that_sends_ids_keeps_addressing_events_to_them(executed):
+    """Nothing is renumbered for a stream that already identifies its calls."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":"x"}')]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert _event_ids(lines, "tool_start") == ["call_a"]
+    assert _event_ids(lines, "tool_end") == ["call_a"]
+
+
+def test_a_new_response_addresses_cards_the_history_already_named(executed):
+    """Historical conversation ids do not rename new response cards."""
+    history = [
+        {"role": "user", "content": "first question"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tool_call_0",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"old"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "tool_call_0",
+            "name": "web_search",
+            "content": "old",
+        },
+        {"role": "user", "content": "second question"},
+    ]
+    transport = FakeTransport(
+        [
+            [_id_less_call("new"), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport, messages = history)
+
+    assert _event_ids(lines, "tool_start") == ["tool_call_0"]
+    assert _event_ids(lines, "tool_end") == ["tool_call_0"]
+    # The new replay id remains unique against history.
+    follow_up = transport.requests[-1]["messages"]
+    assistant = [m for m in follow_up if m.get("role") == "assistant" and m.get("tool_calls")][-1]
+    replayed = [entry["id"] for entry in assistant["tool_calls"]]
+    assert replayed != ["tool_call_0"]
+    assert [m for m in follow_up if m.get("role") == "tool"][-1]["tool_call_id"] == replayed[0]
+
+
+def test_a_provider_id_in_the_minted_namespace_is_not_handed_out_twice(executed):
+    """Provider ids are reserved from the card-id namespace."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            _call_delta(0, "tool_call_0", "web_search", '{"query":"named"}')
+                        ]
+                    }
+                ),
+                _id_less_call("recovered"),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [
+        {"query": "named"},
+        {"query": "recovered"},
+    ]
+    assert _event_ids(lines, "tool_start") == ["tool_call_0", "tool_call_1"]
+    assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
+
+
+def test_a_repeated_provider_id_still_reaches_two_separate_cards(executed):
+    """Repeated provider ids retain the existing distinct-event behavior."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "dup", "web_search", '{"query":"a"}')]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [
+                _sse({"tool_calls": [_call_delta(0, "dup", "web_search", '{"query":"b"}')]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    ids = _event_ids(lines, "tool_start")
+    assert len(ids) == len(set(ids)) == 2, ids
+    assert ids[0] == "dup"
+
+
+def test_budget_exhaustion_closes_the_card_a_recovered_call_painted(executed):
+    """Budget exhaustion closes the recovered call's visible card."""
+    transport = FakeTransport(
+        [
+            [
+                _id_less_call("first"),
+                _id_less_call("second"),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport, max_calls = 1)
+
+    assert [call["arguments"] for call in executed] == [{"query": "first"}]
+    assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
+
+
+def test_a_truncated_turn_closes_the_cards_recovered_calls_painted(executed):
+    """Truncation closes visible cards for recovered calls."""
+    transport = FakeTransport(
+        [
+            [
+                _id_less_call("first"),
+                _id_less_call("second"),
+                _sse(finish = "length"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
