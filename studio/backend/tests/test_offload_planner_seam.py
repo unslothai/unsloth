@@ -1968,6 +1968,34 @@ def test_linux_smt_disabled_hybrid_skips_offline_siblings(tmp_path):
     )
 
 
+def test_linux_hybrid_unpinnable_cpu_matches_llama_physical_fallback(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    sibling_sets = [f"{cpu // 2 * 2},{cpu // 2 * 2 + 1}" for cpu in range(16)]
+    sibling_sets.extend(str(cpu) for cpu in range(16, 24))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (cpu_root / "online").write_text("0-23")
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-15")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("16-23")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+            pinnable_cpus = set(range(8)),
+        )
+        == 16
+    )
+
+
 def test_linux_hybrid_with_unreadable_core_mask_is_conservative(tmp_path):
     from core.inference.llama_cpp import _linux_math_core_count
 

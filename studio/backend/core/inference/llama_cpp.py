@@ -3341,6 +3341,7 @@ def _linux_math_core_count(
     logical_cpus: Optional[int] = None,
     vendor_id: Optional[str] = None,
     event_source_root: Path = Path("/sys/bus/event_source/devices"),
+    pinnable_cpus: Optional[set[int]] = None,
 ) -> Optional[int]:
     """Linux x86 cores useful to llama.cpp's default math pool.
 
@@ -3406,15 +3407,33 @@ def _linux_math_core_count(
         def hybrid_math_count(performance_cpus: set[int]) -> int:
             result = 0
             cpu = 0
-            while cpu < native_count:
-                if online_cpus and cpu not in online_cpus:
-                    return physical_count
-                if cpu not in performance_cpus:
-                    cpu += 1
-                    continue
-                result += 1
-                cpu += 2
-            return result or physical_count
+            saved_affinity: Optional[set[int]] = None
+            probe_affinity = pinnable_cpus is None and cpu_root == Path("/sys/devices/system/cpu")
+            if probe_affinity and hasattr(os, "sched_getaffinity"):
+                try:
+                    saved_affinity = os.sched_getaffinity(0)
+                except OSError:
+                    pass
+            try:
+                while cpu < native_count:
+                    if online_cpus and cpu not in online_cpus:
+                        return physical_count
+                    if pinnable_cpus is not None and cpu not in pinnable_cpus:
+                        return physical_count
+                    if saved_affinity is not None:
+                        try:
+                            os.sched_setaffinity(0, {cpu})
+                        except OSError:
+                            return physical_count
+                    if cpu not in performance_cpus:
+                        cpu += 1
+                        continue
+                    result += 1
+                    cpu += 2
+                return result or physical_count
+            finally:
+                if saved_affinity is not None:
+                    os.sched_setaffinity(0, saved_affinity)
 
         core_mask = cpu_list(event_source_root / "cpu_core" / "cpus")
         atom_path = event_source_root / "cpu_atom"
