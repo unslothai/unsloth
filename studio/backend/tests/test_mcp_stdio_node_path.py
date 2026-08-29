@@ -121,6 +121,7 @@ def test_stdio_env_rejects_invalid_legacy_values(environment):
 def test_client_passes_node_path_to_transport(managed_node, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     monkeypatch.setenv("PATH", "/usr/bin")
+    _make_executable(managed_node, "npx")
     client = mcp_client._client("npx -y @modelcontextprotocol/server-filesystem /tmp", None)
     assert client.transport.env["PATH"].split(os.pathsep)[0] == str(managed_node)
 
@@ -155,9 +156,13 @@ def test_stdio_argv_resolves_managed_npx(managed_node):
 
 
 def test_stdio_argv_keeps_unresolvable_command(managed_node):
-    argv = mcp_client._stdio_argv(
-        ["definitely-not-on-path-9304", "-y"], mcp_client._stdio_env(None)
-    )
+    parts = ["definitely-not-on-path-9304", "-y"]
+    env = mcp_client._stdio_env(None)
+    if os.name == "nt":
+        with pytest.raises(ValueError, match = "configured PATH"):
+            mcp_client._stdio_argv(parts, env)
+        return
+    argv = mcp_client._stdio_argv(parts, env)
     assert argv == ["definitely-not-on-path-9304", "-y"]
 
 
