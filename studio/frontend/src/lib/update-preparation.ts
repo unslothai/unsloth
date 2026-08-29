@@ -31,6 +31,14 @@ export interface StagedUpdateStatus {
   stagingShellVersion?: string | null;
 }
 
+export interface DesktopUpdateBundleStatus {
+  version: string | null;
+  downloaded: boolean;
+  downloading: boolean;
+}
+
+export type DesktopDownloadDecision = "ready" | "wait" | "download";
+
 export type StagingDecision = "stage" | "already-ready" | "adopt" | "wait" | "skip";
 
 export const INITIAL_PREPARATION: UpdatePreparation = {
@@ -63,6 +71,14 @@ export function restartPlan(preparation: UpdatePreparation): RestartPlan {
   return preparation.shell === "done" && preparation.backend === "ready"
     ? "fast"
     : "classic";
+}
+
+export function desktopDownloadDecision(
+  status: DesktopUpdateBundleStatus,
+  offeredVersion: string,
+): DesktopDownloadDecision {
+  if (status.downloaded && sameUpdateVersion(status.version, offeredVersion)) return "ready";
+  return status.downloading ? "wait" : "download";
 }
 
 export function stagingDecision(args: {

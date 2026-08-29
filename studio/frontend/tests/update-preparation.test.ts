@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   INITIAL_PREPARATION,
   backendIdle,
+  desktopDownloadDecision,
   downloadPercent,
   preparationStatus,
   restartPlan,
@@ -81,6 +82,24 @@ test("download progress clamps to a whole percentage", () => {
   assert.equal(downloadPercent(0, null), 0);
   assert.equal(downloadPercent(50, 200), 25);
   assert.equal(downloadPercent(300, 200), 100);
+});
+
+test("a reloaded renderer waits for the native shell download", () => {
+  const status = {
+    version: "0.1.901",
+    downloaded: false,
+    downloading: true,
+  };
+  assert.equal(desktopDownloadDecision(status, "0.1.901"), "wait");
+  assert.equal(desktopDownloadDecision(status, "0.1.902"), "wait");
+  assert.equal(
+    desktopDownloadDecision({ ...status, downloading: false }, "0.1.901"),
+    "download",
+  );
+  assert.equal(
+    desktopDownloadDecision({ ...status, downloaded: true, downloading: false }, "v0.1.901"),
+    "ready",
+  );
 });
 
 function clock() {

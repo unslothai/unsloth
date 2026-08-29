@@ -17,12 +17,14 @@ import {
   installDesktopUpdate,
   stagedUpdateStatus,
   startStagedUpdate,
+  waitForDesktopUpdateDownload,
   type DesktopUpdateMetadata,
 } from "@/lib/tauri-updater";
 import { toast } from "@/lib/toast";
 import {
   INITIAL_PREPARATION,
   backendIdle,
+  desktopDownloadDecision,
   preparationStatus,
   restartPlan,
   sameUpdateVersion,
@@ -394,28 +396,51 @@ export function useTauriUpdate(isExternalServer = false) {
   }
 
   async function ensureBundleDownloaded(): Promise<void> {
-    if ((await desktopUpdateBundleStatus()).downloaded) return;
     setUpdatePhase("shell_download");
     updateStatus("downloading");
     setUpdateProgress(0);
-    await downloadDesktopUpdate(setUpdateProgress);
+    const version = updateRef.current?.version;
+    if (!version) throw new Error("No desktop update has been checked.");
+    for (;;) {
+      const decision = desktopDownloadDecision(await desktopUpdateBundleStatus(), version);
+      if (decision === "ready") break;
+      if (decision === "wait") {
+        await waitForDesktopUpdateDownload(version, setUpdateProgress, () => false);
+      } else {
+        await downloadDesktopUpdate(version, setUpdateProgress);
+      }
+    }
     patchPreparation({ shell: "done", shellProgress: 100 });
   }
 
   async function prepareShell(version: string) {
     try {
-      const bundle = await desktopUpdateBundleStatus();
-      if (bundle.downloaded && bundle.version === version) {
-        patchPreparation({ shell: "done", shellProgress: 100 });
-        return;
-      }
-      patchPreparation({ shell: "downloading" });
-      await downloadDesktopUpdate((percent) => {
+      for (;;) {
+        const bundle = await desktopUpdateBundleStatus();
+        const decision = desktopDownloadDecision(bundle, version);
+        if (decision === "ready") {
+          patchPreparation({ shell: "done", shellProgress: 100 });
+          return;
+        }
+        patchPreparation({ shell: "downloading" });
+        if (decision === "wait") {
+          await waitForDesktopUpdateDownload(
+            version,
+            (percent) => {
+              if (preparingVersionRef.current !== version) return;
+              patchPreparation({ shellProgress: percent });
+            },
+            () => preparingVersionRef.current !== version,
+          );
+          if (preparingVersionRef.current !== version) return;
+          continue;
+        }
+        await downloadDesktopUpdate(version, (percent) => {
+          if (preparingVersionRef.current !== version) return;
+          patchPreparation({ shellProgress: percent });
+        });
         if (preparingVersionRef.current !== version) return;
-        patchPreparation({ shellProgress: percent });
-      });
-      if (preparingVersionRef.current !== version) return;
-      patchPreparation({ shell: "done", shellProgress: 100 });
+      }
     } catch (e) {
       console.warn("Background app download failed:", e);
       if (preparingVersionRef.current !== version) return;

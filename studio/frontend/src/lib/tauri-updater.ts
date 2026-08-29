@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { downloadPercent, type StagedUpdateStatus } from "@/lib/update-preparation";
+import {
+  downloadPercent,
+  sameUpdateVersion,
+  type DesktopUpdateBundleStatus,
+  type StagedUpdateStatus,
+} from "@/lib/update-preparation";
 
 export interface DesktopUpdateMetadata {
   currentVersion: string;
@@ -17,12 +22,6 @@ interface DesktopUpdateDownloadEvent {
   total: number | null;
 }
 
-interface DesktopUpdateBundleStatus {
-  version: string | null;
-  downloaded: boolean;
-  downloading: boolean;
-}
-
 export async function checkDesktopUpdate(): Promise<DesktopUpdateMetadata | null> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<DesktopUpdateMetadata | null>("check_desktop_update");
@@ -34,6 +33,7 @@ export async function desktopUpdateBundleStatus(): Promise<DesktopUpdateBundleSt
 }
 
 export async function downloadDesktopUpdate(
+  expectedVersion: string,
   onProgress: (percent: number) => void,
 ): Promise<void> {
   const [{ invoke }, { listen }] = await Promise.all([
@@ -42,11 +42,43 @@ export async function downloadDesktopUpdate(
   ]);
   const unlisten = await listen<DesktopUpdateDownloadEvent>(
     "desktop-update-download",
-    (event) => onProgress(downloadPercent(event.payload.downloaded, event.payload.total)),
+    (event) => {
+      if (!sameUpdateVersion(event.payload.version, expectedVersion)) return;
+      onProgress(downloadPercent(event.payload.downloaded, event.payload.total));
+    },
   );
   try {
     await invoke("download_desktop_update");
+    const status = await desktopUpdateBundleStatus();
+    if (!status.downloaded || !sameUpdateVersion(status.version, expectedVersion)) {
+      throw new Error(`Desktop update ${expectedVersion} was not downloaded.`);
+    }
     onProgress(100);
+  } finally {
+    unlisten();
+  }
+}
+
+export async function waitForDesktopUpdateDownload(
+  expectedVersion: string,
+  onProgress: (percent: number) => void,
+  isCancelled: () => boolean,
+  pollMs = 500,
+): Promise<void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<DesktopUpdateDownloadEvent>(
+    "desktop-update-download",
+    (event) => {
+      if (!sameUpdateVersion(event.payload.version, expectedVersion)) return;
+      onProgress(downloadPercent(event.payload.downloaded, event.payload.total));
+    },
+  );
+  try {
+    while (!isCancelled()) {
+      const status = await desktopUpdateBundleStatus();
+      if (!status.downloading) return;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
   } finally {
     unlisten();
   }
