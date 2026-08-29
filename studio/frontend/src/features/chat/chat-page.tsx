@@ -548,11 +548,15 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function useIsLoraCompare(): boolean {
+function useIsLoraCompare(): boolean | null {
   return useChatRuntimeStore((s) => {
     const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
+    if (isExternalModelId(cp)) return false;
+    if (s.residentCheckpoint === undefined) return null;
+    if (!cp) return false;
+    const activeModel = s.models.find((model) => model.id === cp);
+    if (activeModel) return activeModel.isLora;
+    return s.loras.find((lora) => lora.id === cp)?.exportType === "lora";
   });
 }
 
@@ -561,41 +565,28 @@ function useCompareVariant(pairId: string): CompareVariant | null {
   const checkpointIsLora = useIsLoraCompare();
   const [stored, setStored] = useState<{
     pairId: string;
-    isGeneralPair: boolean;
     variant: CompareVariant;
   }>();
 
-  // Re-read on the checkpoint flip, not just on the pair: a generalized pair's own
-  // first send writes its model1/model2 rows and then loads model 2, so the rows and
-  // the flip that would hand the pair to the adapter path arrive together. Freezing
-  // the first answer instead is not an option either, since `loras` hydrates after
-  // first paint and a real LoRA compare reads as generalized until it lands.
   useEffect(() => {
+    if (checkpointIsLora === null || stored?.pairId === pairId) return;
     let isActive = true;
-    const settle = (threads: ThreadRecord[]) =>
+    const settle = (threads: ThreadRecord[]) => {
+      if (!isActive) return;
       setStored((previous) => {
-        // Sticky per pair: once seen as generalized it stays that way, so a read
-        // that races the row write cannot hand the pair over on the next flip.
-        const general =
-          resolveComparePaneThreadIds(threads).shape === "general" ||
-          (previous?.pairId === pairId && previous.isGeneralPair);
+        if (previous?.pairId === pairId) return previous;
         return {
           pairId,
-          isGeneralPair: general,
-          variant: compareVariantForPair(
-            general ? threads : [],
-            checkpointIsLora,
-          ),
+          variant: compareVariantForPair(threads, checkpointIsLora),
         };
       });
+    };
     listStoredChatThreads({ pairId })
-      .then((threads) => {
-        if (isActive) settle(threads);
-      })
+      .then(settle)
       .catch((error) => {
         // Unreadable storage falls through to the checkpoint rather than holding
         // the panes blank; the pane resolvers make the same call and fail too.
-        if (isActive) settle([]);
+        settle([]);
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
@@ -603,12 +594,8 @@ function useCompareVariant(pairId: string): CompareVariant | null {
     return () => {
       isActive = false;
     };
-  }, [pairId, checkpointIsLora]);
+  }, [pairId, checkpointIsLora, stored?.pairId]);
 
-  // The renderer only ever moves on a settled read, never on the render that the
-  // flip itself causes: recombining the fresh checkpoint with the previous read
-  // would mount the other component for one render and tear down the panes and
-  // their runtimes mid-send, before the re-read put them back.
   if (stored?.pairId !== pairId) return null;
   return stored.variant;
 }

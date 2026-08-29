@@ -152,12 +152,12 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   );
   assert.ok(chatPageSource.includes('return compareVariant === "lora" ? ('));
   assert.doesNotMatch(chatPageSource, CHECKPOINT_PICKS_RENDERER);
-  // Structural because both failures are shape, not return value. Drop the
-  // dependency and a generalized pair's first send, which writes its rows and loads
-  // model 2 in one go, still reads as empty when the flip arrives. Recombine the
-  // fresh checkpoint with the previous read at render time instead of returning the
-  // settled variant, and the other component mounts for the one render between the
-  // flip and the re-read, tearing the panes down mid-send.
-  assert.ok(chatPageSource.includes("}, [pairId, checkpointIsLora]);"));
+  assert.ok(
+    chatPageSource.includes(
+      "if (checkpointIsLora === null || stored?.pairId === pairId) return;",
+    ),
+  );
+  assert.ok(chatPageSource.includes("s.residentCheckpoint === undefined"));
+  assert.ok(chatPageSource.includes("activeModel.isLora"));
   assert.ok(chatPageSource.includes("  return stored.variant;"));
 });
