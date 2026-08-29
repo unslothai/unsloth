@@ -457,14 +457,13 @@ def gguf_variant_family(filename: str) -> str:
 
 
 def gguf_checkpoint_family(filename: str) -> Optional[str]:
-    """the checkpoint name shared by quant variants, or ``None`` when unnamed."""
+    """the exact checkpoint name shared by quant variants, or ``None`` when unnamed."""
     path = filename.replace("\\", "/")
     family = gguf_variant_family(path)
     quant = quant_token_with_bpw(path)
     if quant is not None:
         family = re.sub(re.escape(quant), "", family, count = 1, flags = re.IGNORECASE)
-    normalized = re.sub(r"[-_.\s]+", "-", family).strip("-/")
-    return normalized.casefold() or None
+    return family.strip("-_. /\t\r\n") or None
 
 
 def extract_quant_label(filename: str) -> str:

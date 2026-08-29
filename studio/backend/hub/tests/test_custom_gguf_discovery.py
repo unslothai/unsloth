@@ -58,6 +58,7 @@ def test_checkpoint_family_keeps_distinct_models_separate():
     assert gguf.gguf_checkpoint_family("model-b-Q4_K_M.gguf") == "model-b"
     assert gguf.gguf_checkpoint_family("alpha.gguf") == "alpha"
     assert gguf.gguf_checkpoint_family("beta.gguf") == "beta"
+    assert gguf.gguf_checkpoint_family("Model-A-Q4_K_M.gguf") == "Model-A"
 
 
 def test_checkpoint_family_normalizes_quant_directories_and_windows_separators():
@@ -98,9 +99,11 @@ def test_distinct_checkpoints_sharing_a_quant_use_file_rows(tmp_path):
     [
         ("model-a-Q4_K_M.gguf", "model.a-Q4_K_M.gguf"),
         ("Model-A-Q4_K_M.gguf", "model-a-Q4_K_M.gguf"),
+        ("model-a-Q4_K_M.gguf", "model.a-Q8_0.gguf"),
+        ("Model-A-Q4_K_M.gguf", "model-a-Q8_0.gguf"),
     ],
 )
-def test_same_quant_checkpoint_names_preserve_exact_identity(
+def test_checkpoint_names_preserve_exact_identity(
     tmp_path, first_name, second_name
 ):
     root = tmp_path / "root"
