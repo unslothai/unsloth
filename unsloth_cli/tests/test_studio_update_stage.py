@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 
@@ -178,6 +179,7 @@ def test_stage_discards_the_tree_when_verification_fails(monkeypatch, tmp_path):
     def broken(venv: Path, env: dict) -> str:
         raise _studio_stage.StageError("no unsloth")
 
+    monkeypatch.setattr(_studio_stage, "finalize_for_activation", lambda root: None)
     monkeypatch.setattr(_studio_stage, "installed_version", broken)
 
     with pytest.raises(_studio_stage.StageError, match = "no unsloth"):
@@ -373,3 +375,20 @@ def test_probe_console_script_accepts_a_relocated_launcher(tmp_path):
     (venv / "bin" / "unsloth").chmod(0o755)
 
     _studio_stage.probe_console_script(venv, dict(os.environ))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
+def test_activation_finalizer_repairs_a_launcher_written_by_an_old_outer_stage(tmp_path):
+    stage_root = tmp_path / "studio" / _studio_stage.STAGE_DIR_NAME
+    venv = _make_venv(stage_root)
+    python = venv / "bin" / "python"
+    python.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    python.chmod(0o755)
+    (venv / "bin" / "unsloth").chmod(0o755)
+
+    _studio_stage.finalize_for_activation(stage_root)
+    live = tmp_path / "studio" / _studio_stage.VENV_NAME
+    venv.rename(live)
+
+    result = subprocess.run([str(live / "bin" / "unsloth"), "-h"], check = False)
+    assert result.returncode == 0

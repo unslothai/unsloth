@@ -195,6 +195,14 @@ def probe_console_script(venv: Path, env: dict[str, str]) -> None:
         raise StageError(f"staged launcher failed to start: {result.stderr.strip()[-2000:]}")
 
 
+def finalize_for_activation(root: Path) -> None:
+    venv = root / VENV_NAME
+    make_relocatable(venv)
+    env = child_environment(root)
+    probe_cli(venv, env)
+    probe_console_script(venv, env)
+
+
 def child_environment(root: Path) -> dict[str, str]:
     env = dict(os.environ)
     env[STAGE_ROOT_ENV] = str(root)
@@ -253,14 +261,9 @@ def stage(
         if run_update(root, update_args) != 0:
             raise StageError("staged update failed")
         echo("[TAURI:STEP] verify")
-        # The update reinstalls the package, and every console script it writes
-        # names the interpreter under the stage by absolute path. Activation moves
-        # the venv out of that path, so relocate what the update just wrote.
-        make_relocatable(root / VENV_NAME)
+        finalize_for_activation(root)
         env = child_environment(root)
         version = installed_version(root / VENV_NAME, env)
-        probe_cli(root / VENV_NAME, env)
-        probe_console_script(root / VENV_NAME, env)
         shell_version = (os.environ.get(SHELL_VERSION_ENV) or "").strip() or None
         write_ready_marker(root, version, shell_version)
     except BaseException:

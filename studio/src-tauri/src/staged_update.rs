@@ -296,6 +296,40 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn finalize_stage_for_activation(stage: &Path) -> Result<(), String> {
+    let python = stage.join("unsloth_studio").join("bin").join("python");
+    let code = concat!(
+        "import sys; from pathlib import Path; ",
+        "from unsloth_cli._studio_stage import finalize_for_activation; ",
+        "finalize_for_activation(Path(sys.argv[1]))"
+    );
+    let output = std::process::Command::new(&python)
+        .args(["-I", "-c", code])
+        .arg(stage)
+        .current_dir(stage)
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
+        .env_remove("VIRTUAL_ENV")
+        .output()
+        .map_err(|error| format!("{}: {error}", python.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "{} exited with {}: {}",
+        python.display(),
+        output.status,
+        stderr.trim()
+    ))
+}
+
+#[cfg(windows)]
+fn finalize_stage_for_activation(_stage: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     let stage = home.join(STAGE_DIR);
     if !stage.is_dir() {
@@ -323,6 +357,13 @@ fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     if live_tree_in_use(home) {
         info!("[staged-update] runtime in use, keeping staged backend for the next launch");
         return Ok(());
+    }
+    if let Err(error) = finalize_stage_for_activation(&stage) {
+        let failed = home.join(FAILED_MARKER);
+        let _ = fs::remove_file(&failed);
+        write_versions(&failed, &versions)?;
+        let _ = fs::remove_dir_all(&stage);
+        return Err(format!("staged runtime finalization failed: {error}"));
     }
     let prev = home.join(PREV_DIR);
     let _ = fs::remove_dir_all(&prev);
@@ -598,6 +639,17 @@ mod tests {
     fn stage_ready(home: &Path, versions: &StagedVersions) {
         let stage = home.join(STAGE_DIR);
         make_runtime(&stage, "new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let python = stage.join("unsloth_studio").join("bin").join("python");
+            fs::create_dir_all(python.parent().unwrap()).unwrap();
+            fs::write(&python, "#!/bin/sh\nexit 0\n").unwrap();
+            let mut permissions = fs::metadata(&python).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&python, permissions).unwrap();
+        }
         write_versions(&stage.join(READY_MARKER), versions).unwrap();
     }
 
@@ -662,6 +714,27 @@ mod tests {
 
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert!(!home.join(STAGE_DIR).exists());
+        cleanup(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stage_that_cannot_finalize_never_replaces_the_live_runtime() {
+        let home = temp_home("finalize-failure");
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(Some("0.1.900-beta")));
+        let python = home
+            .join(STAGE_DIR)
+            .join("unsloth_studio")
+            .join("bin")
+            .join("python");
+        fs::write(&python, "#!/bin/sh\nexit 42\n").unwrap();
+
+        reconcile_at_launch(&home, "0.1.900-beta");
+
+        assert_eq!(tag(&home, "unsloth_studio"), "old");
+        assert!(!home.join(STAGE_DIR).exists());
+        assert_eq!(status(&home).state, "failed");
         cleanup(home);
     }
 
