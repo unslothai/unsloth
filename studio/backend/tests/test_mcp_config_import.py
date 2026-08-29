@@ -173,9 +173,7 @@ def test_parse_stdio_entry():
 
 @pytest.mark.parametrize("args", [None, "", 0, False, {}])
 def test_parse_rejects_explicit_non_list_args(args):
-    entries, errors = parse_mcp_config(
-        {"mcpServers": {"bad": {"command": "python", "args": args}}}
-    )
+    entries, errors = parse_mcp_config({"mcpServers": {"bad": {"command": "python", "args": args}}})
 
     assert entries == []
     assert errors == ["bad: 'args' must be a list of strings."]

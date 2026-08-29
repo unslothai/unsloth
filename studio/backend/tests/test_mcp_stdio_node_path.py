@@ -203,9 +203,7 @@ def test_windows_installed_node_launcher_avoids_cmd_shell(launcher):
     assert Path(resolved).suffix.lower() in (".cmd", ".bat")
     arguments = ["%TOKEN%", "a&b", "x|y", 'say "hello"', "a b", ""]
 
-    argv = mcp_client._stdio_argv(
-        [launcher, *arguments], {"PATH": os.environ.get("PATH", "")}
-    )
+    argv = mcp_client._stdio_argv([launcher, *arguments], {"PATH": os.environ.get("PATH", "")})
 
     assert Path(argv[0]).name.lower() == "node.exe"
     assert Path(argv[1]).name.lower() == f"{launcher}-cli.js"

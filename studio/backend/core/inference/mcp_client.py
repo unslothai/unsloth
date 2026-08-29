@@ -366,7 +366,11 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
             )
             sibling_node = os.path.join(launcher_dir, "node.exe")
             try:
-                node = sibling_node if os.path.isfile(sibling_node) else shutil.which("node", path = path)
+                node = (
+                    sibling_node
+                    if os.path.isfile(sibling_node)
+                    else shutil.which("node", path = path)
+                )
                 cli_exists = os.path.isfile(cli)
             except OSError:
                 node = None
