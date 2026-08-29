@@ -66,6 +66,7 @@ import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -556,9 +557,11 @@ function useIsLoraCompare(): boolean | null {
       return null;
     }
     if (!cp) return false;
-    const activeModel = s.models.find((model) => model.id === cp);
+    const activeModel = s.models.find((model) => modelIdsMatch(model.id, cp));
     if (activeModel?.isLora) return true;
-    if (s.loras.find((lora) => lora.id === cp)?.exportType === "lora") {
+    if (
+      s.loras.find((lora) => modelIdsMatch(lora.id, cp))?.exportType === "lora"
+    ) {
       return true;
     }
     return s.loraInventorySettled ? false : null;
@@ -810,7 +813,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a thread that is
   // still generating.
   const anyRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+    (s) => Object.keys(s.localRunByThreadId).length > 0,
   );
   // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive
   // across the switch into compare, so `anyRunning` is true on arrival for a reason that has
@@ -866,7 +869,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
     : checkpointIsLora === null
       ? "Checking the loaded model."
       : !checkpointIsLora ||
-          (pairLoraModelId !== undefined && pairLoraModelId !== checkpoint)
+          (pairLoraModelId !== undefined &&
+            !modelIdsMatch(pairLoraModelId, checkpoint))
         ? "Load the LoRA saved with this comparison before sending."
         : undefined;
 
@@ -881,6 +885,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
             model1ThreadId={baseThreadId}
             model2ThreadId={loraThreadId}
             sendUnavailableReason={sendUnavailableReason}
+            requireStableCheckpoint={true}
           />
         ) : (
           <></>

@@ -52,6 +52,7 @@ import { isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
@@ -538,6 +539,7 @@ export function SharedComposer({
   model1ThreadId,
   model2ThreadId,
   sendUnavailableReason,
+  requireStableCheckpoint = false,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
@@ -546,6 +548,7 @@ export function SharedComposer({
   model1ThreadId?: string;
   model2ThreadId?: string;
   sendUnavailableReason?: string;
+  requireStableCheckpoint?: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
@@ -1087,6 +1090,9 @@ export function SharedComposer({
     );
     const isGeneralizedCompare =
       hasCompareHandles && Boolean(model1?.id && model2?.id);
+    const submittedCompareCheckpoint = requireStableCheckpoint
+      ? useChatRuntimeStore.getState().params.checkpoint
+      : undefined;
 
     // Generalized compare requires both panes to have a model. A half-
     // selected send either races to an empty bubble with bogus tok/s (#5569)
@@ -1846,6 +1852,21 @@ export function SharedComposer({
       }
     } else {
       // Original behavior: fire all handles simultaneously
+      const liveRuntime = useChatRuntimeStore.getState();
+      if (
+        requireStableCheckpoint &&
+        (liveRuntime.modelLoading ||
+          !modelIdsMatch(
+            submittedCompareCheckpoint,
+            liveRuntime.params.checkpoint,
+          ))
+      ) {
+        resetPromptQueue();
+        toast.error("Compare unavailable", {
+          description: "The loaded model changed while preparing the message.",
+        });
+        return;
+      }
       clearSubmittedDraft();
       for (const handle of Object.values(handlesRef.current)) {
         handle.append(content);

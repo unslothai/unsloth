@@ -14,6 +14,10 @@ const chatPageSource = readFileSync(
   new URL("../src/features/chat/chat-page.tsx", import.meta.url),
   "utf8",
 );
+const sharedComposerSource = readFileSync(
+  new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+  "utf8",
+);
 
 const LORA_PANE_SOURCE = chatPageSource.slice(
   chatPageSource.indexOf("const LoraCompareContent"),
@@ -202,9 +206,17 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   assert.ok(chatPageSource.includes("if (variant === null) return;"));
   assert.ok(chatPageSource.includes("s.residentCheckpoint === undefined"));
   assert.ok(chatPageSource.includes("activeModel?.isLora"));
+  assert.ok(chatPageSource.includes("modelIdsMatch(model.id, cp)"));
+  assert.ok(chatPageSource.includes("modelIdsMatch(lora.id, cp)"));
   assert.ok(chatPageSource.includes("s.loraInventorySettled ? false : null"));
   assert.ok(LORA_PANE_SOURCE.includes("sendUnavailableReason"));
-  assert.ok(LORA_PANE_SOURCE.includes("pairLoraModelId !== checkpoint"));
+  assert.ok(
+    LORA_PANE_SOURCE.includes("!modelIdsMatch(pairLoraModelId, checkpoint)"),
+  );
   assert.ok(LORA_PANE_SOURCE.includes("loraThread?.modelId?.trim() ||"));
+  assert.ok(LORA_PANE_SOURCE.includes("s.localRunByThreadId"));
+  assert.ok(LORA_PANE_SOURCE.includes("requireStableCheckpoint={true}"));
+  assert.ok(sharedComposerSource.includes("submittedCompareCheckpoint"));
+  assert.ok(sharedComposerSource.includes("liveRuntime.modelLoading"));
   assert.ok(chatPageSource.includes("  return stored.variant;"));
 });
