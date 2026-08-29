@@ -813,6 +813,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         return False
 
     # --- Fall back to fetching from HuggingFace ---
+    import urllib.error
     import urllib.request
 
     url = _hf_raw_url(model_name, "tokenizer_config.json")
@@ -833,6 +834,32 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
             )
         _tokenizer_class_cache[cache_key] = result
         return result
+    except urllib.error.HTTPError as exc:
+        # 404 is a legitimate miss (fail-open). Anything else means the endpoint
+        # answered but failed — the classic signature of a HF_ENDPOINT mirror that
+        # does not proxy /resolve/ paths, so surface it instead of staying silent.
+        if exc.code == 404:
+            logger.debug("tokenizer_config.json not found for '%s' at %s", model_name, url)
+        else:
+            logger.warning(
+                "HTTP %s fetching tokenizer_config.json for '%s' from %s; "
+                "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
+                exc.code,
+                model_name,
+                url,
+            )
+        _tokenizer_class_cache[cache_key] = False
+        return False
+    except urllib.error.URLError as exc:
+        logger.warning(
+            "Connection error fetching tokenizer_config.json for '%s' from %s: %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it is reachable",
+            model_name,
+            url,
+            exc,
+        )
+        _tokenizer_class_cache[cache_key] = False
+        return False
     except Exception as exc:
         logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
         _tokenizer_class_cache[cache_key] = False
@@ -939,7 +966,15 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         if exc.code in (401, 403, 404):
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
             return None
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        # 5xx: the endpoint answered but failed. Debug here hides a broken
+        # HF_ENDPOINT mirror behind a cryptic transformers crash later.
+        logger.warning(
+            "HTTP %s fetching config.json for '%s' from %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
+            exc.code,
+            model_name,
+            url,
+        )
         return _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)

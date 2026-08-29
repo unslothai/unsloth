@@ -1819,6 +1819,76 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// Mirror endpoints from the environment, normalised the same way the backend's
+/// `hf_endpoint_url()` does it: scheme added when missing, trailing slash
+/// stripped. Blank values are ignored so an unset mirror changes nothing.
+fn configured_hf_endpoints() -> Vec<String> {
+    ["HF_ENDPOINT", "HF_DATASETS_SERVER"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| {
+            let with_scheme = if raw.contains("://") { raw } else { format!("https://{raw}") };
+            with_scheme.trim_end_matches('/').to_string()
+        })
+        .collect()
+}
+
+/// Append `sources` to the policy's `connect-src` directive, skipping sources
+/// already listed. The directive is matched on its first token (case-blind) so
+/// a hostname containing "connect-src" can never match. Leaves the policy
+/// untouched (and returns false) when there is no `connect-src` directive.
+fn append_connect_sources(policy: &mut String, sources: &[String]) -> bool {
+    let mut appended = false;
+    let rebuilt: Vec<String> = policy
+        .split(';')
+        .map(|directive| directive.trim())
+        .filter(|directive| !directive.is_empty())
+        .map(|directive| {
+            let is_connect_src = directive
+                .split_whitespace()
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("connect-src"));
+            if !is_connect_src || appended {
+                return directive.to_string();
+            }
+            let existing: Vec<&str> = directive.split_whitespace().collect();
+            let mut tokens = existing.clone();
+            for source in sources {
+                if !existing.iter().any(|token| *token == source.as_str()) {
+                    tokens.push(source);
+                }
+            }
+            appended = true;
+            tokens.join(" ")
+        })
+        .collect();
+    if appended {
+        // Same "; " shape the tauri.conf.json policy is written in; the header
+        // is machine-read either way, this just keeps diffs readable.
+        *policy = rebuilt.join("; ");
+    }
+    appended
+}
+
+/// tauri.conf.json's static CSP only allows the official Hub hosts, so a
+/// mirrored HF_ENDPOINT / HF_DATASETS_SERVER would have the webview block the
+/// frontend's Hub calls. Tauri builds the CSP header from the Context config
+/// on every webview asset request, so appending the configured endpoints here
+/// covers the statically declared window too.
+fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<R>) {
+    let endpoints = configured_hf_endpoints();
+    if endpoints.is_empty() {
+        return;
+    }
+    if let Some(tauri::utils::config::Csp::Policy(policy)) =
+        context.config_mut().app.security.csp.as_mut()
+    {
+        append_connect_sources(policy, &endpoints);
+    }
+}
+
 fn main() {
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
@@ -1848,7 +1918,8 @@ fn main() {
     }
     windows_job::initialize();
 
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    extend_csp_with_hf_endpoints(&mut context);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2051,6 +2122,42 @@ mod tests {
         file.flush().unwrap();
         assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "bbbbcccccccccc");
         assert_eq!(fs::read_to_string(&log_path).unwrap(), "dddd");
+    }
+
+    #[test]
+    fn connect_sources_appended_after_existing_directive() {
+        let mut policy = "default-src 'self'; connect-src 'self' https://huggingface.co; img-src 'self' data:".to_string();
+        assert!(append_connect_sources(
+            &mut policy,
+            &["https://hf-mirror.com".to_string(), "https://ds.example.com".to_string()],
+        ));
+        assert_eq!(
+            policy,
+            "default-src 'self'; connect-src 'self' https://huggingface.co https://hf-mirror.com https://ds.example.com; img-src 'self' data:",
+        );
+    }
+
+    #[test]
+    fn already_listed_sources_are_not_duplicated() {
+        let mut policy = "connect-src 'self' https://huggingface.co".to_string();
+        assert!(append_connect_sources(&mut policy, &["https://huggingface.co".to_string()]));
+        assert_eq!(policy, "connect-src 'self' https://huggingface.co");
+    }
+
+    #[test]
+    fn policy_without_connect_src_is_left_untouched() {
+        let mut policy = "default-src 'self'; img-src 'self' data:".to_string();
+        assert!(!append_connect_sources(&mut policy, &["https://hf-mirror.com".to_string()]));
+        assert_eq!(policy, "default-src 'self'; img-src 'self' data:");
+    }
+
+    #[test]
+    fn hostname_containing_directive_name_cannot_match() {
+        // First token of the directive is "connect-src.evil.com", not the
+        // directive itself, so the policy must stay untouched.
+        let mut policy = "connect-src 'self'; img-src connect-src.evil.com".to_string();
+        assert!(append_connect_sources(&mut policy, &["https://hf-mirror.com".to_string()]));
+        assert_eq!(policy, "connect-src 'self' https://hf-mirror.com; img-src connect-src.evil.com");
     }
 
     #[test]

@@ -1411,8 +1411,11 @@ def _detect_audio_from_tokenizer(
     from urllib.parse import quote
 
     revision_path = "main" if revision is None else quote(revision, safe = "")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    hf_endpoint = get_hf_endpoint()
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
-        url = f"https://huggingface.co/{model_name}/resolve/{revision_path}/{tok_path}"
+        url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
             resp = requests.get(url, headers = headers, timeout = 15)
         except Exception as e:

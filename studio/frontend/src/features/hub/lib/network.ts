@@ -1,10 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfEndpoint } from "@/lib/hf-endpoint";
+
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
 const HUGGING_FACE_ORIGIN = "https://huggingface.co";
 const noopUnsubscribe = () => undefined;
+
+/**
+ * Origin the Hub traffic actually goes to. The backoff/failure maps key on the
+ * request origin (fetchWithTimeout extracts it from the real URL), so the
+ * default key has to follow HF_ENDPOINT too — keying a mirror deployment on
+ * huggingface.co would probe an origin nothing ever talks to.
+ */
+function defaultHubOrigin(): string {
+  try {
+    return new URL(getHfEndpoint()).origin;
+  } catch {
+    return HUGGING_FACE_ORIGIN;
+  }
+}
 
 type RemoteNetworkScope = string | readonly string[];
 
@@ -111,7 +127,7 @@ function getEarliestRemoteOfflineUntil(): number {
 }
 
 export function isRemoteNetworkOffline(
-  scope: RemoteNetworkScope = HUGGING_FACE_ORIGIN,
+  scope: RemoteNetworkScope = defaultHubOrigin(),
 ): boolean {
   return getRemoteOfflineUntil(scope) > Date.now();
 }
@@ -121,7 +137,7 @@ export function isHuggingFaceOffline(): boolean {
   // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
   // remote-offline TTL, set when a real fetch fails and cleared on next success;
   // navigator's online/offline events still drive re-evaluation.
-  return isRemoteNetworkOffline(HUGGING_FACE_ORIGIN);
+  return isRemoteNetworkOffline(defaultHubOrigin());
 }
 
 /**
@@ -130,7 +146,7 @@ export function isHuggingFaceOffline(): boolean {
  */
 export type HubPhase = "available" | "probing" | "unavailable";
 
-export function getHubPhase(origin: string = HUGGING_FACE_ORIGIN): HubPhase {
+export function getHubPhase(origin: string = defaultHubOrigin()): HubPhase {
   if (!lastFailureByOrigin.has(origin)) {
     return "available";
   }
@@ -138,7 +154,7 @@ export function getHubPhase(origin: string = HUGGING_FACE_ORIGIN): HubPhase {
 }
 
 export function getLastHubFailure(
-  origin: string = HUGGING_FACE_ORIGIN,
+  origin: string = defaultHubOrigin(),
 ): HubFailure | null {
   return lastFailureByOrigin.get(origin) ?? null;
 }
@@ -166,12 +182,12 @@ export function markRemoteNetworkOnline(origin?: string): void {
 }
 
 export function markRemoteNetworkOffline(
-  originOrTtl: string | number = HUGGING_FACE_ORIGIN,
+  originOrTtl: string | number = defaultHubOrigin(),
   ttlMs = REMOTE_OFFLINE_TTL_MS,
   failure?: HubFailure,
 ): void {
   const origin =
-    typeof originOrTtl === "string" ? originOrTtl : HUGGING_FACE_ORIGIN;
+    typeof originOrTtl === "string" ? originOrTtl : defaultHubOrigin();
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
   const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
@@ -199,7 +215,7 @@ export function markRemoteNetworkOffline(
 
 /** Let Retry re-probe now. The failure stays until a request succeeds. */
 export function clearRemoteBackoff(
-  origin: string = HUGGING_FACE_ORIGIN,
+  origin: string = defaultHubOrigin(),
 ): void {
   if (!remoteOfflineUntilByOrigin.delete(origin)) {
     return;

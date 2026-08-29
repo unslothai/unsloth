@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfDatasetsServerBase, getHfEndpoint } from "@/lib/hf-endpoint";
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
@@ -220,7 +221,7 @@ export function fetchDatasetSize(
     datasetInflight,
     async (signal) => {
       const res = await fetchWithTimeout(
-        `https://datasets-server.huggingface.co/size?dataset=${encodeURIComponent(repoId)}`,
+        `${getHfDatasetsServerBase()}/size?dataset=${encodeURIComponent(repoId)}`,
         {
           signal,
           headers: resolvedToken
@@ -319,7 +320,7 @@ export function fetchModelSize(
     async (signal) => {
       const path = repoId.split("/").map(encodeURIComponent).join("/");
       const res = await fetchWithTimeout(
-        `https://huggingface.co/api/models/${path}?blobs=true`,
+        `${getHfEndpoint()}/api/models/${path}?blobs=true`,
         {
           signal,
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,

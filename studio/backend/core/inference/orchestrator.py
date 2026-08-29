@@ -376,8 +376,10 @@ class InferenceOrchestrator:
         """Fetch top GGUF and non-GGUF repos from unsloth by downloads."""
         try:
             import httpx
+            from utils.hf_endpoint import get_hf_endpoint
+
             resp = httpx.get(
-                "https://huggingface.co/api/models",
+                f"{get_hf_endpoint()}/api/models",
                 params = {
                     "author": "unsloth",
                     "sort": "downloads",

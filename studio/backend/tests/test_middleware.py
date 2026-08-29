@@ -531,6 +531,34 @@ class TestSecurityHeadersMiddleware:
         assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
 
+    def test_mirror_endpoints_in_connect_src(self, main_module, monkeypatch):
+        # A mirrored hub must be allowed by connect-src or the browser blocks
+        # every Hub call the frontend routes there.
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        csp = r.headers["content-security-policy"]
+        directives = {
+            chunk.strip().split(" ", 1)[0]: chunk.strip()
+            for chunk in csp.split(";")
+            if chunk.strip()
+        }
+        assert "https://hf-mirror.com" in directives["connect-src"]
+        assert "https://ds.example.com" in directives["connect-src"]
+
+    def test_connect_src_unchanged_without_mirror(self, main_module, monkeypatch):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        csp = r.headers["content-security-policy"]
+        assert "hf-mirror.com" not in csp
+        assert (
+            "connect-src 'self' https://huggingface.co "
+            "https://datasets-server.huggingface.co;" in csp
+        )
+
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
         app = _make_csp_app(main_module, attach_nonce = nonce)

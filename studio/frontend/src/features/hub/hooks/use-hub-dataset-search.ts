@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { fetchWithTimeout } from "../lib/network";
 import type { HubModelType } from "../types";
 import { listDatasets } from "@huggingface/hub";
@@ -427,6 +428,7 @@ export function useHubDatasetSearch(
         search: hasQuery ? { query } : {},
         additionalFields: ["cardData", "tags", "createdAt", "downloadsAllTime"],
         fetch: makeDatasetSortFetch(sortBy, sortDirection, signal),
+        hubUrl: getHfEndpoint(),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>;
     },

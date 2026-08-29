@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
 import {
@@ -304,6 +305,7 @@ async function* mergedModelIterator(
     tasks,
     (task, taskSignal) =>
       listModels({
+        hubUrl: getHfEndpoint(),
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal),
         ...common,
@@ -314,6 +316,7 @@ async function* mergedModelIterator(
     tasks,
     (task, taskSignal) =>
       listModels({
+        hubUrl: getHfEndpoint(),
         search: { query, ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal),
         ...common,
@@ -324,6 +327,7 @@ async function* mergedModelIterator(
   // Start the pinned lookup now so it runs in parallel with Phase 1 instead of blocking Phase 2.
   const pinnedPromise = pinnedId
     ? cachedModelInfo({
+      hubUrl: getHfEndpoint(),
         name: pinnedId,
         additionalFields: ALL_FIELDS,
         fetch: makeHfFetch(signal),
@@ -396,6 +400,7 @@ async function* priorityThenListingIterator(
   const settled = await Promise.allSettled(
     priorityIds.map((id) =>
       cachedModelInfo({
+        hubUrl: getHfEndpoint(),
         name: id,
         additionalFields: ALL_FIELDS,
         fetch: makeHfFetch(signal),
@@ -416,6 +421,7 @@ async function* priorityThenListingIterator(
     tasks,
     (task, taskSignal) =>
       listModels({
+        hubUrl: getHfEndpoint(),
         search: { owner: "unsloth", ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal),
         ...common,
@@ -455,6 +461,7 @@ function createChannelIterator(
     channel.tags && channel.tags.length ? [...channel.tags] : undefined;
   const queryString = opts.query || channel.query || undefined;
   return listModels({
+    hubUrl: getHfEndpoint(),
     search: {
       ...(queryString ? { query: queryString } : {}),
       ...(channel.owner ? { owner: channel.owner } : {}),
@@ -491,6 +498,8 @@ async function* channelUnslothFirstIterator(
   const seen = new Set<string>();
 
   const unslothIter = listModels({
+
+    hubUrl: getHfEndpoint(),
     search: {
       ...(queryString ? { query: queryString } : {}),
       owner: "unsloth",
@@ -510,6 +519,8 @@ async function* channelUnslothFirstIterator(
   }
 
   const generalIter = listModels({
+
+    hubUrl: getHfEndpoint(),
     search: {
       ...(queryString ? { query: queryString } : {}),
       ...(channel.tags ? { tags: channel.tags } : {}),
@@ -712,6 +723,7 @@ export function useHubModelSearch(
           normalizeTaskFilter(task),
           (task, taskSignal) =>
             listModels({
+              hubUrl: getHfEndpoint(),
               // Unsloth-only scope restricts the plain sort browse to the org.
               search: {
                 ...(unslothOnly ? { owner: "unsloth" } : {}),
@@ -728,6 +740,7 @@ export function useHubModelSearch(
       // Unsloth-only typed query: search within the org rather than floating a few hits globally.
       if (unslothOnly) {
         return listModels({
+          hubUrl: getHfEndpoint(),
           search: { query: searchQuery, owner: "unsloth" },
           additionalFields: ALL_FIELDS,
           fetch: makeSortFetch(sortBy, sortDirection, signal),

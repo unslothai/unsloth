@@ -15,6 +15,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
@@ -181,7 +182,7 @@ function BaseModelReference({
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <a
-              href={`https://huggingface.co/${baseModelHubId}`}
+              href={`${getHfEndpoint()}/${baseModelHubId}`}
               target="_blank"
               rel="noopener noreferrer"
               aria-label={`Open ${baseModelHubId} on Hugging Face`}
@@ -190,7 +191,7 @@ function BaseModelReference({
                 event.stopPropagation();
                 if (
                   confirmExternalLink(
-                    `https://huggingface.co/${baseModelHubId}`,
+                    `${getHfEndpoint()}/${baseModelHubId}`,
                   )
                 ) {
                   event.preventDefault();

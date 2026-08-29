@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { getHfDatasetsServerBase } from "@/lib/hf-endpoint";
 import { useEffect, useState } from "react";
 import {
   type DatasetSplitFetchers,
@@ -41,7 +42,11 @@ export interface HfDatasetSplitsResult {
   requiresManualEntry: boolean;
 }
 
-const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
+// Datasets-server base is independent of the Hub mirror: HF_ENDPOINT does not
+// redirect it, only HF_DATASETS_SERVER (surfaced via /api/health) does.
+function getHfSplitsApi(): string {
+  return `${getHfDatasetsServerBase()}/splits`;
+}
 const MAX_SPLIT_ENTRIES = 2048;
 
 function validatedEntries(value: unknown): HfSplitEntry[] {
@@ -100,7 +105,7 @@ async function fetchRemoteSplits({
   datasetName,
   signal,
 }: LoadHfDatasetSplitsArgs): Promise<HfSplitEntry[]> {
-  const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(datasetName)}`;
+  const url = `${getHfSplitsApi()}?dataset=${encodeURIComponent(datasetName)}`;
   const headers: Record<string, string> = {};
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;

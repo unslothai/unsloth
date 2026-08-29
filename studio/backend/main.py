@@ -356,6 +356,7 @@ from utils.cache_cleanup import (
 )
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
+from utils.hf_endpoint import get_hf_endpoint, get_hf_datasets_server
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -933,18 +934,32 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     # one level) and null-origin iframes; '*' is safe as Colab is a sandboxed single user.
     frame_ancestors = "*" if _IS_COLAB else "'none'"
 
+    # A mirrored HF_ENDPOINT / HF_DATASETS_SERVER has to appear in connect-src too,
+    # or the browser blocks every Hub call the frontend routes there; img/media are
+    # already covered by the https: wildcard above. dict.fromkeys keeps the default
+    # order and de-duplicates, so with no mirror configured the output is unchanged.
+    hf_connect_src = " ".join(
+        dict.fromkeys(
+            (
+                "https://huggingface.co",
+                "https://datasets-server.huggingface.co",
+                get_hf_endpoint(),
+                get_hf_datasets_server(),
+            )
+        )
+    )
+
     # In Colab the kernel scaffolding injects scripts and fetch/WS from *.prod.colab.dev and
     # *.googleusercontent.com, so widen script-src/connect-src. Scripts still use a nonce.
     if _IS_COLAB:
         script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
         connect_src = (
-            "'self' blob: data: "
-            "https://huggingface.co https://datasets-server.huggingface.co "
+            f"'self' blob: data: {hf_connect_src} "
             "https://*.prod.colab.dev wss://*.prod.colab.dev "
             "https://*.googleusercontent.com wss://*.googleusercontent.com"
         )
     else:
-        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        connect_src = f"'self' {hf_connect_src}"
 
     return (
         "default-src 'self'; "
@@ -1785,6 +1800,12 @@ async def health_check(request: Request):
         # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
+        # Non-sensitive routing info: mirrors the HF_ENDPOINT / HF_DATASETS_SERVER
+        # env vars so the frontend can route its Hub calls to the same endpoint the
+        # backend uses. Unauthenticated on purpose — an endpoint URL is not a host
+        # fingerprint, and the frontend needs it before a token exists.
+        "hf_endpoint": get_hf_endpoint(),
+        "hf_datasets_server": get_hf_datasets_server(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
