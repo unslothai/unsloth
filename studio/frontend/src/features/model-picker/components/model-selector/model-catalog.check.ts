@@ -854,6 +854,26 @@ assert.equal(groupForRepoId("unsloth/whisper-large-v3-turbo", AUDIO_CATALOG)?.ta
 assert.equal(groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.task, "stt");
 // A chat model stays unknown to the audio catalog.
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", AUDIO_CATALOG), null);
+// MiniMax Music3 publishes a 67 GB repository, but its official BF16 modular loader
+// fits a 24 GB CUDA card. Download bytes must not become a false OOM badge.
+const minimaxMusic = groupForRepoId("MiniMaxAI/MiniMax-Music3", AUDIO_CATALOG);
+assert.ok(minimaxMusic);
+assert.equal(
+  curatedArtifactFitsDevice(
+    "MiniMaxAI/MiniMax-Music3",
+    AUDIO_CATALOG,
+    { gpuGb: 95, systemRamGb: 0 },
+  ),
+  true,
+);
+assert.equal(
+  curatedArtifactFitsDevice(
+    "MiniMaxAI/MiniMax-Music3",
+    AUDIO_CATALOG,
+    { gpuGb: 23, systemRamGb: 256 },
+  ),
+  false,
+);
 
 // ── groupMatchesQuery ──────────────────────────────────────────────────────────
 
