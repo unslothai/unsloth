@@ -103,7 +103,8 @@ def remove_prior_test_servers(token: str) -> None:
 
 
 def open_dialog(page):
-    page.keyboard.press("Control+Alt+m")
+    page.get_by_role("button", name = "MCP servers").click()
+    page.get_by_role("menuitem", name = "Manage MCP servers").press("Enter")
     dialog = page.get_by_role("dialog", name = "MCP Servers")
     expect(dialog).to_be_visible()
     return dialog
@@ -452,8 +453,6 @@ def main() -> int:
         "(() => {"
         f"localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
         f"localStorage.setItem('unsloth_refresh_token', {json.dumps(session.get('refresh_token', ''))});"
-        "localStorage.setItem('unsloth_keyboard_shortcuts', "
-        "JSON.stringify({openMcpServers:{primary:'Mod+Alt+KeyM'}}));"
         "localStorage.setItem('unsloth_chat_mcp_enabled', 'true');"
         "})();"
     )
