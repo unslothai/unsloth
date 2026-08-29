@@ -589,10 +589,6 @@ def _inventory_physical_identity(raw_path: str) -> str:
     return gguf.local_path_physical_identity(raw_path)
 
 
-def _inventory_resolved_parent_identity(raw_path: str) -> str:
-    return gguf.local_path_parent_physical_identity(raw_path)
-
-
 def _coerce_scan_folder_path(raw_path: str) -> str:
     """Normalize a scan registration target; the registry stores directories, so a pasted weight-file path is reduced to its parent folder."""
     if not raw_path or not raw_path.strip():
@@ -894,29 +890,11 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    grouped_custom_gguf_dirs = {
-        _inventory_physical_identity(model.path)
-        for model in deduped.values()
-        if model.source == "custom"
-        and model.model_format == "gguf"
-        and not model.partial
-        and model.capabilities.requires_variant
-        and _safe_is_dir(Path(model.path))
-    }
-    if grouped_custom_gguf_dirs:
-        deduped = {
-            key: model
-            for key, model in deduped.items()
-            if not (
-                model.source == "custom"
-                and model.model_format == "gguf"
-                and not _safe_is_dir(Path(model.path))
-                and _inventory_resolved_parent_identity(model.path)
-                in grouped_custom_gguf_dirs
-            )
-        }
+    deduped_values = list(deduped.values())
+    custom_values = [model for model in deduped_values if model.source == "custom"]
     return sorted(
-        deduped.values(),
+        [model for model in deduped_values if model.source != "custom"]
+        + gguf.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )

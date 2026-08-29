@@ -2588,7 +2588,10 @@ def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch)
     model = root / "publisher"
     model.mkdir(parents = True)
     (model / "model-Q4_K_M.gguf").write_bytes(b"x")
-    (model / "model-Q8_0.gguf").write_bytes(b"xx")
+    quant_dir = model / "Q8_0"
+    quant_dir.mkdir()
+    (quant_dir / "model-Q8_0.gguf").write_bytes(b"xx")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
     scan_models_dir = models_route._scan_models_dir
     scan_lmstudio_dir = models_route._scan_lmstudio_dir
 
@@ -2596,13 +2599,13 @@ def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch)
         models_route,
         "_scan_models_dir",
         lambda path, **kwargs: scan_models_dir(path, **kwargs)
-        if path in {root, model}
+        if path in {root, quant_dir}
         else [],
     )
     monkeypatch.setattr(
         models_route,
         "_scan_lmstudio_dir",
-        lambda path: scan_lmstudio_dir(path) if path in {root, model} else [],
+        lambda path: scan_lmstudio_dir(path) if path in {root, quant_dir} else [],
     )
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
@@ -2614,7 +2617,7 @@ def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch)
     monkeypatch.setattr(
         studio_db,
         "list_scan_folders",
-        lambda: [{"path": str(root)}, {"path": str(model)}],
+        lambda: [{"path": str(root)}, {"path": str(quant_dir)}],
     )
 
     index = resolver._build_index()

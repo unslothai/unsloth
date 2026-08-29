@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -198,6 +199,19 @@ def test_loose_symlink_into_grouped_model_does_not_add_a_row(tmp_path):
     assert [Path(row.path) for row in rows] == [model]
 
 
+def test_renamed_loose_symlink_into_grouped_model_does_not_add_a_row(tmp_path):
+    grouped_root = tmp_path / "grouped-root"
+    model = grouped_root / "model"
+    target = _write_gguf(model / "model-Q4_K_M.gguf")
+    loose_root = tmp_path / "loose-root"
+    loose_root.mkdir()
+    _symlink_file(loose_root / "latest.gguf", target)
+
+    rows = _custom_rows(grouped_root, loose_root)
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
 def test_symlinked_and_real_parent_roots_dedupe_group_rows(tmp_path):
     real_root = tmp_path / "real"
     real_model = real_root / "model"
@@ -296,13 +310,17 @@ def test_incomplete_direct_split_is_not_collapsed(tmp_path):
 @pytest.mark.parametrize(
     "names",
     [
-        ("model-00001-of-00002-old.gguf", "model-00002-of-00002-old.gguf"),
-        ("model-001-of-002.gguf", "model-002-of-002.gguf"),
+        (
+            "alpha-00001-of-00002-final-Q4_K_M.gguf",
+            "alpha-00002-of-00002-final-Q4_K_M.gguf",
+        ),
+        ("model-Q4_K_M-001-of-002.gguf", "model-Q4_K_M-002-of-002.gguf"),
     ],
 )
 def test_noncanonical_split_like_names_stay_separate(tmp_path, names):
-    root = tmp_path / "direct-model-root"
-    expected = {_write_gguf(root / name) for name in names}
+    root = tmp_path / "root"
+    holder = root / "holder"
+    expected = {_write_gguf(holder / name) for name in names}
 
     rows = _custom_rows(root)
 
@@ -339,6 +357,132 @@ def test_nested_quant_directory_stays_in_the_parent_group(tmp_path):
     assert {variant.quant for variant in variants} == {"Q4_K_M", "Q8_0"}
 
 
+def test_overlapping_nested_quant_root_keeps_the_parent_group(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-a-Q4_K_M.gguf")
+    quant_dir = model / "Q8_0"
+    _write_gguf(quant_dir / "model-a-Q8_0.gguf")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = _custom_rows(root, quant_dir)
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
+def test_quant_named_independent_model_root_stays_selectable(tmp_path):
+    root = tmp_path / "root"
+    parent = root / "parent"
+    _write_gguf(parent / "model-a-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "Q8_0"
+    _write_gguf(child / "model-b-Q8_0.gguf")
+    (child / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = _custom_rows(root, child)
+
+    assert {Path(row.path) for row in rows} == {parent, child}
+
+
+def test_symlinked_nested_quant_root_keeps_the_real_parent_group(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-a-Q4_K_M.gguf")
+    quant_dir = model / "Q8_0"
+    _write_gguf(quant_dir / "model-a-Q8_0.gguf")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+    alias_model = tmp_path / "alias-model"
+    _symlink_dir(alias_model, model)
+
+    rows = _custom_rows(root, alias_model / "Q8_0")
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
+def test_overlapping_nested_independent_model_root_stays_selectable(tmp_path):
+    root = tmp_path / "root"
+    parent = root / "parent"
+    _write_gguf(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    _write_gguf(child / "child-Q8_0.gguf")
+    (child / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = _custom_rows(root, child)
+
+    assert {Path(row.path) for row in rows} == {parent, child}
+
+
+def test_overlapping_nested_independent_loose_root_stays_selectable(tmp_path):
+    root = tmp_path / "root"
+    parent = root / "parent"
+    _write_gguf(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    loose = _write_gguf(child / "child-Q8_0.gguf")
+
+    rows = _custom_rows(root, child)
+
+    assert {Path(row.path) for row in rows} == {parent, loose}
+
+
+def test_aliased_nested_independent_loose_root_stays_selectable(tmp_path):
+    root = tmp_path / "root"
+    parent = root / "parent"
+    _write_gguf(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    loose = _write_gguf(child / "child-Q8_0.gguf")
+    alias_child = tmp_path / "alias-child"
+    _symlink_dir(alias_child, child)
+
+    rows = _custom_rows(root, alias_child)
+
+    assert {Path(row.path).resolve() for row in rows} == {
+        parent.resolve(),
+        loose.resolve(),
+    }
+
+
+def test_mixed_nested_roots_dedupe_only_the_matching_quant_group(tmp_path):
+    root = tmp_path / "root"
+    parent = root / "parent"
+    _write_gguf(parent / "model-a-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    quant_dir = parent / "Q8_0"
+    _write_gguf(quant_dir / "model-a-Q8_0.gguf")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    _write_gguf(child / "child-Q4_K_M.gguf")
+    (child / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = _custom_rows(root, quant_dir, child)
+
+    assert {Path(row.path) for row in rows} == {parent, child}
+
+
+def test_big_endian_companion_does_not_leave_a_duplicate_loose_row(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-Q4_K_M.gguf")
+    _write_gguf(model / "model-Q4_K_M-be.gguf")
+
+    rows = _custom_rows(root, model)
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
+def test_mtp_companion_does_not_leave_a_duplicate_loose_row(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-Q4_K_M.gguf")
+    _write_gguf(model / "MTP" / "model-Q8_0.gguf")
+
+    rows = _custom_rows(root, model)
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
 def test_nested_symlinked_variant_directory_stays_selectable(tmp_path):
     root = tmp_path / "root"
     model = root / "model"
@@ -356,6 +500,55 @@ def test_nested_symlinked_variant_directory_stays_selectable(tmp_path):
     assert Path(
         _find_local_gguf_by_variant(str(alias), "Q8_0", model_root = str(root))
     ).samefile(q8)
+
+
+def test_windows_junction_child_is_suppressed_when_parent_walk_sees_it(
+    tmp_path, monkeypatch
+):
+    model = tmp_path / "root" / "model"
+    q4 = _write_gguf(model / "model-a-Q4_K_M.gguf")
+    outside = tmp_path / "outside" / "Q8_0"
+    q8 = _write_gguf(outside / "model-a-Q8_0.gguf")
+    child = model / "Q8_0"
+    _symlink_dir(child, outside)
+    linked_q8 = child / q8.name
+    parent_row = SimpleNamespace(model_format = "gguf", partial = False, path = str(model))
+    child_row = SimpleNamespace(model_format = "gguf", partial = False, path = str(child))
+
+    monkeypatch.setattr(
+        gguf,
+        "iter_gguf_files",
+        lambda directory, recursive = False: iter(
+            [q4, linked_q8] if directory == model else [linked_q8]
+        ),
+    )
+
+    assert gguf.suppress_grouped_gguf_file_rows([parent_row, child_row]) == [parent_row]
+
+
+def test_windows_junction_independent_child_stays_selectable(tmp_path, monkeypatch):
+    model = tmp_path / "root" / "model"
+    q4 = _write_gguf(model / "model-a-Q4_K_M.gguf")
+    outside = tmp_path / "outside" / "child"
+    q8 = _write_gguf(outside / "child-Q8_0.gguf")
+    child = model / "child"
+    _symlink_dir(child, outside)
+    linked_q8 = child / q8.name
+    parent_row = SimpleNamespace(model_format = "gguf", partial = False, path = str(model))
+    child_row = SimpleNamespace(model_format = "gguf", partial = False, path = str(child))
+
+    monkeypatch.setattr(
+        gguf,
+        "iter_gguf_files",
+        lambda directory, recursive = False: iter(
+            [q4, linked_q8] if directory == model else [linked_q8]
+        ),
+    )
+
+    assert gguf.suppress_grouped_gguf_file_rows([parent_row, child_row]) == [
+        parent_row,
+        child_row,
+    ]
 
 
 def test_lmstudio_publisher_model_layout_keeps_its_model_id(tmp_path):

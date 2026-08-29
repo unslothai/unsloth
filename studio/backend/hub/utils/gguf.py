@@ -72,7 +72,7 @@ GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}(?=\.gguf$|$)", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -483,16 +483,6 @@ def local_path_physical_identity(raw_path: str) -> str:
         return f"path\x00{os.path.abspath(os.path.expanduser(raw_path))}"
 
 
-def local_path_parent_physical_identity(raw_path: str) -> str:
-    """Physical identity of a local file's resolved parent directory."""
-    try:
-        resolved = os.path.realpath(os.path.expanduser(raw_path))
-        parent = str(Path(resolved).parent)
-    except (OSError, UnicodeError, ValueError):
-        parent = str(Path(raw_path).parent)
-    return local_path_physical_identity(parent)
-
-
 def should_group_local_gguf_files(filenames: Sequence[str]) -> bool:
     """Whether filenames are variants of one selectable checkpoint."""
     if len(filenames) == 1:
@@ -515,7 +505,8 @@ def should_group_local_gguf_files(filenames: Sequence[str]) -> bool:
 
 
 def suppress_grouped_gguf_file_rows(rows: Sequence[object]) -> list:
-    """Drop loose rows already represented by a physical GGUF directory row."""
+    """Drop rows already represented by a physical GGUF directory row."""
+    from utils.models.model_config import _extract_quant_label as _loader_quant
 
     def row_path_is_dir(row) -> bool:
         try:
@@ -523,25 +514,124 @@ def suppress_grouped_gguf_file_rows(rows: Sequence[object]) -> list:
         except OSError:
             return False
 
-    grouped_dirs = {
-        local_path_physical_identity(getattr(row, "path", ""))
+    grouped_rows = [
+        (row, Path(os.path.abspath(os.path.expanduser(getattr(row, "path", "")))))
         for row in rows
         if getattr(row, "model_format", None) == "gguf"
         and not getattr(row, "partial", False)
         and row_path_is_dir(row)
-    }
-    if not grouped_dirs:
-        return list(rows)
-    return [
-        row
-        for row in rows
-        if not (
-            getattr(row, "model_format", None) == "gguf"
-            and not row_path_is_dir(row)
-            and local_path_parent_physical_identity(getattr(row, "path", ""))
-            in grouped_dirs
-        )
     ]
+    if not grouped_rows:
+        return list(rows)
+
+    paths_by_group = {
+        id(row): list(iter_gguf_files(directory, recursive = True))
+        for row, directory in grouped_rows
+    }
+    physical_ancestors_by_group = {
+        id(row): {
+            local_path_physical_identity(str(parent))
+            for parent in Path(os.path.realpath(directory)).parents
+        }
+        for row, directory in grouped_rows
+    }
+    families_by_group = {}
+    for row, directory in grouped_rows:
+        families_by_file = {}
+        for file in paths_by_group[id(row)]:
+            try:
+                filename = str(file.relative_to(directory))
+            except ValueError:
+                filename = file.name
+            if (
+                is_mmproj_filename(file.name)
+                or is_imatrix_filename(file.name)
+                or is_mtp_drafter_path(filename)
+                or is_appledouble_metadata(file)
+                or is_big_endian_gguf_path(filename, _loader_quant(filename))
+            ):
+                continue
+            file_identity = local_path_physical_identity(str(file))
+            families_by_file.setdefault(file_identity, set()).add(
+                gguf_checkpoint_family(filename)
+            )
+        families_by_group[id(row)] = families_by_file
+
+    nested_groups_to_drop = set()
+    for row, directory in grouped_rows:
+        families_by_file = families_by_group[id(row)]
+        if not families_by_file:
+            continue
+        physical_ancestors = physical_ancestors_by_group[id(row)]
+        for parent_row, parent_directory in grouped_rows:
+            if row is parent_row:
+                continue
+            parent_families_by_file = families_by_group[id(parent_row)]
+            parent_identity = local_path_physical_identity(getattr(parent_row, "path", ""))
+            try:
+                lexically_nested = bool(directory.relative_to(parent_directory).parts)
+            except ValueError:
+                lexically_nested = False
+            matching_families = [
+                families & parent_families_by_file.get(file_identity, set())
+                for file_identity, families in families_by_file.items()
+            ]
+            outside_families = set().union(
+                *(
+                    families
+                    for file_identity, families in parent_families_by_file.items()
+                    if file_identity not in families_by_file
+                )
+            )
+            if (
+                (lexically_nested or parent_identity in physical_ancestors)
+                and all(matching_families)
+                and (
+                    not outside_families
+                    or all(families & outside_families for families in matching_families)
+                )
+            ):
+                nested_groups_to_drop.add(id(row))
+                break
+
+    filtered = []
+    for row in rows:
+        if id(row) in nested_groups_to_drop:
+            continue
+        if getattr(row, "model_format", None) == "gguf" and not row_path_is_dir(row):
+            path = getattr(row, "path", "")
+            loose_path = Path(os.path.abspath(os.path.expanduser(path)))
+            file_identity = local_path_physical_identity(path)
+            family = gguf_checkpoint_family(Path(path).name)
+            resolved_parent = Path(os.path.realpath(loose_path.parent))
+            physical_parent_ancestry = {
+                local_path_physical_identity(str(parent))
+                for parent in (resolved_parent, *resolved_parent.parents)
+            }
+            for grouped_row, directory in grouped_rows:
+                grouped_families = families_by_group[id(grouped_row)].get(
+                    file_identity, set()
+                )
+                if not grouped_families:
+                    continue
+                try:
+                    lexically_nested = bool(loose_path.relative_to(directory).parts)
+                except ValueError:
+                    lexically_nested = False
+                grouped_identity = local_path_physical_identity(
+                    getattr(grouped_row, "path", "")
+                )
+                if (
+                    not lexically_nested
+                    and grouped_identity not in physical_parent_ancestry
+                ) or family in grouped_families:
+                    break
+            else:
+                filtered.append(row)
+                continue
+            continue
+        filtered.append(row)
+    return filtered
 
 
 def dedupe_custom_gguf_rows(rows: Sequence[object]) -> list:

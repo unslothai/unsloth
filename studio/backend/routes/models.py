@@ -1158,21 +1158,19 @@ def collect_local_models(
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
         semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
-        key = (
-            "\x00".join(
-                (
-                    (
-                        model.model_id
-                        if model.model_id and model.model_id.startswith("ollama/")
-                        else gguf_utils.local_path_physical_identity(model.path)
-                    ),
-                    model.model_format or "",
-                    "custom",
+        if model.source == "custom":
+            physical_identity = gguf_utils.local_path_physical_identity(model.path)
+            if (
+                model.model_id
+                and model.model_id.startswith("ollama/")
+                and any(
+                    part in (".studio_links", "ollama_links") for part in Path(model.path).parts
                 )
-            )
-            if model.source == "custom"
-            else semantic_id
-        )
+            ):
+                physical_identity = "\x00".join((model.model_id, physical_identity))
+            key = "\x00".join((physical_identity, model.model_format or "", "custom"))
+        else:
+            key = semantic_id
         existing = deduped.get(key)
         prefer_model = existing is None
         if existing is not None and model.source == existing.source == "hf_cache":

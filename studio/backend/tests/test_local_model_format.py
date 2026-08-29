@@ -98,6 +98,44 @@ def test_compat_inventory_dedupes_overlapping_custom_roots(tmp_path):
     assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
 
 
+def test_compat_inventory_dedupes_nested_quant_root(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-a-Q4_K_M.gguf")
+    quant_dir = model / "Q8_0"
+    _touch(quant_dir / "model-a-Q8_0.gguf")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(quant_dir)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_preserves_nested_independent_model_root(tmp_path):
+    root = tmp_path / "custom"
+    parent = root / "parent"
+    _touch(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    _touch(child / "child-Q8_0.gguf")
+    (child / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(child)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("custom", parent),
+        ("custom", child),
+    }
+
+
 def test_compat_inventory_keeps_custom_section_copy(tmp_path):
     root = tmp_path / "models"
     model = root / "publisher"
@@ -138,27 +176,78 @@ def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
     }
 
 
-def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path, monkeypatch):
-    blob = _touch(tmp_path / "ollama" / "blobs" / "sha256-model")
-    tags = [
-        models_route.LocalModelInfo(
-            id = str(blob),
-            model_id = f"ollama/model:{tag}",
-            display_name = f"model:{tag}",
-            path = str(blob),
-            source = "custom",
-        )
-        for tag in ("latest", "v1")
-    ]
-    monkeypatch.setattr(models_route, "_scan_ollama_dir", lambda *_a, **_kw: tags)
+def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
+    root = tmp_path / "ollama"
+    digest = "sha256-model"
+    _touch(root / "blobs" / digest)
+    manifest = json.dumps(
+        {
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": digest.replace("-", ":", 1),
+                }
+            ]
+        }
+    )
+    tags = root / "manifests" / "registry.ollama.ai" / "library" / "model"
+    tags.mkdir(parents = True)
+    for tag in ("latest", "v1"):
+        (tags / tag).write_text(manifest, encoding = "utf-8")
 
     rows = models_route.collect_local_models(
         tmp_path / "models",
-        custom_folders = [{"path": str(tmp_path / "ollama")}],
+        custom_folders = [{"path": str(root)}],
         sources = _empty_compat_sources(tmp_path),
     )
 
     assert {row.model_id for row in rows} == {"ollama/model:latest", "ollama/model:v1"}
+
+
+def test_compat_inventory_preserves_same_ollama_tag_from_distinct_stores(tmp_path):
+    roots = [tmp_path / "ollama-one", tmp_path / "ollama-two"]
+    for index, root in enumerate(roots):
+        digest = f"sha256-model-{index}"
+        _touch(root / "blobs" / digest)
+        tag = root / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+        tag.parent.mkdir(parents = True)
+        tag.write_text(
+            json.dumps(
+                {
+                    "layers": [
+                        {
+                            "mediaType": "application/vnd.ollama.image.model",
+                            "digest": digest.replace("-", ":", 1),
+                        }
+                    ]
+                }
+            ),
+            encoding = "utf-8",
+        )
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)} for root in roots],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [row.model_id for row in rows] == ["ollama/model:latest"] * 2
+    assert len({Path(row.path).resolve() for row in rows}) == 2
+
+
+def test_compat_inventory_dedupes_lmstudio_publisher_named_ollama(tmp_path):
+    root = tmp_path / "lmstudio"
+    model = root / "ollama" / "foo"
+    _touch(model / "foo-Q4_K_M.gguf")
+    (model / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [Path(row.path) for row in rows] == [model]
 
 
 def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
