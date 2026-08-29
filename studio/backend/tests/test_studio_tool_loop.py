@@ -111,6 +111,7 @@ def _run(
     tools = None,
     tool_choice = None,
     messages = None,
+    continue_final_message = False,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -134,6 +135,7 @@ def _run(
                 session_id = "s1",
                 thread_id = "t1",
                 tool_choice = tool_choice,
+                continue_final_message = continue_final_message,
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
@@ -815,6 +817,46 @@ def test_a_reasoning_only_stall_is_nudged_and_replayed(executed):
     second = transport.requests[1]["messages"]
     assert [message["role"] for message in second] == ["user", "assistant", "user"]
     assert second[-2]["content"] == stall
+
+
+@pytest.mark.parametrize(
+    "stall, merged",
+    [
+        (
+            "[THINK]The user wants a search.[/THINK] I will search now.",
+            "The answer is not I will search now.",
+        ),
+        # No markup to remove, so the model's own boundary is already at index 0.
+        (" I will search now.", "The answer is not I will search now."),
+        # The model wrote none, and inventing one would change what it continued.
+        ("I will search now.", "The answer is notI will search now."),
+    ],
+)
+def test_a_continued_stall_keeps_the_boundary_the_model_wrote(executed, stall, merged):
+    """The merge has no separator, so a trimmed-away space glues two words.
+
+    strip_tool_markup trims, and after a removed [THINK] block that trim sits past
+    index 0, so measuring the leading run of the raw turn reports none.
+    """
+    transport = FakeTransport(
+        [
+            [_sse({"content": stall}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(
+        transport,
+        nudge_tool_calls = True,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "The answer is not"},
+        ],
+        continue_final_message = True,
+    )
+
+    second = transport.requests[1]["messages"]
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert second[-2]["content"] == merged
 
 
 def test_a_markup_only_stall_is_still_not_nudged(executed):

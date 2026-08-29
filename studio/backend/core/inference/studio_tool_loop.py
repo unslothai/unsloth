@@ -715,6 +715,25 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     conversation.append({"role": "user", "content": content})
 
 
+def _replay_boundary_whitespace(raw: str, replayed: str) -> str:
+    """Whitespace ``raw`` holds immediately before ``replayed`` begins.
+
+    A continuation merges onto the resumed partial with no separator, so this run is
+    all that keeps the partial's last word apart from the first word replayed.
+    ``strip_tool_markup(final = True)`` trims, and after a removed ``[THINK]`` or
+    unpromotable call block that trim is not at index 0, so the leading run of ``raw``
+    reports none. Falls back to that leading run when stripping cut something out of
+    the middle and ``replayed`` is no longer a slice of ``raw``.
+    """
+    if not replayed:
+        return ""
+    start = raw.rfind(replayed)
+    if start < 0:
+        return raw[: len(raw) - len(raw.lstrip())]
+    head = raw[:start]
+    return head[len(head.rstrip()) :]
+
+
 def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
     try:
         return next(generator)
@@ -1048,15 +1067,12 @@ async def stream_with_studio_tools(
             # (_reprompt_intent_text). A turn that is nothing but an unpromotable call
             # block strips to "", leaving no assistant turn to append and no promise to
             # continue from, so nudging on the raw text replayed it as user -> user.
-            leading_whitespace = visible_answer[
-                : len(visible_answer) - len(visible_answer.lstrip())
-            ]
-            replayable_answer = leading_whitespace + strip_tool_markup(
+            replayable_answer = strip_tool_markup(
                 visible_answer,
                 final = True,
                 enabled_tool_names = allowed_tool_names,
             )
-            if not replayable_answer.strip():
+            if not replayable_answer:
                 # A reasoning-only stall announces the plan inside the think block
                 # and nowhere else. _reprompt_intent_text falls back to that block
                 # rather than dropping the turn, so match it, and replay what was
@@ -1067,6 +1083,12 @@ async def stream_with_studio_tools(
                     visible_answer[start:end]
                     for start, end in _think_spans_outside_tool_markup(visible_answer)
                 ).strip()
+            # Both branches trim, so restore the boundary the model wrote before the
+            # replayed text: a continuation merges it onto the partial with no
+            # separator, and "not" + "able" is a different word.
+            replayable_answer = (
+                _replay_boundary_whitespace(visible_answer, replayable_answer) + replayable_answer
+            )
             if (
                 tools_available
                 and nudge_enabled(policy.nudge_tool_calls)
