@@ -124,6 +124,28 @@ def test_unqualified_distinct_checkpoints_use_file_rows(tmp_path):
     assert {Path(row.path) for row in _custom_rows(root)} == {alpha, beta}
 
 
+def test_bare_quant_filenames_use_the_parent_model_group(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    q4 = _write_gguf(model / "Q4_K_M.gguf")
+    q8 = _write_gguf(model / "Q8_0.gguf")
+
+    assert [Path(row.path) for row in _custom_rows(root)] == [model]
+    variants, _ = gguf.list_local_gguf_variants(str(model), model_root = str(root))
+    assert {Path(variant.filename).name for variant in variants} == {q4.name, q8.name}
+
+
+def test_bare_quant_shards_use_the_parent_model_group(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "Q4_K_M-00001-of-00002.gguf")
+    _write_gguf(model / "Q4_K_M-00002-of-00002.gguf")
+
+    rows = _custom_rows(root)
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
 def test_overlapping_parent_and_model_roots_keep_the_grouped_row(tmp_path):
     root = tmp_path / "root"
     model = root / "model"

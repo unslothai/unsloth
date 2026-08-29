@@ -843,8 +843,10 @@ def _scan_custom_folder(
             len(files) == 1
             or (
                 not has_ambiguous_variant
-                and None not in families
-                and len(families) == 1
+                and (
+                    families == {None}
+                    or (None not in families and len(families) == 1)
+                )
             )
             or all(gguf.is_h3_denoiser_variant_key(key) for key in variant_keys)
         )
