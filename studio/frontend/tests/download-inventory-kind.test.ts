@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { downloadInventoryHintKind } from "../src/features/hub/download-manager/download-manager-types.ts";
+import {
+  downloadInventoryHintKind,
+  scopedDownloadInventoryKind,
+} from "../src/features/hub/download-manager/download-manager-types.ts";
 
 test("classifies quant variants as GGUF", () => {
   assert.equal(downloadInventoryHintKind("model", "Q4_K_M"), "gguf");
@@ -27,4 +30,16 @@ test("uses the caller's format for scoped downloads", () => {
 
 test("keeps dataset jobs out of model inventory", () => {
   assert.equal(downloadInventoryHintKind("dataset", null), "dataset");
+});
+
+test("recovers scoped inventory format from backend files", () => {
+  assert.equal(
+    scopedDownloadInventoryKind(["transformer/model-Q4_K_M.gguf"]),
+    "gguf",
+  );
+  assert.equal(
+    scopedDownloadInventoryKind(["transformer/model.safetensors"]),
+    "model",
+  );
+  assert.equal(scopedDownloadInventoryKind(undefined), "model");
 });

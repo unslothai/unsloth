@@ -15,9 +15,10 @@ import {
   apiGetStatus,
   isRequestTimeout,
 } from "./download-api-adapter";
-import type {
-  DownloadRequest,
-  ManagedDownload,
+import {
+  type DownloadRequest,
+  type ManagedDownload,
+  scopedDownloadInventoryKind,
 } from "./download-manager-types";
 import {
   getState,
@@ -95,6 +96,12 @@ async function adoptActiveModelDownloads(): Promise<void> {
         kind: DOWNLOAD_KIND.MODEL,
         repoId,
         variant: download.variant ?? null,
+        ...(download.variant?.startsWith("@")
+          ? {
+              inventoryKind: scopedDownloadInventoryKind(download.files),
+              ...(download.files ? { files: download.files } : {}),
+            }
+          : {}),
         expectedBytes: 0,
       },
       safeGeneration(download.generation),
@@ -306,6 +313,9 @@ export function hydrateDownloadManager(): void {
       kind: job.kind,
       repoId: job.repoId,
       variant: job.variant,
+      ...(job.inventoryKind ? { inventoryKind: job.inventoryKind } : {}),
+      ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
+      ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
       expectedBytes: job.expectedBytes,
     };
     void probeHydratedJob(job.key, req, 0);

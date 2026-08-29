@@ -102,6 +102,14 @@ export function downloadInventoryHintKind(
   return variant && !variant.startsWith("@") ? "gguf" : "model";
 }
 
+export function scopedDownloadInventoryKind(
+  files: readonly string[] | null | undefined,
+): Exclude<InventoryHint["kind"], "dataset"> {
+  return files?.some((file) => file.trim().toLowerCase().endsWith(".gguf"))
+    ? "gguf"
+    : "model";
+}
+
 export interface JobListeners {
   onComplete?: (variant: string | null, bytes: number) => unknown;
   onCancelled?: (variant: string | null) => unknown;
