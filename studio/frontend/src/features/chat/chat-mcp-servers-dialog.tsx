@@ -122,9 +122,24 @@ function isHttpAddress(value: string): boolean {
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
 }
 
-function transportFromAddress(value: string): FormTransport {
-  if (!value.trim()) return "unknown";
-  return isHttpAddress(value) ? "http" : "stdio";
+function transportFromAddress(
+  value: string,
+  credentialTransport: FormState["credentialTransport"] = null,
+): FormTransport {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) {
+    return "unknown";
+  }
+  if (isHttpAddress(value)) {
+    return "http";
+  }
+  if (
+    credentialTransport === "http" &&
+    ("http://".startsWith(trimmed) || "https://".startsWith(trimmed))
+  ) {
+    return "unknown";
+  }
+  return "stdio";
 }
 
 function isValidAddress(value: string): boolean {
@@ -330,16 +345,20 @@ export function ChatMcpServersDialog({
   const [togglingIds, setTogglingIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
   const [confirmingDelete, setConfirmingDelete] =
     useState<McpServerConfig | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formGenerationRef = useRef(0);
   const actionGenerationRef = useRef(0);
+  const importGenerationRef = useRef(0);
   const activeEditIdRef = useRef<string | null>(null);
   const listRefreshGenerationRef = useRef(0);
   const openRef = useRef(open);
   const refreshingIdsRef = useRef(new Set<string>());
   const togglingIdsRef = useRef(new Set<string>());
+  const busyIdsRef = useRef(new Set<string>());
+  const importingRef = useRef(false);
   openRef.current = open;
 
   useEffect(() => {
@@ -414,10 +433,11 @@ export function ChatMcpServersDialog({
       setCodecPending(false);
       setDecodingCommand(false);
       setCodecError(null);
-      setImporting(false);
+      setImporting(importingRef.current);
       setConfirmingDelete(null);
       setRefreshingIds(new Set(refreshingIdsRef.current));
       setTogglingIds(new Set(togglingIdsRef.current));
+      setBusyIds(new Set(busyIdsRef.current));
       if (!open) return;
       void refresh();
       // Reset to the list on each open, else a stale create/edit view persists.
@@ -535,7 +555,6 @@ export function ChatMcpServersDialog({
       setCodecPending(false);
       setDecodingCommand(false);
       setCodecError(null);
-      setImporting(false);
       setConfirmingDelete(null);
     }
     onOpenChange(next);
@@ -681,20 +700,23 @@ export function ChatMcpServersDialog({
   async function onImportFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ""; // let the user re-pick the same file later
-    if (!file) return;
+    if (!file || importingRef.current) return;
     const generation = actionGenerationRef.current;
+    const importGeneration = importGenerationRef.current + 1;
+    importGenerationRef.current = importGeneration;
+    importingRef.current = true;
     setImporting(true);
-    let config: unknown;
     try {
-      config = JSON.parse(await file.text());
-    } catch {
-      if (actionGenerationRef.current === generation && openRef.current)
-        toast.error("Invalid JSON file");
-      if (actionGenerationRef.current === generation) setImporting(false);
-      return;
-    }
-    if (actionGenerationRef.current !== generation || !openRef.current) return;
-    try {
+      let config: unknown;
+      try {
+        config = JSON.parse(await file.text());
+      } catch {
+        if (actionGenerationRef.current === generation && openRef.current)
+          toast.error("Invalid JSON file");
+        return;
+      }
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
       const result = await importMcpServers(config);
       if (actionGenerationRef.current !== generation || !openRef.current)
         return;
@@ -724,27 +746,41 @@ export function ChatMcpServersDialog({
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      if (actionGenerationRef.current === generation) setImporting(false);
+      if (importGenerationRef.current === importGeneration) {
+        importingRef.current = false;
+        if (openRef.current) setImporting(false);
+      }
     }
   }
 
   async function removeServer(server: McpServerConfig) {
+    if (busyIdsRef.current.has(server.id)) return;
     const generation = actionGenerationRef.current;
+    busyIdsRef.current.add(server.id);
+    setBusyIds(new Set(busyIdsRef.current));
     try {
       await deleteMcpServer(server.id);
+      if (actionGenerationRef.current !== generation || !openRef.current)
+        return;
+      setServers((rows) => rows.filter((row) => row.id !== server.id));
     } catch (err) {
       if (actionGenerationRef.current !== generation || !openRef.current)
         return;
       toast.error("Delete failed", {
         description: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      busyIdsRef.current.delete(server.id);
+      if (openRef.current) setBusyIds(new Set(busyIdsRef.current));
     }
   }
 
   async function toggleEnabled(server: McpServerConfig, next: boolean) {
-    if (togglingIdsRef.current.has(server.id)) return;
+    if (busyIdsRef.current.has(server.id)) return;
     const generation = actionGenerationRef.current;
+    busyIdsRef.current.add(server.id);
     togglingIdsRef.current.add(server.id);
+    setBusyIds(new Set(busyIdsRef.current));
     setTogglingIds(new Set(togglingIdsRef.current));
     // Optimistic update so the switch doesn't snap back during the round-trip.
     setServers((rows) =>
@@ -766,15 +802,21 @@ export function ChatMcpServersDialog({
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
+      busyIdsRef.current.delete(server.id);
       togglingIdsRef.current.delete(server.id);
-      if (openRef.current) setTogglingIds(new Set(togglingIdsRef.current));
+      if (openRef.current) {
+        setBusyIds(new Set(busyIdsRef.current));
+        setTogglingIds(new Set(togglingIdsRef.current));
+      }
     }
   }
 
   async function refreshTools(server: McpServerConfig) {
-    if (refreshingIdsRef.current.has(server.id)) return;
+    if (busyIdsRef.current.has(server.id)) return;
     const generation = actionGenerationRef.current;
+    busyIdsRef.current.add(server.id);
     refreshingIdsRef.current.add(server.id);
+    setBusyIds(new Set(busyIdsRef.current));
     setRefreshingIds(new Set(refreshingIdsRef.current));
     try {
       const result = await refreshMcpServerTools(server.id);
@@ -796,8 +838,12 @@ export function ChatMcpServersDialog({
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
+      busyIdsRef.current.delete(server.id);
       refreshingIdsRef.current.delete(server.id);
-      if (openRef.current) setRefreshingIds(new Set(refreshingIdsRef.current));
+      if (openRef.current) {
+        setBusyIds(new Set(busyIdsRef.current));
+        setRefreshingIds(new Set(refreshingIdsRef.current));
+      }
     }
   }
 
@@ -875,9 +921,12 @@ export function ChatMcpServersDialog({
                 disabled={formPending}
                 onChange={(e) => {
                   const url = e.target.value;
-                  const transport = transportFromAddress(url);
                   setCodecError(null);
                   setForm((prev) => {
+                    const transport = transportFromAddress(
+                      url,
+                      prev.credentialTransport,
+                    );
                     const nextCredentialTransport =
                       transport === "unknown"
                         ? prev.credentialTransport
@@ -1072,7 +1121,7 @@ export function ChatMcpServersDialog({
                         checked={server.is_enabled}
                         onCheckedChange={(next) => toggleEnabled(server, next)}
                         aria-label="Enable server"
-                        disabled={importing || togglingIds.has(server.id)}
+                        disabled={importing || busyIds.has(server.id)}
                       />
                       <Button
                         type="button"
@@ -1081,7 +1130,7 @@ export function ChatMcpServersDialog({
                         onClick={() => refreshTools(server)}
                         aria-label="Refresh tools"
                         title="Refresh tools from this server"
-                        disabled={importing || refreshingIds.has(server.id)}
+                        disabled={importing || busyIds.has(server.id)}
                       >
                         {refreshingIds.has(server.id) ? (
                           <Spinner />
@@ -1095,7 +1144,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => void startEdit(server)}
                         aria-label="Edit server"
-                        disabled={importing || togglingIds.has(server.id)}
+                        disabled={importing || busyIds.has(server.id)}
                       >
                         <HugeiconsIcon icon={Edit03Icon} size={14} />
                       </Button>
@@ -1105,7 +1154,7 @@ export function ChatMcpServersDialog({
                         size="icon"
                         onClick={() => setConfirmingDelete(server)}
                         aria-label="Delete server"
-                        disabled={importing || togglingIds.has(server.id)}
+                        disabled={importing || busyIds.has(server.id)}
                       >
                         <HugeiconsIcon icon={Delete02Icon} size={14} />
                       </Button>
