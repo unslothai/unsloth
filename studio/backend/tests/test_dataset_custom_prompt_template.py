@@ -36,14 +36,29 @@ def _alpaca_dataset():
     )
 
 
-def test_custom_prompt_template_is_rejected_without_changing_the_dataset():
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{instruction}\n{input}\n{output}",
+        "{instruction} -> {answer}",
+        "{}\n{}\n{}",
+        "{0}\n{1}\n{2}",
+        "{instruction",
+        "stray }",
+        "{{instruction}}",
+        "{instruction} / {instruction} => {output}",
+        "",
+        "   ",
+    ],
+)
+def test_custom_prompt_template_is_rejected_without_changing_the_dataset(template):
     dataset = _alpaca_dataset()
 
     with pytest.deprecated_call(match = "cannot persist a matching template"):
         result = apply_chat_template_to_dataset(
             _dataset_info(dataset),
             _Tokenizer(),
-            custom_prompt_template = "### Q: {instruction}\n### A: {output}",
+            custom_prompt_template = template,
         )
 
     assert result["success"] is False
