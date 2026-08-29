@@ -1687,6 +1687,7 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads(monkeypatch):
 
     saved = sys.modules.get("psutil")
     sys.modules["psutil"] = _FakePsutil
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)))
     try:
         assert llama_mod._spilled_decode_threads() == 6, "logical count reached the cost model"
     finally:
@@ -1749,6 +1750,7 @@ def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)))
     assert llama_mod._spilled_decode_threads() == 6
     assert llama_mod._spilled_decode_threads(3) == 3
     assert llama_mod._spilled_decode_threads(3, ["--threads", "4"]) == 4
@@ -1768,6 +1770,7 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)))
     monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 16)
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "4"]) == 4
     assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"]) is None
