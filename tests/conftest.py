@@ -29,6 +29,29 @@ for _up in _iso.parents:
         break
 # -----------------------------------------------------------------------------------
 
+# --- subprocess-fix directory containment (issue #9586, channel 2) -----------------
+# Must run at MODULE scope, before _apply_upstream_import_fixes_for_tests() at the bottom
+# of this file triggers `import unsloth`. A fixture cannot do it: the write happens while
+# this module is still being imported, long before any fixture runs.
+#
+# unsloth/import_fixes.py:_subprocess_fix_directory() builds
+# `<gettempdir()>/unsloth_subprocess_import_fix-<uid>` and writes a sitecustomize.py into
+# it, then prepends that directory to PYTHONPATH. That is correct for a real install --
+# the whole point is that child processes inherit it -- but the path is scoped per USER,
+# not per RUN, so a test session leaves a directory that every later Python process on the
+# machine imports from, and two concurrent runs share one.
+#
+# Redirecting tempfile.tempdir moves it to a per-run location. tempfile.tempdir is the
+# documented override; TMPDIR/TEMP/TMP are read by gettempdir() once and then cached, so
+# setting those is unreliable once anything has resolved a temp path.
+#
+# NOT cleaned up on exit, deliberately: a hard-killed worker cannot then leave residue in
+# the shared tempdir, which a `finally` unlink could not promise.
+import tempfile as _tempfile  # noqa: E402
+
+_tempfile.tempdir = _tempfile.mkdtemp(prefix = "unsloth-tests-")
+# -----------------------------------------------------------------------------------
+
 # --- shared test helpers on sys.path -----------------------------------------------
 # tests/_shared holds no package marker and pytest only puts a *test file's* own
 # directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
