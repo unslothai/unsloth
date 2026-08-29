@@ -555,8 +555,11 @@ function useIsLoraCompare(): boolean | null {
     if (s.residentCheckpoint === undefined) return null;
     if (!cp) return false;
     const activeModel = s.models.find((model) => model.id === cp);
-    if (activeModel) return activeModel.isLora;
-    return s.loras.find((lora) => lora.id === cp)?.exportType === "lora";
+    if (activeModel?.isLora) return true;
+    if (s.loras.find((lora) => lora.id === cp)?.exportType === "lora") {
+      return true;
+    }
+    return s.loraInventoryHydrated ? false : null;
   });
 }
 
