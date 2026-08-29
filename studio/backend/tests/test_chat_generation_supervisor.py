@@ -247,9 +247,7 @@ async def test_durable_event_stream_does_not_wait_for_monitor_id(durable_run):
         run_routes.chat_generation_events(
             "run-1",
             SimpleNamespace(
-                app = SimpleNamespace(
-                    state = SimpleNamespace(chat_generation_supervisor = supervisor)
-                ),
+                app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor)),
                 is_disconnected = AsyncMock(return_value = True),
             ),
             after = 0,
@@ -264,9 +262,7 @@ async def test_durable_event_stream_does_not_wait_for_monitor_id(durable_run):
 
 
 @pytest.mark.asyncio
-async def test_durable_monitor_id_records_when_monitoring_is_unavailable(
-    durable_run, monkeypatch
-):
+async def test_durable_monitor_id_records_when_monitoring_is_unavailable(durable_run, monkeypatch):
     async def body():
         yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
         yield "data: [DONE]\n\n"

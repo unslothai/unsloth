@@ -380,9 +380,7 @@ def get_worker_run(
         conn.close()
 
 
-def list_active(
-    thread_id: str, owner_subject: str | None = None
-) -> list[dict[str, Any]]:
+def list_active(thread_id: str, owner_subject: str | None = None) -> list[dict[str, Any]]:
     clauses = ["thread_id=?", "status IN ('queued','running','cancelling')"]
     values: list[Any] = [thread_id]
     if owner_subject is not None:

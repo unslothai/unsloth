@@ -269,9 +269,7 @@ def test_sidebar_summaries_read_only_the_newest_assistant_metadata(tmp_path, mon
     assert summaries["empty"]["lastAssistantMetadata"] is None
     assert summaries["chat"]["hasMessages"] is True
     assert summaries["chat"]["hasAssistant"] is True
-    assert summaries["chat"]["lastAssistantMetadata"] == {
-        "contextUsage": {"totalTokens": 20}
-    }
+    assert summaries["chat"]["lastAssistantMetadata"] == {"contextUsage": {"totalTokens": 20}}
 
     studio_db.upsert_chat_message(
         {
@@ -283,9 +281,7 @@ def test_sidebar_summaries_read_only_the_newest_assistant_metadata(tmp_path, mon
             "createdAt": 13,
         }
     )
-    malformed = {
-        row["id"]: row for row in studio_db.list_chat_thread_sidebar_summaries()
-    }["chat"]
+    malformed = {row["id"]: row for row in studio_db.list_chat_thread_sidebar_summaries()}["chat"]
     assert malformed["hasAssistant"] is True
     assert malformed["lastAssistantMetadata"] is None
 
