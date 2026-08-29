@@ -7,6 +7,7 @@ import {
 } from "../api/chat-monitor";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
+  liveChatTpsThreadKey,
   newestRunningLiveChatTpsEntry,
   readLiveChatTpsSample,
   visibleLiveChatTps,
@@ -15,9 +16,9 @@ import { useEffect } from "react";
 
 const POLL_INTERVAL_MS = 1500;
 
-export function useLiveChatTps(): number | null {
+export function useLiveChatTps(routedThreadId?: string): number | null {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  const threadKey = activeThreadId || "__default";
+  const threadKey = liveChatTpsThreadKey(routedThreadId, activeThreadId);
   const owner = useChatRuntimeStore(
     (state) =>
       newestRunningLiveChatTpsEntry(state.liveTpsByThreadId[threadKey])?.owner,

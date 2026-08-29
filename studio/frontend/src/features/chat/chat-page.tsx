@@ -2206,7 +2206,7 @@ export function ChatPage({
     (state) => state.ggufNativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
-  const liveChatTps = useLiveChatTps();
+  const liveChatTps = useLiveChatTps(search.thread);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);

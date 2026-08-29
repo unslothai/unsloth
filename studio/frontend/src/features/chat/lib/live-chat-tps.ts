@@ -37,6 +37,13 @@ export function visibleLiveChatTps(
   return phase === "running" ? lastRunningTps : null;
 }
 
+export function liveChatTpsThreadKey(
+  routedThreadId: string | undefined,
+  activeThreadId: string | null,
+): string {
+  return routedThreadId ?? activeThreadId ?? "__default";
+}
+
 export function newestRunningLiveChatTpsEntry(
   entries: LiveChatTpsEntry[] | undefined,
 ): LiveChatTpsEntry | undefined {

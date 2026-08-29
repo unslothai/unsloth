@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   formatLiveChatTps,
+  liveChatTpsThreadKey,
   newestRunningLiveChatTpsEntry,
   readLiveChatTpsSample,
   visibleLiveChatTps,
@@ -68,6 +69,24 @@ test("terminal requests cannot leave a stale TPS sample visible", () => {
   assert.equal(visibleLiveChatTps("running", 12.3), 12.3);
   assert.equal(visibleLiveChatTps("terminal", 12.3), null);
   assert.equal(visibleLiveChatTps(undefined, 12.3), null);
+});
+
+test("the routed chat owns TPS while the runtime switch is still landing", () => {
+  assert.equal(liveChatTpsThreadKey("older", "newer"), "older");
+  assert.equal(
+    liveChatTpsThreadKey(undefined, "persisted-new-chat"),
+    "persisted-new-chat",
+  );
+  assert.equal(liveChatTpsThreadKey(undefined, null), "__default");
+});
+
+test("the chat page gives route ownership to the TPS hook", async () => {
+  const source = await readFile(
+    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /useLiveChatTps\(search\.thread\)/);
 });
 
 test("a delayed older header cannot replace the newest running request", () => {
