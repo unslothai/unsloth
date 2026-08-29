@@ -583,12 +583,12 @@ def _per_device_usage(
         if opts.kv_on_host
         else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     )
-    # Scaled to the total the caller already priced. Uniform when unsupplied.
+    # Scaled without under-booking the caller's total. Uniform when unsupplied.
     total_weight = sum(weights)
     if weights and total_weight > 0:
-        kv_by_layer = [cache * w // total_weight for w in weights]
+        kv_by_layer = [(cache * w + total_weight - 1) // total_weight for w in weights]
     else:
-        per = cache // layout.n_layers if layout.n_layers else 0
+        per = (cache + layout.n_layers - 1) // layout.n_layers if layout.n_layers else 0
         kv_by_layer = [per] * layout.n_layers
     by_index = {b.index: b for b in layout.blocks}
     output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
@@ -784,8 +784,10 @@ def _plan_at(
                 kv_layer_weights = kv_layer_weights,
             )
             if per_device is not None:
-                chosen = per_device
-                freed = sum(block.spillable_bytes for block in chosen)
+                per_device_freed = sum(block.spillable_bytes for block in per_device)
+                if needed - per_device_freed <= budget:
+                    chosen = per_device
+                    freed = per_device_freed
         uneven = _per_device_shortfall(
             layout,
             opts,
