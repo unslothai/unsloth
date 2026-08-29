@@ -213,13 +213,17 @@ test("replayed arguments keep parsable text and fall back otherwise", () => {
     toolCallReplayArguments('{"query":"first"}{"query":"second"}', {
       _raw: '{"query":"first"}{"query":"second"}',
     }),
-    '{"_raw":"{\\"query\\":\\"first\\"}{\\"query\\":\\"second\\"}"}',
+    "{}",
   );
   assert.equal(
     toolCallReplayArguments("", { query: "first" }),
     '{"query":"first"}',
   );
   assert.equal(toolCallReplayArguments(undefined, undefined), "{}");
+  assert.equal(
+    toolCallReplayArguments(undefined, { _raw: "user supplied" }),
+    '{"_raw":"user supplied"}',
+  );
 });
 
 test("id-less parallel calls renumbered to index 0 stay separate calls", () => {
