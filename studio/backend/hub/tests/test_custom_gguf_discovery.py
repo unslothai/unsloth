@@ -169,6 +169,31 @@ def test_symlinked_parent_and_real_model_roots_keep_one_row(tmp_path):
     assert Path(rows[0].path).resolve() == real_model.resolve()
 
 
+def test_loose_file_symlink_dedupes_by_physical_identity(tmp_path):
+    root = tmp_path / "root"
+    target = _write_gguf(root / "model-Q4_K_M.gguf")
+    alias = root / "latest.gguf"
+    _symlink_file(alias, target)
+
+    rows = _custom_rows(root)
+
+    assert len(rows) == 1
+    assert Path(rows[0].path).samefile(target)
+
+
+def test_loose_symlink_into_grouped_model_does_not_add_a_row(tmp_path):
+    grouped_root = tmp_path / "grouped-root"
+    model = grouped_root / "model"
+    target = _write_gguf(model / "model-Q4_K_M.gguf")
+    loose_root = tmp_path / "loose-root"
+    loose_root.mkdir()
+    _symlink_file(loose_root / "model-Q4_K_M.gguf", target)
+
+    rows = _custom_rows(grouped_root, loose_root)
+
+    assert [Path(row.path) for row in rows] == [model]
+
+
 def test_symlinked_and_real_parent_roots_dedupe_group_rows(tmp_path):
     real_root = tmp_path / "real"
     real_model = real_root / "model"
@@ -298,3 +323,33 @@ def test_symlinked_model_directory_stays_grouped(tmp_path):
     _symlink_dir(alias, real_model)
 
     assert [Path(row.path) for row in _custom_rows(root)] == [alias]
+
+
+def test_physical_identity_preserves_native_posix_names(tmp_path):
+    if os.sep == "\\":
+        pytest.skip("names are not distinct on Windows")
+    backslash_root = tmp_path / "model\\one"
+    nested_root = tmp_path / "model" / "one"
+    trailing_root = tmp_path / "model "
+    plain_root = tmp_path / "model"
+    paths = {
+        _write_gguf(backslash_root / "model-Q4_K_M.gguf"),
+        _write_gguf(nested_root / "model-Q4_K_M.gguf"),
+        _write_gguf(trailing_root / "model-Q4_K_M.gguf"),
+        _write_gguf(plain_root / "model-Q4_K_M.gguf"),
+    }
+
+    discovered = [
+        local_inventory._promote_to_custom_source(
+            local_inventory._local_model_info(
+                scan_path = path,
+                load_path = path,
+                source = "lmstudio",
+                model_format = "gguf",
+            )
+        )
+        for path in paths
+    ]
+    rows = local_inventory._dedupe_local_models(discovered)
+
+    assert {Path(row.path) for row in rows} == paths

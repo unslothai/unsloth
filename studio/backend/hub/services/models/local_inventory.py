@@ -584,6 +584,27 @@ def _inventory_path_identity(raw_path: str) -> str:
         return os.path.normcase(raw)
 
 
+def _inventory_physical_identity(raw_path: str) -> str:
+    """physical identity for an existing discovered path without lossy name folding."""
+    try:
+        path = os.path.realpath(os.path.expanduser(raw_path))
+        stat = os.stat(path)
+        if stat.st_ino:
+            return "\x00".join(("stat", str(stat.st_dev), str(stat.st_ino)))
+        return f"path\x00{path}"
+    except (OSError, UnicodeError, ValueError):
+        return f"path\x00{os.path.abspath(os.path.expanduser(raw_path))}"
+
+
+def _inventory_resolved_parent_identity(raw_path: str) -> str:
+    try:
+        resolved = os.path.realpath(os.path.expanduser(raw_path))
+        parent = str(Path(resolved).parent)
+    except (OSError, UnicodeError, ValueError):
+        parent = str(Path(raw_path).parent)
+    return _inventory_physical_identity(parent)
+
+
 def _coerce_scan_folder_path(raw_path: str) -> str:
     """Normalize a scan registration target; the registry stores directories, so a pasted weight-file path is reduced to its parent folder."""
     if not raw_path or not raw_path.strip():
@@ -816,7 +837,7 @@ def _scan_custom_folder(
             and family != path.stem
         )
         if is_loose_shard:
-            shard_key = (_inventory_path_identity(str(path.parent)), family)
+            shard_key = (_inventory_physical_identity(str(path.parent)), family)
             if shard_key in seen_loose_shard_families:
                 continue
             seen_loose_shard_families.add(shard_key)
@@ -824,7 +845,7 @@ def _scan_custom_folder(
     selectable = unsharded_selectable
 
     grouped_gguf_dirs = {
-        _inventory_path_identity(model.path)
+        _inventory_physical_identity(model.path)
         for model in selectable
         if model.source != "lmstudio"
         and model.model_format == "gguf"
@@ -840,7 +861,7 @@ def _scan_custom_folder(
             and not _safe_is_dir(path)
         ):
             lmstudio_files_by_parent.setdefault(
-                _inventory_path_identity(str(path.parent)), []
+                _inventory_physical_identity(str(path.parent)), []
             ).append(path)
 
     grouped_decisions: dict[str, bool] = {}
@@ -875,7 +896,7 @@ def _scan_custom_folder(
         for model in selectable:
             path = Path(model.path)
             is_dir = _safe_is_dir(path)
-            identity = _inventory_path_identity(str(path if is_dir else path.parent))
+            identity = _inventory_physical_identity(str(path if is_dir else path.parent))
             keep_group = grouped_decisions.get(identity)
             if (
                 keep_group is not None
@@ -942,8 +963,8 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
             key = _local_inventory_id(
                 "custom",
                 model.model_format,
-                _inventory_path_identity(model.path),
-                model.format_variant,
+                _inventory_physical_identity(model.path),
+                None,
             )
         else:
             row_key = model.inventory_id or model.id
@@ -966,7 +987,7 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
             deduped[key] = model
 
     grouped_custom_gguf_dirs = {
-        _inventory_path_identity(model.path)
+        _inventory_physical_identity(model.path)
         for model in deduped.values()
         if model.source == "custom"
         and model.model_format == "gguf"
@@ -982,7 +1003,7 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                 model.source == "custom"
                 and model.model_format == "gguf"
                 and not _safe_is_dir(Path(model.path))
-                and _inventory_path_identity(str(Path(model.path).parent))
+                and _inventory_resolved_parent_identity(model.path)
                 in grouped_custom_gguf_dirs
             )
         }
