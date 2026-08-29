@@ -272,6 +272,13 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     expect(dialog.get_by_role("button", name = "Import")).to_be_disabled()
     expect(dialog.get_by_role("button", name = "Add server")).to_be_disabled()
     dialog.get_by_role("button", name = "Close").click()
+    composer = page.get_by_role("button", name = "MCP servers")
+    composer.click()
+    expect(page.get_by_role("menuitem", name = "Unsloth Docs")).to_be_disabled()
+    page.get_by_role("menu").screenshot(
+        path = str(ART / f"fixed-composer-import-reconciliation-busy-{BROWSER}.png")
+    )
+    page.keyboard.press("Escape")
     dialog = open_dialog(page)
     expect(dialog.get_by_role("button", name = "Import")).to_be_disabled()
     expect(dialog.get_by_role("button", name = "Add server")).to_be_disabled()
@@ -324,6 +331,10 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     expect(dialog.get_by_placeholder("Header name")).to_have_value("Authorization")
     expect(oauth).to_be_checked()
     screenshot(dialog, "fixed-http-typing-preserves-credentials")
+    address.fill("https:/")
+    expect(dialog.get_by_role("button", name = "Save changes")).to_be_disabled()
+    expect(dialog.get_by_role("button", name = "Test connection")).to_be_disabled()
+    screenshot(dialog, "fixed-partial-http-save-disabled")
     address.fill("http")
     expect(dialog.get_by_role("button", name = "Save changes")).to_be_disabled()
     expect(dialog.get_by_role("button", name = "Test connection")).to_be_disabled()
@@ -365,17 +376,21 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     )
     page.route("**/api/mcp/servers/", hold_first_list)
     preset.click()
-    expect(preset).to_be_enabled(timeout = 10_000)
+    expect(preset).to_be_disabled(timeout = 10_000)
+    deadline = time.monotonic() + 10
+    while (not held_list or writes.count("POST") != 1) and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
     assert held_list and writes.count("POST") == 1
     page.get_by_role("menu").screenshot(
-        path = str(ART / f"fixed-composer-preset-settles-locally-{BROWSER}.png")
+        path = str(ART / f"fixed-composer-preset-waits-for-refresh-{BROWSER}.png")
     )
+    release_request(page, held_list)
+    page.unroute("**/api/mcp/servers/", hold_first_list)
+    expect(preset).to_be_enabled(timeout = 10_000)
     preset.click()
     page.wait_for_timeout(500)
     assert writes.count("POST") == 1
     assert writes.count("PUT") == 1
-    release_request(page, held_list)
-    page.unroute("**/api/mcp/servers/", hold_first_list)
     page.get_by_role("menuitem", name = "Manage MCP servers").press("Enter")
     dialog = page.get_by_role("dialog", name = "MCP Servers")
     expect(dialog).to_be_visible()

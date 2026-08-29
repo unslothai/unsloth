@@ -126,6 +126,7 @@ export function McpComposerButton({
     async (waitForPendingMutations = true, minimumMutationEpoch = 0) => {
       const generation = listRefreshGenerationRef.current + 1;
       listRefreshGenerationRef.current = generation;
+      setServersLoaded(false);
       try {
         const rows = await listMcpServers({
           waitForPendingMutations,

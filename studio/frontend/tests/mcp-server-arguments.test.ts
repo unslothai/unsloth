@@ -367,7 +367,7 @@ test("composer applies mutation responses before releasing each preset", () => {
   );
   assert.match(
     composer,
-    /const \[serversLoaded, setServersLoaded\] = useState\(false\)[\s\S]*setServers\(rows\);\s*setServersLoaded\(true\)/,
+    /const \[serversLoaded, setServersLoaded\] = useState\(false\)[\s\S]*setServersLoaded\(false\);[\s\S]*setServers\(rows\);\s*setServersLoaded\(true\)/,
   );
   assert.match(
     composer,
