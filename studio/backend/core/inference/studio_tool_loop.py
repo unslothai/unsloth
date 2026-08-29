@@ -366,6 +366,17 @@ def _same_json_value(left: Any, right: Any) -> bool:
     return left == right
 
 
+def _is_repeated_json_snapshot(existing: str, fragment: str) -> bool:
+    if not fragment.strip():
+        return False
+    if existing == fragment:
+        return True
+    if "{" not in fragment and "[" not in fragment:
+        return False
+    complete, tail = _split_top_level_json_documents(fragment)
+    return len(complete) == 1 and not tail and _same_json_document(existing, fragment)
+
+
 def _delta_text(content: Any) -> str:
     """Text of a content delta, whether it is a plain string or content parts.
 
@@ -646,6 +657,10 @@ class _Turn:
                 # reorder parallel calls against what the model actually sent.
             current = self.by_index[key]
             exact_stable_id = bool(stable_id and current.get("id") == stable_id)
+            if exact_stable_id and _is_repeated_json_snapshot(
+                current["function"]["arguments"], args_fragment
+            ):
+                repeated_snapshot = True
             same_stable_call = exact_stable_id or adopted_stable_id
             current_complete: list[str] = []
             current_tail = current["function"]["arguments"]

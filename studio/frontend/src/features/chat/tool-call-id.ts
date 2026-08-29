@@ -178,6 +178,21 @@ export function splitTopLevelJsonDocuments(text: string): JsonDocumentSplit {
   };
 }
 
+export function isRepeatedJsonSnapshot(
+  existing: string,
+  fragment: string,
+): boolean {
+  if (!fragment.trim()) return false;
+  if (existing === fragment) return true;
+  if (!fragment.includes("{") && !fragment.includes("[")) return false;
+  const documents = splitTopLevelJsonDocuments(fragment);
+  return (
+    documents.complete.length === 1 &&
+    !documents.tail &&
+    sameJsonDocument(existing, fragment)
+  );
+}
+
 /**
  * Newest part holding `deltaIndex`, or -1. `unownedOnly` restricts the match to
  * a slot no provider id has claimed yet.

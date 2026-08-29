@@ -115,6 +115,7 @@ import {
   findOldestUnownedStreamedToolCallPartIndex,
   findDelayedStableToolCallPartIndex,
   findStreamedToolCallPartIndex,
+  isRepeatedJsonSnapshot,
   mergeStreamedToolCallName,
   mintStreamedToolCallId,
   resolveToolCallPartId,
@@ -7072,6 +7073,15 @@ export function createOpenAIStreamAdapter(
                   const exactStableMatch = Boolean(
                     stablePartId && matchedPart?.toolCallId === stablePartId,
                   );
+                  if (
+                    exactStableMatch &&
+                    isRepeatedJsonSnapshot(
+                      matchedPart?.argsText ?? "",
+                      argsFragment,
+                    )
+                  ) {
+                    argsFragment = "";
+                  }
                   const checkCompletedSlot = Boolean(
                     matchedPart &&
                       !exactStableMatch &&
@@ -7111,7 +7121,7 @@ export function createOpenAIStreamAdapter(
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
                   }
-                  streamedChars += argsFragment.length + nameFragment.length;
+                  streamedChars += rawArgsFragment.length + nameFragment.length;
                   let combinedDocuments: ReturnType<
                     typeof splitTopLevelJsonDocuments
                   > | null = null;

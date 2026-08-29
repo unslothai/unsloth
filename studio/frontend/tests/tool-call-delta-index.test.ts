@@ -15,6 +15,7 @@ import {
   findOldestUnownedStreamedToolCallPartIndex,
   findStreamedToolCallPartIndex,
   fragmentStartsNewToolCall,
+  isRepeatedJsonSnapshot,
   mergeStreamedToolCallName,
   mintStreamedToolCallId,
   sameJsonDocument,
@@ -106,6 +107,12 @@ function accumulate(
     const exactId = Boolean(
       partId && matchedPart?.toolCallId === partId,
     );
+    if (
+      exactId &&
+      isRepeatedJsonSnapshot(matchedPart?.argsText ?? "", fragment.arguments)
+    ) {
+      fragment = { ...fragment, arguments: "" };
+    }
     const settled = matchedPart
       ? splitTopLevelJsonDocuments(matchedPart.argsText)
       : null;
@@ -502,6 +509,18 @@ test("a delayed id carrying an exact snapshot does not duplicate the call", () =
       ["call-a", '{"a":1}'],
       ["tool_call_0", '{"b":2}'],
     ],
+  );
+});
+
+test("an existing stable id ignores a repeated cumulative snapshot", () => {
+  const parts = accumulate([
+    { id: "call-a", index: 0, name: "alpha", arguments: '{"a":1}' },
+    { id: "call-a", index: 0, name: "alpha", arguments: '{"a":1}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [["call-a", '{"a":1}']],
   );
 });
 

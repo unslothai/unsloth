@@ -1390,6 +1390,33 @@ def test_a_delayed_id_adopts_a_semantically_equal_snapshot(executed):
     assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == ["call_a"]
 
 
+def test_a_stable_id_repeated_snapshot_executes_once(executed):
+    call = _call_delta(0, "call_a", "web_search", '{"query":"first"}')
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [call]}),
+                _sse({"tool_calls": [call]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+
+    _run(transport)
+
+    assert [item["arguments"] for item in executed] == [{"query": "first"}]
+    replayed_calls = [
+        replayed_call
+        for message in transport.requests[1]["messages"]
+        if message.get("role") == "assistant"
+        for replayed_call in message.get("tool_calls") or []
+    ]
+    assert len(replayed_calls) == 1
+
+
 def test_delayed_named_ids_adopt_parallel_calls_in_order(executed):
     transport = FakeTransport(
         [
