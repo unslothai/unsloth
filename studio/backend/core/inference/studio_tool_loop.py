@@ -690,7 +690,10 @@ class _Turn:
                         split_call["id"] = stable_id
                         self.key_by_call_id[stable_id] = split_key
                     if segment_index == 0 and isinstance(extra, dict) and extra:
-                        split_call["extra_content"] = dict(extra)
+                        metadata_call = (
+                            current if stable_id and not had_existing_arguments else split_call
+                        )
+                        metadata_call["extra_content"] = dict(extra)
                     split_complete, split_tail = _split_top_level_json_documents(segment)
                     if not split_complete or split_tail:
                         self.incomplete_split_keys.add(split_key)

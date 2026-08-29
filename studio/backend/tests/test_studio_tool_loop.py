@@ -1422,21 +1422,17 @@ def test_delayed_named_ids_adopt_parallel_calls_in_order(executed):
 
 
 def test_a_fresh_stable_multi_document_delta_keeps_id_on_first_call(executed):
+    delta = _call_delta(
+        0,
+        "call_a",
+        "web_search",
+        '{"query":"first"}{"query":"second"}',
+    )
+    delta["extra_content"] = {"google": {"thought_signature": "SIG-A"}}
     transport = FakeTransport(
         [
             [
-                _sse(
-                    {
-                        "tool_calls": [
-                            _call_delta(
-                                0,
-                                "call_a",
-                                "web_search",
-                                '{"query":"first"}{"query":"second"}',
-                            )
-                        ]
-                    }
-                ),
+                _sse({"tool_calls": [delta]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
             ],
@@ -1452,6 +1448,16 @@ def test_a_fresh_stable_multi_document_delta_keeps_id_on_first_call(executed):
         "tool_call_0",
     ]
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+    replayed_calls = [
+        call
+        for message in transport.requests[1]["messages"]
+        if message.get("role") == "assistant"
+        for call in message.get("tool_calls") or []
+    ]
+    assert replayed_calls[0]["extra_content"] == {
+        "google": {"thought_signature": "SIG-A"}
+    }
+    assert "extra_content" not in replayed_calls[1]
 
 
 def test_stream_and_replay_ids_stay_unique_when_provider_ids_collide(executed):
