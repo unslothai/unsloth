@@ -23,6 +23,65 @@ export interface StreamedToolCallPart {
   _has_stable_id?: boolean;
 }
 
+export interface JsonDocumentSplit {
+  complete: string[];
+  tail: string;
+}
+
+/** Split a stream slot into complete top-level JSON documents and its open tail. */
+export function splitTopLevelJsonDocuments(text: string): JsonDocumentSplit {
+  const unsplit = { complete: [], tail: text };
+  const complete: string[] = [];
+  const closing: string[] = [];
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (closing.length === 0) {
+      if (character === "{" || character === "[") {
+        start = index;
+        closing.push(character === "{" ? "}" : "]");
+        continue;
+      }
+      if (/\s/u.test(character)) continue;
+      return unsplit;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      closing.push(character === "{" ? "}" : "]");
+      continue;
+    }
+    if (character !== "}" && character !== "]") continue;
+    if (closing.pop() !== character) return unsplit;
+    if (closing.length !== 0) continue;
+
+    const document = text.slice(start, index + 1);
+    try {
+      JSON.parse(document);
+    } catch {
+      return unsplit;
+    }
+    complete.push(document);
+    start = -1;
+  }
+
+  return {
+    complete,
+    tail: start === -1 ? "" : text.slice(start),
+  };
+}
+
 /**
  * Newest part holding `deltaIndex`, or -1. `unownedOnly` restricts the match to
  * a slot no provider id has claimed yet.
@@ -84,20 +143,10 @@ export function fragmentStartsNewToolCall(
   existingArgsText: string | undefined,
   fragmentArguments: string,
 ): boolean {
-  const settled = (existingArgsText ?? "").trim();
-  if (!settled) {
-    return false;
-  }
-  const opening = fragmentArguments.trimStart();
-  if (!(opening.startsWith("{") || opening.startsWith("["))) {
-    return false;
-  }
-  try {
-    JSON.parse(settled);
-  } catch {
-    return false;
-  }
-  return true;
+  const existing = existingArgsText ?? "";
+  if (!existing.trim() || !fragmentArguments.trim()) return false;
+  const split = splitTopLevelJsonDocuments(existing + fragmentArguments);
+  return split.complete.length > 1 || (split.complete.length === 1 && Boolean(split.tail));
 }
 
 /** A `tool_call_<n>` id no existing part already carries. */

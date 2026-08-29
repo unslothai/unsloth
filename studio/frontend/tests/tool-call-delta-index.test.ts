@@ -10,6 +10,7 @@ import {
   findStreamedToolCallPartIndex,
   fragmentStartsNewToolCall,
   mintStreamedToolCallId,
+  splitTopLevelJsonDocuments,
 } from "../src/features/chat/tool-call-id.ts";
 
 interface DeltaFragment {
@@ -207,5 +208,62 @@ test("an id-less chunked continuation still merges into its own call", () => {
   assert.deepEqual(
     parts.map((part) => part.argsText),
     ['{"url":"https://example.com/1"}', '{"url":"https://example.com/2"}'],
+  );
+});
+
+test("JSON document boundaries survive strings, nesting, whitespace, and Unicode", () => {
+  const documents = [
+    JSON.stringify({ nested: { items: [1, { text: '} ] { " \\\\ 雪' }] } }),
+    "[]",
+    "{}",
+    '[{"emoji":"🦥"}]',
+  ];
+  const split = splitTopLevelJsonDocuments(` \n${documents.join(" \t\r\n")}  `);
+
+  assert.deepEqual(split.complete, documents);
+  assert.equal(split.tail, "");
+});
+
+test("JSON document boundaries keep an incomplete final document as the tail", () => {
+  assert.deepEqual(splitTopLevelJsonDocuments('{"a":1} \n ["open"'), {
+    complete: ['{"a":1}'],
+    tail: '["open"',
+  });
+});
+
+test("JSON document boundaries reject mismatched or non-document text", () => {
+  for (const text of ['{"a":1]','{"a":1}suffix','"{\\"a\\":1}"','true{"a":1}']) {
+    assert.deepEqual(splitTopLevelJsonDocuments(text), {
+      complete: [],
+      tail: text,
+    });
+  }
+});
+
+test("new-call detection works when the SSE boundary lands inside either document", () => {
+  const first = '{"path":"C:\\\\tmp","nested":[{"text":"{x}"}]}';
+  const second = '{"query":"雪 🦥"}';
+  for (let firstCut = 1; firstCut <= first.length; firstCut += 1) {
+    const existing = first.slice(0, firstCut);
+    const remainder = first.slice(firstCut) + second;
+    assert.equal(
+      fragmentStartsNewToolCall(existing, remainder),
+      true,
+      `missed boundary after first character ${firstCut}`,
+    );
+  }
+  for (let secondCut = 1; secondCut <= second.length; secondCut += 1) {
+    assert.equal(
+      fragmentStartsNewToolCall(first, second.slice(0, secondCut)),
+      true,
+      `missed partial second document at character ${secondCut}`,
+    );
+  }
+});
+
+test("a document-looking continuation is not split while the first document is open", () => {
+  assert.equal(
+    fragmentStartsNewToolCall('{"text":"prefix', '{\\"nested\\":true}"}'),
+    false,
   );
 });
