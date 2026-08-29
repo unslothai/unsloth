@@ -125,6 +125,27 @@ def _update(studio, *, verify = True):
     studio.update(local = False, package = "unsloth", verbose = False, verify = verify)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows DLL locking only")
+@pytest.mark.parametrize("entry", ["unsloth", "-m"])
+@pytest.mark.parametrize("command", ["setup", "update"])
+def test_windows_mutating_entry_does_not_load_pydantic_core(entry, command):
+    code = f"""
+import sys
+sys.argv = [{entry!r}, "studio", {command!r}]
+from unsloth_cli import app
+assert "pydantic_core" not in sys.modules
+assert "unsloth_cli.commands.train" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+        check = False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_setup_noop_preserves_launcher_and_removes_backup(monkeypatch, studio, tmp_path):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
