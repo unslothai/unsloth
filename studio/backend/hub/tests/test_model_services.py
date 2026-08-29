@@ -270,9 +270,7 @@ def test_custom_inventory_keeps_lmstudio_publisher_model_layout(tmp_path):
 
     rows = local_inventory._scan_custom_folder(root)
 
-    assert [(Path(row.path), row.model_id) for row in rows] == [
-        (model_dir, "publisher/model")
-    ]
+    assert [(Path(row.path), row.model_id) for row in rows] == [(model_dir, "publisher/model")]
 
 
 def test_custom_inventory_keeps_file_row_beneath_partial_group(tmp_path, monkeypatch):
