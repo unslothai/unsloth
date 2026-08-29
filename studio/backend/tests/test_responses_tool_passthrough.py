@@ -363,8 +363,12 @@ class TestToolChoiceTranslation:
 
     def test_forced_apply_patch_custom_tool_converted(self):
         assert _translate_responses_tool_choice_to_chat(
-            {"type": "custom", "name": "apply_patch"}
+            {"type": "custom", "name": "apply_patch"}, {"apply_patch"}
         ) == {"type": "function", "function": {"name": "apply_patch"}}
+
+    def test_forced_apply_patch_without_valid_catalog_passes_through(self):
+        choice = {"type": "custom", "name": "apply_patch"}
+        assert _translate_responses_tool_choice_to_chat(choice, set()) is choice
 
     def test_unrelated_custom_tool_choice_passes_through(self):
         choice = {"type": "custom", "name": "code_exec"}
