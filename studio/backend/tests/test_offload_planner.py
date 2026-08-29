@@ -489,6 +489,53 @@ def test_the_per_device_check_passes_when_the_shares_really_fit():
     )
 
 
+def test_the_per_device_check_charges_each_secondary_pipeline_reserve():
+    layout = uneven_layout()
+    spilled = {b.index for b in layout.blocks}
+    cache_per_layer = layout.kv_bytes(4096, 2) // layout.n_layers
+    device_one_used = layout.blocks[3].resident_bytes + cache_per_layer + layout.lm_head_bytes
+    pipeline_reserve = GIB
+    opts = PlanOptions(overhead_bytes_per_device = 0, pipeline_overhead_bytes = pipeline_reserve)
+
+    below = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve - 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+    exact = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+    above = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve + 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+
+    assert below is not None and "device 1" in below
+    assert exact is None
+    assert above is None
+
+
 def test_multi_gpu_credit_sums():
     layout = q2_layout()
     assert (

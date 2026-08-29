@@ -616,7 +616,13 @@ def _per_device_shortfall(
         # devices[0] once -sm none has already pruned the list.
         if device == 0:
             used += max(0, opts.extra_resident_bytes)
-        headroom = max(0, vram_bytes_per_device[device] - opts.overhead_bytes_per_device)
+        pipeline_reserve = opts.pipeline_overhead_bytes if device > 0 else 0
+        headroom = max(
+            0,
+            vram_bytes_per_device[device]
+            - opts.overhead_bytes_per_device
+            - pipeline_reserve,
+        )
         if used > headroom:
             return (
                 f"device {device} would still hold {used / GIB:.2f} GiB of its "
