@@ -9,6 +9,7 @@ import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  markdownRenderKey,
   markdownRenderScope,
   parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
@@ -169,6 +170,10 @@ test("link references and definitions stay in one rendered document", () => {
   const render = cache.update(complete);
   assert.equal(cache.renderGeneration, generation);
   assert.notEqual(markdownRenderScope(usage), markdownRenderScope(complete));
+  assert.notEqual(
+    markdownRenderKey(`${usage}[math-ref]: `),
+    markdownRenderKey(complete),
+  );
   assert.equal(render.markdown, remend(complete));
   assert.deepEqual(render.parseMarkdownIntoBlocks(render.markdown), [
     remend(complete),

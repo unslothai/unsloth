@@ -83,6 +83,16 @@ export function markdownRenderScope(markdown: string): "blocks" | "document" {
   return hasGlobalLinkReference(markdown) ? "document" : "blocks";
 }
 
+export function markdownRenderKey(markdown: string): string {
+  if (markdownRenderScope(markdown) === "blocks") {
+    return "blocks";
+  }
+  return `document:${markdown
+    .split("\n")
+    .filter((line) => LINK_DEFINITION_RE.test(line))
+    .join("\n")}`;
+}
+
 export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
   return markdownRenderScope(markdown) === "document"
     ? [markdown]

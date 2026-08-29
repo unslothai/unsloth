@@ -77,7 +77,7 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
-  markdownRenderScope,
+  markdownRenderKey,
   parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
@@ -620,9 +620,6 @@ const StreamdownBlock = memo((props: BlockProps) => (
   </MarkdownBlockBoundary>
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
-const DocumentStreamdownBlock = (props: BlockProps) => (
-  <StreamdownBlock {...props} />
-);
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
@@ -776,7 +773,7 @@ const MarkdownTextImpl = () => {
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
-  const renderScope = markdownRenderScope(processedText);
+  const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -790,7 +787,7 @@ const MarkdownTextImpl = () => {
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={status.type} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
             parseMarkdownIntoBlocksFn={
@@ -805,11 +802,7 @@ const MarkdownTextImpl = () => {
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
-            BlockComponent={
-              renderScope === "document"
-                ? DocumentStreamdownBlock
-                : StreamdownBlock
-            }
+            BlockComponent={StreamdownBlock}
           >
             {incrementalRender?.markdown ?? processedText}
           </Streamdown>
