@@ -13,6 +13,7 @@ import {
   cancelStagedUpdate,
   checkDesktopUpdate,
   desktopUpdateBundleStatus,
+  discardStagedUpdate,
   downloadDesktopUpdate,
   installDesktopUpdate,
   stagedUpdateStatus,
@@ -331,6 +332,7 @@ export function useTauriUpdate(isExternalServer = false) {
           // latest.json has no deb/rpm key, so the in-app updater would offer an
           // AppImage this install cannot apply. Stop instead.
           updateRef.current = null;
+          await clearPreparedBackendUpdate();
           replaceInfo(null);
           updateStatus("idle");
           return;
@@ -351,6 +353,7 @@ export function useTauriUpdate(isExternalServer = false) {
         });
       } else {
         updateRef.current = null;
+        await clearPreparedBackendUpdate();
         replaceInfo(null);
         resetPreparation();
         updateStatus("idle");
@@ -363,6 +366,12 @@ export function useTauriUpdate(isExternalServer = false) {
       checkingRef.current = false;
       setHasChecked(true);
     }
+  }
+
+  async function clearPreparedBackendUpdate() {
+    const staged = await stagedUpdateStatus();
+    if (staged.staging) await cancelStagedUpdate();
+    await discardStagedUpdate();
   }
   // Startup owns one delayed check; this ref keeps a per-render function out of
   // the empty dep list. The closure reads only refs/setState, so it cannot stale.

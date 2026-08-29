@@ -132,3 +132,8 @@ export async function cancelStagedUpdate(): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("cancel_staged_update");
 }
+
+export async function discardStagedUpdate(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("discard_staged_update");
+}
