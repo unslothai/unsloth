@@ -687,3 +687,15 @@ test("applies URL navigation before rewriting a resolved selection", () => {
     { action: "select", selectedId: "cache:gguf:Org%2FNext" },
   );
 });
+
+test("adopts a raw selection after its URL navigation lands", () => {
+  assert.deepEqual(
+    resolveSelectionUrlSync({
+      isDiscoverTab: false,
+      urlModel: "Org/Legacy-Model",
+      selectionInputId: null,
+      resolvedSelectedId: null,
+    }),
+    { action: "select", selectedId: "Org/Legacy-Model" },
+  );
+});

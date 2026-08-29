@@ -1159,13 +1159,12 @@ export function ModelsPage() {
 
   const handleSelect = useCallback(
     (id: string) => {
-      setSelected(id);
       void navigate({
         to: "/hub",
         search: (prev) => ({ ...prev, model: id, file: undefined }),
       });
     },
-    [setSelected, navigate],
+    [navigate],
   );
   const handleCloseDetail = useCallback(() => {
     // From split view, "Back to Hub" returns to the main hub feed (not the filtered list): leave
@@ -1265,7 +1264,6 @@ export function ModelsPage() {
       ? listRows[0]?.id
       : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id);
     if (!firstId) return;
-    setSelected(firstId);
     void navigate({
       to: "/hub",
       search: (prev) => ({ ...prev, model: firstId, file: undefined }),
@@ -1278,7 +1276,6 @@ export function ModelsPage() {
     listRows,
     filteredCachedRows,
     filteredLocalRows,
-    setSelected,
     navigate,
   ]);
 
