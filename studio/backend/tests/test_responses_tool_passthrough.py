@@ -565,7 +565,8 @@ class TestNormaliseResponsesInputWithTools:
                     "call_id": "call_patch",
                     "output": "Done!",
                 },
-            ]
+            ],
+            tools = [_codex_apply_patch_tool()],
         )
 
         messages = _normalise_responses_input(payload)
@@ -579,6 +580,36 @@ class TestNormaliseResponsesInputWithTools:
         assert messages[1].role == "tool"
         assert messages[1].tool_call_id == "call_patch"
         assert messages[1].content == "Done!"
+
+    def test_unrelated_custom_tool_replay_stays_ignored(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_code",
+                    "name": "code_exec",
+                    "input": "print('hidden')",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_code",
+                    "output": "hidden output",
+                },
+            ],
+            tools = [
+                {
+                    "type": "custom",
+                    "name": "code_exec",
+                    "format": {
+                        "type": "grammar",
+                        "syntax": "lark",
+                        "definition": "start: /.+/",
+                    },
+                }
+            ],
+        )
+
+        assert _normalise_responses_input(payload) == []
 
     def test_instructions_plus_developer_message_are_merged(self):
         """Codex CLI sends `instructions` (system prompt) AND a developer

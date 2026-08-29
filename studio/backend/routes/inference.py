@@ -24981,6 +24981,14 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             messages.append(ChatMessage(role = "user", content = payload.input))
         return _with_system(messages)
 
+    custom_tool_names = _responses_custom_tool_names(payload.tools)
+    custom_tool_call_ids = {
+        item.call_id
+        for item in payload.input
+        if isinstance(item, ResponsesCustomToolCallInputItem)
+        and item.name in custom_tool_names
+    }
+
     for item in payload.input:
         if isinstance(item, ResponsesFunctionCallInputItem):
             messages.append(
@@ -25015,6 +25023,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesCustomToolCallInputItem):
+            if item.call_id not in custom_tool_call_ids:
+                continue
             messages.append(
                 ChatMessage(
                     role = "assistant",
@@ -25034,6 +25044,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesCustomToolCallOutputInputItem):
+            if item.call_id not in custom_tool_call_ids:
+                continue
             messages.append(
                 ChatMessage(
                     role = "tool",
