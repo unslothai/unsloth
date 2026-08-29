@@ -4,6 +4,7 @@
 import {
   type ManagedDownload,
   clearCompletedInventoryHint,
+  downloadInventoryHintKind,
   useDownloadManagerStore,
 } from "@/features/hub/download-manager";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
@@ -83,7 +84,12 @@ const LOCAL_DATASET_INVENTORY_SOURCE = [
 
 type LiveInventoryJob = Pick<
   ManagedDownload,
-  "kind" | "repoId" | "variant" | "state" | "startedAt"
+  | "kind"
+  | "repoId"
+  | "variant"
+  | "inventoryKind"
+  | "state"
+  | "startedAt"
 > & {
   displayBytes: number;
 };
@@ -175,6 +181,7 @@ function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
         kind: job.kind,
         repoId: job.repoId,
         variant: job.variant,
+        inventoryKind: job.inventoryKind,
         state: job.state,
         startedAt: job.startedAt,
         displayBytes: liveJobDisplayBytes(job),
@@ -183,7 +190,7 @@ function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
     const signature = jobs
       .map(
         (job) =>
-          `${job.kind}\u0001${job.repoId.toLowerCase()}\u0001${job.variant ?? ""}\u0001${job.state}\u0001${job.startedAt}\u0001${job.displayBytes}`,
+          `${job.kind}\u0001${job.repoId.toLowerCase()}\u0001${job.variant ?? ""}\u0001${job.inventoryKind ?? ""}\u0001${job.state}\u0001${job.startedAt}\u0001${job.displayBytes}`,
       )
       .join("\u0002");
     if (signature === cache.signature) return cache.jobs;
@@ -197,9 +204,14 @@ function liveDownloadInventoryRows(
   isDatasetMode: boolean,
 ): CachedInventoryRow[] {
   return jobs.map((job) => {
+    const inventoryKind = downloadInventoryHintKind(
+      job.kind,
+      job.variant,
+      job.inventoryKind,
+    );
     const modelFormat = isDatasetMode
       ? "unknown"
-      : job.variant
+      : inventoryKind === "gguf"
         ? "gguf"
         : "safetensors";
     return {

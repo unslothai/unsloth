@@ -12,6 +12,8 @@ export interface ManagedDownload {
   kind: DownloadKind;
   repoId: string;
   variant: string | null;
+  /** inventory class for downloads whose variant is a scope key instead of a GGUF quant. */
+  inventoryKind?: Exclude<InventoryHint["kind"], "dataset">;
   state: DownloadJobState;
   downloadedBytes: number;
   /** False when the last poll HELD `downloadedBytes` rather than measuring it
@@ -57,6 +59,8 @@ export interface DownloadRequest {
   kind: DownloadKind;
   repoId: string;
   variant: string | null;
+  /** inventory class known by the caller for a scoped model download. */
+  inventoryKind?: Exclude<InventoryHint["kind"], "dataset">;
   expectedBytes: number;
   /** Marks a partial-by-design download of `files` only, for a consumer that reads a deliberate subset of a repo (the diffusion loader skips the packaged root single, transformer/ shards and fp16 twins). Set `variant` to `scopedVariant(scopeId)` so this surface keys the job the way the backend does. */
   scopeId?: string | null;
@@ -86,6 +90,16 @@ export interface CallerToast {
 /** The variant slot a scoped job occupies. Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@", so a scope collides with neither a real variant nor the repo's full snapshot. */
 export function scopedVariant(scopeId: string): string {
   return `@${scopeId}`;
+}
+
+export function downloadInventoryHintKind(
+  kind: DownloadKind,
+  variant: string | null,
+  inventoryKind?: Exclude<InventoryHint["kind"], "dataset">,
+): InventoryHint["kind"] {
+  if (kind === "dataset") return "dataset";
+  if (inventoryKind) return inventoryKind;
+  return variant && !variant.startsWith("@") ? "gguf" : "model";
 }
 
 export interface JobListeners {

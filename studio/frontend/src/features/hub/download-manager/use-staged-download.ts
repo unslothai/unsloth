@@ -110,6 +110,7 @@ export function useStagedDownload({
         kind: DOWNLOAD_KIND.MODEL,
         repoId: current.repoId,
         variant: activeVariant,
+        inventoryKind: current.ggufFilename ? "gguf" : "model",
         expectedBytes: current.bytes,
         scopeId,
         files: current.files,

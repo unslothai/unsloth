@@ -23,6 +23,7 @@ import {
   type DownloadManagerState,
   type JobListeners,
   type ManagedDownload,
+  downloadInventoryHintKind,
 } from "./download-manager-types";
 import {
   clearRuntimeTimer,
@@ -87,6 +88,10 @@ function sanitizePersistedJob(
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
+    ...(value.inventoryKind === INVENTORY_HINT_KIND.MODEL ||
+    value.inventoryKind === INVENTORY_HINT_KIND.GGUF
+      ? { inventoryKind: value.inventoryKind }
+      : {}),
     // A held reading survives the reload that carried it: dropping the flag restores the stale
     // downloadedBytes with the guard reading undefined (so, measured), which is the "0 B left"
     // the guard exists to stop.
@@ -147,6 +152,9 @@ function toPersistedJob(
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
+    ...(job.inventoryKind !== undefined
+      ? { inventoryKind: job.inventoryKind }
+      : {}),
     ...(job.measuredTransfer !== undefined
       ? { measuredTransfer: job.measuredTransfer }
       : {}),
@@ -185,24 +193,17 @@ export function jobKeyOf(
   return variantKey ? `${base}#${variantKey}` : base;
 }
 
-function completedInventoryHintKind(
-  kind: DownloadKind,
-  variant: string | null,
-): InventoryHint["kind"] {
-  return kind === DOWNLOAD_KIND.DATASET
-    ? INVENTORY_HINT_KIND.DATASET
-    : variant
-      ? INVENTORY_HINT_KIND.GGUF
-      : INVENTORY_HINT_KIND.MODEL;
-}
-
 function liveCompletedInventoryHintKeys(): Set<string> {
   const keys = new Set<string>();
   for (const job of Object.values(getState().jobs)) {
     if (job.state !== "complete") continue;
     keys.add(
       inventoryHintKey(
-        completedInventoryHintKind(job.kind, job.variant),
+        downloadInventoryHintKind(
+          job.kind,
+          job.variant,
+          job.inventoryKind,
+        ),
         job.repoId,
       ),
     );
@@ -219,7 +220,11 @@ function collectCompletedInventoryHints(
     // is only hidden once the backend has scanned its config, so an optimistic
     // hint would surface it in the chat inventory for the hint's whole TTL.
     if (job.external) return [];
-    const kind = completedInventoryHintKind(job.kind, job.variant);
+    const kind = downloadInventoryHintKind(
+      job.kind,
+      job.variant,
+      job.inventoryKind,
+    );
     if (
       runtimeRegistry.suppressedCompletedInventoryHints.has(
         inventoryHintKey(kind, job.repoId),
@@ -438,7 +443,11 @@ export function putJob(job: ManagedDownload): void {
   const suppressionChanged =
     runtimeRegistry.suppressedCompletedInventoryHints.delete(
       inventoryHintKey(
-        completedInventoryHintKind(job.kind, job.variant),
+        downloadInventoryHintKind(
+          job.kind,
+          job.variant,
+          job.inventoryKind,
+        ),
         job.repoId,
       ),
     );
@@ -467,7 +476,11 @@ export function removeJob(key: string): void {
     suppressionChanged =
       runtimeRegistry.suppressedCompletedInventoryHints.delete(
         inventoryHintKey(
-          completedInventoryHintKind(job.kind, job.variant),
+          downloadInventoryHintKind(
+            job.kind,
+            job.variant,
+            job.inventoryKind,
+          ),
           job.repoId,
         ),
       );

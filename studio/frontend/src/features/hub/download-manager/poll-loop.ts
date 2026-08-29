@@ -723,6 +723,11 @@ export async function startJob(
       : opts.adopt && existing?.checkpoint !== undefined
         ? { checkpoint: existing.checkpoint }
         : {}),
+    ...(req.inventoryKind !== undefined
+      ? { inventoryKind: req.inventoryKind }
+      : opts.adopt && existing?.inventoryKind !== undefined
+        ? { inventoryKind: existing.inventoryKind }
+        : {}),
   });
 
   if (!opts.adopt) {
