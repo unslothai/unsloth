@@ -23203,6 +23203,7 @@ def _downloaded_custom_stt_ids(catalog_at: Optional[float]) -> tuple[str, ...]:
             return _CUSTOM_STT_CACHE["ids"]
         from core.inference import stt_sidecar
         from hub.services.models.cache_inventory import _scan_cached_models
+
         try:
             ids = tuple(
                 sorted(
