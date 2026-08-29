@@ -192,6 +192,65 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
     ] == chunks
 
 
+@pytest.mark.asyncio
+async def test_durable_event_stream_forwards_request_monitor_id(durable_run, monkeypatch):
+    release = asyncio.Event()
+
+    async def body():
+        await release.wait()
+        yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(
+            status_code = 200,
+            headers = {"X-Unsloth-Monitor-Id": "monitor-123"},
+            body_iterator = body(),
+        )
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    supervisor._prepare_monitor_correlation("run-1")
+    producer = asyncio.create_task(supervisor._produce("run-1"))
+
+    assert await asyncio.wait_for(supervisor.wait_monitor_id("run-1"), timeout = 1) == "monitor-123"
+    response = await run_routes.chat_generation_events(
+        "run-1",
+        SimpleNamespace(
+            app = SimpleNamespace(
+                state = SimpleNamespace(chat_generation_supervisor = supervisor)
+            ),
+            is_disconnected = AsyncMock(return_value = True),
+        ),
+        after = 0,
+        last_event_id = None,
+        current_subject = "alice",
+    )
+    assert response.headers["X-Unsloth-Monitor-Id"] == "monitor-123"
+
+    release.set()
+    await producer
+
+
+@pytest.mark.asyncio
+async def test_durable_monitor_wait_resolves_when_monitoring_is_unavailable(
+    durable_run, monkeypatch
+):
+    async def body():
+        yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, headers = {}, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    supervisor._prepare_monitor_correlation("run-1")
+    await supervisor._produce("run-1")
+
+    assert await asyncio.wait_for(supervisor.wait_monitor_id("run-1"), timeout = 1) is None
+
+
 async def _subscriber_sequences(after = 0):
     response = await run_routes.chat_generation_events(
         "run-1",

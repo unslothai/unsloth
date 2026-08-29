@@ -2423,6 +2423,13 @@ type ThreadRunOwner = {
   local: boolean;
 };
 
+export type LiveChatTpsEntry = {
+  owner: () => void;
+  monitorId: string;
+  phase: "running" | "terminal";
+  lastRunningTps: number | null;
+};
+
 type ToolStatusEntry = {
   status: string;
   startedAt: number;
@@ -2459,6 +2466,8 @@ type ChatRuntimeStore = {
      * a newer run's clear delete an older run's flag while it still generates.
      */
   runOwnerByThreadId: Record<string, ThreadRunOwner[]>;
+  /** Request-owned, session-only monitor correlation and last live sample. */
+  liveTpsByThreadId: Record<string, LiveChatTpsEntry[]>;
   cancelByThreadId: Record<string, () => void>;
   /**
      * Backend cancels for the threads generating in the background. `cancelByThreadId` only holds
@@ -2854,6 +2863,18 @@ type ChatRuntimeStore = {
      * it captured, or its writes and its final clear miss the entries.
      */
   runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
+  beginThreadLiveTps: (
+    threadId: string,
+    owner: () => void,
+    monitorId: string,
+  ) => void;
+  setThreadLiveTps: (
+    threadId: string,
+    owner: () => void,
+    monitorId: string,
+    tps: number,
+  ) => void;
+  finishThreadLiveTps: (threadId: string, owner: () => void) => void;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string, cancel?: () => void) => void;
   registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
@@ -3722,6 +3743,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   runningByThreadId: {},
   localRunByThreadId: {},
   runOwnerByThreadId: {},
+  liveTpsByThreadId: {},
   cancelByThreadId: {},
   serverCancelByThreadId: {},
   autoTitle: false,
@@ -4162,6 +4184,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       move(state.runningByThreadId, "runningByThreadId");
       move(state.localRunByThreadId, "localRunByThreadId");
       move(state.runOwnerByThreadId, "runOwnerByThreadId");
+      move(state.liveTpsByThreadId, "liveTpsByThreadId");
       move(state.cancelByThreadId, "cancelByThreadId");
       move(state.serverCancelByThreadId, "serverCancelByThreadId");
       move(state.toolStatusByThreadId, "toolStatusByThreadId");
@@ -4177,6 +4200,68 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }
     return fallbackKey;
   },
+  beginThreadLiveTps: (threadId, owner, monitorId) =>
+    set((state) => {
+      const current = state.liveTpsByThreadId[threadId] ?? [];
+      const existing = current.find((entry) => entry.owner === owner);
+      if (
+        existing?.monitorId === monitorId &&
+        existing.phase === "running"
+      ) {
+        return state;
+      }
+      const entries = current.filter(
+        (entry) => entry.owner !== owner && entry.phase === "running",
+      );
+      entries.push({
+        owner,
+        monitorId,
+        phase: "running",
+        lastRunningTps: null,
+      });
+      return {
+        liveTpsByThreadId: {
+          ...state.liveTpsByThreadId,
+          [threadId]: entries,
+        },
+      };
+    }),
+  setThreadLiveTps: (threadId, owner, monitorId, tps) =>
+    set((state) => {
+      if (!Number.isFinite(tps) || tps < 0) return state;
+      const current = state.liveTpsByThreadId[threadId] ?? [];
+      const index = current.findIndex(
+        (entry) =>
+          entry.owner === owner &&
+          entry.monitorId === monitorId &&
+          entry.phase === "running",
+      );
+      if (index < 0 || current[index]?.lastRunningTps === tps) return state;
+      const entries = [...current];
+      entries[index] = { ...entries[index], lastRunningTps: tps };
+      return {
+        liveTpsByThreadId: {
+          ...state.liveTpsByThreadId,
+          [threadId]: entries,
+        },
+      };
+    }),
+  finishThreadLiveTps: (threadId, owner) =>
+    set((state) => {
+      const current = state.liveTpsByThreadId[threadId] ?? [];
+      const index = current.findIndex(
+        (entry) => entry.owner === owner && entry.phase === "running",
+      );
+      if (index < 0) return state;
+      const entries = [...current];
+      entries[index] = { ...entries[index], phase: "terminal" };
+      return {
+        liveTpsByThreadId: {
+          ...state.liveTpsByThreadId,
+          [threadId]: entries,
+        },
+      };
+    }),
   registerThreadCancel: (threadId, cancel) =>
     set((state) => {
       const next = { ...state.cancelByThreadId };

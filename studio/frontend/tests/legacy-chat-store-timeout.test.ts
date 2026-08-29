@@ -69,6 +69,9 @@ function loadStorage(options: {
           transaction: options.transaction ?? (async () => undefined),
         },
       },
+      "../lib/sidebar-last-request-usage": {
+        selectSidebarLastRequestUsage: () => null,
+      },
       "./chat-thread-tombstones": {
         isChatThreadDeleted: () => false,
         markChatThreadDeleted: () => {},

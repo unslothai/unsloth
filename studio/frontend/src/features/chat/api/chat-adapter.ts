@@ -5156,6 +5156,19 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
+      // Reset the header widget for this request before the backend publishes its
+      // request-owned monitor id. Keeping the owner lets thread adoption and
+      // overlapping runs update only the matching request.
+      runtime.beginThreadLiveTps(threadKey, serverCancel, "");
+      const captureMonitorId = (monitorId: string | null) => {
+        if (!monitorId) return;
+        const store = useChatRuntimeStore.getState();
+        store.beginThreadLiveTps(
+          store.runKeyForOwner(threadKey, serverCancel),
+          serverCancel,
+          monitorId,
+        );
+      };
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
@@ -6154,6 +6167,7 @@ export function createOpenAIStreamAdapter(
                   initialRun: generationRun!,
                   replayFrom: 0,
                   signal: runSignal,
+                  onMonitorId: captureMonitorId,
                 },
               )) {
                 generationRun = update.run;
@@ -6217,6 +6231,7 @@ export function createOpenAIStreamAdapter(
                       : (runtime.loadedCustomContextLength ??
                         runtime.ggufContextLength ??
                         (params.maxSeqLength || null)),
+                    captureMonitorId,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
@@ -7676,6 +7691,7 @@ export function createOpenAIStreamAdapter(
         }
         // serverCancel narrows both clears: runs with no resolved thread id share the "__default"
         // key, so a blind clear could drop a sibling's entry.
+        runtime.finishThreadLiveTps(cleanupKey, serverCancel);
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
       }

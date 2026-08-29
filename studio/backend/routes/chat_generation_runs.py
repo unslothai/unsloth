@@ -67,6 +67,7 @@ _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 _ENVELOPE_MAX_DEPTH = 64
 _ENVELOPE_MAX_NODES = 20_000
 _ENVELOPE_MAX_JSON_CHARS = 1_000_000
+_MONITOR_ID_RESPONSE_HEADER = "X-Unsloth-Monitor-Id"
 
 
 class CreateChatGenerationRun(BaseModel):
@@ -297,7 +298,8 @@ def cancel_chat_generation_run(
     run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
+    app_state = getattr(getattr(request, "app", None), "state", None)
+    supervisor = getattr(app_state, "chat_generation_supervisor", None)
     if supervisor is not None and run["status"] in {"cancelling", "cancelled"}:
         supervisor.cancel(run_id)
     return run
@@ -313,6 +315,9 @@ async def chat_generation_events(
 ):
     _require_run(run_id)
     cursor = _event_cursor(after, last_event_id)
+    app_state = getattr(getattr(request, "app", None), "state", None)
+    supervisor = getattr(app_state, "chat_generation_supervisor", None)
+    monitor_id = await supervisor.wait_monitor_id(run_id) if supervisor is not None else None
 
     async def stream():
         nonlocal cursor
@@ -359,8 +364,11 @@ async def chat_generation_events(
             if not events:
                 yield ": keep-alive\n\n"
 
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if monitor_id:
+        headers[_MONITOR_ID_RESPONSE_HEADER] = monitor_id
     return StreamingResponse(
         stream(),
         media_type = "text/event-stream",
-        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers = headers,
     )

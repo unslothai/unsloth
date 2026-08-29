@@ -42,6 +42,7 @@ import type {
   ValidateModelResponse,
 } from "../types/api";
 import { publishChatHistoryRevision } from "../utils/chat-history-revision";
+import { CHAT_MONITOR_ID_RESPONSE_HEADER } from "./chat-monitor";
 import {
   type GgufVariantsRequestOptions,
   ggufVariantsQuery,
@@ -55,7 +56,6 @@ export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // they built from a history this one has just changed.
 export { CHAT_HISTORY_REVISION_KEY } from "../utils/chat-history-revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
-
 export type ChatHistoryUpdatedDetail = {
   thread?: ThreadRecord;
   coalesce?: boolean;
@@ -247,9 +247,13 @@ export async function getApiMonitor(): Promise<ApiMonitorResponse> {
   return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
-export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+export async function getApiMonitorEntry(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ApiMonitorEntry> {
   const response = await authFetch(
     `/api/inference/monitor/${encodeURIComponent(id)}`,
+    { signal },
   );
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
@@ -1515,6 +1519,7 @@ export async function* streamChatCompletions(
    * context length -- the two need opposite advice when generation stops on length.
    */
   loadedContextLength?: number | null,
+  onMonitorId?: (monitorId: string | null) => void,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -1527,6 +1532,10 @@ export async function* streamChatCompletions(
     const body = await response.json().catch(() => null);
     throw new Error(parseErrorText(response.status, body));
   }
+
+  onMonitorId?.(
+    response.headers.get(CHAT_MONITOR_ID_RESPONSE_HEADER)?.trim() || null,
+  );
 
   if (!response.body) {
     throw new Error("Stream response missing body");

@@ -33,6 +33,10 @@ import type {
   ThreadRecord,
 } from "../types";
 import {
+  selectSidebarLastRequestUsage,
+  type SidebarLastRequestUsage,
+} from "../lib/sidebar-last-request-usage";
+import {
   isChatThreadDeleted,
   markChatThreadDeleted,
   markChatThreadsDeleted,
@@ -853,9 +857,13 @@ export async function listStoredChatThreads(
     );
 }
 
+export type StoredChatThreadWithSidebarUsage = ThreadRecord & {
+  sidebarLastRequestUsage?: SidebarLastRequestUsage;
+};
+
 export async function listStoredChatThreadsWithMessages(
   args: ThreadListArgs = {},
-): Promise<ThreadRecord[]> {
+): Promise<StoredChatThreadWithSidebarUsage[]> {
   const threads = await listStoredChatThreads(args);
   if (threads.length === 0) return [];
   // One batched HTTP call instead of N. Per-thread legacy Dexie fallback
@@ -871,7 +879,14 @@ export async function listStoredChatThreadsWithMessages(
     threads.map(async (thread) => {
       const backendMessages = backendByThread.get(thread.id) ?? [];
       if (backendMessages.length > 0) {
-        return { thread, hasContent: true };
+        return {
+          thread: {
+            ...thread,
+            sidebarLastRequestUsage:
+              selectSidebarLastRequestUsage(backendMessages),
+          },
+          hasContent: true,
+        };
       }
       const legacy = await listStoredChatMessages(thread.id).catch(() => null);
       return { thread, hasContent: legacy === null || legacy.length > 0 };

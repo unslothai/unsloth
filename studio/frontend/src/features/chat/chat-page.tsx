@@ -153,6 +153,8 @@ import {
   providerModelSupportsStudioTools,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import { useLiveChatTps } from "./hooks/use-live-chat-tps";
+import { formatLiveChatTps } from "./lib/live-chat-tps";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import {
   deleteChatProject,
@@ -2204,6 +2206,7 @@ export function ChatPage({
     (state) => state.ggufNativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const liveChatTps = useLiveChatTps();
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -4018,6 +4021,20 @@ export function ChatPage({
             ) : null}
           </div>
           <div className="pointer-events-auto ml-auto flex items-center gap-1">
+            {view.mode === "single" ? (
+              <div
+                className="flex h-[var(--studio-chat-control-height,34px)] items-center rounded-[10px] border border-border/70 bg-background/75 px-2.5 text-xs font-medium tabular-nums text-muted-foreground shadow-sm backdrop-blur"
+                role="status"
+                aria-live="polite"
+                aria-label={
+                  liveChatTps === null
+                    ? "Live generation speed unavailable"
+                    : `Live generation speed ${liveChatTps.toFixed(1)} tokens per second`
+                }
+              >
+                TPS: {formatLiveChatTps(liveChatTps)}
+              </div>
+            ) : null}
             {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}

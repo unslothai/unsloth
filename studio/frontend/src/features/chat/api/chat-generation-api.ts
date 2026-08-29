@@ -7,6 +7,7 @@ import type {
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
 } from "../types/api";
+import { CHAT_MONITOR_ID_RESPONSE_HEADER } from "./chat-monitor";
 
 export type ChatGenerationStatus =
   | "queued"
@@ -317,12 +318,16 @@ async function* streamChatGenerationEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
+  onMonitorId?: (monitorId: string | null) => void,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
     `/api/inference/chat-runs/${encodeURIComponent(id)}/events?after=${Math.max(0, after)}`,
     { method: "POST", headers: { accept: "text/event-stream" }, signal },
   );
   if (!response.ok) await json(response);
+  onMonitorId?.(
+    response.headers.get(CHAT_MONITOR_ID_RESPONSE_HEADER)?.trim() || null,
+  );
   if (!response.body)
     throw new Error("Chat generation event stream returned no body");
   const reader = response.body.getReader();
@@ -364,9 +369,10 @@ export async function* followChatGenerationRun(
     initialRun?: ChatGenerationRun;
     replayFrom?: number;
     signal?: AbortSignal;
+    onMonitorId?: (monitorId: string | null) => void;
   } = {},
 ): AsyncGenerator<ChatGenerationRunUpdate> {
-  const { replayFrom, signal } = options;
+  const { replayFrom, signal, onMonitorId } = options;
   let run = options.initialRun;
   let failures = 0;
   while (!(run || signal?.aborted)) {
@@ -391,6 +397,7 @@ export async function* followChatGenerationRun(
         id,
         cursor,
         signal,
+        onMonitorId,
       )) {
         if (event.seq <= cursor) continue;
         cursor = event.seq;

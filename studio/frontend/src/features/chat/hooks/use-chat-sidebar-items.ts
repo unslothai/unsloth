@@ -14,8 +14,10 @@ import {
   isExpectedBackgroundChatStorageError,
   listStoredChatThreads,
   listStoredChatThreadsWithMessages,
+  type StoredChatThreadWithSidebarUsage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import type { SidebarLastRequestUsage } from "../lib/sidebar-last-request-usage";
 import { clearComposerDraft } from "../utils/composer-draft";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
@@ -36,6 +38,8 @@ export interface SidebarItem {
   updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
+  /** Present only for a persisted single-chat row with validated server usage. */
+  lastRequestUsage?: SidebarLastRequestUsage;
 }
 
 function lastActivityAt(thread: ThreadRecord): number {
@@ -43,7 +47,7 @@ function lastActivityAt(thread: ThreadRecord): number {
 }
 
 export function groupThreads(
-  threads: ThreadRecord[],
+  threads: StoredChatThreadWithSidebarUsage[],
   archived = false,
 ): SidebarItem[] {
   const items: SidebarItem[] = [];
@@ -87,6 +91,7 @@ export function groupThreads(
         updatedAt: lastActivityAt(t),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
+        lastRequestUsage: t.sidebarLastRequestUsage,
       });
     }
   }
@@ -103,7 +108,7 @@ export function useChatSidebarItems(options?: {
   enabled?: boolean;
   requireMessages?: boolean;
 }) {
-  const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
+  const [allThreads, setAllThreads] = useState<StoredChatThreadWithSidebarUsage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const enabled = options?.enabled ?? true;
   const requireMessages = options?.requireMessages ?? true;

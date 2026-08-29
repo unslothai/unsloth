@@ -89,7 +89,7 @@ const frame = (
     ...(snapshot ? { run: snapshot } : {}),
   })}\n\n`;
 
-function sse(frames: string[]): Response {
+function sse(frames: string[], headers: Record<string, string> = {}): Response {
   const encoder = new TextEncoder();
   const body = new ReadableStream({
     start(controller) {
@@ -99,9 +99,33 @@ function sse(frames: string[]): Response {
   });
   return new Response(body, {
     status: 200,
-    headers: { "content-type": "text/event-stream" },
+    headers: { "content-type": "text/event-stream", ...headers },
   });
 }
+
+test("durable follow captures the exact monitor id from the event response", async () => {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/events")) {
+      return sse(
+        [frame(1, "run.completed", { status: "completed" }, run("completed", 1))],
+        { "X-Unsloth-Monitor-Id": "monitor-123" },
+      );
+    }
+    return new Response(JSON.stringify(run("completed", 1)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const monitorIds: Array<string | null> = [];
+  for await (const _update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+    onMonitorId: (monitorId) => monitorIds.push(monitorId),
+  })) {
+    // Consume the terminal update.
+  }
+  assert.deepEqual(monitorIds, ["monitor-123"]);
+});
 
 test("reconnect resumes from the applied cursor without duplicate chunks", async () => {
   const eventUrls: string[] = [];

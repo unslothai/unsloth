@@ -389,3 +389,88 @@ def test_cors_preflight_cache_window_is_short():
 
     main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert "max_age = 60" in main_src, "the mounted middleware must pin max_age"
+
+
+def _monitor_header_cors_client(remote_access_state):
+    from starlette.applications import Starlette
+    from starlette.responses import Response
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from main import RemoteAccessCORSMiddleware
+    from utils.host_policy import cors_origins_for_mode
+
+    async def endpoint(_request):
+        return Response(headers = {"X-Unsloth-Monitor-Id": "opaque-row"})
+
+    cors_app = Starlette(routes = [Route("/stream", endpoint)])
+    cors_app.add_middleware(
+        RemoteAccessCORSMiddleware,
+        remote_access_state = remote_access_state,
+        allow_origins = cors_origins_for_mode(api_only = True, secure = False),
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
+        expose_headers = ["X-Unsloth-Monitor-Id"],
+        max_age = 60,
+    )
+    return TestClient(cors_app)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+)
+def test_monitor_header_is_readable_from_tauri_and_dev_origins(origin):
+    from types import SimpleNamespace
+
+    response = _monitor_header_cors_client(SimpleNamespace(cloudflare_url = None)).get(
+        "/stream", headers = {"Origin": origin}
+    )
+
+    assert response.headers["access-control-allow-origin"] == origin
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert response.headers["access-control-expose-headers"] == "X-Unsloth-Monitor-Id"
+
+
+def test_monitor_header_exposure_does_not_weaken_dynamic_tunnel_origin_gate():
+    from types import SimpleNamespace
+
+    origin = "https://browser-client.example"
+    state = SimpleNamespace(cloudflare_url = None)
+    client = _monitor_header_cors_client(state)
+
+    closed = client.get("/stream", headers = {"Origin": origin})
+    assert "access-control-allow-origin" not in closed.headers
+    assert closed.headers["access-control-expose-headers"] == "X-Unsloth-Monitor-Id"
+
+    state.cloudflare_url = "https://public.trycloudflare.com"
+    published = client.get("/stream", headers = {"Origin": origin})
+    assert published.headers["access-control-allow-origin"] == origin
+    assert published.headers["access-control-allow-credentials"] == "true"
+    assert published.headers["access-control-expose-headers"] == "X-Unsloth-Monitor-Id"
+
+    state.cloudflare_url = None
+    revoked = client.get("/stream", headers = {"Origin": origin})
+    assert "access-control-allow-origin" not in revoked.headers
+
+
+def test_mounted_cors_policy_only_adds_monitor_response_header_exposure():
+    main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    mounted = main_src[
+        main_src.index("app.add_middleware(\n    RemoteAccessCORSMiddleware,") : main_src.index(
+            "\n)\n", main_src.index("app.add_middleware(\n    RemoteAccessCORSMiddleware,")
+        )
+    ]
+
+    assert 'expose_headers = ["X-Unsloth-Monitor-Id"]' in mounted
+    assert "allow_origins = _cors_origins" in mounted
+    assert "allow_credentials = True" in mounted
+    assert 'allow_methods = ["*"]' in mounted
+    assert 'allow_headers = ["*"]' in mounted
+    assert "max_age = 60" in mounted
