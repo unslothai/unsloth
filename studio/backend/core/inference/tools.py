@@ -11172,9 +11172,15 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if enabled is None:
         enabled = _autoinject_enabled()
     thread_id = rag_scope.get("thread_id")
+    project_id = rag_scope.get("project_id")
     whole_doc_requested = (
         bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
     )
+    # Project sources are always pre-retrieved: the Search pill only gates
+    # web_search, so grounding must not depend on the model calling the tool or
+    # on the user's autoinject setting.
+    if project_id and not rag_scope.get("kb_id"):
+        enabled = True
     if not enabled and not whole_doc_requested:
         return None
     query = _last_user_text(conversation)

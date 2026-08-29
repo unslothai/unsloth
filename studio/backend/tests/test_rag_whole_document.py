@@ -746,6 +746,41 @@ def test_build_rag_autoinject_args_carry_user_query(rag_conn):
     assert args["query"] == "what is in here"
 
 
+def test_build_rag_autoinject_project_scope_runs_when_autoinject_off(monkeypatch):
+    """#9947: Project sources must pre-retrieve even when autoinject is false."""
+    import storage.rag_db as rag_db
+    from core.rag import tool as rag_tool
+
+    captured = {}
+
+    def fake_search(**kw):
+        captured.update(kw)
+        return (
+            "project hit",
+            [
+                {
+                    "citationId": 1,
+                    "chunkId": "pj:0",
+                    "documentId": "pj",
+                    "filename": "project.txt",
+                    "page": None,
+                    "text": "fourteen minutes",
+                    "score": 0.95,
+                }
+            ],
+        )
+
+    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True)
+    monkeypatch.setattr(rag_tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        [{"role": "user", "content": "how many minutes"}],
+        {"project_id": "p1", "autoinject": False},
+    )
+    assert result is not None
+    assert "fourteen minutes" in result["messages"][-1]["content"]
+    assert captured.get("scope_project_id") == "p1"
+
+
 # ── end-to-end: real ingestion pipeline -> whole-doc injection ────────
 
 
