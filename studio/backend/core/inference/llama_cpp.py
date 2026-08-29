@@ -24459,12 +24459,7 @@ class LlamaCppBackend:
             # Windows: Popen.terminate() alone has left llama-server.exe holding
             # the mmap'd GGUF (Shareable ~model size) after /unload (#9790). The
             # lifetime helper's taskkill /T /F is the same path terminate_all uses.
-            if (
-                terminable
-                and _killed_pid is not None
-                and not _exited
-                and sys.platform == "win32"
-            ):
+            if terminable and _killed_pid is not None and not _exited and sys.platform == "win32":
                 try:
                     from utils.process_lifetime import terminate_pid
                     terminate_pid(_killed_pid, timeout = 5.0)
