@@ -129,17 +129,29 @@ def _make_executable(bin_dir, name):
     """A stub the platform's own PATH lookup will accept (.cmd via PATHEXT on Windows)."""
     path = bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
     path.write_text("")
-    if os.name != "nt":
+    if os.name == "nt" and name in ("npm", "npx"):
+        (bin_dir / "node.exe").write_text("")
+        cli = bin_dir / "node_modules" / "npm" / "bin" / f"{name}-cli.js"
+        cli.parent.mkdir(parents = True, exist_ok = True)
+        cli.write_text("")
+    elif os.name != "nt":
         path.chmod(0o755)
     return path
+
+
+def _expected_node_launcher_argv(launcher, arguments):
+    if os.name != "nt":
+        return [str(launcher), *arguments]
+    bin_dir = launcher.parent
+    cli = bin_dir / "node_modules" / "npm" / "bin" / f"{launcher.stem}-cli.js"
+    return [str(bin_dir / "node.exe"), str(cli), *arguments]
 
 
 def test_stdio_argv_resolves_managed_npx(managed_node):
     npx = _make_executable(managed_node, "npx")
     env = mcp_client._stdio_env(None)
     argv = mcp_client._stdio_argv(["npx", "-y", "pkg"], env)
-    assert os.path.samefile(argv[0], npx)
-    assert argv[1:] == ["-y", "pkg"]
+    assert argv == _expected_node_launcher_argv(npx, ["-y", "pkg"])
 
 
 def test_stdio_argv_keeps_unresolvable_command(managed_node):
@@ -157,7 +169,7 @@ def test_stdio_argv_prefers_child_path_over_parent(managed_node, monkeypatch, tm
     monkeypatch.setenv("PATH", str(bare))
     assert shutil.which("npx") is None
     argv = mcp_client._stdio_argv(["npx"], mcp_client._stdio_env(None))
-    assert os.path.samefile(argv[0], npx)
+    assert argv == _expected_node_launcher_argv(npx, [])
 
 
 @pytest.mark.parametrize("launcher", ["npm", "npx"])
@@ -218,7 +230,10 @@ def test_client_spawns_managed_npx_by_full_path(managed_node, monkeypatch, tmp_p
     monkeypatch.setenv("PATH", str(bare))
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     client = mcp_client._client("npx -y @modelcontextprotocol/server-filesystem /tmp", None)
-    assert os.path.samefile(client.transport.command, npx)
+    expected = _expected_node_launcher_argv(
+        npx, ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    )
+    assert [client.transport.command, *client.transport.args] == expected
 
 
 def test_runtime_free_dir_resolves_nothing(runtime_free_dir):
