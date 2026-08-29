@@ -43,6 +43,8 @@ from pydantic import ValidationError
 from core.inference.api_monitor import ApiMonitor
 from models.inference import (
     ChatMessage,
+    ResponsesCustomToolCallInputItem,
+    ResponsesCustomToolCallOutputInputItem,
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
     ResponsesFunctionTool,
@@ -184,6 +186,26 @@ class TestResponsesMultiTurnInput:
             output = [{"type": "output_text", "text": "done"}],
         )
         assert isinstance(item.output, list)
+
+    def test_custom_tool_call_items(self):
+        req = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch",
+                    "output": "Done!",
+                },
+            ]
+        )
+
+        assert isinstance(req.input[0], ResponsesCustomToolCallInputItem)
+        assert isinstance(req.input[1], ResponsesCustomToolCallOutputInputItem)
 
 
 # =====================================================================
@@ -492,6 +514,36 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[2].role == "tool"
         assert msgs[2].tool_call_id == "call_1"
         assert msgs[2].content == '{"temp": 20}'
+
+    def test_custom_tool_call_round_trip_maps_to_local_function(self):
+        patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch",
+                    "name": "apply_patch",
+                    "input": patch,
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch",
+                    "output": "Done!",
+                },
+            ]
+        )
+
+        messages = _normalise_responses_input(payload)
+
+        assert len(messages) == 2
+        assert messages[0].role == "assistant"
+        call = messages[0].tool_calls[0]
+        assert call["id"] == "call_patch"
+        assert call["function"]["name"] == "apply_patch"
+        assert json.loads(call["function"]["arguments"]) == {"input": patch}
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_patch"
+        assert messages[1].content == "Done!"
 
     def test_instructions_plus_developer_message_are_merged(self):
         """Codex CLI sends `instructions` (system prompt) AND a developer

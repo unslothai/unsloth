@@ -2832,6 +2832,27 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
+class ResponsesCustomToolCallInputItem(BaseModel):
+    """A prior assistant custom_tool_call replayed by a Responses client."""
+
+    type: Literal["custom_tool_call"]
+    id: Optional[str] = None
+    call_id: str
+    name: str
+    input: str = Field(..., description = "Raw freeform input the model produced.")
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesCustomToolCallOutputInputItem(BaseModel):
+    """A client result for a prior custom_tool_call."""
+
+    type: Literal["custom_tool_call_output"]
+    id: Optional[str] = None
+    call_id: str
+    output: Union[str, list]
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
@@ -2861,6 +2882,10 @@ def _responses_input_item_discriminator(v: Any) -> str:
         return "function_call"
     if t == "function_call_output":
         return "function_call_output"
+    if t == "custom_tool_call":
+        return "custom_tool_call"
+    if t == "custom_tool_call_output":
+        return "custom_tool_call_output"
     if r is not None or t == "message":
         return "message"
     return "unknown"
@@ -2871,6 +2896,8 @@ ResponsesInputItem = Annotated[
         Annotated[ResponsesInputMessage, Tag("message")],
         Annotated[ResponsesFunctionCallInputItem, Tag("function_call")],
         Annotated[ResponsesFunctionCallOutputInputItem, Tag("function_call_output")],
+        Annotated[ResponsesCustomToolCallInputItem, Tag("custom_tool_call")],
+        Annotated[ResponsesCustomToolCallOutputInputItem, Tag("custom_tool_call_output")],
         Annotated[ResponsesUnknownInputItem, Tag("unknown")],
     ],
     Discriminator(_responses_input_item_discriminator),
