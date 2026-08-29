@@ -572,9 +572,14 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    # Mirrors the collapse list in unsloth_zoo's `_normalize_mlx_optimizer_name`,
+    # which deliberately leaves `adamw_8bit` out: MLX implements it as a real 8-bit
+    # optimizer (unsloth_zoo/mlx/optimizers_quantized.py) and collapsing it here
+    # would hand the caller plain adamw instead of what they asked for. The paged
+    # and bnb spellings stay, since they promise CPU offload or a library MLX does
+    # not use.
     _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
         (
-            "adamw_8bit",
             "paged_adamw_8bit",
             "adamw_bnb_8bit",
             "paged_adamw_32bit",
@@ -606,8 +611,8 @@ if _IS_MLX:
         try:
             return _normalize_mlx_optimizer_name(value)
         except ValueError:
-            # Older unsloth-zoo lacks CUDA/TRL optimizer aliases; map common
-            # adamw_* names so notebook defaults (optim="adamw_8bit") still work.
+            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases; map the
+            # spellings it collapses so a notebook default still loads.
             opt = str(getattr(value, "value", value) or "adamw").strip().lower()
             opt = opt.rsplit(".", 1)[-1].replace("-", "_")
             if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:

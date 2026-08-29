@@ -278,7 +278,12 @@ def test_mlx_training_arguments_accept_output_dir_positional():
 
 
 def test_mlx_training_arguments_normalize_optim_and_object_aliases():
-    """Common notebook optimizer names and object aliases should normalize."""
+    """Common notebook optimizer names and object aliases should normalize.
+
+    `adamw_8bit` is the one the notebooks set and MLX implements it, so it has to
+    survive; the aliases MLX has no optimizer for are collapsed in the two tests
+    below.
+    """
     unsloth = _import_mlx_unsloth()
 
     class Scheduler:
@@ -299,7 +304,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     with pytest.warns(RuntimeWarning, match = "save_strategy"):
         args = unsloth._coerce_mlx_training_args(ArgsObject())
 
-    assert args.optim == "adamw"
+    assert args.optim == "adamw_8bit"
     assert args.eval_steps == 0
     assert args.lr_scheduler_type == "cosine"
     assert args.max_seq_length == 321
