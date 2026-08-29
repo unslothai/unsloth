@@ -113,7 +113,10 @@ test("managed completion loads the exact GGUF only when Audio is active and idle
 test("switching to Transcribe invalidates a pending staged TTS auto-load", () => {
   const invalidateStart = source.indexOf("const invalidatePendingTtsSelection");
   const transitionStart = source.indexOf("const transitionMode", invalidateStart);
-  assert.match(source.slice(invalidateStart, transitionStart), /invalidatePendingStagedTts\(\);/);
+  const invalidateSelection = source.slice(invalidateStart, transitionStart);
+  assert.match(invalidateSelection, /ttsPickGeneration\.current \+= 1;/);
+  assert.match(invalidateSelection, /pendingRoutedTtsPick\.current = null;/);
+  assert.match(invalidateSelection, /invalidatePendingStagedTts\(\);/);
   assert.match(
     source,
     /if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
