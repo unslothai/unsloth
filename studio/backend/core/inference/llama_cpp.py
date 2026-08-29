@@ -6794,6 +6794,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         env: Optional[Mapping[str, str]] = None,
         probe_vulkan: bool = True,
+        known_vulkan_igpus: Optional[Collection[int]] = None,
         fit_active: bool = False,
     ) -> bool:
         """True when the weights will sit in pageable host RAM, so mlock helps.
@@ -6839,7 +6840,10 @@ class LlamaCppBackend:
         if is_vulkan_backend:
             # gpu_indices are Vulkan ordinals here, which the ROCm APU helper
             # would read as physical ids and answer for the wrong device. The
-            # Vulkan probe owns device type; unprobed keeps the True answer.
+            # fit probe already records iGPU ordinals for normal launches. A
+            # standalone bookkeeping call without that snapshot stays conservative.
+            if known_vulkan_igpus is not None:
+                return bool(known_vulkan_igpus)
             return not probe_vulkan or self._vulkan_targets_are_igpus(binary, gpu_indices)
         return self._amd_apu_wants_unified_memory(gpu_indices)
 
@@ -18898,6 +18902,7 @@ class LlamaCppBackend:
                     binary = binary,
                     env = _mem_env,
                     probe_vulkan = should_mlock(),
+                    known_vulkan_igpus = _shared_gpu_ids,
                     # Over the built cmd AND the extras, so Studio's own --fit
                     # counts and a later user --fit still wins by last-arg.
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),

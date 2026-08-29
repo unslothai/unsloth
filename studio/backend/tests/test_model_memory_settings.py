@@ -2009,6 +2009,28 @@ class TestADefaultLaunchRecordsItsApplicability:
             is False
         )
 
+    def test_the_fit_probe_snapshot_classifies_default_vulkan_launches(self, monkeypatch):
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                is_vulkan_backend = True,
+                probe_vulkan = False,
+                known_vulkan_igpus = set(),
+            )
+            is False
+        )
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                is_vulkan_backend = True,
+                probe_vulkan = False,
+                known_vulkan_igpus = {0},
+            )
+            is True
+        )
+
 
 class TestPairedWritesAreInvalidatedTogether:
     """The write commits both keys in one transaction, so a reader must never
