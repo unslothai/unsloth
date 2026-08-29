@@ -62,8 +62,7 @@ _MAX_CONCATENATED_WAV_SEGMENTS = 1_024
 
 
 def _merge_concatenated_wav_segments(
-    audio: bytes,
-    cancelled: Optional[threading.Event] = None,
+    audio: bytes, cancelled: Optional[threading.Event] = None
 ) -> bytes:
     """Join a byte stream containing multiple complete WAV files into one WAV."""
     cancelled = cancelled or threading.Event()
@@ -73,14 +72,9 @@ def _merge_concatenated_wav_segments(
     def _segment_offsets():
         offset = 0
         while offset < len(audio):
-            if (
-                audio[offset : offset + 4] != b"RIFF"
-                or audio[offset + 8 : offset + 12] != b"WAVE"
-            ):
+            if audio[offset : offset + 4] != b"RIFF" or audio[offset + 8 : offset + 12] != b"WAVE":
                 raise ValueError("not a concatenated WAV stream")
-            segment_end = offset + 8 + int.from_bytes(
-                audio[offset + 4 : offset + 8], "little"
-            )
+            segment_end = offset + 8 + int.from_bytes(audio[offset + 4 : offset + 8], "little")
             if segment_end <= offset + 12 or segment_end > len(audio):
                 raise ValueError("invalid RIFF segment length")
             yield offset, segment_end

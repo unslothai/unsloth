@@ -15317,6 +15317,7 @@ async def openai_audio_speech(
         # upstream await so slow external speech cannot block a local swap/training
         # start or reset the local model's idle timer.
         from core.inference.llama_keepwarm import untrack_current_request
+
         untrack_current_request(request.scope)
         # A saved TTS connection is still media traffic through this server,
         # just like the proxied STT path below. Keep it visible in the monitor

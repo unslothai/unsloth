@@ -720,9 +720,7 @@ def test_provider_client_merges_concatenated_wav_segments(monkeypatch):
         provider_module._merge_concatenated_wav_segments(many_pseudo_segments)
         == many_pseudo_segments
     )
-    too_many_valid_segments = _wav(b"") * (
-        provider_module._MAX_CONCATENATED_WAV_SEGMENTS + 1
-    )
+    too_many_valid_segments = _wav(b"") * (provider_module._MAX_CONCATENATED_WAV_SEGMENTS + 1)
     assert (
         provider_module._merge_concatenated_wav_segments(too_many_valid_segments)
         == too_many_valid_segments
