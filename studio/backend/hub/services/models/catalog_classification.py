@@ -50,6 +50,27 @@ _ORPHEUS_GGUF_HINT = re.compile(
 )
 
 
+class _LocalProbeModel:
+    def __init__(self, model, path: str):
+        self._model = model
+        self.path = path
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
+def _local_probe_model(model):
+    if getattr(model, "source", None) != "hf_cache" or _hf_cache_snapshot_repo_id(model.path):
+        return model
+    try:
+        from hub.utils.inventory_scan import resolve_hf_cache_realpath
+
+        path = resolve_hf_cache_realpath(Path(model.path))
+    except Exception:
+        path = None
+    return _LocalProbeModel(model, path) if path and path != model.path else model
+
+
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
     if not hint:
         return False
@@ -398,10 +419,12 @@ def _local_family_needles(model) -> tuple[str, ...]:
 
 
 def _local_model_can_chat(model) -> Optional[bool]:
+    model = _local_probe_model(model)
     return _local_path_can_chat(model.path, getattr(model, "base_model", None))
 
 
 def _local_model_task(model) -> Optional[str]:
+    model = _local_probe_model(model)
     path = model.path
     id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
@@ -438,14 +461,11 @@ def _local_model_task(model) -> Optional[str]:
 
 
 def _local_model_audio_type(model) -> Optional[str]:
+    model = _local_probe_model(model)
     path = model.path
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
     try:
-        if getattr(model, "source", None) == "hf_cache":
-            from hub.utils.inventory_scan import resolve_hf_cache_realpath
-
-            path = resolve_hf_cache_realpath(Path(path)) or path
         from utils.audio_tokens import detect_local_tts_audio_type
         return detect_local_tts_audio_type(path)
     except Exception:
@@ -464,6 +484,7 @@ def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
 
 
 def _local_is_diffusers(model) -> bool:
+    model = _local_probe_model(model)
     try:
         path = Path(model.path)
         if path.is_dir() and _is_diffusers_pipeline_dir(path):

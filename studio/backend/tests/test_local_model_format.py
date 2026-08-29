@@ -403,6 +403,25 @@ def test_local_classification_probes_the_hf_cache_snapshot(tmp_path):
     assert classification._local_model_classification(model) == ("text-to-speech", "csm")
 
 
+def test_local_task_probes_the_hf_cache_pipeline_snapshot(tmp_path):
+    repo = tmp_path / "models--hf-internal-testing--tiny-sdxl-pipe"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model_index.json").write_text(
+        json.dumps({"_class_name": "StableDiffusionXLPipeline"}),
+        encoding = "utf-8",
+    )
+    model = LocalModelInfo(
+        id = "hf-internal-testing/tiny-sdxl-pipe",
+        display_name = "tiny-sdxl-pipe",
+        path = str(repo),
+        source = "hf_cache",
+        model_id = "hf-internal-testing/tiny-sdxl-pipe",
+    )
+
+    assert models_route._local_model_task(model) == "text-to-image"
+
+
 def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path, monkeypatch):
     """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
     is not reachable from the one page whose pick would pull it down, and lists in Chat
