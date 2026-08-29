@@ -563,6 +563,7 @@ function useCompareVariant(pairId: string): CompareVariant | null {
   const [stored, setStored] = useState<{
     pairId: string;
     isGeneralPair: boolean;
+    variant: CompareVariant;
   }>();
 
   // Re-read on the checkpoint flip, not just on the pair: a generalized pair's own
@@ -572,23 +573,27 @@ function useCompareVariant(pairId: string): CompareVariant | null {
   // first paint and a real LoRA compare reads as generalized until it lands.
   useEffect(() => {
     let isActive = true;
-    const keep = (previous: typeof stored, isGeneralPair: boolean) => ({
-      pairId,
-      // Sticky per pair: once seen as generalized it stays that way, so a read that
-      // races the row write cannot hand the pair over on the next flip.
-      isGeneralPair:
-        isGeneralPair ||
-        (previous?.pairId === pairId && previous.isGeneralPair),
-    });
+    const settle = (isGeneralPair: boolean) =>
+      setStored((previous) => {
+        // Sticky per pair: once seen as generalized it stays that way, so a read
+        // that races the row write cannot hand the pair over on the next flip.
+        const general =
+          isGeneralPair ||
+          (previous?.pairId === pairId && previous.isGeneralPair);
+        return {
+          pairId,
+          isGeneralPair: general,
+          variant: compareVariantForPair(general, checkpointIsLora),
+        };
+      });
     listStoredChatThreads({ pairId })
       .then((threads) => {
-        if (!isActive) return;
-        setStored((prev) => keep(prev, pairHasGeneralThreads(threads)));
+        if (isActive) settle(pairHasGeneralThreads(threads));
       })
       .catch((error) => {
         // Unreadable storage falls through to the checkpoint rather than holding
         // the panes blank; the pane resolvers make the same call and fail too.
-        if (isActive) setStored((prev) => keep(prev, false));
+        if (isActive) settle(false);
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
@@ -598,8 +603,12 @@ function useCompareVariant(pairId: string): CompareVariant | null {
     };
   }, [pairId, checkpointIsLora]);
 
+  // The renderer only ever moves on a settled read, never on the render that the
+  // flip itself causes: recombining the fresh checkpoint with the previous read
+  // would mount the other component for one render and tear down the panes and
+  // their runtimes mid-send, before the re-read put them back.
   if (stored?.pairId !== pairId) return null;
-  return compareVariantForPair(stored.isGeneralPair, checkpointIsLora);
+  return stored.variant;
 }
 
 const CompareContent = memo(function CompareContent({

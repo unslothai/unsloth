@@ -123,9 +123,12 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   );
   assert.ok(chatPageSource.includes('return compareVariant === "lora" ? ('));
   assert.doesNotMatch(chatPageSource, CHECKPOINT_PICKS_RENDERER);
-  // Structural because the failure is a dropped dependency, not a wrong return: a
-  // generalized pair's first send writes its rows and loads model 2 in one go, so
-  // without the re-read the pair is still "empty" when the flip arrives and the
-  // adapter path takes it mid-run.
+  // Structural because both failures are shape, not return value. Drop the
+  // dependency and a generalized pair's first send, which writes its rows and loads
+  // model 2 in one go, still reads as empty when the flip arrives. Recombine the
+  // fresh checkpoint with the previous read at render time instead of returning the
+  // settled variant, and the other component mounts for the one render between the
+  // flip and the re-read, tearing the panes down mid-send.
   assert.ok(chatPageSource.includes("}, [pairId, checkpointIsLora]);"));
+  assert.ok(chatPageSource.includes("  return stored.variant;"));
 });
