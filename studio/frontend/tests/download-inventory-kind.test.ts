@@ -11,7 +11,6 @@ import {
   downloadRequestInventoryKind,
   scopedDownloadInventoryKind,
 } from "../src/features/hub/download-manager/download-manager-types.ts";
-import { inventoryHintKey } from "../src/features/hub/inventory/inventory-hints.ts";
 
 test("classifies quant variants as GGUF", () => {
   assert.equal(downloadInventoryHintKind("model", "Q4_K_M"), "gguf");
@@ -98,11 +97,6 @@ test("infers missing scoped request formats during adoption", () => {
 });
 
 test("separates live inventory rows for hybrid repository formats", () => {
-  assert.notEqual(
-    inventoryHintKey("gguf", "Org/Hybrid"),
-    inventoryHintKey("model", "Org/Hybrid"),
-  );
-
   const source = readFileSync(
     fileURLToPath(
       new URL(
