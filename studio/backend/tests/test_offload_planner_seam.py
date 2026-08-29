@@ -1465,9 +1465,9 @@ def test_an_inherited_tensor_split_scrubbed_with_its_mode_is_not_planned_against
         mod.plan_placement = real
 
     assert scrubbed == [8 * 1024 * MIB, 16 * 1024 * MIB], "the child never sees that -ts"
-    # Not vacuous: with no inherited mode to drag it out, it IS the row weight,
-    # scaled onto the same magnitude as the free-VRAM numbers.
-    assert survives == [9 * 16 * 1024 * MIB, 16 * 1024 * MIB]
+    # Not vacuous: with no inherited mode to drag it out, the float shares reach
+    # the row model exactly as llama.cpp parsed them.
+    assert survives == [9.0, 1.0]
 
 
 @pytest.mark.parametrize("value", ["nan,1", "inf,1", "1,nan", "-nan,1", "infinity,1"])

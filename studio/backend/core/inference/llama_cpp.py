@@ -4789,8 +4789,12 @@ def _extra_args_tensor_split(
     if raw is None:
         return None
     try:
-        parts = [float(p) for p in re.split(r"[,/]+", raw) if p.strip()]
-    except ValueError:
+        parts = [
+            struct.unpack("=f", struct.pack("=f", float(p)))[0]
+            for p in re.split(r"[,/]+", raw)
+            if p.strip()
+        ]
+    except (OverflowError, ValueError):
         return None
     # isfinite, not just >= 0: float() takes "nan"/"inf", and NaN passes BOTH the
     # other tests (every comparison against NaN is false, sum() of a NaN list is
@@ -25111,8 +25115,7 @@ class LlamaCppBackend:
                     len(kept),
                 )
                 return None
-            _scale = max(split_weights) if split_weights else 1
-            split_weights = [int(round(p * _scale)) for p in _ts[: len(kept)]]
+            split_weights = _ts[: len(kept)]
         if not vram_per_device:
             return None
         avail_mib = self._available_system_memory_mib()

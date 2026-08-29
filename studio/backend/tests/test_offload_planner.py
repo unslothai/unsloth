@@ -488,6 +488,46 @@ def test_the_row_split_matches_llama_cpp():
     assert _device_slots(4, [0, 0]) == [[0, 1, 2, 3], []]
 
 
+def test_the_row_split_uses_llama_cpp_float32_boundaries():
+    rows = _device_slots(353, [39407 * MIB, 12114 * MIB])
+    assert len(rows[0]) == 270
+    assert 270 in rows[1]
+
+
+def test_a_float32_split_boundary_cannot_approve_an_oom():
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = 2 * GIB,
+            resident_bytes = 2 * GIB if i == 270 else 0,
+        )
+        for i in range(352)
+    )
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 352,
+        n_attention_layers = 352,
+        blocks = blocks,
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [2 * GIB, GIB],
+        1024 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [39407 * MIB, 12114 * MIB],
+    )
+
+    assert plan.changed is False
+    assert "device 1" in plan.reason
+
+
 def test_the_per_device_check_passes_when_the_shares_really_fit():
     """The check must not be a disguised "never plan on two GPUs". Cards sized so
     that each one's row share fits with room to spare return None -- no abstain

@@ -22,6 +22,7 @@ reads no globals, so the whole decision table is testable directly.
 from __future__ import annotations
 
 import os
+import struct
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Mapping, Optional, Sequence
@@ -357,7 +358,7 @@ def plan_placement(
     *,
     opts: Optional[PlanOptions] = None,
     kv_bytes_floor: int = 0,
-    split_weights_per_device: Sequence[int] = (),
+    split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Plan:
     """Decide the placement for one launch.
@@ -499,7 +500,7 @@ def _kv_modes(opts: PlanOptions) -> tuple[bool, ...]:
     return (False, True) if opts.allow_kv_quant else (False,)
 
 
-def _device_slots(n_slots: int, split_weights: Sequence[int]) -> list[list[int]]:
+def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int]]:
     """Which of the ``n_slots`` layer rows land on which device.
 
     Mirrors llama.cpp's default tensor split exactly: free VRAM per device
@@ -508,18 +509,22 @@ def _device_slots(n_slots: int, split_weights: Sequence[int]) -> list[list[int]]
     the output row (:1467). With every layer offloaded ``i_gpu_start`` is 0 and
     ``act_gpu_layers`` is ``n_layer_all + 1``, which is ``n_slots`` here.
     """
+    def f32(value: float) -> float:
+        return struct.unpack("=f", struct.pack("=f", value))[0]
+
     weights = [max(0, v) for v in split_weights]
     total = sum(weights)
     if total <= 0:
         return [list(range(n_slots))] + [[] for _ in weights[1:]]
     cumulative: list[float] = []
-    running = 0.0
+    running = f32(0.0)
     for w in weights:
-        running += w
-        cumulative.append(running / total)
+        running = f32(running + f32(w))
+        cumulative.append(running)
+    cumulative = [f32(value / running) for value in cumulative]
     slots: list[list[int]] = [[] for _ in weights]
     for row in range(n_slots):
-        fraction = row / n_slots
+        fraction = f32(f32(row) / f32(n_slots))
         # std::upper_bound: first cumulative strictly greater than fraction.
         device = next((i for i, c in enumerate(cumulative) if c > fraction), len(weights) - 1)
         slots[device].append(row)
@@ -536,7 +541,7 @@ def _per_device_shortfall(
     *,
     quantised: bool,
     kv_bytes_floor: int,
-    split_weights_per_device: Sequence[int] = (),
+    split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Optional[str]:
     """``None`` when every device provably fits, else why it cannot be shown to.
@@ -638,7 +643,7 @@ def _plan_at(
     quantised: bool,
     kv_bytes_floor: int = 0,
     vram_bytes_per_device: Sequence[int] = (),
-    split_weights_per_device: Sequence[int] = (),
+    split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Optional[Plan]:
     """One pass of the ladder at a fixed context and cache dtype."""
