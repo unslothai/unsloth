@@ -23363,6 +23363,8 @@ async def _openai_catalog_objects() -> list[dict]:
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
+    orchestrator = _peek_inference_backend()
+    resident_id = _orchestrator_public_model_id(orchestrator) if orchestrator else None
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
@@ -23371,7 +23373,6 @@ async def _openai_catalog_objects() -> list[dict]:
         if not cid or cid in by_id:
             continue
         if loaded and not is_gguf:
-            resident_id = _orchestrator_public_model_id(get_inference_backend())
             if resident_id in by_id:
                 continue
         obj = {
