@@ -46,7 +46,22 @@ test("a wedged monitor read aborts within its request budget", async () => {
       );
     })) as typeof fetch;
 
-  await assert.rejects(getApiMonitorEntry("wedged", undefined, 5), {
-    name: "AbortError",
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const exceededBudget = new Promise<never>((_resolve, reject) => {
+    watchdog = setTimeout(
+      () => reject(new Error("monitor read exceeded its request budget")),
+      250,
+    );
   });
+  try {
+    await assert.rejects(
+      Promise.race([
+        getApiMonitorEntry("wedged", undefined, 5),
+        exceededBudget,
+      ]),
+      { name: "AbortError" },
+    );
+  } finally {
+    if (watchdog !== undefined) clearTimeout(watchdog);
+  }
 });
