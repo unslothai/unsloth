@@ -364,13 +364,11 @@ class TestSdistOnlyBuildArgs:
             req = next((k for k in node.keywords if k.arg == "req"), None)
             if req is None or "diffusers-pin.txt" not in ast.unparse(req.value):
                 continue
-            arguments = " ".join(ast.unparse(argument) for argument in node.args)
-            assert "_sdist_only_build_args('diffusers')" not in arguments
-            literal_arguments = [
-                argument.value
-                for argument in node.args
-                if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
-            ]
+            try:
+                literal_arguments = [ast.literal_eval(argument) for argument in node.args]
+            except (ValueError, TypeError):
+                pytest.fail("the diffusers pin options must remain literal and auditable")
+            assert all(isinstance(argument, str) for argument in literal_arguments)
             assert not any(argument.startswith("--no-binary") for argument in literal_arguments)
             return
         pytest.fail("no pip_install(req=.../diffusers-pin.txt) call found")
