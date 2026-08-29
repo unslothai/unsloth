@@ -60,8 +60,7 @@ test("the generalized compare rehydrates a pair the LoRA compare saved", () => {
 });
 
 test("a pair holding both shapes resolves each pane from its own shape, not the freshest row", () => {
-  // Reachable today: before this fix the LoRA panes blanked over a model1/model2
-  // pair, and sending from there wrote base/lora rows into the same pair.
+  // Reachable: the pre-fix blank LoRA panes wrote base/lora into a model1/model2 pair.
   const threads = storedPair([
     ["model2", 40],
     ["lora", 30],
@@ -95,7 +94,6 @@ test("both compare resolvers go through the helper", () => {
   ]) {
     assert.ok(chatPageSource.includes(call), call);
   }
-  // A find inlined back into either resolver is how both the blanking and the
-  // freshest-row mixing got in.
+  // An inlined find is how both the blanking and the mixing got in.
   assert.doesNotMatch(chatPageSource, INLINE_THREAD_FIND);
 });
