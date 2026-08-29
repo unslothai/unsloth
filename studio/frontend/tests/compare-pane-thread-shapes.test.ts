@@ -6,6 +6,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { ModelType, ThreadRecord } from "../src/features/chat/types.ts";
 import {
+  type CheckpointCompareClassInput,
+  checkpointCompareClass,
+  comparePairReadState,
   compareVariantForPair,
   resolveComparePaneThreadIds,
 } from "../src/features/chat/utils/compare-pane-threads.ts";
@@ -189,28 +192,146 @@ test("the LoRA panes adopt no generalized thread", () => {
   assert.doesNotMatch(LORA_PANE_SOURCE, ADOPTS_GENERALIZED);
 });
 
+/** The store fields `useIsLoraCompare` reads, with the unclassified defaults. */
+function classInput(
+  overrides: Partial<CheckpointCompareClassInput>,
+): CheckpointCompareClassInput {
+  return {
+    checkpoint: "outputs/my-lora",
+    isExternal: false,
+    residentUnknown: false,
+    models: [],
+    loras: [],
+    inventorySettled: false,
+    ...overrides,
+  };
+}
+
+test("an external selection is never an adapter-toggle compare", () => {
+  assert.equal(checkpointCompareClass(classInput({ isExternal: true })), false);
+  assert.equal(checkpointCompareClass(classInput({ checkpoint: "" })), false);
+});
+
+test("a checkpoint the catalog calls a base model does not wait for the inventory", () => {
+  // Chat defers /api/models/loras by 1.2s, so waiting rendered a new pair blank for it.
+  assert.equal(
+    checkpointCompareClass(
+      classInput({
+        models: [{ id: "outputs/my-lora", isLora: false }],
+        inventorySettled: false,
+      }),
+    ),
+    false,
+  );
+});
+
+test("an unclassified checkpoint still waits for the inventory", () => {
+  assert.equal(checkpointCompareClass(classInput({})), null);
+  assert.equal(
+    checkpointCompareClass(classInput({ residentUnknown: true })),
+    null,
+  );
+  // A failed inventory answers too, rather than blanking the view forever.
+  assert.equal(
+    checkpointCompareClass(classInput({ inventorySettled: true })),
+    false,
+  );
+});
+
+test("either inventory naming the checkpoint a LoRA wins", () => {
+  assert.equal(
+    checkpointCompareClass(
+      classInput({ models: [{ id: "outputs/MY-LORA", isLora: true }] }),
+    ),
+    true,
+  );
+  // Ordering guard: the base-model shortcut above must not shadow this lookup.
+  assert.equal(
+    checkpointCompareClass(
+      classInput({
+        models: [{ id: "outputs/my-lora", isLora: false }],
+        loras: [{ id: "outputs/my-lora", exportType: "lora" }],
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    checkpointCompareClass(
+      classInput({ loras: [{ id: "outputs/my-lora", exportType: "merged" }] }),
+    ),
+    null,
+  );
+});
+
+test("a failed pair read reaches a rendered state, never a blank one", () => {
+  // The first failure buys one quiet retry; the second has to surface, because
+  // `pending` renders nothing at all and no later edge comes back for it.
+  assert.deepEqual(comparePairReadState({ failed: true }, null, 0), {
+    status: "retry",
+  });
+  assert.deepEqual(comparePairReadState({ failed: true }, null, 1), {
+    status: "unreadable",
+  });
+  // ...and it never guesses a renderer for a pair whose shape it could not read.
+  for (const checkpointIsLora of [true, false, null]) {
+    for (const attempt of [0, 1, 2]) {
+      const state = comparePairReadState(
+        { failed: true },
+        checkpointIsLora,
+        attempt,
+      );
+      assert.notEqual(state.status, "ready");
+      assert.notEqual(state.status, "pending");
+    }
+  }
+});
+
+test("a pair that reads cleanly settles on its own shape", () => {
+  assert.deepEqual(
+    comparePairReadState(
+      {
+        threads: storedPair([
+          ["base", 20],
+          ["lora", 10],
+        ]),
+      },
+      false,
+      0,
+    ),
+    { status: "ready", variant: "lora" },
+  );
+  assert.deepEqual(comparePairReadState({ threads: [] }, true, 0), {
+    status: "ready",
+    variant: "lora",
+  });
+  assert.deepEqual(comparePairReadState({ threads: [] }, null, 0), {
+    status: "pending",
+  });
+});
+
 test("the renderer is chosen from the pair, not straight from the checkpoint", () => {
   assert.ok(
     chatPageSource.includes(
-      "const compareVariant = useCompareVariant(pairId);",
+      "const { state: compareRead, retry: retryCompareRead } =",
     ),
   );
   assert.ok(
-    chatPageSource.includes("if (compareVariant === null) return <></>;"),
+    chatPageSource.includes(
+      "return <CompareUnreadable onRetry={retryCompareRead} />;",
+    ),
   );
-  assert.ok(chatPageSource.includes('return compareVariant === "lora" ? ('));
-  assert.doesNotMatch(chatPageSource, CHECKPOINT_PICKS_RENDERER);
   assert.ok(
-    chatPageSource.includes("if (stored?.pairId === pairId) return;"),
+    chatPageSource.includes(
+      'if (compareRead.status !== "ready") return <></>;',
+    ),
   );
-  assert.ok(chatPageSource.includes("if (variant === null) return;"));
-  assert.doesNotMatch(chatPageSource, /\.catch\(\(error\) => \{[^}]*settle\(\[\]\)/s);
-  assert.ok(chatPageSource.includes("setStorageRetry({ pairId, count: 1 })"));
-  assert.ok(chatPageSource.includes("s.residentCheckpoint === undefined"));
-  assert.ok(chatPageSource.includes("activeModel?.isLora"));
-  assert.ok(chatPageSource.includes("modelIdsMatch(model.id, cp)"));
-  assert.ok(chatPageSource.includes("modelIdsMatch(lora.id, cp)"));
-  assert.ok(chatPageSource.includes("s.loraInventorySettled ? false : null"));
+  assert.ok(
+    chatPageSource.includes('return compareRead.variant === "lora" ? ('),
+  );
+  assert.doesNotMatch(chatPageSource, CHECKPOINT_PICKS_RENDERER);
+  // Per visit: re-picking the renderer mid-session is what swapped it under a run.
+  assert.ok(chatPageSource.includes("if (settled) return;"));
+  assert.doesNotMatch(chatPageSource, /settle\(\[\]\)/);
   assert.ok(LORA_PANE_SOURCE.includes("sendUnavailableReason"));
   assert.ok(
     LORA_PANE_SOURCE.includes("!modelIdsMatch(pairLoraModelId, checkpoint)"),
@@ -222,5 +343,4 @@ test("the renderer is chosen from the pair, not straight from the checkpoint", (
   assert.ok(sharedComposerSource.includes("liveRuntime.modelLoading"));
   assert.ok(sharedComposerSource.includes("reservePreStreamRun(handle.threadIds()"));
   assert.ok(sharedComposerSource.includes("threadIds: getThreadIds"));
-  assert.ok(chatPageSource.includes("  return stored.variant;"));
 });

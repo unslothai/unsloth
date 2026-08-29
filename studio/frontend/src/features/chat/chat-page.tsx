@@ -219,10 +219,11 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
-import type { ChatView, MessageRecord, ThreadRecord } from "./types";
+import type { ChatView, MessageRecord } from "./types";
 import {
-  type CompareVariant,
-  compareVariantForPair,
+  type ComparePairReadState,
+  checkpointCompareClass,
+  comparePairReadState,
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
 import { clearNewChatDraft } from "./utils/composer-draft";
@@ -550,75 +551,94 @@ function modelMatchesDeleted(
  * compare that uses the fast simultaneous adapter-toggle path.
  */
 function useIsLoraCompare(): boolean | null {
-  return useChatRuntimeStore((s) => {
-    const cp = s.params.checkpoint;
-    if (isExternalModelId(cp)) return false;
-    if (s.residentCheckpoint === undefined && !s.loraInventorySettled) {
-      return null;
-    }
-    if (!cp) return false;
-    const activeModel = s.models.find((model) => modelIdsMatch(model.id, cp));
-    if (activeModel?.isLora) return true;
-    if (
-      s.loras.find((lora) => modelIdsMatch(lora.id, cp))?.exportType === "lora"
-    ) {
-      return true;
-    }
-    return s.loraInventorySettled ? false : null;
-  });
+  return useChatRuntimeStore((s) =>
+    checkpointCompareClass({
+      checkpoint: s.params.checkpoint,
+      isExternal: isExternalModelId(s.params.checkpoint),
+      residentUnknown: s.residentCheckpoint === undefined,
+      models: s.models,
+      loras: s.loras,
+      inventorySettled: s.loraInventorySettled,
+    }),
+  );
 }
 
-/** `null` while the pair is still being read, so neither component hydrates first. */
-function useCompareVariant(pairId: string): CompareVariant | null {
+/** `pending` while the pair is still being read, so neither component hydrates first. */
+function useCompareVariant(pairId: string): {
+  state: ComparePairReadState;
+  retry: () => void;
+} {
   const checkpointIsLora = useIsLoraCompare();
-  const [stored, setStored] = useState<{
+  const [read, setRead] = useState<{
     pairId: string;
-    variant: CompareVariant;
+    state: ComparePairReadState;
   }>();
   const [storageRetry, setStorageRetry] = useState<{
     pairId: string;
     count: number;
   }>();
+  const settled = read?.pairId === pairId ? read.state : undefined;
   const retryCount = storageRetry?.pairId === pairId ? storageRetry.count : 0;
 
   useEffect(() => {
-    if (stored?.pairId === pairId) return;
+    if (settled) return;
     let isActive = true;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    const settle = (threads: ThreadRecord[]) => {
-      if (!isActive) return;
-      const variant = compareVariantForPair(threads, checkpointIsLora);
-      if (variant === null) return;
-      setStored((previous) => {
-        if (previous?.pairId === pairId) return previous;
-        return {
-          pairId,
-          variant,
-        };
-      });
+    const settle = (state: ComparePairReadState) => {
+      if (!isActive || state.status === "pending") return;
+      if (state.status === "retry") {
+        retryTimer = setTimeout(() => {
+          if (isActive) setStorageRetry({ pairId, count: retryCount + 1 });
+        }, 250);
+        return;
+      }
+      setRead({ pairId, state });
     };
     listStoredChatThreads({ pairId })
-      .then(settle)
+      .then((threads) =>
+        settle(comparePairReadState({ threads }, checkpointIsLora, retryCount)),
+      )
       .catch((error) => {
-        if (!isActive || isExpectedBackgroundChatStorageError(error)) return;
-        if (retryCount === 0) {
-          retryTimer = setTimeout(() => {
-            if (isActive) setStorageRetry({ pairId, count: 1 });
-          }, 250);
-          return;
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          console.error("Could not read a comparison's stored threads", error);
         }
-        toast.error("Could not load comparison history", {
-          description: error instanceof Error ? error.message : "Storage failed",
-        });
+        settle(
+          comparePairReadState({ failed: true }, checkpointIsLora, retryCount),
+        );
       });
     return () => {
       isActive = false;
       if (retryTimer !== null) clearTimeout(retryTimer);
     };
-  }, [pairId, checkpointIsLora, retryCount, stored?.pairId]);
+  }, [pairId, checkpointIsLora, retryCount, settled]);
 
-  if (stored?.pairId !== pairId) return null;
-  return stored.variant;
+  const retry = useCallback(() => {
+    setRead(undefined);
+    setStorageRetry({ pairId, count: 0 });
+  }, [pairId]);
+
+  return { state: settled ?? { status: "pending" }, retry };
+}
+
+/**
+ * The pair read failed. Its persisted shape is unknown, and picking a renderer from the
+ * loaded checkpoint would relabel existing histories, so offer the read again instead.
+ */
+function CompareUnreadable({
+  onRetry,
+}: {
+  onRetry: () => void;
+}): ReactElement {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-3 p-6 text-center">
+      <p className="text-sm text-muted-foreground">
+        Could not load this comparison's history.
+      </p>
+      <Button variant="outline" size="sm" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  );
 }
 
 const CompareContent = memo(function CompareContent({
@@ -644,11 +664,15 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const compareVariant = useCompareVariant(pairId);
+  const { state: compareRead, retry: retryCompareRead } =
+    useCompareVariant(pairId);
 
-  if (compareVariant === null) return <></>;
+  if (compareRead.status === "unreadable") {
+    return <CompareUnreadable onRetry={retryCompareRead} />;
+  }
+  if (compareRead.status !== "ready") return <></>;
 
-  return compareVariant === "lora" ? (
+  return compareRead.variant === "lora" ? (
     <LoraCompareContent
       pairId={pairId}
       onExitCompare={onExitCompare}
