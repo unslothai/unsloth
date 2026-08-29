@@ -3381,6 +3381,17 @@ def _linux_math_core_count(
     if not siblings:
         return None
     if vendor_id == "GenuineIntel":
+        def hybrid_math_count(performance_cpus: set[int]) -> int:
+            result = 0
+            cpu = 0
+            while cpu < len(siblings):
+                if cpu not in performance_cpus:
+                    cpu += 1
+                    continue
+                result += 1
+                cpu += 2
+            return result or len(set(siblings))
+
         def cpu_list(path: Path) -> Optional[set[int]]:
             try:
                 raw = path.read_text().strip()
@@ -3404,10 +3415,7 @@ def _linux_math_core_count(
         lowpower_path = event_source_root / "cpu_lowpower"
         hybrid_pmu = atom_path.exists() or lowpower_path.exists()
         if core_mask:
-            p_core_siblings = {
-                sibling_set for index, sibling_set in enumerate(siblings) if index in core_mask
-            }
-            return len(p_core_siblings) or 1
+            return hybrid_math_count(core_mask)
         if hybrid_pmu:
             atom_mask = cpu_list(atom_path / "cpus") or cpu_list(lowpower_path / "cpus")
             if core_mask == set() and atom_mask:
@@ -3415,10 +3423,10 @@ def _linux_math_core_count(
             return 1
         if all(capacity is not None for capacity in capacities) and len(set(capacities)) > 1:
             fastest = max(capacity for capacity in capacities if capacity is not None)
-            return len(
+            return hybrid_math_count(
                 {
-                    sibling_set
-                    for sibling_set, capacity in zip(siblings, capacities)
+                    index
+                    for index, capacity in enumerate(capacities)
                     if capacity == fastest
                 }
             )

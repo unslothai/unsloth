@@ -1885,6 +1885,34 @@ def test_linux_hybrid_pmu_excludes_efficiency_cores_without_capacity(tmp_path):
     )
 
 
+@pytest.mark.parametrize("source", ["pmu", "capacity"])
+def test_linux_no_smt_hybrid_matches_llama_cpu_loop(tmp_path, source):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(8):
+        cpu_path = cpu_root / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(str(cpu))
+        if source == "capacity":
+            (cpu_path / "cpu_capacity").write_text("1024" if cpu < 4 else "512")
+    if source == "pmu":
+        (event_root / "cpu_core").mkdir(parents = True)
+        (event_root / "cpu_core" / "cpus").write_text("0-3")
+        (event_root / "cpu_atom").mkdir()
+        (event_root / "cpu_atom" / "cpus").write_text("4-7")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 2
+    )
+
+
 def test_linux_hybrid_with_unreadable_core_mask_is_conservative(tmp_path):
     from core.inference.llama_cpp import _linux_math_core_count
 
