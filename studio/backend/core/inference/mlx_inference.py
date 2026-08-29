@@ -25,7 +25,6 @@ from core.inference.chat_template_helpers import (
     messages_have_tool_history as _vlm_messages_have_tool_history,
     messages_with_attached_image,
     neutralize_control_markup_in_messages,
-    normalize_reasoning_snapshots,
     prompt_opens_reasoning_channel,
     strip_open_reasoning_prefill,
     trailing_assistant_text,
@@ -1461,6 +1460,7 @@ def _mlx_sampling_processors(
 # the markers, and 0.6.0-0.6.8 are what this stands in for.
 _VLM_INLINE_SPECIAL_TOKEN_FAMILIES = ("gemma3", "gemma3n", "gemma4", "gemma4_unified")
 
+
 class _RowStream:
     """Cumulative snapshots for one generation, from its raw token events."""
 
@@ -1581,6 +1581,24 @@ class _TextRowPlan:
         self.sampler = sampler
         self.processors = processors
         self.max_tokens = max_tokens
+
+
+class _VLMRowPlan:
+    """One vision reply's inputs, resolved before any model runs.
+
+    ``kwargs`` is what the runtime's stream call takes, this reply's sampler
+    included when one is seeded -- built per reply for the reason `_TextRowPlan`
+    gives.
+    """
+
+    __slots__ = ("prompt", "images", "think_prefix", "stream", "kwargs")
+
+    def __init__(self, *, prompt, images, think_prefix, stream, kwargs):
+        self.prompt = prompt
+        self.images = images
+        self.think_prefix = think_prefix
+        self.stream = stream
+        self.kwargs = kwargs
 
 
 class MLXInferenceBackend:
@@ -2696,18 +2714,17 @@ class MLXInferenceBackend:
             raise RuntimeError(f"VLM chat template returned {prompt_issue}.") from prompt_error
         return prompt, chat_target
 
-    def _generate_vlm(
+    def _plan_vlm_row(
         self,
         messages,
         image,
+        *,
         temperature,
         top_p,
         top_k,
         min_p,
         max_new_tokens,
         repetition_penalty,
-        cancel_event,
-        *,
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
@@ -2717,9 +2734,9 @@ class MLXInferenceBackend:
         seed = None,
         frequency_penalty = 0.0,
         logit_bias = None,
-        _adapter_state = None,
         stop = None,
-    ):
+    ) -> "_VLMRowPlan":
+        """Resolve one vision reply: rendered prompt, images, kwargs, snapshots."""
         from mlx_vlm import stream_generate as vlm_stream
 
         images = [image] if image is not None else None
@@ -2736,18 +2753,26 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        prefill = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
-        vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
-        # Deltas here only append, so the cut never moves back over text already
-        # released and no decode= is needed. Reasoning normalization wraps the whole
-        # stream below rather than running per snapshot, so this row has no
-        # normalizer of its own. Matched on the sampled text, for the reason
-        # _generate_text gives.
-        row = _RowStream(prefix = prefill, sequences = _mlx_stop_sequences(stop))
-        logger.info(
-            "VLM generating: prompt_len=%d, has_image=%s",
-            len(prompt),
-            image is not None,
+        think_prefix = detect_think_prefill(
+            prompt, getattr(chat_target, "all_special_tokens", None)
+        )
+        markers = detect_reasoning_channel_markers(chat_target, tools = tools)
+        normalizer = (
+            make_reasoning_normalizer(
+                markers,
+                in_reasoning = prompt_opens_reasoning_channel(
+                    prompt,
+                    markers,
+                    bool(continue_final_message and trailing_assistant_text(messages)),
+                ),
+            )
+            if markers is not None
+            else None
+        )
+        row = _RowStream(
+            prefix = think_prefix,
+            sequences = _mlx_stop_sequences(stop),
+            normalizer = normalizer,
         )
         # stream_generate forwards **kwargs into generate_step (builds the
         # sampler + logits_processors internally). GOTCHA: generate_step expects
@@ -2788,56 +2813,107 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        def _stream_vlm_snapshots():
-            with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
-                final_response = None
-                try:
-                    if prefill:
-                        yield prefill
-                    for response in vlm_stream(
-                        self._model,
-                        self._processor,
-                        prompt,
-                        images,
-                        **vlm_kwargs,
-                    ):
-                        final_response = response
-                        token_text = response.text if hasattr(response, "text") else str(response)
-                        yield from row.feed(text = token_text)
-                        if row.stopped:
-                            break
-                        if cancel_event and cancel_event.is_set():
-                            break
-                    yield from row.settle()
-                finally:
-                    if final_response is not None:
-                        tokenizer = getattr(self._processor, "tokenizer", self._processor)
-                        stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
-                        self.last_generation_stats = _build_generation_stats(
-                            getattr(final_response, "prompt_tokens", 0),
-                            getattr(final_response, "prompt_tps", 0.0),
-                            getattr(final_response, "generation_tokens", 0),
-                            getattr(final_response, "generation_tps", 0.0),
-                            finish_reason = _mlx_finish_reason(
-                                final_response,
-                                stop_ids,
-                                getattr(final_response, "generation_tokens", 0),
-                                max_new_tokens,
-                            ),
-                        )
-
-        yield from normalize_reasoning_snapshots(
-            _stream_vlm_snapshots(),
-            chat_target,
-            cancel_event,
-            tools = tools,
+        return _VLMRowPlan(
             prompt = prompt,
-            continued = vlm_continued,
-            ended = lambda: row.stopped,
+            images = images,
+            think_prefix = think_prefix,
+            stream = row,
+            kwargs = vlm_kwargs,
+        )
+
+    def _generate_vlm(
+        self,
+        messages,
+        image,
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        max_new_tokens,
+        repetition_penalty,
+        cancel_event,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+        presence_penalty = 0.0,
+        seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
+        _adapter_state = None,
+        stop = None,
+    ):
+        from mlx_vlm import stream_generate as vlm_stream
+
+        plan = self._plan_vlm_row(
+            messages,
+            image,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            max_new_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+            presence_penalty = presence_penalty,
+            seed = seed,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+            stop = stop,
+        )
+        prompt, think_prefix, row = plan.prompt, plan.think_prefix, plan.stream
+        logger.info(
+            "VLM generating: prompt_len=%d, has_image=%s",
+            len(prompt),
+            image is not None,
+        )
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            final_response = None
+            try:
+                if think_prefix:
+                    yield think_prefix
+                for response in vlm_stream(
+                    self._model,
+                    self._processor,
+                    prompt,
+                    plan.images,
+                    **plan.kwargs,
+                ):
+                    final_response = response
+                    token_text = response.text if hasattr(response, "text") else str(response)
+                    yield from row.feed(text = token_text)
+                    if row.stopped:
+                        break
+                    if cancel_event and cancel_event.is_set():
+                        break
+            finally:
+                if final_response is not None:
+                    tokenizer = getattr(self._processor, "tokenizer", self._processor)
+                    stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                        finish_reason = _mlx_finish_reason(
+                            final_response,
+                            stop_ids,
+                            getattr(final_response, "generation_tokens", 0),
+                            max_new_tokens,
+                        ),
+                    )
+        yield from row.settle()
+        yield from row.drain(
+            cancelled = cancel_event is not None and cancel_event.is_set(),
         )
         if row.stopped:
             self._mark_stopped()
-
 
     def batch_unavailable_reason(self, requests):
         """Why these replies cannot share one decode, or None if they can."""

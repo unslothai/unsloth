@@ -2529,6 +2529,63 @@ def test_template_probe_renders_through_the_path_generation_uses(monkeypatch):
             backend._render_template_probe(False)
 
 
+def _vlm_backend(
+    monkeypatch,
+    *,
+    markers,
+    prompt_tail = "",
+):
+    """A backend that renders a fixed vision prompt against a stub processor."""
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *a, **k: (
+            "<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" + prompt_tail
+        ),
+    )
+    monkeypatch.setattr(
+        mlx_inference, "detect_reasoning_channel_markers", lambda target, tools = None: markers
+    )
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    backend._tokenizer = SimpleNamespace(chat_template = "t", all_special_tokens = [])
+    backend._processor = SimpleNamespace(
+        chat_template = "t", tokenizer = backend._tokenizer, apply_chat_template = lambda *a, **k: ""
+    )
+    backend._model = object()
+    monkeypatch.setattr(type(backend), "_kv_quant_generate_kwargs", lambda self: {})
+    return backend
+
+
+def _vlm_row(
+    backend,
+    *,
+    stop = None,
+    messages = None,
+    continue_final_message = False,
+):
+    """One vision reply resolved by that backend."""
+    return backend._plan_vlm_row(
+        messages or [{"role": "user", "content": "hi"}],
+        None,
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 0,
+        min_p = 0.0,
+        max_new_tokens = 16,
+        repetition_penalty = 1.0,
+        continue_final_message = continue_final_message,
+        stop = stop,
+    ).stream
+
+
+def test_a_vision_reply_cuts_at_its_own_stop_sequence(monkeypatch):
+    """The row carries the request's stop sequences, matched on the sampled text."""
+    row = _vlm_row(_vlm_backend(monkeypatch, markers = None), stop = ["HALT"])
+    assert row.feed(text = "some text HALT and more") == ["some text "]
+    assert row.stopped
+
+
 def test_the_audio_refusal_puts_the_native_template_back(monkeypatch):
     """The refusal itself, not just the marker check.
 
