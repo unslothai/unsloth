@@ -291,6 +291,91 @@ test("a read started during a save waits for the committed value", async () => {
   }
 });
 
+test("partial saves are serialized before a waiting read", async () => {
+  const original = globalThis.fetch;
+  const server = { keepResident: false, noRamReserve: false };
+  const pendingPuts: Array<{
+    body: Record<string, boolean>;
+    resolve: (response: Response) => void;
+  }> = [];
+  let gets = 0;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") {
+      return new Promise<Response>((resolve) => {
+        pendingPuts.push({
+          body: JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            boolean
+          >,
+          resolve,
+        });
+      });
+    }
+    gets += 1;
+    return new Response(
+      JSON.stringify({
+        ...API,
+        keep_resident: server.keepResident,
+        no_ram_reserve: server.noRamReserve,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const finishNextPut = () => {
+    const pending = pendingPuts.shift();
+    assert.ok(pending, "a save must be pending");
+    if (pending.body.keep_resident !== undefined) {
+      server.keepResident = pending.body.keep_resident;
+    }
+    if (pending.body.no_ram_reserve !== undefined) {
+      server.noRamReserve = pending.body.no_ram_reserve;
+    }
+    pending.resolve(
+      new Response(
+        JSON.stringify({
+          ...API,
+          keep_resident: server.keepResident,
+          no_ram_reserve: server.noRamReserve,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  };
+
+  try {
+    const keepSave = updateModelMemorySettings({ keepResident: true });
+    const reserveSave = updateModelMemorySettings({ noRamReserve: true });
+    const read = loadModelMemorySettings({ force: true });
+    await Promise.resolve();
+    assert.equal(pendingPuts.length, 1, "only the first save may reach the backend");
+    assert.equal(gets, 0);
+
+    finishNextPut();
+    await keepSave;
+    await Promise.resolve();
+    assert.equal(pendingPuts.length, 1, "the second save follows the first");
+    assert.equal(gets, 0);
+
+    finishNextPut();
+    await reserveSave;
+    assert.deepEqual(await read, {
+      keepResident: true,
+      noRamReserve: true,
+      defaultKeepResident: false,
+      defaultNoRamReserve: false,
+      mlockActive: false,
+      mlockApplicable: true,
+      reloadRequired: false,
+      memlockLimitBytes: null,
+    });
+    assert.deepEqual(server, { keepResident: true, noRamReserve: true });
+    assert.equal(gets, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("a later read is NOT served from a cache", async () => {
   calls = [];
   await loadModelMemorySettings();

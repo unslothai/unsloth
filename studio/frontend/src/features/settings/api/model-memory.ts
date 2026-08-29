@@ -48,7 +48,7 @@ type ApiModelMemorySettings = {
 };
 
 let inFlightModelMemory: Promise<ModelMemorySettings> | null = null;
-let inFlightModelMemoryWrite: Promise<ModelMemorySettings> | null = null;
+let pendingModelMemoryWrites: Promise<void> | null = null;
 let deferredModelMemoryRead: Promise<ModelMemorySettings> | null = null;
 // Bumped by every forced read, so a displaced one can tell it is no longer the current
 // answer. It still resolves for its own caller; it just stops speaking for everyone else.
@@ -116,13 +116,11 @@ async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
 export async function loadModelMemorySettings(
   options: { force?: boolean } = {},
 ): Promise<ModelMemorySettings> {
-  if (inFlightModelMemoryWrite) {
-    deferredModelMemoryRead ??= inFlightModelMemoryWrite
-      .catch(() => undefined)
-      .then(() => {
-        deferredModelMemoryRead = null;
-        return loadModelMemorySettings({ force: true });
-      });
+  if (pendingModelMemoryWrites) {
+    deferredModelMemoryRead ??= pendingModelMemoryWrites.then(() => {
+      deferredModelMemoryRead = null;
+      return loadModelMemorySettings({ force: true });
+    });
     return deferredModelMemoryRead;
   }
   if (options.force) {
@@ -187,13 +185,21 @@ export function updateModelMemorySettings(
   // a get already in flight predates this write, and later reads must wait for it.
   inFlightModelMemory = null;
   modelMemoryGeneration += 1;
-  const write = saveModelMemorySettings(patch, modelMemoryGeneration);
-  inFlightModelMemoryWrite = write;
+  const generation = modelMemoryGeneration;
+  const previousWrites = pendingModelMemoryWrites ?? Promise.resolve();
+  const write = previousWrites.then(() =>
+    saveModelMemorySettings(patch, generation),
+  );
+  const writeTail = write.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingModelMemoryWrites = writeTail;
   const clearWrite = () => {
-    if (inFlightModelMemoryWrite === write) {
-      inFlightModelMemoryWrite = null;
+    if (pendingModelMemoryWrites === writeTail) {
+      pendingModelMemoryWrites = null;
     }
   };
-  write.then(clearWrite, clearWrite);
+  writeTail.then(clearWrite);
   return write;
 }
