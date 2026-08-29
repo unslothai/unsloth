@@ -3,11 +3,12 @@
 
 """Regression coverage for the deprecated custom prompt template parameter."""
 
+import inspect
+
 import pytest
 from datasets import Dataset
 
-from utils.datasets.chat_templates import apply_chat_template_to_dataset
-from utils.datasets.dataset_utils import format_and_template_dataset
+from utils.datasets import apply_chat_template_to_dataset, format_and_template_dataset
 
 
 class _Tokenizer:
@@ -174,6 +175,30 @@ def test_direct_chatml_path_is_unchanged_without_custom_template():
     assert result["dataset"][0]["text"] == "user: hello\nassistant: hi"
     assert result["dataset"].column_names == ["conversations", "id", "text"]
     assert len(result["dataset"]) == 1
+
+
+def test_public_exports_keep_deprecated_positional_parameter_slots():
+    apply_parameters = list(inspect.signature(apply_chat_template_to_dataset).parameters)
+    main_parameters = list(inspect.signature(format_and_template_dataset).parameters)
+
+    assert apply_parameters[2:5] == [
+        "model_name",
+        "custom_prompt_template",
+        "add_eos_token",
+    ]
+    assert main_parameters[8:11] == [
+        "dataset_name",
+        "custom_prompt_template",
+        "add_eos_token",
+    ]
+
+    dataset = _alpaca_dataset()
+    with pytest.deprecated_call(match = "cannot persist a matching template"):
+        result = apply_chat_template_to_dataset(
+            _dataset_info(dataset), _Tokenizer(), None, "{instruction}"
+        )
+    assert result["success"] is False
+    assert result["dataset"] is dataset
 
 
 @pytest.mark.parametrize(
