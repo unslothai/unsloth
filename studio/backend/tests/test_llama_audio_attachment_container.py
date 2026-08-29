@@ -739,3 +739,180 @@ def test_every_path_names_the_limit_the_same_way(monkeypatch):
     assert inference_route._audio_too_long_detail() == "Audio is too long (max 90 minutes)."
     source = (pathlib.Path(inference_route.__file__)).read_text()
     assert source.count('f"Audio is too long') == 1
+
+
+def _old_resample(arr, source_rate, target_rate):
+    """The whole-array pass this replaced, kept so the output can be compared."""
+    duration = len(arr) / float(source_rate)
+    target_len = max(1, int(round(duration * target_rate)))
+    source_x = np.linspace(0.0, duration, num = len(arr), endpoint = False)
+    target_x = np.linspace(0.0, duration, num = target_len, endpoint = False)
+    return np.interp(target_x, source_x, arr).astype(np.float32)
+
+
+@pytest.mark.parametrize(
+    ("count", "source_rate", "target_rate"),
+    [
+        (48_000, 48_000, 16_000),
+        (2_500_000, 48_000, 47_999),
+        ((1 << 20) + 1, 48_000, 44_100),
+        (100_000, 16_000, 48_000),
+        (3, 8_000, 4_000),
+    ],
+)
+def test_the_sliced_resampler_returns_what_the_whole_array_pass_did(
+    count, source_rate, target_rate
+):
+    """Slicing is a memory change, not an audio one: same samples, same dtype."""
+    arr = np.random.default_rng(11).standard_normal(count).astype(np.float32)
+    fitted = inference_route._resample_mono_linear(arr, source_rate, target_rate)
+    expected = _old_resample(arr, source_rate, target_rate)
+    assert fitted.dtype == expected.dtype
+    assert np.array_equal(fitted, expected)
+
+
+def test_resampling_does_not_allocate_grids_the_length_of_the_recording():
+    """The two float64 grids were 8 bytes per input sample each, so a 30-minute
+    upload spent more on the coordinates than on the audio."""
+    import tracemalloc
+
+    arr = np.zeros(4_000_000, dtype = np.float32)
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        before = tracemalloc.get_traced_memory()[0]
+        fitted = inference_route._resample_mono_linear(arr, 48_000, 16_000)
+        peak = tracemalloc.get_traced_memory()[1] - before
+    finally:
+        tracemalloc.stop()
+    # The result is a third of the input; anything past it plus a slice means a
+    # grid was materialized whole.
+    assert peak < fitted.nbytes + 16 * 1024 * 1024
+
+
+def test_the_wav_encoder_writes_the_bytes_it_always_wrote():
+    """In place beyond the first copy, and the same file out."""
+    rng = np.random.default_rng(3)
+    for scale in (0.5, 3.0):
+        arr = (rng.standard_normal(5_000) * scale).astype(np.float32)
+        arr[7], arr[8], arr[9] = np.nan, np.inf, -np.inf
+        scrubbed = np.nan_to_num(
+            np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0
+        )
+        peak = float(np.abs(scrubbed).max())
+        if peak > 1.0:
+            scrubbed = scrubbed / peak
+        expected = (scrubbed * 32767.0).astype(np.int16).tobytes()
+        written = inference_route._mono_f32_to_wav_bytes(arr, 16_000)
+        assert written[inference_route._WAV_HEADER_BYTES :] == expected
+        assert len(written) == inference_route._WAV_HEADER_BYTES + arr.size * 2
+
+
+def test_the_wav_encoder_leaves_its_caller_s_array_alone():
+    """Scaling in place must happen on the copy, not on the decoded audio."""
+    arr = np.array([0.5, -2.0, 0.25], dtype = np.float32)
+    inference_route._mono_f32_to_wav_bytes(arr, 8_000)
+    assert np.array_equal(arr, np.array([0.5, -2.0, 0.25], dtype = np.float32))
+
+
+class _CountingSoundFile:
+    """A libsndfile stand-in whose header count can disagree with what it yields."""
+
+    samplerate = 8_000
+    channels = 1
+    blocks_yielded = 4
+    declared_frames = 4
+    block_len = 1_000
+    allocations: list = []
+
+    def __init__(self, _source):
+        self.frames = type(self).declared_frames * type(self).block_len
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def blocks(self, **_kwargs):
+        for index in range(type(self).blocks_yielded):
+            yield np.full(type(self).block_len, float(index), dtype = np.float32)
+
+
+def _decode_with(monkeypatch, **attributes):
+    for name, value in attributes.items():
+        setattr(_CountingSoundFile, name, value)
+    monkeypatch.setitem(
+        sys.modules, "soundfile", types.SimpleNamespace(SoundFile = _CountingSoundFile)
+    )
+    joins = []
+    real_concatenate = np.concatenate
+
+    def counted(arrays, *args, **kwargs):
+        joins.append(len(list(arrays)) if isinstance(arrays, list) else 1)
+        return real_concatenate(arrays, *args, **kwargs)
+
+    monkeypatch.setattr(np, "concatenate", counted)
+    arr, rate = inference_route._decode_audio_mono(b"blocks")
+    return arr, rate, joins
+
+
+def test_an_honest_header_decodes_into_one_array(monkeypatch):
+    """Holding every block and then joining them copied the whole recording twice."""
+    arr, rate, joins = _decode_with(
+        monkeypatch, blocks_yielded = 4, declared_frames = 4, block_len = 1_000
+    )
+    assert rate == 8_000
+    assert joins == []
+    assert len(arr) == 4_000
+    assert np.array_equal(arr[::1_000], np.array([0.0, 1.0, 2.0, 3.0], dtype = np.float32))
+
+
+def test_a_header_claiming_more_than_it_holds_buys_no_buffer(monkeypatch):
+    """A buffer sized from an unread header is how a small file asks for a large
+    allocation, so the count is only trusted once the decode has met half of it."""
+    sizes = []
+    real_empty = np.empty
+
+    def watched(shape, *args, **kwargs):
+        if isinstance(shape, int):
+            sizes.append(shape)
+        return real_empty(shape, *args, **kwargs)
+
+    monkeypatch.setattr(np, "empty", watched)
+    arr, _rate, _joins = _decode_with(
+        monkeypatch, blocks_yielded = 1, declared_frames = 200, block_len = 1_000
+    )
+    assert len(arr) == 1_000
+    assert all(size <= 2_000 for size in sizes), sizes
+
+
+def test_a_header_that_undercounts_still_returns_every_sample(monkeypatch):
+    """The buffer takes what it can hold and the rest joins the ordinary way."""
+    arr, _rate, joins = _decode_with(
+        monkeypatch, blocks_yielded = 5, declared_frames = 3, block_len = 1_000
+    )
+    assert len(arr) == 5_000
+    assert joins != []
+    assert np.array_equal(arr[::1_000], np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype = np.float32))
+
+
+def test_a_header_past_the_duration_cap_is_not_preallocated(monkeypatch):
+    """The cap refuses the audio anyway; it must not buy the array first."""
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
+    sizes = []
+    real_empty = np.empty
+
+    def watched(shape, *args, **kwargs):
+        if isinstance(shape, int):
+            sizes.append(shape)
+        return real_empty(shape, *args, **kwargs)
+
+    monkeypatch.setattr(np, "empty", watched)
+    try:
+        _decode_with(monkeypatch, blocks_yielded = 4, declared_frames = 4, block_len = 3_000)
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected the duration cap to refuse this decode")
+    assert sizes == [], sizes

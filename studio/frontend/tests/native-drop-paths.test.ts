@@ -1288,7 +1288,12 @@ test("a vCard naming a charset it does not hold is still refused", async () => {
   await assert.rejects(
     readTextAttachment(new File([vcf], "contact.vcf")),
     (error: Error) => {
-      assert.match(error.message, /utf-8, windows-1251/);
+      // The property that broke its declaration, not a list of every charset
+      // the card names: only one of them is the reason it cannot be read.
+      assert.match(
+        error.message,
+        /declares charset "utf-8" but does not hold valid utf-8 text/,
+      );
       return true;
     },
   );
@@ -2371,4 +2376,85 @@ test("the clipboard reader takes what the native side hands it", () => {
     source,
     /file\.mimeType\.startsWith\("video\/"\)\s*\?\s*MAX_CLIPBOARD_VIDEO_BYTES/,
   );
+});
+
+test("an unsupported charset is refused however many others sit beside it", async () => {
+  // The per-property read cannot honour UTF-7, and the fallback then read the
+  // card as UTF-8 and accepted it with the escapes literal, because every other
+  // byte in it happened to be ASCII. The same declaration alone was refused, so
+  // one card's fate turned on how many of its neighbours declared anything.
+  const card = (extra: string) =>
+    new File(
+      [
+        `BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=UTF-7:Bj+APg-rk\r\n${extra}END:VCARD\r\n`,
+      ],
+      "contact.vcf",
+    );
+  const message = /Charset "UTF-7" isn't supported/;
+  await assert.rejects(readTextAttachment(card("")), (error: Error) => {
+    assert.match(error.message, message);
+    return true;
+  });
+  await assert.rejects(
+    readTextAttachment(card("NOTE;CHARSET=windows-1252:plain ascii\r\n")),
+    (error: Error) => {
+      assert.match(error.message, message);
+      return true;
+    },
+  );
+});
+
+test("a property declaring two charsets is refused rather than read as UTF-8", async () => {
+  const vcf = new File(
+    [
+      "BEGIN:VCARD\r\nVERSION:2.1\r\n" +
+        "FN;CHARSET=windows-1252;CHARSET=windows-1251:ascii\r\n" +
+        "NOTE;CHARSET=utf-8:ascii\r\nEND:VCARD\r\n",
+    ],
+    "contact.vcf",
+  );
+  await assert.rejects(readTextAttachment(vcf), (error: Error) => {
+    assert.match(
+      error.message,
+      /One of its properties declares two charsets \(windows-1252, windows-1251\)/,
+    );
+    return true;
+  });
+});
+
+test("a card whose undeclared property is legacy still reports its charsets", async () => {
+  // Nothing about the declarations blocks this reading: it is an undeclared
+  // property holding bytes that are not UTF-8. That case keeps the answer it
+  // had, so the change only reaches files a declaration itself defeats.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode(
+      "BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:ok\r\nORG;CHARSET=windows-1251:ok\r\nNOTE:Caf",
+    ),
+    0xe9,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([vcf], "contact.vcf")),
+    (error: Error) => {
+      assert.match(error.message, /windows-1252, windows-1251/);
+      return true;
+    },
+  );
+});
+
+test("a card every property of which reads still decodes per property", async () => {
+  // The guard above must not refuse cards the per-property read handles.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nORG;CHARSET=windows-1251:"),
+    0xcf,
+    0xf0,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  const text = await readTextAttachment(new File([vcf], "contact.vcf"));
+  assert.match(text, /FN;CHARSET=windows-1252:Café/);
+  assert.match(text, /ORG;CHARSET=windows-1251:Пр/);
 });

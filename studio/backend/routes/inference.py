@@ -17455,6 +17455,9 @@ _MAX_DECODED_SAMPLES = 48_000 * _MAX_AUDIO_SECONDS
 # holds a second copy of it, so this is the transient a decode may reach for
 # regardless of how many channels the container declares.
 _MAX_DECODE_BLOCK_SAMPLES = 1 << 20
+# How much of a resample is in flight at once, counted on the side that reads
+# the most samples. A few MB of float64, whatever the recording's length.
+_RESAMPLE_SLICE_SAMPLES = 1 << 18
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
 
@@ -17608,20 +17611,27 @@ def _mono_f32_to_wav_bytes(arr: "np.ndarray", sample_rate: int) -> bytes:
     import numpy as np
     import wave
 
-    arr = np.nan_to_num(np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0)
-    if arr.size == 0:
+    if np.asarray(arr).size == 0:
         raise ValueError("decoded audio is empty")
-    peak = float(np.abs(arr).max())
+    # One copy, then every stage in place. Flatten, the nan scrub, abs, the
+    # normalise and the scale each used to allocate the whole recording again.
+    scratch = np.nan_to_num(np.asarray(arr, dtype = np.float32).ravel(), posinf = 0.0, neginf = 0.0)
+    # Every value is finite after the scrub, so the extremes carry the peak
+    # without an absolute copy of the array.
+    peak = max(abs(float(scratch.min())), abs(float(scratch.max())))
     if peak > 1.0:
-        arr = arr / peak
-    pcm = (arr * 32767.0).astype(np.int16)
+        np.divide(scratch, peak, out = scratch)
+    np.multiply(scratch, 32767.0, out = scratch)
+    pcm = scratch.astype(np.int16)
+    del scratch
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(int(sample_rate))
-        wf.writeframes(pcm.tobytes())
+        # The array itself, not a bytes copy of it: wave casts the buffer.
+        wf.writeframes(pcm)
     return buf.getvalue()
 
 
@@ -17631,13 +17641,37 @@ def _resample_mono_linear(arr: "np.ndarray", source_rate: int, target_rate: int)
 
     if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
         return arr
-    duration = len(arr) / float(source_rate)
-    target_len = max(1, int(round(duration * target_rate)))
-    if target_len == len(arr):
+    count = len(arr)
+    if count == 0:
         return arr
-    source_x = np.linspace(0.0, duration, num = len(arr), endpoint = False)
-    target_x = np.linspace(0.0, duration, num = target_len, endpoint = False)
-    return np.interp(target_x, source_x, arr).astype(np.float32)
+    duration = count / float(source_rate)
+    target_len = max(1, int(round(duration * target_rate)))
+    if target_len == count:
+        return arr
+    # Both grids are uniform and start at zero, so a slice of either is
+    # `index * step` and can be built where it is needed. Materializing them
+    # whole cost two float64 arrays the length of the recording, 8 bytes per
+    # input sample each, on top of np.interp's own float64 result: the single
+    # largest transient in the transcode, and larger than the audio itself.
+    source_step = duration / count
+    target_step = duration / target_len
+    out = np.empty(target_len, dtype = np.float32)
+    # Sized from the source window a slice reads, not from the slice: at 3:1 a
+    # million outputs consult three million inputs, and it is the window that
+    # np.interp widens to float64.
+    ratio = max(1.0, count / target_len)
+    slice_len = max(1, int(_RESAMPLE_SLICE_SAMPLES / ratio))
+    for start in range(0, target_len, slice_len):
+        stop = min(start + slice_len, target_len)
+        target_x = np.arange(start, stop, dtype = np.float64) * target_step
+        # The window np.interp consults for this slice, widened by a sample at
+        # each end so the bracketing points, and the clamp past the last one,
+        # are the ones the whole-array pass would have found.
+        first = max(0, int(target_x[0] / source_step) - 1)
+        last = min(count, int(target_x[-1] / source_step) + 3)
+        source_x = np.arange(first, last, dtype = np.float64) * source_step
+        out[start:stop] = np.interp(target_x, source_x, arr[first:last])
+    return out
 
 
 def _fit_transcoded_audio_to_wav_cap(
@@ -17671,6 +17705,8 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
 
     chunks = []
     sample_count = 0
+    joined = None
+    filled = 0
     with sf.SoundFile(io.BytesIO(raw)) as source:
         sample_rate = int(source.samplerate)
         if sample_rate <= 0:
@@ -17684,6 +17720,13 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
         # about 20 channels.
         channels = max(1, int(getattr(source, "channels", 1) or 1))
         block_frames = max(1, min(sample_rate, 65_536, _MAX_DECODE_BLOCK_SAMPLES // channels))
+        # The length the header claims, kept only while it is one this decode is
+        # allowed to reach. Holding every block and then joining them meant a
+        # second copy of the whole recording at the end; filling one array
+        # instead costs a 30-minute upload a third of a gigabyte less.
+        declared = int(getattr(source, "frames", 0) or 0)
+        if declared > min(sample_rate * _MAX_AUDIO_SECONDS, _MAX_DECODED_SAMPLES):
+            declared = 0
         for block in source.blocks(
             blocksize = block_frames,
             dtype = "float32",
@@ -17699,7 +17742,25 @@ def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
                 )
             if block.ndim > 1:
                 block = block.mean(axis = 1)
-            chunks.append(block)
+            # Not before the decode has produced half of it: a header may claim
+            # any length, and sizing a buffer from an unread one is how a small
+            # file asks for a large allocation.
+            if joined is None and declared and sample_count * 2 >= declared:
+                joined = np.empty(declared, dtype = np.float32)
+                for held in chunks:
+                    joined[filled : filled + len(held)] = held
+                    filled += len(held)
+                chunks.clear()
+            if joined is not None and filled + len(block) <= declared:
+                joined[filled : filled + len(block)] = block
+                filled += len(block)
+            else:
+                # The header under-counted; the rest joins the ordinary way.
+                chunks.append(block)
+    if filled:
+        if not chunks:
+            return joined[:filled], sample_rate
+        chunks.insert(0, joined[:filled])
     if not chunks:
         raise ValueError("audio container decoded to no samples")
     return np.concatenate(chunks, axis = 0).astype(np.float32, copy = False), sample_rate

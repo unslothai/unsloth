@@ -956,6 +956,24 @@ function declaredEmailCharsets(bytes: Uint8Array, fileName: string): string[] {
   return found;
 }
 
+/** A charset this browser has no decoder for. */
+function unsupportedCharsetError(charset: string): Error {
+  return new Error(
+    `Charset "${charset}" isn't supported. Convert the file to UTF-8 before attaching it.`,
+  );
+}
+
+/** A charset the file declared and then contradicted. */
+function contradictedCharsetError(
+  fileName: string,
+  charset: string,
+): UndecodableTextError {
+  return new UndecodableTextError(
+    fileName,
+    `It declares charset "${charset}" but does not hold valid ${charset} text.`,
+  );
+}
+
 /** Decode under a charset the file itself declared, or say why it could not. */
 function decodeWithCharset(
   bytes: Uint8Array,
@@ -972,19 +990,14 @@ function decodeWithCharset(
     decoder = new TextDecoder(label, { fatal: true });
   } catch (error) {
     if (error instanceof RangeError) {
-      throw new Error(
-        `Charset "${charset}" isn't supported. Convert the file to UTF-8 before attaching it.`,
-      );
+      throw unsupportedCharsetError(charset);
     }
     throw error;
   }
   try {
     return decoder.decode(bytes, { stream: truncated });
   } catch {
-    throw new UndecodableTextError(
-      fileName,
-      `It declares charset "${charset}" but does not hold valid ${charset} text.`,
-    );
+    throw contradictedCharsetError(fileName, charset);
   }
 }
 
@@ -1016,8 +1029,10 @@ const ASCII_DECODER_LABEL = "windows-1252";
  * charset. A property that declares nothing is UTF-8, strictly: this is not the
  * place to guess a code page for it.
  *
- * Returns null on anything it cannot account for, so the caller falls back to
- * the whole-file reading rather than emitting a partly guessed one.
+ * Anything it cannot account for comes back as a reading with no text, so the
+ * caller falls back to the whole-file one rather than emitting a partly guessed
+ * one. `failure` is set when a declaration itself is the obstacle, which no
+ * other reading of the file can resolve.
  *
  * @param truncated Whether `bytes` is a prefix. Only its last line can end
  * mid-character, so only that one is read leniently.
@@ -1025,7 +1040,8 @@ const ASCII_DECODER_LABEL = "windows-1252";
 function decodeVCardPerProperty(
   bytes: Uint8Array,
   truncated: boolean,
-): string | null {
+  fileName: string,
+): { text: string } | { failure: Error | null } {
   const ascii = new TextDecoder(ASCII_DECODER_LABEL);
   const utf8 = new TextDecoder("utf-8", { fatal: true });
   const decoders = new Map<string, TextDecoder | null>();
@@ -1040,6 +1056,8 @@ function decodeVCardPerProperty(
 
   const out: string[] = [];
   let valueDecoder: TextDecoder | null = utf8;
+  // What the property being read declared, so a decode that throws can name it.
+  let valueCharset: string | null = null;
   let position = 0;
   while (position < bytes.length) {
     let lineBreak = bytes.indexOf(0x0a, position);
@@ -1055,7 +1073,7 @@ function decodeVCardPerProperty(
     try {
       if (folded) {
         // A continuation of the value above, so it keeps that charset.
-        if (!valueDecoder) return null;
+        if (!valueDecoder) return { failure: null };
         out.push(
           valueDecoder.decode(bytes.subarray(position, contentEnd), {
             stream: cut,
@@ -1069,6 +1087,7 @@ function decodeVCardPerProperty(
             utf8.decode(bytes.subarray(position, contentEnd), { stream: cut }),
           );
           valueDecoder = utf8;
+          valueCharset = null;
         } else {
           const parameters = ascii.decode(bytes.subarray(position, delimiter));
           const charsets: string[] = [];
@@ -1076,9 +1095,19 @@ function decodeVCardPerProperty(
             if (match[1]) charsets.push(match[1]);
           }
           // Two on one property is the container's problem, not this reading's.
-          if (charsets.length > 1) return null;
-          valueDecoder = decoderFor(charsets[0] ?? null);
-          if (!valueDecoder) return null;
+          if (charsets.length > 1) {
+            return {
+              failure: new UndecodableTextError(
+                fileName,
+                `One of its properties declares two charsets (${charsets.join(", ")}).`,
+              ),
+            };
+          }
+          valueCharset = charsets[0] ?? null;
+          valueDecoder = decoderFor(valueCharset);
+          if (!valueDecoder) {
+            return { failure: unsupportedCharsetError(valueCharset!) };
+          }
           out.push(parameters, ":");
           out.push(
             valueDecoder.decode(bytes.subarray(delimiter + 1, contentEnd), {
@@ -1088,14 +1117,21 @@ function decodeVCardPerProperty(
         }
       }
     } catch {
-      return null;
+      // A property that broke its own declaration is the declaration's problem.
+      // One with no declaration is just bytes, and the caller may still have a
+      // whole-file charset that reads them.
+      return {
+        failure: valueCharset
+          ? contradictedCharsetError(fileName, valueCharset)
+          : null,
+      };
     }
     out.push(contentEnd === lineBreak ? "" : "\r");
     if (lineBreak === bytes.length) break;
     out.push("\n");
     position = lineBreak + 1;
   }
-  return out.join("");
+  return { text: out.join("") };
 }
 
 /** The first colon outside a quoted parameter value, or -1 if there is none. */
@@ -1158,9 +1194,18 @@ export function decodeTextAttachmentBytes(
     // card beside a 3.0 one, which cannot declare anything, read the whole
     // bundle in the 2.1 card's charset and turned the other into mojibake.
     // A preview reads the same way, so what it shows is what gets sent.
-    const perProperty = decodeVCardPerProperty(bytes, truncated);
-    if (perProperty !== null) {
-      return perProperty;
+    const perProperty = decodeVCardPerProperty(bytes, truncated, fileName);
+    if ("text" in perProperty) {
+      return perProperty.text;
+    }
+    // A declaration the reading could not honour has to be reported, not read
+    // past. Falling through to UTF-8 accepted the card whenever its other
+    // properties happened to be ASCII, so one unsupported charset was refused
+    // on a card that declared it alone and ignored on a card that declared a
+    // second one beside it. The single-declaration case reports the same
+    // obstacle through the whole-unit reading below.
+    if (perProperty.failure && vCardCharsets.length > 1) {
+      throw perProperty.failure;
     }
   }
   if (vCardCharsets.length === 1) {
