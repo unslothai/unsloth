@@ -89,6 +89,8 @@ check "setup.ps1 leaves long-path policy unchanged while staging" \
     "$(has "$SETUP_PS1" 'step "long paths" "disabled; unchanged during staging"')"
 check "setup.ps1 does not install Git while staging" \
     "$(has "$SETUP_PS1" 'Background staging cannot install Git; retry with the foreground updater.')"
+check "setup.ps1 preserves foreground Git bootstrap" \
+    "$(has "$SETUP_PS1" 'if ($gitNeeded -or -not $StageRoot) {')"
 check "setup.ps1 keeps the staging compiler cache under the stage root" \
     "$(has "$SETUP_PS1" 'if ($StageRoot -or $LongPathsEnabled) {')"
 

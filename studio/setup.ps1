@@ -2871,7 +2871,7 @@ if (-not $HasGit) {
     if ($gitNeeded -and $StageRoot) {
         Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
     }
-    if ($gitNeeded) {
+    if ($gitNeeded -or -not $StageRoot) {
         Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
