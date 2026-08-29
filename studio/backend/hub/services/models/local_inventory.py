@@ -48,6 +48,12 @@ logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
 _MAX_CUSTOM_FOLDER_ENTRIES = 2000
 _MODEL_SIGNAL_PROBE_LIMIT = 200
+_LOCAL_PATH_DEDUPE_SOURCES = frozenset(("models_dir", "lmstudio", "custom"))
+_LOCAL_SOURCE_PRIORITY = {
+    "models_dir": 0,
+    "lmstudio": 1,
+    "custom": 2,
+}
 
 
 class _LocalInventorySources(NamedTuple):
@@ -844,21 +850,32 @@ async def _load_custom_folders() -> list[dict]:
         return []
 
 
+def _local_model_dedupe_key(model: LocalModelInfo) -> str:
+    if model.source == "hf_cache" and model.model_id:
+        return "\x00".join(
+            (
+                "hf_cache",
+                model.model_id.strip().lower(),
+                model.model_format,
+                model.format_variant or "",
+            )
+        )
+    if model.source in _LOCAL_PATH_DEDUPE_SOURCES:
+        return "\x00".join(
+            (
+                "local_path",
+                _inventory_path_identity(model.path),
+                model.model_format,
+                model.format_variant or "",
+            )
+        )
+    return model.inventory_id or model.id
+
+
 def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
-        if model.source == "hf_cache" and model.model_id:
-            key = "\x00".join(
-                (
-                    "hf_cache",
-                    model.model_id.strip().lower(),
-                    model.model_format,
-                    model.format_variant or "",
-                )
-            )
-        else:
-            row_key = model.inventory_id or model.id
-            key = f"{row_key}\x00custom" if model.source == "custom" else row_key
+        key = _local_model_dedupe_key(model)
         existing = deduped.get(key)
         prefer_candidate = existing is None
         if existing is not None:
@@ -866,6 +883,14 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                 prefer_candidate = not model.partial
             elif (model.active_cache is True) != (existing.active_cache is True):
                 prefer_candidate = model.active_cache is True
+            elif (
+                model.source in _LOCAL_PATH_DEDUPE_SOURCES
+                and existing.source in _LOCAL_PATH_DEDUPE_SOURCES
+                and model.source != existing.source
+            ):
+                prefer_candidate = (
+                    _LOCAL_SOURCE_PRIORITY[model.source] < _LOCAL_SOURCE_PRIORITY[existing.source]
+                )
             else:
                 prefer_candidate = _prefer_complete_larger(
                     model.partial,
