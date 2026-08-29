@@ -3396,13 +3396,13 @@ def _linux_math_core_count(
 def _spilled_decode_threads(
     n_threads: Optional[int] = None,
     extra_args: Optional[Iterable[str]] = None,
-    env: Optional[Mapping[str, str]] = None,
 ) -> int:
     """How many threads the spilled-decode cost model should price.
 
-    A positive override follows the launched command's env, managed-flag, then
-    pass-through precedence. Otherwise Studio leaves ``--threads`` unset (see
-    the note next to the flag), and llama.cpp sizes its pool from
+    A positive override follows the launched command's managed-flag, then
+    pass-through precedence. An inherited ``LLAMA_ARG_THREADS`` is ignored here
+    because Studio removes it before spawn whenever argv has no thread flag; if
+    argv does have one, that later flag wins. Otherwise llama.cpp sizes its pool from
     ``common_cpu_get_num_math``, which counts physical cores
     and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
     hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
@@ -3414,14 +3414,7 @@ def _spilled_decode_threads(
     neither can answer, match llama.cpp's last resort: keep up to four logical
     CPUs, otherwise halve them, and use four when no logical count is available.
     """
-    source_env = os.environ if env is None else env
     requested: Optional[int] = None
-    raw = source_env.get("LLAMA_ARG_THREADS")
-    if raw:
-        try:
-            requested = int(str(raw).strip())
-        except (TypeError, ValueError):
-            pass
     if n_threads is not None and n_threads > 0:
         requested = int(n_threads)
     args = [str(arg) for arg in extra_args] if extra_args else []
@@ -25231,7 +25224,6 @@ class LlamaCppBackend:
                     threads = _spilled_decode_threads(
                         inputs.get("n_threads"),
                         extra_args,
-                        source_env,
                     ),
                     # Wired, not defaulted. On a unified-memory APU the credited
                     # "VRAM" IS system RAM, so an -ot spill frees no device memory

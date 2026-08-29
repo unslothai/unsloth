@@ -1718,8 +1718,8 @@ def test_thread_overrides_reach_the_cost_model(monkeypatch):
 
     seen = []
 
-    def _threads(n_threads = None, extra_args = None, env = None):
-        seen.append((n_threads, extra_args, env))
+    def _threads(n_threads = None, extra_args = None):
+        seen.append((n_threads, extra_args))
         return int(n_threads or 8)
 
     monkeypatch.setattr(llama_mod, "_spilled_decode_threads", _threads)
@@ -1732,9 +1732,7 @@ def test_thread_overrides_reach_the_cost_model(monkeypatch):
     )
 
     assert plan is not None and plan.spills_anything
-    expected = [
-        (3, ["--threads", "2"], {"UNSLOTH_SMART_OFFLOAD": "1", "LLAMA_ARG_THREADS": "1"})
-    ]
+    expected = [(3, ["--threads", "2"])]
     assert seen == expected
 
 
@@ -1751,17 +1749,16 @@ def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
-    assert llama_mod._spilled_decode_threads(env = {"LLAMA_ARG_THREADS": "2"}) == 2
-    assert llama_mod._spilled_decode_threads(3, env = {"LLAMA_ARG_THREADS": "2"}) == 3
+    assert llama_mod._spilled_decode_threads() == 6
+    assert llama_mod._spilled_decode_threads(3) == 3
     assert (
         llama_mod._spilled_decode_threads(
             3,
             ["--threads", "4"],
-            {"LLAMA_ARG_THREADS": "2"},
         )
         == 4
     )
-    assert llama_mod._spilled_decode_threads(3, ["-t=5", "--threads=1"], {}) == 1
+    assert llama_mod._spilled_decode_threads(3, ["-t=5", "--threads=1"]) == 1
 
 
 def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
@@ -1777,10 +1774,10 @@ def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
-    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "4"], env = {}) == 4
-    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"], env = {}) == 8
-    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"], env = {}) == 8
-    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"], env = {}) == 8
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "4"]) == 4
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"]) == 8
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) == 8
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"]) == 8
 
 
 def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):
@@ -1845,4 +1842,4 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
 
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
     monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
-    assert llama_mod._spilled_decode_threads(env = {}) == 12
+    assert llama_mod._spilled_decode_threads() == 12
