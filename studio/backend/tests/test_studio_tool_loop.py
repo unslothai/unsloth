@@ -1532,8 +1532,11 @@ def test_a_later_name_does_not_activate_a_completed_unnamed_call(executed):
         heals = False,
     )
 
-    _run(transport)
+    lines = _run(transport)
 
     assert [(call["name"], call["arguments"]) for call in executed] == [
         ("web_search", {"query": "ok"})
+    ]
+    assert [event["tool_call_id"] for event in _events(lines, "tool_start")] == [
+        "tool_call_1"
     ]

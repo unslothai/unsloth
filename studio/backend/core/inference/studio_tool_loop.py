@@ -713,15 +713,26 @@ class _Turn:
         ]
         for position, (key, call) in enumerate(ordered_calls):
             fallback_id = _mint_streamed_tool_call_id(streamed)
+            raw_call_id = call.get("id")
+            stream_id = (
+                raw_call_id
+                if isinstance(raw_call_id, str) and raw_call_id
+                else fallback_id
+            )
+            if key is not None:
+                if stream_id in streamed:
+                    stream_id = _mint_streamed_tool_call_id(streamed)
+                streamed.add(stream_id)
+                if key in self.incomplete_split_keys:
+                    continue
             normalized = _normalized_call(call, fallback_id = fallback_id)
             if normalized is None:
                 continue
-            stream_id = normalized["id"]
-            if stream_id in streamed:
-                stream_id = _mint_streamed_tool_call_id(streamed)
-            streamed.add(stream_id)
-            if key in self.incomplete_split_keys:
-                continue
+            if key is None:
+                stream_id = normalized["id"]
+                if stream_id in streamed:
+                    stream_id = _mint_streamed_tool_call_id(streamed)
+                streamed.add(stream_id)
             if stream_id != normalized["id"]:
                 normalized["stream_id"] = stream_id
             if normalized["id"] in seen:
