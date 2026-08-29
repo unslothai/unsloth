@@ -4210,15 +4210,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ) {
         return state;
       }
-      const entries = current.filter(
-        (entry) => entry.owner !== owner && entry.phase === "running",
-      );
-      entries.push({
+      const entries = current.filter((entry) => entry.phase === "running");
+      const index = entries.findIndex((entry) => entry.owner === owner);
+      const nextEntry: LiveChatTpsEntry = {
         owner,
         monitorId,
         phase: "running",
-        lastRunningTps: null,
-      });
+        lastRunningTps:
+          existing?.monitorId === monitorId
+            ? existing.lastRunningTps
+            : null,
+      };
+      if (index >= 0) {
+        entries[index] = nextEntry;
+      } else {
+        entries.push(nextEntry);
+      }
       return {
         liveTpsByThreadId: {
           ...state.liveTpsByThreadId,
@@ -4249,17 +4256,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   finishThreadLiveTps: (threadId, owner) =>
     set((state) => {
       const current = state.liveTpsByThreadId[threadId] ?? [];
-      const index = current.findIndex(
-        (entry) => entry.owner === owner && entry.phase === "running",
-      );
-      if (index < 0) return state;
-      const entries = [...current];
-      entries[index] = { ...entries[index], phase: "terminal" };
+      const entries = current.filter((entry) => entry.owner !== owner);
+      if (entries.length === current.length) return state;
+      const liveTpsByThreadId = { ...state.liveTpsByThreadId };
+      if (entries.length === 0) {
+        delete liveTpsByThreadId[threadId];
+      } else {
+        liveTpsByThreadId[threadId] = entries;
+      }
       return {
-        liveTpsByThreadId: {
-          ...state.liveTpsByThreadId,
-          [threadId]: entries,
-        },
+        liveTpsByThreadId,
       };
     }),
   registerThreadCancel: (threadId, cancel) =>

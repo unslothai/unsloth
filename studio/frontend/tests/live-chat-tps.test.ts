@@ -3,14 +3,23 @@
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { register } from "node:module";
 import test from "node:test";
 
 import {
   formatLiveChatTps,
+  newestRunningLiveChatTpsEntry,
   readLiveChatTpsSample,
   visibleLiveChatTps,
 } from "../src/features/chat/lib/live-chat-tps.ts";
 import type { ApiMonitorEntry } from "../src/features/chat/types/api.ts";
+import { installLocalStorageFake } from "./helpers/kit.ts";
+
+installLocalStorageFake();
+register("./store-settings-resolver.mjs", import.meta.url);
+const { useChatRuntimeStore } = await import(
+  "../src/features/chat/stores/chat-runtime-store.ts"
+);
 
 function entry(overrides: Partial<ApiMonitorEntry> = {}): ApiMonitorEntry {
   return {
@@ -59,6 +68,38 @@ test("terminal requests cannot leave a stale TPS sample visible", () => {
   assert.equal(visibleLiveChatTps("running", 12.3), 12.3);
   assert.equal(visibleLiveChatTps("terminal", 12.3), null);
   assert.equal(visibleLiveChatTps(undefined, 12.3), null);
+});
+
+test("a delayed older header cannot replace the newest running request", () => {
+  const older = () => undefined;
+  const newer = () => undefined;
+  useChatRuntimeStore.setState({ liveTpsByThreadId: {} });
+  const store = useChatRuntimeStore.getState();
+
+  store.beginThreadLiveTps("thread", older, "");
+  store.beginThreadLiveTps("thread", newer, "monitor-new");
+  store.beginThreadLiveTps("thread", older, "monitor-old");
+
+  const entries = useChatRuntimeStore.getState().liveTpsByThreadId.thread;
+  assert.equal(entries.length, 2);
+  assert.equal(newestRunningLiveChatTpsEntry(entries)?.owner, newer);
+  assert.equal(entries[0]?.monitorId, "monitor-old");
+});
+
+test("finishing the newest request restores an older active request", () => {
+  const older = () => undefined;
+  const newer = () => undefined;
+  useChatRuntimeStore.setState({ liveTpsByThreadId: {} });
+  const store = useChatRuntimeStore.getState();
+
+  store.beginThreadLiveTps("thread", older, "monitor-old");
+  store.beginThreadLiveTps("thread", newer, "monitor-new");
+  store.finishThreadLiveTps("thread", newer);
+
+  const remaining = useChatRuntimeStore.getState().liveTpsByThreadId.thread;
+  assert.equal(newestRunningLiveChatTpsEntry(remaining)?.owner, older);
+  store.finishThreadLiveTps("thread", older);
+  assert.equal(useChatRuntimeStore.getState().liveTpsByThreadId.thread, undefined);
 });
 
 test("a transient monitor read failure remains retryable", async () => {

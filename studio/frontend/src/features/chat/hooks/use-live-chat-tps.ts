@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getApiMonitorEntry } from "../api/chat-api";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
-  type LiveChatTpsEntry,
-  useChatRuntimeStore,
-} from "../stores/chat-runtime-store";
-import {
+  newestRunningLiveChatTpsEntry,
   readLiveChatTpsSample,
   visibleLiveChatTps,
 } from "../lib/live-chat-tps";
@@ -14,25 +12,26 @@ import { useEffect } from "react";
 
 const POLL_INTERVAL_MS = 1500;
 
-function latestEntry(entries: LiveChatTpsEntry[] | undefined) {
-  return entries?.[entries.length - 1];
-}
-
 export function useLiveChatTps(): number | null {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const threadKey = activeThreadId || "__default";
   const owner = useChatRuntimeStore(
-    (state) => latestEntry(state.liveTpsByThreadId[threadKey])?.owner,
+    (state) =>
+      newestRunningLiveChatTpsEntry(state.liveTpsByThreadId[threadKey])?.owner,
   );
   const monitorId = useChatRuntimeStore(
-    (state) => latestEntry(state.liveTpsByThreadId[threadKey])?.monitorId,
+    (state) =>
+      newestRunningLiveChatTpsEntry(state.liveTpsByThreadId[threadKey])
+        ?.monitorId,
   );
   const phase = useChatRuntimeStore(
-    (state) => latestEntry(state.liveTpsByThreadId[threadKey])?.phase,
+    (state) =>
+      newestRunningLiveChatTpsEntry(state.liveTpsByThreadId[threadKey])?.phase,
   );
   const lastRunningTps = useChatRuntimeStore(
     (state) =>
-      latestEntry(state.liveTpsByThreadId[threadKey])?.lastRunningTps ?? null,
+      newestRunningLiveChatTpsEntry(state.liveTpsByThreadId[threadKey])
+        ?.lastRunningTps ?? null,
   );
 
   useEffect(() => {

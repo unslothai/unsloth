@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ApiMonitorEntry } from "../types/api";
+import type { LiveChatTpsEntry } from "../stores/chat-runtime-store";
 
 export type LiveChatTpsSample = {
   running: boolean;
@@ -34,4 +35,14 @@ export function visibleLiveChatTps(
   lastRunningTps: number | null,
 ): number | null {
   return phase === "running" ? lastRunningTps : null;
+}
+
+export function newestRunningLiveChatTpsEntry(
+  entries: LiveChatTpsEntry[] | undefined,
+): LiveChatTpsEntry | undefined {
+  if (!entries) return undefined;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.phase === "running") return entries[index];
+  }
+  return undefined;
 }
