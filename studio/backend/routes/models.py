@@ -1161,7 +1161,11 @@ def collect_local_models(
         key = (
             "\x00".join(
                 (
-                    gguf_utils.local_path_physical_identity(model.path),
+                    (
+                        model.model_id
+                        if model.model_id and model.model_id.startswith("ollama/")
+                        else gguf_utils.local_path_physical_identity(model.path)
+                    ),
                     model.model_format or "",
                     "custom",
                 )
@@ -1181,8 +1185,11 @@ def collect_local_models(
         if prefer_model:
             deduped[key] = model
 
+    deduped_values = list(deduped.values())
+    custom_values = [model for model in deduped_values if model.source == "custom"]
     models = sorted(
-        deduped.values(),
+        [model for model in deduped_values if model.source != "custom"]
+        + gguf_utils.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )

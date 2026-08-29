@@ -514,6 +514,36 @@ def should_group_local_gguf_files(filenames: Sequence[str]) -> bool:
     ) or all(is_h3_denoiser_variant_key(key) for key in variant_keys)
 
 
+def suppress_grouped_gguf_file_rows(rows: Sequence[object]) -> list:
+    """Drop loose rows already represented by a physical GGUF directory row."""
+
+    def row_path_is_dir(row) -> bool:
+        try:
+            return Path(getattr(row, "path", "")).is_dir()
+        except OSError:
+            return False
+
+    grouped_dirs = {
+        local_path_physical_identity(getattr(row, "path", ""))
+        for row in rows
+        if getattr(row, "model_format", None) == "gguf"
+        and not getattr(row, "partial", False)
+        and row_path_is_dir(row)
+    }
+    if not grouped_dirs:
+        return list(rows)
+    return [
+        row
+        for row in rows
+        if not (
+            getattr(row, "model_format", None) == "gguf"
+            and not row_path_is_dir(row)
+            and local_path_parent_physical_identity(getattr(row, "path", ""))
+            in grouped_dirs
+        )
+    ]
+
+
 def dedupe_custom_gguf_rows(rows: Sequence[object]) -> list:
     """Remove scanner overlap while preserving independently loadable GGUF checkpoints."""
     from utils.models.model_config import colocated_split_shards
@@ -633,12 +663,16 @@ def dedupe_custom_gguf_rows(rows: Sequence[object]) -> list:
 
         filenames = [path.name for path in files_by_parent[parent_identity]]
         nested_identities = set()
+        parent_visible_files = {
+            local_path_physical_identity(str(file))
+            for file in iter_gguf_files(parent_path, recursive = True)
+        }
         for nested_path in nested_paths:
             nested_identities.add(local_path_physical_identity(str(nested_path)))
             try:
                 relative_parent = nested_path.relative_to(parent_path)
-                filenames.extend(
-                    str(relative_parent / file.name)
+                nested_files = [
+                    file
                     for file in nested_path.iterdir()
                     if file.is_file()
                     and is_gguf_filename(file.name)
@@ -646,10 +680,17 @@ def dedupe_custom_gguf_rows(rows: Sequence[object]) -> list:
                     and not is_imatrix_filename(file.name)
                     and not is_mtp_drafter_path(file.name)
                     and not is_appledouble_metadata(file)
-                )
+                ]
             except OSError:
                 grouped_decisions[parent_identity] = False
                 break
+            if not nested_files or any(
+                local_path_physical_identity(str(file)) not in parent_visible_files
+                for file in nested_files
+            ):
+                grouped_decisions[parent_identity] = False
+                break
+            filenames.extend(str(relative_parent / file.name) for file in nested_files)
         else:
             grouped_decisions[parent_identity] = should_group_local_gguf_files(filenames)
         if grouped_decisions[parent_identity]:

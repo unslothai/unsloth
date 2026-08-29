@@ -2578,7 +2578,7 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
 
 
-def test_build_index_groups_custom_gguf_variants(tmp_path, monkeypatch):
+def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch):
     import routes.models as models_route
     from storage import studio_db
     from utils import hf_cache_settings
@@ -2595,12 +2595,14 @@ def test_build_index_groups_custom_gguf_variants(tmp_path, monkeypatch):
     monkeypatch.setattr(
         models_route,
         "_scan_models_dir",
-        lambda path, **kwargs: scan_models_dir(path, **kwargs) if path == root else [],
+        lambda path, **kwargs: scan_models_dir(path, **kwargs)
+        if path in {root, model}
+        else [],
     )
     monkeypatch.setattr(
         models_route,
         "_scan_lmstudio_dir",
-        lambda path: scan_lmstudio_dir(path) if path == root else [],
+        lambda path: scan_lmstudio_dir(path) if path in {root, model} else [],
     )
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
@@ -2609,7 +2611,11 @@ def test_build_index_groups_custom_gguf_variants(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
     monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
     monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [{"path": str(root)}])
+    monkeypatch.setattr(
+        studio_db,
+        "list_scan_folders",
+        lambda: [{"path": str(root)}, {"path": str(model)}],
+    )
 
     index = resolver._build_index()
 

@@ -83,6 +83,84 @@ def test_compat_inventory_preserves_distinct_custom_ggufs(tmp_path):
     assert {Path(row.path) for row in rows} == {first, second}
 
 
+def test_compat_inventory_dedupes_overlapping_custom_roots(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-Q4_K_M.gguf")
+    _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_keeps_custom_section_copy(tmp_path):
+    root = tmp_path / "models"
+    model = root / "publisher"
+    q4 = _touch(model / "model-Q4_K_M.gguf")
+    q8 = _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        root,
+        custom_folders = [{"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("models_dir", model),
+        ("custom", q4),
+        ("custom", q8),
+    }
+
+
+def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
+    root = tmp_path / "models"
+    holder = root / "publisher"
+    first = _touch(holder / "model-a-Q4_K_M.gguf")
+    second = _touch(holder / "model-b-Q4_K_M.gguf")
+    empty = _empty_compat_sources(tmp_path)
+    sources = empty._replace(lm_dirs = (root,))
+
+    rows = models_route.collect_local_models(
+        root,
+        custom_folders = [],
+        sources = sources,
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("models_dir", holder),
+        ("lmstudio", first),
+        ("lmstudio", second),
+    }
+
+
+def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path, monkeypatch):
+    blob = _touch(tmp_path / "ollama" / "blobs" / "sha256-model")
+    tags = [
+        models_route.LocalModelInfo(
+            id = str(blob),
+            model_id = f"ollama/model:{tag}",
+            display_name = f"model:{tag}",
+            path = str(blob),
+            source = "custom",
+        )
+        for tag in ("latest", "v1")
+    ]
+    monkeypatch.setattr(models_route, "_scan_ollama_dir", lambda *_a, **_kw: tags)
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(tmp_path / "ollama")}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {row.model_id for row in rows} == {"ollama/model:latest", "ollama/model:v1"}
+
+
 def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
     from hub.services.models.common import _classify_local_path
 

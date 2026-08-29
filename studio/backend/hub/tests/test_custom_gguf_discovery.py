@@ -339,6 +339,25 @@ def test_nested_quant_directory_stays_in_the_parent_group(tmp_path):
     assert {variant.quant for variant in variants} == {"Q4_K_M", "Q8_0"}
 
 
+def test_nested_symlinked_variant_directory_stays_selectable(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    q4 = _write_gguf(model / "model-a-Q4_K_M.gguf")
+    q8_dir = tmp_path / "outside" / "Q8_0"
+    q8 = _write_gguf(q8_dir / "model-a-Q8_0.gguf")
+    alias = model / "Q8_0"
+    _symlink_dir(alias, q8_dir)
+
+    rows = _custom_rows(root)
+
+    assert {Path(row.path) for row in rows} == {q4, alias}
+    variants, _ = gguf.list_local_gguf_variants(str(alias), model_root = str(root))
+    assert [variant.quant for variant in variants] == ["Q8_0"]
+    assert Path(
+        _find_local_gguf_by_variant(str(alias), "Q8_0", model_root = str(root))
+    ).samefile(q8)
+
+
 def test_lmstudio_publisher_model_layout_keeps_its_model_id(tmp_path):
     root = tmp_path / "lmstudio"
     model = root / "publisher" / "model"
