@@ -19701,6 +19701,7 @@ class LlamaCppBackend:
                     """
                     nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
+                    nonlocal _mem_host_resident
                     # GGML_ASSERT is a signal on POSIX and a CRT abort (exit 3) on
                     # MSVC, so Windows needs both. Cancel-checked like every retry
                     # here: an /unload racing the crash must not leave a server up.
@@ -19727,11 +19728,47 @@ class LlamaCppBackend:
                         return False
                     replay, _spawn_cwd = prepared
 
+                    fallback_managed, fallback_args = apply_model_memory_policy(
+                        replay[1:],
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        weights_in_host_memory = True,
+                    )
+                    fallback_load_mode, fallback_args = apply_load_mode_policy(
+                        fallback_args,
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        weights_in_host_memory = True,
+                        requested_load_mode = load_mode,
+                    )
+                    fallback_policy_active = bool(
+                        fallback_managed
+                        or model_memory_suppresses_load_mode(
+                            load_mode,
+                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            weights_in_host_memory = True,
+                        )
+                        or fallback_args != replay[1:]
+                        or _mem_scrubbed
+                    )
+                    replay = [replay[0], *fallback_managed, *fallback_load_mode, *fallback_args]
+                    previous_memory_policy = (
+                        self._memory_state,
+                        self._memory_policy_active,
+                        self._memory_mlock_applicable,
+                    )
+                    self._memory_state = resolve_effective_memory_state(replay, env)
+                    self._memory_policy_active = fallback_policy_active
+                    self._memory_mlock_applicable = True
+
                     logger.warning(
                         "The auto-selected Vulkan backend hard-crashed during "
                         "startup; retrying once with llama.cpp devices disabled."
                     )
                     if not _spawn_and_wait(replay, label = "-cpu"):
+                        (
+                            self._memory_state,
+                            self._memory_policy_active,
+                            self._memory_mlock_applicable,
+                        ) = previous_memory_policy
                         if not terminal:
                             # This argv's drafter may be why it cannot start at all,
                             # which the GPU crash says nothing about. Reap the child
@@ -19753,6 +19790,7 @@ class LlamaCppBackend:
                         self._vram_fraction_pending = None
                         raise RuntimeError(detail)
 
+                    _mem_host_resident = True
                     intent = self._apply_cpu_fallback_state(
                         intent,
                         is_vision = fallback_has_mmproj,

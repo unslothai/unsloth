@@ -24,6 +24,7 @@ _spec = importlib.util.spec_from_file_location(
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 apply_model_memory_policy = _lsa.apply_model_memory_policy
+apply_load_mode_policy = _lsa.apply_load_mode_policy
 memory_state_satisfies_settings = _lsa.memory_state_satisfies_settings
 model_memory_suppresses_load_mode = _lsa.model_memory_suppresses_load_mode
 resolve_effective_memory_state = _lsa.resolve_effective_memory_state
@@ -2422,6 +2423,45 @@ class TestAGpuIdsPinOverridesADeviceFlag:
         assert re.search(r"self\._clear_device_placement_env\(_mem_env\)", src)
         call = src.find("self._weights_in_host_memory(", strip)
         assert call != -1 and "extra_args = _mem_extra_args" in src[call : call + 400]
+
+
+class TestVulkanCpuFallbackMemoryPolicy:
+    def test_cpu_replay_reapplies_the_host_lock(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (True, False))
+        replay = ["--gpu-layers", "0", "--fit", "off", "--device", "none"]
+        managed, extras = apply_model_memory_policy(
+            replay, supports_load_mode = True, weights_in_host_memory = True
+        )
+        load_mode, extras = apply_load_mode_policy(
+            extras,
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            requested_load_mode = None,
+        )
+        argv = ["llama-server", *managed, *load_mode, *extras]
+        assert resolve_effective_memory_state(argv, {}) == (True, False)
+        assert argv[-6:] == [
+            "--gpu-layers",
+            "0",
+            "--fit",
+            "off",
+            "--device",
+            "none",
+        ]
+
+    def test_the_fallback_records_policy_before_spawning(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        branch = src.index("fallback_managed, fallback_args")
+        spawn = src.index('if not _spawn_and_wait(replay, label = "-cpu")', branch)
+        tail = src[branch:spawn]
+        assert "resolve_effective_memory_state(replay, env)" in tail
+        assert "self._memory_mlock_applicable = True" in tail
 
 
 class TestFitOffRetryDropsTheLock:
