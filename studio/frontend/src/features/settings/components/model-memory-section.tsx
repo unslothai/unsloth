@@ -82,11 +82,13 @@ export function ModelMemorySection() {
   // pin and the lock is skipped deliberately. Without this the panel is silent:
   // the toggle reads on, mlockActive reads false, reloadRequired reads false,
   // and nothing explains why the setting changed nothing (issue #9549). Not
-  // shown alongside the veto notice, which already gives a reason.
+  // shown when no-reserve is the only enabled setting or an explicit lock is
+  // active, since either case would make this explanation false.
   const mlockNotApplicable =
     settings?.mlockApplicable === false &&
-    !mlockVetoed &&
-    (settings.keepResident || settings.noRamReserve);
+    settings.keepResident === true &&
+    settings.noRamReserve === false &&
+    settings.mlockActive === false;
 
   return (
     <SettingsSection title={t("settings.resources.modelMemory.title")}>
