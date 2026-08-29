@@ -479,9 +479,7 @@ def test_mounted_cors_policy_only_adds_monitor_response_header_exposure():
         )
     ]
 
-    assert (
-        'expose_headers = ["X-Unsloth-Monitor-Id", "X-Unsloth-Monitor-Status"]' in mounted
-    )
+    assert 'expose_headers = ["X-Unsloth-Monitor-Id", "X-Unsloth-Monitor-Status"]' in mounted
     assert "allow_origins = _cors_origins" in mounted
     assert "allow_credentials = True" in mounted
     assert 'allow_methods = ["*"]' in mounted
