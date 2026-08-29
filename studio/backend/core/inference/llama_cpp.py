@@ -3335,7 +3335,7 @@ _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
 
 
-def _spilled_decode_threads() -> int:
+def _spilled_decode_threads(n_threads: Optional[int] = None) -> int:
     """How many threads a spilled decode actually gets.
 
     PHYSICAL cores, not logical. Studio deliberately leaves ``--threads`` unset
@@ -3351,6 +3351,8 @@ def _spilled_decode_threads() -> int:
     SMT is common but not universal, and halving a machine that has no SMT would
     trade one wrong answer for another.
     """
+    if n_threads is not None and n_threads > 0:
+        return int(n_threads)
     try:
         import psutil
         physical = psutil.cpu_count(logical = False)
@@ -19758,6 +19760,7 @@ class LlamaCppBackend:
                         # total, so it can spill the MINIMUM set of blocks.
                         "model_path": model_path,
                         "n_ctx": effective_ctx,
+                        "n_threads": n_threads,
                         # The slot count the KV and recurrent state were PRICED at.
                         # A pass-through --parallel is appended after Unsloth's own
                         # and wins, and both caches scale with it.
@@ -25135,7 +25138,7 @@ class LlamaCppBackend:
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.
                 host = HostProfile(
-                    threads = _spilled_decode_threads(),
+                    threads = _spilled_decode_threads(inputs.get("n_threads")),
                     # Wired, not defaulted. On a unified-memory APU the credited
                     # "VRAM" IS system RAM, so an -ot spill frees no device memory
                     # and only buys the CPU backend's slower read path. The planner

@@ -150,6 +150,7 @@ def _inputs(
     shared = None,
     gpus = None,
     n_parallel = 1,
+    n_threads = None,
     compute_flat = 0,
     ctx_compute = 0,
     env_mmproj = 0,
@@ -171,6 +172,7 @@ def _inputs(
         "model_path": "/models/stub.gguf",
         "n_ctx": 32768,
         "n_parallel": n_parallel,
+        "n_threads": n_threads,
         "shared_gpu_ids": set() if shared is None else set(shared),
         "separate_draft_on_gpu": separate_draft,
         **({} if mtp is None else {"mtp_will_engage": mtp}),
@@ -1708,3 +1710,19 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
             del sys.modules["psutil"]
         else:
             sys.modules["psutil"] = saved
+
+
+def test_a_managed_thread_limit_reaches_the_cost_model(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    seen = []
+
+    def _threads(n_threads = None):
+        seen.append(n_threads)
+        return int(n_threads or 8)
+
+    monkeypatch.setattr(llama_mod, "_spilled_decode_threads", _threads)
+    plan = _plan(_Stub(), free_mib = 14 * 1024, n_threads = 3)
+
+    assert plan is not None and plan.spills_anything
+    assert seen == [3]
