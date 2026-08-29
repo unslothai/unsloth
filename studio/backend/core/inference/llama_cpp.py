@@ -3376,16 +3376,19 @@ def _spilled_decode_threads(
             requested = int(value.strip())
         except (TypeError, ValueError):
             continue
-    if requested is not None and requested > 0:
-        return requested
+    physical: Optional[int] = None
     try:
         import psutil
-        physical = psutil.cpu_count(logical = False)
-        if physical and physical > 0:
-            return int(physical)
+        answer = psutil.cpu_count(logical = False)
+        if answer and answer > 0:
+            physical = int(answer)
     except Exception:
         pass
-    return os.cpu_count() or 1
+    if physical is None:
+        physical = os.cpu_count() or 1
+    if requested is not None and requested > 0:
+        return min(requested, physical)
+    return physical
 
 
 def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:

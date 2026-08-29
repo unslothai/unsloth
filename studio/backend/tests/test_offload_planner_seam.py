@@ -1759,3 +1759,20 @@ def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
         == 4
     )
     assert llama_mod._spilled_decode_threads(3, ["-t=5", "--threads=1"], {}) == 1
+
+
+def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _SmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 16 if logical else 8
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "4"], env = {}) == 4
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"], env = {}) == 8
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"], env = {}) == 8
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"], env = {}) == 8
