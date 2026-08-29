@@ -257,10 +257,24 @@ class PlanOptions:
     # it is not a family effect wearing a ratio as a disguise.
     #
     # WHY IT IS OFF. Six points with a threshold located only to within
-    # 1.35-1.49 is a candidate, not a default. The rule is also MoE-only: the
-    # two dense models measured (gemma-31B at 1.30 and 1.32) both WIN, which is
-    # the wrong side of any threshold fitted here, and they have a third rung
-    # the MoE case does not. Dense keeps BOUNDARY regardless.
+    # 1.35-1.49 is a candidate, not a default.
+    #
+    # MoE ONLY, and the reason is that DENSE IS HETEROGENEOUS rather than
+    # uniformly one way. Scored over 26 dense cells, the ladder beats the coarse
+    # planner by more than 3% in exactly two, and this threshold gets half the
+    # dense models wrong:
+    #
+    #     ratio  model         rule says   measured
+    #     1.34   gemma-31B Q2  BOUNDARY    WIN 1.069-1.444   rule WRONG
+    #     1.31   gemma-31B Q3  BOUNDARY    WIN 1.136-1.40    rule WRONG
+    #     1.22   gemma-31B Q4  BOUNDARY    flat 1.000        rule right
+    #     1.33   gemma-E2B Q4  BOUNDARY    flat 0.975-1.008  rule right
+    #
+    # and Qwen3.8-27B, also dense, LOSES in all four of its spilled cells
+    # (0.905, 0.953, 0.961, 0.971). So gemma-31B wins where the ratio says it
+    # should not while two other dense families behave as the ratio predicts,
+    # which means dense carries a model-specific factor this rule does not
+    # capture. Abstaining is the honest response to that, not a placeholder.
     #
     # WHAT WOULD FALSIFY IT. An MoE landing in the untested 1.35-1.49 gap that
     # comes out on the wrong side, or any MoE above 1.5 that loses.
