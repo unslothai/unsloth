@@ -1608,6 +1608,34 @@ class TestModelMemoryResponseSnapshot:
         assert body.reload_required is True
 
 
+class TestRecordedMemoryState:
+    def test_every_snapshot_resolves_the_command_that_runs(self):
+        import ast
+        import inspect
+        import textwrap
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
+        recorded_from = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(
+                isinstance(target, ast.Attribute) and target.attr == "_memory_state"
+                for target in node.targets
+            ):
+                continue
+            call = node.value
+            assert isinstance(call, ast.Call)
+            assert isinstance(call.func, ast.Name)
+            assert call.func.id == "resolve_effective_memory_state"
+            assert isinstance(call.args[0], ast.Name)
+            recorded_from.append(call.args[0].id)
+
+        assert sorted(recorded_from) == ["_run", "cmd", "cmd", "run_cmd"]
+
+
 class TestFitOnRetryReArmsResidency:
     """The --fit on fallback fires exactly when the full-offload prediction that
     suppressed the lock turns out to be wrong, so the retry must re-apply it."""

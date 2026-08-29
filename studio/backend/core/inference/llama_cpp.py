@@ -19047,9 +19047,7 @@ class LlamaCppBackend:
                 # Record what the child will ACTUALLY run with (env defaults plus
                 # last-wins argv), not just what Unsloth emitted, so the reload
                 # hint also catches a user-supplied --mlock / --no-mmap.
-                self._memory_state = resolve_effective_memory_state(
-                    list(_mem_managed) + list(_mem_extras), env
-                )
+                self._memory_state = resolve_effective_memory_state(cmd, env)
                 # Did the policy change this launch at all: emitted a flag,
                 # suppressed a requested one, or scrubbed an inherited env var.
                 # Turning both toggles off must relaunch to undo any of those,
@@ -20072,11 +20070,8 @@ class LlamaCppBackend:
                             self._memory_policy_active = (
                                 bool(_retry_managed) or self._memory_policy_active
                             )
-                            # In argv order -- extras first, then the appended
-                            # lock -- because the resolver is last-wins too.
-                            self._memory_state = resolve_effective_memory_state(
-                                list(_mem_extras) + list(_retry_managed), env
-                            )
+                            # resolve the final respawn argv so per-model load mode remains represented.
+                            self._memory_state = resolve_effective_memory_state(cmd, env)
                             logger.info(
                                 "Arch-crash retry changed where the weights live; "
                                 "recomputed Model Memory (%s).",
