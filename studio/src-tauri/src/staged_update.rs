@@ -2,7 +2,8 @@ use crate::process_identity::ProcessOrigin;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub(crate) const STAGE_DIR: &str = ".update-stage";
@@ -10,6 +11,8 @@ const PREV_DIR: &str = ".update-prev";
 const FAILED_MARKER: &str = ".update-failed.json";
 const READY_MARKER: &str = "READY.json";
 const PENDING_MARKER: &str = "PENDING.json";
+const CONFIRMED_MARKER: &str = "CONFIRMED.json";
+const ROLLED_BACK_MARKER: &str = "ROLLED_BACK.json";
 const ROLLBACK_TRASH_PREFIX: &str = ".update-rollback-";
 const RUNTIME_ENTRIES: [&str; 4] = [
     "unsloth_studio",
@@ -23,6 +26,14 @@ pub(crate) struct StagedVersions {
     pub backend_version: String,
     #[serde(default)]
     pub shell_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct ActivationJournal {
+    #[serde(flatten)]
+    versions: StagedVersions,
+    #[serde(default)]
+    previous_entries: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -54,8 +65,38 @@ fn read_versions(path: &Path) -> Option<StagedVersions> {
 }
 
 fn write_versions(path: &Path, versions: &StagedVersions) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(versions).map_err(|e| e.to_string())?;
-    fs::write(path, body).map_err(|e| format!("{}: {e}", path.display()))
+    let body = serde_json::to_vec_pretty(versions).map_err(|e| e.to_string())?;
+    write_atomic(path, &body)
+}
+
+fn read_journal(path: &Path) -> Option<ActivationJournal> {
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+}
+
+fn write_journal(path: &Path, journal: &ActivationJournal) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?;
+    write_atomic(path, &body)
+}
+
+fn write_atomic(path: &Path, body: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", path.display()))?;
+    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".update-marker-")
+        .tempfile_in(parent)
+        .map_err(|e| format!("{}: {e}", parent.display()))?;
+    temporary
+        .write_all(body)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|e| format!("{}: {}", path.display(), e.error))?;
+    #[cfg(unix)]
+    let _ = File::open(parent).and_then(|directory| directory.sync_all());
+    Ok(())
 }
 
 pub(crate) fn status(home: &Path) -> StagedUpdateStatus {
@@ -115,13 +156,35 @@ fn remove_stale_trash(home: &Path) {
 
 pub(crate) fn confirm_activated(home: &Path) {
     let prev = home.join(PREV_DIR);
-    if fs::remove_file(prev.join(PENDING_MARKER)).is_err() {
+    let Some(versions) = read_versions(&prev.join(PENDING_MARKER)) else {
+        return;
+    };
+    if let Err(error) = write_versions(&prev.join(CONFIRMED_MARKER), &versions) {
+        warn!("[staged-update] could not confirm activated runtime: {error}");
         return;
     }
     info!("[staged-update] backend healthy, dropping previous runtime");
     std::thread::spawn(move || {
-        let _ = fs::remove_dir_all(prev);
+        remove_confirmed_previous(&prev);
     });
+}
+
+fn remove_confirmed_previous(prev: &Path) {
+    if let Ok(entries) = fs::read_dir(prev) {
+        for entry in entries.flatten() {
+            if entry.file_name() == CONFIRMED_MARKER {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(path);
+            } else {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    let _ = fs::remove_file(prev.join(CONFIRMED_MARKER));
+    let _ = fs::remove_dir(prev);
 }
 
 fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
@@ -130,12 +193,24 @@ fn roll_back_unconfirmed(home: &Path) -> Result<(), String> {
 
 fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
     let prev = home.join(PREV_DIR);
-    let Some(versions) = read_versions(&prev.join(PENDING_MARKER)) else {
+    if prev.join(CONFIRMED_MARKER).is_file() {
+        remove_confirmed_previous(&prev);
+        return Ok(());
+    }
+    if prev.join(ROLLED_BACK_MARKER).is_file() {
+        let _ = fs::remove_dir_all(home.join(STAGE_DIR));
+        let _ = fs::remove_dir_all(&prev);
+        return Ok(());
+    }
+    let journal = read_journal(&prev.join(PENDING_MARKER));
+    let versions = journal.as_ref().map(|journal| journal.versions.clone());
+    let has_previous_runtime = RUNTIME_ENTRIES.iter().any(|name| prev.join(name).exists());
+    if versions.is_none() && !has_previous_runtime {
         if prev.is_dir() {
             let _ = fs::remove_dir_all(&prev);
         }
         return Ok(());
-    };
+    }
     if in_use {
         // Renaming the tree under a live process is unsafe, but a process that never
         // reached validate_candidate_port is not healthy either. Confirming here
@@ -144,14 +219,26 @@ fn roll_back_unconfirmed_with(home: &Path, in_use: bool) -> Result<(), String> {
         info!("[staged-update] runtime still in use, deferring the rollback decision");
         return Ok(());
     }
-    info!(
-        "[staged-update] backend {} never became healthy, restoring previous runtime",
-        versions.backend_version
-    );
-    let trash = home.join(format!("{ROLLBACK_TRASH_PREFIX}{}", std::process::id()));
-    fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
-    swap_entries(home, &prev, &trash, true)?;
-    write_versions(&home.join(FAILED_MARKER), &versions)?;
+    let versions = versions.or_else(|| read_versions(&home.join(STAGE_DIR).join(READY_MARKER)));
+    let previous_entries = journal
+        .map(|journal| journal.previous_entries)
+        .filter(|entries| !entries.is_empty())
+        .unwrap_or_else(|| {
+            RUNTIME_ENTRIES
+                .iter()
+                .filter(|name| prev.join(name).exists())
+                .map(|name| (*name).to_string())
+                .collect()
+        });
+    info!("[staged-update] staged backend never became healthy, restoring previous runtime");
+    let trash = restore_previous_runtime(home, &prev, &previous_entries)?;
+    if let Some(versions) = versions.as_ref() {
+        write_versions(&prev.join(ROLLED_BACK_MARKER), versions)?;
+        let failed = home.join(FAILED_MARKER);
+        let _ = fs::remove_file(&failed);
+        write_versions(&failed, versions)?;
+    }
+    let _ = fs::remove_dir_all(home.join(STAGE_DIR));
     let _ = fs::remove_dir_all(&prev);
     std::thread::spawn(move || {
         let _ = fs::remove_dir_all(trash);
@@ -190,16 +277,28 @@ fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     let prev = home.join(PREV_DIR);
     let _ = fs::remove_dir_all(&prev);
     fs::create_dir_all(&prev).map_err(|e| e.to_string())?;
-    swap_entries(home, &stage, &prev, false)?;
-    if let Err(error) = write_versions(&prev.join(PENDING_MARKER), &versions) {
-        // Without the marker the next launch drops the previous runtime instead of
-        // restoring it, so an unverified backend would become permanent. Put it back,
-        // evicting like the rollback does: an older install with no tiered sidecars
-        // has nothing to swap them back with, and leaving them live beside the
-        // restored venv is the same mixed runtime, with no marker left to undo it.
-        let _ = swap_entries(home, &prev, &stage, true);
-        let _ = fs::remove_dir_all(&prev);
-        return Err(error);
+    let journal = ActivationJournal {
+        versions: versions.clone(),
+        previous_entries: RUNTIME_ENTRIES
+            .iter()
+            .filter(|name| home.join(name).exists())
+            .map(|name| (*name).to_string())
+            .collect(),
+    };
+    write_journal(&prev.join(PENDING_MARKER), &journal)?;
+    if let Err(error) = swap_entries(home, &stage, &prev, false) {
+        let rollback = restore_previous_runtime(home, &prev, &journal.previous_entries);
+        if rollback.is_ok() {
+            let _ = fs::remove_file(prev.join(PENDING_MARKER));
+            let _ = fs::remove_dir_all(&prev);
+        }
+        return Err(match rollback {
+            Ok(trash) => {
+                let _ = fs::remove_dir_all(trash);
+                error
+            }
+            Err(rollback_error) => format!("{error}; rollback failed: {rollback_error}"),
+        });
     }
     let _ = fs::remove_file(home.join(FAILED_MARKER));
     let _ = fs::remove_dir_all(&stage);
@@ -236,6 +335,48 @@ fn shell_order(current: &str, required: &str) -> Ordering {
         -1 => Ordering::Less,
         _ => Ordering::Equal,
     }
+}
+
+fn restore_previous_runtime(
+    home: &Path,
+    previous: &Path,
+    previous_entries: &[String],
+) -> Result<PathBuf, String> {
+    let stage = home.join(STAGE_DIR);
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let trash = home.join(format!(
+        "{ROLLBACK_TRASH_PREFIX}{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let result = (|| {
+        for name in RUNTIME_ENTRIES {
+            let old = previous.join(name);
+            let staged = stage.join(name);
+            let live = home.join(name);
+            if previous_entries.iter().any(|entry| entry == name) {
+                if old.exists() {
+                    if live.exists() {
+                        rename_tracked(&live, &trash.join(name), &mut moved)?;
+                    }
+                    rename_tracked(&old, &live, &mut moved)?;
+                }
+            } else if !staged.exists() && live.exists() {
+                rename_tracked(&live, &trash.join(name), &mut moved)?;
+            }
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for (from, to) in moved.iter().rev() {
+            let _ = fs::rename(to, from);
+        }
+    }
+    result.map(|()| trash)
 }
 
 /// `evict_extra` moves a live entry the incoming tree does not have out of the way
@@ -501,11 +642,102 @@ mod tests {
         reconcile_at_launch(&home, "0.1.900-beta");
 
         confirm_activated(&home);
-        assert!(!home.join(PREV_DIR).join(PENDING_MARKER).exists());
+        for _ in 0..50 {
+            if !home.join(PREV_DIR).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         reconcile_at_launch(&home, "0.1.900-beta");
 
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert_eq!(status(&home).state, "none");
+        cleanup(home);
+    }
+
+    #[test]
+    fn every_interrupted_activation_boundary_restores_the_old_runtime() {
+        for completed_renames in 0..=RUNTIME_ENTRIES.len() * 2 {
+            let home = temp_home(&format!("crash-{completed_renames}"));
+            make_runtime(&home, "old");
+            stage_ready(&home, &versions(None));
+            let stage = home.join(STAGE_DIR);
+            let prev = home.join(PREV_DIR);
+            fs::create_dir_all(&prev).unwrap();
+            let journal = ActivationJournal {
+                versions: versions(None),
+                previous_entries: RUNTIME_ENTRIES.iter().map(|name| (*name).to_string()).collect(),
+            };
+            write_journal(&prev.join(PENDING_MARKER), &journal).unwrap();
+
+            let mut completed = 0;
+            for name in RUNTIME_ENTRIES {
+                if completed == completed_renames {
+                    break;
+                }
+                fs::rename(home.join(name), prev.join(name)).unwrap();
+                completed += 1;
+                if completed == completed_renames {
+                    break;
+                }
+                fs::rename(stage.join(name), home.join(name)).unwrap();
+                completed += 1;
+            }
+
+            roll_back_unconfirmed_with(&home, false).unwrap();
+
+            for name in RUNTIME_ENTRIES {
+                assert_eq!(tag(&home, name), "old", "boundary {completed_renames}: {name}");
+            }
+            assert!(!prev.exists());
+            cleanup(home);
+        }
+    }
+
+    #[test]
+    fn repeating_an_interrupted_rollback_keeps_the_restored_runtime() {
+        let home = temp_home("rollback-retry");
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(None));
+        let stage = home.join(STAGE_DIR);
+        let prev = home.join(PREV_DIR);
+        fs::create_dir_all(&prev).unwrap();
+        let previous_entries: Vec<String> =
+            RUNTIME_ENTRIES.iter().map(|name| (*name).to_string()).collect();
+        write_journal(
+            &prev.join(PENDING_MARKER),
+            &ActivationJournal {
+                versions: versions(None),
+                previous_entries: previous_entries.clone(),
+            },
+        )
+        .unwrap();
+        swap_entries(&home, &stage, &prev, false).unwrap();
+
+        let first_trash = restore_previous_runtime(&home, &prev, &previous_entries).unwrap();
+        let second_trash = restore_previous_runtime(&home, &prev, &previous_entries).unwrap();
+
+        for name in RUNTIME_ENTRIES {
+            assert_eq!(tag(&home, name), "old", "{name}");
+        }
+        cleanup(first_trash);
+        cleanup(second_trash);
+        cleanup(home);
+    }
+
+    #[test]
+    fn a_durable_confirmation_never_rolls_back_the_new_runtime() {
+        let home = temp_home("confirmed-crash");
+        make_runtime(&home, "old");
+        stage_ready(&home, &versions(None));
+        activate_ready(&home, "0.1.900-beta").unwrap();
+        let prev = home.join(PREV_DIR);
+        write_versions(&prev.join(CONFIRMED_MARKER), &versions(None)).unwrap();
+
+        roll_back_unconfirmed_with(&home, false).unwrap();
+
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        assert!(!prev.exists());
         cleanup(home);
     }
 
