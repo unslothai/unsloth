@@ -7,6 +7,7 @@ import test from "node:test";
 import { toolCallReplayArguments } from "../src/features/chat/tool-call-arguments.ts";
 import {
   type StreamedToolCallPart,
+  findOldestUnownedStreamedToolCallPartIndex,
   findStreamedToolCallPartIndex,
   fragmentStartsNewToolCall,
   mintStreamedToolCallId,
@@ -28,25 +29,32 @@ function accumulate(
     argsText: string;
     toolName?: string;
   })[] = [];
+  const usedIds = new Set<string>();
   const append = (
     fragment: DeltaFragment,
     argsText: string,
     id = fragment.id,
   ) => {
     parts.push({
-      toolCallId: id ?? mintStreamedToolCallId(parts, fragment.index),
+      toolCallId:
+        id ?? mintStreamedToolCallId(parts, fragment.index, usedIds),
       toolName: fragment.name,
       argsText,
       ...(id ? { _has_stable_id: true } : {}),
       ...(fragment.index !== undefined ? { _delta_index: fragment.index } : {}),
     });
+    usedIds.add(parts[parts.length - 1].toolCallId);
   };
   for (const fragment of fragments) {
-    const matched = findStreamedToolCallPartIndex(
-      parts,
-      fragment.id,
-      fragment.index,
-    );
+    const exact = fragment.id
+      ? parts.findIndex((part) => part.toolCallId === fragment.id)
+      : -1;
+    const matched =
+      exact !== -1
+        ? exact
+        : fragment.id && !fragment.name && !fragment.arguments
+          ? findOldestUnownedStreamedToolCallPartIndex(parts, fragment.index)
+          : findStreamedToolCallPartIndex(parts, fragment.id, fragment.index);
     const matchedPart = matched === -1 ? undefined : parts[matched];
     const exactId = Boolean(
       fragment.id && matchedPart?.toolCallId === fragment.id,
@@ -94,6 +102,7 @@ function accumulate(
       ...(fragment.name ? { toolName: fragment.name } : {}),
       argsText: parts[target].argsText + fragment.arguments,
     };
+    if (fragment.id) usedIds.add(fragment.id);
   }
   return parts;
 }
@@ -353,4 +362,28 @@ test("one fresh fragment can contain several complete calls", () => {
     ['{"a":1}', '{"b":2}', "[]"],
   );
   assert.equal(new Set(parts.map((part) => part.toolCallId)).size, 3);
+});
+
+test("delayed ids claim same-index calls in announcement order", () => {
+  const parts = accumulate([
+    { index: 0, name: "alpha", arguments: '{"a":1}' },
+    { index: 0, name: "beta", arguments: '{"b":2}' },
+    { id: "call-a", index: 0, arguments: "" },
+    { id: "call-b", index: 0, arguments: "" },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.toolName, part.argsText]),
+    [
+      ["call-a", "alpha", '{"a":1}'],
+      ["call-b", "beta", '{"b":2}'],
+    ],
+  );
+});
+
+test("minted ids never reuse an adopted or stable id", () => {
+  const reserved = new Set(["tool_call_0", "tool_call_2"]);
+  const parts = [{ toolCallId: "stable" }, { toolCallId: "tool_call_1" }];
+
+  assert.equal(mintStreamedToolCallId(parts, 0, reserved), "tool_call_3");
 });

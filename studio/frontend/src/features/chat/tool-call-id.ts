@@ -99,9 +99,26 @@ function findDeltaIndexSlot(
     if (part._delta_index !== deltaIndex) {
       continue;
     }
-    return unownedOnly && part._has_stable_id ? -1 : i;
+    if (unownedOnly && part._has_stable_id) {
+      continue;
+    }
+    return i;
   }
   return -1;
+}
+
+/** oldest id-less part holding `deltaIndex`, or -1. */
+export function findOldestUnownedStreamedToolCallPartIndex(
+  parts: readonly StreamedToolCallPart[],
+  deltaIndex: number | undefined,
+): number {
+  if (deltaIndex === undefined) {
+    return -1;
+  }
+  return parts.findIndex(
+    (part) =>
+      part._delta_index === deltaIndex && part._has_stable_id !== true,
+  );
 }
 
 /**
@@ -152,16 +169,19 @@ export function fragmentStartsNewToolCall(
   );
 }
 
-/** A `tool_call_<n>` id no existing part already carries. */
+/** a `tool_call_<n>` id no existing part already carries. */
 export function mintStreamedToolCallId(
   parts: readonly StreamedToolCallPart[],
-  deltaIndex: number | undefined,
+  _deltaIndex: number | undefined,
+  reservedIds: Iterable<string> = [],
 ): string {
-  let candidate = `tool_call_${deltaIndex ?? parts.length}`;
-  let next = parts.length;
-  while (parts.some((part) => part.toolCallId === candidate)) {
-    candidate = `tool_call_${next}`;
+  const taken = new Set(reservedIds);
+  for (const part of parts) {
+    taken.add(part.toolCallId);
+  }
+  let next = 0;
+  while (taken.has(`tool_call_${next}`)) {
     next += 1;
   }
-  return candidate;
+  return `tool_call_${next}`;
 }

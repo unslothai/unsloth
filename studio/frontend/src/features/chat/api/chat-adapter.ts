@@ -108,6 +108,7 @@ import {
 
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import {
+  findOldestUnownedStreamedToolCallPartIndex,
   findStreamedToolCallPartIndex,
   mintStreamedToolCallId,
   resolveToolCallPartId,
@@ -6954,11 +6955,24 @@ export function createOpenAIStreamAdapter(
                     typeof call.function?.arguments === "string"
                       ? call.function.arguments
                       : "";
-                  const existingIndex = findStreamedToolCallPartIndex(
-                    toolCallParts,
-                    stablePartId,
-                    idx,
-                  );
+                  const exactStableIndex = stablePartId
+                    ? toolCallParts.findIndex(
+                        (part) => part.toolCallId === stablePartId,
+                      )
+                    : -1;
+                  const existingIndex =
+                    exactStableIndex !== -1
+                      ? exactStableIndex
+                      : stablePartId && !nameFragment && !argsFragment
+                        ? findOldestUnownedStreamedToolCallPartIndex(
+                            toolCallParts,
+                            idx,
+                          )
+                        : findStreamedToolCallPartIndex(
+                            toolCallParts,
+                            stablePartId,
+                            idx,
+                          );
                   const matchedPart =
                     existingIndex === -1
                       ? undefined
@@ -7018,7 +7032,11 @@ export function createOpenAIStreamAdapter(
                         const callId =
                           segmentIndex === 0 && stablePartId
                             ? stablePartId
-                            : mintStreamedToolCallId(toolCallParts, idx);
+                            : mintStreamedToolCallId(
+                                toolCallParts,
+                                idx,
+                                toolPartIdByBackendId.keys(),
+                              );
                         if (!stablePartId || callId !== stablePartId) {
                           toolPartIdByBackendId.set(callId, callId);
                         }
@@ -7086,7 +7104,11 @@ export function createOpenAIStreamAdapter(
                     // the plain tool_call_<idx> spelling is already taken.
                     const callId =
                       stablePartId ||
-                      mintStreamedToolCallId(toolCallParts, idx);
+                      mintStreamedToolCallId(
+                        toolCallParts,
+                        idx,
+                        toolPartIdByBackendId.keys(),
+                      );
 
                     if (!stablePartId) {
                       toolPartIdByBackendId.set(callId, callId);
