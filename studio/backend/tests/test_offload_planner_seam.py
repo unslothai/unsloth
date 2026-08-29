@@ -1751,13 +1751,7 @@ def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
     assert llama_mod._spilled_decode_threads() == 6
     assert llama_mod._spilled_decode_threads(3) == 3
-    assert (
-        llama_mod._spilled_decode_threads(
-            3,
-            ["--threads", "4"],
-        )
-        == 4
-    )
+    assert llama_mod._spilled_decode_threads(3, ["--threads", "4"]) == 4
     assert llama_mod._spilled_decode_threads(3, ["-t=5", "--threads=1"]) == 1
 
 
@@ -1829,11 +1823,7 @@ def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
     import core.inference.llama_cpp as llama_mod
 
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
-    assert _plan(
-        _Stub(),
-        free_mib = 14 * 1024,
-        extra_args = ["--threads", "16"],
-    ) is None
+    assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = ["--threads", "16"]) is None
     plan = _plan(
         _Stub(),
         free_mib = 14 * 1024,
@@ -1852,13 +1842,8 @@ def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
 )
 def test_affinity_constrained_decode_declines_spill_planning(monkeypatch, extra_args):
     import core.inference.llama_cpp as llama_mod
-
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
-    assert _plan(
-        _Stub(),
-        free_mib = 14 * 1024,
-        extra_args = extra_args,
-    ) is None
+    assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = extra_args) is None
 
 
 def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):
@@ -2135,18 +2120,13 @@ def test_linux_topology_ignores_python_cpu_count_override(tmp_path, monkeypatch)
 
 def test_linux_amd_capacity_classes_keep_all_physical_cores(tmp_path):
     from core.inference.llama_cpp import _linux_math_core_count
-
     for cpu in range(24):
         cpu_path = tmp_path / f"cpu{cpu}"
         (cpu_path / "topology").mkdir(parents = True)
         (cpu_path / "topology" / "thread_siblings").write_text(str(cpu))
         (cpu_path / "cpu_capacity").write_text("1024" if cpu < 8 else "512")
 
-    assert _linux_math_core_count(
-        tmp_path,
-        logical_cpus = 24,
-        vendor_id = "AuthenticAMD",
-    ) == 24
+    assert _linux_math_core_count(tmp_path, logical_cpus = 24, vendor_id = "AuthenticAMD") == 24
 
 
 @pytest.mark.parametrize(
@@ -2158,7 +2138,6 @@ def test_linux_amd_capacity_classes_keep_all_physical_cores(tmp_path):
 )
 def test_linux_smt_and_non_smt_core_counts(tmp_path, sibling_sets, expected):
     from core.inference.llama_cpp import _linux_math_core_count
-
     for cpu, sibling_set in enumerate(sibling_sets):
         cpu_path = tmp_path / f"cpu{cpu}"
         (cpu_path / "topology").mkdir(parents = True)

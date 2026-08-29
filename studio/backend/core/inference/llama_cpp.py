@@ -3383,6 +3383,7 @@ def _linux_math_core_count(
     if not siblings:
         return None
     if vendor_id == "GenuineIntel":
+
         def cpu_list(path: Path) -> Optional[set[int]]:
             try:
                 raw = path.read_text().strip()
@@ -3459,18 +3460,13 @@ def _linux_math_core_count(
         if all(capacity is not None for capacity in capacities) and len(set(capacities)) > 1:
             fastest = max(capacity for capacity in capacities if capacity is not None)
             return hybrid_math_count(
-                {
-                    index
-                    for index, capacity in enumerate(capacities)
-                    if capacity == fastest
-                }
+                {index for index, capacity in enumerate(capacities) if capacity == fastest}
             )
     return len(set(siblings))
 
 
 def _spilled_decode_threads(
-    n_threads: Optional[int] = None,
-    extra_args: Optional[Iterable[str]] = None,
+    n_threads: Optional[int] = None, extra_args: Optional[Iterable[str]] = None
 ) -> Optional[int]:
     """How many threads the spilled-decode cost model should price.
 
@@ -3519,6 +3515,7 @@ def _spilled_decode_threads(
         physical = _linux_math_core_count()
     try:
         import psutil
+
         answer = psutil.cpu_count(logical = True)
         if answer and answer > 0:
             logical = int(answer)

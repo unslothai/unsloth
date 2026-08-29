@@ -509,6 +509,7 @@ def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int
     the output row (:1467). With every layer offloaded ``i_gpu_start`` is 0 and
     ``act_gpu_layers`` is ``n_layer_all + 1``, which is ``n_slots`` here.
     """
+
     def f32(value: float) -> float:
         return struct.unpack("=f", struct.pack("=f", value))[0]
 
@@ -707,9 +708,7 @@ def _select_blocks_per_device(
         if deficit <= 0:
             continue
         candidates = [
-            by_index[row]
-            for row in rows
-            if row in by_index and by_index[row].spillable_bytes > 0
+            by_index[row] for row in rows if row in by_index and by_index[row].spillable_bytes > 0
         ]
         local, freed = _select_blocks(candidates, deficit, opts.spill_order)
         if freed < deficit:
