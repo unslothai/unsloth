@@ -5306,6 +5306,21 @@ export function createOpenAIStreamAdapter(
       >();
       // Calls a boundary split off whose own document has not closed yet.
       const splitTailPartIds = new Set<string>();
+      // Split calls the backend has already withheld. Their card stays until the
+      // final sweep, but no event will ever reach it, so the next round's id-less
+      // delta has to open its own call instead of continuing this one.
+      const retiredSplitTailIds = new Set<string>();
+      const retireWithheldSplitCalls = (): void => {
+        for (const part of toolCallParts) {
+          if (
+            splitTailPartIds.has(part.toolCallId) &&
+            part.result === undefined &&
+            toolArgumentBoundaries.get(part.toolCallId)?.isOpen()
+          ) {
+            retiredSplitTailIds.add(part.toolCallId);
+          }
+        }
+      };
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
           toolPartIdByBackendId,
@@ -6892,6 +6907,9 @@ export function createOpenAIStreamAdapter(
 
               if (chunk.choices?.[0]?.finish_reason) {
                 codexRoundToolCallIds = [];
+                // The provider turn is over, so the backend now decides which
+                // split calls it withholds. Retire them before the next round.
+                retireWithheldSplitCalls();
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
               // wrap inline as <think>...</think> for parseAssistantContent.
@@ -6966,11 +6984,15 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // A card the backend already closed takes no more fragments:
-                  // the next delta in its slot is the next round's call, whatever
-                  // its scan was left holding after a malformed first round.
+                  // A card the backend already closed, or one it withheld, takes
+                  // no more fragments: the next delta in its slot is the next
+                  // round's call, whatever its scan was left holding.
                   const matched =
-                    slotPart?.result === undefined ? slotPart : undefined;
+                    slotPart &&
+                    slotPart.result === undefined &&
+                    !retiredSplitTailIds.has(slotPart.toolCallId)
+                      ? slotPart
+                      : undefined;
 
                   const argsFragment = call.function?.arguments ?? "";
                   const nameFragment = call.function?.name ?? "";
@@ -7160,11 +7182,14 @@ export function createOpenAIStreamAdapter(
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
-                    // A name-only fork starts with a fresh scan.
+                    // A name-only fork starts with a fresh scan, and is a split
+                    // like any other: the backend withholds it too if its own
+                    // document never closes.
                     toolArgumentBoundaries.set(
                       callId,
                       matched ? new ToolCallArgumentBoundaries() : scan,
                     );
+                    if (matched) splitTailPartIds.add(callId);
                     addedToolCall = true;
                   }
                 }

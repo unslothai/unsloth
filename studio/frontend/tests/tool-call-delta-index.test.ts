@@ -34,7 +34,16 @@ interface ToolEndEvent {
   toolEnd: string;
 }
 
-type StreamEvent = DeltaFragment | ToolStartEvent | ToolEndEvent;
+/** The provider-turn boundary, where the backend decides what it withholds. */
+interface RoundEndEvent {
+  finishReason: string;
+}
+
+type StreamEvent =
+  | DeltaFragment
+  | ToolStartEvent
+  | ToolEndEvent
+  | RoundEndEvent;
 
 /** The adapter's parseStreamedToolCallArgs, used by the tool_start mirror. */
 function parseArgs(raw: string): unknown {
@@ -62,7 +71,18 @@ function accumulate(
   const scans = new Map<string, ToolCallArgumentBoundaries>();
   const providerIds = new Set<string>();
   const splitTails = new Set<string>();
+  const retired = new Set<string>();
+  const withheld = (part: AccumulatedPart) =>
+    splitTails.has(part.toolCallId) &&
+    part.result === undefined &&
+    scans.get(part.toolCallId)?.isOpen() === true;
   for (const event of fragments) {
+    if ("finishReason" in event) {
+      for (const part of parts) {
+        if (withheld(part)) retired.add(part.toolCallId);
+      }
+      continue;
+    }
     if ("toolStart" in event) {
       const at = parts.findIndex((part) => part.toolCallId === event.toolStart);
       if (at !== -1) {
@@ -86,7 +106,12 @@ function accumulate(
       fragment.index,
     );
     const slotPart = target === -1 ? undefined : parts[target];
-    const matched = slotPart?.result === undefined ? slotPart : undefined;
+    const matched =
+      slotPart &&
+      slotPart.result === undefined &&
+      !retired.has(slotPart.toolCallId)
+        ? slotPart
+        : undefined;
     const name = fragment.name ?? "";
     let scan = matched ? scans.get(matched.toolCallId) : undefined;
     if (!scan) {
@@ -170,6 +195,7 @@ function accumulate(
         providerIds,
       );
     scans.set(callId, matched ? new ToolCallArgumentBoundaries() : scan);
+    if (matched) splitTails.add(callId);
     parts.push({
       toolCallId: callId,
       toolName: name,
@@ -182,12 +208,7 @@ function accumulate(
   // has to go.
   if (endOfStream) {
     for (let i = parts.length - 1; i >= 0; i -= 1) {
-      if (
-        splitTails.has(parts[i].toolCallId) &&
-        scans.get(parts[i].toolCallId)?.isOpen()
-      ) {
-        parts.splice(i, 1);
-      }
+      if (withheld(parts[i])) parts.splice(i, 1);
     }
   }
   return parts;
@@ -672,6 +693,51 @@ test("a second call on the same tool still splits on its arguments", () => {
     [
       ["web_search", '{"query":"first"}'],
       ["web_search", '{"query":"second"}'],
+    ],
+  );
+});
+
+// The name fork is a split like any other, so the backend withholds it when its
+// own document never closes. Without the marker the sweep cannot find its card
+// and it runs for the rest of the response.
+test("a name fork left unfinished is swept like any other split tail", () => {
+  const parts = accumulate(
+    [
+      { index: 0, name: "web_fetch", arguments: '{"url":"a"}' },
+      { index: 0, name: "web_search", arguments: "" },
+      { index: 0, arguments: '{"query":' },
+    ],
+    true,
+  );
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [["web_fetch", '{"url":"a"}']],
+  );
+});
+
+// The backend withheld the tail and ran only the first call, so the next round
+// has to open its own card. Continuing the tail fed the new arguments into a
+// call no event ever reaches, and the sweep then deleted them.
+test("a withheld split tail does not take the next round's arguments", () => {
+  const parts = accumulate(
+    [
+      { index: 0, name: "web_search", arguments: '{"a":1}{"b":' },
+      { toolStart: "tool_call_0" },
+      { toolEnd: "tool_call_0" },
+      { finishReason: "tool_calls" },
+      { index: 0, name: "web_search", arguments: '{"query":"second"}' },
+    ],
+    true,
+  );
+
+  // tool_call_1 is the withheld tail: its spelling stays spoken for, which is
+  // what keeps the next round on the tool_call_2 the backend mints for it.
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [
+      ["tool_call_0", '{"a":1}'],
+      ["tool_call_2", '{"query":"second"}'],
     ],
   );
 });
