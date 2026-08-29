@@ -193,28 +193,34 @@ def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
 def test_the_load_mode_rule_matches_a_measured_ram_boundary_crossing():
     """Pin where the (VRAM + RAM) rule switches to mmap. Nothing more.
 
-    This docstring has been wrong twice, so it is worth stating only what
-    replicated. gemma-4-31B Q4 on a G4 forced to 12 GiB free VRAM, host spill
-    10757 MiB (10.50 GiB), host RAM swept. Generation t/s, --fit on baselines:
+    This docstring has been wrong three times. The third time is the instructive
+    one, because it was wrong about the AXIS rather than about a data point.
 
-        RAM 15.76 GiB   mmap 22.62   no-mmap 23.23
-        RAM 10.44 GiB   mmap TIMED OUT past 2400 s   no-mmap 23.18
-        RAM 10.12 GiB   mmap 22.71                   (re-run, quieter box)
-        RAM  8.53 GiB   mmap 22.53                   (larger deficit still fine)
+    The benchmark rig forced host RAM down by holding a hog sized against
+    MemFree (SC_AVPHYS_PAGES). What determines whether a new process can get
+    memory is MemAvailable -- free pages PLUS reclaimable page cache -- and after
+    the rig downloads a 17.5 GiB GGUF those differ by tens of GiB. One cell
+    labelled "6.16 GiB of RAM" was measured starting its arms with 46.3 GiB
+    available. The hog was also sized once as `MemFree - target`, which is zero
+    when MemFree already sits near the target, so on the cells that mattered no
+    hog was formed at all.
 
-    The 10.44 GiB timeout DID NOT REPRODUCE. A re-run of the same cell served in
-    144 s at a larger deficit, and a 2 GiB deficit served too, so that timeout was
-    environmental (eleven other jobs were running) and not the rule biting. Two
-    earlier readings built on it -- "the boundary is a cliff" and "mmap is what
-    fails at the margin" -- are withdrawn.
+    So every RAM figure this docstring used to quote was a label, not a
+    condition, and the boundary was never crossed in a way a process could feel.
+    Three separate "mmap collapses" readings came out of that rig at three
+    different claimed deficits, each contradicted by the next run. All three are
+    withdrawn, and so is the framing that treated them as a thrash curve.
 
-    What replicated across seven cells is only this: --load-mode none is 2-3%
-    faster than mmap wherever the spill fits, and never slower. Whether mmap is
-    better or worse where the spill does NOT fit is still unmeasured, because no
-    run has yet reached a deficit large enough for no-mmap to fail to allocate.
+    What survives is the part that never depended on the RAM axis: --load-mode
+    none is 2-3% faster than mmap wherever the spill fits, and never slower,
+    across seven cells and three runs. Whether mmap helps where the spill does
+    NOT fit remains unmeasured.
 
-    So this test pins the switch point so a change to it is deliberate. It does
-    not claim the switch point is right, and it does not claim it is wrong.
+    The assertions below are unaffected by any of this. They pin
+    _fits_without_paging, which is a property of the code and not of any cell:
+    given a stated need, a device list and an available-RAM figure, it must
+    switch at the stated point. That is worth pinning so a change is deliberate.
+    This test does not claim the switch point is right or wrong.
     """
     mib = 1024 ** 2
     gib = 1024 ** 3
