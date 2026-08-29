@@ -1664,7 +1664,7 @@ def test_a_single_card_pays_no_split_reserve():
     assert _usable_vram([card, card, card], opts) == 3 * card - 2 * GIB
 
 
-def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
+def test_the_cost_model_is_told_physical_cores_not_hyperthreads(monkeypatch):
     """Spilled decode gets physical cores, so the penalty must be priced on them.
 
     Studio leaves --threads unset on purpose, and an unset --threads makes
@@ -1694,8 +1694,7 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
         else:
             sys.modules["psutil"] = saved
 
-    # A host that cannot answer falls back rather than guessing a ratio: halving
-    # a machine with no SMT would trade one wrong answer for another.
+    # Match llama.cpp's own last resort when physical topology is unavailable.
     class _NoAnswer:
         @staticmethod
         def cpu_count(logical = True):
@@ -1703,8 +1702,9 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
 
     sys.modules["psutil"] = _NoAnswer
     try:
-        import os as _os
-        assert llama_mod._spilled_decode_threads() == (_os.cpu_count() or 1)
+        for logical, expected in ((2, 2), (4, 4), (8, 4), (16, 8), (None, 4)):
+            monkeypatch.setattr(llama_mod.os, "cpu_count", lambda answer = logical: answer)
+            assert llama_mod._spilled_decode_threads() == expected
     finally:
         if saved is None:
             del sys.modules["psutil"]

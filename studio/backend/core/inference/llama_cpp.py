@@ -3351,10 +3351,9 @@ def _spilled_decode_threads(
     host had twice the cores the child would ever use, and the generation
     penalty came out about half of what a spill really costs there.
 
-    psutil is already a dependency of this backend (studio/backend/run.py). If it
-    cannot answer, fall back to the logical count rather than guessing a ratio:
-    SMT is common but not universal, and halving a machine that has no SMT would
-    trade one wrong answer for another.
+    psutil is already a dependency of this backend (studio/backend/run.py). Its
+    failure fallback matches llama.cpp: keep up to four logical CPUs, otherwise
+    halve them, and use four when no logical count is available.
     """
     source_env = os.environ if env is None else env
     requested: Optional[int] = None
@@ -3385,7 +3384,8 @@ def _spilled_decode_threads(
     except Exception:
         pass
     if physical is None:
-        physical = os.cpu_count() or 1
+        logical = os.cpu_count()
+        physical = logical if logical and logical <= 4 else (logical // 2 if logical else 4)
     if requested is not None and requested > 0:
         return min(requested, physical)
     return physical
