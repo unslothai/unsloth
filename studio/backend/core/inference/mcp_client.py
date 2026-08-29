@@ -345,17 +345,21 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     """argv with argv[0] resolved against the child's PATH. Windows resolves the
     command against the parent environment before ``env`` applies, so a managed-only
     ``npx`` has to be handed over as a full path."""
-    path = (env or {}).get(_path_key(env or {}))
+    path_key = _path_key(env or {})
+    explicit_path = env is not None and path_key in env
+    path = (env or {}).get(path_key)
     if not isinstance(path, str):
         path = os.environ.get("PATH", "")
     try:
         resolved = shutil.which(parts[0], path = path)
     except OSError:
         resolved = None
+    if _IS_WINDOWS and resolved is None and explicit_path and not os.path.dirname(parts[0]):
+        raise ValueError(f"Cannot find {parts[0]!r} on the MCP server's configured PATH")
     executable = resolved or parts[0]
-    if _IS_WINDOWS and _launcher_name(executable) in {"npm", "npx"}:
+    if _IS_WINDOWS:
         suffix = os.path.splitext(executable)[1].lower()
-        if suffix in {".cmd", ".bat"}:
+        if suffix in {".cmd", ".bat"} and _launcher_name(executable) in {"npm", "npx"}:
             launcher_dir = os.path.dirname(executable)
             cli = os.path.join(
                 launcher_dir,
@@ -380,6 +384,11 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
                 return [node, cli, *parts[1:]]
             raise ValueError(
                 f"Cannot launch {executable!r} without its Node executable and npm CLI script"
+            )
+        if suffix in {".cmd", ".bat"} and len(parts) > 1:
+            raise ValueError(
+                "Windows batch launchers cannot preserve MCP command arguments; "
+                "invoke the executable directly, or use node.exe with the JavaScript entry point"
             )
     return [executable, *parts[1:]]
 

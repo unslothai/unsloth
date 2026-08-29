@@ -206,6 +206,28 @@ def test_windows_stdio_argv_rejects_batch_when_cli_is_unknown(monkeypatch, tmp_p
         mcp_client._stdio_argv(["npx", "package"], {"PATH": str(tmp_path)})
 
 
+def test_windows_stdio_argv_rejects_other_batch_arguments(monkeypatch, tmp_path):
+    batch = tmp_path / "mcp-server-example.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+
+    with pytest.raises(ValueError, match = "cannot preserve MCP command arguments"):
+        mcp_client._stdio_argv(
+            ["mcp-server-example", "%TOKEN%", "a&b", "x|y"],
+            {"PATH": str(tmp_path)},
+        )
+
+
+def test_windows_stdio_argv_keeps_argument_free_batch(monkeypatch, tmp_path):
+    batch = tmp_path / "mcp-server-example.cmd"
+    batch.write_text("")
+    monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mcp_client.shutil, "which", lambda command, path = None: str(batch))
+
+    assert mcp_client._stdio_argv(["mcp-server-example"], {"PATH": str(tmp_path)}) == [str(batch)]
+
+
 @pytest.mark.skipif(os.name != "nt", reason = "requires an installed Windows Node runtime")
 @pytest.mark.parametrize("launcher", ["npm", "npx"])
 def test_windows_installed_node_launcher_avoids_cmd_shell(launcher):
@@ -298,7 +320,11 @@ def test_explicit_empty_path_blocks_host_lookup(managed_node, monkeypatch, tmp_p
     _make_executable(host, "hostcmd")
     monkeypatch.setenv("PATH", str(host))
     assert shutil.which("hostcmd") is not None
-    assert mcp_client._stdio_argv(["hostcmd"], {"PATH": ""}) == ["hostcmd"]
+    if os.name == "nt":
+        with pytest.raises(ValueError, match = "configured PATH"):
+            mcp_client._stdio_argv(["hostcmd"], {"PATH": ""})
+    else:
+        assert mcp_client._stdio_argv(["hostcmd"], {"PATH": ""}) == ["hostcmd"]
 
 
 def test_explicit_empty_path_still_allows_absolute_command(managed_node):
@@ -494,8 +520,9 @@ def test_windows_npx_sibling_runtime_is_the_one_validated(
     checked = []
     _patch_floors(
         monkeypatch,
-        lambda executable, path = None: checked.append(str(executable))
-        or not str(executable).startswith(str(old)),
+        lambda executable, path = None: (
+            checked.append(str(executable)) or not str(executable).startswith(str(old))
+        ),
     )
     configured = f"{good}{os.pathsep}{old}"
     result = node_runtime.path_with_managed_node(configured)
@@ -542,7 +569,8 @@ def test_windows_lowercase_empty_path_is_still_a_sandbox(managed_node, monkeypat
 
 
 def test_windows_lowercase_path_blocks_host_lookup(managed_node, windows_env):
-    assert mcp_client._stdio_argv(["npx"], {"Path": ""}) == ["npx"]
+    with pytest.raises(ValueError, match = "configured PATH"):
+        mcp_client._stdio_argv(["npx"], {"Path": ""})
 
 
 def test_posix_treats_path_and_lowercase_path_as_distinct(managed_node, monkeypatch, posix_env):
