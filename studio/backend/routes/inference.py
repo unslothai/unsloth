@@ -19805,7 +19805,7 @@ async def produce_openai_chat_completions(
             )
 
             # Request-scoped usage/budget receptacle (filled at gen_done).
-            _audio_stats_holder: dict = {}
+            _audio_stats_holder = _monitor_safetensors_stats_holder(monitor_id)
 
             def audio_input_generate():
                 if model_info.get("audio_type") == "whisper":

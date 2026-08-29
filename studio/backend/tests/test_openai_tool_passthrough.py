@@ -9658,6 +9658,18 @@ class TestApiMonitorAudioInput:
             inf_mod = self._patch_audio_backend(monkeypatch, ["hello", " world"])
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            holder_monitor_ids = []
+            original_stats_holder = inf_mod._monitor_safetensors_stats_holder
+
+            def tracked_stats_holder(monitor_id):
+                holder_monitor_ids.append(monitor_id)
+                return original_stats_holder(monitor_id)
+
+            monkeypatch.setattr(
+                inf_mod,
+                "_monitor_safetensors_stats_holder",
+                tracked_stats_holder,
+            )
 
             async def is_disconnected():
                 return False
@@ -9689,6 +9701,7 @@ class TestApiMonitorAudioInput:
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
+            assert holder_monitor_ids == [entry["id"]]
 
             def failing_chunks():
                 yield "partial"
