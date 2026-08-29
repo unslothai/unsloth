@@ -984,6 +984,30 @@ def test_local_inventory_scan_stops_retrying_under_constant_invalidation(monkeyp
     assert local_inventory._local_inventory_flights == {}
 
 
+def test_local_inventory_filters_and_dedupes_off_event_loop(monkeypatch):
+    main_thread = threading.get_ident()
+    worker_threads = []
+    original_dedupe = local_inventory._dedupe_local_models
+
+    async def collect(*_args, **_kwargs):
+        return []
+
+    def record_dedupe(rows):
+        worker_threads.append(threading.get_ident())
+        return original_dedupe(rows)
+
+    monkeypatch.setattr(local_inventory, "_collect_models_from_default_sources", collect)
+    monkeypatch.setattr(local_inventory, "_dedupe_local_models", record_dedupe)
+
+    asyncio.run(
+        local_inventory._scan_local_models_response(
+            "./models", [], local_inventory._local_inventory_sources()
+        )
+    )
+
+    assert worker_threads and worker_threads[0] != main_thread
+
+
 @pytest.mark.parametrize("change_kind", ["folders", "epoch"])
 def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     # What the flight key needs from the helper is that it is total and stable on

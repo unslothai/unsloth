@@ -1028,6 +1028,12 @@ def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModel
     return visible
 
 
+def _filter_and_dedupe_local_models(
+    local_models: List[LocalModelInfo],
+) -> list[LocalModelInfo]:
+    return _dedupe_local_models(_filter_hidden_models(local_models))
+
+
 async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
@@ -1057,7 +1063,7 @@ async def _scan_local_models_response(
             known_hf_caches,
             custom_folders,
         )
-        models = _dedupe_local_models(_filter_hidden_models(local_models))
+        models = await asyncio.to_thread(_filter_and_dedupe_local_models, local_models)
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
