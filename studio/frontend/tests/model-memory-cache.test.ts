@@ -201,7 +201,9 @@ test("a displaced read neither publishes nor frees the slot", async () => {
 
 test("a save displaces a runtime read already in flight", async () => {
   const original = globalThis.fetch;
-  let finishRead: ((body: Record<string, unknown>) => void) | null = null;
+  let finishRead: (body: Record<string, unknown>) => void = (_body) => {
+    assert.fail("the read did not start");
+  };
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET") === "PUT") {
       return new Response(
@@ -227,13 +229,62 @@ test("a save displaces a runtime read already in flight", async () => {
   try {
     const staleRead = loadModelMemorySettings({ force: true });
     await updateModelMemorySettings({ keepResident: true });
-    finishRead?.({ ...API, keep_resident: false });
+    finishRead({ ...API, keep_resident: false });
     await staleRead;
     assert.deepEqual(
       published,
       [true],
       "the response predating the save must not repaint subscribers",
     );
+  } finally {
+    stop();
+    globalThis.fetch = original;
+  }
+});
+
+test("a read started during a save waits for the committed value", async () => {
+  const original = globalThis.fetch;
+  let committed = false;
+  let gets = 0;
+  let finishPut: () => void = () => {
+    assert.fail("the save did not start");
+  };
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") {
+      return new Promise<Response>((resolve) => {
+        finishPut = () => {
+          committed = true;
+          resolve(
+            new Response(JSON.stringify({ ...API, keep_resident: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        };
+      });
+    }
+    gets += 1;
+    return new Response(
+      JSON.stringify({ ...API, keep_resident: committed }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const published: boolean[] = [];
+  const stop = subscribeModelMemorySettings((settings) => {
+    published.push(settings.keepResident);
+  });
+  try {
+    const save = updateModelMemorySettings({ keepResident: true });
+    const read = loadModelMemorySettings({ force: true });
+    await Promise.resolve();
+    assert.equal(gets, 0, "the read must not snapshot before the write commits");
+
+    finishPut();
+    assert.equal((await save).keepResident, true);
+    assert.equal((await read).keepResident, true);
+    assert.equal(gets, 1);
+    assert.deepEqual(published, [true, true]);
   } finally {
     stop();
     globalThis.fetch = original;

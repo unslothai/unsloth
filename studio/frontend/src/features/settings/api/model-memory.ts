@@ -4,8 +4,8 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-import { SettingsRouteAbsentError } from "./settings-route-absent";
 import { invalidateOpenAIAutoSwitchSettings } from "./openai-auto-switch";
+import { SettingsRouteAbsentError } from "./settings-route-absent";
 
 const MODEL_MEMORY_EVENT = "unsloth-model-memory-change";
 
@@ -48,6 +48,8 @@ type ApiModelMemorySettings = {
 };
 
 let inFlightModelMemory: Promise<ModelMemorySettings> | null = null;
+let inFlightModelMemoryWrite: Promise<ModelMemorySettings> | null = null;
+let deferredModelMemoryRead: Promise<ModelMemorySettings> | null = null;
 // Bumped by every forced read, so a displaced one can tell it is no longer the current
 // answer. It still resolves for its own caller; it just stops speaking for everyone else.
 let modelMemoryGeneration = 0;
@@ -113,7 +115,16 @@ async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
  */
 export async function loadModelMemorySettings(
   options: { force?: boolean } = {},
-) {
+): Promise<ModelMemorySettings> {
+  if (inFlightModelMemoryWrite) {
+    deferredModelMemoryRead ??= inFlightModelMemoryWrite
+      .catch(() => undefined)
+      .then(() => {
+        deferredModelMemoryRead = null;
+        return loadModelMemorySettings({ force: true });
+      });
+    return deferredModelMemoryRead;
+  }
   if (options.force) {
     inFlightModelMemory = null;
     modelMemoryGeneration += 1;
@@ -139,15 +150,10 @@ export async function loadModelMemorySettings(
   return inFlightModelMemory;
 }
 
-/** Partial update: omitted fields keep their stored value. */
-export async function updateModelMemorySettings(
+async function saveModelMemorySettings(
   patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
+  generation: number,
 ): Promise<ModelMemorySettings> {
-  // a get already in flight describes the state before this write. displace it
-  // so its later response cannot repaint subscribers with the value just saved.
-  inFlightModelMemory = null;
-  modelMemoryGeneration += 1;
-  const generation = modelMemoryGeneration;
   const body: Record<string, boolean> = {};
   if (patch.keepResident !== undefined) {
     body.keep_resident = patch.keepResident;
@@ -172,4 +178,22 @@ export async function updateModelMemorySettings(
   return generation === modelMemoryGeneration
     ? publishModelMemory(settings)
     : settings;
+}
+
+/** Partial update: omitted fields keep their stored value. */
+export function updateModelMemorySettings(
+  patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
+): Promise<ModelMemorySettings> {
+  // a get already in flight predates this write, and later reads must wait for it.
+  inFlightModelMemory = null;
+  modelMemoryGeneration += 1;
+  const write = saveModelMemorySettings(patch, modelMemoryGeneration);
+  inFlightModelMemoryWrite = write;
+  const clearWrite = () => {
+    if (inFlightModelMemoryWrite === write) {
+      inFlightModelMemoryWrite = null;
+    }
+  };
+  write.then(clearWrite, clearWrite);
+  return write;
 }

@@ -17,6 +17,56 @@ import { SettingsSection } from "./settings-section";
 
 const MODEL_MEMORY_POLL_MS = 5000;
 
+function coalesceRefreshes(refreshOnce: () => Promise<void>): () => void {
+  let refreshInFlight = false;
+  let refreshQueued = false;
+  const finishRefresh = () => {
+    refreshInFlight = false;
+    if (refreshQueued) {
+      refreshQueued = false;
+      refresh();
+    }
+  };
+  const refresh = () => {
+    if (refreshInFlight) {
+      refreshQueued = true;
+      return;
+    }
+    refreshInFlight = true;
+    refreshOnce().then(finishRefresh, finishRefresh);
+  };
+  return refresh;
+}
+
+async function refreshModelMemoryState(
+  isCurrent: () => boolean,
+  setSettings: (settings: ModelMemorySettings) => void,
+  setError: (error: string | null) => void,
+  fallbackError: string,
+): Promise<void> {
+  try {
+    const loaded = await loadModelMemorySettings({ force: true });
+    if (!isCurrent()) {
+      return;
+    }
+    setSettings(loaded);
+    setError(null);
+  } catch (loadError) {
+    if (!isCurrent()) {
+      return;
+    }
+    setError(loadError instanceof Error ? loadError.message : fallbackError);
+  }
+}
+
+function isRefreshCurrent(
+  cancelled: boolean,
+  currentGeneration: number,
+  expectedGeneration: number,
+): boolean {
+  return !cancelled && currentGeneration === expectedGeneration;
+}
+
 export function ModelMemorySection() {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
@@ -26,24 +76,15 @@ export function ModelMemorySection() {
   useEffect(() => {
     let cancelled = false;
     let refreshGeneration = 0;
-
-    const refresh = () => {
+    const refresh = coalesceRefreshes(async () => {
       const generation = ++refreshGeneration;
-      void loadModelMemorySettings({ force: true })
-        .then((loaded) => {
-          if (cancelled || generation !== refreshGeneration) return;
-          setSettings(loaded);
-          setError(null);
-        })
-        .catch((loadError) => {
-          if (cancelled || generation !== refreshGeneration) return;
-          setError(
-            loadError instanceof Error
-              ? loadError.message
-              : t("settings.resources.modelMemory.loadError"),
-          );
-        });
-    };
+      await refreshModelMemoryState(
+        () => isRefreshCurrent(cancelled, refreshGeneration, generation),
+        setSettings,
+        setError,
+        t("settings.resources.modelMemory.loadError"),
+      );
+    });
 
     refresh();
     const unsubscribeSettings = subscribeModelMemorySettings((next) => {
