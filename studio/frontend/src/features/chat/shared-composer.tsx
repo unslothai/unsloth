@@ -52,11 +52,16 @@ import { isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
-import { cancelPreStreamRunReservations } from "./utils/pre-stream-run-reservation";
+import {
+  cancelPreStreamRunReservations,
+  releasePreStreamRunReservation,
+  reservePreStreamRun,
+} from "./utils/pre-stream-run-reservation";
 import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
@@ -191,6 +196,7 @@ export interface CompareHandle {
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
+  threadIds: () => string[];
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
@@ -388,6 +394,16 @@ export function RegisterCompareHandle({
       return;
     }
     const currentHandles = handlesRef.current;
+    const getThreadIds = () => {
+      const itemState = aui.threadListItem().getState();
+      return Array.from(
+        new Set(
+          [itemState.id, itemState.remoteId].filter(
+            (id): id is string => Boolean(id),
+          ),
+        ),
+      );
+    };
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
@@ -410,18 +426,12 @@ export function RegisterCompareHandle({
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
+      threadIds: getThreadIds,
       waitForRunEnd: () =>
         new Promise<void>((resolve, reject) => {
           const runtime =
             aui.threads().__internal_getAssistantRuntime?.();
-          const itemState = aui.threadListItem().getState();
-          const threadIds = Array.from(
-            new Set(
-              [itemState.id, itemState.remoteId].filter(
-                (id): id is string => Boolean(id),
-              ),
-            ),
-          );
+          const threadIds = getThreadIds();
           let thread = null;
           for (const threadId of threadIds) {
             try {
@@ -537,6 +547,8 @@ export function SharedComposer({
   onExitCompare,
   model1ThreadId,
   model2ThreadId,
+  sendUnavailableReason,
+  requireStableCheckpoint = false,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
@@ -544,6 +556,8 @@ export function SharedComposer({
   onExitCompare?: () => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
+  sendUnavailableReason?: string;
+  requireStableCheckpoint?: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
@@ -1072,12 +1086,22 @@ export function SharedComposer({
       resetPromptQueue();
       return;
     }
+    if (sendUnavailableReason) {
+      resetPromptQueue();
+      toast.error("Compare unavailable", {
+        description: sendUnavailableReason,
+      });
+      return;
+    }
 
     const hasCompareHandles = Boolean(
       handlesRef.current["model1"] || handlesRef.current["model2"],
     );
     const isGeneralizedCompare =
       hasCompareHandles && Boolean(model1?.id && model2?.id);
+    const submittedCompareCheckpoint = requireStableCheckpoint
+      ? useChatRuntimeStore.getState().params.checkpoint
+      : undefined;
 
     // Generalized compare requires both panes to have a model. A half-
     // selected send either races to an empty bubble with bogus tok/s (#5569)
@@ -1837,8 +1861,44 @@ export function SharedComposer({
       }
     } else {
       // Original behavior: fire all handles simultaneously
+      const liveRuntime = useChatRuntimeStore.getState();
+      if (
+        requireStableCheckpoint &&
+        (liveRuntime.modelLoading ||
+          !modelIdsMatch(
+            submittedCompareCheckpoint,
+            liveRuntime.params.checkpoint,
+          ))
+      ) {
+        resetPromptQueue();
+        toast.error("Compare unavailable", {
+          description: "The loaded model changed while preparing the message.",
+        });
+        return;
+      }
+      const handles = Object.values(handlesRef.current);
+      const reservations: symbol[] = [];
+      if (requireStableCheckpoint) {
+        for (const handle of handles) {
+          const token = reservePreStreamRun(handle.threadIds(), {
+            usesLocalModel: true,
+            cancel: () => handle.cancel(),
+          });
+          if (!token) {
+            for (const reservation of reservations) {
+              releasePreStreamRunReservation(reservation);
+            }
+            resetPromptQueue();
+            toast.error("Compare unavailable", {
+              description: "A comparison run is already starting.",
+            });
+            return;
+          }
+          reservations.push(token);
+        }
+      }
       clearSubmittedDraft();
-      for (const handle of Object.values(handlesRef.current)) {
+      for (const handle of handles) {
         handle.append(content);
       }
     }
@@ -1894,7 +1954,8 @@ export function SharedComposer({
       pendingAudio !== null) &&
     !busy &&
     !isComposing &&
-    !isDictating;
+    !isDictating &&
+    !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one, and only one
   // of the two is ever on screen, so the chords register in both. Both gate on
@@ -2797,7 +2858,7 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip="Send message"
+              tooltip={sendUnavailableReason ?? "Send message"}
               side="bottom"
               variant="default"
               size="icon"
