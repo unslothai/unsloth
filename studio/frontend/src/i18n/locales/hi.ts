@@ -1355,6 +1355,8 @@ export const hi = {
           "अपडेट पृष्ठभूमि में तैयार हो रहा है। आप काम करते रह सकते हैं।",
         desktopReadyToRestartDescription:
           "सब तैयार है। इंस्टॉल पूरा करने के लिए फिर से शुरू करें।",
+        desktopReadyToInstallDescription:
+          "ऐप अपडेट डाउनलोड हो गया है। इसे इंस्टॉल करने के लिए बैकएंड अपडेट पूरा करें।",
         checkForUpdates: "अपडेट की जाँच करें",
         checkAgain: "फिर से जाँचें",
         retryCheck: "फिर से कोशिश करें",
@@ -1362,6 +1364,7 @@ export const hi = {
         preparing: "तैयार हो रहा है...",
         updateNow: "अभी अपडेट करें",
         restartToUpdate: "अपडेट के लिए फिर से शुरू करें",
+        finishUpdate: "अपडेट पूरा करें",
         openReleasePage: "रिलीज़ पेज खोलें",
         unknownInstall:
           "यह पता नहीं लगाया जा सका कि Unsloth कैसे इंस्टॉल किया गया था। इंस्टॉलर या PyPI इंस्टॉल के लिए, ऊपर दिए गए कमांड का उपयोग करें।",

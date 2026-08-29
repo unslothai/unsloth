@@ -1391,6 +1391,8 @@ export const de = {
           "Das Update wird im Hintergrund vorbereitet. Sie können weiterarbeiten.",
         desktopReadyToRestartDescription:
           "Alles ist bereit. Starten Sie neu, um die Installation abzuschließen.",
+        desktopReadyToInstallDescription:
+          "Das App-Update wurde heruntergeladen. Schließen Sie das Backend-Update ab, um es zu installieren.",
         checkForUpdates: "Nach Updates suchen",
         checkAgain: "Erneut suchen",
         retryCheck: "Erneut versuchen",
@@ -1398,6 +1400,7 @@ export const de = {
         preparing: "Wird vorbereitet...",
         updateNow: "Jetzt aktualisieren",
         restartToUpdate: "Zum Aktualisieren neu starten",
+        finishUpdate: "Update abschließen",
         openReleasePage: "Release-Seite öffnen",
         unknownInstall:
           "Es konnte nicht erkannt werden, wie Unsloth installiert wurde. Verwenden Sie für Installer- oder PyPI-Installationen die obigen Befehle.",

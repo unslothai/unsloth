@@ -1342,6 +1342,8 @@ export const en = {
           "The update is being prepared in the background. You can keep working.",
         desktopReadyToRestartDescription:
           "Everything is ready. Restart to finish installing the update.",
+        desktopReadyToInstallDescription:
+          "The app update is downloaded. Finish updating the backend to install it.",
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
@@ -1349,6 +1351,7 @@ export const en = {
         preparing: "Preparing...",
         updateNow: "Update now",
         restartToUpdate: "Restart to update",
+        finishUpdate: "Finish update",
         openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",

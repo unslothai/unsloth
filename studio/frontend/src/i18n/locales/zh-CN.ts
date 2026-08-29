@@ -1307,6 +1307,7 @@ export const zhCN = {
         desktopCurrentDescription: "Unsloth 会继续自动检查更新。",
         desktopPreparingDescription: "更新正在后台准备中。你可以继续工作。",
         desktopReadyToRestartDescription: "一切就绪。重启即可完成更新安装。",
+        desktopReadyToInstallDescription: "应用更新已下载。请完成后端更新以安装该版本。",
         checkForUpdates: "检查更新",
         checkAgain: "再次检查",
         retryCheck: "重试",
@@ -1314,6 +1315,7 @@ export const zhCN = {
         preparing: "正在准备...",
         updateNow: "立即更新",
         restartToUpdate: "重启以更新",
+        finishUpdate: "完成更新",
         openReleasePage: "打开发布页面",
         unknownInstall:
           "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请使用上面的命令。",

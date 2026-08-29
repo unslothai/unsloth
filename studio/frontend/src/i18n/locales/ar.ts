@@ -1347,6 +1347,8 @@ export const ar = {
           "يجري تجهيز التحديث في الخلفية. يمكنك متابعة عملك.",
         desktopReadyToRestartDescription:
           "كل شيء جاهز. أعد التشغيل لإكمال تثبيت التحديث.",
+        desktopReadyToInstallDescription:
+          "تم تنزيل تحديث التطبيق. أكمل تحديث الواجهة الخلفية لتثبيته.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
@@ -1354,6 +1356,7 @@ export const ar = {
         preparing: "جارٍ التجهيز...",
         updateNow: "التحديث الآن",
         restartToUpdate: "إعادة التشغيل للتحديث",
+        finishUpdate: "إكمال التحديث",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
           "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",

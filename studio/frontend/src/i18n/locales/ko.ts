@@ -1344,6 +1344,7 @@ export const ko = {
         desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
         desktopPreparingDescription: "업데이트를 백그라운드에서 준비하고 있습니다. 계속 작업할 수 있습니다.",
         desktopReadyToRestartDescription: "모두 준비되었습니다. 다시 시작하면 업데이트 설치가 완료됩니다.",
+        desktopReadyToInstallDescription: "앱 업데이트를 다운로드했습니다. 설치하려면 백엔드 업데이트를 완료하세요.",
         checkForUpdates: "업데이트 확인",
         checkAgain: "다시 확인",
         retryCheck: "다시 시도",
@@ -1351,6 +1352,7 @@ export const ko = {
         preparing: "준비 중...",
         updateNow: "지금 업데이트",
         restartToUpdate: "다시 시작하여 업데이트",
+        finishUpdate: "업데이트 완료",
         openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",

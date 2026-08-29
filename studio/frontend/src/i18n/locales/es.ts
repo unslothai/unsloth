@@ -1383,6 +1383,8 @@ export const es = {
           "La actualización se está preparando en segundo plano. Puedes seguir trabajando.",
         desktopReadyToRestartDescription:
           "Todo está listo. Reinicia para terminar de instalar la actualización.",
+        desktopReadyToInstallDescription:
+          "La actualización de la aplicación se descargó. Completa la actualización del backend para instalarla.",
         checkForUpdates: "Buscar actualizaciones",
         checkAgain: "Buscar de nuevo",
         retryCheck: "Intentarlo de nuevo",
@@ -1390,6 +1392,7 @@ export const es = {
         preparing: "Preparando...",
         updateNow: "Actualizar ahora",
         restartToUpdate: "Reiniciar para actualizar",
+        finishUpdate: "Finalizar actualización",
         openReleasePage: "Abrir la página de versiones",
         unknownInstall:
           "No se pudo detectar cómo se instaló Unsloth. Para instalaciones con el instalador o desde PyPI, usa los comandos anteriores.",

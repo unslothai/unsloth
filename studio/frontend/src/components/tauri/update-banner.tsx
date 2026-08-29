@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import type {
   DesktopUpdatePolicyMode,
@@ -10,11 +11,11 @@ import type {
   UpdateStatus,
 } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
-import { Spinner } from "@/components/ui/spinner";
 import {
   INITIAL_PREPARATION,
-  preparationShortLabel,
   type UpdatePreparation,
+  preparationShortLabel,
+  restartPlan,
 } from "@/lib/update-preparation";
 import { cn } from "@/lib/utils";
 import { ChevronDown, CircleAlert, Download } from "lucide-react";
@@ -73,7 +74,9 @@ export function UpdateBanner({
   const showFailure = Boolean(lastFailure) && !dismissed;
   const isPreparing = status === "preparing";
   const isReady = status === "ready";
-  const showCompact = (isPreparing || isReady) && !dismissed && !showFailure && Boolean(info);
+  const fastRestart = isReady && restartPlan(preparation) === "fast";
+  const showCompact =
+    (isPreparing || isReady) && !dismissed && !showFailure && Boolean(info);
   const showAvailable = status === "available" && !dismissed && !showFailure;
   const show = showFailure || (showAvailable && Boolean(info));
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
@@ -147,7 +150,13 @@ export function UpdateBanner({
               <Spinner className="text-foreground" label="Preparing update" />
             )}
             <p className="min-w-0 truncate text-ui-13 text-foreground">
-              <span className="font-medium">{isReady ? "Update ready" : "Preparing update"}</span>
+              <span className="font-medium">
+                {isReady
+                  ? fastRestart
+                    ? "Update ready"
+                    : "App update downloaded"
+                  : "Preparing update"}
+              </span>
               <span className="text-muted-foreground">
                 {" · "}
                 {isReady ? latestVersion : preparationShortLabel(preparation)}
@@ -161,7 +170,7 @@ export function UpdateBanner({
                 disabled={installDisabled}
                 data-testid="tauri-update-install"
               >
-                Restart
+                {fastRestart ? "Restart" : "Finish update"}
               </Button>
             )}
             {logs.length > 0 && (

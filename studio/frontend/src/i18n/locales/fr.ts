@@ -1392,6 +1392,8 @@ export const fr = {
           "La mise à jour est préparée en arrière-plan. Vous pouvez continuer à travailler.",
         desktopReadyToRestartDescription:
           "Tout est prêt. Redémarrez pour terminer l’installation de la mise à jour.",
+        desktopReadyToInstallDescription:
+          "La mise à jour de l’application a été téléchargée. Terminez la mise à jour du backend pour l’installer.",
         checkForUpdates: "Rechercher les mises à jour",
         checkAgain: "Rechercher à nouveau",
         retryCheck: "Réessayer",
@@ -1399,6 +1401,7 @@ export const fr = {
         preparing: "Préparation...",
         updateNow: "Mettre à jour maintenant",
         restartToUpdate: "Redémarrer pour mettre à jour",
+        finishUpdate: "Terminer la mise à jour",
         openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",
