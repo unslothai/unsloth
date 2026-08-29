@@ -64,6 +64,7 @@ from core.inference.tool_call_parser import (
     reprompt_to_act_message,
     strip_tool_markup,
 )
+from core.tool_healing import _think_spans_outside_tool_markup
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
@@ -714,6 +715,10 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     conversation.append({"role": "user", "content": content})
 
 
+def _leading_whitespace(text: str) -> str:
+    return text[: len(text) - len(text.lstrip())]
+
+
 def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
     try:
         return next(generator)
@@ -1043,29 +1048,60 @@ async def stream_with_studio_tools(
             # gets one nudge to actually do it, the same recovery the local loops
             # give a stalled small model, then the answer stands as written.
             visible_answer = "".join(turn.text)
+            # Classify the same text the retry replays, as the local loops do
+            # (_reprompt_intent_text). A turn that is nothing but an unpromotable call
+            # block strips to "", leaving no assistant turn to append and no promise to
+            # continue from, so nudging on the raw text replayed it as user -> user.
+            # Untrimmed: a continuation merges with no separator, so the whitespace a
+            # removed span exposed is all that keeps the partial's last word apart from
+            # the first word replayed, and "not" + " able" is not "notable".
+            stripped_answer = strip_tool_markup(
+                visible_answer,
+                final = True,
+                trim = False,
+                enabled_tool_names = allowed_tool_names,
+            )
+            replayable_answer = stripped_answer.strip()
+            boundary = _leading_whitespace(stripped_answer)
+            if not replayable_answer:
+                # A reasoning-only stall announces the plan inside the think block
+                # and nowhere else. _reprompt_intent_text falls back to that block
+                # rather than dropping the turn, so match it, and replay what was
+                # classified. Ordering matters: the fallback runs on the stripped
+                # text, so a turn that is only an unpromotable call block has no
+                # think span, stays empty, and still does not get nudged.
+                replayable_answer = "\n".join(
+                    visible_answer[start:end]
+                    for start, end in _think_spans_outside_tool_markup(visible_answer)
+                ).strip()
+                # Only a removed leading [THINK] block empties the strip while leaving a
+                # think span, so the block opens after the turn's own leading run.
+                boundary = _leading_whitespace(visible_answer)
+            if replayable_answer:
+                replayable_answer = boundary + replayable_answer
             if (
                 tools_available
                 and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
-                and is_short_intent_without_action(visible_answer)
-                and not is_reprompt_repeat(visible_answer, last_reprompt_text)
+                and is_short_intent_without_action(replayable_answer)
+                and not is_reprompt_repeat(replayable_answer, last_reprompt_text)
             ):
                 reprompts += 1
-                last_reprompt_text = visible_answer
+                last_reprompt_text = replayable_answer
                 stalled_hosted = turn.hosted_replay_text()
-                if stalled_hosted:
-                    # A hosted tool did run, the model just did not go on to ask
-                    # for a local one. The replay below never happens on this
-                    # path, so the reprompted request would be told to continue
-                    # from output it can no longer see.
+                stalled_content = (
+                    f"{replayable_answer}\n\n{stalled_hosted}"
+                    if replayable_answer and stalled_hosted
+                    else replayable_answer or stalled_hosted
+                )
+                if stalled_content:
+                    # The retry must see the assistant turn it is being asked to
+                    # continue from. Without this, plain prose stalls are replayed
+                    # as user -> user and the provider answers from scratch.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
-                        "content": (
-                            f"{visible_answer}\n\n{stalled_hosted}"
-                            if visible_answer
-                            else stalled_hosted
-                        ),
+                        "content": stalled_content,
                     }
                     if turn.reasoning_extra:
                         # Gemini 3 stows the text part's thoughtSignature here

@@ -189,6 +189,10 @@ def test_strip_tool_markup_is_pinned_at_both_final_values():
 
     assert strip_tool_markup(text, final = False, enabled_tool_names = names) == " tail"
     assert strip_tool_markup(text, final = True, enabled_tool_names = names) == "tail"
+    # trim = False keeps the boundary the removed span exposed, which the nudge replay
+    # merges onto a resumed partial.
+    untrimmed = strip_tool_markup(text, final = True, trim = False, enabled_tool_names = names)
+    assert untrimmed == " tail"
 
 
 def test_an_unrelated_addition_elsewhere_does_not_fail_the_guard():

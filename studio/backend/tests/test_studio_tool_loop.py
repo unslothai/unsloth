@@ -111,6 +111,7 @@ def _run(
     tools = None,
     tool_choice = None,
     messages = None,
+    continue_final_message = False,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -134,6 +135,7 @@ def _run(
                 session_id = "s1",
                 thread_id = "t1",
                 tool_choice = tool_choice,
+                continue_final_message = continue_final_message,
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
@@ -774,13 +776,159 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
-    # The nudge is a user turn appended after the stall.
+    # The retry sees the assistant stall before the nudge, not user -> user.
     second = transport.requests[1]["messages"]
-    assert second[-1]["role"] == "user"
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert second[-2]["content"] == "I'll search for that now."
 
 
-def test_a_stalled_model_is_not_nudged_by_default(executed):
-    """The external loop must not invent a retry for an omitted opt-in flag."""
+def test_a_reasoning_only_stall_is_nudged_and_replayed(executed):
+    """Magistral-style stalls put the whole promise inside the think block.
+
+    Stripping tool markup empties such a turn, so classifying the stripped text
+    alone would drop the nudge the local loops still give. The replayed turn must
+    be the text that was classified, or the retry is user -> user again.
+    """
+    stall = "[THINK]I will search now.[/THINK]"
+    transport = FakeTransport(
+        [
+            [_sse({"content": stall}), _sse(finish = "stop"), _DONE],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = True)
+
+    assert [c["name"] for c in executed] == ["web_search"]
+    second = transport.requests[1]["messages"]
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert second[-2]["content"] == stall
+
+
+@pytest.mark.parametrize(
+    "stall, merged",
+    [
+        (
+            "[THINK]The user wants a search.[/THINK] I will search now.",
+            "The answer is not I will search now.",
+        ),
+        # Restored as written, not normalised to one space.
+        (
+            "[THINK]The user wants a search.[/THINK]\n\nI will search now.",
+            "The answer is not\n\nI will search now.",
+        ),
+        # No markup to remove, so the model's own boundary is already at index 0.
+        (" I will search now.", "The answer is not I will search now."),
+        # The model wrote none, and inventing one would change what it continued.
+        ("I will search now.", "The answer is notI will search now."),
+    ],
+)
+def test_a_continued_stall_keeps_the_boundary_the_model_wrote(executed, stall, merged):
+    """The merge has no separator, so a trimmed-away space glues two words.
+
+    strip_tool_markup trims, and after a removed [THINK] block that trim sits past
+    index 0, so measuring the leading run of the raw turn reports none.
+    """
+    transport = FakeTransport(
+        [
+            [_sse({"content": stall}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(
+        transport,
+        nudge_tool_calls = True,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "The answer is not"},
+        ],
+        continue_final_message = True,
+    )
+
+    second = transport.requests[1]["messages"]
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert second[-2]["content"] == merged
+
+
+_NOPE_CALL = '<tool_call>{"name": "nope", "arguments": {"q": "I will search now."}}</tool_call>'
+
+
+@pytest.mark.parametrize(
+    "stall, merged",
+    [
+        # The markup quotes the prose back, so searching the raw turn for the surviving
+        # text finds the copy inside the arguments, whose own boundary is the quote.
+        (" I will search now." + _NOPE_CALL, "The answer is not I will search now."),
+        # Stripped at both ends with nothing between the block and the prose, so there
+        # is no boundary to restore and one must not be invented.
+        (
+            "[THINK]plan[/THINK]I will search now." + _NOPE_CALL,
+            "The answer is notI will search now.",
+        ),
+    ],
+)
+def test_the_boundary_is_read_off_the_stripped_turn_not_searched_for(executed, stall, merged):
+    """The surviving prose can also sit inside the markup that was stripped out."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": stall}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(
+        transport,
+        auto_heal = False,
+        nudge_tool_calls = True,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "The answer is not"},
+        ],
+        continue_final_message = True,
+    )
+
+    second = transport.requests[1]["messages"]
+    assert second[-2]["content"] == merged
+
+
+def test_a_markup_only_stall_is_still_not_nudged(executed):
+    """The reasoning fallback runs on the stripped text, so it must not revive Case G."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": '<tool_call>{"name": "not_enabled"}</tool_call>'}),
+                _sse(finish = "stop"),
+                _DONE,
+            ],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, auto_heal = False, nudge_tool_calls = True)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+
+
+def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
+    """An API caller that omits the opt-in must not get a hidden retry."""
+    from core.inference import passthrough_healing
+
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
     transport = FakeTransport(
         [
             [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
@@ -794,6 +942,33 @@ def test_a_stalled_model_is_not_nudged_by_default(executed):
     assert "SHOULD NOT APPEAR" not in _visible_text(lines)
 
 
+def test_a_stalled_model_respects_explicit_nudge_off(executed):
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = False)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+
+
+def test_nudging_is_independent_of_text_form_healing(executed):
+    """Codex emits structured calls, but still needs plan-without-action recovery."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, auto_heal = False, nudge_tool_calls = True)
+
+    assert len(transport.requests) == 2
+
+
 def test_a_finished_answer_is_not_nudged(executed):
     """A real answer must never be re-prompted into calling a tool."""
     answer = (
@@ -801,7 +976,7 @@ def test_a_finished_answer_is_not_nudged(executed):
         "since the tenth century and remains the largest city in the country."
     )
     transport = FakeTransport([[_sse({"content": answer}), _sse(finish = "stop"), _DONE]])
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
 
     assert executed == []
     assert len(transport.requests) == 1
@@ -911,6 +1086,45 @@ def test_replayed_assistant_content_carries_no_markup(executed):
     assistant = [m for m in replayed if m.get("role") == "assistant"][-1]
     assert "<tool_call>" not in (assistant.get("content") or "")
     assert assistant.get("tool_calls")
+
+
+def test_truncated_tool_markup_is_not_replayed_during_a_nudge(executed):
+    """A length-truncated call is visible to the user, but not provider context."""
+    markup = '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
+    transport = FakeTransport(
+        [
+            [_sse({"content": f"I'll search now. {markup}"}), _sse(finish = "length"), _DONE],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = True)
+
+    replayed = transport.requests[1]["messages"]
+    assistant = [m for m in replayed if m.get("role") == "assistant"][-1]
+    assert assistant["content"] == "I'll search now."
+
+
+def test_a_markup_only_stall_is_not_nudged(executed):
+    """Nothing to continue from, so the retry would have been user -> user.
+
+    An intent phrase buried in an unpromotable call block reads as a stall to the
+    classifier but strips to nothing, so there is no assistant turn to append and
+    the nudge would merge into the user's own message. Easiest to reach on a
+    transport that does not heal text-form calls, which is the Codex shape.
+    """
+    markup = (
+        '<tool_call>{"name": "nope", "arguments": {"q": "I will look this up now"}}</tool_call>'
+    )
+    transport = FakeTransport(
+        [
+            [_sse({"content": markup}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, auto_heal = False, nudge_tool_calls = True)
+
+    assert len(transport.requests) == 1
 
 
 def test_conversation_roles_stay_alternating_for_a_strict_server(executed):
