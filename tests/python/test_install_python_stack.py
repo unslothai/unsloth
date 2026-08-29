@@ -2332,7 +2332,13 @@ class TestRecordlessDistributionRecovery:
 
         attempts = []
 
-        def fake_run(label, cmd, *, quiet = True, check = True):
+        def fake_run(
+            label,
+            cmd,
+            *,
+            quiet = True,
+            check = True,
+        ):
             attempts.append(cmd)
             failed = len(attempts) == 1
             return types.SimpleNamespace(
@@ -2352,7 +2358,13 @@ class TestRecordlessDistributionRecovery:
 
         attempts = []
 
-        def fake_run(label, cmd, *, quiet = True, check = True):
+        def fake_run(
+            label,
+            cmd,
+            *,
+            quiet = True,
+            check = True,
+        ):
             attempts.append(cmd)
             return types.SimpleNamespace(returncode = 1, stdout = b"ERROR: no matching distribution")
 
