@@ -4116,8 +4116,7 @@ def _stage_update(*, local: bool, package: str, verbose: bool, verify: bool) -> 
             typer.echo(f"[TAURI:ERROR] {exc}")
             raise typer.Exit(1)
         except Exception as exc:
-            # A full disk, a timed-out probe, a copy the OS refused: the desktop reads
-            # this stream, so a traceback here would reach it as an unlabelled failure.
+            # convert staging exceptions to the structured error stream consumed by the desktop.
             typer.echo(f"[TAURI:ERROR] {type(exc).__name__}: {exc}")
             raise typer.Exit(1)
     typer.echo(f"Staged Unsloth Studio {result['backend_version']} at {result['root']}")

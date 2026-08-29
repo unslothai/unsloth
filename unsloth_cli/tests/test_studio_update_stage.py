@@ -315,8 +315,7 @@ def test_update_stage_reports_an_unexpected_failure_as_a_tauri_error(monkeypatch
     monkeypatch.delenv(_studio_stage.STAGE_ROOT_ENV, raising = False)
 
     def failing_stage(home, *, update_args, echo):
-        # A full disk during the clone, not a StageError: the desktop parses this
-        # stream, so a traceback would reach it as an unlabelled failure.
+        # model an unlabeled full-disk staging failure.
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(_studio_stage, "stage", failing_stage)

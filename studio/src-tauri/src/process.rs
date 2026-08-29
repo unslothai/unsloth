@@ -543,10 +543,7 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
     acquire_file_studio_runtime_launch_guard(&crate::diagnostics::studio_dir())
 }
 
-/// serialize creation of managed-environment children with install/repair.
-///
-/// the guard ends when the synchronous operation returns, so platform locks do
-/// not cross an await.
+/// serialize managed-environment child creation with install and repair.
 #[cfg(windows)]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,

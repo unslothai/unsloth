@@ -3304,8 +3304,7 @@ if (-not $IsPipInstall) {
                 Exit-SetupFailure "UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist"
             }
             $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
-            # An override pointing at the legacy default maps to the legacy sibling
-            # ~/.unsloth/node (what the runtime resolver and setup.sh use), not <root>/node.
+            # legacy default overrides map to ~/.unsloth/node, matching runtime resolution.
             $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
             if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
                 $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
