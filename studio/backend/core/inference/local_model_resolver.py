@@ -456,6 +456,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
+
         custom_found = []
         for folder in list_scan_folders():
             try:

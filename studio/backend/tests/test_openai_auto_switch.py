@@ -2598,9 +2598,7 @@ def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch)
     monkeypatch.setattr(
         models_route,
         "_scan_models_dir",
-        lambda path, **kwargs: scan_models_dir(path, **kwargs)
-        if path in {root, quant_dir}
-        else [],
+        lambda path, **kwargs: scan_models_dir(path, **kwargs) if path in {root, quant_dir} else [],
     )
     monkeypatch.setattr(
         models_route,

@@ -79,9 +79,7 @@ def test_same_checkpoint_quantizations_use_one_grouped_row(tmp_path):
     variants, _ = gguf.list_local_gguf_variants(str(model), model_root = str(root))
     assert {variant.quant for variant in variants} == {"Q4_K_M", "Q8_0"}
     assert Path(detect_gguf_model(str(model), model_root = str(root))) == q8
-    assert Path(
-        _find_local_gguf_by_variant(str(model), "Q4_K_M", model_root = str(root))
-    ) == q4
+    assert Path(_find_local_gguf_by_variant(str(model), "Q4_K_M", model_root = str(root))) == q4
 
 
 def test_distinct_checkpoints_sharing_a_quant_use_file_rows(tmp_path):
@@ -105,9 +103,7 @@ def test_distinct_checkpoints_sharing_a_quant_use_file_rows(tmp_path):
         ("Model-A-Q4_K_M.gguf", "model-a-Q8_0.gguf"),
     ],
 )
-def test_checkpoint_names_preserve_exact_identity(
-    tmp_path, first_name, second_name
-):
+def test_checkpoint_names_preserve_exact_identity(tmp_path, first_name, second_name):
     root = tmp_path / "root"
     holder = root / "holder"
     first = _write_gguf(holder / first_name)
@@ -339,9 +335,7 @@ def test_nested_independent_gguf_models_do_not_share_a_parent_group(tmp_path):
     assert {Path(row.path) for row in rows} == {loose, nested}
     variants, _ = gguf.list_local_gguf_variants(str(nested), model_root = str(root))
     assert [variant.quant for variant in variants] == ["Q8_0"]
-    assert _find_local_gguf_by_variant(
-        str(nested), "Q4_K_M", model_root = str(root)
-    ) is None
+    assert _find_local_gguf_by_variant(str(nested), "Q4_K_M", model_root = str(root)) is None
 
 
 def test_nested_quant_directory_stays_in_the_parent_group(tmp_path):
@@ -438,10 +432,7 @@ def test_aliased_nested_independent_loose_root_stays_selectable(tmp_path):
 
     rows = _custom_rows(root, alias_child)
 
-    assert {Path(row.path).resolve() for row in rows} == {
-        parent.resolve(),
-        loose.resolve(),
-    }
+    assert {Path(row.path).resolve() for row in rows} == {parent.resolve(), loose.resolve()}
 
 
 def test_mixed_nested_roots_dedupe_only_the_matching_quant_group(tmp_path):
@@ -497,14 +488,10 @@ def test_nested_symlinked_variant_directory_stays_selectable(tmp_path):
     assert {Path(row.path) for row in rows} == {q4, alias}
     variants, _ = gguf.list_local_gguf_variants(str(alias), model_root = str(root))
     assert [variant.quant for variant in variants] == ["Q8_0"]
-    assert Path(
-        _find_local_gguf_by_variant(str(alias), "Q8_0", model_root = str(root))
-    ).samefile(q8)
+    assert Path(_find_local_gguf_by_variant(str(alias), "Q8_0", model_root = str(root))).samefile(q8)
 
 
-def test_windows_junction_child_is_suppressed_when_parent_walk_sees_it(
-    tmp_path, monkeypatch
-):
+def test_windows_junction_child_is_suppressed_when_parent_walk_sees_it(tmp_path, monkeypatch):
     model = tmp_path / "root" / "model"
     q4 = _write_gguf(model / "model-a-Q4_K_M.gguf")
     outside = tmp_path / "outside" / "Q8_0"

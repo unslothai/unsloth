@@ -914,9 +914,7 @@ def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModel
     return visible
 
 
-def _filter_and_dedupe_local_models(
-    local_models: List[LocalModelInfo],
-) -> list[LocalModelInfo]:
+def _filter_and_dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     return _dedupe_local_models(_filter_hidden_models(local_models))
 
 
