@@ -410,7 +410,7 @@ def test_this_workflows_own_leftovers_still_occupy_slots():
 
 
 def test_an_idle_account_clears_the_kernel_this_workflow_pushes():
-    """One kernel, carrying all four legs, leaving the second slot for Studio.
+    """One kernel, carrying all four legs, leaving the second slot for Unsloth.
 
     This asserted 2, when four legs meant two kernels of two and the notebook
     leg took the whole account. The legs now queue inside a single kernel, so
@@ -4267,7 +4267,7 @@ def test_the_frontier_leg_rides_in_the_one_kernel_rather_than_opening_a_session(
     BILLING and is no longer the binding constraint. The account allows two
     concurrent GPU sessions; two kernels took both, and
     kaggle-t4-studio-gpu-ci.yml runs on the same account, so the notebook leg
-    locked Studio out for as long as it ran. Everything now packs into one
+    locked Unsloth out for as long as it ran. Everything now packs into one
     kernel and frontier queues behind the legs ahead of it.
 
     So the property worth pinning is no longer "frontier shares a full kernel"
@@ -4285,7 +4285,7 @@ def test_the_frontier_leg_rides_in_the_one_kernel_rather_than_opening_a_session(
     assert len(wired) == 1, f"frontier appears in {len(wired)} kernels, expected 1"
     assert len(legs.KERNELS) == 1, (
         f"{len(legs.KERNELS)} kernels means {len(legs.KERNELS)} concurrent Kaggle "
-        "sessions, and the account only has two. Studio needs one of them."
+        "sessions, and the account only has two. Unsloth needs one of them."
     )
     assert "frontier" not in legs.UNWIRED
 

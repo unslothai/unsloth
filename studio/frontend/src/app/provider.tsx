@@ -19,7 +19,10 @@ import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { DownloadManagerPanel } from "@/features/hub/download-manager";
+import {
+  DownloadManagerPanel,
+  dismissStartToasts,
+} from "@/features/hub/download-manager";
 import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
@@ -428,6 +431,8 @@ function TauriUpdateLayer({
       <UpdateBanner
         status={update.status}
         info={update.info}
+        preparation={update.preparation}
+        logs={update.logs}
         dismissed={update.dismissed}
         lastFailure={update.lastFailure}
         isExternalServer={isExternalServer}
@@ -882,6 +887,11 @@ export function AppProvider({ children }: AppProviderProps) {
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,
   );
+  // A start toast describes the surface it was raised on, and lasts 8s from a
+  // root-level Toaster; see dismissStartToasts for what it lands on otherwise.
+  useEffect(() => {
+    dismissStartToasts();
+  }, [pathname]);
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>

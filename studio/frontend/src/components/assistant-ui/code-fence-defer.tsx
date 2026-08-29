@@ -13,7 +13,9 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
+import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
+import { normalizeLanguage } from "./code-plugin";
 
 /*
  * MONOTONIC fence highlighting: a fence is rendered as a plain shell until the
@@ -89,11 +91,17 @@ const readBuildFlag = (): string => {
 
 // Streamdown trims trailing newlines off a fence body before rendering it, so
 // the shell has to as well or the two differ by a blank line of height.
-export const trimTrailingNewlines = (text: string): string => {
+//
+// The length is split out because `warmGrammars` needs the size of what a warm WOULD tokenize on
+// every render, and slicing a 20,000 character fence to measure it is a copy per render.
+export const trimmedLength = (text: string): number => {
   let end = text.length;
   while (end > 0 && text[end - 1] === "\n") end -= 1;
-  return text.slice(0, end);
+  return end;
 };
+
+export const trimTrailingNewlines = (text: string): string =>
+  text.slice(0, trimmedLength(text));
 
 /*
  * AN EMPTY FENCE IS ONE LINE TALL, not nothing.
@@ -178,6 +186,8 @@ type FenceGate = {
   near: HTMLElement | null;
   outer: HTMLElement | null;
   language: string | null;
+  /** Upper bound on what `warm(true)` would tokenize; trimming only removes trailing newlines. */
+  chars: number;
   /** `true` tokenizes this fence's source now; `false` only loads its grammar. */
   warm: (tokens: boolean) => void;
   latch: () => void;
@@ -330,25 +340,89 @@ const upgradeEverythingForPrint = (): void => {
 };
 
 /*
- * GRAMMARS, WARMED AT IDLE. NOT TOKENS.
+ * GRAMMARS, WARMED AT IDLE, ON REAL TEXT, ONE TOKENIZATION PER TASK.
  *
- * `warm(false)` highlights an EMPTY string in the fence's language: the grammar loads, nothing is
- * tokenized, no span is mounted, the document stays the size deferral made it. It buys that
- * `latchNow`'s synchronous path cannot be defeated by a still-loading grammar -- on a jump into a
- * language the reader has not met, and on a print, where there is no later frame to correct in.
- * Deduplicated by language and scheduled at idle: one load per language, nothing when nothing is
- * deferred.
+ * One fence per language, so `latchNow`'s synchronous path cannot be defeated by a still-loading
+ * grammar: on a jump into a language the reader has not met, and on a print, where there is no
+ * later frame to correct in. Nothing runs when nothing is deferred. "Per language" means per
+ * GRAMMAR, `normalizeLanguage`, not per fence tag: ```py and ```python are one grammar to the
+ * highlighter, and two keys here would warm it twice, on two different fences.
+ *
+ * IT USED TO WARM ON AN EMPTY STRING. Loading a grammar is the cheap half; running it over text
+ * the first time is not, and `""` never does the second. So the first REAL tokenization still paid
+ * the whole one-off cost, and with deferral on that landed in one frame, during a scroll, on the
+ * fence the reader had just reached. Three arms out of ONE build at the 100K rung on WebKitGTK
+ * 2.50.4, two reps each, so a difference between arms cannot be a build difference:
+ *
+ *                          worst scroll frame   warm callbacks, ms
+ *   warm on ""                 1200, 1085 ms     1                and 1
+ *   warm on real text           183,  190 ms     1                and 2
+ *   this: split, eager loads    187,  183 ms     1/64/21/32/1016  and 2/68/36/52/1104
+ *
+ * The 1,016 ms is ONE tokenize call, typescript's first, which nothing here can subdivide; the
+ * split only keeps the other four off it. Every arm pays that call: unsplit at t=6.5 s inside a
+ * grammar-load callback, which is why its warm reads 1 ms, and on the `""` arm at t=36.5 s, inside
+ * the scroll, where it IS the worst frame. Moved, not skipped, and the totals say so: tokenize time
+ * RISES, 1607-1746 ms to 1917-2039 ms, because a warmed fence is tokenized once and read from cache
+ * later. Mount is unaffected, worst idle frame is best here (25 and 32 ms against 46/37 unsplit and
+ * 38/43 on `""`), idle is 62.5 fps and 7.1 to 7.4% busy on every arm, the three arms render the
+ * same document (7,259 spans, 27,045 elements, 56 code blocks), and the rig is jam-controlled: a
+ * 200 ms/250 ms hog reads 81% busy.
+ *
+ * WHY THE TOKENIZATIONS YIELD AND THE LOADS DO NOT. An idle callback only chooses when it STARTS:
+ * nothing yields once it runs, its 2,000 ms timeout can start it on a busy thread, and WebKitGTK
+ * has no `requestIdleCallback` at all, so this venue takes the `setTimeout` fallback and cannot
+ * even pick a quiet moment. With a grammar already loaded `code.highlight` tokenizes INLINE and N
+ * languages concatenate -- driving shiki with this component's configuration, the five languages
+ * here (c, python, go, typescript, rust) cost 746 ms back to back. But `highlight` answers `null`
+ * WHILE a grammar loads, so yielding the loads too would put the fifth grammar 500 ms x N away and
+ * a jump or a print inside that window would get streamdown's plain fallback out of `latchNow`'s
+ * flush -- the defect this whole pre-warm exists to prevent. So every load starts in the first
+ * pass and only the tokenizing is spread out.
+ *
+ * NOTHING BOUNDED THE SIZE OF A WARM, and this comment used to claim `MAX_HIGHLIGHT_CHARS` did.
+ * It does not reach here: `markdownPluginNeeds` applies it in `markdown-preview.tsx` and
+ * `model-readme.tsx`, `tool-code-cell.tsx` and `attachment-preview.tsx` apply it to their own
+ * source, but `markdown-text.tsx` supplies the code plugin unconditionally and `FenceBlock` warms
+ * the whole body -- and `code-plugin.ts`'s `evict` keeps the last fence whatever its size. A LATCH
+ * is demanded work and stays uncapped; a warm is SPECULATIVE, on a fence the reader may never
+ * reach, so it is capped at the same 20,000 characters. Over the cap, and for a fence that is
+ * EMPTY or nothing but newlines, the grammar loads and nothing is tokenized; neither marks the
+ * language warmed, so a later fence that can warm it still does. The cap costs the measurement
+ * nothing: the largest fence at this rung is 2,817 characters.
  */
 const grammarsWarmed = new Set<string>();
+const grammarsLoaded = new Set<string>();
 let warmScheduled = false;
+
+// Keyed the way `highlight` keys it, or `py` and `Python` are two keys for one grammar.
+const grammarOf = (gate: FenceGate): string =>
+  normalizeLanguage(gate.language ?? "text");
 
 const warmGrammars = (): void => {
   warmScheduled = false;
+  // EVERY GRAMMAR STARTS LOADING IN THE FIRST TASK. A load is cheap and asynchronous, and it is
+  // what `latchNow` needs already present; only the tokenizations below are worth yielding for.
   for (const gate of unreached) {
-    const language = gate.language ?? "text";
-    if (grammarsWarmed.has(language)) continue;
-    grammarsWarmed.add(language);
+    const language = grammarOf(gate);
+    if (grammarsLoaded.has(language)) continue;
+    grammarsLoaded.add(language);
     gate.warm(false);
+  }
+  for (const gate of unreached) {
+    const language = grammarOf(gate);
+    if (grammarsWarmed.has(language)) continue;
+    // An EMPTY fence would tokenize `""` and teach this loop nothing, and one over the cap is not
+    // ours to tokenize speculatively. Neither marks the grammar warmed, so a later fence in the
+    // same language still gets its real warm.
+    if (gate.chars === 0 || gate.chars > MAX_HIGHLIGHT_CHARS) continue;
+    grammarsWarmed.add(language);
+    // TRUE, not false: real text is what takes the one-off tokenizer cost off the scroll.
+    gate.warm(true);
+    // Yield. `grammarsWarmed` only grows, so the chain drains a language per task; a pass that
+    // warms nothing falls out of the loop and schedules nothing.
+    scheduleGrammarWarm();
+    return;
   }
 };
 
@@ -476,6 +550,8 @@ const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
  *                 latches, so that finishing cannot take the highlighting back.
  * @param language  used only to load one grammar per language rather than one per fence; `null`
  *                 warms plain text.
+ * @param chars  this fence's source length, read only by `warmGrammars` to keep a SPECULATIVE
+ *                 warm inside `MAX_HIGHLIGHT_CHARS`. A latch is demanded work and is not capped.
  * @param warm  drive the highlighter over this fence: `true` for tokens, `false` for the grammar
  *                 alone. See `latchNow`. Held in a ref, not an effect dependency, so an
  *                 unmemoized caller cannot rebuild every observer in the thread on every render.
@@ -485,6 +561,7 @@ export function useFenceReached(
   enabled: boolean,
   streaming: boolean,
   language: string | null,
+  chars: number,
   warm: (tokens: boolean) => void,
 ): boolean {
   const [latched, setLatched] = useState(false);
@@ -605,6 +682,7 @@ export function useFenceReached(
       near,
       outer,
       language,
+      chars,
       warm: (tokens) => warmRef.current(tokens),
       latch: () => setLatched(true),
       // Reuses `generation`: this fence has just latched, so every effect keyed on it

@@ -2365,9 +2365,49 @@ def test_an_embedding_only_request_still_counts_the_default_projections():
     one_matrix = tied.vocab_size * tied.hidden_size
     for targets in (["embed_tokens"], ["embed_tokens", "lm_head"], ["lm_head"]):
         assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
-    # "all-linear" expands in the trainer too, but matches no counter here unnormalized.
+    # For Llama, all-linear and the default projection set are equivalent.
     for targets in (["all-linear", "lm_head"], ["all-linear", "embed_tokens"]):
         assert compute_lora_params(tied, 128, targets) == projections + one_matrix, targets
+
+
+def test_cpt_all_linear_payload_counts_lfm2_linear_layers():
+    arch = ModelArchConfig(
+        hidden_size = 2048,
+        num_hidden_layers = 2,
+        num_attention_heads = 32,
+        num_key_value_heads = 8,
+        intermediate_size = 12288,
+        vocab_size = 65536,
+        tie_word_embeddings = True,
+        layer_types = ["conv", "full_attention"],
+        model_type = "lfm2",
+        block_auto_adjust_ff_dim = True,
+        block_ffn_dim_multiplier = 1.0,
+        block_multiple_of = 256,
+    )
+    all_linear = compute_lora_params(arch, 128, ["all-linear"])
+    combined = compute_lora_params(
+        arch,
+        128,
+        ["all-linear", "embed_tokens", "lm_head"],
+    )
+    one_matrix = arch.vocab_size * arch.hidden_size
+    conv_linears = [(2048, 6144), (2048, 2048), (2048, 8192), (2048, 8192), (8192, 2048)]
+    attention_linears = [
+        (2048, 2048),
+        (2048, 512),
+        (2048, 512),
+        (2048, 2048),
+        (2048, 8192),
+        (2048, 8192),
+        (8192, 2048),
+    ]
+    expected_all_linear = sum((in_dim + out_dim) * 128 for in_dim, out_dim in conv_linears)
+    expected_all_linear += sum((in_dim + out_dim) * 128 for in_dim, out_dim in attention_linears)
+
+    assert all_linear == expected_all_linear
+    assert combined == all_linear + one_matrix
+    assert all_linear > compute_lora_params(arch, 128, list(DEFAULT_TARGET_MODULES))
 
 
 def test_qualified_embedding_names_are_counted_too():

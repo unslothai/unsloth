@@ -36,6 +36,11 @@ import {
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceInForeground,
+  useShortcut,
+} from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   AUDIO_ACCEPT,
@@ -77,12 +82,14 @@ import {
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
+import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -115,7 +122,7 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import { resolveFitMaxSeqLength, resolveExplicitCtxPin } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -1611,16 +1618,13 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // Keep an explicit Manual+Auto context pin the load just applied (so a
-        // later Apply/Reset doesn't silently revert the model to auto-fit
-        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
-        // compare loads don't send the pin, so their baseline clears.
+        // This pane's own saved Context Length, not compareMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        // Non-GGUF compare loads send a sequence length rather than an n_ctx, so
+        // their baseline clears.
         const keepCustomCtx = targetIsGguf
-          ? resolveManualAutoCtxPin(
-              effectiveGpuMemoryMode,
-              effectiveGpuLayers,
-              effectiveCustomContextLength,
-            )
+          ? resolveExplicitCtxPin(effectiveCustomContextLength)
           : null;
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
@@ -1690,12 +1694,10 @@ export function SharedComposer({
           loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
-          // Record the context this pane loaded with (like the single-model path)
-          // so when it becomes the active model, the UI and later reload/save use
-          // its context, not the previous/default one.
-          customContextLength: targetIsGguf
-            ? (ownConfig.customContextLength ?? keepCustomCtx)
-            : null,
+          // Same value as the baseline above, so that when this pane becomes the
+          // active model the UI and later reload/save use the context it actually
+          // loaded with, not the previous/default one.
+          customContextLength: keepCustomCtx,
           ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
           ggufNativeContextLength: resp.is_gguf
             ? (resp.native_context_length ?? null)
@@ -1726,6 +1728,7 @@ export function SharedComposer({
         const synced = {
           isVision: Boolean(resp.is_vision),
           isGguf: Boolean(resp.is_gguf),
+          isMlx: Boolean(resp.is_mlx),
           isAudio: Boolean(resp.is_audio),
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
@@ -1893,6 +1896,56 @@ export function SharedComposer({
     !isComposing &&
     !isDictating;
 
+  // Compare mode swaps this composer in for the single-chat one, and only one
+  // of the two is ever on screen, so the chords register in both. Both gate on
+  // the chat tab being visible: off-route the pane is hidden, not unmounted.
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      // As in the single-chat composer: a dialog over Chat leaves this
+      // registered, and a microphone opened behind one is neither visible nor
+      // stoppable from where the user is.
+      // Stopping first and ungated, as in the single-chat composer: a recording
+      // stays stoppable wherever the gate would say no.
+      if (isDictating) {
+        stopDictation();
+        return;
+      }
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      startDictation();
+    },
+    { enabled: chatActive },
+  );
+  // Through the existing sendRef: `send` is render-scoped, which the React
+  // compiler will not let a hook outlive.
+  useShortcut(
+    "sendMessage",
+    () => {
+      // As in the single-chat composer: the draft behind a dialog is not what
+      // the user is typing.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      sendRef.current?.();
+    },
+    {
+      enabled: chatActive && canSend,
+      // As in the single-chat composer: a non-modal popover's search box is a
+      // text field the composer is still the foreground behind.
+      skipInTextFields: true,
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
+  );
+  useShortcut(
+    "attachFiles",
+    () => {
+      // As in the single-chat composer, which would otherwise raise the file
+      // chooser from behind a dialog.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      fileInputRef.current?.click();
+    },
+    { enabled: chatActive },
+  );
+
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,
   // web search, code) and "More" itself live outside this map.
@@ -1975,7 +2028,8 @@ export function SharedComposer({
           className="unsloth-plus-menu w-[208px]"
         >
           {[
-            { label: "Raw JSONL", fn: exportConversationRawJsonl },
+            { label: "Training JSONL", fn: exportConversationRawJsonl },
+            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
             {
@@ -2180,11 +2234,16 @@ export function SharedComposer({
           setCompositionState(false);
         }}
         placeholder="Send to both models..."
-        className="composer-input"
-        rows={1}
         // dir="auto" detects RTL (Arabic/Hebrew/Persian/Urdu) from the first
-        // strong character; no effect on LTR scripts.
+        // strong character; no effect on LTR scripts. Kept next to the
+        // placeholder: the IME smoke reads this pair out of the source.
         dir="auto"
+        // aui-composer-input carries no styling anywhere; it is the name both
+        // composers answer to, so one selector can mean "the composer" whichever
+        // of the two is on screen. Escape's decline exception and the dictation
+        // foreground check both rely on it.
+        className="composer-input aui-composer-input"
+        rows={1}
       />
       <div className="composer-action-wrapper">
         <div
@@ -2706,7 +2765,7 @@ export function SharedComposer({
                       : "Stop dictation"
                   }
                 >
-                  <SquareIcon className="size-3 animate-pulse fill-current" />
+                  <SquareIcon className="aui-composer-cancel-icon size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
@@ -2734,7 +2793,7 @@ export function SharedComposer({
               className="ml-1.5 size-9 rounded-full"
               onClick={stop}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton

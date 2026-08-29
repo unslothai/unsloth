@@ -195,6 +195,44 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
         conn.close()
 
 
+def test_start_ingestion_accepts_precomputed_content_hash(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """A caller that already hashed the file (linked-folder sync) can pass that
+    digest through instead of paying for a second full read of it."""
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    precomputed = ingestion._sha256_file(path)
+
+    calls = []
+    original = ingestion._sha256_file
+
+    def counting(p):
+        calls.append(p)
+        return original(p)
+
+    monkeypatch.setattr(ingestion, "_sha256_file", counting)
+    doc_id, job_id = ingestion.start_ingestion(
+        scope, "K1", None, "doc.txt", path, content_hash = precomputed
+    )
+    _drain(job_id)
+    _wait_completed(job_id)
+
+    assert calls == []  # start_ingestion never re-hashed the file
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id)["sha256"] == precomputed
+    finally:
+        conn.close()
+
+
+def test_start_ingestion_rejects_malformed_content_hash(rag_home, stub_embeddings, tmp_path):
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    with pytest.raises(ValueError):
+        ingestion.start_ingestion(scope, "K1", None, "doc.txt", path, content_hash = "not-a-sha256")
+
+
 def test_manual_upload_does_not_dedupe_to_linked_folder_document(
     rag_home, stub_embeddings, tmp_path
 ):

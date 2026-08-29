@@ -43,7 +43,7 @@ def _isolate_binary_discovery(tmp_path_factory, monkeypatch):
     Clearing ``SD_CLI_PATH`` / ``UNSLOTH_SD_CPP_PATH`` and patching ``Path.home`` is not enough:
     hop 3 goes through ``managed_install_root()``, which honors ``UNSLOTH_STUDIO_HOME`` /
     ``STUDIO_HOME`` and resolves to ``<studio home>/../stable-diffusion.cpp``. Anyone running the
-    suite with a Studio home set -- which is the documented way to run side-by-side Studios -- gets
+    suite with an Unsloth home set -- which is the documented way to run side-by-side Unsloth instances -- gets
     a real binary back and every "nothing is installed" assertion here fails. Hop 4 (the in-tree
     developer build) has the same problem for anyone who built sd.cpp in the checkout.
 
@@ -261,7 +261,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
     # loader with nothing identifying on either stream. That is a CompletedProcess, not an
     # exception, so it would otherwise be cached as a definitive "not stable-diffusion.cpp"
     # against a file that never changed -- and installing the missing library would not get it
-    # re-probed until Studio restarted.
+    # re-probed until Unsloth restarted.
     _clear_env(monkeypatch)
     candidate = tmp_path / "sd"
     candidate.write_text("#!/bin/sh\n")
@@ -354,7 +354,7 @@ def test_identity_verdict_expires(tmp_path, monkeypatch):
 def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypatch):
     # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
     # Remembering that "no" would blacklist a genuine build for the life of the process over one
-    # slow --help under disk or memory pressure -- Studio would have to be restarted to see it.
+    # slow --help under disk or memory pressure -- Unsloth would have to be restarted to see it.
     _clear_env(monkeypatch)
     candidate = tmp_path / "sd"
     candidate.write_text("#!/bin/sh\n")

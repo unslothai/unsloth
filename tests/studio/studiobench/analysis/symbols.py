@@ -132,7 +132,7 @@ class Bridge:
 
     @staticmethod
     def prod_key(url: str, start_offset: int, end_offset: int) -> str:
-        # The URL is reduced to its basename because a Studio install serves the
+        # The URL is reduced to its basename because an Unsloth install serves the
         # same bundle from a hashed path that changes per install, while the
         # offsets inside the bundle do not.
         return f"{os.path.basename(url)}:{start_offset}:{end_offset}"

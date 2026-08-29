@@ -7,6 +7,7 @@ import atexit
 import base64
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import re
@@ -117,6 +118,7 @@ _SUBAGENT_PLAN_INSTRUCTIONS = (
     "to the parent agent. Do not modify files."
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_SETTINGS_ENV = "UNSLOTH_CLAUDE_SUBAGENT_SETTINGS"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
@@ -162,7 +164,20 @@ class _PassthroughCommand(TyperCommand):
         return remaining
 
 
-_CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+# provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
+_CLAUDE_ENV_UNSET = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_UNIX_SOCKET",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
+)
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
@@ -256,8 +271,8 @@ _REASONING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = (
         "llama-server reasoning mode for an auto-started coding-agent server. "
-        "Defaults to off so tool calls stay in the structured tool channel; use "
-        "'auto' or 'on' to opt back into model reasoning."
+        "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
+        "to override it."
     ),
 )
 _REASONING_EFFORT_OPTION = typer.Option(
@@ -709,7 +724,7 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
@@ -1159,8 +1174,8 @@ def _start_studio_server(
     child_env = os.environ.copy()
     # Current llama-server versions read this documented env equivalent of --reasoning.
     # Older managed versions ignore an unknown env variable instead of failing startup on
-    # an unknown passthrough CLI flag. An omitted start option still defaults to off.
-    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
+    # an unknown passthrough CLI flag. An omitted start option follows the model template.
+    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "auto"
     # Always written, like the line above: an inherited value would otherwise pin
     # a level the omitted flag promises to leave alone. 'default' is llama.cpp's
     # own sentinel for "keep the chat template's level".
@@ -1169,7 +1184,7 @@ def _start_studio_server(
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
     # Convey healing/nudging through the env; `unsloth run` reads these when its own
-    # flags are omitted, so this works even if run re-execs into an older Studio venv.
+    # flags are omitted, so this works even if run re-execs into an older Unsloth venv.
     # Only write when the operator set the flag explicitly; otherwise keep whatever they
     # already exported (child_env is a copy of os.environ), falling back to the start
     # defaults (healing on, nudging on) when nothing was inherited.
@@ -2432,21 +2447,30 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 
-def _claude_settings_overlay(model_id: str) -> str:
-    # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, keep every subagent on the served model (a user
-    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
-    # endpoint), and pin availableModels to the served model so a user allowlist can't
-    # reject it. The pin must be non-empty; [] is ignored.
+def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) -> str:
+    # Command-tier pins beat user/project settings, which Claude applies after the process env.
+    settings_env = {name: "" for name in _CLAUDE_ENV_UNSET}
+    settings_env.update(local_env or {})
+    settings_env.update(
+        {
+            "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+        }
+    )
     return json.dumps(
         {
-            "env": {
-                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
-            },
+            "env": settings_env,
             "availableModels": [model_id],
         }
     )
+
+
+def _write_claude_settings(path: Path, model_id: str, local_env: dict) -> Path:
+    overlay = _claude_settings_overlay(model_id, local_env)
+    digest = hashlib.sha256(overlay.encode("utf-8")).hexdigest()[:16]
+    settings = path / f"settings-{digest}.json"
+    _write_private_text(settings, overlay)
+    return settings
 
 
 def _claude_version() -> Optional[tuple]:
@@ -2469,14 +2493,49 @@ def _claude_version() -> Optional[tuple]:
         return (0,)
 
 
-def _claude_flags(model_id: str) -> list:
+def _claude_flags(model_id: str, settings: Optional[str] = None) -> list:
     # KV-cache-preserving flags: move per-session context out of the system prompt and pass
-    # the session overlay. claude < 2.1.98 rejects unknown flags; no local binary means a
-    # printout for another machine, so assume a current build.
+    # the session overlay. claude < 2.1.98 rejects the dynamic-sections flag but already
+    # supports --settings; no local binary means a printout for another machine, so assume
+    # a current build.
     version = _claude_version()
+    settings_flags = ["--settings", settings or _claude_settings_overlay(model_id)]
     if version is not None and version < (2, 1, 98):
-        return []
-    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
+        return settings_flags
+    return [_DYNAMIC_SECTIONS_FLAG, *settings_flags]
+
+
+def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough: list) -> list:
+    local_args = [
+        "--model",
+        model_id,
+        *_claude_flags(model_id, settings),
+        *_yolo_command_flags("claude", yolo),
+    ]
+    forwarded = list(passthrough)
+    separator = forwarded.index("--") if "--" in forwarded else len(forwarded)
+    before_separator = forwarded[:separator]
+    forwarded_settings = []
+    remaining = []
+    index = 0
+    while index < len(before_separator):
+        arg = before_separator[index]
+        if arg == "--settings" and index + 1 < len(before_separator):
+            forwarded_settings.extend(before_separator[index : index + 2])
+            index += 2
+            continue
+        if arg.startswith("--settings="):
+            forwarded_settings.append(arg)
+        else:
+            remaining.append(arg)
+        index += 1
+    return [
+        "claude",
+        *forwarded_settings,
+        *local_args,
+        *remaining,
+        *forwarded[separator:],
+    ]
 
 
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:
@@ -2493,6 +2552,9 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
     }
     window = entry.get("context_length") or entry.get("max_context_length")
     if window:
+        # claude assumes 200k for a model id it does not recognize, and clamps
+        # AUTO_COMPACT_WINDOW to [100k, that]. MAX_CONTEXT_TOKENS sets the window itself.
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
     return env
@@ -2942,6 +3004,18 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     command = sys.executable
     args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
     mcp_env = dict(server_env)
+    base = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
+    key = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
+    model_id = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
+    if base and key and model_id:
+        entry = {
+            "id": model_id,
+            "context_length": int(
+                server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0
+            ),
+        }
+        settings = _write_claude_settings(plugin, model_id, _claude_local_env(base, key, entry))
+        mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
         args = [
@@ -2954,7 +3028,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         ]
         mcp_env["WSLENV"] = _merge_wslenv(
             os.environ.get("WSLENV", ""),
-            _wsl_bridge_names(server_env, ()),
+            (
+                *_wsl_bridge_names(server_env, ()),
+                *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if base and key and model_id else []),
+            ),
         )
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
@@ -3296,7 +3373,7 @@ def _augment_path_with_install_dirs() -> None:
 def _probe_env(**extra: str) -> dict:
     """Environment for probes that RUN a resolved shim.
 
-    _which_with_install_dirs restores PATH before returning, so a shim backed by Studio's
+    _which_with_install_dirs restores PATH before returning, so a shim backed by Unsloth's
     managed Node would not find that node when executed.
     """
     original = os.environ.get("PATH")
@@ -3850,7 +3927,7 @@ def _agents_config_root() -> Path:
 
 @contextlib.contextmanager
 def _temporary_agent_config(prefix: str):
-    # Nothing else prunes Studio's auth tree, so reuse the locked session helper: the next
+    # Nothing else prunes Unsloth's auth tree, so reuse the locked session helper: the next
     # launch reclaims homes left by a killed wrapper, and the lock spares live sessions.
     temp_root = _agents_config_root() / ".tmp"
     with contextlib.ExitStack() as stack:
@@ -3858,7 +3935,7 @@ def _temporary_agent_config(prefix: str):
             temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
             path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
         except OSError:
-            # Attaching to a remote or running Studio needs no local auth tree, so it may be
+            # Attaching to a remote or running Unsloth needs no local auth tree, so it may be
             # absent or unwritable. Fall back to the system temp dir, as before: no
             # reclamation there, but the OS prunes it.
             path = Path(tempfile.mkdtemp(prefix = prefix))
@@ -4028,7 +4105,7 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Studio's root.
+        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Unsloth's root.
         parent = _ephemeral_session_parent(agent)
         prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:
@@ -4506,23 +4583,23 @@ def claude(
     # claude keeps its history in ~/.claude/projects, which --settings/env never
     # relocate, so a session already survives exit; resume it with `claude --continue`
     # or `--resume <id>` passed through.
-    command = [
-        "claude",
-        "--model",
-        model_id,
-        *_claude_flags(model_id),
-        *_yolo_command_flags("claude", yolo),
-        *ctx.args,
-    ]
-    _run(
-        base,
-        entry,
-        env,
-        command,
-        launch = launch,
-        install_hint = install_hint,
-        unset_env = _CLAUDE_ENV_UNSET,
-    )
+    with _session_config("claude", launch, persist = persist) as config:
+        settings = _write_claude_settings(config, model_id, env)
+        command = _claude_local_command(
+            model_id,
+            _agent_config_path(settings, ["claude"]),
+            yolo,
+            ctx.args,
+        )
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            unset_env = _CLAUDE_ENV_UNSET,
+        )
 
 
 @start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)

@@ -105,7 +105,11 @@ import {
   isLocalModelPath,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import type { InferenceParams } from "./types/runtime";
+import {
+  MAX_SAMPLING_SEED,
+  modelReadsSamplingSeed,
+  type InferenceParams,
+} from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -515,6 +519,13 @@ export function ChatSettingsPanel({
     isLoadedGguf ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const activeModel = useChatRuntimeStore(
+    (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
+  );
+  // Same call the request body makes, on the same summary, so the panel cannot offer a
+  // seed the body drops. An external selection carries an `external::` id that no local
+  // entry matches, so the summary answers that case without a separate guard.
+  const showSeed = modelReadsSamplingSeed(activeModel);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
@@ -618,6 +629,36 @@ export function ChatSettingsPanel({
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
   const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
+  // Raw keystrokes while the Seed box is being typed into, null once committed.
+  // Clamping straight into params would rewrite the box mid-entry, so the commit
+  // waits for blur the way NumericValueInput's does.
+  const [seedDraft, setSeedDraft] = useState<string | null>(null);
+  // What blur would commit, available before it runs. Clicking Save blurs the box during
+  // mousedown, but React has not re-rendered by the time that button's onClick fires, so
+  // a handler reading `params` there still sees the seed from before the entry.
+  // NumericValueInput bridges the same gap with its imperative commit().
+  const committedSeed = useMemo<number | null>(() => {
+    if (seedDraft === null) return params.seed ?? null;
+    // Measured after the padding: a zero-padded seed is short enough to keep, and
+    // truncating instead of clamping would rewrite it.
+    const digits = seedDraft.replace(/^0+(?=\d)/, "");
+    if (digits === "") return null;
+    return digits.length > 10
+      ? MAX_SAMPLING_SEED
+      : Math.min(Number(digits), MAX_SAMPLING_SEED);
+  }, [params.seed, seedDraft]);
+  const paramsWithCommittedSeed = useMemo(
+    () =>
+      committedSeed === (params.seed ?? null)
+        ? params
+        : { ...params, seed: committedSeed },
+    [committedSeed, params],
+  );
+  // Removing a focused element fires no blur, so a draft the user walked away from
+  // would keep reporting through committedSeed with the field gone.
+  useEffect(() => {
+    setSeedDraft(null);
+  }, [currentCheckpoint, showSeed]);
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
@@ -661,8 +702,12 @@ export function ChatSettingsPanel({
       }
       const samplingChanged =
         activePresetDefinition.name === "Default"
-          ? activePresetSource === "modified"
-          : !isSamePresetConfig(activePresetDefinition.params, params);
+          ? activePresetSource === "modified" ||
+            committedSeed !== (params.seed ?? null)
+          : !isSamePresetConfig(
+              activePresetDefinition.params,
+              paramsWithCommittedSeed,
+            );
       const currentLoadConfig = capturePresetLoadConfig();
       const loadChanged = !isSamePresetLoadConfig(
         activePresetDefinition.loadConfig,
@@ -673,6 +718,8 @@ export function ChatSettingsPanel({
     activePresetDefinition,
     activePresetSource,
     params,
+    committedSeed,
+    paramsWithCommittedSeed,
     customContextLength,
     ggufContextLength,
     kvCacheDtype,
@@ -781,6 +828,8 @@ export function ChatSettingsPanel({
     };
   }
 
+  const setSeed = set("seed");
+
   // Lower a live Max Tokens that no longer fits the connection's cap.
   // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be
   // read as the 32,768 fallback.
@@ -866,7 +915,7 @@ export function ChatSettingsPanel({
       ...next,
       {
         name: saveName,
-        params: toPresetParams(params),
+        params: toPresetParams(paramsWithCommittedSeed),
         ...(loadConfig ? { loadConfig } : {}),
       },
     ];
@@ -1491,6 +1540,54 @@ export function ChatSettingsPanel({
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
+            {showSeed ? (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Seed
+                  </span>
+                  <InfoHint>
+                    Pins the sampling draw so the same prompt and settings can
+                    reproduce the same reply. Leave blank to draw a fresh seed
+                    each request. It only fixes the draw, so the other sampling
+                    settings have to stay put as well; at Temperature 0 decoding
+                    is already greedy and a seed changes nothing. Matching a
+                    reply also needs the model loaded with Parallel Slots at 1
+                    and Speculative Decoding off, since both change how tokens
+                    are batched and that moves the result.
+                  </InfoHint>
+                </div>
+                <InputGroup className="panel-input-group w-[8.5rem] shrink-0">
+                  <InputGroupInput
+                    id="inference-seed"
+                    // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={
+                      seedDraft ??
+                      (params.seed == null ? "" : String(params.seed))
+                    }
+                    onChange={(e) =>
+                      setSeedDraft(e.target.value.replace(/\D/g, ""))
+                    }
+                    onBlur={() => {
+                      if (seedDraft === null) return;
+                      setSeedDraft(null);
+                      setSeed(committedSeed);
+                    }}
+                    onKeyDown={(e) => {
+                      // Blur is the only commit, so Enter has to reach it.
+                      if (e.key === "Enter") e.currentTarget.blur();
+                    }}
+                    placeholder="Random"
+                    aria-label="Seed"
+                    className="!h-9 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13"
+                  />
+                </InputGroup>
+              </div>
+            ) : null}
           </div>
         </CollapsibleSection>
 

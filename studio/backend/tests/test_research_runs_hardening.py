@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import sys
 import time
@@ -2204,14 +2205,21 @@ def test_model_unloaded_matches_the_model_switch_refusal():
     assert asyncio.run(research_runs._model_unloaded(_response(503, body = "overloaded"))) is None
 
 
-def test_retry_after_seconds_reads_only_a_delay():
+def _http_date_in(seconds):
+    at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds = seconds)
+    return at.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+
+def test_retry_after_seconds_reads_both_rfc_9110_forms():
     assert research_runs._retry_after_seconds(_switch_failed()) == 5.0
     assert research_runs._retry_after_seconds(_switch_failed(None)) is None
-    # HTTP-date form and non-positive delays carry no usable delay, so the default applies.
-    assert (
-        research_runs._retry_after_seconds(_switch_failed("Wed, 21 Oct 2026 07:28:00 GMT")) is None
-    )
+    # RFC 9110 allows "Retry-After: <HTTP-date>", which is the delay from now until then.
+    soon = research_runs._retry_after_seconds(_switch_failed(_http_date_in(30)))
+    assert soon is not None and 27.0 < soon <= 30.0
+    # A date already past, a non-positive delay, and an unparsable one all carry none.
+    assert research_runs._retry_after_seconds(_switch_failed(_http_date_in(-60))) is None
     assert research_runs._retry_after_seconds(_switch_failed("0")) is None
+    assert research_runs._retry_after_seconds(_switch_failed("shortly")) is None
 
 
 def test_stream_completion_waits_out_an_in_flight_model_switch(monkeypatch):
@@ -2286,3 +2294,272 @@ def test_an_unlimited_run_survives_a_gap_past_the_default_queue_bound(monkeypatc
     supervisor = _make_supervisor(_noop_check_active)
 
     assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+
+
+def _send_attempts(
+    monkeypatch,
+    status,
+    headers = None,
+    model_timeout = 900.0,
+    first_output = 5.0,
+    on_wait = None,
+    on_check = None,
+    body = b"{}",
+    errors = None,
+):
+    """Drive the real send/retry loop against a canned response; return (attempts, waits).
+
+    ``waits`` totals the wait before each re-send, so it does not depend on how many slices
+    the wait is split into. The hooks see the virtual clock at each slice."""
+    run = {
+        "id": "run-1",
+        "ownerSubject": "owner",
+        "threadId": "thread-1",
+        "config": {
+            "model": "m",
+            "inferenceRequest": {"model": "m"},
+            "budgets": {
+                "modelTimeoutSeconds": model_timeout,
+                "firstOutputTimeoutSeconds": first_output,
+            },
+        },
+    }
+    supervisor = research_runs.ResearchSupervisor.__new__(research_runs.ResearchSupervisor)
+    attempts, waits = [], []
+    clock, waited = {"t": 0.0}, {"t": 0.0}
+    real_sleep = asyncio.sleep
+
+    async def _sleep(delay, *args, **kwargs):
+        if delay and delay > 0.25:
+            if on_wait is not None:
+                on_wait(clock["t"])
+            clock["t"] += delay
+            waited["t"] += delay
+        return await real_sleep(0)
+
+    async def _send(
+        self,
+        request,
+        stream = False,
+    ):
+        if waited["t"]:
+            waits.append(round(waited["t"], 2))
+            waited["t"] = 0.0
+        attempts.append(request.url)
+        return httpx.Response(status, headers = headers or {}, content = body, request = request)
+
+    async def _check_active(run_id):
+        if on_check is not None:
+            on_check(clock["t"])
+        return await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
+    monkeypatch.setattr(httpx.AsyncClient, "send", _send)
+    monkeypatch.setattr(
+        research_runs.auth_storage, "create_api_key", lambda **k: ("token", {"id": 1})
+    )
+    monkeypatch.setattr(research_runs.auth_storage, "revoke_internal_api_key", lambda key_id: None)
+    supervisor._note_phase = lambda *a, **k: real_sleep(0)
+    supervisor._check_active = _check_active
+    supervisor._cancel_event = lambda run_id: SimpleNamespace(is_set = lambda: False)
+    supervisor._endpoint = lambda: "http://127.0.0.1:9/v1/chat/completions"
+    supervisor._discard_task = lambda *a, **k: real_sleep(0)
+
+    with pytest.raises(Exception) as raised:
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user", "content": "x"}]))
+    if errors is not None:
+        errors.append(raised.value)
+    return len(attempts), waits
+
+
+def test_provider_rate_limit_is_retried_not_fatal(monkeypatch):
+    # A 429 used to end the run on the first send, discarding every gathered source.
+    assert _send_attempts(monkeypatch, 429)[0] == 3
+
+
+def test_rate_limit_honours_retry_after(monkeypatch):
+    assert _send_attempts(monkeypatch, 429, {"Retry-After": "30"})[1] == [30.0, 30.0]
+
+
+def test_rate_limit_wait_is_capped_by_what_is_left_of_the_call(monkeypatch):
+    # The cap is the call's own wall clock less the room the re-send needs (20 - 5, shrinking
+    # as the call runs), not the model-load share a 20s budget would allow (5).
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 20.0)
+    assert len(waits) == 2
+    assert all(13.0 < wait <= 15.0 for wait in waits), waits
+
+
+def test_a_wall_clock_no_larger_than_the_first_output_budget_still_waits(monkeypatch):
+    # firstOutputTimeoutSeconds defaults to 120 and modelTimeoutSeconds may be set as low as
+    # 10, so any run configured at or under its own first-output budget reserved the whole
+    # of it as headroom. Every wait collapsed to zero and the three sends went out
+    # back-to-back, which is the failure this retry path exists to prevent.
+    _, waits = _send_attempts(
+        monkeypatch,
+        429,
+        {"Retry-After": "30"},
+        model_timeout = 120.0,
+        first_output = 120.0,
+    )
+    assert waits == [30.0, 30.0]
+
+
+def test_reserving_headroom_never_consumes_the_whole_remaining_budget():
+    # Half of what is left, at most: the reserve scales with the budget instead of being an
+    # absolute that can equal it. A budget with room to spare is unaffected.
+    assert research_runs._rate_limit_wait(30.0, 120.0, 120.0) == 30.0
+    assert research_runs._rate_limit_wait(30.0, 900.0, 120.0) == 30.0
+    # Still bounded by what is left: half of a 40s remainder cannot fund a 300s delay.
+    assert research_runs._rate_limit_wait(300.0, 40.0, 120.0) == 20.0
+
+
+def test_server_error_backoff_is_unchanged(monkeypatch):
+    assert _send_attempts(monkeypatch, 500) == (3, [1, 2])
+
+
+def _provider_error_sse(error):
+    return f"data: {json.dumps({'error': error})}\n\n".encode()
+
+
+_PROVIDER_429 = {
+    "message": "Rate limit reached for gpt-4o",
+    "type": "provider_error",
+    "code": "429",
+    "provider": "openai",
+}
+
+
+def test_a_retry_after_http_date_is_read_as_a_delay(monkeypatch):
+    # RFC 9110 allows "Retry-After: <HTTP-date>", and providers behind a CDN send it. Reading
+    # only the numeric form backed off for a second inside a 30s cooldown.
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": _http_date_in(30)})
+    assert len(waits) == 2
+    assert all(27.0 < wait <= 30.0 for wait in waits), waits
+
+
+def test_a_retry_after_date_already_past_falls_back_to_the_backoff(monkeypatch):
+    assert _send_attempts(monkeypatch, 429, {"Retry-After": _http_date_in(-60)}) == (3, [1, 2])
+
+
+def test_an_unlimited_run_honours_the_whole_retry_after(monkeypatch):
+    # No wall clock to divide, so nothing may trim the provider's delay to a model-load share.
+    unlimited = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 0.0)
+    assert unlimited == (3, [300.0, 300.0])
+
+
+def test_an_unlimited_rate_limit_wait_still_has_a_ceiling(monkeypatch):
+    # Unlimited is not "park this run for a day on one header".
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "86400"}, model_timeout = 0.0)
+    assert waits == [research_runs._MAX_RATE_LIMIT_WAIT_SECONDS] * 2
+
+
+def test_a_rate_limit_delivered_inside_the_stream_is_retried(monkeypatch):
+    # An external provider's 429 is proxied as a 200 whose first line carries the refusal, so
+    # the status line never shows it and the run used to end on the first send.
+    errors = []
+    body = _provider_error_sse(_PROVIDER_429)
+    assert _send_attempts(monkeypatch, 200, body = body, errors = errors) == (3, [1, 2])
+    assert "Rate limit reached for gpt-4o" in str(errors[0])
+
+
+def test_an_in_band_rate_limit_honours_the_forwarded_retry_after(monkeypatch):
+    # The proxy carries the provider's Retry-After in the error line, since the 200 the stream
+    # rides on has no status line left to put it on.
+    body = _provider_error_sse(dict(_PROVIDER_429, retry_after = "30"))
+    assert _send_attempts(monkeypatch, 200, body = body) == (3, [30.0, 30.0])
+
+
+def test_a_chatgpt_quota_refusal_in_the_stream_is_retried(monkeypatch):
+    # The ChatGPT connection reports its 429 by type with the delay in metadata, not by code.
+    body = _provider_error_sse(
+        {
+            "message": "ChatGPT subscription quota is temporarily unavailable.",
+            "type": "rate_limit_error",
+            "metadata": {"retry_after": "30"},
+        }
+    )
+    assert _send_attempts(monkeypatch, 200, body = body) == (3, [30.0, 30.0])
+
+
+def test_an_in_band_retry_after_http_date_is_read_as_a_delay(monkeypatch):
+    body = _provider_error_sse(dict(_PROVIDER_429, retry_after = _http_date_in(30)))
+    _, waits = _send_attempts(monkeypatch, 200, body = body)
+    assert len(waits) == 2
+    assert all(27.0 < wait <= 30.0 for wait in waits), waits
+
+
+def test_a_terminal_quota_refusal_is_not_retried(monkeypatch):
+    # ChatGPT reports an exhausted subscription with the same 429 shape as a throttle. Waiting
+    # out its Retry-After cannot clear it, so it must surface on the first send.
+    body = _provider_error_sse(
+        {
+            "message": "ChatGPT subscription quota is temporarily unavailable.",
+            "type": "rate_limit_error",
+            "metadata": {"retry_after": "30", "terminal": True},
+        }
+    )
+    assert _send_attempts(monkeypatch, 200, body = body) == (1, [])
+
+
+def test_a_rate_limit_wait_cannot_outlive_the_internal_key(monkeypatch):
+    # A wait past the call key's expiry would fail auth without reaching the provider, and an
+    # unlimited run has no wall clock, which leaves the key as the only thing bounding it.
+    monkeypatch.setattr(research_runs, "_MODEL_CALL_KEY_LIFETIME_SECONDS", 100)
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "3000"}, model_timeout = 0.0)
+    # 100 less the 5s reserve: not the 3000s asked for, and not the standing ceiling.
+    assert len(waits) == 2
+    assert all(93.0 < wait <= 95.0 for wait in waits), waits
+
+
+def test_a_blank_first_line_survives_the_peek_and_replay():
+    """A blank SSE separator is a line. Peeled off to be inspected and put back, it has to
+    round-trip verbatim through the whole path, or every line after it shifts up one."""
+
+    async def _stream():
+        for line in ("", "data: one", "data: [DONE]"):
+            yield line
+
+    async def _peek_then_replay():
+        lines = _stream()
+        head = await research_runs._peek_stream_head(lines)
+        assert research_runs._stream_rate_limit_delay(head) is None
+        return head, [line async for line in research_runs._with_head(head, lines)]
+
+    head, replayed = asyncio.run(_peek_then_replay())
+    assert head == ""
+    assert replayed == ["", "data: one", "data: [DONE]"]
+
+
+def test_another_in_band_provider_error_is_not_retried(monkeypatch):
+    # Only a rate limit is transient; anything else must surface on the first send.
+    errors = []
+    other = dict(_PROVIDER_429, code = "400", message = "Unsupported parameter")
+    body = _provider_error_sse(other)
+    assert _send_attempts(monkeypatch, 200, body = body, errors = errors) == (1, [])
+    assert "Unsupported parameter" in str(errors[0])
+
+
+def test_a_cancel_during_the_rate_limit_wait_is_not_held_for_the_retry_after(monkeypatch):
+    # One uninterrupted sleep held a cancelled run open for the whole Retry-After, then
+    # re-sent without re-reading the lease.
+    started, ended = [], []
+
+    def _cancel_once_the_wait_starts(now):
+        if not started:
+            started.append(now)
+
+    def _end_when_cancelled(now):
+        if started and not ended:
+            ended.append(now)
+            raise RunCancelled()
+
+    _send_attempts(
+        monkeypatch,
+        429,
+        {"Retry-After": "30"},
+        on_wait = _cancel_once_the_wait_starts,
+        on_check = _end_when_cancelled,
+    )
+
+    assert ended, "the wait never re-checked the run"
+    assert ended[0] - started[0] <= research_runs._MODEL_WAIT_POLL_SECONDS
