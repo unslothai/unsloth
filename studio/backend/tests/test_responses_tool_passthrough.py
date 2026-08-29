@@ -78,6 +78,18 @@ from routes.inference import (
 )
 
 
+def _codex_apply_patch_tool():
+    return {
+        "type": "custom",
+        "name": "apply_patch",
+        "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": 'start: "*** Begin Patch" LF hunk+ "*** End Patch" LF?',
+        },
+    }
+
+
 # =====================================================================
 # Request model — tools / tool_choice / parallel_tool_calls
 # =====================================================================
@@ -255,13 +267,18 @@ class TestToolsTranslation:
         assert out[0]["function"]["name"] == "search"
 
     def test_codex_apply_patch_custom_tool_becomes_a_local_function(self):
+        grammar = (
+            'start: "*** Begin Patch" LF add_hunk "*** End Patch" LF?\n'
+            'add_hunk: "*** Add File: " filename LF add_line+\n'
+            'add_line: "+" /(.*)/ LF'
+        )
         out = _translate_responses_tools_to_chat(
             [
                 {
                     "type": "custom",
                     "name": "apply_patch",
                     "description": "freeform",
-                    "format": {"type": "grammar", "syntax": "lark", "definition": "start: x"},
+                    "format": {"type": "grammar", "syntax": "lark", "definition": grammar},
                 }
             ]
         )
@@ -272,15 +289,16 @@ class TestToolsTranslation:
                 "function": {
                     "name": "apply_patch",
                     "description": (
-                        "Edit files with one complete *** Begin Patch / *** End Patch "
-                        "patch passed in the input field."
+                        "Edit files by passing one complete patch in the input field.\n\n"
+                        "The input must match this Lark grammar:\n"
+                        + grammar
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "input": {
                                 "type": "string",
-                                "description": "The complete apply_patch input.",
+                                "description": "A complete patch matching the tool grammar.",
                             }
                         },
                         "required": ["input"],
@@ -296,6 +314,12 @@ class TestToolsTranslation:
             _translate_responses_tools_to_chat(
                 [{"type": "custom", "name": "code_exec", "description": "raw input"}]
             )
+            is None
+        )
+
+    def test_apply_patch_without_the_codex_grammar_stays_unsupported(self):
+        assert (
+            _translate_responses_tools_to_chat([{"type": "custom", "name": "apply_patch"}])
             is None
         )
 
@@ -999,7 +1023,7 @@ class TestResponsesNonStreamingAdapter:
         patch = "*** Begin Patch\n*** Add File: nested/a.txt\n+ok\n*** End Patch"
         payload = ResponsesRequest(
             input = "edit the file",
-            tools = [{"type": "custom", "name": "apply_patch"}],
+            tools = [_codex_apply_patch_tool()],
         )
         body = self._run_with_message(
             monkeypatch,
@@ -2065,7 +2089,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(
             input = "edit",
             stream = True,
-            tools = [{"type": "custom", "name": "apply_patch"}],
+            tools = [_codex_apply_patch_tool()],
         )
 
         async def run():

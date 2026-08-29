@@ -24568,14 +24568,30 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 _RESPONSES_CUSTOM_APPLY_PATCH = "apply_patch"
 
 
-def _responses_custom_tool_names(tools: Optional[list[dict]]) -> set[str]:
-    return {
-        tool["name"]
-        for tool in tools or []
-        if isinstance(tool, dict)
-        and tool.get("type") == "custom"
+def _is_responses_apply_patch_tool(tool: Any) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    format_spec = tool.get("format")
+    return (
+        tool.get("type") == "custom"
         and tool.get("name") == _RESPONSES_CUSTOM_APPLY_PATCH
-    }
+        and isinstance(format_spec, dict)
+        and format_spec.get("type") == "grammar"
+        and format_spec.get("syntax") == "lark"
+        and isinstance(format_spec.get("definition"), str)
+    )
+
+
+def _responses_custom_tool_names(tools: Optional[list[dict]]) -> set[str]:
+    return {tool["name"] for tool in tools or [] if _is_responses_apply_patch_tool(tool)}
+
+
+def _responses_apply_patch_description(tool: dict) -> str:
+    description = "Edit files by passing one complete patch in the input field."
+    format_spec = tool.get("format")
+    if isinstance(format_spec, dict) and isinstance(format_spec.get("definition"), str):
+        description += "\n\nThe input must match this Lark grammar:\n" + format_spec["definition"]
+    return description
 
 
 def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[list[dict]]:
@@ -24602,22 +24618,19 @@ def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[
     for tool in tools:
         if not isinstance(tool, dict):
             continue
-        if tool.get("type") == "custom" and tool.get("name") == _RESPONSES_CUSTOM_APPLY_PATCH:
+        if _is_responses_apply_patch_tool(tool):
             out.append(
                 {
                     "type": "function",
                     "function": {
                         "name": _RESPONSES_CUSTOM_APPLY_PATCH,
-                        "description": (
-                            "Edit files with one complete *** Begin Patch / *** End Patch "
-                            "patch passed in the input field."
-                        ),
+                        "description": _responses_apply_patch_description(tool),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "input": {
                                     "type": "string",
-                                    "description": "The complete apply_patch input.",
+                                    "description": "A complete patch matching the tool grammar.",
                                 }
                             },
                             "required": ["input"],
