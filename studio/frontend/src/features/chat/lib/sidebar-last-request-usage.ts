@@ -8,11 +8,15 @@ export type SidebarLastRequestUsage = {
   totalTokens: number;
 };
 
-export type SidebarAssistantUsageUpdate = {
-  threadId: string;
-  hasAssistant: boolean;
-  metadata?: MessageRecord["metadata"] | null;
-};
+export type SidebarAssistantUsageUpdate =
+  | { threadId: string; hasAssistant: false }
+  | {
+      threadId: string;
+      hasAssistant: true;
+      assistantId: string;
+      createdAt: number;
+      metadata?: MessageRecord["metadata"] | null;
+    };
 
 type ContextUsageRecord = {
   promptTokens?: unknown;
@@ -91,22 +95,49 @@ export function newestSidebarAssistantUsageUpdate(
     return {
       threadId,
       hasAssistant: true,
+      assistantId: message.id,
+      createdAt: message.createdAt,
       metadata: message.metadata,
     };
   return { threadId, hasAssistant: false };
 }
 
 export function applySidebarAssistantUsageUpdate<
-  T extends { id: string; sidebarLastRequestUsage?: SidebarLastRequestUsage },
+  T extends {
+    id: string;
+    sidebarLastRequestUsage?: SidebarLastRequestUsage;
+    lastAssistantId?: string | null;
+    lastAssistantCreatedAt?: number | null;
+  },
 >(threads: readonly T[], update: SidebarAssistantUsageUpdate): T[] {
-  return threads.map((thread) =>
-    thread.id === update.threadId
-      ? {
-          ...thread,
-          sidebarLastRequestUsage: update.hasAssistant
-            ? selectSidebarLastRequestUsageFromMetadata(update.metadata ?? null)
-            : undefined,
-        }
-      : thread,
-  );
+  return threads.map((thread) => {
+    if (thread.id !== update.threadId) return thread;
+    if (!update.hasAssistant) {
+      return {
+        ...thread,
+        sidebarLastRequestUsage: undefined,
+        lastAssistantId: undefined,
+        lastAssistantCreatedAt: undefined,
+      };
+    }
+    const currentCreatedAt = thread.lastAssistantCreatedAt;
+    const currentId = thread.lastAssistantId;
+    if (
+      typeof currentCreatedAt === "number" &&
+      (update.createdAt < currentCreatedAt ||
+        (update.createdAt === currentCreatedAt &&
+          typeof currentId === "string" &&
+          update.assistantId < currentId))
+    ) {
+      return thread;
+    }
+    return {
+      ...thread,
+      sidebarLastRequestUsage: selectSidebarLastRequestUsageFromMetadata(
+        update.metadata ?? null,
+      ),
+      lastAssistantId: update.assistantId,
+      lastAssistantCreatedAt: update.createdAt,
+    };
+  });
 }

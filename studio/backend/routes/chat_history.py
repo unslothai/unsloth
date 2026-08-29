@@ -353,6 +353,8 @@ class ChatThreadListResponse(BaseModel):
 class ChatThreadSidebarSummary(ChatThread):
     hasMessages: bool
     hasAssistant: bool
+    lastAssistantId: Optional[str] = None
+    lastAssistantCreatedAt: Optional[int] = None
     lastAssistantMetadata: Optional[dict[str, Any]] = None
 
 

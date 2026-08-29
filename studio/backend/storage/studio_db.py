@@ -2206,13 +2206,16 @@ def list_chat_thread_sidebar_summaries(
                        SELECT 1 FROM chat_messages m
                        WHERE m.thread_id = t.id AND m.role = 'assistant'
                    ) AS sidebar_has_assistant,
-                   (
-                       SELECT m.metadata_json FROM chat_messages m
-                       WHERE m.thread_id = t.id AND m.role = 'assistant'
-                       ORDER BY m.created_at DESC, m.id DESC
-                       LIMIT 1
-                   ) AS sidebar_last_assistant_metadata_json
+                   last_assistant.id AS sidebar_last_assistant_id,
+                   last_assistant.created_at AS sidebar_last_assistant_created_at,
+                   last_assistant.metadata_json AS sidebar_last_assistant_metadata_json
             FROM chat_threads t
+            LEFT JOIN chat_messages last_assistant ON last_assistant.id = (
+                SELECT m.id FROM chat_messages m
+                WHERE m.thread_id = t.id AND m.role = 'assistant'
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT 1
+            )
             {where}
             ORDER BY COALESCE(t.updated_at, t.created_at) DESC, t.created_at DESC
             """,
@@ -2227,6 +2230,10 @@ def list_chat_thread_sidebar_summaries(
                 {
                     "hasMessages": bool(data["sidebar_has_messages"]),
                     "hasAssistant": bool(data["sidebar_has_assistant"]),
+                    "lastAssistantId": data.get("sidebar_last_assistant_id"),
+                    "lastAssistantCreatedAt": data.get(
+                        "sidebar_last_assistant_created_at"
+                    ),
                     "lastAssistantMetadata": metadata if isinstance(metadata, dict) else None,
                 }
             )

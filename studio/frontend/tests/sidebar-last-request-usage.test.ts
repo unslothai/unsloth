@@ -131,6 +131,38 @@ test("immediately clears and replaces usage only for the changed thread", () => 
   assert.deepEqual(completed[1].sidebarLastRequestUsage, { totalTokens: 200 });
 });
 
+test("ignores a late autosave from an older assistant generation", () => {
+  const older = assistant(
+    { ...validUsage, totalTokens: 150 },
+    { id: "assistant-old", createdAt: 10 },
+  );
+  const newer = assistant(validUsage, {
+    id: "assistant-new",
+    createdAt: 20,
+  });
+  const current = applySidebarAssistantUsageUpdate(
+    [
+      {
+        id: "thread",
+        sidebarLastRequestUsage: undefined,
+        lastAssistantId: undefined,
+        lastAssistantCreatedAt: undefined,
+      },
+    ],
+    newestSidebarAssistantUsageUpdate("thread", [newer]),
+  );
+  const afterOlderSave = applySidebarAssistantUsageUpdate(
+    current,
+    newestSidebarAssistantUsageUpdate("thread", [older]),
+  );
+
+  assert.deepEqual(afterOlderSave[0].sidebarLastRequestUsage, {
+    totalTokens: 999,
+  });
+  assert.equal(afterOlderSave[0].lastAssistantId, "assistant-new");
+  assert.equal(afterOlderSave[0].lastAssistantCreatedAt, 20);
+});
+
 test("a synced thread with no assistant clears its saved usage", () => {
   const update = newestSidebarAssistantUsageUpdate("thread", [
     { ...assistant(validUsage), role: "user" },

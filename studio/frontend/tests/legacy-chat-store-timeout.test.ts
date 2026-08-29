@@ -10,6 +10,7 @@ import type {
   ThreadSidebarSummaryRecord,
 } from "../src/features/chat/types";
 import {
+  newestSidebarAssistantUsageUpdate,
   selectSidebarLastRequestUsage,
   selectSidebarLastRequestUsageFromMetadata,
 } from "../src/features/chat/lib/sidebar-last-request-usage.ts";
@@ -95,6 +96,7 @@ function loadStorage(options: {
         },
       },
       "../lib/sidebar-last-request-usage": {
+        newestSidebarAssistantUsageUpdate,
         selectSidebarLastRequestUsage,
         selectSidebarLastRequestUsageFromMetadata,
       },

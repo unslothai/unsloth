@@ -35,7 +35,7 @@ import type {
   ThreadSidebarSummaryRecord,
 } from "../types";
 import {
-  selectSidebarLastRequestUsage,
+  newestSidebarAssistantUsageUpdate,
   selectSidebarLastRequestUsageFromMetadata,
   type SidebarLastRequestUsage,
 } from "../lib/sidebar-last-request-usage";
@@ -873,6 +873,8 @@ export function listStoredChatThreads(
 
 export type StoredChatThreadWithSidebarUsage = ThreadRecord & {
   sidebarLastRequestUsage?: SidebarLastRequestUsage;
+  lastAssistantId?: string | null;
+  lastAssistantCreatedAt?: number | null;
 };
 
 async function listStoredChatThreadsWithSidebarData(
@@ -908,13 +910,27 @@ async function listStoredChatThreadsWithSidebarData(
         };
       }
       const legacy = await listStoredChatMessages(thread.id).catch(() => null);
+      const sidebarAssistant =
+        legacy === null
+          ? null
+          : newestSidebarAssistantUsageUpdate(thread.id, legacy);
       return {
         thread: {
           ...thread,
           sidebarLastRequestUsage:
-            legacy === null
-              ? undefined
-              : selectSidebarLastRequestUsage(legacy),
+            sidebarAssistant?.hasAssistant === true
+              ? selectSidebarLastRequestUsageFromMetadata(
+                  sidebarAssistant.metadata ?? null,
+                )
+              : undefined,
+          lastAssistantId:
+            sidebarAssistant?.hasAssistant === true
+              ? sidebarAssistant.assistantId
+              : undefined,
+          lastAssistantCreatedAt:
+            sidebarAssistant?.hasAssistant === true
+              ? sidebarAssistant.createdAt
+              : undefined,
         },
         hasContent: legacy === null || legacy.length > 0,
       };
