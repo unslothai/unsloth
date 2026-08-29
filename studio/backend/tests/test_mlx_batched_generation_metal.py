@@ -17,6 +17,16 @@ metal_only = pytest.mark.skipif(not _METAL, reason = "requires Apple Silicon Met
 
 MODEL = "mlx-community/SmolLM2-135M-Instruct"
 PROMPT = [{"role": "user", "content": "Name a colour and explain why."}]
+VLM_MODEL = "mlx-community/SmolVLM-256M-Instruct-4bit"
+VLM_PROMPT = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "image"},
+            {"type": "text", "text": "What colour is this?"},
+        ],
+    }
+]
 
 
 @pytest.fixture(scope = "module")

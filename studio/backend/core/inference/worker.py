@@ -835,7 +835,7 @@ def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> 
             )
         else:
             logger.info(
-                "Starting batched text generation for request_id=%s rows=%d",
+                "Starting batched generation for request_id=%s rows=%d",
                 request_id,
                 len(requests),
             )
@@ -866,9 +866,7 @@ def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> 
                 close = getattr(generator, "close", None)
                 if callable(close):
                     close()
-            logger.info(
-                "Finished %d-reply text generation for request_id=%s", len(requests), request_id
-            )
+            logger.info("Finished %d-reply generation for request_id=%s", len(requests), request_id)
 
         _send_response(
             resp_queue,
