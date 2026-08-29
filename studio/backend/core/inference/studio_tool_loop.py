@@ -712,8 +712,7 @@ class _Turn:
         return [
             self.by_index[key]
             for key in self.order
-            if key in self.split_keys
-            and self.boundaries.get(key, _EMPTY_BOUNDARIES).is_open()
+            if key in self.split_keys and self.boundaries.get(key, _EMPTY_BOUNDARIES).is_open()
         ]
 
     def calls(
