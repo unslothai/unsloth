@@ -57,13 +57,14 @@ from core.inference.context_window import (
     compact_completed_tool_arguments,
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
-    estimate_messages_tokens,
+    estimate_message_tokens_without_unpriced_media,
+    estimate_messages_tokens_without_unpriced_media,
     _reply_floor,
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
-    messages_have_media,
+    messages_without_unpriced_media,
     retrieval_budget,
     tool_result_budget,
     turn_is_servable,
@@ -462,10 +463,39 @@ class LlamaServerNotFoundError(RuntimeError):
     __slots__ = ()
 
 
+class GgufDownloadCancelled(RuntimeError):
+    """Expected signal from a cancelled GGUF download."""
+
+    __slots__ = ()
+
+
 class _LlamaStreamCancelled(Exception):
     """Internal signal for an expected client/request cancellation."""
 
     __slots__ = ()
+
+
+class _CombinedCancelEvent:
+    __slots__ = ("_events",)
+
+    def __init__(self, *events: threading.Event):
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        if self.is_set():
+            return True
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return self.is_set()
+            pause = 0.05 if remaining is None else min(0.05, remaining)
+            self._events[0].wait(pause)
+            if self.is_set():
+                return True
 
 
 # Deliberately NOT ``slots=True``: it drops ``__dict__``, so ``vars(intent)`` raises and
@@ -626,6 +656,11 @@ _GPU_OFFLOAD_MARKERS = (
 )
 _OFFLOADED_LAYERS_RE = re.compile(
     r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+_GPU_MODEL_BUFFER_RE = re.compile(
+    r"\b(?:CUDA|ROCm|ROCM|HIP|SYCL)(\d+)\s+model buffer size\s*=\s*"
+    r"([0-9]+(?:\.[0-9]+)?)\s+MiB\b",
+    re.IGNORECASE,
 )
 _DEVICE_ROW_RE = re.compile(
     r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
@@ -5384,6 +5419,11 @@ class LlamaCppBackend:
         self._arch_gate_forced_cpu: bool = False
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
+        # Physical GPU ids in the exact ordinal order exposed to the current
+        # llama-server child.  Automatic placement deliberately leaves
+        # ``_gpu_ids`` unset, so reclaim accounting must not infer this mapping
+        # from status state after a fit/arch gate narrowed the child mask.
+        self._child_gpu_physical_ids: Optional[tuple[int, ...]] = None
         # RAW requested GPU pin, before the fit narrowed it. self._gpu_ids records the
         # EFFECTIVE (fit-narrowed) pin for /status; dedupe compares this raw value so a
         # [0, 1] narrowed to [0] and re-sent as [0, 1] still matches (#7239).
@@ -5557,6 +5597,34 @@ class LlamaCppBackend:
     def is_active(self) -> bool:
         """True if a llama-server process exists (loading or loaded)."""
         return self._process is not None
+
+    def reclaimable_gpu_memory_gb(self) -> Optional[dict[int, float]]:
+        """Stable GPU model buffers the disposable llama-server will release.
+
+        The startup log sizes only resident model buffers, so this is a
+        conservative lower bound: KV/compute buffers remain charged.  Unlike a
+        live process-memory sample, the value cannot race a short generation
+        that grows or clears its cache between the free-memory and owner reads.
+        """
+        process = self._process
+        if process is None or process.poll() is not None:
+            return None
+        physical_ids = list(getattr(self, "_child_gpu_physical_ids", None) or ())
+        if not physical_ids:
+            return None
+        reported: dict[int, float] = {}
+        for line in list(self._stdout_lines):
+            match = _GPU_MODEL_BUFFER_RE.search(line)
+            if match is None:
+                continue
+            ordinal = int(match.group(1))
+            if ordinal >= len(physical_ids):
+                return None
+            physical = int(physical_ids[ordinal])
+            reported[physical] = reported.get(physical, 0.0) + float(match.group(2)) / 1024.0
+        if self._process is not process or process.poll() is not None:
+            return None
+        return reported or None
 
     @property
     def base_url(self) -> str:
@@ -7356,7 +7424,16 @@ class LlamaCppBackend:
             logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
     @staticmethod
-    def _pin_visible_gpu_order_for_split(env: dict) -> None:
+    def _unmasked_child_gpu_physical_ids() -> Optional[tuple[int, ...]]:
+        from utils.hardware import get_parent_visible_gpu_ids
+
+        parent_gpu_ids = get_parent_visible_gpu_ids()
+        if len(parent_gpu_ids) == 1:
+            return (int(parent_gpu_ids[0]),)
+        return None
+
+    @staticmethod
+    def _pin_visible_gpu_order_for_split(env: dict) -> Optional[tuple[int, ...]]:
         """Pin the child's GPU enumeration to the picker's order for a manual
         ``--tensor-split`` across the whole visible set. CUDA's default
         FASTEST_FIRST enumeration applies the shares to the wrong cards on
@@ -7373,7 +7450,7 @@ class LlamaCppBackend:
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         inherited = LlamaCppBackend._resolve_visible_physical_ids()
         if not inherited:
-            return
+            return None
         order = None
         try:
             from utils.hardware import get_backend_visible_gpu_info
@@ -7401,6 +7478,7 @@ class LlamaCppBackend:
         LlamaCppBackend._emit_child_gpu_visibility(
             env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
         )
+        return tuple(int(i) for i in order)
 
     @staticmethod
     def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
@@ -12549,6 +12627,7 @@ class LlamaCppBackend:
         gpu_ids: Optional[List[int]] = None,
         gpu_memory_mode: Literal["auto", "manual"] = "auto",
         gpu_layers: int = -1,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Launch the OpenAI-compat diffusion shim (which drives the on-device
         visual decoder) and wait for health. Presents the same /v1 + /health
@@ -12782,7 +12861,7 @@ class LlamaCppBackend:
         self._effective_context_length = maxtok or self._context_length
         self._max_context_length = self._context_length or maxtok or None
 
-        healthy = self._wait_for_health(timeout = 600.0)
+        healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
         if healthy:
             self._healthy = True
             self._gpu_offload_active = not holds_no_gpu
@@ -12807,9 +12886,21 @@ class LlamaCppBackend:
                 self._effective_context_length = chosen
                 self._max_context_length = chosen
             self._requested_n_ctx = int(n_ctx)
+            if cancelled is not None and cancelled():
+                logger.info("DiffusionGemma start cancelled after it became healthy")
+                self._healthy = False
+                self._kill_process()
+                return False
         else:
             self._healthy = False
-            logger.error("DiffusionGemma runner failed to become healthy")
+            if getattr(self, "_health_wait_cancelled", False):
+                # An automatic switch cancels without unloading, so nothing else reaps
+                # the shim and the visual server: they would keep loading and holding
+                # memory until some later teardown.
+                logger.info("DiffusionGemma start cancelled; stopping the runner")
+                self._kill_process()
+            else:
+                logger.error("DiffusionGemma runner failed to become healthy")
         return healthy
 
     # ── HF download (no lock held) ───────────────────────────────
@@ -12836,6 +12927,8 @@ class LlamaCppBackend:
         touching the shared one; defaults to the shared event.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            raise GgufDownloadCancelled("Cancelled")
         from utils.hf_cache_settings import get_hf_cache_paths
 
         download_cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -13000,7 +13093,7 @@ class LlamaCppBackend:
         logger.info(f"Resolving GGUF: {gguf_label}")
         try:
             if cancel_event.is_set():
-                raise RuntimeError("Cancelled")
+                raise GgufDownloadCancelled("Cancelled")
             dl_start = time.monotonic()
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
             local_path = hf_hub_download_with_xet_fallback(
@@ -13014,7 +13107,7 @@ class LlamaCppBackend:
             )
             for shard in gguf_extra_shards:
                 if cancel_event.is_set():
-                    raise RuntimeError("Cancelled")
+                    raise GgufDownloadCancelled("Cancelled")
                 logger.info(f"Resolving GGUF shard: {shard}")
                 hf_hub_download_with_xet_fallback(
                     hf_repo,
@@ -13025,8 +13118,10 @@ class LlamaCppBackend:
                     cache_dir = download_cache_dir,
                 )
         except Exception as e:
-            if isinstance(e, RuntimeError) and "Cancelled" in str(e):
+            if isinstance(e, GgufDownloadCancelled):
                 raise
+            if isinstance(e, RuntimeError) and "Cancelled" in str(e):
+                raise GgufDownloadCancelled(str(e)) from e
             raise RuntimeError(
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
             )
@@ -13322,6 +13417,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
@@ -13333,6 +13429,10 @@ class LlamaCppBackend:
         higher-precision copies under ``MTP/`` are for explicit selection and
         are intentionally skipped. Returns the local path, or None.
         """
+
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
 
         if near_path:
             cached = _companion_snapshot_sibling(near_path, _pick_mtp)
@@ -13358,6 +13458,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_mtp,
             label = "MTP drafter",
+            cancel_event = cancel_event,
             near_path = near_path,
         )
 
@@ -13400,6 +13501,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
         caps_probe: Optional[Callable[[Optional[str]], dict]] = None,
@@ -13415,6 +13517,13 @@ class LlamaCppBackend:
         guess here has to latch like any other, or a load that skipped the sidecar on an
         inconclusive probe looks conclusive once the retry window lapses mid-download.
         """
+        cancel_event = (
+            cancel_event
+            if cancel_event is not None
+            else getattr(self, "_cancel_event", threading.Event())
+        )
+        if cancel_event.is_set():
+            return None
         if caps_probe is None:
             caps_probe = self.probe_server_capabilities
 
@@ -13448,6 +13557,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_dspark,
             label = "DSpark drafter",
+            cancel_event = cancel_event,
             near_path = near_path,
             outcome = outcome,
         )
@@ -13542,6 +13652,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
     ) -> Optional[str]:
@@ -13556,6 +13667,9 @@ class LlamaCppBackend:
         engage.
         """
 
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
         weight_name = Path(near_path).name if near_path else None
         # Whatever a previous load concluded, this one is asking again.
         self._dflash_retry_needed = False
@@ -13645,7 +13759,7 @@ class LlamaCppBackend:
         # it too, so a scan that ignores the pool cannot spin here.
         cached: Optional[str] = None
         seen_siblings: set[str] = set()
-        while near_path:
+        while near_path and not cancel_event.is_set():
             sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
             if sibling is None or sibling in seen_siblings:
                 break
@@ -13694,6 +13808,7 @@ class LlamaCppBackend:
                 hf_token = hf_token,
                 pick = _pick_dflash,
                 label = "DFlash drafter",
+                cancel_event = cancel_event,
                 near_path = near_path,
                 outcome = outcome,
                 # Not a header rejection: that candidate is settled and the loop moves
@@ -16561,7 +16676,9 @@ class LlamaCppBackend:
                 out[ki] = "<redacted>"
         return out
 
-    def _start_llama_process(self, cmd: list[str], env: dict) -> None:
+    def _start_llama_process(
+        self, cmd: list[str], env: dict, *, child_gpu_physical_ids: Optional[tuple[int, ...]]
+    ) -> None:
         """Spawn llama-server from cmd and start draining its output.
 
         Caller holds self._lock. Resets the stdout buffer, opens a fresh
@@ -16573,6 +16690,7 @@ class LlamaCppBackend:
         # stored a Popen handle here, drop that orphan before we overwrite
         # the reference. See issue #5161.
         self._kill_process()
+        self._child_gpu_physical_ids = child_gpu_physical_ids
 
         self._stdout_lines = []
         # Tee llama-server output to a dedicated log file so a post-mortem
@@ -16653,6 +16771,12 @@ class LlamaCppBackend:
             return self._cancel_event.is_set() or bool(
                 load_cancel_event is not None and load_cancel_event.is_set()
             )
+
+        download_cancel_event = (
+            _CombinedCancelEvent(self._cancel_event, load_cancel_event)
+            if load_cancel_event is not None
+            else self._cancel_event
+        )
 
         gguf_path = intent.gguf_path
         mmproj_path = intent.mmproj_path
@@ -16845,6 +16969,9 @@ class LlamaCppBackend:
             # Placement is undecided until the spawn site narrows it: a needless
             # reload prompt beats sizing a child against a replaced budget.
             self._cancel_event.clear()
+            # Belongs to this attempt only; a guard that runs before this load's first
+            # health wait would otherwise read the previous request's cancellation.
+            self._health_wait_cancelled = False
             if _load_cancelled():
                 logger.info("Load cancelled before GGUF resolution")
                 return False
@@ -16961,6 +17088,7 @@ class LlamaCppBackend:
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        cancel_event = download_cancel_event,
                     )
                 _preflight_is_diffusion = self._gguf_path_is_diffusion(
                     _preflight_model_path, model_identifier
@@ -17125,6 +17253,7 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_variant = hf_variant,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                         )
                     # Auto-download mmproj for vision models unless opted out. Vision
                     # switched off does NOT opt out: remote discovery calls any mmproj
@@ -17137,6 +17266,7 @@ class LlamaCppBackend:
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
@@ -17154,6 +17284,7 @@ class LlamaCppBackend:
                         mtp_draft_path = self._download_mtp(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
                     # "auto" is included: DSpark is the default whenever the repo
@@ -17167,6 +17298,7 @@ class LlamaCppBackend:
                         dspark_draft_path = self._download_dspark(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                             binary = binary,
                             caps_probe = _launch_caps,
@@ -17201,6 +17333,7 @@ class LlamaCppBackend:
                         dflash_draft_path = self._download_dflash(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            cancel_event = download_cancel_event,
                             near_path = model_path,
                             binary = binary,
                         )
@@ -17316,6 +17449,7 @@ class LlamaCppBackend:
                         gpu_ids = gpu_ids,
                         gpu_memory_mode = gpu_memory_mode,
                         gpu_layers = gpu_layers,
+                        cancelled = _load_cancelled,
                     )
 
             if not binary:
@@ -17654,6 +17788,7 @@ class LlamaCppBackend:
                 # UnboundLocalError on the path that reaches it most often.
                 _spill_inputs: Optional[dict] = None
                 total_by_idx: dict[int, int] = {}
+                _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
@@ -21449,6 +21584,10 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
+                _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
+                if not is_vulkan_backend and _gpu_mem:
+                    _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
+
                 # The CUDA SM gate goes here, where the child's GPU visibility is
                 # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
                 # kernel image loads and the abort this pre-empts cannot happen.
@@ -21467,6 +21606,7 @@ class LlamaCppBackend:
                 # None there, so this branch writes the mask.
                 if _cpu_only_zero_offload or _arch_gate_forced_cpu:
                     self._emit_child_gpu_visibility(env, "-1")
+                    _child_gpu_physical_ids = ()
                     # Manual mode admits tensor parallelism on the FULL device count,
                     # which still counts the dropped cards, so --split-mode tensor can
                     # reach a child that sees none. llama_prepare_model_devices then
@@ -21510,6 +21650,7 @@ class LlamaCppBackend:
                     self._emit_child_gpu_visibility(
                         env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
                     )
+                    _child_gpu_physical_ids = tuple(int(i) for i in gpu_indices)
                     _launch_pinned_ids = list(gpu_indices)
                 elif not is_vulkan_backend and not gpu_ids:
                     # Nothing above pinned the child. Two shapes land here and the gate
@@ -21582,6 +21723,7 @@ class LlamaCppBackend:
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
                         )
+                        _child_gpu_physical_ids = tuple(int(i) for i in _survivors)
                         # Narrower than any pin above, so it replaces it.
                         _launch_pinned_ids = list(_survivors)
                     elif manual_tensor_split_emitted:
@@ -21589,7 +21731,7 @@ class LlamaCppBackend:
                         # no mask above): the UI built --tensor-split in ascending
                         # physical/PCI order, so pin the child's enumeration to match.
                         # The whole visible set stays in use, only its order is fixed.
-                        self._pin_visible_gpu_order_for_split(env)
+                        _child_gpu_physical_ids = self._pin_visible_gpu_order_for_split(env)
 
                 _child_has_no_gpu = (
                     # each names a device present but unusable, so it owns the empty pool
@@ -21780,6 +21922,7 @@ class LlamaCppBackend:
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
                         self._kill_process()
+                        self._child_gpu_physical_ids = _child_gpu_physical_ids
 
                         self._stdout_lines = []
                         # Tee llama-server output to a dedicated log file so a
@@ -21834,12 +21977,14 @@ class LlamaCppBackend:
                             target = self._drain_stdout, daemon = True, name = "llama-stdout"
                         )
                         self._stdout_thread.start()
-                        if self._wait_for_health(timeout = 600.0):
+                        if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                             if _did_rocm_retry:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
                             return True
+                        if getattr(self, "_health_wait_cancelled", False):
+                            return False
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
@@ -22043,6 +22188,19 @@ class LlamaCppBackend:
                     self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
+                def _cleanup_cancelled_load(message: str) -> None:
+                    logger.info(message)
+                    self._cleanup_failed_cpu_fallback()
+                    self._unload_audio_codec()
+                    self._healthy = False
+                    self._vram_fraction_pending = None
+
+                def _finish_cancelled_health_wait(message: str) -> bool:
+                    if not getattr(self, "_health_wait_cancelled", False):
+                        return False
+                    _cleanup_cancelled_load(message)
+                    return True
+
                 def _try_auto_vulkan_cpu_fallback(
                     failed_cmd: list[str],
                     failed_rc: Optional[int],
@@ -22083,7 +22241,7 @@ class LlamaCppBackend:
                         # Staging copies a whole runtime, so an /unload can land after
                         # the gate above with no runtime yet for unload_model() to
                         # remove; take it back here.
-                        self._cleanup_cpu_fallback_runtime()
+                        _cleanup_cancelled_load("Load cancelled while staging the CPU fallback")
                         return False
                     replay, _spawn_cwd, _cpu_pageable_note = prepared
                     # The rewrite mutates the SHARED env in place, so it happens once
@@ -22101,6 +22259,10 @@ class LlamaCppBackend:
                         "startup; retrying once with llama.cpp devices disabled."
                     )
                     if not _spawn_and_wait(replay, label = "-cpu"):
+                        if _finish_cancelled_health_wait(
+                            "Load cancelled during the staged CPU replay health wait"
+                        ):
+                            return False
                         if not terminal:
                             # This argv's drafter may be why it cannot start at all,
                             # which the GPU crash says nothing about. Reap the child
@@ -22242,6 +22404,11 @@ class LlamaCppBackend:
                             avail_mib = _preflight_avail_mib,
                         )
                         if prepared is None:
+                            if _load_cancelled():
+                                _cleanup_cancelled_load(
+                                    "Load cancelled while reconstructing the CPU fallback"
+                                )
+                                return False
                             _raise_terminal_load_failure(
                                 "The prior Vulkan CPU fallback could not be reconstructed; run "
                                 "`unsloth studio update` to repair the managed llama.cpp runtime."
@@ -22308,6 +22475,10 @@ class LlamaCppBackend:
                     healthy = _spawn_and_wait(cmd)
                 finally:
                     self._memory_launch_pending = False
+                if not healthy and _finish_cancelled_health_wait(
+                    "Load cancelled during the llama-server health wait"
+                ):
+                    return False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -22348,7 +22519,7 @@ class LlamaCppBackend:
                 # narrowed set. Auto selection only; an explicit pick keeps its error.
                 if (
                     not healthy
-                    and not self._cancel_event.is_set()
+                    and not _load_cancelled()
                     and not gpu_ids
                     and not is_vulkan_backend
                     and gpu_indices
@@ -22444,6 +22615,7 @@ class LlamaCppBackend:
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _remaining), prefer_rocr = True
                         )
+                        _child_gpu_physical_ids = tuple(int(i) for i in _remaining)
                         # Same for the inherited env twins of the flags dropped
                         # below: the new mask re-indexes the survivors under them.
                         self._clear_split_placement_env(env)
@@ -22852,6 +23024,13 @@ class LlamaCppBackend:
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
                     self._kill_process()
+                    # Only when the WAIT itself was cancelled. A cancel that lands later,
+                    # while a crashed launch is staging its CPU fallback, must still run
+                    # that recovery, so _load_cancelled() alone is the wrong test here.
+                    if _finish_cancelled_health_wait(
+                        "Load cancelled during the llama-server health wait"
+                    ):
+                        return False
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     _projector_msg = self._is_projector_incompatibility(out)
@@ -22916,7 +23095,14 @@ class LlamaCppBackend:
                                     self._process.poll() if self._process is not None else None
                                 )
                                 self._kill_process()
+                                if _finish_cancelled_health_wait(
+                                    "Load cancelled during the CPU-projector health wait"
+                                ):
+                                    return False
                                 if _load_cancelled():
+                                    _cleanup_cancelled_load(
+                                        "Load cancelled after the CPU-projector health wait"
+                                    )
                                     return False
                                 if self._is_projector_incompatibility(_cpu_projector_out):
                                     _projector_msg = True
@@ -22975,8 +23161,12 @@ class LlamaCppBackend:
                             _last_spawn_cmd = list(cmd)
                             self._is_vision = False
                             self._mmproj_has_audio = False
-                            self._start_llama_process(cmd, env)
-                            if self._wait_for_health(timeout = 600.0):
+                            self._start_llama_process(
+                                cmd,
+                                env,
+                                child_gpu_physical_ids = _child_gpu_physical_ids,
+                            )
+                            if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                                 healthy = True
                                 # The child that serves this session never read the
                                 # CPU-pinned projector, so the host-memory advisory the
@@ -23000,6 +23190,10 @@ class LlamaCppBackend:
                                     self._process.poll() if self._process is not None else None
                                 )
                                 self._kill_process()
+                                if _finish_cancelled_health_wait(
+                                    "Load cancelled during the text-only retry health wait"
+                                ):
+                                    return False
                                 # A text-only signal crash is independent evidence of a GPU
                                 # startup fault. Keep a confirmed bad projector out of the
                                 # replay; a guessed one still gets a CPU try with vision.
@@ -23017,6 +23211,10 @@ class LlamaCppBackend:
                                         if not _projector_msg:
                                             self._mmproj_fallback_reason = None
                                     else:
+                                        if _finish_cancelled_health_wait(
+                                            "Load cancelled during the CPU replay health wait"
+                                        ):
+                                            return False
                                         _raise_terminal_load_failure(
                                             self._gpu_init_crash_message(binary)
                                         )
@@ -23031,6 +23229,10 @@ class LlamaCppBackend:
                                         (self._api_key,),
                                         self._extra_args,
                                     )
+                                    if _finish_cancelled_health_wait(
+                                        "Load cancelled during the text-only recovery"
+                                    ):
+                                        return False
                                     _raise_terminal_load_failure(
                                         self._mmproj_retry_failure_message(
                                             projector_confirmed = _projector_msg,
@@ -23057,6 +23259,10 @@ class LlamaCppBackend:
                         if _replayed:
                             healthy = True
                         else:
+                            if _finish_cancelled_health_wait(
+                                "Load cancelled during the CPU replay health wait"
+                            ):
+                                return False
                             _raise_terminal_load_failure(
                                 self._classify_llama_start_failure(
                                     out,
@@ -23272,6 +23478,13 @@ class LlamaCppBackend:
                 return False
 
             if not self._healthy:
+                return False
+            if _load_cancelled():
+                # Cancelled during the post-health setup or the audio probe. Publishing
+                # now leaves the child resident while the cancel route sees is_loaded.
+                _cleanup_cancelled_load(
+                    "Load cancelled after llama-server became healthy; unwinding"
+                )
                 return False
             # Snapshot the files the server actually loaded. If a GGUF shard or a
             # LoRA/control-vector sidecar is swapped on disk afterwards while the
@@ -24128,14 +24341,7 @@ class LlamaCppBackend:
                 except Exception:
                     pass
                 self._chat_template_file = None
-            # Free audio codec GPU memory.
-            if LlamaCppBackend._codec_mgr is not None:
-                LlamaCppBackend._codec_mgr.unload()
-                LlamaCppBackend._codec_mgr = None
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            self._unload_audio_codec()
             return True
 
     @staticmethod
@@ -24199,6 +24405,7 @@ class LlamaCppBackend:
         # Cleared before the early return, not in the finally below, so a stale split never
         # outlives its runner even when there was no process to kill.
         self._diffusion_requested_ngl = None
+        self._child_gpu_physical_ids = None
         if self._process is None:
             return
         # Not every _process is a Popen: tests stand one in to mean "a server is
@@ -25603,15 +25810,17 @@ class LlamaCppBackend:
                 # load_model) so a newer load isn't clobbered by this stale replay.
                 requested_mode = snapshot.speculative_type
                 with self._serial_load_lock:
-                    if self._cancel_event.is_set():
-                        logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
-                        return
-                    if self._process is not proc:
-                        logger.info("MTP-crash reload skipped: a newer load is already active.")
-                        return
-                    if self._last_load_intent != snapshot:
-                        logger.info("MTP-crash reload skipped: load settings changed.")
-                        return
+                    with self._lock:
+                        if self._cancel_event.is_set():
+                            logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
+                            return
+                        if self._process is not proc:
+                            logger.info("MTP-crash reload skipped: a newer load is already active.")
+                            return
+                        if self._last_load_intent != snapshot:
+                            logger.info("MTP-crash reload skipped: load settings changed.")
+                            return
+                        unload_epoch = self._unload_epoch
                     # Appending --spec-default cannot drop MTP: llama.cpp appends spec
                     # types rather than replacing, so the extras have to lose theirs.
                     # Once they do, Unsloth owns the block and the launch scrubs the
@@ -25634,21 +25843,35 @@ class LlamaCppBackend:
                         speculative_type = "off",
                         extra_args = fallback_extra_args,
                     )
-                    self.load_model(fallback)
-                    # Same reason the mode is restored below: the replay launched a
-                    # stripped list but the caller keeps sending the original, so a
-                    # comparator seeing only the stripped one would reload the very MTP
-                    # configuration that just crashed.
-                    if fallback_extra_args is not snapshot.extra_args:
-                        self._requested_extra_args = (
-                            self._strip_device_extra_args(_ea)
-                            if snapshot.gpu_ids is not None
-                            else list(_ea)
+                    started = bool(self.load_model(fallback))
+                    if not started:
+                        logger.info("MTP-crash reload stopped before the replacement was ready.")
+                        return
+                    undo_reload = False
+                    with self._lock:
+                        if self._cancel_event.is_set() or self._unload_epoch != unload_epoch:
+                            undo_reload = True
+                        else:
+                            # Same reason the mode is restored below: the replay launched a
+                            # stripped list but the caller keeps sending the original, so a
+                            # comparator seeing only the stripped one would reload the very MTP
+                            # configuration that just crashed.
+                            if fallback_extra_args is not snapshot.extra_args:
+                                self._requested_extra_args = (
+                                    self._strip_device_extra_args(_ea)
+                                    if snapshot.gpu_ids is not None
+                                    else list(_ea)
+                                )
+                            # Restore the requested mode + reason load_model("off") cleared,
+                            # so /status shows the user's mode + note (like the startup fallback).
+                            self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
+                            self._spec_fallback_reason = "runtime_error"
+                    if undo_reload:
+                        logger.info(
+                            "MTP-crash reload undone: the model was unloaded during reload."
                         )
-                    # Restore the requested mode + reason load_model("off") cleared,
-                    # so /status shows the user's mode + note (like the startup fallback).
-                    self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
-                    self._spec_fallback_reason = "runtime_error"
+                        self.unload_model()
+                        return
                 logger.info("Reloaded without MTP after the tensor-parallel crash.")
             except Exception as e:
                 logger.error(f"Reload without MTP failed: {e}")
@@ -25707,6 +25930,7 @@ class LlamaCppBackend:
         self,
         timeout: float = 120.0,
         interval: float = 0.5,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Poll llama-server's /health until 200; also detect early exit/crash."""
         deadline = time.monotonic() + timeout
@@ -25715,7 +25939,22 @@ class LlamaCppBackend:
         if health_probe_event is None:  # Backward-compatible with lightweight test doubles.
             health_probe_event = self._health_probe_event = threading.Event()
 
+        if cancelled is None:
+            # A scoped /load carries its own cancel event, so load_model passes its own
+            # predicate; fall back to the unload flag for callers that have none.
+            cancel_event = getattr(self, "_cancel_event", None)
+            cancelled = cancel_event.is_set if cancel_event is not None else None
+
+        # Why this wait ended, for callers that must tell a cancel apart from a crash:
+        # a cancel landing during CPU-fallback staging is not a cancelled wait.
+        self._health_wait_cancelled = False
+
         while time.monotonic() < deadline:
+            # unload_model() blocks on self._lock, which the load holds across this wait.
+            if cancelled is not None and cancelled():
+                logger.info("llama-server startup cancelled before it became healthy")
+                self._health_wait_cancelled = True
+                return False
             # Cleared before probing so output during the request stays latched for
             # the fallback wait below.
             health_probe_event.clear()
@@ -25744,6 +25983,12 @@ class LlamaCppBackend:
                 # for 127.0.0.1 loops the probe until timeout and hangs load.
                 resp = httpx.get(url, timeout = 2.0, trust_env = False)
                 if resp.status_code == 200:
+                    # The probe blocks for up to 2s; a cancel landing inside that window
+                    # would otherwise publish the model the user just asked us to drop.
+                    if cancelled is not None and cancelled():
+                        logger.info("llama-server became healthy after the load was cancelled")
+                        self._health_wait_cancelled = True
+                        return False
                     return True
             except (
                 httpx.ConnectError,
@@ -25757,6 +26002,11 @@ class LlamaCppBackend:
                 pass
 
             health_probe_event.wait(interval)
+
+        if cancelled is not None and cancelled():
+            logger.info("llama-server startup cancelled at the health-check deadline")
+            self._health_wait_cancelled = True
+            return False
 
         # Leave a marker so _classify_llama_start_failure tells a live but
         # never-healthy load (too large, or a proxy hijacking the loopback
@@ -26499,11 +26749,7 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        if (
-            context_overflow == "truncate_oldest"
-            and self._effective_context_length
-            and not messages_have_media(openai_messages)
-        ):
+        if context_overflow == "truncate_oldest" and self._effective_context_length:
             try:
                 _before_fit = openai_messages
                 # One value for both the boundary read and the fit: a boundary the fit
@@ -26525,7 +26771,9 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
@@ -26533,6 +26781,7 @@ class LlamaCppBackend:
                         continue_final_message = continue_final_message,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky,
                     sticky_is_checkpoint = _sticky_is_checkpoint,
@@ -26562,7 +26811,9 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, None, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                None,
+                                self.markup_profile,
                             ),
                             None,
                             None,
@@ -27212,8 +27463,6 @@ class LlamaCppBackend:
             """
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
-            if messages_have_media(candidate):
-                return None
             try:
                 _fitted, _truncation = _fit_with_instruction_pins(
                     list(candidate),
@@ -27227,7 +27476,9 @@ class LlamaCppBackend:
                     ),
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            fitted, _markup_cache, self.markup_profile
+                            messages_without_unpriced_media(fitted),
+                            _markup_cache,
+                            self.markup_profile,
                         ),
                         None,
                         tools,
@@ -27235,6 +27486,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = reasoning_kw,
                         continue_final_message = continue_flag,
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     anchor_ids = _rolling_anchor_ids,
                 )
             except Exception:
@@ -27269,7 +27521,9 @@ class LlamaCppBackend:
             try:
                 _tokens = self.count_chat_tokens(
                     neutralize_control_markup_in_messages(
-                        candidate, _markup_cache, self.markup_profile
+                        messages_without_unpriced_media(candidate),
+                        _markup_cache,
+                        self.markup_profile,
                     ),
                     None,
                     tools,
@@ -27390,11 +27644,7 @@ class LlamaCppBackend:
             )
             _preflight_context_length = None
             _preflight_succeeded = False
-            if (
-                context_overflow == "truncate_oldest"
-                and self._effective_context_length
-                and not messages_have_media(conversation)
-            ):
+            if context_overflow == "truncate_oldest" and self._effective_context_length:
                 _preflight_context_length = self._effective_context_length
                 try:
                     _before_fit = conversation
@@ -27420,7 +27670,9 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, _markup_cache, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                _markup_cache,
+                                self.markup_profile,
                             ),
                             None,
                             safe_tools,
@@ -27431,6 +27683,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
+                        estimate_message = estimate_message_tokens_without_unpriced_media,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
@@ -27446,7 +27699,7 @@ class LlamaCppBackend:
                         # messages, priced by the fit with the catalogue and template.
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
-                        ) - estimate_messages_tokens(conversation)
+                        ) - estimate_messages_tokens_without_unpriced_media(conversation)
                     if truncation:
                         _recalled = _archive_and_recall(
                             conversation,
@@ -27476,7 +27729,9 @@ class LlamaCppBackend:
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    fitted, _markup_cache, self.markup_profile
+                                    messages_without_unpriced_media(fitted),
+                                    _markup_cache,
+                                    self.markup_profile,
                                 ),
                                 None,
                                 safe_tools,
@@ -27585,7 +27840,9 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, _markup_cache, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                _markup_cache,
+                                self.markup_profile,
                             ),
                             None,
                             safe_tools,
@@ -27596,6 +27853,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
+                        estimate_message = estimate_message_tokens_without_unpriced_media,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
@@ -27713,11 +27971,18 @@ class LlamaCppBackend:
                     _reply_target = prompt_budget(
                         self._effective_context_length, _iteration_max_tokens
                     )
-                    if estimate_messages_tokens_dense(conversation) > 0.7 * _reply_target:
+                    if (
+                        estimate_messages_tokens_dense(
+                            messages_without_unpriced_media(conversation)
+                        )
+                        > 0.7 * _reply_target
+                    ):
                         try:
                             _prompt_now = self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    conversation, _markup_cache, self.markup_profile
+                                    messages_without_unpriced_media(conversation),
+                                    _markup_cache,
+                                    self.markup_profile,
                                 ),
                                 None,
                                 safe_tools,
@@ -29065,7 +29330,12 @@ class LlamaCppBackend:
                         # the write lands before the next request is rejected. Erring
                         # high here only costs an extra count; erring low costs the
                         # whole gate.
-                        if estimate_messages_tokens_conservative(conversation) > 0.7 * _room_target:
+                        if (
+                            estimate_messages_tokens_conservative(
+                                messages_without_unpriced_media(conversation)
+                            )
+                            > 0.7 * _room_target
+                        ):
                             # Priced with a STAND-IN tool message for the call about to
                             # run, not on the conversation as it stands. A chat template
                             # renders an assistant turn's `tool_calls` only once a `tool`
@@ -29091,7 +29361,9 @@ class LlamaCppBackend:
                                 try:
                                     _turn_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            [*conversation, _probe_message],
+                                            messages_without_unpriced_media(
+                                                [*conversation, _probe_message]
+                                            ),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -29148,7 +29420,9 @@ class LlamaCppBackend:
                                     try:
                                         _after_tokens = self.count_chat_tokens(
                                             neutralize_control_markup_in_messages(
-                                                _as_if_run, _markup_cache, self.markup_profile
+                                                messages_without_unpriced_media(_as_if_run),
+                                                _markup_cache,
+                                                self.markup_profile,
                                             ),
                                             None,
                                             safe_tools,
@@ -29347,7 +29621,9 @@ class LlamaCppBackend:
                                 try:
                                     _exact_prompt_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            [*conversation, _size_probe],
+                                            messages_without_unpriced_media(
+                                                [*conversation, _size_probe]
+                                            ),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -29377,7 +29653,9 @@ class LlamaCppBackend:
                                     if _compact_after_execution and _compacted_turn_tokens
                                     else _exact_prompt_tokens
                                     if _exact_prompt_tokens is not None
-                                    else estimate_messages_tokens_dense(conversation)
+                                    else estimate_messages_tokens_dense(
+                                        messages_without_unpriced_media(conversation)
+                                    )
                                     + (
                                         _prompt_token_offset
                                         if _prompt_token_offset is not None
@@ -29464,7 +29742,9 @@ class LlamaCppBackend:
                                                 # is handed to the result.
                                                 _spent_after = self.count_chat_tokens(
                                                     neutralize_control_markup_in_messages(
-                                                        [*conversation, _size_probe],
+                                                        messages_without_unpriced_media(
+                                                            [*conversation, _size_probe]
+                                                        ),
                                                         _markup_cache,
                                                         self.markup_profile,
                                                     ),
@@ -29835,11 +30115,7 @@ class LlamaCppBackend:
         )
         _final_preflight_context_length = None
         _final_preflight_succeeded = False
-        if (
-            context_overflow == "truncate_oldest"
-            and self._effective_context_length
-            and not messages_have_media(conversation)
-        ):
+        if context_overflow == "truncate_oldest" and self._effective_context_length:
             _final_preflight_context_length = self._effective_context_length
             try:
                 _before_final_fit = conversation
@@ -29867,13 +30143,16 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _final_can_reset,
@@ -29906,7 +30185,9 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, None, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                None,
+                                self.markup_profile,
                             ),
                             None,
                             None,
@@ -29989,13 +30270,16 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
@@ -30107,7 +30391,7 @@ class LlamaCppBackend:
                 return True
             try:
                 _tokens = self.count_chat_tokens(
-                    candidate_messages,
+                    messages_without_unpriced_media(candidate_messages),
                     None,
                     None,
                     strict = True,
@@ -30830,6 +31114,17 @@ class LlamaCppBackend:
     }
 
     _codec_mgr = None  # Shared AudioCodecManager instance
+
+    @staticmethod
+    def _unload_audio_codec() -> None:
+        if LlamaCppBackend._codec_mgr is None:
+            return
+        LlamaCppBackend._codec_mgr.unload()
+        LlamaCppBackend._codec_mgr = None
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def init_audio_codec(self, audio_type: str) -> None:
         """Load the audio codec at model load time (mirrors the non-GGUF path)."""

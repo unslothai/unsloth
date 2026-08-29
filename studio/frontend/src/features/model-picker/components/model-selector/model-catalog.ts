@@ -455,7 +455,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
 ];
 
 // The Audio page's curated list. tts groups load into the main slot via /api/inference/load
-// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); stt groups map to
+// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); native TTS
+// families use their official Transformers/Diffusers interfaces. stt groups map to
 // the dictation sidecar models in stt-model-catalog.ts, so their sizes are informational only.
 export const AUDIO_CATALOG: CatalogGroup[] = [
   {
@@ -494,6 +495,69 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     task: "tts",
     artifacts: [
       bf16Pipeline("unsloth/Llama-OuteTTS-1.0-1B", 4, { label: "Safetensors" }),
+    ],
+  },
+  {
+    canonicalId: "bosonai/higgs-tts-2-3b-base",
+    displayName: "Higgs TTS 2 3B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("bosonai/higgs-tts-2-3b-base", 12, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+    displayName: "MOSS TTS Local v1.5",
+    description: "48 kHz stereo text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", 10, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "OpenMOSS-Team/MOSS-TTS-Nano-100M",
+    displayName: "MOSS TTS Nano 100M",
+    description: "CPU-friendly text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-TTS-Nano-100M", 1, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "multimodalart/higgs-audio-v3-tts-4b-transformers",
+    displayName: "Higgs Audio v3 TTS 4B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("multimodalart/higgs-audio-v3-tts-4b-transformers", 10, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "MiniMaxAI/MiniMax-Music3",
+    displayName: "MiniMax Music 3",
+    description: "Lyrics-to-music · NVIDIA CUDA",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-Music3", 67, {
+        label: "Diffusers",
+        // 67 GB is the repository/download footprint, not resident VRAM. The
+        // publisher's ModularPipeline path loads in BF16 on a 24 GB CUDA GPU.
+        offloadFitTiers: [{ gpuGb: 24, systemRamGb: 0 }],
+      }),
     ],
   },
   // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is

@@ -694,7 +694,7 @@ export const ptBR = {
         sectionTitle: "Troca automática de modelo (API OpenAI)",
         enable: "Trocar de modelo por requisição",
         enableDescription:
-          "Carrega, antes de responder, um GGUF baixado indicado em uma requisição da API. Desativado por padrão.",
+          "Carrega, antes de responder, um modelo baixado indicado em uma requisição da API. Desativado por padrão.",
         idleUnload: "Descarregamento automático por inatividade",
         idleUnloadDescription:
           "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
@@ -1398,6 +1398,13 @@ export const ptBR = {
         collapseByDefaultDescription:
           "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
       },
+      currentDate: {
+        label: "Informar a data de hoje ao modelo",
+        description:
+          "Adiciona a data atual ao prompt para que a busca na web e o Deep Research procurem fontes recentes em vez de assumir a data de corte do treinamento do modelo.",
+        loadError: "Não foi possível carregar as configurações de data atual",
+        saveError: "Não foi possível atualizar as configurações de data atual",
+      },
       tools: {
         collapseByDefault: "Recolher atividade de ferramentas por padrão",
         collapseByDefaultDescription:
@@ -1420,6 +1427,11 @@ export const ptBR = {
         blockedBanner: "{count} recurso externo de {hosts} bloqueado.",
         blockedBannerPlural: "{count} recursos externos de {hosts} bloqueados.",
         blockedBannerAction: "Permitir neste Canvas",
+        blockedTitle: "O acesso à rede do Canvas está desativado",
+        blockedHint:
+          "Ative “{setting}” em Configurações → Chat para que os Canvas carreguem recursos externos, ou permita apenas neste Canvas.",
+        blockedSettingsAction: "Abrir configurações",
+        blockedDismiss: "Dispensar",
       },
       data: "Dados",
       exportHistory: "Exportar histórico de chat",

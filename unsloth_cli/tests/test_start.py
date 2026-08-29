@@ -62,7 +62,8 @@ def _launch_command(output: str) -> list:
 
 
 def _fake_claude(monkeypatch, version_output: str) -> None:
-    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_probe_env", lambda **_: {})
     monkeypatch.setattr(
         start.subprocess,
         "run",
@@ -104,14 +105,20 @@ def test_claude_flags_passed_to_supported_claude(monkeypatch):
     ]
 
 
-def test_claude_flags_skipped_on_old_claude(monkeypatch):
+def test_claude_dynamic_sections_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
-def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
+def test_claude_settings_retained_on_unparseable_version(monkeypatch):
     _fake_claude(monkeypatch, "weird build string\n")
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
 def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
@@ -133,10 +140,31 @@ def test_claude_settings_overlay_pins_served_model():
     # applies), so it lists exactly this model, for this session only.
     overlay = json.loads(start._claude_settings_overlay(MODEL["id"]))
     assert overlay["availableModels"] == [MODEL["id"]]
+
+
+def test_claude_settings_overlay_pins_local_routing_and_auth():
+    local_env = start._claude_local_env(BASE, "sk-unsloth-test", MODEL)
+    overlay = json.loads(start._claude_settings_overlay(MODEL["id"], local_env))
+    for name, value in local_env.items():
+        assert overlay["env"][name] == value
+    assert overlay["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert overlay["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-test"
+    for name in start._CLAUDE_ENV_UNSET:
+        assert overlay["env"][name] == ""
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
     # Subagents fall through to the served model instead of a user's opus/sonnet pin.
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
+
+
+def test_claude_settings_files_preserve_concurrent_sessions(tmp_path):
+    first_env = start._claude_local_env("http://127.0.0.1:8001", "first-key", MODEL)
+    second_env = start._claude_local_env("http://127.0.0.1:8002", "second-key", MODEL)
+    first = start._write_claude_settings(tmp_path, MODEL["id"], first_env)
+    second = start._write_claude_settings(tmp_path, MODEL["id"], second_env)
+    assert first != second
+    assert json.loads(first.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == "first-key"
+    assert json.loads(second.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == "second-key"
 
 
 def test_install_agent_prompts_then_installs(monkeypatch):
@@ -145,6 +173,7 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
     monkeypatch.setattr(start, "_npm_executable", lambda: "/usr/local/bin/npm")
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
     ran = []
     monkeypatch.setattr(
         start.subprocess,
@@ -659,7 +688,10 @@ def test_claude_flags_probes_old_agent_only_in_install_dir(monkeypatch, tmp_path
     monkeypatch.setattr(
         start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
     )
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
 def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, tmp_path):
@@ -694,7 +726,10 @@ def test_claude_flags_probes_npm_install_dir_on_windows(monkeypatch, tmp_path):
     monkeypatch.setattr(
         start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = "2.0.14 (Claude Code)\n")
     )
-    assert start._claude_flags(MODEL["id"]) == []
+    assert start._claude_flags(MODEL["id"]) == [
+        "--settings",
+        start._claude_settings_overlay(MODEL["id"]),
+    ]
 
 
 def test_codex_catalog_probes_old_codex_only_in_install_dir(monkeypatch, tmp_path):
@@ -1416,8 +1451,8 @@ def fake_studio(tmp_path, monkeypatch):
 def test_connect_claude_no_launch(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
-    _assert_env_unset(result.output, "CLAUDE_CODE_OAUTH_TOKEN")
+    for name in start._CLAUDE_ENV_UNSET:
+        _assert_env_unset(result.output, name)
     _assert_env_set(result.output, "ANTHROPIC_BASE_URL", BASE)
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
@@ -1428,18 +1463,79 @@ def test_connect_claude_no_launch(fake_studio):
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
-    # Auto-compact window is sized to the loaded model's real context length so the
-    # session compacts before it overflows the local server's (much smaller) window,
-    # and compaction is forced at 90% of it for headroom.
+    # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
+    # window into [100k, that], so the real window has to be pinned as well.
+    _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
-    # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
+    # Overlay is session-only and lives outside the user's ~/.claude.
     command = _launch_command(result.output)
-    settings = json.loads(command[command.index("--settings") + 1])
+    settings_path = Path(command[command.index("--settings") + 1])
+    settings = json.loads(settings_path.read_text())
     assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
+    assert settings["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
+    for name in start._CLAUDE_ENV_UNSET:
+        assert settings["env"][name] == ""
+    if os.name != "nt":
+        assert settings_path.stat().st_mode & 0o777 == 0o600
     assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
+
+
+def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
+    forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--settings", forwarded],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    positions = [index for index, arg in enumerate(command) if arg == "--settings"]
+    assert len(positions) == 2
+    assert command[positions[0] + 1] == forwarded
+    assert Path(command[positions[1] + 1]).name.startswith("settings-")
+
+
+@pytest.mark.parametrize(
+    "settings_arg",
+    [
+        lambda value: ["--settings", value],
+        lambda value: [f"--settings={value}"],
+    ],
+)
+def test_connect_claude_session_settings_precede_subcommand(fake_studio, settings_arg):
+    forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "mcp", "list", *settings_arg(forwarded)],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    subcommand = command.index("mcp")
+    assert command.index("--model") < subcommand
+    settings_positions = [
+        index
+        for index, arg in enumerate(command)
+        if arg == "--settings" or arg.startswith("--settings=")
+    ]
+    assert len(settings_positions) == 2
+    assert settings_positions[0] < settings_positions[1] < subcommand
+
+
+def test_connect_claude_session_settings_precede_forwarded_delimiter(fake_studio):
+    forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--", "--settings", forwarded],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    positions = [index for index, arg in enumerate(command) if arg == "--settings"]
+    assert len(positions) == 2
+    assert positions[0] < command.index("--") < positions[1]
+    assert Path(command[positions[0] + 1]).name.startswith("settings-")
 
 
 def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
@@ -1479,6 +1575,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "unsloth-local-agent"
     )
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    settings_path = next(plugin.glob("settings-*.json"))
     assert mcp["command"] == sys.executable
     assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
     assert mcp["env"] == {
@@ -1487,7 +1584,14 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
         "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
         "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
+        start._CLAUDE_SUBAGENT_SETTINGS_ENV: str(settings_path),
     }
+    settings = json.loads(settings_path.read_text())
+    assert settings["availableModels"] == [MODEL["id"] + ":UD-Q4_K_XL"]
+    assert settings["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert settings["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
+    for name in start._CLAUDE_ENV_UNSET:
+        assert settings["env"][name] == ""
     skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
     assert "spawn an Unsloth agent or local agent" in skill
     assert "In plan mode" in skill
@@ -1503,9 +1607,14 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
         "which",
         lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
     )
-    server_env = {"UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret"}
+    server_env = {
+        "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": BASE,
+        "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"],
+    }
     plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    settings_path = next(plugin.glob("settings-*.json"))
     assert mcp["command"] == "wsl.exe"
     assert mcp["args"] == [
         "-d",
@@ -1516,7 +1625,14 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
         start._CLAUDE_SUBAGENT_MCP_MODULE,
     ]
     assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
-    assert mcp["env"]["WSLENV"].split(":") == ["EXISTING", "UNSLOTH_CLAUDE_SUBAGENT_API_KEY"]
+    assert mcp["env"][start._CLAUDE_SUBAGENT_SETTINGS_ENV] == str(settings_path)
+    assert mcp["env"]["WSLENV"].split(":") == [
+        "EXISTING",
+        "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL",
+        "UNSLOTH_CLAUDE_SUBAGENT_API_KEY",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL",
+        start._CLAUDE_SUBAGENT_SETTINGS_ENV,
+    ]
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
@@ -1525,6 +1641,7 @@ def test_connect_claude_compact_window_omitted_without_context(fake_studio, monk
     monkeypatch.setattr(start, "_resolve_model", lambda *a, **k: {"id": "local-model"})
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
+    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in result.output
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in result.output
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in result.output
 
@@ -1573,6 +1690,18 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     captured = {}
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
+    monkeypatch.setenv("ANTHROPIC_UNIX_SOCKET", "/tmp/remote-claude.sock")
+    monkeypatch.setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+    monkeypatch.setenv(
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "https://corporate-gateway.azure-api.net/anthropic-stream",
+    )
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "my-foundry-resource")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
 
@@ -1586,8 +1715,8 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
 
     assert result.exit_code == 0, result.output
     assert captured["command"] == ["/usr/local/bin/claude", "--model", MODEL["id"]]
-    assert "ANTHROPIC_API_KEY" not in captured["env"]
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["env"]
+    for name in start._CLAUDE_ENV_UNSET:
+        assert name not in captured["env"]
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
@@ -1601,6 +1730,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
 )
 def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch, tmp_path):
     captured = {}
+    windows_settings = r"C:\\Users\\samle\\AppData\\Local\\unsloth\\settings.json"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
@@ -1609,7 +1739,12 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
-    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(start, "_wsl_windows_path", lambda _: windows_settings)
+    monkeypatch.setattr(
+        start,
+        "_claude_flags",
+        lambda model_id, settings: ["--settings", settings],
+    )
 
     def run(command, env):
         captured["command"] = command
@@ -1624,9 +1759,11 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         "/mnt/c/Users/samle/AppData/Roaming/npm/claude",
         "--model",
         MODEL["id"],
+        "--settings",
+        windows_settings,
     ]
-    assert captured["env"]["ANTHROPIC_API_KEY"] == ""
-    assert captured["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == ""
+    for name in start._CLAUDE_ENV_UNSET:
+        assert captured["env"][name] == ""
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
@@ -1637,8 +1774,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_MODEL",
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
+        *start._CLAUDE_ENV_UNSET,
     ):
         assert name in captured["env"]["WSLENV"].split(":")
 
@@ -2029,18 +2165,20 @@ def test_resolved_launch_command_leaves_non_npm_batch_file_unchanged(monkeypatch
 def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
     fake_studio, monkeypatch, tmp_path
 ):
+    windows_settings = r"C:\\Users\\samle\\AppData\\Local\\unsloth\\settings.json"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
+    monkeypatch.setattr(start, "_wsl_windows_path", lambda _: windows_settings)
 
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
 
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_API_KEY=" in result.output
-    assert "export CLAUDE_CODE_OAUTH_TOKEN=" in result.output
+    for name in start._CLAUDE_ENV_UNSET:
+        assert f"export {name}=" in result.output
     assert "export WSLENV=" in result.output
     # PWD must NOT be frozen into the recipe (no `export PWD=`): WSLENV PWD/p translates the
     # shell's live PWD at run time, so a recipe reused from another dir resolves the project root.
@@ -2048,6 +2186,8 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
     assert "PWD/p" in result.output
     assert "ANTHROPIC_AUTH_TOKEN" in result.output
     assert "CLAUDE_CODE_OAUTH_TOKEN" in result.output
+    command = _launch_command(result.output)
+    assert command[command.index("--settings") + 1] == windows_settings
 
 
 def test_connect_codex_no_launch(fake_studio, tmp_path):
@@ -2471,8 +2611,8 @@ def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
-    assert "ANTHROPIC_API_KEY= " in last
-    assert "CLAUDE_CODE_OAUTH_TOKEN= " in last
+    for name in start._CLAUDE_ENV_UNSET:
+        assert f"{name}= " in last
     assert "ANTHROPIC_AUTH_TOKEN=" in last  # the real key still applied after the blanks
 
 
@@ -6274,6 +6414,7 @@ _RESUME_ENV_VAR = {
 
 def _capture_launch(monkeypatch, argv):
     captured = {}
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
 
     def run(
         command,
@@ -6507,7 +6648,9 @@ def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
-    assert captured["command"][-2:] == ["--resume", "some-session-guid"]
+    resume = captured["command"].index("--resume")
+    assert captured["command"][resume : resume + 2] == ["--resume", "some-session-guid"]
+    assert captured["command"].index("--model") < resume
     # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]

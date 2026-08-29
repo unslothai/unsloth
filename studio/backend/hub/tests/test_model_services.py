@@ -82,6 +82,29 @@ def _sibling(name: str, size: int, sha: str):
     return SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": sha})
 
 
+def test_gguf_inventory_dates_rows_from_managed_companions(tmp_path):
+    repo = _repo(
+        "Org/Vision-GGUF",
+        [
+            SimpleNamespace(
+                file_name = "model-Q4_K_M.gguf",
+                size_on_disk = 100,
+                blob_path = None,
+                blob_last_modified = 10.0,
+            ),
+            SimpleNamespace(
+                file_name = "mmproj-F16.gguf",
+                size_on_disk = 20,
+                blob_path = None,
+                blob_last_modified = 30.0,
+            ),
+        ],
+        tmp_path,
+    )
+
+    assert cache_inventory._repo_gguf_last_modified(repo) == 30.0
+
+
 class TestExtractQuantToken:
     def test_trailing_precision_is_kept(self):
         assert gguf.extract_quant_token("model-it-F16.gguf") == "F16"
@@ -775,7 +798,7 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
         releases[1].set()
         return await asyncio.gather(second, changed)
 
-    assert asyncio.run(run_requests()) == [{"cached": cached}] * 2
+    assert asyncio.run(run_requests()) == [{"cached": cached, "scan_confirmed": True}] * 2
     assert scans == 1 and cache_inventory._cached_inventory_flights == {}
 
 
@@ -812,8 +835,9 @@ def test_cached_inventory_discards_a_scan_that_raced_an_invalidation(
     monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
     monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
 
-    rows = asyncio.run(cache_inventory._shared_cached_inventory_scan(inventory_call, scan))
-    assert rows == [{"repo_id": "Org/Kept"}], "rows from the superseded walk were served"
+    result = asyncio.run(cache_inventory._shared_cached_inventory_scan(inventory_call, scan))
+    assert result.rows == [{"repo_id": "Org/Kept"}], "rows from the superseded walk were served"
+    assert result.confirmed is True
     assert len(scans) == 2, "the superseded walk was not retried"
     assert cache_inventory._cached_inventory_flights == {}
 
@@ -840,7 +864,9 @@ def test_cached_inventory_scan_stops_retrying_under_constant_invalidation(monkey
             cache_inventory._shared_cached_inventory_scan("gguf", scan), timeout = 5
         )
 
-    assert asyncio.run(run()) == []
+    result = asyncio.run(run())
+    assert result.rows == []
+    assert result.confirmed is False
     assert len(scans) == cache_inventory._INVENTORY_SCAN_MAX_ATTEMPTS
     assert cache_inventory._cached_inventory_flights == {}
 
@@ -908,8 +934,8 @@ def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     calls, started, releases = 0, [event(), event()], [event(), event()]
     loaded, both_loaded, task_calls, epoch = 0, event(), [], [0]
     epoch_reads, retried = [0], event()
-    model = SimpleNamespace(id = "model")
-    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    model = SimpleNamespace(id = "model", path = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
     response = SimpleNamespace(models = [model])
     response.model_copy = lambda update: SimpleNamespace(models = update["models"])
     sources = local_inventory._local_inventory_sources()
@@ -1781,7 +1807,17 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
 _SNAPSHOT_SHA = "a" * 40
 
 
-def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: str):
+def _diffusion_scan(
+    monkeypatch,
+    tmp_path,
+    repo_id: str,
+    files: list,
+    *,
+    task: str | None,
+    modular_manifest: dict | None = None,
+    config_manifest: dict | None = None,
+    expect_task_classification: bool = True,
+):
     """One cached diffusion repo through _scan_cached_models, with the download-partial signal
     forced off so only the pipeline-shape checks can flag the row.
 
@@ -1797,6 +1833,12 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         target = snapshot / f.file_name
         target.parent.mkdir(parents = True, exist_ok = True)
         target.write_bytes(b"\0" * min(int(f.size_on_disk), 4096))
+    if modular_manifest is not None:
+        (snapshot / "modular_model_index.json").write_text(
+            json.dumps(modular_manifest), encoding = "utf-8"
+        )
+    if config_manifest is not None:
+        (snapshot / "config.json").write_text(json.dumps(config_manifest), encoding = "utf-8")
     refs = repo_path / "refs"
     refs.mkdir(parents = True, exist_ok = True)
     (refs / "main").write_text(_SNAPSHOT_SHA)
@@ -1828,7 +1870,7 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
     monkeypatch.setattr(cache_inventory, "_cached_row_task", row_task)
     rows = cache_inventory._scan_cached_models()
     assert len(rows) == 1
-    assert selected_snapshots == [snapshot]
+    assert selected_snapshots == ([snapshot] if expect_task_classification else [])
     return rows[0]
 
 
@@ -1872,6 +1914,30 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
         task = "text-to-image",
     )
 
+    assert row["partial"] is False
+    assert row["single_file"] is False
+
+
+def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch, tmp_path):
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "MiniMaxAI/MiniMax-Music3",
+        [
+            _file("modular_model_index.json", 900),
+            _file("transformer/diffusion_pytorch_model.safetensors", 4_000_000_000),
+        ],
+        task = None,
+        modular_manifest = {
+            "_class_name": "MiniMaxMusic3ModularPipeline",
+            "_blocks_class_name": "MiniMaxMusic3Blocks",
+        },
+        expect_task_classification = False,
+    )
+
+    assert row["task"] == "text-to-speech"
+    assert row["audio_type"] == "minimax_music3"
+    assert row["capabilities"]["can_chat"] is False
     assert row["partial"] is False
     assert row["single_file"] is False
 
@@ -1928,6 +1994,31 @@ def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
     assert row["companion"] is False
     # ...and an ordinary chat repo keeps its chat capability.
     assert row["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    ("repo_id", "config"),
+    [
+        ("OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano", {}),
+        ("Acme/custom-moss-codec", {"model_type": "moss-audio-tokenizer"}),
+        ("Acme/legacy-moss-codec", {"model_type": "speech_tokenizer"}),
+        ("Acme/custom-higgs-codec", {"architectures": ["HiggsAudioV2TokenizerModel"]}),
+    ],
+)
+def test_native_audio_codec_repos_are_companion_infrastructure(
+    monkeypatch, tmp_path, repo_id, config
+):
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        repo_id,
+        [_file("config.json", 100), _file("model.safetensors", 100)],
+        task = None,
+        config_manifest = config,
+    )
+
+    assert row["companion"] is True
+    assert row["capabilities"]["can_chat"] is False
 
 
 def test_the_real_companion_shape_never_reaches_a_row_at_all(monkeypatch, tmp_path):
@@ -7194,8 +7285,8 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
 
     idents: list[int] = []
     loop_is_free = threading.Event()
-    model = SimpleNamespace(id = "model")
-    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    model = SimpleNamespace(id = "model", path = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
     response = SimpleNamespace(models = [model])
     response.model_copy = lambda update: SimpleNamespace(models = update["models"])
 
@@ -7265,8 +7356,8 @@ def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monke
 
     idents: list[int] = []
     epoch = [0]
-    model = SimpleNamespace(id = "model")
-    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    model = SimpleNamespace(id = "model", path = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, path = model.path, **update)
     response = SimpleNamespace(models = [model])
     response.model_copy = lambda update: SimpleNamespace(models = update["models"])
 
@@ -7306,8 +7397,8 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
     scans: list[int] = []
 
     def _scan_response(tag: str):
-        row = SimpleNamespace(id = tag)
-        row.model_copy = lambda update, tag = tag: SimpleNamespace(id = tag, task = update["task"])
+        row = SimpleNamespace(id = tag, path = tag)
+        row.model_copy = lambda update, tag = tag: SimpleNamespace(id = tag, path = tag, **update)
         response = SimpleNamespace(models = [row])
         response.model_copy = lambda update: SimpleNamespace(models = update["models"])
         return response

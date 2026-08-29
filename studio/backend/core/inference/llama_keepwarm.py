@@ -100,6 +100,12 @@ _INFERENCE_SUFFIXES = (
     "/video/generate",  # /api/inference/video/generate
 )
 
+# Matched WHOLE, not by suffix. The suffix tuple above is an endswith test, so a bare
+# "/videos" entry would also class an unrouted /v1/anything/videos as inference: that
+# 404s before any auth dependency, and this middleware only excludes 401/403, so each
+# such probe would refresh the chat model's idle timer and keep it resident for free.
+_INFERENCE_EXACT_PATHS = frozenset({"/v1/videos", "/api/inference/videos"})
+
 # Tracked above (they hold the GPU, so the in-flight count must see them) but served by the
 # diffusion/video engines, never the llama slot. A successful one therefore did NOT run against
 # the resident chat model and must not adopt it for Unsloth: clearing the marker on an image or
@@ -109,6 +115,10 @@ _NON_LLM_SLOT_SUFFIXES = (
     "/images/generate",
     "/images/generations",
     "/video/generate",
+    # The OpenAI videos route (/v1/videos + /api/inference/videos) runs the video
+    # backend only, exactly like /video/generate. It is tracked as an inference path,
+    # so without this it would claim the slot and clear preview ownership.
+    "/videos",
 )
 
 
@@ -119,6 +129,8 @@ def _is_preview_path(path: str) -> bool:
 
 
 def _is_inference_path(path: str) -> bool:
+    if path in _INFERENCE_EXACT_PATHS:
+        return True
     if path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES):
         return True
     return _is_preview_path(path)

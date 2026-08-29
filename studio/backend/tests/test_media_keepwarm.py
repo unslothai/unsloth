@@ -564,6 +564,8 @@ def test_a_path_that_is_not_a_mounted_route_is_not_tracked():
     # The Unsloth routes are mounted under /api/inference only; /v1 carries the OpenAI shape.
     assert mk.owner_for_path("/v1/images/generate") is None
     assert mk.owner_for_path("/v1/video/load") is None
+    assert mk.owner_for_path("/v1/videos/video_abc") is None
+    assert mk.owner_for_path("/v1/videos/video_abc/content") is None
 
 
 def test_every_tracked_path_is_a_route_that_is_actually_mounted():
@@ -572,6 +574,7 @@ def test_every_tracked_path_is_a_route_that_is_actually_mounted():
     # list to the routers main.py mounts, in both directions.
     from routes.inference import router as inference_router
     from routes.inference import studio_router
+    from routes.video import openai_router as video_openai_router
     from routes.video import router as video_router
 
     mounted = {
@@ -580,11 +583,15 @@ def test_every_tracked_path_is_a_route_that_is_actually_mounted():
             (inference_router, ("/api/inference", "/v1")),
             (studio_router, ("/api/inference",)),
             (video_router, ("/api/inference",)),
+            (video_openai_router, ("/api/inference", "/v1")),
         )
         for route in router.routes
         for prefix in prefixes
     }
     assert not set(mk._TRACKED_PATHS) - mounted
+    for path in ("/v1/videos", "/api/inference/videos"):
+        assert path in mounted, path
+        assert mk.owner_for_path(path) == arb.VIDEO, path
     for path in mounted:
         if ("/images/" in path or "/video/" in path) and path.rsplit("/", 1)[-1] in (
             "generate",
@@ -778,3 +785,24 @@ def test_an_authenticated_request_is_still_counted_before_its_body(media, monkey
     _step()
     _stalled_media_request("/api/inference/images/generate", _BEARER)
     assert media[arb.DIFFUSION].unloads == 0
+
+
+def test_the_openai_videos_route_never_claims_the_llama_slot():
+    """/v1/videos runs the video backend, exactly like /video/generate.
+
+    Adding "/videos" to the inference suffixes made it a tracked path; without the
+    matching non-LLM entry its completion called _claim_non_preview_slot(), clearing
+    preview ownership so the next preview of a different checkpoint 503s on the guard.
+    """
+    from core.inference import llama_keepwarm as kw
+
+    for path in ("/v1/videos", "/api/inference/videos"):
+        assert kw._is_inference_path(path), path
+        assert path.endswith(kw._NON_LLM_SLOT_SUFFIXES), path
+    # Matched whole. As an endswith suffix it also caught unrouted paths, and those
+    # 404 before auth -- which this middleware does not exclude -- so each probe would
+    # have refreshed the chat model's idle timer and kept it resident for free.
+    for path in ("/v1/anything/videos", "/api/inference/nope/videos", "/v1/videosx"):
+        assert not kw._is_inference_path(path), path
+    for path in ("/v1/videos/", "/api/inference/videos/"):
+        assert not kw._is_inference_path(path), path

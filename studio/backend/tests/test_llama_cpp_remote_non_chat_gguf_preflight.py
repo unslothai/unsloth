@@ -976,7 +976,7 @@ def _launchable_backend(monkeypatch) -> LlamaCppBackend:
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
     backend._llama_server_env_for_binary = lambda _binary: {}
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda timeout, **_kw: True
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     monkeypatch.setattr(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)

@@ -688,7 +688,7 @@ export const ar = {
         sectionTitle: "التبديل التلقائي للنموذج (OpenAI API)",
         enable: "تبديل النموذج حسب الطلب",
         enableDescription:
-          "تحميل ملف GGUF منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
+          "تحميل نموذج منزّل ومذكور في طلب API قبل تلبية الطلب. مُعطّل افتراضيًا.",
         idleUnload: "التفريغ التلقائي عند الخمول",
         idleUnloadDescription:
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
@@ -1379,6 +1379,13 @@ export const ar = {
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
       },
+      currentDate: {
+        label: "إخبار النموذج بتاريخ اليوم",
+        description:
+          "أضف التاريخ الحالي إلى المطالبة حتى يبحث البحث على الويب و Deep Research عن مصادر حديثة بدلًا من افتراض تاريخ انتهاء تدريب النموذج.",
+        loadError: "تعذّر تحميل إعدادات التاريخ الحالي",
+        saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
+      },
       tools: {
         collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
         collapseByDefaultDescription:
@@ -1401,6 +1408,11 @@ export const ar = {
         blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
         blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
         blockedBannerAction: "السماح لهذا الـ Canvas",
+        blockedTitle: "الوصول إلى الشبكة لـ Canvas معطّل",
+        blockedHint:
+          "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
+        blockedSettingsAction: "فتح الإعدادات",
+        blockedDismiss: "تجاهل",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
