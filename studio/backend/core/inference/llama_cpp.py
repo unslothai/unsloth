@@ -7323,6 +7323,13 @@ class LlamaCppBackend:
 
         architecture: Optional[str] = None
         token_embd_bytes = 0
+        alignment = 32  # GGUF's default when general.alignment is absent
+        # Set when token_embd uses a quant type this gguf package predates: its
+        # size then comes from the data layout instead. Studio runs whatever
+        # llama.cpp the user points it at, while gguf is pinned in pyproject, so
+        # the table can be older than the file. Aborting on that would put back
+        # the whole under-count this probe exists to remove.
+        unsized_at: Optional[int] = None
         with open(path, "rb") as f:
             if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
                 return None, False, 0
@@ -7335,22 +7342,38 @@ class LlamaCppBackend:
                     raw = f.read(struct.unpack("<Q", f.read(8))[0])
                     architecture = raw.decode("utf-8", "replace")
                     continue
+                if key == b"general.alignment" and value_type == 4:
+                    alignment = max(1, struct.unpack("<I", f.read(4))[0])
+                    continue
                 LlamaCppBackend._gguf_skip_value(f, value_type)
             for _ in range(n_tensors):
                 name = f.read(struct.unpack("<Q", f.read(8))[0])
                 n_dims = struct.unpack("<I", f.read(4))[0]
                 dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
                 ggml_type = struct.unpack("<I", f.read(4))[0]
-                f.seek(8, 1)  # data offset
+                offset = struct.unpack("<Q", f.read(8))[0]
+                if unsized_at is not None:
+                    # The tensors are written in the order of their info
+                    # records, each padded up to the alignment, so the next
+                    # offset bounds the previous tensor. Over by less than one
+                    # alignment unit, which is the harmless direction.
+                    token_embd_bytes = offset - unsized_at
+                    unsized_at = None
                 if name == b"output.weight":
                     return architecture, True, 0
                 if name == b"token_embd.weight":
                     # Quantised rows are stored in blocks, so the element count
-                    # is not the byte count. GGML_QUANT_SIZES comes from the
-                    # pinned gguf package rather than a table here, so a new
-                    # quant type cannot silently size to zero.
-                    block, block_bytes = GGML_QUANT_SIZES[ggml_type]
-                    token_embd_bytes = math.prod(dims) // block * block_bytes
+                    # is not the byte count.
+                    block = GGML_QUANT_SIZES.get(ggml_type)
+                    if block is None:
+                        unsized_at = offset
+                    else:
+                        token_embd_bytes = math.prod(dims) // block[0] * block[1]
+            if unsized_at is not None:
+                # token_embd was the last tensor, so the data section itself
+                # bounds it. It starts at the aligned end of the info records.
+                data_start = -(-f.tell() // alignment) * alignment
+                token_embd_bytes = max(0, os.path.getsize(path) - data_start - unsized_at)
         return architecture, False, token_embd_bytes
 
     @staticmethod

@@ -166,6 +166,46 @@ def test_a_quantised_embedding_is_charged_its_blocks_not_its_elements(backend, t
     assert backend._tied_output_bytes(str(path)) == 256 * 64 // 256 * 144
 
 
+def test_a_quant_type_the_pinned_gguf_package_predates_is_still_charged(backend, tmp_path):
+    """Studio runs a user-supplied llama.cpp; `gguf` is pinned in pyproject.
+
+    A GGUF quantised with a type added after the pinned package is one the
+    selected llama-server loads fine, so aborting the probe on the unknown enum
+    would silently restore the whole under-count. The data layout bounds the
+    tensor without the table: the next tensor's offset ends the previous one.
+    """
+    path = tmp_path / "future-quant.gguf"
+    _write_gguf(
+        path,
+        [("token_embd.weight", (256, 64)), ("blk.0.attn_q.weight", (256, 8))],
+        ggml_type = _TYPE_Q4_K,
+    )
+    expected = 256 * 64 // 256 * 144
+    assert backend._tied_output_bytes(str(path)) == expected
+
+    # The same file with the quant enum bumped past everything the table knows.
+    from gguf.constants import GGML_QUANT_SIZES
+
+    unknown = max(GGML_QUANT_SIZES) + 1
+    raw = bytearray(path.read_bytes())
+    assert raw.count(struct.pack("<I", _TYPE_Q4_K)) >= 1
+    raw = raw.replace(struct.pack("<I", _TYPE_Q4_K), struct.pack("<I", unknown))
+    (tmp_path / "bumped.gguf").write_bytes(raw)
+
+    charged = backend._tied_output_bytes(str(tmp_path / "bumped.gguf"))
+    assert charged >= expected, "an unknown quant type must not silently cost 0"
+    assert charged < expected + 32, "and it must not over-count by more than the alignment"
+
+    # And when token_embd is the last tensor there is no next offset, so the
+    # data section itself has to bound it.
+    only = tmp_path / "only.gguf"
+    _write_gguf(only, [("token_embd.weight", (256, 64))], ggml_type = _TYPE_Q4_K)
+    raw = bytearray(only.read_bytes())
+    only.write_bytes(bytes(raw).replace(struct.pack("<I", _TYPE_Q4_K), struct.pack("<I", unknown)))
+    last = backend._tied_output_bytes(str(only))
+    assert expected <= last < expected + 32
+
+
 def test_an_encoder_only_architecture_is_charged_nothing(backend, tmp_path):
     """BERT ships token_embd and no output.weight, yet nothing is duplicated.
 
