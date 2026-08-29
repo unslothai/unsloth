@@ -1030,6 +1030,7 @@ def collect_local_models(
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
+    from hub.utils import gguf as gguf_utils
     from utils.models.model_config import detect_gguf_model
 
     sources = sources or _compat_local_inventory_sources()
@@ -1138,6 +1139,7 @@ def collect_local_models(
                     is not None
                 ):
                     custom_models.append(model)
+            custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -1156,7 +1158,17 @@ def collect_local_models(
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
         semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
-        key = f"{semantic_id}\x00custom" if model.source == "custom" else semantic_id
+        key = (
+            "\x00".join(
+                (
+                    gguf_utils.local_path_physical_identity(model.path),
+                    model.model_format or "",
+                    "custom",
+                )
+            )
+            if model.source == "custom"
+            else semantic_id
+        )
         existing = deduped.get(key)
         prefer_model = existing is None
         if existing is not None and model.source == existing.source == "hf_cache":

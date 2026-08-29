@@ -64,6 +64,7 @@ def test_checkpoint_family_keeps_distinct_models_separate():
 def test_checkpoint_family_normalizes_quant_directories_and_windows_separators():
     assert gguf.gguf_checkpoint_family("Q4_K_M/model.gguf") == "model"
     assert gguf.gguf_checkpoint_family(r"Q8_0\model.gguf") == "model"
+    assert gguf.gguf_checkpoint_family("Q8_0/model-a-Q8_0.gguf") == "model-a"
     assert gguf.gguf_checkpoint_family("Q4_K_M.gguf") is None
 
 
@@ -261,13 +262,71 @@ def test_direct_custom_model_root_keeps_loose_variants(tmp_path):
 
 def test_direct_custom_model_root_dedupes_split_shards(tmp_path):
     root = tmp_path / "direct-model-root"
-    _write_gguf(root / "Q4_K_M-00001-of-00002.gguf")
-    _write_gguf(root / "Q4_K_M-00002-of-00002.gguf")
+    first = _write_gguf(root / "Q4_K_M-00001-of-00002.gguf", 11)
+    _write_gguf(root / "Q4_K_M-00002-of-00002.gguf", 7)
 
     rows = _custom_rows(root)
 
     assert len(rows) == 1
-    assert gguf.gguf_variant_family(Path(rows[0].path).name) == "Q4_K_M"
+    assert Path(rows[0].path) == first
+    assert rows[0].size_bytes == 18
+    assert Path(detect_gguf_model(rows[0].path, model_root = str(root))) == first
+
+
+def test_direct_split_prefix_matching_follows_the_loader(tmp_path):
+    root = tmp_path / "direct-model-root"
+    first = _write_gguf(root / "Model-Q4_K_M-00001-of-00002.gguf", 11)
+    _write_gguf(root / "model-Q4_K_M-00002-of-00002.gguf", 7)
+
+    rows = _custom_rows(root)
+
+    assert [(Path(row.path), row.size_bytes) for row in rows] == [(first, 18)]
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("model-00001-of-00002-old.gguf", "model-00002-of-00002-old.gguf"),
+        ("model-001-of-002.gguf", "model-002-of-002.gguf"),
+    ],
+)
+def test_noncanonical_split_like_names_stay_separate(tmp_path, names):
+    root = tmp_path / "direct-model-root"
+    expected = {_write_gguf(root / name) for name in names}
+
+    rows = _custom_rows(root)
+
+    assert {Path(row.path) for row in rows} == expected
+
+
+def test_nested_independent_gguf_models_do_not_share_a_parent_group(tmp_path):
+    root = tmp_path / "root"
+    publisher = root / "publisher"
+    loose = _write_gguf(publisher / "model-a-Q4_K_M.gguf")
+    nested = publisher / "model-b"
+    _write_gguf(nested / "model-b-Q8_0.gguf")
+
+    rows = _custom_rows(root)
+
+    assert {Path(row.path) for row in rows} == {loose, nested}
+    variants, _ = gguf.list_local_gguf_variants(str(nested), model_root = str(root))
+    assert [variant.quant for variant in variants] == ["Q8_0"]
+    assert _find_local_gguf_by_variant(
+        str(nested), "Q4_K_M", model_root = str(root)
+    ) is None
+
+
+def test_nested_quant_directory_stays_in_the_parent_group(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-a-Q4_K_M.gguf")
+    _write_gguf(model / "Q8_0" / "model-a-Q8_0.gguf")
+
+    rows = _custom_rows(root)
+
+    assert [Path(row.path) for row in rows] == [model]
+    variants, _ = gguf.list_local_gguf_variants(str(model), model_root = str(root))
+    assert {variant.quant for variant in variants} == {"Q4_K_M", "Q8_0"}
 
 
 def test_lmstudio_publisher_model_layout_keeps_its_model_id(tmp_path):

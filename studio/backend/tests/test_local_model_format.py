@@ -42,6 +42,47 @@ def _touch(path: Path) -> Path:
     return path
 
 
+def _empty_compat_sources(tmp_path: Path):
+    empty = tmp_path / "empty"
+    return models_route._CompatLocalInventorySources(
+        empty / "active",
+        empty / "legacy",
+        empty / "default",
+        (),
+        (),
+    )
+
+
+def test_compat_inventory_groups_custom_gguf_variants(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-Q4_K_M.gguf")
+    _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_preserves_distinct_custom_ggufs(tmp_path):
+    root = tmp_path / "custom"
+    holder = root / "publisher"
+    first = _touch(holder / "model-a-Q4_K_M.gguf")
+    second = _touch(holder / "model-b-Q4_K_M.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {Path(row.path) for row in rows} == {first, second}
+
+
 def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
     from hub.services.models.common import _classify_local_path
 

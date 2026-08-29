@@ -586,23 +586,11 @@ def _inventory_path_identity(raw_path: str) -> str:
 
 def _inventory_physical_identity(raw_path: str) -> str:
     """physical identity for an existing discovered path without lossy name folding."""
-    try:
-        path = os.path.realpath(os.path.expanduser(raw_path))
-        stat = os.stat(path)
-        if stat.st_ino:
-            return "\x00".join(("stat", str(stat.st_dev), str(stat.st_ino)))
-        return f"path\x00{path}"
-    except (OSError, UnicodeError, ValueError):
-        return f"path\x00{os.path.abspath(os.path.expanduser(raw_path))}"
+    return gguf.local_path_physical_identity(raw_path)
 
 
 def _inventory_resolved_parent_identity(raw_path: str) -> str:
-    try:
-        resolved = os.path.realpath(os.path.expanduser(raw_path))
-        parent = str(Path(resolved).parent)
-    except (OSError, UnicodeError, ValueError):
-        parent = str(Path(raw_path).parent)
-    return _inventory_physical_identity(parent)
+    return gguf.local_path_parent_physical_identity(raw_path)
 
 
 def _coerce_scan_folder_path(raw_path: str) -> str:
@@ -825,87 +813,7 @@ def _scan_custom_folder(
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
 
-    seen_loose_shard_families: set[tuple[str, str]] = set()
-    unsharded_selectable: list[LocalModelInfo] = []
-    for model in selectable:
-        path = Path(model.path)
-        family = gguf.gguf_variant_family(path.name)
-        is_loose_shard = (
-            model.source in {"models_dir", "lmstudio"}
-            and model.model_format == "gguf"
-            and not _safe_is_dir(path)
-            and family != path.stem
-        )
-        if is_loose_shard:
-            shard_key = (_inventory_physical_identity(str(path.parent)), family)
-            if shard_key in seen_loose_shard_families:
-                continue
-            seen_loose_shard_families.add(shard_key)
-        unsharded_selectable.append(model)
-    selectable = unsharded_selectable
-
-    grouped_gguf_dirs = {
-        _inventory_physical_identity(model.path)
-        for model in selectable
-        if model.source != "lmstudio"
-        and model.model_format == "gguf"
-        and not model.partial
-        and _safe_is_dir(Path(model.path))
-    }
-    lmstudio_files_by_parent: dict[str, list[Path]] = {}
-    for model in selectable:
-        path = Path(model.path)
-        if (
-            model.source == "lmstudio"
-            and model.model_format == "gguf"
-            and not _safe_is_dir(path)
-        ):
-            lmstudio_files_by_parent.setdefault(
-                _inventory_physical_identity(str(path.parent)), []
-            ).append(path)
-
-    grouped_decisions: dict[str, bool] = {}
-    for parent, files in lmstudio_files_by_parent.items():
-        if parent not in grouped_gguf_dirs:
-            continue
-        families = {gguf.gguf_checkpoint_family(path.name) for path in files}
-        variant_keys = [gguf.gguf_variant_key(path.name) for path in files]
-        exact_families_by_variant: dict[str, set[str]] = {}
-        for path, variant_key in zip(files, variant_keys):
-            exact_families_by_variant.setdefault(variant_key.casefold(), set()).add(
-                gguf.gguf_variant_family(path.name)
-            )
-        has_ambiguous_variant = any(
-            len(exact_families) > 1
-            for exact_families in exact_families_by_variant.values()
-        )
-        grouped_decisions[parent] = (
-            len(files) == 1
-            or (
-                not has_ambiguous_variant
-                and (
-                    families == {None}
-                    or (None not in families and len(families) == 1)
-                )
-            )
-            or all(gguf.is_h3_denoiser_variant_key(key) for key in variant_keys)
-        )
-
-    if grouped_decisions:
-        filtered: list[LocalModelInfo] = []
-        for model in selectable:
-            path = Path(model.path)
-            is_dir = _safe_is_dir(path)
-            identity = _inventory_physical_identity(str(path if is_dir else path.parent))
-            keep_group = grouped_decisions.get(identity)
-            if (
-                keep_group is not None
-                and model.model_format == "gguf"
-                and ((is_dir and not keep_group) or (not is_dir and keep_group))
-            ):
-                continue
-            filtered.append(model)
-        selectable = filtered
+    selectable = gguf.dedupe_custom_gguf_rows(selectable)
     remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
     if remaining > 0:
         selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
