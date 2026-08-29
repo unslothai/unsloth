@@ -1342,6 +1342,76 @@ def test_a_name_resent_as_it_grows_still_names_one_call(executed):
     ]
 
 
+def test_a_name_resent_after_its_arguments_closed_is_not_a_second_call(executed):
+    """A whole name resent after the arguments closed stays on the same call."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"first"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"})
+    ]
+
+
+def test_a_second_call_with_the_same_name_still_splits_on_its_arguments(executed):
+    """The resend guard does not merge two real calls on one tool."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"first"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
+                _sse(
+                    {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"second"}'}}]}
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"query": "first"}),
+        ("web_search", {"query": "second"}),
+    ]
+
+
 def test_one_fragment_holding_two_documents_is_two_named_calls(executed):
     """Both calls split from one named fragment keep the name."""
     transport = FakeTransport(

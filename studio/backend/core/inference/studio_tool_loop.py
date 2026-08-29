@@ -628,6 +628,9 @@ class _Turn:
                 and not (isinstance(call_id, str) and call_id)
                 # An unnamed call claims the next name itself.
                 and current["function"]["name"]
+                # A resent whole name is the same call; a second call with that
+                # name arrives with its own arguments and splits there.
+                and name_fragment != current["function"]["name"]
                 and scan.holds_one_complete_document()
             ):
                 # A name after a finished named call opens the next call.

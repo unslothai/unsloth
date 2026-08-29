@@ -6962,10 +6962,15 @@ export function createOpenAIStreamAdapter(
                     stablePartId,
                     idx,
                   );
-                  const matched =
+                  const slotPart =
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
+                  // A card the backend already closed takes no more fragments:
+                  // the next delta in its slot is the next round's call, whatever
+                  // its scan was left holding after a malformed first round.
+                  const matched =
+                    slotPart?.result === undefined ? slotPart : undefined;
 
                   const argsFragment = call.function?.arguments ?? "";
                   const nameFragment = call.function?.name ?? "";
@@ -6994,6 +6999,9 @@ export function createOpenAIStreamAdapter(
                     !argsFragment &&
                     Boolean(nameFragment) &&
                     Boolean(matched?.toolName) &&
+                    // A resent whole name is the same call; a second call with
+                    // that name arrives with its own arguments and splits there.
+                    nameFragment !== matched?.toolName &&
                     scan.holdsOneCompleteDocument();
                   const existing = namedNextCall ? undefined : matched;
 
@@ -7041,7 +7049,11 @@ export function createOpenAIStreamAdapter(
                         argsText,
                         args: parseStreamedToolCallArgs(argsText),
                         textCursor: cumulativeText.length,
-                        ...(call.extra_content !== undefined
+                        // One signature belongs to one call. The backend puts it
+                        // on the last call the delta opened; replaying a copy on
+                        // each of them fails Gemini's signature validation.
+                        ...(call.extra_content !== undefined &&
+                        position === segments.length - 1
                           ? { extra_content: call.extra_content }
                           : {}),
                         ...(idx !== undefined ? { _delta_index: idx } : {}),

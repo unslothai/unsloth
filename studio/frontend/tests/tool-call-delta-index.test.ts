@@ -20,6 +20,7 @@ interface DeltaFragment {
   index?: number;
   name?: string;
   arguments: string;
+  extra?: unknown;
 }
 
 /** The adapter's tool_start branch, which replaces argsText with the arguments
@@ -28,11 +29,27 @@ interface ToolStartEvent {
   toolStart: string;
 }
 
-type StreamEvent = DeltaFragment | ToolStartEvent;
+/** The adapter's tool_end branch, which puts a result on the card. */
+interface ToolEndEvent {
+  toolEnd: string;
+}
+
+type StreamEvent = DeltaFragment | ToolStartEvent | ToolEndEvent;
+
+/** The adapter's parseStreamedToolCallArgs, used by the tool_start mirror. */
+function parseArgs(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { _raw: raw };
+  }
+}
 
 type AccumulatedPart = StreamedToolCallPart & {
   argsText: string;
   toolName: string;
+  extra_content?: unknown;
+  result?: unknown;
 };
 
 /** Accumulate `delta.tool_calls[]` fragments the way the chat adapter does.
@@ -51,9 +68,14 @@ function accumulate(
       if (at !== -1) {
         parts[at] = {
           ...parts[at],
-          argsText: JSON.stringify(JSON.parse(parts[at].argsText)),
+          argsText: JSON.stringify(parseArgs(parts[at].argsText)),
         };
       }
+      continue;
+    }
+    if ("toolEnd" in event) {
+      const at = parts.findIndex((part) => part.toolCallId === event.toolEnd);
+      if (at !== -1) parts[at] = { ...parts[at], result: "done" };
       continue;
     }
     const fragment = event;
@@ -63,7 +85,8 @@ function accumulate(
       fragment.id,
       fragment.index,
     );
-    const matched = target === -1 ? undefined : parts[target];
+    const slotPart = target === -1 ? undefined : parts[target];
+    const matched = slotPart?.result === undefined ? slotPart : undefined;
     const name = fragment.name ?? "";
     let scan = matched ? scans.get(matched.toolCallId) : undefined;
     if (!scan) {
@@ -80,6 +103,7 @@ function accumulate(
       !fragment.arguments &&
       Boolean(name) &&
       Boolean(matched?.toolName) &&
+      name !== matched?.toolName &&
       scan.holdsOneCompleteDocument();
 
     if (segments.length > 1) {
@@ -104,6 +128,9 @@ function accumulate(
           toolCallId: splitId,
           toolName: splitName,
           argsText,
+          ...(fragment.extra !== undefined && position === segments.length - 1
+            ? { extra_content: fragment.extra }
+            : {}),
           ...(fragment.index !== undefined
             ? { _delta_index: fragment.index }
             : {}),
@@ -577,5 +604,74 @@ test("a split tail renamed by a late id is still dropped when its JSON never clo
   assert.deepEqual(
     parts.map((part) => [part.toolCallId, part.argsText]),
     [["tool_call_0", '{"a":1}']],
+  );
+});
+
+// A thought signature belongs to one function call. Replaying a copy of it on
+// every call a split opened fails Gemini's signature validation, and the
+// backend puts it on the last call the delta opened.
+test("split metadata rides only the last call the delta opened", () => {
+  const parts = accumulate([
+    {
+      index: 0,
+      name: "web_search",
+      arguments: '{"a":1}{"b":2}',
+      extra: { thought_signature: "S" },
+    },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => part.extra_content),
+    [undefined, { thought_signature: "S" }],
+  );
+});
+
+// The first round's arguments never parsed, so its scan is stuck invalid. The
+// call ran anyway under the coercion path and its card is closed, so the next
+// round's fragments must open their own call rather than append to it.
+test("a finished malformed call does not swallow the next round", () => {
+  const parts = accumulate([
+    { index: 0, name: "web_search", arguments: "{bad}" },
+    { toolStart: "tool_call_0" },
+    { toolEnd: "tool_call_0" },
+    { index: 0, name: "web_search", arguments: '{"query":"second"}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [
+      ["tool_call_0", '{"_raw":"{bad}"}'],
+      ["tool_call_1", '{"query":"second"}'],
+    ],
+  );
+});
+
+// The accumulator supports dialects that resend a whole name, so a resend after
+// the arguments closed is the same call, not a second one to run with {}.
+test("a name resent after its arguments closed opens no second call", () => {
+  const parts = accumulate([
+    { index: 0, name: "web_search", arguments: '{"query":"first"}' },
+    { index: 0, name: "web_search", arguments: "" },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [["web_search", '{"query":"first"}']],
+  );
+});
+
+test("a second call on the same tool still splits on its arguments", () => {
+  const parts = accumulate([
+    { index: 0, name: "web_search", arguments: '{"query":"first"}' },
+    { index: 0, name: "web_search", arguments: "" },
+    { index: 0, arguments: '{"query":"second"}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [
+      ["web_search", '{"query":"first"}'],
+      ["web_search", '{"query":"second"}'],
+    ],
   );
 });
