@@ -522,6 +522,7 @@ test("an existing stable id ignores a repeated cumulative snapshot", () => {
     parts.map((part) => [part.toolCallId, part.argsText]),
     [["call-a", '{"a":1}']],
   );
+  assert.equal(isRepeatedJsonSnapshot('{"a":', '{"a":'), false);
 });
 
 test("a delayed id adopts a semantically equal JSON snapshot", () => {

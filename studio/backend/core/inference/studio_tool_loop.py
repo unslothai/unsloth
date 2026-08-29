@@ -369,12 +369,12 @@ def _same_json_value(left: Any, right: Any) -> bool:
 def _is_repeated_json_snapshot(existing: str, fragment: str) -> bool:
     if not fragment.strip():
         return False
-    if existing == fragment:
-        return True
     if "{" not in fragment and "[" not in fragment:
         return False
     complete, tail = _split_top_level_json_documents(fragment)
-    return len(complete) == 1 and not tail and _same_json_document(existing, fragment)
+    if len(complete) != 1 or tail:
+        return False
+    return existing == fragment or _same_json_document(existing, fragment)
 
 
 def _delta_text(content: Any) -> str:

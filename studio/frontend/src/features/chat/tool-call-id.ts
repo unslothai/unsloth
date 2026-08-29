@@ -105,7 +105,14 @@ function containsUnsafeJsonInteger(text: string): boolean {
 }
 
 export function sameJsonDocument(left: string, right: string): boolean {
-  if (left.trim() === right.trim()) return true;
+  if (left.trim() === right.trim()) {
+    try {
+      JSON.parse(left);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (containsUnsafeJsonInteger(left) || containsUnsafeJsonInteger(right)) {
     return false;
   }
@@ -183,13 +190,12 @@ export function isRepeatedJsonSnapshot(
   fragment: string,
 ): boolean {
   if (!fragment.trim()) return false;
-  if (existing === fragment) return true;
   if (!fragment.includes("{") && !fragment.includes("[")) return false;
   const documents = splitTopLevelJsonDocuments(fragment);
   return (
     documents.complete.length === 1 &&
     !documents.tail &&
-    sameJsonDocument(existing, fragment)
+    (existing === fragment || sameJsonDocument(existing, fragment))
   );
 }
 
