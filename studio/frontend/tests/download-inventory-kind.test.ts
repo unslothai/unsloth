@@ -11,6 +11,7 @@ import {
   downloadRequestInventoryKind,
   scopedDownloadInventoryKind,
 } from "../src/features/hub/download-manager/download-manager-types.ts";
+import { inventoryHintKey } from "../src/features/hub/inventory/inventory-hints.ts";
 
 test("classifies quant variants as GGUF", () => {
   assert.equal(downloadInventoryHintKind("model", "Q4_K_M"), "gguf");
@@ -72,6 +73,52 @@ test("infers missing scoped request formats during adoption", () => {
       files: ["model-Q4_K_M.gguf"],
     }),
     "model",
+  );
+  assert.equal(
+    downloadRequestInventoryKind({
+      kind: "model",
+      variant: "@rag-embedding",
+    }),
+    undefined,
+  );
+
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/hub/download-manager/poll-loop.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf-8",
+  );
+  assert.match(
+    source,
+    /if \(probeDescribesCurrentRun\(known, generation\)\)[\s\S]*?const inventoryKind = downloadRequestInventoryKind\(req\)[\s\S]*?scopedFiles: \[\.\.\.req\.files\][\s\S]*?\{ inventoryKind \}/,
+  );
+});
+
+test("separates live inventory rows for hybrid repository formats", () => {
+  assert.notEqual(
+    inventoryHintKey("gguf", "Org/Hybrid"),
+    inventoryHintKey("model", "Org/Hybrid"),
+  );
+
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/hub/inventory/use-hub-inventory.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf-8",
+  );
+  assert.match(
+    source,
+    /function liveInventorySelectionKey[\s\S]*?inventoryHintKey\(\s*downloadInventoryHintKind\(job\.kind, job\.variant, job\.inventoryKind\),\s*job\.repoId,\s*\)/,
+  );
+  assert.match(
+    source,
+    /const selectionKey = liveInventorySelectionKey\(job\)[\s\S]*?selectedByRepoAndKind\.set\(selectionKey, job\)/,
   );
 });
 

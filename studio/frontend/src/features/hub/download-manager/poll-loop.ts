@@ -1007,13 +1007,16 @@ export function adoptJob(
     // Only for the run it described, though: a cancel and restart in between
     // makes this a different job, possibly on the other transport.
     const known = getState().jobs[key]?.serverGeneration;
-    if (transport && probeDescribesCurrentRun(known, generation)) {
+    if (probeDescribesCurrentRun(known, generation)) {
+      const inventoryKind = downloadRequestInventoryKind(req);
       patchJob(key, {
-        transport,
-        ...(cancelTransport === undefined
-          ? {}
-          : { cancelTransport: cancelTransport ?? undefined }),
+        ...(transport ? { transport } : {}),
+        ...(transport && cancelTransport !== undefined
+          ? { cancelTransport: cancelTransport ?? undefined }
+          : {}),
         ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
+        ...(req.files?.length ? { scopedFiles: [...req.files] } : {}),
+        ...(inventoryKind ? { inventoryKind } : {}),
       });
     }
     return;

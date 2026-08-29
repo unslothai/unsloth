@@ -24,6 +24,7 @@ import {
 } from "./inventory-hint-store";
 import {
   type PendingInventoryHints,
+  inventoryHintKey,
   nextInventoryHintExpiryDelay,
   repoKey,
 } from "./inventory-hints";
@@ -142,6 +143,15 @@ function liveInventoryRank(job: ManagedDownload): number {
   return 0;
 }
 
+function liveInventorySelectionKey(
+  job: Pick<ManagedDownload, "kind" | "repoId" | "variant" | "inventoryKind">,
+): string {
+  return inventoryHintKey(
+    downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind),
+    job.repoId,
+  );
+}
+
 function observedKeyProtections(
   jobs: Record<string, ManagedDownload>,
 ): Record<InventoryHint["kind"], Set<string>> {
@@ -190,22 +200,22 @@ function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
     jobs: [],
   };
   return (state) => {
-    const selectedByRepo = new Map<string, ManagedDownload>();
+    const selectedByRepoAndKind = new Map<string, ManagedDownload>();
     for (const job of Object.values(state.jobs)) {
       if (!shouldSurfaceLiveJob(job, isDatasetMode)) continue;
-      const repoKey = job.repoId.trim().toLowerCase();
-      if (!repoKey) continue;
-      const current = selectedByRepo.get(repoKey);
+      if (!repoKey(job.repoId)) continue;
+      const selectionKey = liveInventorySelectionKey(job);
+      const current = selectedByRepoAndKind.get(selectionKey);
       if (
         !current ||
         liveInventoryRank(job) > liveInventoryRank(current) ||
         (liveInventoryRank(job) === liveInventoryRank(current) &&
           job.startedAt > current.startedAt)
       ) {
-        selectedByRepo.set(repoKey, job);
+        selectedByRepoAndKind.set(selectionKey, job);
       }
     }
-    const jobs = [...selectedByRepo.values()]
+    const jobs = [...selectedByRepoAndKind.values()]
       .map((job) => ({
         kind: job.kind,
         repoId: job.repoId,
@@ -215,7 +225,13 @@ function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
         startedAt: job.startedAt,
         displayBytes: liveJobDisplayBytes(job),
       }))
-      .sort((a, b) => a.repoId.localeCompare(b.repoId));
+      .sort(
+        (a, b) =>
+          repoKey(a.repoId).localeCompare(repoKey(b.repoId)) ||
+          liveInventorySelectionKey(a).localeCompare(
+            liveInventorySelectionKey(b),
+          ),
+      );
     const signature = jobs
       .map(
         (job) =>

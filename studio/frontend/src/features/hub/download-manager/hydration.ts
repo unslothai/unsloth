@@ -16,9 +16,9 @@ import {
   isRequestTimeout,
 } from "./download-api-adapter";
 import {
+  downloadRequestInventoryKind,
   type DownloadRequest,
   type ManagedDownload,
-  scopedDownloadInventoryKind,
 } from "./download-manager-types";
 import {
   getState,
@@ -86,22 +86,21 @@ async function adoptActiveModelDownloads(): Promise<void> {
   for (const download of downloads) {
     const repoId = download.repo_id?.trim();
     if (!repoId || !ACTIVE_STATES.has(download.state)) continue;
-    removeLocalActivePeers(
-      DOWNLOAD_KIND.MODEL,
-      repoId,
-      download.variant ?? null,
-    );
+    const variant = download.variant ?? null;
+    const files = download.files?.length ? [...download.files] : undefined;
+    const inventoryKind = downloadRequestInventoryKind({
+      kind: DOWNLOAD_KIND.MODEL,
+      variant,
+      files,
+    });
+    removeLocalActivePeers(DOWNLOAD_KIND.MODEL, repoId, variant);
     adoptJob(
       {
         kind: DOWNLOAD_KIND.MODEL,
         repoId,
-        variant: download.variant ?? null,
-        ...(download.variant?.startsWith("@")
-          ? {
-              inventoryKind: scopedDownloadInventoryKind(download.files),
-              ...(download.files ? { files: download.files } : {}),
-            }
-          : {}),
+        variant,
+        ...(inventoryKind ? { inventoryKind } : {}),
+        ...(files ? { files } : {}),
         expectedBytes: 0,
       },
       safeGeneration(download.generation),
