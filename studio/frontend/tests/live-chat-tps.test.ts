@@ -102,12 +102,31 @@ test("finishing the newest request restores an older active request", () => {
   assert.equal(useChatRuntimeStore.getState().liveTpsByThreadId.thread, undefined);
 });
 
-test("a transient monitor read failure remains retryable", async () => {
+test("a monitor read failure clears only its request sample", () => {
+  const owner = () => undefined;
+  useChatRuntimeStore.setState({ liveTpsByThreadId: {} });
+  const store = useChatRuntimeStore.getState();
+
+  store.beginThreadLiveTps("thread", owner, "monitor");
+  store.setThreadLiveTps("thread", owner, "monitor", 15);
+  store.clearThreadLiveTpsSample("thread", owner, "other-monitor");
+  assert.equal(
+    useChatRuntimeStore.getState().liveTpsByThreadId.thread?.[0]?.lastRunningTps,
+    15,
+  );
+  store.clearThreadLiveTpsSample("thread", owner, "monitor");
+  assert.equal(
+    useChatRuntimeStore.getState().liveTpsByThreadId.thread?.[0]?.lastRunningTps,
+    null,
+  );
+});
+
+test("monitor failures clear stale samples before retrying", async () => {
   const source = await readFile(
     new URL("../src/features/chat/hooks/use-live-chat-tps.ts", import.meta.url),
     "utf8",
   );
-  const catchStart = source.indexOf("} catch {");
+  const catchStart = source.indexOf("} catch (error) {");
   const retry = source.indexOf(
     "window.setTimeout(poll, POLL_INTERVAL_MS)",
     catchStart,
@@ -115,6 +134,7 @@ test("a transient monitor read failure remains retryable", async () => {
   const catchBody = source.slice(catchStart, retry);
 
   assert.ok(catchStart > 0 && retry > catchStart);
-  assert.doesNotMatch(catchBody, /finish\(\)/);
   assert.match(catchBody, /controller\.signal\.aborted/);
+  assert.match(catchBody, /clearThreadLiveTpsSample/);
+  assert.match(catchBody, /isPermanentApiMonitorEntryError/);
 });

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getApiMonitorEntry } from "../api/chat-api";
+import {
+  getApiMonitorEntry,
+  isPermanentApiMonitorEntryError,
+} from "../api/chat-monitor";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   newestRunningLiveChatTpsEntry,
@@ -67,8 +70,18 @@ export function useLiveChatTps(): number | null {
             sample.tps,
           );
         }
-      } catch {
+      } catch (error) {
         if (cancelled || controller.signal.aborted) return;
+        const store = useChatRuntimeStore.getState();
+        store.clearThreadLiveTpsSample(
+          store.runKeyForOwner(threadKey, owner),
+          owner,
+          monitorId,
+        );
+        if (isPermanentApiMonitorEntryError(error)) {
+          finish();
+          return;
+        }
       }
       if (!cancelled) {
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);

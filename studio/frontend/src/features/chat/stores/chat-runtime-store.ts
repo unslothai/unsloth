@@ -2874,6 +2874,11 @@ type ChatRuntimeStore = {
     monitorId: string,
     tps: number,
   ) => void;
+  clearThreadLiveTpsSample: (
+    threadId: string,
+    owner: () => void,
+    monitorId: string,
+  ) => void;
   finishThreadLiveTps: (threadId: string, owner: () => void) => void;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string, cancel?: () => void) => void;
@@ -4246,6 +4251,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (index < 0 || current[index]?.lastRunningTps === tps) return state;
       const entries = [...current];
       entries[index] = { ...entries[index], lastRunningTps: tps };
+      return {
+        liveTpsByThreadId: {
+          ...state.liveTpsByThreadId,
+          [threadId]: entries,
+        },
+      };
+    }),
+  clearThreadLiveTpsSample: (threadId, owner, monitorId) =>
+    set((state) => {
+      const current = state.liveTpsByThreadId[threadId] ?? [];
+      const index = current.findIndex(
+        (entry) =>
+          entry.owner === owner &&
+          entry.monitorId === monitorId &&
+          entry.phase === "running",
+      );
+      if (index < 0 || current[index]?.lastRunningTps === null) return state;
+      const entries = [...current];
+      entries[index] = { ...entries[index], lastRunningTps: null };
       return {
         liveTpsByThreadId: {
           ...state.liveTpsByThreadId,

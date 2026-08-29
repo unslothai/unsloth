@@ -247,16 +247,11 @@ export async function getApiMonitor(): Promise<ApiMonitorResponse> {
   return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
-export async function getApiMonitorEntry(
-  id: string,
-  signal?: AbortSignal,
-): Promise<ApiMonitorEntry> {
-  const response = await authFetch(
-    `/api/inference/monitor/${encodeURIComponent(id)}`,
-    { signal },
-  );
-  return parseJsonOrThrow<ApiMonitorEntry>(response);
-}
+export {
+  ApiMonitorEntryRequestError,
+  getApiMonitorEntry,
+  isPermanentApiMonitorEntryError,
+} from "./chat-monitor";
 
 export async function clearApiMonitor(): Promise<void> {
   const response = await authFetch("/api/inference/monitor", {
