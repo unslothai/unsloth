@@ -4,6 +4,9 @@
 import asyncio
 import json
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -306,6 +309,30 @@ def test_the_media_scan_is_reused_across_requests_in_one_catalog_window(monkeypa
     inf._CATALOG_CACHE["at"] = 5678.0
     asyncio.run(inf._openai_catalog_objects())
     assert calls == list(inf._MEDIA_MODEL_TASKS) * 2, calls
+
+
+def test_concurrent_media_requests_share_one_catalog_rebuild(monkeypatch):
+    calls = []
+    ready = threading.Barrier(2)
+
+    def _ids(task):
+        calls.append(task)
+        time.sleep(0.02)
+        return []
+
+    monkeypatch.setattr(mmi, "available_media_model_ids", _ids)
+    monkeypatch.setattr(mmi, "resolve_local_media_model", lambda name, *, task: None)
+    inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
+
+    def _build():
+        ready.wait()
+        return inf._validated_media_picks(1234.0)
+
+    with ThreadPoolExecutor(max_workers = 2) as pool:
+        results = [future.result() for future in (pool.submit(_build), pool.submit(_build))]
+
+    assert results == [{task: [] for task in inf._MEDIA_MODEL_TASKS}] * 2
+    assert calls == list(inf._MEDIA_MODEL_TASKS)
 
 
 def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):

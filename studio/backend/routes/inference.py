@@ -23069,6 +23069,7 @@ def _resident_media_status(task: str) -> Optional[dict]:
 
 
 _MEDIA_PICK_CACHE: dict = {"at": None, "picks": {}}
+_MEDIA_PICK_CACHE_LOCK = threading.Lock()
 
 
 def _validated_media_picks(catalog_at: float) -> dict:
@@ -23080,33 +23081,36 @@ def _validated_media_picks(catalog_at: float) -> dict:
     """
     if _MEDIA_PICK_CACHE["at"] == catalog_at:
         return _MEDIA_PICK_CACHE["picks"]
-    from core.inference.media_locality import is_edit_only, missing_download_bytes
-    from core.inference.media_model_index import (
-        available_media_model_ids,
-        resolve_local_media_model,
-    )
+    with _MEDIA_PICK_CACHE_LOCK:
+        if _MEDIA_PICK_CACHE["at"] == catalog_at:
+            return _MEDIA_PICK_CACHE["picks"]
+        from core.inference.media_locality import is_edit_only, missing_download_bytes
+        from core.inference.media_model_index import (
+            available_media_model_ids,
+            resolve_local_media_model,
+        )
 
-    picks: dict = {}
-    for task in _MEDIA_MODEL_TASKS:
-        rows = []
-        for model_id in available_media_model_ids(task):
-            pick = resolve_local_media_model(model_id, task = task)
-            if pick is None:
-                continue
-            # The local catalog tags an instruction-editing checkpoint text-to-image, but it
-            # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
-            # is refused by /v1/images/generations too.
-            if task == "text-to-image" and is_edit_only(pick):
-                continue
-            try:
-                local = missing_download_bytes(_media_owner(task), pick) == 0
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("media locality unavailable for %s: %s", model_id, exc)
-                local = False
-            rows.append((model_id, pick, local))
-        picks[task] = rows
-    _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
-    return picks
+        picks: dict = {}
+        for task in _MEDIA_MODEL_TASKS:
+            rows = []
+            for model_id in available_media_model_ids(task):
+                pick = resolve_local_media_model(model_id, task = task)
+                if pick is None:
+                    continue
+                # The local catalog tags an instruction-editing checkpoint text-to-image, but it
+                # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
+                # is refused by /v1/images/generations too.
+                if task == "text-to-image" and is_edit_only(pick):
+                    continue
+                try:
+                    local = missing_download_bytes(_media_owner(task), pick) == 0
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("media locality unavailable for %s: %s", model_id, exc)
+                    local = False
+                rows.append((model_id, pick, local))
+            picks[task] = rows
+        _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
+        return picks
 
 
 def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list[dict]:
