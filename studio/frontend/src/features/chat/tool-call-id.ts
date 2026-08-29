@@ -42,16 +42,19 @@ export class ToolCallArgumentBoundaries {
   private escaped = false;
   private closed = false;
   private invalid = false;
-  /** Total characters fed. */
-  private consumed = 0;
+  /** Everything fed so far. Tool events rewrite the part's own argsText, so
+   * the offsets `feed` returns can only index text this scan owns. */
+  private raw = "";
   /** Current document text, retained only until it parses. */
   private open: string[] = [];
   /** Exposed for deterministic complexity tests. */
   scanned = 0;
 
-  /** Offsets into the accumulated arguments where `fragment` opens another call. */
+  /** Offsets into `text()` where `fragment` opens another call. */
   feed(fragment: string): number[] {
     if (this.invalid) return [];
+    const base = this.raw.length;
+    this.raw += fragment;
     const boundaries: number[] = [];
     // Start of this fragment's contribution to the open document.
     let from = this.depth > 0 ? 0 : -1;
@@ -72,7 +75,7 @@ export class ToolCallArgumentBoundaries {
           return [];
         }
         if (this.closed) {
-          boundaries.push(this.consumed + i);
+          boundaries.push(base + i);
           this.closed = false;
         }
         from = i;
@@ -103,8 +106,12 @@ export class ToolCallArgumentBoundaries {
     }
 
     if (this.depth > 0) this.open.push(fragment.slice(from < 0 ? 0 : from));
-    this.consumed += fragment.length;
     return boundaries;
+  }
+
+  /** The arguments as the provider streamed them, which `feed` indexes into. */
+  text(): string {
+    return this.raw;
   }
 
   holdsOneCompleteDocument(): boolean {
@@ -118,7 +125,7 @@ export class ToolCallArgumentBoundaries {
 
   /** Reset offsets after moving the scan to a split call. */
   rebase(text: string): void {
-    this.consumed = text.length;
+    this.raw = text;
     this.open = this.depth > 0 ? [text] : [];
   }
 }

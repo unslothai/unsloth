@@ -6981,11 +6981,12 @@ export function createOpenAIStreamAdapter(
                     }
                   }
                   // Scan every stream so a late id does not invalidate the state.
-                  const accumulated = matched?.argsText ?? "";
                   const cuts = argsFragment ? scan.feed(argsFragment) : [];
+                  // Cut the scan's own text: tool_start rewrites argsText to the
+                  // arguments it parsed, which no longer matches these offsets.
                   const segments =
                     cuts.length > 0 && !stablePartId
-                      ? toolCallArgumentSegments(accumulated + argsFragment, cuts)
+                      ? toolCallArgumentSegments(scan.text(), cuts)
                       : [];
                   // A name after a finished named call opens the next call.
                   const namedNextCall =
@@ -7107,9 +7108,13 @@ export function createOpenAIStreamAdapter(
                     };
                     toolCallParts[existingIndex] = updated;
                     if (stablePartId && stablePartId !== existing.toolCallId) {
-                      // Move the scan with the renamed part.
+                      // Move the scan and the split-tail marker with the renamed
+                      // part, else the cleanup below no longer finds its card.
                       toolArgumentBoundaries.delete(existing.toolCallId);
                       toolArgumentBoundaries.set(stablePartId, scan);
+                      if (splitTailPartIds.delete(existing.toolCallId)) {
+                        splitTailPartIds.add(stablePartId);
+                      }
                     }
                   } else {
                     const callId =

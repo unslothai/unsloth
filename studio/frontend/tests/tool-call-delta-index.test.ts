@@ -22,17 +22,41 @@ interface DeltaFragment {
   arguments: string;
 }
 
+/** The adapter's tool_start branch, which replaces argsText with the arguments
+ * the backend parsed out of it. */
+interface ToolStartEvent {
+  toolStart: string;
+}
+
+type StreamEvent = DeltaFragment | ToolStartEvent;
+
 type AccumulatedPart = StreamedToolCallPart & {
   argsText: string;
   toolName: string;
 };
 
-/** Accumulate `delta.tool_calls[]` fragments the way the chat adapter does. */
-function accumulate(fragments: DeltaFragment[]): AccumulatedPart[] {
+/** Accumulate `delta.tool_calls[]` fragments the way the chat adapter does.
+ * `endOfStream` also runs the sweep the adapter runs once the stream closes. */
+function accumulate(
+  fragments: StreamEvent[],
+  endOfStream = false,
+): AccumulatedPart[] {
   const parts: AccumulatedPart[] = [];
   const scans = new Map<string, ToolCallArgumentBoundaries>();
   const providerIds = new Set<string>();
-  for (const fragment of fragments) {
+  const splitTails = new Set<string>();
+  for (const event of fragments) {
+    if ("toolStart" in event) {
+      const at = parts.findIndex((part) => part.toolCallId === event.toolStart);
+      if (at !== -1) {
+        parts[at] = {
+          ...parts[at],
+          argsText: JSON.stringify(JSON.parse(parts[at].argsText)),
+        };
+      }
+      continue;
+    }
+    const fragment = event;
     if (fragment.id) providerIds.add(fragment.id);
     const target = findStreamedToolCallPartIndex(
       parts,
@@ -46,11 +70,10 @@ function accumulate(fragments: DeltaFragment[]): AccumulatedPart[] {
       scan = new ToolCallArgumentBoundaries();
       if (matched) scans.set(matched.toolCallId, scan);
     }
-    const accumulated = matched?.argsText ?? "";
     const cuts = fragment.arguments ? scan.feed(fragment.arguments) : [];
     const segments =
       cuts.length > 0 && !fragment.id
-        ? toolCallArgumentSegments(accumulated + fragment.arguments, cuts)
+        ? toolCallArgumentSegments(scan.text(), cuts)
         : [];
     const namedNextCall =
       !fragment.id &&
@@ -90,6 +113,7 @@ function accumulate(fragments: DeltaFragment[]): AccumulatedPart[] {
       if (lastSplitId) {
         scan.rebase(segments[segments.length - 1]);
         scans.set(lastSplitId, scan);
+        splitTails.add(lastSplitId);
       }
       continue;
     }
@@ -106,6 +130,7 @@ function accumulate(fragments: DeltaFragment[]): AccumulatedPart[] {
       if (fragment.id && fragment.id !== matched.toolCallId) {
         scans.delete(matched.toolCallId);
         scans.set(fragment.id, scan);
+        if (splitTails.delete(matched.toolCallId)) splitTails.add(fragment.id);
       }
       continue;
     }
@@ -125,6 +150,18 @@ function accumulate(fragments: DeltaFragment[]): AccumulatedPart[] {
       ...(fragment.id ? { _has_stable_id: true } : {}),
       ...(fragment.index !== undefined ? { _delta_index: fragment.index } : {}),
     });
+  }
+  // The backend withholds a split call whose JSON never closed, so its card
+  // has to go.
+  if (endOfStream) {
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      if (
+        splitTails.has(parts[i].toolCallId) &&
+        scans.get(parts[i].toolCallId)?.isOpen()
+      ) {
+        parts.splice(i, 1);
+      }
+    }
   }
   return parts;
 }
@@ -491,4 +528,54 @@ test("replayed arguments keep parsable text and fall back otherwise", () => {
     '{"query":"first"}',
   );
   assert.equal(toolCallReplayArguments(undefined, undefined), "{}");
+});
+
+// Both rounds are id-less and reuse index 0, so the second round's arguments
+// are cut off the first round's. tool_start has by then replaced argsText with
+// the arguments the backend parsed, which is a character shorter than the raw
+// JSON, so a cut measured against argsText lands inside both documents.
+test("a next round splits correctly after tool_start rewrites the arguments", () => {
+  const parts = accumulate([
+    { index: 0, name: "web_search", arguments: '{"query": "first"}' },
+    { toolStart: "tool_call_0" },
+    { index: 0, name: "web_search", arguments: '{"query":"second"}' },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, JSON.parse(part.argsText)]),
+    [
+      ["tool_call_0", { query: "first" }],
+      ["tool_call_1", { query: "second" }],
+    ],
+  );
+});
+
+test("boundary offsets index the scan's own text, not the part's", () => {
+  const scan = new ToolCallArgumentBoundaries();
+  assert.deepEqual(scan.feed('{"query": "first"}'), []);
+  const cuts = scan.feed('{"query":"second"}');
+
+  assert.deepEqual(cuts, [18]);
+  assert.deepEqual(toolCallArgumentSegments(scan.text(), cuts), [
+    '{"query": "first"}',
+    '{"query":"second"}',
+  ]);
+});
+
+// The backend withholds a split call whose JSON never closed, so nothing ever
+// closes its card. A provider id stamped on that tail renames the part, and the
+// sweep has to follow the rename or the card spins for the rest of the response.
+test("a split tail renamed by a late id is still dropped when its JSON never closes", () => {
+  const parts = accumulate(
+    [
+      { index: 0, name: "web_search", arguments: '{"a":1}{"b":' },
+      { id: "call-A", index: 0, arguments: "" },
+    ],
+    true,
+  );
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.argsText]),
+    [["tool_call_0", '{"a":1}']],
+  );
 });
