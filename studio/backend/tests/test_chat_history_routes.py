@@ -458,6 +458,95 @@ def test_chat_settings_payload_accepts_preset_batch_sizes():
             chat_history.ChatPresetLoadConfig.model_validate(bad)
 
 
+def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
+    # Same forbid trap as nBatch (#9879): normalizePresetLoadConfig always emits
+    # loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam / disableVision
+    # (null/false included). Without them on ChatPresetLoadConfig, saving a named
+    # system-prompt preset that carries any loadConfig 400s the whole customPresets
+    # write; the settings retry then drops customPresets and only the activePreset
+    # name survives -- which is why the toast fires and the entry vanishes on restart.
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "Test",
+                    "params": {"temperature": 0.7, "systemPrompt": "You are Test."},
+                    "loadConfig": {
+                        "nParallel": 4,
+                        "nBatch": None,
+                        "nUbatch": None,
+                        "loadMode": None,
+                        "specDraftCacheDtype": None,
+                        "ctxCheckpoints": None,
+                        "cacheRam": None,
+                        "tensorParallel": False,
+                        "disableVision": False,
+                    },
+                },
+            ],
+            "activePreset": "Test",
+            "activePresetSource": "custom",
+        }
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    load = dumped["customPresets"][0]["loadConfig"]
+    assert load["loadMode"] is None
+    assert load["disableVision"] is False
+    assert dumped["activePreset"] == "Test"
+
+    # A saved non-default shape must round-trip too.
+    chat_history.ChatPresetLoadConfig.model_validate(
+        {
+            "loadMode": "mmap+mlock",
+            "specDraftCacheDtype": "q8_0",
+            "ctxCheckpoints": 8,
+            "cacheRam": 2048,
+            "disableVision": True,
+        }
+    )
+    for bad in (
+        {"ctxCheckpoints": True},
+        {"cacheRam": True},
+        {"ctxCheckpoints": -1},
+        {"cacheRam": -2},
+        {"loadMode": "swap"},
+    ):
+        with pytest.raises(ValidationError):
+            chat_history.ChatPresetLoadConfig.model_validate(bad)
+
+
+def test_chat_preset_load_config_covers_frontend_persisted_fields():
+    # Drift guard: every key normalizePresetLoadConfig / PresetLoadConfig persists
+    # must exist on ChatPresetLoadConfig, else extra="forbid" 400s the preset save
+    # the next time the UI grows a load knob (#9879, same shape as #5862).
+    preset_ts = os.path.join(
+        _backend,
+        "..",
+        "frontend",
+        "src",
+        "features",
+        "chat",
+        "presets",
+        "preset-load-config.ts",
+    )
+    if not os.path.exists(preset_ts):
+        pytest.skip("frontend preset-load-config.ts not present")
+
+    with open(preset_ts, encoding = "utf-8") as fh:
+        block = re.search(
+            r"export type PresetLoadConfig = Pick<\s*PerModelConfig,\s*((?:.|\n)*?)\s*>;",
+            fh.read(),
+        )
+    assert block, "PresetLoadConfig Pick not found in preset-load-config.ts"
+    persisted = set(re.findall(r'"(\w+)"', block.group(1)))
+    assert persisted, "no PresetLoadConfig keys parsed"
+
+    backend = set(chat_history.ChatPresetLoadConfig.model_fields)
+    assert (
+        persisted == backend
+    ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
+
+
 def test_chat_settings_payload_accepts_mlx_kv_bits():
     from pydantic import ValidationError
 

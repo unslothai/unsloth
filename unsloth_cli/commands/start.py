@@ -2551,6 +2551,9 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
     }
     window = entry.get("context_length") or entry.get("max_context_length")
     if window:
+        # claude assumes 200k for a model id it does not recognize, and clamps
+        # AUTO_COMPACT_WINDOW to [100k, that]. MAX_CONTEXT_TOKENS sets the window itself.
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
     return env
