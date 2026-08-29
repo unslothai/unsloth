@@ -738,3 +738,62 @@ def test_no_ladder_rung_can_reach_a_unified_memory_host():
         assert on_gpu.ot_patterns, granularity
 
     assert len(reasons) == 1, f"granularity leaked into the abstain: {reasons}"
+
+
+def test_the_selection_matches_an_independent_minimal_walk():
+    """MINIMALITY, checked against a reimplementation rather than a comment.
+
+    The request this ladder answers asks for "the MINIMAL number of layers to
+    offload", and the selection code asserts it gets one by construction: take
+    the fewest units of the cheapest rung, step down only when a rung is
+    exhausted. That is sound reasoning, but it is reasoning, and a greedy walk
+    across several rungs is the shape of code where an off-by-one leaves one
+    unit too many on the host without breaking any test that only checks the
+    plan FITS.
+
+    So this recomputes the answer independently -- walk the rungs in order,
+    take units largest-first, stop at the first unit that closes the gap -- and
+    demands the planner move exactly that many bytes. An overshoot bound cannot
+    catch an off-by-one that stays inside one unit; an exact comparison can.
+
+    NOTE ON THE BOUND, because the first version of this test was wrong. It
+    compared the overshoot against the smallest unit ANYWHERE in the layout and
+    failed at 21 GiB, where the plan overshot by 166.4 MB while a 161 MB
+    ffn_gate unit existed. The plan had stopped inside the ffn_down rung (unit
+    171.8 MB), so it was minimal; the test was asking it to substitute a unit
+    from a rung the ladder had not entered, which is precisely what rung ORDER
+    forbids. Minimality here means minimal SUBJECT TO the rung discipline, and
+    a check that ignores the discipline reports a violation that is not one.
+    """
+    layout = graded_moe()
+    checked = 0
+    for vram in (23, 21, 19, 17, 15, 13, 11):
+        plan = plan_placement(layout, [vram * GIB], 94 * GIB, 8192, opts = opts())
+        if not plan.spills_anything:
+            continue
+        need = deficit_of(layout, vram)
+
+        # Independent walk: ffn_down over every block, then ffn_up, then
+        # ffn_gate, each rung largest-first, stopping the moment the gap closes.
+        expected = 0
+        for attr in ("ffn_down_bytes", "ffn_up_bytes", "ffn_gate_bytes"):
+            if expected >= need:
+                break
+            sizes = sorted(
+                (getattr(b, attr) for b in layout.blocks if getattr(b, attr)),
+                reverse = True,
+            )
+            for size in sizes:
+                if expected >= need:
+                    break
+                expected += size
+
+        assert expected >= need, (vram, expected, need)
+        assert moved_bytes(plan, layout) == expected, (
+            f"at {vram} GiB the planner moved {moved_bytes(plan, layout)} bytes "
+            f"but the minimal rung-ordered walk needs {expected} for a {need} "
+            f"byte deficit"
+        )
+        checked += 1
+
+    assert checked >= 5, f"only {checked} budgets spilled; the sweep is vacuous"
