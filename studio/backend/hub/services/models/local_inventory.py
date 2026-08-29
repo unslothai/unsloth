@@ -810,7 +810,7 @@ def _scan_custom_folder(
         path = Path(model.path)
         family = gguf.gguf_variant_family(path.name)
         is_loose_shard = (
-            model.source == "lmstudio"
+            model.source in {"models_dir", "lmstudio"}
             and model.model_format == "gguf"
             and not _safe_is_dir(path)
             and family != path.stem
