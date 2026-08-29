@@ -217,9 +217,7 @@ async def test_durable_event_stream_forwards_request_monitor_id(durable_run, mon
     response = await run_routes.chat_generation_events(
         "run-1",
         SimpleNamespace(
-            app = SimpleNamespace(
-                state = SimpleNamespace(chat_generation_supervisor = supervisor)
-            ),
+            app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor)),
             is_disconnected = AsyncMock(return_value = True),
         ),
         after = 0,

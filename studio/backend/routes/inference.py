@@ -629,9 +629,7 @@ def _raise_unsupported_n(path_label: str, monitor_id: Optional[str] = None) -> N
 _MONITOR_ID_RESPONSE_HEADER = "X-Unsloth-Monitor-Id"
 
 
-def _monitor_response_headers(
-    monitor_id: Optional[str], headers: dict[str, str]
-) -> dict[str, str]:
+def _monitor_response_headers(monitor_id: Optional[str], headers: dict[str, str]) -> dict[str, str]:
     """Attach request correlation only when this response owns a monitor row."""
     if not isinstance(monitor_id, str) or not monitor_id.strip():
         return headers

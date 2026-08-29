@@ -107,9 +107,7 @@ def test_every_row_owning_chat_stream_constructor_uses_exact_monitor_header():
     )
     assert isinstance(codex_headers, ast.Dict)
 
-    production_calls = _stream_responses(
-        _named_function(tree, "produce_openai_chat_completions")
-    )
+    production_calls = _stream_responses(_named_function(tree, "produce_openai_chat_completions"))
     production_by_body = {_callee_name(call.args[0]): call for call in production_calls}
     for body_name in (
         "audio_input_stream",
@@ -124,9 +122,7 @@ def test_every_row_owning_chat_stream_constructor_uses_exact_monitor_header():
     queued = next(call for call in queued_calls if _callee_name(call.args[0]) == "_queued_stream")
     _assert_monitor_wrapped(queued)
 
-    admitted_calls = _stream_responses(
-        _named_function(tree, "_openai_passthrough_stream_admitted")
-    )
+    admitted_calls = _stream_responses(_named_function(tree, "_openai_passthrough_stream_admitted"))
     admitted_by_body = {_callee_name(call.args[0]): call for call in admitted_calls}
     # Covers the pre-body cancelled response and the admitted passthrough body.
     _assert_monitor_wrapped(admitted_by_body["iter"])
