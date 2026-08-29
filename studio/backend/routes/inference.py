@@ -76,6 +76,7 @@ from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
     GenStreamErrorRaised,
+    MONITOR_TOKEN_CALLBACK_STATS_KEY,
     _summed_tool_loop_stats,
 )
 from core.inference.llama_admission import (
@@ -5234,6 +5235,15 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
         )
 
     return _callback
+
+
+def _monitor_safetensors_stats_holder(monitor_id: Optional[str]) -> dict:
+    holder: dict = {}
+    if monitor_id:
+        holder[MONITOR_TOKEN_CALLBACK_STATS_KEY] = lambda: api_monitor.record_decoded_token(
+            monitor_id
+        )
+    return holder
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
@@ -21538,7 +21548,7 @@ async def produce_openai_chat_completions(
                 _sf_chat_messages.append(_msg)
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
-        _sf_stats_holder: dict = {}
+        _sf_stats_holder = _monitor_safetensors_stats_holder(monitor_id)
 
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
@@ -22063,7 +22073,7 @@ async def produce_openai_chat_completions(
     _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
-    stats_holder: dict = {}
+    stats_holder = _monitor_safetensors_stats_holder(monitor_id)
 
     if payload.use_adapter is not None:
 

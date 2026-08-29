@@ -235,6 +235,32 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
         next(gen)
 
 
+def test_consume_token_stream_reports_each_worker_token():
+    from core.inference.orchestrator import MONITOR_TOKEN_CALLBACK_STATS_KEY
+
+    o = _bare_orchestrator()
+    responses = [
+        {"type": "token", "text": "A"},
+        {"type": "token", "text": "AB"},
+        {"type": "gen_done", "stats": {"usage": {"completion_tokens": 2}}},
+    ]
+    observed = []
+    stats_holder = {MONITOR_TOKEN_CALLBACK_STATS_KEY: lambda: observed.append(len(observed) + 1)}
+
+    chunks = list(
+        o._consume_token_stream(
+            lambda _timeout: responses.pop(0),
+            lambda: None,
+            crash_context = "generation",
+            stats_holder = stats_holder,
+        )
+    )
+
+    assert chunks == ["A", "AB"]
+    assert observed == [1, 2]
+    assert stats_holder["stats"]["usage"]["completion_tokens"] == 2
+
+
 def test_unload_pending_clears_after_unload(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)

@@ -207,6 +207,7 @@ class ApiMonitorEntry:
     prompt_tok_per_sec: Optional[float] = None
     # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
+    decoded_tokens_observed: int = 0
     stop_reason: Optional[str] = None
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own
     # chunk, so agreement can only be judged across the whole request. Not serialized.
@@ -242,6 +243,15 @@ class ApiMonitorEntry:
             ttft_ms = max(0, int(self.prompt_ms))
         tok_per_sec = self.tok_per_sec
         if (
+            tok_per_sec is None
+            and self.status == "running"
+            and self.decoded_tokens_observed > 1
+            and self.first_decode_monotonic is not None
+        ):
+            gen_s = time.monotonic() - self.first_decode_monotonic
+            if gen_s > 0.05:
+                tok_per_sec = (self.decoded_tokens_observed - 1) / gen_s
+        elif (
             tok_per_sec is None
             and self.completion_tokens
             # The clock starts at the first token, so it spans only the gaps that
@@ -668,6 +678,19 @@ class ApiMonitor:
                 entry.first_token_monotonic = now
             if decoded and entry.first_decode_monotonic is None:
                 entry.first_decode_monotonic = now
+
+    def record_decoded_token(self, entry_id: Optional[str]) -> None:
+        if not entry_id:
+            return
+        now = time.monotonic()
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.status != "running":
+                return
+            if entry.first_decode_monotonic is None:
+                entry.first_decode_monotonic = now
+            entry.decoded_tokens_observed += 1
+            entry.updated_at = time.time()
 
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:

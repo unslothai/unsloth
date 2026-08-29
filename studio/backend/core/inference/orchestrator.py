@@ -39,6 +39,7 @@ from utils.utils import hf_env_offline
 # Via PEP 562, not a module-level import: resolving the name imports unsloth_zoo, hence
 # torch, and routes/inference.py imports this module at startup only for GenStream*.
 DownloadStallError: type
+MONITOR_TOKEN_CALLBACK_STATS_KEY = "_monitor_token_callback"
 
 
 def __getattr__(name: str):
@@ -932,6 +933,16 @@ class InferenceOrchestrator:
                         self._cancel_generation()
                     drain_on_cancel()
                     return
+                on_token = (
+                    stats_holder.get(MONITOR_TOKEN_CALLBACK_STATS_KEY)
+                    if isinstance(stats_holder, dict)
+                    else None
+                )
+                if callable(on_token):
+                    try:
+                        on_token()
+                    except Exception:
+                        logger.warning("Failed to record a live generation token", exc_info = True)
                 yield resp.get("text", "")
             elif rtype == "gen_done":
                 if stats_holder is not None:
