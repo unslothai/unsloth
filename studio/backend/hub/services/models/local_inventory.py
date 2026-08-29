@@ -830,9 +830,22 @@ def _scan_custom_folder(
             continue
         families = {gguf.gguf_checkpoint_family(path.name) for path in files}
         variant_keys = [gguf.gguf_variant_key(path.name) for path in files]
+        exact_families_by_variant: dict[str, set[str]] = {}
+        for path, variant_key in zip(files, variant_keys):
+            exact_families_by_variant.setdefault(variant_key.casefold(), set()).add(
+                gguf.gguf_variant_family(path.name)
+            )
+        has_ambiguous_variant = any(
+            len(exact_families) > 1
+            for exact_families in exact_families_by_variant.values()
+        )
         grouped_decisions[parent] = (
             len(files) == 1
-            or (None not in families and len(families) == 1)
+            or (
+                not has_ambiguous_variant
+                and None not in families
+                and len(families) == 1
+            )
             or all(gguf.is_h3_denoiser_variant_key(key) for key in variant_keys)
         )
 

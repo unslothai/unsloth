@@ -93,6 +93,28 @@ def test_distinct_checkpoints_sharing_a_quant_use_file_rows(tmp_path):
     assert all(not row.capabilities.requires_variant for row in rows)
 
 
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    [
+        ("model-a-Q4_K_M.gguf", "model.a-Q4_K_M.gguf"),
+        ("Model-A-Q4_K_M.gguf", "model-a-Q4_K_M.gguf"),
+    ],
+)
+def test_same_quant_checkpoint_names_preserve_exact_identity(
+    tmp_path, first_name, second_name
+):
+    root = tmp_path / "root"
+    holder = root / "holder"
+    first = _write_gguf(holder / first_name)
+    second = _write_gguf(holder / second_name)
+    if first.samefile(second):
+        pytest.skip("filesystem does not preserve the distinct names")
+
+    rows = _custom_rows(root)
+
+    assert {Path(row.path) for row in rows} == {first, second}
+
+
 def test_unqualified_distinct_checkpoints_use_file_rows(tmp_path):
     root = tmp_path / "root"
     holder = root / "holder"
