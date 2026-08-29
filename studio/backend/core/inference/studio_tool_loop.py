@@ -647,9 +647,12 @@ class _Turn:
             current = self.by_index[key]
             exact_stable_id = bool(stable_id and current.get("id") == stable_id)
             same_stable_call = exact_stable_id or adopted_stable_id
-            current_complete, current_tail = _split_top_level_json_documents(
-                current["function"]["arguments"]
-            )
+            current_complete: list[str] = []
+            current_tail = current["function"]["arguments"]
+            if name_fragment and (
+                not args_fragment.strip() or not current["function"]["name"]
+            ):
+                current_complete, current_tail = _split_top_level_json_documents(current_tail)
             if (
                 current_complete
                 and not current_tail
@@ -669,7 +672,10 @@ class _Turn:
             combined = current["function"]["arguments"] + (
                 "" if repeated_snapshot else args_fragment
             )
-            complete, tail = _split_top_level_json_documents(combined)
+            if "{" in args_fragment or "[" in args_fragment:
+                complete, tail = _split_top_level_json_documents(combined)
+            else:
+                complete, tail = [], combined
             segments = [*complete, *([tail] if tail else [])]
             if not repeated_snapshot and len(segments) > 1:
                 if not current["function"]["name"] and not (current_complete and not current_tail):
@@ -711,9 +717,12 @@ class _Turn:
                     accumulated = current["function"]["name"]
                     current["function"]["name"] = self._merge_name(accumulated, name_fragment)
                 current["function"]["arguments"] = combined
-                complete, tail = _split_top_level_json_documents(combined)
-                if complete and not tail:
-                    self.incomplete_split_keys.discard(key)
+                if key in self.incomplete_split_keys and (
+                    "}" in args_fragment or "]" in args_fragment
+                ):
+                    complete, tail = _split_top_level_json_documents(combined)
+                    if complete and not tail:
+                        self.incomplete_split_keys.discard(key)
 
     def calls(
         self,

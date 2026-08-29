@@ -239,6 +239,9 @@ export function fragmentStartsNewToolCall(
 ): boolean {
   const existing = existingArgsText ?? "";
   if (!existing.trim() || !fragmentArguments.trim()) return false;
+  if (!fragmentArguments.includes("{") && !fragmentArguments.includes("[")) {
+    return false;
+  }
   const split = splitTopLevelJsonDocuments(existing + fragmentArguments);
   return (
     split.complete.length > 1 ||
