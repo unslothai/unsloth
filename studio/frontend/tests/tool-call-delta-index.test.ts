@@ -526,6 +526,30 @@ test("a delayed id adopts a semantically equal JSON snapshot", () => {
   );
 });
 
+test("JSON snapshot matching does not round unsafe integers", () => {
+  assert.equal(
+    sameJsonDocument(
+      '{"id":9007199254740992}',
+      '{"id":9007199254740993}',
+    ),
+    false,
+  );
+  assert.equal(
+    sameJsonDocument(
+      ' {"id":9007199254740993} ',
+      '{"id":9007199254740993}',
+    ),
+    true,
+  );
+  assert.equal(
+    sameJsonDocument(
+      '{"id":"9007199254740993","ok":true}',
+      '{"ok":true,"id":"9007199254740993"}',
+    ),
+    true,
+  );
+});
+
 test("a stable id collision mints a distinct stream id", () => {
   const parts = accumulate([
     { index: 0, name: "alpha", arguments: '{"a":1}' },

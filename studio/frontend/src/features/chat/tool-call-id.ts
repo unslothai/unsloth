@@ -73,7 +73,42 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
   );
 }
 
+function containsUnsafeJsonInteger(text: string): boolean {
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character !== "-" && (character < "0" || character > "9")) {
+      continue;
+    }
+    const match = text
+      .slice(index)
+      .match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u);
+    if (!match) continue;
+    const value = Number(match[0]);
+    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+      return true;
+    }
+    index += match[0].length - 1;
+  }
+  return false;
+}
+
 export function sameJsonDocument(left: string, right: string): boolean {
+  if (left.trim() === right.trim()) return true;
+  if (containsUnsafeJsonInteger(left) || containsUnsafeJsonInteger(right)) {
+    return false;
+  }
   try {
     return sameJsonValue(JSON.parse(left), JSON.parse(right));
   } catch {
