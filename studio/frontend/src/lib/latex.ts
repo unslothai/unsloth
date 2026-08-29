@@ -124,6 +124,24 @@ function findInlineCodeRegions(
   content: string,
   blockRegions: Array<[number, number]>,
 ): Array<[number, number]> {
+  // An inline span needs a backtick that a block region does not already own, and
+  // masking below rebuilds the whole reply to find out. That rebuild is O(n) per
+  // call and this runs once per streamed chunk, so it is quadratic over a reply:
+  // on the 45 KB fixture in streaming-latex-retro-edit.test.ts it is the whole gap
+  // between 1.2x and 3.7x the plain arm (#9796). Masking turns a backtick inside a
+  // block region into a space, so "a backtick outside blockRegions" is exactly
+  // "masked contains a backtick", and the answer without one is [].
+  let probe = content.indexOf("`");
+  let unowned = false;
+  while (probe !== -1) {
+    if (!isInRegion(probe, blockRegions)) {
+      unowned = true;
+      break;
+    }
+    probe = content.indexOf("`", probe + 1);
+  }
+  if (!unowned) return [];
+
   let masked = content;
   if (blockRegions.length > 0) {
     const parts: string[] = [];
