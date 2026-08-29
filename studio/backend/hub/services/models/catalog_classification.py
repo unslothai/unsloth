@@ -64,7 +64,6 @@ def _local_probe_model(model):
         return model
     try:
         from hub.utils.inventory_scan import resolve_hf_cache_realpath
-
         path = resolve_hf_cache_realpath(Path(model.path))
     except Exception:
         path = None

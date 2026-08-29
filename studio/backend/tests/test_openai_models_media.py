@@ -359,9 +359,7 @@ def test_loaded_non_gguf_media_stays_listed_when_discovery_misses_it(monkeypatch
     (model,) = asyncio.run(inf._openai_catalog_objects())
     assert model["id"] == "black-forest-labs/FLUX.1-dev"
     assert model["task"] == "text-to-image" and model["loaded"] is True
-    assert resident_answers_media_request(
-        resident["text-to-image"], model["id"], owner = DIFFUSION
-    )
+    assert resident_answers_media_request(resident["text-to-image"], model["id"], owner = DIFFUSION)
 
 
 def _stt(

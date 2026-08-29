@@ -22954,8 +22954,10 @@ def _openai_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
-        if not model_info.get("is_mlx") and model_info.get("is_audio") and (
-            model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES
+        if (
+            not model_info.get("is_mlx")
+            and model_info.get("is_audio")
+            and (model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES)
         ):
             entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
@@ -23267,7 +23269,6 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
         spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model_id)
         if spec is not None:
             from hub.utils.gguf import extract_quant_token
-
             quant = extract_quant_token(spec.model_file)
             if quant:
                 obj["quant"] = quant
