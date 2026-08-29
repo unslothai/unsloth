@@ -532,7 +532,7 @@ export interface DiffusionTrainingStatus {
   ema_path?: string | null;
   started_at: number | null;
   updated_at: number | null;
-  // Where the trained adapter was mirrored into the Studio LoRA catalog, and the family / base it trained from.
+  // Where the trained adapter was mirrored into the Unsloth LoRA catalog, and the family / base it trained from.
   catalog_path?: string | null;
   family?: string | null;
   base_model?: string | null;
@@ -629,7 +629,7 @@ export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingSta
   return parseJson(await authFetch("/api/train/diffusion/status"));
 }
 
-// One dataset folder under the Studio datasets root (GET /api/train/diffusion/info): images,
+// One dataset folder under the Unsloth datasets root (GET /api/train/diffusion/info): images,
 // clips, or both. `clip_count` is absent on older backends, hence optional.
 export interface DiffusionDatasetSummary {
   name: string;
@@ -698,7 +698,7 @@ export interface DiffusionTrainableFamily {
   >;
 }
 
-// Where diffusion training reads/writes on this Studio, plus usable dataset folders.
+// Where diffusion training reads/writes on this Unsloth, plus usable dataset folders.
 export interface DiffusionTrainingInfo {
   datasets_root: string;
   outputs_root: string;
@@ -831,7 +831,7 @@ export interface DiffusionDatasetImportResult {
   source_repo: string;
 }
 
-/** Materialize a curated example dataset (by id) into a Studio dataset folder. */
+/** Materialize a curated example dataset (by id) into an Unsloth dataset folder. */
 export async function importDiffusionDatasetExample(
   id: string,
   name?: string,

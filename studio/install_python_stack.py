@@ -335,6 +335,10 @@ _TORCH_RUNTIME_PROBE: "tuple[bool, bool, str | None, str, str] | None" = None
 # line" is not reliably ours; "the last line starting with this" is.
 _TORCH_PROBE_MARKER = "UNSLOTH_TORCH_PROBE|"
 
+# Prefix on the --amd-torch-needs-dependency-pass decision line: five states share exit 1,
+# so a caller (CI above all) needs to read WHICH input decided. setup.sh discards the stream.
+_AMD_FASTPATH_DECISION_MARKER = "UNSLOTH_AMD_FASTPATH|"
+
 
 def _invalidate_torch_runtime_probe() -> None:
     """Forget the memoized torch classification after a pip operation."""
@@ -5592,20 +5596,15 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
-    # 11b. The pinned Diffusers revision. NOT in base.txt, which is applied early: this must
+    # 11b. The pinned Diffusers release. NOT in base.txt, which is applied early: this must
     #      run after every other requirements file so nothing re-resolves Diffusers back to a
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
     _progress("diffusers pin")
     pip_install(
-        "Installing the pinned Diffusers revision",
+        "Installing the pinned Diffusers release",
         "--no-cache-dir",
-        # The pin is a source ARCHIVE, which uv refuses to build under a user-level
-        # no-build, so a hardened host failed here even once extras.txt succeeded
-        # (#8530). Guarded: python < 3.10 resolves a released wheel from this file that
-        # must not be forced through a source build.
-        *(_sdist_only_build_args("diffusers") if sys.version_info >= (3, 10) else []),
         req = REQ_ROOT / "diffusers-pin.txt",
     )
 
@@ -5688,7 +5687,18 @@ def install_python_stack() -> int:
 if __name__ == "__main__":
     if sys.argv[1:] == ["--amd-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
-        sys.exit(0 if _amd_torch_needs_dependency_pass() else 1)
+        _needs_pass = _amd_torch_needs_dependency_pass()
+        # Exit 1 covers five states (no-torch venv, resolved non-ROCm backend, non-ROCm pin,
+        # absent or masked AMD host, unreadable torch), so a CI failure here would otherwise
+        # report a bare `assert 1 == 0` with both streams empty. setup.sh discards both
+        # streams, so this costs the installer nothing. _TORCH_RUNTIME_PROBE is read, not
+        # called, so no subprocess is added: None means an earlier gate answered first.
+        _safe_print(
+            f"{_AMD_FASTPATH_DECISION_MARKER}needs_pass={_needs_pass} no_torch={NO_TORCH} "
+            f"is_linux={IS_LINUX} machine={platform.machine()!r} backend={_TORCH_BACKEND!r} "
+            f"probe={_TORCH_RUNTIME_PROBE!r}"
+        )
+        sys.exit(0 if _needs_pass else 1)
     if any(_arg.startswith("-") for _arg in sys.argv[1:]):
         # Never let a malformed probe call fall through into a multi-gigabyte install.
         _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")

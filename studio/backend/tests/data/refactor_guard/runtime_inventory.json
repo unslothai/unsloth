@@ -56,6 +56,7 @@
       "_KIMI_ID_RE",
       "_KIMI_SECTION_BEGIN",
       "_KIMI_SECTION_END",
+      "_LENGTH_PROGRESS_TAIL_CHARS",
       "_LLAMA3_BARE_JSON_SENTINELS",
       "_LLAMA3_CALL_CHAIN_RE",
       "_LLAMA3_HEADER_ROLES",
@@ -141,6 +142,7 @@
       "_xml_signal_inside_leading_bare_json",
       "_xml_signal_inside_leading_mistral",
       "annotations",
+      "continue_after_length_message",
       "has_tool_signal",
       "is_reprompt_repeat",
       "is_reprompt_restatement",
@@ -148,11 +150,16 @@
       "json",
       "parse_tool_calls_from_text",
       "re",
+      "reasoning_cap_spent_message",
+      "repeated_result_message",
       "reprompt_to_act_message",
+      "starved_result_message",
       "strip_leading_bare_json_call",
       "strip_llama3_leading_sentinels",
       "strip_segment",
-      "strip_tool_markup"
+      "strip_tool_markup",
+      "thinking_exhausted_message",
+      "unfinished_thought_progress"
     ],
     "functions": {
       "_balanced_brace_end": "core.tool_healing._balanced_brace_end(content: 'str', brace_start: 'int', *, gemma_quotes: 'bool' = False) -> 'int | None'",
@@ -207,16 +214,22 @@
       "_whole_content_is_json_value": "core.inference.tool_call_parser._whole_content_is_json_value(text: 'str') -> 'bool'",
       "_xml_signal_inside_leading_bare_json": "core.inference.tool_call_parser._xml_signal_inside_leading_bare_json(content: 'str') -> 'bool'",
       "_xml_signal_inside_leading_mistral": "core.inference.tool_call_parser._xml_signal_inside_leading_mistral(content: 'str') -> 'bool'",
+      "continue_after_length_message": "core.inference.tool_call_parser.continue_after_length_message() -> 'str'",
       "has_tool_signal": "core.inference.tool_call_parser.has_tool_signal(text: 'str') -> 'bool'",
       "is_reprompt_repeat": "core.inference.tool_call_parser.is_reprompt_repeat(text: 'str', previous: 'str') -> 'bool'",
       "is_reprompt_restatement": "core.inference.tool_call_parser.is_reprompt_restatement(text: 'str', previous: 'str') -> 'bool'",
       "is_short_intent_without_action": "core.inference.tool_call_parser.is_short_intent_without_action(text: 'str') -> 'bool'",
       "parse_tool_calls_from_text": "core.inference.tool_call_parser.parse_tool_calls_from_text(content: 'str', *, id_offset: 'int' = 0, allow_incomplete: 'bool' = True, enabled_tool_names: 'Optional[set]' = None) -> 'list[dict]'",
+      "reasoning_cap_spent_message": "core.inference.tool_call_parser.reasoning_cap_spent_message(max_tokens: 'Optional[int]' = None) -> 'str'",
+      "repeated_result_message": "core.inference.tool_call_parser.repeated_result_message(tool_name: 'str', times: 'int', last_result: 'str') -> 'str'",
       "reprompt_to_act_message": "core.inference.tool_call_parser.reprompt_to_act_message(tool_hint: 'str') -> 'str'",
+      "starved_result_message": "core.inference.tool_call_parser.starved_result_message(tool_name: 'str', result: 'str') -> 'str'",
       "strip_leading_bare_json_call": "core.inference.tool_call_parser.strip_leading_bare_json_call(text: 'str', enabled_tool_names: 'Optional[set]' = None) -> 'str'",
       "strip_llama3_leading_sentinels": "core.inference.tool_call_parser.strip_llama3_leading_sentinels(content: 'str') -> 'str'",
       "strip_segment": "core.inference.tool_call_parser.strip_segment(segment: 'str', *, seg_final: 'bool', enabled_tool_names: 'Optional[set]' = None) -> 'str'",
-      "strip_tool_markup": "core.inference.tool_call_parser.strip_tool_markup(text: 'str', *, final: 'bool' = False, enabled_tool_names: 'Optional[set]' = None) -> 'str'"
+      "strip_tool_markup": "core.inference.tool_call_parser.strip_tool_markup(text: 'str', *, final: 'bool' = False, trim: 'bool' = True, enabled_tool_names: 'Optional[set]' = None) -> 'str'",
+      "thinking_exhausted_message": "core.inference.tool_call_parser.thinking_exhausted_message(context_length: 'Optional[int]' = None) -> 'str'",
+      "unfinished_thought_progress": "core.inference.tool_call_parser.unfinished_thought_progress(reasoning: 'str') -> 'str'"
     }
   },
   "core.tool_healing": {

@@ -16,7 +16,7 @@ Only downloaded models resolve, and an unknown name is refused rather than answe
 whatever is resident. Nothing here starts a download: the media equivalent of the chat
 auto-download setting would let one API key spend tens of GB, which is its own decision.
 
-Both waits are bounded, because Studio's secure-mode tunnel caps an origin response near 100
+Both waits are bounded, because Unsloth's secure-mode tunnel caps an origin response near 100
 seconds. Exceeding a bound leaves the work running and asks the caller to retry, the contract
 ``begin_load`` already gives the UI.
 
@@ -101,6 +101,20 @@ def _resident_answers_exactly(resident: dict[str, Any], name: str) -> bool:
         and partition_matches(resident)
         and same_identity(name, str(resident.get("repo_id") or ""))
     )
+
+
+def resident_answers_media_request(
+    resident: dict[str, Any], requested_model: Optional[str], *, owner: str
+) -> bool:
+    """Whether one exact resident state still answers an auto-switch request."""
+    if not isinstance(requested_model, str) or not requested_model.strip():
+        return False
+    name = requested_model.strip()
+    if _resident_answers_exactly(resident, name):
+        return True
+    task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
+    pick = resolve_local_media_model(name, task = task)
+    return pick is not None and satisfied_by(resident, name, pick)
 
 
 async def _require_local(
@@ -518,5 +532,6 @@ __all__ = [
     "available_media_model_ids",
     "invalidate_index",
     "maybe_auto_switch_media_model",
+    "resident_answers_media_request",
     "resolve_local_media_model",
 ]

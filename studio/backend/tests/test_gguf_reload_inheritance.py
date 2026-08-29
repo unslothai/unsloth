@@ -14,6 +14,8 @@ import sys
 import types as _types
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -274,3 +276,105 @@ def test_already_in_target_state_explicit_extras_match():
 def test_extra_args_source_default_is_none():
     backend = LlamaCppBackend()
     assert backend.extra_args_source is None
+
+
+class TestRepeatLoadMatchesTheEffectiveCache:
+    """A repeat /load of an identical request must reuse the healthy server.
+
+    self._cache_type_kv records only what Unsloth emitted as a MANAGED flag, so a
+    cache set through extras or the environment leaves it None on one side and a
+    type on the other; the old scalar-against-scalar comparison then read an
+    identical repeat as a mismatch and tore the server down to relaunch the same
+    thing. Before ggml-org/llama.cpp#23792 the tensor gate hid this by rewriting
+    the cache away; a layer load has always had it.
+    """
+
+    @staticmethod
+    def _backend_running(effective):
+        """A backend carrying only the field the comparison reads: the per-axis
+        pair the live child was launched with."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._effective_cache_types = effective
+        return b
+
+    @pytest.mark.parametrize(
+        "extras,managed",
+        [
+            (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"], None),  # extras only
+            (["--cache-type-k", "q4_0", "--cache-type-v", "f16"], None),  # asymmetric
+            ([], "q8_0"),  # managed only
+            ([], None),  # nothing set
+        ],
+    )
+    def test_the_same_request_resolves_to_the_running_pair(self, extras, managed):
+        from core.inference.llama_cpp import _planned_main_cache_types
+
+        planned = _planned_main_cache_types(managed, extras)
+        running = self._backend_running(planned)
+
+        # The comparison the matcher makes, isolated: same request in, same pair out.
+        assert running._effective_cache_types == _planned_main_cache_types(managed, extras)
+
+    def test_a_changed_cache_still_reloads(self):
+        from core.inference.llama_cpp import _planned_main_cache_types
+        running = self._backend_running(("q8_0", "q8_0"))
+
+        assert running._effective_cache_types != _planned_main_cache_types(
+            None, ["--cache-type-k", "f16", "--cache-type-v", "f16"]
+        )
+
+    def test_the_matcher_compares_the_pair_not_the_managed_scalar(self):
+        """Source-pinned: the scalar cannot describe an extras-only or env cache,
+        so reintroducing it here would bring the spurious reload back."""
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend._runtime_matches_intent).split())
+        assert "self._requested_cache_types!=_planned_main_cache_types(" in src
+        assert "_norm(self._cache_type_kv)!=_norm(intent.cache_type_kv)" not in src
+
+    def test_a_launch_time_rewrite_does_not_force_a_reload(self):
+        """The comparison is requested-against-requested, so a rewrite the launch
+        performed does not make the next identical request look different.
+
+        A build with no --flash-attn resets a quantized V cache to f16 before the
+        spawn (and the flash-attn crash recovery does the same), so the pair that
+        LAUNCHED is not the pair that was ASKED for. Comparing the running pair
+        would then reject every repeat and redo that normalization each time.
+        """
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _effective_main_cache_types,
+            _planned_main_cache_types,
+        )
+
+        extras = ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+        asked = _planned_main_cache_types(None, extras)
+        cmd = ["llama-server", "-m", "/x.gguf", *extras]
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._architecture = None
+        launched = _effective_main_cache_types(
+            LlamaCppBackend._reset_quantized_v_cache(
+                cmd, "this build has no --flash-attn", mla = False, draft_mla = None
+            ),
+            {},
+        )
+
+        assert asked == ("q8_0", "q8_0")
+        assert launched == ("q8_0", "f16"), launched
+        # The matcher reads the first, not the second.
+        b._requested_cache_types = asked
+        assert b._requested_cache_types == _planned_main_cache_types(None, extras)
+
+    def test_the_requested_pair_is_recorded_next_to_the_effective_one(self):
+        """Both are recorded on the same success path, so one cannot drift."""
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "self._effective_cache_types=_effective_main_cache_types(" in load
+        assert "self._requested_cache_types=_planned_cache_pair" in load

@@ -9,6 +9,22 @@
 //   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
 //      math delimiters when singleDollarTextMath is enabled.
 
+import { parseMarkdownIntoBlocks } from "streamdown";
+import {
+  codeSpans,
+  crossesCodeSpanBlockBoundary,
+} from "./markdown-code-spans.ts";
+import {
+  EMPTY_LIST_STATE,
+  NO_QUOTE,
+  containerContent,
+  indentWidth,
+  itemContent,
+  openLists,
+  quoteDepth,
+  quoteState,
+} from "./markdown-list-columns.ts";
+
 /**
  * Matches a single $ followed by a number pattern (currency), e.g.:
  *   $5, $1,000, $5.99, $100K, $3.5M
@@ -48,40 +64,283 @@ function mergeRegions(
   return merged;
 }
 
+const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)$/;
+const FENCE_CANDIDATE_RE =
+  /(^|\r\n|\n|\r)((?:(?: {0,3}>[ \t]?)|(?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+))*[ \t]*)(`{3,}|~{3,})([^\r\n]*)/g;
+const INDENTED_CODE_CANDIDATE_RE =
+  /(^|\r\n|\n|\r)(?: {0,3}>[ \t]?)*(?:(?: {4}| {0,3}\t)| {0,3}(?:[-+*]|\d{1,9}[.)])(?: {5,}|[ \t]*\t[ \t]*))/g;
+const BLOCK_LINE_RE =
+  /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
+const LINK_DEFINITION_RE = /^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:/;
+const NON_LINE_ENDING_RE = /[^\r\n]/g;
+
+/** `line` with up to `columns` columns of leading whitespace removed. */
+function stripIndent(line: string, columns: number): string {
+  let width = 0;
+  let index = 0;
+  while (index < line.length && width < columns) {
+    const char = line[index];
+    if (char !== " " && char !== "\t") break;
+    width += char === " " ? 1 : 4 - (width % 4);
+    index += 1;
+  }
+  return line.slice(index);
+}
+
+/** Display columns occupied by a Markdown container prefix. */
+function columnWidth(prefix: string): number {
+  let width = 0;
+  for (const char of prefix) {
+    width += char === "\t" ? 4 - (width % 4) : 1;
+  }
+  return width;
+}
+
 /**
- * Find code-block regions (``` ... ```, ~~~ ... ~~~, and ` ... `) to skip.
+ * Find code regions (fenced, indented, and inline) to skip.
  * Returns a sorted, non-overlapping array of [start, end] index pairs.
  */
-export function findCodeBlockRegions(content: string): Array<[number, number]> {
-  // Fenced code blocks: ```...``` and ~~~...~~~ (both are code in GFM)
-  const fenced: Array<[number, number]> = [];
-  const fencedRe = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
-  let match: RegExpExecArray | null;
-  while ((match = fencedRe.exec(content)) !== null) {
-    fenced.push([match.index, match.index + match[0].length]);
+function normalizedMarkdownOffsets(content: string): {
+  text: string;
+  offsets: number[];
+} {
+  let text = "";
+  const offsets = [0];
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "\r") {
+      if (content[index + 1] === "\n") {
+        index += 1;
+      }
+      text += "\n";
+    } else {
+      text += content[index];
+    }
+    offsets.push(index + 1);
+  }
+  return { text, offsets };
+}
+
+function findInlineCodeRegions(
+  content: string,
+  blockRegions: Array<[number, number]>,
+): Array<[number, number]> {
+  let masked = content;
+  if (blockRegions.length > 0) {
+    const parts: string[] = [];
+    let cursor = 0;
+    for (const [start, end] of blockRegions) {
+      parts.push(content.slice(cursor, start));
+      parts.push(content.slice(start, end).replace(NON_LINE_ENDING_RE, " "));
+      cursor = end;
+    }
+    parts.push(content.slice(cursor));
+    masked = parts.join("");
   }
 
-  // Inline code: `...`, skipped when inside a fenced block. Both loops yield
-  // ascending matches, so walk the fenced list with a cursor rather than
-  // rescanning it per match (was quadratic on code-heavy text).
-  const inline: Array<[number, number]> = [];
-  const inlineRe = /`[^`\n]+`/g;
-  let fencedIndex = 0;
-  while ((match = inlineRe.exec(content)) !== null) {
-    const start = match.index;
-    const end = start + match[0].length;
-    while (fencedIndex < fenced.length && fenced[fencedIndex][1] <= start) {
-      fencedIndex += 1;
+  const spans = codeSpans(masked);
+  const crossesBlock = spans.some(({ start, end }) =>
+    crossesCodeSpanBlockBoundary(masked.slice(start, end)),
+  );
+  if (!crossesBlock) {
+    return spans.map(({ start, end }) => [start, end]);
+  }
+
+  const normalized = normalizedMarkdownOffsets(masked);
+  const blocks = parseMarkdownIntoBlocks(normalized.text);
+  const regions: Array<[number, number]> = [];
+  let blockStart = 0;
+  for (const block of blocks) {
+    for (const span of codeSpans(block)) {
+      regions.push([
+        normalized.offsets[blockStart + span.start] ?? content.length,
+        normalized.offsets[blockStart + span.end] ?? content.length,
+      ]);
     }
-    const block = fencedIndex < fenced.length ? fenced[fencedIndex] : null;
-    if (!(block && start >= block[0] && end <= block[1])) {
-      inline.push([start, end]);
+    blockStart += block.length;
+  }
+  return regions;
+}
+
+export function findCodeBlockRegions(content: string): Array<[number, number]> {
+  const fenced: Array<[number, number]> = [];
+  let match: RegExpExecArray | null;
+  const indented: Array<[number, number]> = [];
+
+  FENCE_CANDIDATE_RE.lastIndex = 0;
+  INDENTED_CODE_CANDIDATE_RE.lastIndex = 0;
+  let simpleFenceStart = -1;
+  let simpleFenceMarker = "";
+  let needsBlockScan = false;
+  while ((match = FENCE_CANDIDATE_RE.exec(content)) !== null) {
+    const prefix = match[2] ?? "";
+    if (prefix.trim() || indentWidth(prefix) > 3) {
+      needsBlockScan = true;
+      break;
+    }
+    const marker = match[3] ?? "";
+    const tail = match[4] ?? "";
+    const lineStart = match.index + (match[1]?.length ?? 0);
+    if (simpleFenceStart < 0) {
+      if (marker[0] !== "`" || !tail.includes("`")) {
+        simpleFenceStart = lineStart;
+        simpleFenceMarker = marker;
+      }
+    } else if (
+      marker[0] === simpleFenceMarker[0] &&
+      marker.length >= simpleFenceMarker.length &&
+      !tail.trim()
+    ) {
+      fenced.push([
+        simpleFenceStart,
+        lineStart + prefix.length + marker.length,
+      ]);
+      simpleFenceStart = -1;
+      simpleFenceMarker = "";
     }
   }
+  if (!needsBlockScan && simpleFenceStart >= 0) {
+    fenced.push([simpleFenceStart, content.length]);
+  }
+  if (!needsBlockScan) {
+    while ((match = INDENTED_CODE_CANDIDATE_RE.exec(content)) !== null) {
+      if (!isInRegion(match.index + match[0].length - 1, fenced)) {
+        needsBlockScan = true;
+        break;
+      }
+    }
+  }
+  if (needsBlockScan) {
+    fenced.length = 0;
+    const lines = content.matchAll(/[^\r\n]*(?:\r\n|\n|\r|$)/g);
+    let openFence: {
+      start: number;
+      marker: string;
+      column: number;
+      quotes: number;
+    } | null = null;
+    let indentedStart = -1;
+    let indentedEnd = -1;
+    let afterParagraph = false;
+    let lists = EMPTY_LIST_STATE;
+    let quote = NO_QUOTE;
+
+    for (const lineMatch of lines) {
+      const line = lineMatch[0];
+      if (!line) break;
+      const start = lineMatch.index;
+      const text = line.replace(/(?:\r\n|\n|\r)$/, "");
+      const above = quote;
+      quote = NO_QUOTE;
+      const quotes = quoteDepth(text);
+
+      if (openFence !== null) {
+        const quoted = containerContent(
+          text,
+          EMPTY_LIST_STATE,
+          openFence.quotes,
+        );
+        const leftContainer =
+          quotes < openFence.quotes ||
+          (quoted.trim() !== "" &&
+            openFence.column > 0 &&
+            indentWidth(quoted) < openFence.column);
+        if (leftContainer) {
+          fenced.push([openFence.start, start]);
+          openFence = null;
+        }
+      }
+
+      const activeFence = openFence;
+      const container = containerContent(
+        text,
+        lists,
+        activeFence?.quotes ?? quotes,
+      );
+      let fenceSource: string;
+      if (activeFence) {
+        fenceSource = stripIndent(container, activeFence.column);
+      } else {
+        fenceSource = container;
+        let previous: string;
+        let itemAfterParagraph = afterParagraph;
+        do {
+          previous = fenceSource;
+          fenceSource = itemContent(fenceSource, itemAfterParagraph);
+          itemAfterParagraph = false;
+        } while (fenceSource !== previous);
+      }
+      const fence = FENCE_LINE_RE.exec(fenceSource);
+      if (fence !== null) {
+        lists = openLists(text, lists, afterParagraph, above.quoted);
+        const marker = fence[1] ?? "";
+        const tail = fence[2] ?? "";
+        if (openFence === null) {
+          if (marker[0] !== "`" || !tail.includes("`")) {
+            const quoted = containerContent(text, EMPTY_LIST_STATE, quotes);
+            openFence = {
+              start,
+              marker,
+              column: columnWidth(
+                quoted.slice(0, quoted.length - fenceSource.length),
+              ),
+              quotes,
+            };
+          }
+        } else if (
+          marker[0] === openFence.marker[0] &&
+          marker.length >= openFence.marker.length &&
+          !tail.trim()
+        ) {
+          fenced.push([openFence.start, start + line.length]);
+          openFence = null;
+        }
+        afterParagraph = false;
+        continue;
+      }
+
+      if (openFence !== null) {
+        lists = openLists("", lists, afterParagraph, above.quoted);
+        afterParagraph = false;
+        continue;
+      }
+
+      lists = openLists(text, lists, afterParagraph, above.quoted);
+      const inner = itemContent(
+        containerContent(text, lists, quoteDepth(text)),
+        afterParagraph,
+      );
+      const blank = /^\s*$/.test(inner);
+      const code = indentWidth(inner) >= 4;
+      if (indentedStart >= 0) {
+        if (code || blank) {
+          indentedEnd = start + line.length;
+          continue;
+        }
+        indented.push([indentedStart, indentedEnd]);
+        indentedStart = -1;
+      }
+      if (code && !afterParagraph && !blank) {
+        indentedStart = start;
+        indentedEnd = start + line.length;
+        afterParagraph = false;
+        continue;
+      }
+      afterParagraph =
+        !blank &&
+        !BLOCK_LINE_RE.test(text) &&
+        (afterParagraph || !LINK_DEFINITION_RE.test(text));
+      quote = quoteState(text, above.inQuote);
+    }
+    if (openFence !== null) fenced.push([openFence.start, content.length]);
+    if (indentedStart >= 0) indented.push([indentedStart, indentedEnd]);
+  }
+
+  const blocks = mergeRegions(fenced, indented);
+  const inline = findInlineCodeRegions(content, blocks);
 
   // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
   // the binary search land on the inner span and miss the outer one.
-  return mergeRegions(fenced, inline);
+  return mergeRegions(blocks, inline);
 }
 
 /**
@@ -92,7 +351,7 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
  * of balanced parens.
  */
 const LINK_DEST_RE =
-  /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/gd;
+  /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
 
 /**
  * Find the destination spans of inline links/images, so a `\(...\)` written with
@@ -244,15 +503,10 @@ function hasInlineMathCloser(
 }
 
 /**
- * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. Non-greedy so
- * the first closer wins; dotall so display spans can wrap lines. `(?<!\\)` on
- * each opener leaves an escaped literal `\\[` (a real backslash then bracket)
- * alone. The body is length-capped so an unclosed opener can't scan to
- * end-of-input: without the cap, many unclosed `\(`/`\[` make matching O(n^2),
- * and this runs per animation frame while streaming. Real spans are far shorter
- * than the cap; a longer one just stays literal.
+ * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. The body
+ * is capped so repeated incomplete openers stay linear during streaming.
  */
-const LATEX_DELIM_RE =
+const CONVERT_LATEX_DELIM_RE =
   /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
 
 /**
@@ -310,8 +564,8 @@ function convertLatexDelimiters(content: string): {
     return start;
   };
   let match: RegExpExecArray | null;
-  LATEX_DELIM_RE.lastIndex = 0;
-  while ((match = LATEX_DELIM_RE.exec(content)) !== null) {
+  CONVERT_LATEX_DELIM_RE.lastIndex = 0;
+  while ((match = CONVERT_LATEX_DELIM_RE.exec(content)) !== null) {
     const matchEnd = match.index + match[0].length;
     // Skip if either delimiter is inside code or a link destination: an opener
     // outside such a zone must not consume a closer inside one and rewrite
@@ -319,7 +573,7 @@ function convertLatexDelimiters(content: string): {
     // match) so a valid span that this match spanned across (a stray code `\(`
     // paired with a real closer) is still found on the next pass, not swallowed.
     if (inSkipZone(match.index) || inSkipZone(matchEnd - 1)) {
-      LATEX_DELIM_RE.lastIndex = match.index + 1;
+      CONVERT_LATEX_DELIM_RE.lastIndex = match.index + 1;
       continue;
     }
     const isDisplay = match[1] !== undefined;

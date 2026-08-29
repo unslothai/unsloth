@@ -95,7 +95,9 @@ def _send_path_slice() -> str:
     """
     body = slice_between(
         read(ADAPTER),
-        "const survivingMessages = pruneOutboundHistory(",
+        "      const survivingMessages = pruneOutboundHistory(\n"
+        "        messages,\n"
+        "        !isExternalRequest,\n",
         "if (selectedImageEditReference) {",
     )
     return (
@@ -164,7 +166,7 @@ export { pruneOutboundHistory, toOpenAIMessages };
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script)
+    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
 USER = '{ role: "user", content: [{ type: "text", text: "TEXT" }] }'

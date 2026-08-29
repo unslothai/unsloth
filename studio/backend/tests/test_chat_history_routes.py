@@ -98,6 +98,26 @@ def test_replace_thread_messages_reports_protected_research_turn(monkeypatch):
     assert "Research prompts and responses" in str(exc_info.value.detail)
 
 
+def test_save_thread_message_forwards_explicit_generation_edit(monkeypatch):
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "thread-1"})
+    captured = {}
+
+    def save(message, *, allow_generation_edit = False):
+        captured["allow_generation_edit"] = allow_generation_edit
+        return message
+
+    monkeypatch.setattr(chat_history, "upsert_chat_message", save)
+    payload = _message("assistant-1", "thread-1").model_copy(update = {"role": "assistant"})
+    chat_history.save_thread_message(
+        "thread-1",
+        "assistant-1",
+        payload,
+        allow_generation_edit = True,
+        current_subject = "test-user",
+    )
+    assert captured == {"allow_generation_edit": True}
+
+
 def test_save_thread_message_returns_404_when_thread_is_deleted_during_write(monkeypatch):
     parent_reads = iter(({"id": "thread-1"}, None))
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: next(parent_reads))
@@ -186,14 +206,34 @@ def test_save_thread_distinguishes_a_tombstone_from_an_unknown_id(monkeypatch):
     assert exc_info.value.detail == "Thread thread-1 was deleted"
 
 
+def test_chat_thread_payload_carries_gguf_variant():
+    thread = chat_history.ChatThread(
+        id = "thread-1",
+        title = "GGUF chat",
+        modelType = "base",
+        modelId = "unsloth/Qwen3-GGUF",
+        modelGgufVariant = "Q6_K",
+        createdAt = 1,
+    )
+    patch = chat_history.ChatThreadPatch(modelGgufVariant = "Q8_0")
+
+    assert thread.model_dump()["modelGgufVariant"] == "Q6_K"
+    assert patch.model_dump(exclude_unset = True) == {"modelGgufVariant": "Q8_0"}
+
+
 def test_clear_history_fences_pending_thread_ids(monkeypatch):
     captured: list[str] = []
     captured_operation_ids: list[str | None] = []
 
-    def clear_with_ids(thread_ids = (), operation_id = None):
+    def clear_with_ids(
+        thread_ids = (),
+        operation_id = None,
+        include_chat_generation_runs = False,
+    ):
         captured.extend(thread_ids)
         captured_operation_ids.append(operation_id)
-        return list(thread_ids), [], False
+        result = (list(thread_ids), [])
+        return (*result, [], False) if include_chat_generation_runs else (*result, False)
 
     async def remove_sandboxes(_thread_ids, _delete_files):
         return 0, []
@@ -239,7 +279,9 @@ def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
     monkeypatch.setattr(
         chat_history,
         "clear_chat_history_with_replay_status",
-        lambda thread_ids = (), operation_id = None: ([], [], False),
+        lambda thread_ids = (), operation_id = None, include_chat_generation_runs = False: (
+            ([], [], [], False) if include_chat_generation_runs else ([], [], False)
+        ),
     )
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
@@ -414,6 +456,95 @@ def test_chat_settings_payload_accepts_preset_batch_sizes():
     for bad in ({"nBatch": 0}, {"nUbatch": BATCH_MAX + 1}, {"nBatch": True}):
         with pytest.raises(ValidationError):
             chat_history.ChatPresetLoadConfig.model_validate(bad)
+
+
+def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
+    # Same forbid trap as nBatch (#9879): normalizePresetLoadConfig always emits
+    # loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam / disableVision
+    # (null/false included). Without them on ChatPresetLoadConfig, saving a named
+    # system-prompt preset that carries any loadConfig 400s the whole customPresets
+    # write; the settings retry then drops customPresets and only the activePreset
+    # name survives -- which is why the toast fires and the entry vanishes on restart.
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "Test",
+                    "params": {"temperature": 0.7, "systemPrompt": "You are Test."},
+                    "loadConfig": {
+                        "nParallel": 4,
+                        "nBatch": None,
+                        "nUbatch": None,
+                        "loadMode": None,
+                        "specDraftCacheDtype": None,
+                        "ctxCheckpoints": None,
+                        "cacheRam": None,
+                        "tensorParallel": False,
+                        "disableVision": False,
+                    },
+                },
+            ],
+            "activePreset": "Test",
+            "activePresetSource": "custom",
+        }
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    load = dumped["customPresets"][0]["loadConfig"]
+    assert load["loadMode"] is None
+    assert load["disableVision"] is False
+    assert dumped["activePreset"] == "Test"
+
+    # A saved non-default shape must round-trip too.
+    chat_history.ChatPresetLoadConfig.model_validate(
+        {
+            "loadMode": "mmap+mlock",
+            "specDraftCacheDtype": "q8_0",
+            "ctxCheckpoints": 8,
+            "cacheRam": 2048,
+            "disableVision": True,
+        }
+    )
+    for bad in (
+        {"ctxCheckpoints": True},
+        {"cacheRam": True},
+        {"ctxCheckpoints": -1},
+        {"cacheRam": -2},
+        {"loadMode": "swap"},
+    ):
+        with pytest.raises(ValidationError):
+            chat_history.ChatPresetLoadConfig.model_validate(bad)
+
+
+def test_chat_preset_load_config_covers_frontend_persisted_fields():
+    # Drift guard: every key normalizePresetLoadConfig / PresetLoadConfig persists
+    # must exist on ChatPresetLoadConfig, else extra="forbid" 400s the preset save
+    # the next time the UI grows a load knob (#9879, same shape as #5862).
+    preset_ts = os.path.join(
+        _backend,
+        "..",
+        "frontend",
+        "src",
+        "features",
+        "chat",
+        "presets",
+        "preset-load-config.ts",
+    )
+    if not os.path.exists(preset_ts):
+        pytest.skip("frontend preset-load-config.ts not present")
+
+    with open(preset_ts, encoding = "utf-8") as fh:
+        block = re.search(
+            r"export type PresetLoadConfig = Pick<\s*PerModelConfig,\s*((?:.|\n)*?)\s*>;",
+            fh.read(),
+        )
+    assert block, "PresetLoadConfig Pick not found in preset-load-config.ts"
+    persisted = set(re.findall(r'"(\w+)"', block.group(1)))
+    assert persisted, "no PresetLoadConfig keys parsed"
+
+    backend = set(chat_history.ChatPresetLoadConfig.model_fields)
+    assert (
+        persisted == backend
+    ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
 def test_chat_settings_payload_accepts_mlx_kv_bits():
