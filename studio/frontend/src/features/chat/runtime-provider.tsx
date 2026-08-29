@@ -790,6 +790,16 @@ function scheduleGenerationRecovery(
       local: true,
       owner: serverCancel,
     });
+    runtime.beginThreadLiveTps(threadId, serverCancel, "");
+    const captureMonitorId = (monitorId: string | null) => {
+      if (!monitorId) return;
+      const store = useChatRuntimeStore.getState();
+      store.beginThreadLiveTps(
+        store.runKeyForOwner(threadId, serverCancel),
+        serverCancel,
+        monitorId,
+      );
+    };
 
     const publish = async (run: ChatGenerationRun) => {
       const status = run.status;
@@ -883,6 +893,7 @@ function scheduleGenerationRecovery(
       let identityValidated = false;
       for await (const update of followChatGenerationRun(runId, {
         replayFrom: cursor,
+        onMonitorId: captureMonitorId,
       })) {
         if (!identityValidated) {
           if (
@@ -989,6 +1000,10 @@ function scheduleGenerationRecovery(
       }
     } finally {
       const store = useChatRuntimeStore.getState();
+      store.finishThreadLiveTps(
+        store.runKeyForOwner(threadId, serverCancel),
+        serverCancel,
+      );
       store.setThreadRunning(threadId, false, { owner: serverCancel });
       store.clearThreadServerCancel(threadId, serverCancel);
     }

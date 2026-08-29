@@ -172,6 +172,7 @@ import {
   type ChatNavigationState,
   adjacentChatItem,
   countUnreadRows,
+  formatTokenCountFull,
   nextAttentionChatItem,
   openChatItemById,
   recentChatItemAtSlot,
@@ -983,7 +984,7 @@ export function AppSidebar() {
     loaded: chatItemsLoaded,
   } = useChatSidebarItems({
     enabled: !isStudioRoute,
-    requireMessages: false,
+    requireMessages: true,
   });
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
@@ -3037,6 +3038,7 @@ export function AppSidebar() {
         : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
+      item.type === "single" && "h-auto min-h-[30px] py-1",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
       // Pinned chats carry a chat icon, so add the nav-item icon gap.
@@ -3133,8 +3135,21 @@ export function AppSidebar() {
               {isPinned && variant !== "project" && (
                 <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
               )}
-              <span className="truncate">
-                {pendingRename?.id === item.id ? pendingRename.title : item.title}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">
+                  {pendingRename?.id === item.id ? pendingRename.title : item.title}
+                </span>
+                {item.type === "single" ? (
+                  <span
+                    className="block truncate text-ui-10 text-muted-foreground"
+                    data-testid="sidebar-last-request-usage"
+                  >
+                    Last request:{" "}
+                    {item.lastRequestUsage
+                      ? `${formatTokenCountFull(item.lastRequestUsage.totalTokens)} tokens`
+                      : "—"}
+                  </span>
+                ) : null}
               </span>
               {showWorkSpinner && (
                 <Spinner

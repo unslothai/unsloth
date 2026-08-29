@@ -92,3 +92,24 @@ test("carries usage only to single sidebar rows, never compare rows", async () =
   assert.doesNotMatch(compare, /lastRequestUsage/);
   assert.match(single, /lastRequestUsage: t\.sidebarLastRequestUsage/);
 });
+
+test("the root-mounted sidebar loads and renders the last-request total", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const loader = source.slice(
+    source.indexOf("useChatSidebarItems({"),
+    source.indexOf("const pinnedIds", source.indexOf("useChatSidebarItems({")),
+  );
+  const rowStart = source.indexOf("function renderChatSidebarItem(");
+  const row = source.slice(
+    rowStart,
+    source.indexOf("\n  return (\n    <Sidebar", rowStart),
+  );
+
+  assert.match(loader, /requireMessages: true/);
+  assert.match(row, /data-testid="sidebar-last-request-usage"/);
+  assert.match(row, /item\.lastRequestUsage\.totalTokens/);
+  assert.match(row, /formatTokenCountFull/);
+});

@@ -69,8 +69,7 @@ export function useLiveChatTps(): number | null {
           );
         }
       } catch {
-        if (!cancelled && !controller.signal.aborted) finish();
-        return;
+        if (cancelled || controller.signal.aborted) return;
       }
       if (!cancelled) {
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
