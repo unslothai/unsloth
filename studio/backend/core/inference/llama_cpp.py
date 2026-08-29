@@ -3335,11 +3335,16 @@ _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
 
 
-def _spilled_decode_threads(n_threads: Optional[int] = None) -> int:
-    """How many threads a spilled decode actually gets.
+def _spilled_decode_threads(
+    n_threads: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """How many threads the spilled-decode cost model should price.
 
-    PHYSICAL cores, not logical. Studio deliberately leaves ``--threads`` unset
-    (see the note next to the flag), and an unset ``--threads`` makes llama.cpp
+    A positive override follows the launched command's env, managed-flag, then
+    pass-through precedence. Otherwise Studio leaves ``--threads`` unset (see
+    the note next to the flag), and llama.cpp
     size its pool from ``common_cpu_get_num_math``, which counts physical cores
     and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
     hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
@@ -3351,8 +3356,28 @@ def _spilled_decode_threads(n_threads: Optional[int] = None) -> int:
     SMT is common but not universal, and halving a machine that has no SMT would
     trade one wrong answer for another.
     """
+    source_env = os.environ if env is None else env
+    requested: Optional[int] = None
+    raw = source_env.get("LLAMA_ARG_THREADS")
+    if raw:
+        try:
+            requested = int(str(raw).strip())
+        except (TypeError, ValueError):
+            pass
     if n_threads is not None and n_threads > 0:
-        return int(n_threads)
+        requested = int(n_threads)
+    args = [str(arg) for arg in extra_args] if extra_args else []
+    for i, arg in enumerate(args):
+        name, _, inline = arg.partition("=")
+        if name not in _THREAD_OVERRIDE_FLAGS:
+            continue
+        value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
+        try:
+            requested = int(value.strip())
+        except (TypeError, ValueError):
+            continue
+    if requested is not None and requested > 0:
+        return requested
     try:
         import psutil
         physical = psutil.cpu_count(logical = False)
@@ -25138,7 +25163,11 @@ class LlamaCppBackend:
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.
                 host = HostProfile(
-                    threads = _spilled_decode_threads(inputs.get("n_threads")),
+                    threads = _spilled_decode_threads(
+                        inputs.get("n_threads"),
+                        extra_args,
+                        source_env,
+                    ),
                     # Wired, not defaulted. On a unified-memory APU the credited
                     # "VRAM" IS system RAM, so an -ot spill frees no device memory
                     # and only buys the CPU backend's slower read path. The planner

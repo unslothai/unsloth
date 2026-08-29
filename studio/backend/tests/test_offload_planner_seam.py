@@ -1712,17 +1712,50 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
             sys.modules["psutil"] = saved
 
 
-def test_a_managed_thread_limit_reaches_the_cost_model(monkeypatch):
+def test_thread_overrides_reach_the_cost_model(monkeypatch):
     import core.inference.llama_cpp as llama_mod
 
     seen = []
 
-    def _threads(n_threads = None):
-        seen.append(n_threads)
+    def _threads(n_threads = None, extra_args = None, env = None):
+        seen.append((n_threads, extra_args, env))
         return int(n_threads or 8)
 
     monkeypatch.setattr(llama_mod, "_spilled_decode_threads", _threads)
-    plan = _plan(_Stub(), free_mib = 14 * 1024, n_threads = 3)
+    plan = _plan(
+        _Stub(),
+        free_mib = 14 * 1024,
+        n_threads = 3,
+        extra_args = ["--threads", "2"],
+        env = {"LLAMA_ARG_THREADS": "1"},
+    )
 
     assert plan is not None and plan.spills_anything
-    assert seen == [3]
+    expected = [
+        (3, ["--threads", "2"], {"UNSLOTH_SMART_OFFLOAD": "1", "LLAMA_ARG_THREADS": "1"})
+    ]
+    assert seen == expected
+
+
+def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _FakePsutil:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 12 if logical else 6
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+    assert llama_mod._spilled_decode_threads(env = {"LLAMA_ARG_THREADS": "2"}) == 2
+    assert llama_mod._spilled_decode_threads(3, env = {"LLAMA_ARG_THREADS": "2"}) == 3
+    assert (
+        llama_mod._spilled_decode_threads(
+            3,
+            ["--threads", "4"],
+            {"LLAMA_ARG_THREADS": "2"},
+        )
+        == 4
+    )
+    assert llama_mod._spilled_decode_threads(3, ["-t=5", "--threads=1"], {}) == 1
