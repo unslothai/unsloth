@@ -84,6 +84,56 @@ def test_local_minimax_detection_and_moss_companion_override(tmp_path):
     ]
 
 
+@pytest.mark.parametrize(
+    ("audio_type", "metadata_file", "metadata", "codec"),
+    (
+        (
+            "higgs_tts2",
+            "processor_config.json",
+            {"audio_tokenizer": {"audio_tokenizer_name_or_path": "acme/private-higgs2-codec"}},
+            "acme/private-higgs2-codec",
+        ),
+        (
+            "higgs_tts3",
+            "config.json",
+            {
+                "model_type": "higgs_multimodal_qwen3",
+                "audio_tokenizer_id": "acme/private-higgs3-codec",
+            },
+            "acme/private-higgs3-codec",
+        ),
+    ),
+)
+def test_local_higgs_companion_metadata_drives_security_and_download_plans(
+    tmp_path, monkeypatch, audio_type, metadata_file, metadata, codec
+):
+    if metadata_file != "config.json":
+        (tmp_path / "config.json").write_text(
+            json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"
+        )
+    (tmp_path / metadata_file).write_text(json.dumps(metadata), encoding = "utf-8")
+    assert native_audio_security_targets(str(tmp_path), audio_type) == [str(tmp_path), codec]
+
+    calls = []
+    siblings = [SimpleNamespace(rfilename = "model.safetensors", size = 100)]
+
+    def model_info(repo_id, **_kwargs):
+        calls.append(repo_id)
+        return SimpleNamespace(sha = "current", siblings = siblings)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(HfApi = lambda **_kwargs: SimpleNamespace(model_info = model_info)),
+    )
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached", lambda *_args: False
+    )
+    plan = native_audio_download_plan(str(tmp_path))
+    assert calls == [codec]
+    assert [entry["repo_id"] for entry in plan["entries"]] == [codec]
+
+
 def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch):
     siblings = [
         SimpleNamespace(rfilename = "modular_model_index.json", size = 10),

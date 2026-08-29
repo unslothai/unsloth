@@ -169,6 +169,29 @@ def _moss_local_codec_target(model_name: str, hf_token: Optional[str] = None) ->
     return MOSS_LOCAL_CODEC_REPO
 
 
+def _higgs_tts2_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
+    """Resolve the codec source that the Higgs TTS 2 processor will load."""
+    processor_config = _read_audio_metadata(model_name, "processor_config.json", hf_token)
+    nested = processor_config.get("audio_tokenizer")
+    candidates = (
+        processor_config.get("audio_tokenizer_name_or_path"),
+        nested.get("audio_tokenizer_name_or_path") if isinstance(nested, dict) else None,
+    )
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return HIGGS_TTS2_CODEC_REPO
+
+
+def _higgs_tts3_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
+    """Resolve the codec source that the Higgs TTS 3 remote model will load."""
+    model_config = _read_audio_metadata(model_name, "config.json", hf_token)
+    candidate = model_config.get("audio_tokenizer_id")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return HIGGS_TTS3_CODEC_REPO
+
+
 def native_audio_type_from_local_path(model_name: str) -> Optional[str]:
     """Recognize a local native-audio checkpoint from bounded metadata files."""
     normalized = str(model_name or "").strip()
@@ -221,6 +244,10 @@ def native_audio_security_targets(
     resolved_type = audio_type or _native_audio_type(model_name)
     if resolved_type == "moss_tts_local":
         targets.append(_moss_local_codec_target(model_name, hf_token))
+    elif resolved_type == "higgs_tts2":
+        targets.append(_higgs_tts2_codec_target(model_name, hf_token))
+    elif resolved_type == "higgs_tts3":
+        targets.append(_higgs_tts3_codec_target(model_name, hf_token))
     else:
         targets.extend(NATIVE_AUDIO_COMPANION_REPOS.get(resolved_type, ()))
     return targets
