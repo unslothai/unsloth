@@ -4,9 +4,10 @@
 """Regression coverage for the deprecated custom prompt template parameter."""
 
 import inspect
+import warnings
 
 import pytest
-from datasets import Dataset
+from datasets import Dataset, Features, IterableDataset, Value
 
 from utils.datasets import apply_chat_template_to_dataset, format_and_template_dataset
 
@@ -191,6 +192,62 @@ def test_public_exports_keep_deprecated_positional_parameter_slots():
         )
     assert result["success"] is False
     assert result["dataset"] is dataset
+
+
+@pytest.mark.parametrize("entry_point", ["apply", "format"])
+def test_deprecation_warning_points_to_external_callsite(entry_point):
+    dataset = _alpaca_dataset()
+
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        if entry_point == "apply":
+            result = apply_chat_template_to_dataset(
+                _dataset_info(dataset),
+                _Tokenizer(),
+                custom_prompt_template = "{instruction}",
+            )
+        else:
+            result = format_and_template_dataset(
+                dataset,
+                model_name = "Qwen2ForCausalLM",
+                tokenizer = _Tokenizer(),
+                custom_prompt_template = "{instruction}",
+            )
+
+    assert result["success"] is False
+    assert len(caught) == 1
+    assert caught[0].category is DeprecationWarning
+    assert caught[0].filename == __file__
+
+
+def test_streaming_dataset_is_not_consumed_when_custom_template_is_rejected():
+    visited = []
+
+    def generate_rows():
+        visited.append(True)
+        yield {"instruction": "question", "input": "", "output": "answer"}
+
+    features = Features(
+        {
+            "instruction": Value("string"),
+            "input": Value("string"),
+            "output": Value("string"),
+        }
+    )
+    dataset = IterableDataset.from_generator(generate_rows, features = features)
+
+    with pytest.deprecated_call(match = "cannot persist a matching template"):
+        result = apply_chat_template_to_dataset(
+            _dataset_info(dataset),
+            _Tokenizer(),
+            custom_prompt_template = "{instruction}",
+        )
+
+    assert result["success"] is False
+    assert result["dataset"] is dataset
+    assert result["dataset"].features == features
+    assert result["dataset"].column_names == ["instruction", "input", "output"]
+    assert visited == []
 
 
 @pytest.mark.parametrize(

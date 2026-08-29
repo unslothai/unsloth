@@ -30,14 +30,14 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
     "custom_prompt_template is deprecated and unsupported because Studio cannot persist a "
-    "matching template for inference. Pass None to use the default Alpaca template."
+    "matching template for inference. Pass None to continue without a custom prompt template."
 )
 
 
 def _custom_prompt_template_error(custom_prompt_template):
     if custom_prompt_template is None:
         return None
-    python_warnings.warn(_CUSTOM_PROMPT_TEMPLATE_ERROR, DeprecationWarning, stacklevel = 2)
+    python_warnings.warn(_CUSTOM_PROMPT_TEMPLATE_ERROR, DeprecationWarning, stacklevel = 3)
     return _CUSTOM_PROMPT_TEMPLATE_ERROR
 
 
