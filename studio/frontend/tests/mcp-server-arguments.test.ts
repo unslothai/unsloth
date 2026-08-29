@@ -367,7 +367,11 @@ test("composer applies mutation responses before releasing each preset", () => {
   );
   assert.match(
     composer,
-    /const \[serversLoaded, setServersLoaded\] = useState\(false\)[\s\S]*setServersLoaded\(false\);[\s\S]*setServers\(rows\);\s*setServersLoaded\(true\)/,
+    /const \[serversLoaded, setServersLoaded\] = useState\(false\)[\s\S]*const hasLoadedServerSnapshotRef = useRef\(false\);[\s\S]*setServersLoaded\(false\);[\s\S]*setServers\(rows\);\s*hasLoadedServerSnapshotRef\.current = true;\s*setServersLoaded\(true\)/,
+  );
+  assert.match(
+    composer,
+    /catch \{\s*if \(\s*listRefreshGenerationRef\.current === generation &&\s*hasLoadedServerSnapshotRef\.current\s*\) \{\s*setServersLoaded\(true\);/,
   );
   assert.match(
     composer,

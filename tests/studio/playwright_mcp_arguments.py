@@ -391,6 +391,26 @@ def run(page, launch_log: Path, fixture: Path) -> None:
     page.wait_for_timeout(500)
     assert writes.count("POST") == 1
     assert writes.count("PUT") == 1
+    failed_list = []
+
+    def fail_next_list(route):
+        if route.request.method == "GET" and not failed_list:
+            failed_list.append(route.request.url)
+            route.fulfill(status = 503, json = {"detail": "temporary list failure"})
+        else:
+            route.continue_()
+
+    page.route("**/api/mcp/servers/", fail_next_list)
+    preset.click()
+    deadline = time.monotonic() + 10
+    while (not failed_list or writes.count("PUT") != 2) and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert failed_list and writes.count("PUT") == 2
+    expect(preset).to_be_enabled()
+    page.get_by_role("menu").screenshot(
+        path = str(ART / f"fixed-composer-recovers-after-refresh-error-{BROWSER}.png")
+    )
+    page.unroute("**/api/mcp/servers/", fail_next_list)
     page.get_by_role("menuitem", name = "Manage MCP servers").press("Enter")
     dialog = page.get_by_role("dialog", name = "MCP Servers")
     expect(dialog).to_be_visible()

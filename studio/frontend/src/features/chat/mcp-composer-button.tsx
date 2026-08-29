@@ -117,6 +117,7 @@ export function McpComposerButton({
   const pendingUrlsRef = useRef(new Set<string>());
   const [hintKey, setHintKey] = useState<string | null>(null);
   const listRefreshGenerationRef = useRef(0);
+  const hasLoadedServerSnapshotRef = useRef(false);
 
   // Grey out only when a loaded model lacks tool support; with no model yet,
   // MCP can still be pre-selected, like the other composer tools.
@@ -134,9 +135,15 @@ export function McpComposerButton({
         });
         if (listRefreshGenerationRef.current !== generation) return;
         setServers(rows);
+        hasLoadedServerSnapshotRef.current = true;
         setServersLoaded(true);
       } catch {
-        // Keep prior state if the list call fails.
+        if (
+          listRefreshGenerationRef.current === generation &&
+          hasLoadedServerSnapshotRef.current
+        ) {
+          setServersLoaded(true);
+        }
       }
     },
     [],
