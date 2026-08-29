@@ -665,37 +665,9 @@ def _plan_at(
             ),
         )
 
-    n_devices = len(vram_bytes_per_device)
     deficit = needed - budget
     chosen, freed = _select_blocks(layout.blocks, deficit, opts.spill_order)
     if freed >= deficit:
-        spillable = [b for b in layout.blocks if b.spillable_bytes > 0]
-        if n_devices > 1 and len(chosen) < len(spillable):
-            # A pooled budget is not a per-device fit test for a PARTIAL spill.
-            # llama.cpp fixes the split before any override exists -- free memory
-            # per device at llama-model.cpp:1425-1433, prefix-summed at :1439-1447,
-            # then upper_bound on the normalised LAYER INDEX at :1457, so each
-            # device owns a contiguous index range -- and -ot only swaps a tensor's
-            # buffer type in llama_model_loader::create_tensor
-            # (llama-model-loader.cpp:1177-1203), leaving dev_layer(il) untouched
-            # (llama-model.cpp:1467-1474). Nothing rebalances afterwards and with
-            # --fit off common/fit.cpp never runs, so a subset of indices sitting
-            # in one device's range relieves only that device: the aggregate
-            # deficit is covered while a single card is still over, and a
-            # per-device shortfall is a hard throw (llama-model.cpp:1731-1733).
-            # Which rows the chosen indices land on is exactly what makes it
-            # uneven, so no arithmetic rescues it. Abstain: --fit on is per-device
-            # aware (common/fit.cpp:646-651, :687, :705). A FULL spill IS
-            # checkable, and is checked below rather than assumed.
-            return Plan(
-                n_ctx = n_ctx,
-                reason = (
-                    f"a partial spill ({len(chosen)} of {len(spillable)} blocks) across "
-                    f"{n_devices} devices cannot be checked against a pooled budget, "
-                    "because llama.cpp assigns contiguous layer ranges per device and "
-                    "-ot does not move a layer; leaving llama.cpp's own fitter to place it"
-                ),
-            )
         uneven = _per_device_shortfall(
             layout,
             opts,
@@ -712,7 +684,7 @@ def _plan_at(
             return Plan(
                 n_ctx = n_ctx,
                 reason = (
-                    f"spilling every block still does not fit device by device: {uneven}; "
+                    f"the selected spill still does not fit device by device: {uneven}; "
                     "leaving llama.cpp's own fitter to place it"
                 ),
             )
