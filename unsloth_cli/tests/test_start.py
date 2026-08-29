@@ -926,12 +926,15 @@ def test_merge_codex_config_keeps_user_oss_provider():
 
 def test_write_codex_config_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    monkeypatch.setattr(start, "_codex_supports_patch_line_endings", lambda: True)
     start.write_codex_config(BASE, MODEL, tmp_path)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
     assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
     assert profile["model"] == MODEL["id"]
     assert profile["model_context_window"] == 131072
+    assert profile["features"]["apply_patch_preserve_line_endings"] is True
+    assert profile["suppress_unstable_features_warning"] is True
 
     catalog_path = Path(profile["model_catalog_json"])
     assert catalog_path == Path("model-catalog.json")
@@ -970,6 +973,20 @@ def test_codex_model_catalog_version_gate(monkeypatch, version, expected):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
     assert start._codex_supports_model_catalog() is expected
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("codex-cli 0.150.0", False),
+        ("codex-cli 0.151.0", True),
+        ("codex-cli 1.0.0", True),
+    ],
+)
+def test_codex_patch_line_endings_version_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
+    assert start._codex_supports_patch_line_endings() is expected
 
 
 def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
