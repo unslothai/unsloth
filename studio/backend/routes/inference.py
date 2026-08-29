@@ -24985,8 +24985,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     custom_tool_call_ids = {
         item.call_id
         for item in payload.input
-        if isinstance(item, ResponsesCustomToolCallInputItem)
-        and item.name in custom_tool_names
+        if isinstance(item, ResponsesCustomToolCallInputItem) and item.name in custom_tool_names
     }
 
     for item in payload.input:

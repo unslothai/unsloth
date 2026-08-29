@@ -295,8 +295,7 @@ class TestToolsTranslation:
                         "*** Add File: path/to/file.txt\n"
                         "+first line\n"
                         "*** End Patch\n\n"
-                        "The input must match this Lark grammar:\n"
-                        + grammar
+                        "The input must match this Lark grammar:\n" + grammar
                     ),
                     "parameters": {
                         "type": "object",
@@ -324,8 +323,7 @@ class TestToolsTranslation:
 
     def test_apply_patch_without_the_codex_grammar_stays_unsupported(self):
         assert (
-            _translate_responses_tools_to_chat([{"type": "custom", "name": "apply_patch"}])
-            is None
+            _translate_responses_tools_to_chat([{"type": "custom", "name": "apply_patch"}]) is None
         )
 
     def test_empty_returns_none(self):
@@ -1021,7 +1019,11 @@ class TestResponsesNonStreamingAdapter:
     ):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request, current_subject = None):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             return JSONResponse(
                 content = {
                     "model": "test-model",
@@ -1100,7 +1102,11 @@ class TestResponsesNonStreamingAdapter:
         import routes.inference as inf_mod
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request, current_subject = None):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -1156,7 +1162,11 @@ class TestResponsesNonStreamingAdapter:
 
         usage = {"prompt_tokens": 11, "completion_tokens": 50, "total_tokens": 61}
 
-        async def fake_chat_completions(chat_req, request, current_subject = None):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             # monitor_id is None here: this call's own row is the suppressed one.
             if observations is not None:
@@ -1275,7 +1285,11 @@ class TestResponsesNonStreamingAdapter:
     def test_monitor_records_tool_only_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request, current_subject = None):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
                 content = {
@@ -1330,7 +1344,11 @@ class TestResponsesNonStreamingAdapter:
     def test_cancelled_chat_completion_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
 
-        async def fake_chat_completions(chat_req, request, current_subject = None):
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
             assert request.state.skip_api_monitor is True
             raise asyncio.CancelledError()
 

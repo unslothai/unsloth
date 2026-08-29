@@ -2939,7 +2939,7 @@ class ResponsesRequest(BaseModel):
         None,
         description = (
             "Responses-shape tool definitions. Function tools and Codex's "
-            'custom `apply_patch` are translated to the Chat Completions nested '
+            "custom `apply_patch` are translated to the Chat Completions nested "
             "shape before being forwarded to llama-server; other tool types "
             "(built-in web_search, file_search, mcp, ...) are accepted for SDK "
             "compatibility but ignored on the llama-server passthrough."
