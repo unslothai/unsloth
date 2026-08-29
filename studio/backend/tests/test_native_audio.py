@@ -11,8 +11,12 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import torch
-import torchaudio
+
+# CPU CI installs torch for the backend job but not torchaudio, so an
+# unconditional import fails the whole file at collection (house pattern:
+# test_audio_probe_target.py).
+torch = pytest.importorskip("torch")
+torchaudio = pytest.importorskip("torchaudio")
 
 from core.inference.native_audio import (
     HIGGS_TTS2_CODEC_REPO,
