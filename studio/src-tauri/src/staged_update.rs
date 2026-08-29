@@ -34,6 +34,7 @@ pub(crate) struct StagedUpdateStatus {
     /// A staged child is running now, so a partial stage is being written rather
     /// than left over.
     pub staging: bool,
+    pub staging_shell_version: Option<String>,
 }
 
 impl StagedUpdateStatus {
@@ -43,6 +44,7 @@ impl StagedUpdateStatus {
             backend_version: versions.as_ref().map(|v| v.backend_version.clone()),
             shell_version: versions.and_then(|v| v.shell_version),
             staging: false,
+            staging_shell_version: None,
         }
     }
 }
@@ -737,6 +739,7 @@ mod tests {
                 backend_version: Some("2026.9.1".into()),
                 shell_version: Some("0.1.900-beta".into()),
                 staging: false,
+                staging_shell_version: None,
             }
         );
         discard(&home);

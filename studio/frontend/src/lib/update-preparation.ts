@@ -27,9 +27,11 @@ export interface StagedUpdateStatus {
   shellVersion: string | null;
   /** A staged child is running now, so this stage is being written, not stale. */
   staging?: boolean;
+  /** shell version captured when the running staged child started. */
+  stagingShellVersion?: string | null;
 }
 
-export type StagingDecision = "stage" | "already-ready" | "adopt" | "skip";
+export type StagingDecision = "stage" | "already-ready" | "adopt" | "wait" | "skip";
 
 export const INITIAL_PREPARATION: UpdatePreparation = {
   shell: "pending",
@@ -39,7 +41,7 @@ export const INITIAL_PREPARATION: UpdatePreparation = {
 
 const LEADING_V = /^v/;
 
-function sameVersion(left: string | null | undefined, right: string): boolean {
+export function sameUpdateVersion(left: string | null | undefined, right: string): boolean {
   if (!left) return false;
   return left.replace(LEADING_V, "") === right.replace(LEADING_V, "");
 }
@@ -70,12 +72,16 @@ export function stagingDecision(args: {
   staged: StagedUpdateStatus;
 }): StagingDecision {
   if (!args.inApp || args.isExternalServer) return "skip";
-  const matches = sameVersion(args.staged.shellVersion, args.offeredVersion);
+  const matches = sameUpdateVersion(args.staged.shellVersion, args.offeredVersion);
   if (args.staged.state === "ready" && matches) return "already-ready";
   if (args.staged.state === "failed" && matches) return "skip";
   // A webview reload loses the hook's own record of a run it started, and the
   // native side rejects a second one, so join the running one instead.
-  if (args.staged.staging) return "adopt";
+  if (args.staged.staging) {
+    return sameUpdateVersion(args.staged.stagingShellVersion, args.offeredVersion)
+      ? "adopt"
+      : "wait";
+  }
   return "stage";
 }
 

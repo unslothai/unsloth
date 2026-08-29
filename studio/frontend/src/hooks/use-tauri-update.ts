@@ -25,6 +25,7 @@ import {
   backendIdle,
   preparationStatus,
   restartPlan,
+  sameUpdateVersion,
   settleWithin,
   stagingDecision,
   waitForBackendIdle,
@@ -439,13 +440,17 @@ export function useTauriUpdate(isExternalServer = false) {
         patchPreparation({ backend: "skipped" });
         return;
       }
-      if (decision === "adopt") {
+      if (decision === "adopt" || decision === "wait") {
         patchPreparation({ backend: "staging" });
         const settled = await adoptStagedUpdate(
           appendLog,
           () => preparingVersionRef.current !== version,
         );
         if (preparingVersionRef.current !== version) return;
+        if (decision === "wait" || !sameUpdateVersion(settled.shellVersion, version)) {
+          await prepareBackend(version);
+          return;
+        }
         patchPreparation({ backend: settled.state === "ready" ? "ready" : "failed" });
         return;
       }
@@ -470,6 +475,11 @@ export function useTauriUpdate(isExternalServer = false) {
       patchPreparation({ backend: "staging" });
       await startStagedUpdate(appendLog);
       if (preparingVersionRef.current !== version) return;
+      const settled = await stagedUpdateStatus();
+      if (settled.state !== "ready" || !sameUpdateVersion(settled.shellVersion, version)) {
+        await prepareBackend(version);
+        return;
+      }
       patchPreparation({ backend: "ready" });
     } catch (e) {
       console.warn("Background backend preparation failed:", e);

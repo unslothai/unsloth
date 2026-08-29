@@ -15,6 +15,7 @@ pub struct UpdateProcess {
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
     pub staged: bool,
+    pub staged_shell_version: Option<String>,
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
@@ -26,6 +27,14 @@ pub(crate) fn is_staged_update_running(state: &UpdateState) -> bool {
         .lock()
         .map(|s| s.child.is_some() && s.staged)
         .unwrap_or(false)
+}
+
+pub(crate) fn staged_update_shell_version(state: &UpdateState) -> Option<String> {
+    state.lock().ok().and_then(|update| {
+        (update.child.is_some() && update.staged)
+            .then(|| update.staged_shell_version.clone())
+            .flatten()
+    })
 }
 
 pub fn new_update_state() -> UpdateState {
@@ -126,6 +135,10 @@ fn spawn_update(
     }
     update.intentional_stop = false;
     update.staged = matches!(kind, UpdateKind::Staged { .. });
+    update.staged_shell_version = match kind {
+        UpdateKind::Staged { shell_version, .. } => shell_version.clone(),
+        _ => None,
+    };
 
     let mut cmd = build_update_command(bin, kind.args())?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -283,11 +296,13 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
             Some(child) => match child.try_wait() {
                 Ok(Some(status)) => {
                     update.child = None;
+                    update.staged_shell_version = None;
                     return Ok((status, intentional));
                 }
                 Ok(None) => {}
                 Err(e) => {
                     update.child = None;
+                    update.staged_shell_version = None;
                     return Err(format!("Error waiting for update: {}", e));
                 }
             },
@@ -526,6 +541,7 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
             }
         };
         update.intentional_stop = true;
+        update.staged_shell_version = None;
         update.child.take()
     };
 

@@ -196,7 +196,7 @@ test("an unanswerable backend still reaches the idle deadline", async () => {
   assert.ok(probes <= 4, `expected the deadline to stop the loop, ran ${probes} probes`);
 });
 
-test("a stage already being written is adopted, not started again", () => {
+test("only a running stage for the offered version is adopted", () => {
   // The webview reloaded while start_staged_update was running: the hook lost its
   // own record of it, and the native side rejects a second request.
   assert.equal(
@@ -204,9 +204,26 @@ test("a stage already being written is adopted, not started again", () => {
       inApp: true,
       isExternalServer: false,
       offeredVersion: "0.1.901",
-      staged: staged({ state: "partial", staging: true }),
+      staged: staged({
+        state: "partial",
+        staging: true,
+        stagingShellVersion: "0.1.901",
+      }),
     }),
     "adopt",
+  );
+  assert.equal(
+    stagingDecision({
+      inApp: true,
+      isExternalServer: false,
+      offeredVersion: "0.1.902",
+      staged: staged({
+        state: "partial",
+        staging: true,
+        stagingShellVersion: "0.1.901",
+      }),
+    }),
+    "wait",
   );
   // A partial stage with nothing running is leftover, and is restaged.
   assert.equal(
@@ -224,7 +241,12 @@ test("a stage already being written is adopted, not started again", () => {
       inApp: true,
       isExternalServer: false,
       offeredVersion: "0.1.901",
-      staged: staged({ state: "ready", shellVersion: "0.1.901", staging: true }),
+      staged: staged({
+        state: "ready",
+        shellVersion: "0.1.901",
+        staging: true,
+        stagingShellVersion: "0.1.901",
+      }),
     }),
     "already-ready",
   );

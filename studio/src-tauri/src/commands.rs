@@ -885,6 +885,7 @@ pub fn staged_update_status(
 ) -> staged_update::StagedUpdateStatus {
     let mut status = staged_update::status(&diagnostics::studio_dir());
     status.staging = update::is_staged_update_running(&update_state);
+    status.staging_shell_version = update::staged_update_shell_version(&update_state);
     status
 }
 
