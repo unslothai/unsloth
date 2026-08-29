@@ -97,7 +97,7 @@ def _is_venv_python_shell_wrapper(lines: list[bytes]) -> bool:
     )
 
 
-def make_relocatable(venv: Path) -> int:
+def make_relocatable(venv: Path, *, exclude_scripts: tuple[str, ...] = ()) -> int:
     cfg = venv / "pyvenv.cfg"
     lines = cfg.read_text(encoding = "utf-8").splitlines()
     if not any(line.split("=", 1)[0].strip() == "relocatable" for line in lines):
@@ -107,7 +107,7 @@ def make_relocatable(venv: Path) -> int:
         return 0
     rewritten = 0
     for script in (venv / "bin").iterdir():
-        if script.is_symlink() or not script.is_file():
+        if script.name in exclude_scripts or script.is_symlink() or not script.is_file():
             continue
         data = script.read_bytes()
         lines = data.splitlines(keepends = True)
@@ -256,7 +256,7 @@ def stage(
             helper = helper_root / name
             if helper.is_dir():
                 clone_tree(helper, root / name)
-        make_relocatable(root / VENV_NAME)
+        make_relocatable(root / VENV_NAME, exclude_scripts = ("unsloth",))
         echo("[TAURI:STEP] update")
         if run_update(root, update_args) != 0:
             raise StageError("staged update failed")

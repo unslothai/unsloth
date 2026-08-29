@@ -187,6 +187,33 @@ def test_stage_discards_the_tree_when_verification_fails(monkeypatch, tmp_path):
     assert not (home / _studio_stage.STAGE_DIR_NAME).exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
+def test_same_version_stage_preserves_the_launcher_until_update_verification(monkeypatch, tmp_path):
+    home = tmp_path / "studio"
+    live_venv = _make_venv(home)
+    live_launcher = (live_venv / "bin" / "unsloth").read_bytes()
+
+    def same_version_update(root: Path, args: list[str]) -> int:
+        staged_launcher = root / _studio_stage.VENV_NAME / "bin" / "unsloth"
+        assert staged_launcher.read_bytes() == live_launcher
+        return 0
+
+    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.8.22")
+    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
+    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
+
+    _studio_stage.stage(
+        home, update_args = [], echo = lambda _: None, run_update = same_version_update
+    )
+
+    staged_launcher = (
+        home / _studio_stage.STAGE_DIR_NAME / _studio_stage.VENV_NAME / "bin" / "unsloth"
+    )
+    assert staged_launcher.read_text(encoding = "utf-8").startswith(
+        _studio_stage.RELOCATABLE_SHEBANG
+    )
+
+
 def test_stage_refuses_without_a_managed_environment(tmp_path):
     with pytest.raises(_studio_stage.StageError, match = "no managed environment"):
         _studio_stage.stage(
