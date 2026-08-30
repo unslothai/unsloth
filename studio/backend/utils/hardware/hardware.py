@@ -37,10 +37,6 @@ from loggers import get_logger
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
-)
-
 logger = get_logger(__name__)
 
 
@@ -549,6 +545,22 @@ def _linux_amd_gfx_candidates() -> list[str]:
     return []
 
 
+def _hidden_console_kwargs() -> Dict[str, Any]:
+    """subprocess kwargs that keep a console window from flashing on Windows.
+
+    Imported here rather than at module scope on purpose: this module is loaded very
+    early, and tests/python/test_e2e_no_torch_sandbox.py executes it against a minimal
+    stub tree with no utils.subprocess_compat in it, so a top-level import would make
+    the module unloadable on a host without the rest of the package. Empty kwargs are
+    the correct answer everywhere but Windows anyway.
+    """
+    try:
+        from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+    except Exception:
+        return {}
+    return windows_hidden_subprocess_kwargs()
+
+
 def _windows_live_adapter_names() -> Optional[list[str]]:
     """Display adapter names Windows reports as PRESENT, or None when it could not say.
 
@@ -574,7 +586,7 @@ def _windows_live_adapter_names() -> Optional[list[str]]:
             encoding = "utf-8",
             errors = "replace",
             timeout = 10,
-            **_windows_hidden_subprocess_kwargs(),
+            **_hidden_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as e:
         logger.debug("Live Windows adapter scan failed: %s", e)

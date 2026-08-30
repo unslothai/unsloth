@@ -2030,3 +2030,27 @@ def test_one_capability_response_describes_one_host(monkeypatch):
 def _hardware_source() -> str:
     import pathlib
     return pathlib.Path(hw.__file__).resolve().read_text(encoding = "utf-8")
+
+
+def test_the_hardware_module_loads_without_the_rest_of_the_package(tmp_path):
+    """tests/python/test_e2e_no_torch_sandbox.py executes this module on its own.
+
+    It builds a minimal stub tree -- loggers, structlog, utils/hardware -- and nothing
+    else, so a top-level import of anything further inside utils makes the module
+    unloadable there, which is how a Windows-only console-hiding helper broke hardware
+    detection on a host with no torch at all.
+    """
+    import pathlib
+    import re as _re
+
+    source = pathlib.Path(hw.__file__).resolve().read_text(encoding = "utf-8")
+    header = source[: source.index("logger = get_logger(__name__)")]
+    imports = _re.findall(r"^\s*(?:from|import)\s+([\w.]+)", header, _re.MULTILINE)
+    # utils.hardware itself IS stubbed by that sandbox; nothing else under utils is.
+    for module in imports:
+        if module == "utils.hardware" or module.startswith("utils.hardware."):
+            continue
+        assert not module.startswith("utils"), (
+            f"{module} is imported at module scope; the no-torch sandbox stubs only "
+            "utils.hardware, so import it inside the function that needs it"
+        )
