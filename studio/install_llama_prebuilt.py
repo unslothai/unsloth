@@ -6936,18 +6936,16 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
 
 
-# Signals that say the image itself is broken rather than that something intervened.
-# SIGKILL is deliberately absent: that is an OOM or an external kill, not a verdict.
+# Broken image, not something intervening: SIGKILL is absent because it is an OOM.
 _BROKEN_IMAGE_SIGNALS = frozenset(
     {signal.SIGSEGV, signal.SIGILL, signal.SIGFPE}
     | ({signal.SIGBUS} if hasattr(signal, "SIGBUS") else set())
 )
 # Windows' "%1 is not a valid Win32 application", its answer to a corrupt image.
 _ERROR_BAD_EXE_FORMAT = 193
-# Windows reports a loader failure as the NTSTATUS itself, not as a signal: CreateProcess
-# succeeds and the process exits 0xC0000135 (missing DLL), 0xC0000142 (DLL init failed) or
-# 0xC0000005 (access violation). Python surfaces those as large positive return codes. The
-# range is unreachable on POSIX, where an exit status is 0-255, so it needs no host guard.
+# A Windows loader failure is not a signal: CreateProcess succeeds and the process exits
+# the NTSTATUS (0xC0000135 missing DLL), which Python reports as a large POSITIVE code.
+# Unreachable on POSIX, where an exit status is 0-255, so no host guard is needed.
 _NTSTATUS_FAILURE_FLOOR = 0xC0000000
 
 
@@ -6959,26 +6957,21 @@ def _binary_image_runs(
 ) -> bool:
     """Whether the OS will actually start ``path``.
 
-    ``os.access`` answers "may I execute this", not "is this an executable": a truncated
-    or zero-byte file keeps its mode bits, and ``ldd`` on a non-ELF reports only that it
-    is not a dynamic executable, so neither sees the corruption. ``execve`` does. Measured
-    on Linux: a zero-byte file and a non-ELF file both raise ENOEXEC, and an ELF cut short
-    starts and dies on SIGSEGV.
+    ``os.access`` asks "may I execute this", not "is this an executable": a truncated file
+    keeps its mode bits and ``ldd`` on a non-ELF only says it is not a dynamic executable.
+    execve sees it -- measured on Linux, zero-byte and non-ELF both raise ENOEXEC.
 
-    The exit code is not the verdict. llama-quantize answers ``--version`` by printing its
-    quantization table and exiting non-zero, which is why ``macos_dyld_load_issues`` reads
-    output rather than status. Only the kernel refusing the image counts, plus the signals
-    that say the image is broken. Everything else -- a timeout, a refusal to spawn, an
-    ordinary non-zero exit -- reads as healthy, because a false positive here spends a
-    source build on a working install.
+    The exit code is NOT the verdict: llama-quantize answers ``--version`` by printing its
+    table and exiting non-zero, the same reason ``macos_dyld_load_issues`` reads output. So
+    a timeout, a failed spawn or an ordinary non-zero exit all read as healthy, because a
+    false positive here spends a source build on a working install.
     """
     try:
         result = run_capture(
             [str(path), "--version"],
             timeout = 60,
-            # runtime_line, as validate_prebuilt_choice passes it: it is what puts the
-            # detected CUDA toolkit on PATH. Without it a healthy pair-less Windows CUDA
-            # install cannot find its DLLs, exits 0xC0000135, and gets thrown away.
+            # runtime_line as validate_prebuilt_choice passes it: it is what puts the
+            # CUDA toolkit on PATH, and a pair-less Windows install dies 0xC0000135 without it.
             env = binary_env(path, install_dir, host, runtime_line = runtime_line),
         )
     except OSError as exc:
@@ -7017,11 +7010,9 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         preflight_macos_installed_binaries(binaries, install_dir, host)
     except Exception:
         return False
-    # The root-level copies too, and first: LlamaCppBackend._find_llama_server_binary
-    # searches <install>/llama-server BEFORE <install>/build/bin/llama-server, so that is
-    # what inference launches. It is normally a symlink to the one above, and resolve()
-    # collapses it; when symlinking was unavailable it is a separate file that can rot on
-    # its own. confirm_install_tree already required both to exist on POSIX.
+    # Root copies first: _find_llama_server_binary searches <install>/llama-server BEFORE
+    # build/bin, so that is what inference launches. resolve() collapses the usual symlink;
+    # when symlinking was unavailable it is a separate file that can rot alone.
     probes: list[Path] = []
     seen: set[Path] = set()
     for binary in [install_dir / p.name for p in binaries] + binaries:

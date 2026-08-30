@@ -5574,16 +5574,15 @@ def _complete_existing_llama_install(
         elif path.name == "UNSLOTH_PREBUILT_INFO.json":
             path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
         elif path.name.startswith("llama-"):
-            # The root copy can rot on its own when symlinking was unavailable, and it is
-            # the one _find_llama_server_binary reaches first.
+            # The root copy is what _find_llama_server_binary reaches first, and it can
+            # rot alone when symlinking was unavailable.
             ok = (
                 runnable
                 if path.parent != install_dir
                 else (runnable if runnable_root is None else runnable_root)
             )
-            # A runnable stub, not an empty file: the kept-install check execs these now,
-            # and a zero-byte file that kept its mode bits is ENOEXEC, which is the
-            # corruption runnable = False exists to cover.
+            # A runnable stub, not an empty file: the kept-install check execs these, and
+            # a zero-byte file that kept its mode bits is the ENOEXEC case below.
             path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
             # Match setup.sh's executable reuse gate.
             os.chmod(path, 0o755 if executable else 0o644)
@@ -5793,13 +5792,8 @@ def test_a_stored_backend_the_install_does_not_run_is_not_answered_with_it(tmp_p
 def test_release_listing_failure_does_not_keep_a_corrupt_binary(
     tmp_path, monkeypatch, windows, host
 ):
-    """Executable is not the same as executABLE: the OS has to accept the image.
-
-    A truncated or zero-byte llama-server keeps its mode bits, so os.access says yes, and
-    ldd on a non-ELF only reports that it is not a dynamic executable, so the Linux
-    preflight finds nothing. On Windows neither preflight runs at all. execve is what
-    sees it: ENOEXEC.
-    """
+    """A truncated llama-server keeps its mode bits, so os.access says yes and ldd on a
+    non-ELF finds nothing. On Windows neither preflight runs at all. execve sees it."""
     _listing_failure(monkeypatch, host)
     install_dir = _complete_existing_llama_install(
         tmp_path, windows = windows, backend = "cuda" if windows else "cpu", runnable = False
@@ -5815,12 +5809,8 @@ def test_release_listing_failure_does_not_keep_a_corrupt_binary(
 
 
 def test_a_rotten_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, monkeypatch):
-    """Probe what inference launches, which is the root copy, not build/bin.
-
-    LlamaCppBackend._find_llama_server_binary searches <install>/llama-server before
-    <install>/build/bin/llama-server. Normally the first is a symlink to the second, but
-    when symlink creation was unavailable it is a separate file that can rot alone.
-    """
+    """_find_llama_server_binary searches <install>/llama-server before build/bin, so the
+    root copy is what runs; without a symlink it is a separate file that can rot alone."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", runnable_root = False)
     assert os.access(install_dir / "build" / "bin" / "llama-server", os.X_OK)
@@ -5832,12 +5822,8 @@ def test_a_rotten_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, 
 
 
 def test_a_windows_loader_status_is_not_a_successful_probe(tmp_path, monkeypatch):
-    """CreateProcess succeeding is not the binary starting.
-
-    A missing dependent DLL exits 0xC0000135, which Python reports as a large POSITIVE
-    return code, so "not negative" would read it as healthy. The payload groups cannot
-    cover it either: the Windows CPU group is only llama.dll.
-    """
+    """A missing DLL exits 0xC0000135, which Python reports POSITIVE, so "not negative"
+    reads it as healthy. The payload groups cannot cover it: windows-cpu is only llama.dll."""
     _listing_failure(monkeypatch, _windows_host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
@@ -5860,12 +5846,8 @@ def test_a_windows_loader_status_is_not_a_successful_probe(tmp_path, monkeypatch
 def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
     tmp_path, monkeypatch, kwargs
 ):
-    """ "auto" is a request to re-detect, not the absence of one.
-
-    Keeping the tree would leave both the old backend and its marker exactly as they were
-    while reporting success, which is the same substitution the explicit-version guard
-    already refuses.
-    """
+    """ "auto" asks to re-detect; answering it with the old tree leaves the backend and its
+    marker untouched while reporting success."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
 
@@ -5884,12 +5866,8 @@ def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
     ids = ["has-rocm", "rocm-gfx"],
 )
 def test_forwarded_gpu_detection_is_not_a_selection_change(tmp_path, monkeypatch, kwargs):
-    """Both setup entrypoints forward the DETECTED GPU on every AMD host.
-
-    studio/setup.sh builds --rocm-gfx/--has-rocm into _PREBUILT_CMD from its own probe and
-    setup.ps1 does the same in $prebuiltArgs, so treating either as a user choice would
-    take the keep path away from essentially every AMD update.
-    """
+    """setup.sh builds --rocm-gfx/--has-rocm into _PREBUILT_CMD from its own probe and
+    setup.ps1 does the same, so counting them would lose the keep path on every AMD host."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu")
 
@@ -5899,12 +5877,8 @@ def test_forwarded_gpu_detection_is_not_a_selection_change(tmp_path, monkeypatch
 
 
 def test_the_probe_gets_the_runtime_line_the_marker_recorded(tmp_path, monkeypatch):
-    """Same env the real validation path builds, or a healthy pair-less CUDA install dies.
-
-    binary_env puts the detected CUDA toolkit on PATH from runtime_line;
-    validate_prebuilt_choice passes it, so probing without it would exit 0xC0000135 on a
-    Windows install whose DLLs are not already on the inherited PATH.
-    """
+    """binary_env puts the CUDA toolkit on PATH from runtime_line and
+    validate_prebuilt_choice passes it, so probing without it kills a pair-less install."""
     _listing_failure(monkeypatch, linux_host)
     seen: list = []
     real_binary_env = INSTALL_LLAMA_PREBUILT.binary_env
@@ -5920,9 +5894,8 @@ def test_the_probe_gets_the_runtime_line_the_marker_recorded(tmp_path, monkeypat
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
-    # preflight_linux_installed_binaries builds an env too and passes no runtime_line,
-    # which is correct: it only matters on Windows. What is asserted is that the probe
-    # did not also drop it.
+    # preflight_linux_installed_binaries also builds an env and correctly passes none,
+    # since it only matters on Windows; what is asserted is that the probe kept it.
     assert (
         "cuda-12.4" in seen
     ), f"the kept-install probe built its env without the marker's runtime_line: {seen}"
