@@ -414,3 +414,71 @@ def test_every_delete_branch_invalidates_the_scan():
         assert not [
             n for n in successes if before[-1] < n < at
         ], "the invalidation must belong to this branch, not to one above it"
+
+
+def test_the_invalidation_helper_stays_off_the_event_loop():
+    """invalidate_index takes the resolver lock and _index() holds it across a full
+    multi-root filesystem scan, so an async route calling it inline would stall unrelated
+    requests and in-flight inference streams behind a rebuild."""
+    import asyncio as _asyncio
+    import inspect
+
+    from routes import models as models_route
+
+    assert _asyncio.iscoroutinefunction(models_route._invalidate_local_scans)
+    source = inspect.getsource(models_route._invalidate_local_scans)
+    assert "asyncio.to_thread(invalidate_index)" in source, (
+        "the invalidation must be offloaded, matching the other async sites in this file"
+    )
+    # And every call site must await it, or the coroutine is created and dropped.
+    route = inspect.getsource(models_route.delete_finetuned_model)
+    calls = route.count("_invalidate_local_scans()")
+    awaited = route.count("await _invalidate_local_scans()")
+    assert calls == awaited == 2, f"{calls} call(s), {awaited} awaited"
+
+
+def test_a_generation_bump_while_waiting_for_the_lock_is_not_accepted(monkeypatch):
+    """Two callers miss together, one scans while the other queues on the lock, and a
+    delete lands during that scan.
+
+    The scanner stamps its entry with the generation it STARTED with, which is correct.
+    The waiter then wakes holding the generation it captured before queueing, and those
+    two agree, so comparing against it would hand back rows examined before the delete.
+    Only a re-read under the lock sees that the world moved.
+    """
+    from core.inference import local_model_resolver as resolver
+
+    catalog = _catalog(1, "w")
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_servable_model",
+        lambda info: (True, ("Q4_K_M",)),
+    )
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
+    monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
+
+    generation_at_queue = inf._servability_generation()
+    stale_rows = [("scanned-before-the-delete",)]
+
+    class _LockThatLosesTheRace:
+        """Stands in for the wait: the other scanner finishes and a delete lands here."""
+
+        def __enter__(self):
+            _SEEDED = (
+                777.0,
+                catalog,
+                generation_at_queue,  # what the other scanner started with
+                stale_rows,
+            )
+            inf._SERVABLE_SCAN_CACHE["entry"] = _SEEDED
+            resolver.invalidate_index()  # the delete, while we were queued
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(inf, "_SERVABLE_SCAN_CACHE_LOCK", _LockThatLosesTheRace())
+    rows = inf._servable_catalog_rows(catalog, 777.0)
+    assert rows != stale_rows, (
+        "the waiter accepted rows scanned before the delete instead of rescanning"
+    )
+    assert inf._SERVABLE_SCAN_CACHE["entry"][2] != generation_at_queue

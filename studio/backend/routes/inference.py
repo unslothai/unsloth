@@ -23977,9 +23977,7 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
     #                    decides servability for non-GGUF checkpoints. An Apple Silicon
     #                    MLX self-repair flips CPU to MLX after startup, and an early
     #                    /v1/models would otherwise hide those checkpoints until the TTL.
-    generation = _servability_generation()
-
-    def _fresh():
+    def _fresh(generation):
         entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the tuple cannot tear
         if entry is None or catalog_at is None:
             return None
@@ -23988,11 +23986,17 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
             return None
         return rows if at == catalog_at and cached_catalog is catalog else None
 
-    hit = _fresh()
+    hit = _fresh(_servability_generation())
     if hit is not None:
         return hit
     with _SERVABLE_SCAN_CACHE_LOCK:
-        hit = _fresh()
+        # Re-read under the lock rather than reusing the generation from before it. A
+        # caller that waited here can have been overtaken by an invalidation, and the
+        # entry the first scanner published carries the generation it started with, so
+        # comparing against the stale one would accept rows examined before the delete
+        # or download that invalidation announced.
+        generation = _servability_generation()
+        hit = _fresh(generation)
         if hit is not None:
             return hit
         scanned = []
