@@ -635,7 +635,9 @@ function DownloadedBadge() {
 function VramBadge({ status }: { status?: VramFitStatus | null }) {
   if (status === "exceeds") {
     return (
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
+      // Held in the layout but painted only on the hovered row: on a list where most rows are over
+      // budget, one pill per row is a wall of red. The dimmed row carries the verdict until then.
+      <span className="whitespace-nowrap text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100">
         OOM
       </span>
     );
@@ -936,7 +938,7 @@ function ModelRow({
         // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it
         // on 10px, level with the section labels at px-2.5. Inside a w-full button, so the hover
         // pill itself does not move.
-        "flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "group/row flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
@@ -944,7 +946,16 @@ function ModelRow({
     >
       {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
           first meta mark. 4px is the rhythm the meta columns already keep among themselves. */}
-      <span className="flex w-full items-center gap-1">
+      <span
+        className={cn(
+          "flex w-full items-center gap-1",
+          // Over budget reads as a dimmed row, which scans; hover restores it and shows the pill.
+          // The selected row keeps full weight, since it is the one being considered.
+          exceeds &&
+            !selected &&
+            "opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+        )}
+      >
         <span className="flex min-w-0 flex-1 items-baseline">
           {/* Fixed slot, so names start on one line with or without a dot. */}
           {aligned ? (

@@ -83,6 +83,27 @@ test("the parameter chip hugs its label so the gap to the modality mark is the r
   assert.ok(PICKERS.includes('paramWide: "min-w-min min-[560px]:w-[5.2em]"'));
 });
 
+test("an over budget row dims instead of putting a pill on every line", () => {
+  // Recommended is mostly over budget on a normal GPU, so a pill per row was a wall of red. The
+  // row dims and the pill is painted only while that row is hovered or focused.
+  assert.ok(PICKERS.includes("group/row flex w-full flex-col items-stretch"));
+  assert.ok(
+    PICKERS.includes(
+      "rounded opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+    ),
+  );
+  assert.ok(
+    PICKERS.includes(
+      '"opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
+    ),
+  );
+  // The pill is hidden, not removed, and its slot keeps a width, so revealing it cannot reflow.
+  assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[4em]"'));
+  // TIGHT is rare enough to stay put; only the OOM pill hides.
+  const tight = PICKERS.slice(PICKERS.indexOf('if (status === "tight")'));
+  assert.ok(!tight.slice(0, 300).includes("opacity-0"));
+});
+
 test("aligned meta slots spend their slack on the name", () => {
   // Centring a lone glyph splits the slack either side of it, reading as a gap on both sides.
   assert.ok(
