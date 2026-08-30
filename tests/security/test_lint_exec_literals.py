@@ -166,7 +166,9 @@ def test_the_digest_follows_what_is_passed_rather_than_where_it_sits(tmp_path):
 
 def test_the_self_test_is_wired_into_ci():
     """Guards the guard: an unrun gate is not a gate."""
-    workflow = (SCRIPT.parents[1] / ".github" / "workflows" / "lint-ci.yml").read_text()
+    workflow = (SCRIPT.parents[1] / ".github" / "workflows" / "lint-ci.yml").read_text(
+        encoding = "utf-8"
+    )
     assert "lint_exec_literals.py --self-test" in workflow
     assert "lint_exec_literals.py\n" in workflow
 
