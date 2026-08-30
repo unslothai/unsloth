@@ -3145,27 +3145,34 @@ class FastLlamaModel:
 
         # LAST, after every patch this function applies. The attach at load
         # happens while the model is still the one transformers returned, and
-        # `post_patch` then rebuilds and re-ties parts of it, so a hook on a
-        # tied module does not survive. Repairing at `post_patch` instead is
-        # still too early: the QKV/MLP patching below it replaces the forwards
-        # the hook wrapped, and the same 3 steps then came out at
-        # 2.6619460582733154 against the single-card 2.662875493367513.
+        # `post_patch` then REPLACES the embedding and lm_head modules with
+        # freshly built ones, which carry the weights over but not the
+        # `_hf_hook` that lived on the object they replaced. Repairing at
+        # `post_patch` instead is still too early: the QKV/MLP patching below it
+        # replaces the forwards the hook wrapped, and the same 3 steps then came
+        # out at 2.6619460582733154 against the single-card 2.662875493367513.
         # Attaching here, once nothing further is rewrapped, reproduces the
         # single-card loss exactly.
         #
         # Idempotent, so anything the load already hooked is left alone.
-        try:
-            from unsloth.models.vision import _repair_tied_module_hooks
-            _repaired = _repair_tied_module_hooks(model)
-            if _repaired:
-                logger.info(
-                    f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
-                    "left unhooked by the split, so the model trains."
+        #
+        # Skipped under vLLM for the same reason `_attach_bnb_multidevice_hooks`
+        # opens with that test: vLLM owns the weights there, and the HF module
+        # tree this would hook is not what runs.
+        if not fast_inference:
+            try:
+                from unsloth.models.vision import _repair_dispatch_hooks
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "left unhooked by the split, so the model trains."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks "
+                    f"({type(_exc).__name__}: {_exc})."
                 )
-        except Exception as _exc:
-            logger.warning(
-                f"Unsloth: could not check the dispatch hooks " f"({type(_exc).__name__}: {_exc})."
-            )
         return model, tokenizer
 
     @staticmethod

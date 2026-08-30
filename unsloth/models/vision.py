@@ -152,15 +152,22 @@ def _infer_device_map_from_loaded_model(model):
     return device_map
 
 
-def _repair_tied_module_hooks(model):
-    """Give a dispatched module its hook back when accelerate skipped it.
+def _repair_dispatch_hooks(model):
+    """Give a dispatched module its hook back after the load replaced it.
 
-    `dispatch_model` leaves TIED weights unhooked: it moves the tensor but
-    installs no `AlignDevicesHook`, because a tied parameter is reached through
-    more than one name. On a `tie_word_embeddings` model the planner's own map
-    puts `model.embed_tokens` and `lm_head` on the second card, and those are
-    exactly the two names that get skipped -- so the one module deliberately
-    moved elsewhere is the one with nothing to move its input there.
+    `dispatch_model` hooks every name in the device map, including the tied
+    ones. What loses the hook is our own patching pass: `post_patch` calls
+    `unsloth_zoo.patching_utils.patch_model_and_tokenizer`, which builds a
+    BRAND NEW `torch.nn.Embedding` around the existing weight and a brand new
+    `torch.nn.Linear` for the lm_head, and installs them with
+    `set_input_embeddings` / `set_output_embeddings`. The weights are carried
+    over; the `_hf_hook` attribute is not, because it lived on the module
+    object that was just replaced.
+
+    On one card nothing notices, since every tensor is already in the same
+    place. On a split model those two are typically the ones the planner put
+    on the OTHER card, so they become the only modules with nothing to move
+    their input to them.
 
     Measured on 2x Tesla T4, `unsloth/Qwen3-0.6B` in 4bit, the map placing
     `embed_tokens` and `lm_head` on cuda:1 and everything else on cuda:0: 395
@@ -170,6 +177,10 @@ def _repair_tied_module_hooks(model):
         RuntimeError: Expected all tensors to be on the same device, but got
         index is on cuda:0, different from other tensors on cuda:1
         (when checking argument in method wrapper_CUDA__index_select)
+
+    Nothing here is specific to tied weights. The replacement happens whether
+    or not `tie_word_embeddings` is set, and an untied model split the same way
+    fails the same way; the tied case is simply where it was first measured.
 
     Repairs only what the model's OWN `hf_device_map` already names, so it
     cannot move a module the load did not place, and it never touches a module
@@ -186,12 +197,12 @@ def _repair_tied_module_hooks(model):
         return 0
 
     # Every mapped module that lacks a hook, not only the ones on a far card.
-    # This restores what `dispatch_model` would have done: it hooks each entry
-    # in the map, which is why 395 modules carried one in the measured run and
-    # only the tied pair did not. A hook whose execution device is where the
-    # module already sits is a no-op move, so matching that behaviour is both
-    # simpler and safer than guessing which device counts as "main" -- a guess
-    # that inverts the moment the far side holds more entries than the near one.
+    # This restores what `dispatch_model` did: it hooks each entry in the map,
+    # which is why 395 modules carried one in the measured run and only the
+    # replaced pair did not. A hook whose execution device is where the module
+    # already sits is a no-op move, so matching that behaviour is both simpler
+    # and safer than guessing which device counts as "main" -- a guess that
+    # inverts the moment the far side holds more entries than the near one.
     repaired = 0
     for name, device in device_map.items():
         if not name:
@@ -209,7 +220,12 @@ def _repair_tied_module_hooks(model):
             if isinstance(device, int) and not isinstance(device, bool)
             else device
         )
-        if execution_device in ("cpu", "disk"):
+        # Compared as text, because a map may carry `torch.device("cpu")` rather
+        # than the string: `dispatch_model` takes `Union[str, int, torch.device]`
+        # and writes back whatever it was given. `torch.device("cpu") != "cpu"`,
+        # so an identity test here reads an offloaded module as an accelerator
+        # one and hooks it, which is the opposite of what this line is for.
+        if str(execution_device) in ("cpu", "disk"):
             continue  # offload is a different mechanism, and has its own hooks
         try:
             # `io_same_device = True`: the output goes back to where the input
@@ -249,17 +265,17 @@ def _attach_bnb_multidevice_hooks(
     """
     if fast_inference:
         return
-    # Before the bnb gate, because a dispatched model loses the hooks on its
-    # tied weights whatever the quantization. Skipped entirely when the
+    # Before the bnb gate, because the embedding rebuild that drops these hooks
+    # happens whatever the quantization. Skipped entirely when the
     # embedding is being offloaded: that path owns the embedding, and
     # `_embedding_dispatch_device` READS the hook we would add to decide where
     # to re-send the ids, so adding one here would answer its question wrongly.
     if not offload_embedding:
-        repaired = _repair_tied_module_hooks(model)
+        repaired = _repair_dispatch_hooks(model)
         if repaired:
             logger.info(
-                f"Unsloth: re-attached dispatch hooks to {repaired} tied module(s) "
-                "accelerate skipped, so a split model runs and trains."
+                f"Unsloth: re-attached dispatch hooks to {repaired} module(s) "
+                "the load left unhooked, so a split model runs and trains."
             )
     is_bnb = (
         load_in_4bit
