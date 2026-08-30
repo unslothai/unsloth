@@ -307,8 +307,13 @@ assert_contains "an existing ROCm tree is acknowledged" "so ROCm is likely insta
 assert_lacks "an existing ROCm tree is not called missing" "Install the ROCm/HIP SDK" "$_w"
 
 # ── 8. The reroute gate reads the no-version state ──────────────────────────
-# The gate is top-level installer code, not a function, so assert on its text: the
-# disjunct is what lets a readable-arch/no-version host reach the per-arch wheels.
+# The gate is top-level installer code, not a function, so this file can only assert
+# on its text. Be clear about what that is worth: a grep for the gate's own variable
+# names is a wiring check, and it keeps passing if the gate is wired but always
+# decides "no". The behaviour -- a Fedora gfx1201 host actually arriving at
+# repo.amd.com/rocm/whl/gfx120X-all/ -- is asserted in the sibling file
+# test_rocm_no_version_arch_route_e2e.sh, which splices the top-level block out and
+# RUNS it. Anything here that reads like a routing claim is checked for real there.
 _gate=$(grep -c '_amd_no_rocm_version_reroute' "$INSTALL_SH")
 assert_eq "install.sh wires the no-version reroute state" "yes" \
     "$([ "$_gate" -ge 4 ] && echo yes || echo "no ($_gate refs)")"
