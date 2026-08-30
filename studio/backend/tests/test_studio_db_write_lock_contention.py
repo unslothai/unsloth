@@ -133,13 +133,13 @@ def test_client_errors_log_without_a_traceback():
     error = ValueError("server-managed generation messages cannot be edited")
 
     log = _RecordingLogger()
-    exc = log_and_http_error(error, 409, "Conflict", event="chat.conflict", log=log)
+    exc = log_and_http_error(error, 409, "Conflict", event = "chat.conflict", log = log)
     assert exc.status_code == 409
     assert exc.detail == "Conflict", "the raw exception text must not reach the client"
     assert log.calls == [("warning", {})], "4xx: one warning, no exc_info"
 
     log = _RecordingLogger()
-    log_and_http_error(error, 500, "Boom", event="server.broke", log=log)
+    log_and_http_error(error, 500, "Boom", event = "server.broke", log = log)
     level, kwargs = log.calls[0]
     assert level == "error" and kwargs.get("exc_info") is error, "5xx keeps its traceback"
 
@@ -148,9 +148,7 @@ def test_claim_next_still_claims_real_work(db):
     """The read-first probe is an optimisation, not a suppression: a claimable run must
     still be claimed, or the supervisor would quietly stop doing its job."""
     # Through the modules' own APIs, so the fixture cannot drift from the real schema.
-    studio_db.upsert_chat_thread(
-        {"id": "t1", "title": "T", "modelType": "gguf", "createdAt": 1}
-    )
+    studio_db.upsert_chat_thread({"id": "t1", "title": "T", "modelType": "gguf", "createdAt": 1})
     studio_db.upsert_chat_message(
         {"id": "u1", "threadId": "t1", "role": "user", "content": [], "createdAt": 2}
     )
@@ -165,12 +163,12 @@ def test_claim_next_still_claims_real_work(db):
         }
     )
     research_runs_db.create_run(
-        run_id="r1",
-        owner_subject="sub",
-        thread_id="t1",
-        user_message_id="u1",
-        assistant_message_id="a1",
-        config={},
+        run_id = "r1",
+        owner_subject = "sub",
+        thread_id = "t1",
+        user_message_id = "u1",
+        assistant_message_id = "a1",
+        config = {},
     )
 
     assert research_runs_db._has_claimable(research_runs_db.now_ms()) is True
