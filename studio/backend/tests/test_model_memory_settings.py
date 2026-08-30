@@ -2738,6 +2738,27 @@ class TestFitOffRetryDropsTheLock:
         retry = [*retry[:-2], *retry_mode, *retry[-2:]]
         assert retry == ["--fit", "on", "--load-mode", "dio", "--fit", "off"]
 
+    def test_a_restored_reserving_mode_remains_applicable(self):
+        settings = (True, False)
+        managed, extras = apply_model_memory_policy(
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            model_memory_settings = settings,
+        )
+        retry_mode, retry_extras = apply_load_mode_policy(
+            extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            requested_load_mode = "none",
+            model_memory_settings = settings,
+        )
+        retry = self._retry_argv([*managed, "--fit", "on"], managed, drops = True)
+        retry = [*retry[:-2], *retry_mode, *retry_extras, *retry[-2:]]
+        state = resolve_effective_memory_state(retry, {})
+        assert state == (False, True)
+        assert state[1] is True
+
     def test_the_retry_restores_stripped_hand_typed_extras(self):
         from core.inference.llama_cpp import _replace_subsequence
 
@@ -2820,7 +2841,8 @@ class TestFitOffRetryDropsTheLock:
             "_retry_policy_argv",
             "requested_load_mode = load_mode",
             "_mem_host_resident = False",
-            "self._memory_mlock_applicable = False",
+            "self._memory_mlock_applicable = (",
+            "_mem_host_resident or self._memory_state[1]",
             "resolve_effective_memory_state(run_cmd, env)",
         ):
             assert needle in tail, needle

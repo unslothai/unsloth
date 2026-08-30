@@ -22519,10 +22519,6 @@ class LlamaCppBackend:
                                         _retry_policy_argv,
                                     )
                                     _mem_host_resident = False
-                                    # Recorded so a later "keep resident" save is not
-                                    # compared against a lock this launch dropped,
-                                    # which would demand a pointless reload.
-                                    self._memory_mlock_applicable = False
                                     # The managed flag was the policy's only mark on
                                     # this child unless it also scrubbed or stripped,
                                     # and a child equal to an unmanaged one must not
@@ -22533,6 +22529,9 @@ class LlamaCppBackend:
                                         "the --fit off retry; it offloads every layer."
                                     )
                                 self._memory_state = resolve_effective_memory_state(run_cmd, env)
+                                self._memory_mlock_applicable = (
+                                    _mem_host_resident or self._memory_state[1]
+                                )
                             _did_fit_retry = True
                             continue
                         return False
