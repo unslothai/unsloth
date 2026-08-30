@@ -9,6 +9,7 @@ into Unsloth's structured log so the terminal shows serving health, not just
 per-request access lines. Emitted only while there is activity.
 """
 
+import math
 import os
 import re
 import threading
@@ -180,20 +181,38 @@ class LlamaServerStatsLogger:
                 )
 
 
+def _env_float(name, default, logger):
+    """Seconds from the environment, rejecting anything that would silently do nothing.
+
+    float() accepts non-finite text, and both spellings disable the very reporting they
+    were set to configure: nan loses every comparison, so max() keeps the other operand
+    and the stall line never arms, while inf can never be reached by an elapsed time and
+    would park the poll loop in stop.wait() until shutdown.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value):
+        logger.warning(
+            "engine_stats_env_ignored", variable = name, value = raw,
+            reason = "not a finite number",
+        )
+        return default
+    return value
+
+
 def maybe_start_stats_logger(base_url, logger):
     """Start a stats logger unless UNSLOTH_STUDIO_ENGINE_STATS disables it."""
     if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
         return None
-    try:
-        interval = float(os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", "10"))
-    except ValueError:
-        interval = 10.0
+    interval = _env_float("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", 10.0, logger)
     # Generously above any legitimate pause between decode calls; 0 silences the
     # stall line and keeps the poller as a pure stats logger.
-    try:
-        stall_timeout = float(os.environ.get("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", "600"))
-    except ValueError:
-        stall_timeout = 600.0
+    stall_timeout = _env_float("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", 600.0, logger)
     sl = LlamaServerStatsLogger(
         base_url,
         logger,

@@ -19,6 +19,8 @@ This only reports. Cancelling on this evidence is unsafe, and Studio reaps a run
 that stops progressing from its own per-token event stream instead.
 """
 
+import pytest
+
 import core.inference.llama_stats as ls
 from core.inference.llama_stats import LlamaServerStatsLogger
 
@@ -205,3 +207,39 @@ def test_counter_reset_after_reload_is_not_a_stall(monkeypatch):
     ]
     cap = _drive(snaps, monkeypatch, stall_timeout_s = 600.0)
     assert not _stalls(cap), "200s of wedge then a reset must not trip the report"
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "NaN", "Infinity"])
+def test_a_non_finite_stall_timeout_falls_back_to_the_default(monkeypatch, raw):
+    """Both spellings disable the very report the variable was set to configure.
+
+    nan loses every comparison, so max(0.0, nan) keeps 0.0 and the stall line never
+    arms; inf can never be reached by an elapsed time. Neither may parse.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", raw)
+    cap = _Capture()
+    assert ls._env_float("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", 600.0, cap) == 600.0
+    assert [ev for ev, _ in cap.events] == ["engine_stats_env_ignored"]
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf"])
+def test_a_non_finite_interval_falls_back_to_the_default(monkeypatch, raw):
+    """An infinite interval parks the poll loop in stop.wait() until shutdown."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", raw)
+    assert ls._env_float("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", 10.0, _Capture()) == 10.0
+
+
+def test_a_non_finite_timeout_still_leaves_the_stall_report_armed(monkeypatch):
+    """The end state: a malformed setting must not silence the wedge report."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", "nan")
+    applied = ls._env_float("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", 600.0, _Capture())
+    cap = _drive(_wedged(120), monkeypatch, stall_timeout_s = applied)
+    assert _stalls(cap), "a nan timeout must not disable the stall report"
+
+
+def test_a_garbage_timeout_still_falls_back_without_warning(monkeypatch):
+    """Unparseable text was already handled; it must stay quiet, not warn."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", "not-a-number")
+    cap = _Capture()
+    assert ls._env_float("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", 600.0, cap) == 600.0
+    assert cap.events == []
