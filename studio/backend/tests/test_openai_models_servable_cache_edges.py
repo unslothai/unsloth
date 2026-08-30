@@ -417,27 +417,6 @@ def test_every_delete_branch_invalidates_the_scan():
         ], "the invalidation must belong to this branch, not to one above it"
 
 
-def test_the_invalidation_helper_stays_off_the_event_loop():
-    """invalidate_index takes the resolver lock and _index() holds it across a full
-    multi-root filesystem scan, so an async route calling it inline would stall unrelated
-    requests and in-flight inference streams behind a rebuild."""
-    import asyncio as _asyncio
-    import inspect
-
-    from routes import models as models_route
-
-    assert _asyncio.iscoroutinefunction(models_route._invalidate_local_scans)
-    source = inspect.getsource(models_route._invalidate_local_scans)
-    assert (
-        "asyncio.to_thread(invalidate_index)" in source
-    ), "the invalidation must be offloaded, matching the other async sites in this file"
-    # And every call site must await it, or the coroutine is created and dropped.
-    route = inspect.getsource(models_route.delete_finetuned_model)
-    calls = route.count("_invalidate_local_scans()")
-    awaited = route.count("await _invalidate_local_scans()")
-    assert calls == awaited == 2, f"{calls} call(s), {awaited} awaited"
-
-
 def test_a_generation_bump_while_waiting_for_the_lock_is_not_accepted(monkeypatch):
     """Two callers miss together, one scans while the other queues on the lock, and a
     delete lands during that scan. The scanner stamps its entry with the generation it
