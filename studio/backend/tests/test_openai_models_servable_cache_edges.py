@@ -214,9 +214,9 @@ def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
     catalog = _catalog(1)
     assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is False
     snapshot["dir"] = "/models/m0/snapshots/new"  # a download moved the pointer
-    assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is True, (
-        "the snapshot must be re-resolved per call, not cached with the scan"
-    )
+    assert (
+        inf._servable_catalog_rows(catalog, 111.0)[0][3] is True
+    ), "the snapshot must be re-resolved per call, not cached with the scan"
     assert seen == ["/models/m0/snapshots/old", "/models/m0/snapshots/new"]
 
 
@@ -405,16 +405,16 @@ def test_every_delete_branch_invalidates_the_scan():
     ]
     invalidations = [n for n, line in enumerate(lines) if "_invalidate_local_scans()" in line]
     assert len(successes) == 2, f"expected two success returns, found {len(successes)}"
-    assert len(invalidations) == 2, (
-        f"expected one invalidation per success branch, found {len(invalidations)}"
-    )
+    assert (
+        len(invalidations) == 2
+    ), f"expected one invalidation per success branch, found {len(invalidations)}"
     for at in successes:
         before = [n for n in invalidations if n < at]
         assert before, "a successful deletion branch reports success without invalidating"
         # Belongs to THIS branch: nothing else returns between the two.
-        assert not [n for n in successes if before[-1] < n < at], (
-            "the invalidation must belong to this branch, not to one above it"
-        )
+        assert not [
+            n for n in successes if before[-1] < n < at
+        ], "the invalidation must belong to this branch, not to one above it"
 
 
 def test_the_invalidation_helper_stays_off_the_event_loop():
@@ -428,9 +428,9 @@ def test_the_invalidation_helper_stays_off_the_event_loop():
 
     assert _asyncio.iscoroutinefunction(models_route._invalidate_local_scans)
     source = inspect.getsource(models_route._invalidate_local_scans)
-    assert "asyncio.to_thread(invalidate_index)" in source, (
-        "the invalidation must be offloaded, matching the other async sites in this file"
-    )
+    assert (
+        "asyncio.to_thread(invalidate_index)" in source
+    ), "the invalidation must be offloaded, matching the other async sites in this file"
     # And every call site must await it, or the coroutine is created and dropped.
     route = inspect.getsource(models_route.delete_finetuned_model)
     calls = route.count("_invalidate_local_scans()")
@@ -493,9 +493,9 @@ def test_the_invalidation_helper_stays_off_the_event_loop():
 
     assert _asyncio.iscoroutinefunction(models_route._invalidate_local_scans)
     source = inspect.getsource(models_route._invalidate_local_scans)
-    assert "asyncio.to_thread(invalidate_index)" in source, (
-        "the invalidation must be offloaded, matching the other async sites in this file"
-    )
+    assert (
+        "asyncio.to_thread(invalidate_index)" in source
+    ), "the invalidation must be offloaded, matching the other async sites in this file"
     # And every call site must await it, or the coroutine is created and dropped.
     route = inspect.getsource(models_route.delete_finetuned_model)
     calls = route.count("_invalidate_local_scans()")
