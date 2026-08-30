@@ -942,10 +942,20 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     try:
         path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
         with open(path, encoding = "utf-8") as fh:
-            recorded = json.load(fh).get("expected_torch_tag")
+            manifest = json.load(fh)
+        recorded = manifest.get("expected_torch_tag")
+        pinned = manifest.get("expected_torch_tag_pinned")
     except (OSError, ValueError, AttributeError):
         return False
-    return isinstance(recorded, str) and recorded.strip().lower() == "cpu"
+    if not isinstance(recorded, str) or recorded.strip().lower() != "cpu":
+        return False
+    # A recorded cpu is not by itself a choice. setup.ps1 selects /cpu automatically on a
+    # host with no GPU and records it exactly as it records a pinned one, so reading the
+    # tag alone as deliberate left a machine that later gained a card reporting no_gpu
+    # with no repair offered -- the very failure this file exists to fix. An older
+    # manifest that predates the marker reads as not pinned for the same reason: an
+    # offered repair can be declined, a silently CPU-only GPU host cannot.
+    return bool(pinned)
 
 
 def classify_torch_build(*, block_inventory: bool = False) -> Optional[str]:
@@ -1127,6 +1137,39 @@ _ROCM_SUPPORTED_GFX = frozenset(
 )
 
 
+def _linux_kfd_reports_an_amd_gpu() -> bool:
+    """Whether the KFD topology enumerates an AMD GPU node. Never raises.
+
+    The same probe, and the same vendor guard, install_python_stack._has_rocm_gpu()
+    uses: gpu_id 0 is a CPU node, and the NVIDIA open kernel module registers KFD nodes
+    of its own with vendor_id 4318, so AMD ownership has to be confirmed rather than
+    assumed. A node whose properties cannot be read is skipped for that reason.
+    """
+    if platform.system() != "Linux":
+        return False
+    nodes = "/sys/class/kfd/kfd/topology/nodes"
+    try:
+        entries = os.listdir(nodes)
+    except OSError:
+        return False
+    for entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "gpu_id"), encoding = "utf-8") as fh:
+                gpu_id = fh.read().strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not gpu_id or gpu_id == "0":
+            continue
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.search(r"\bvendor_id\s+4098\b", properties):
+            return True
+    return False
+
+
 def _expected_rocm_flavor_was_chosen() -> bool:
     """Whether this install selected a ROCm wheel, by pin or by recorded flavor."""
     for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
@@ -1174,13 +1217,14 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
         if gfx
     ]
     if not candidates:
-        # Nothing can name the card. setup.sh detects an AMD host through rocminfo and
-        # amd-smi and nothing else, so a host with neither was never going to be given a
-        # ROCm wheel in the first place and its CPU torch is the intended state. Claiming
-        # otherwise offers a repair that reinstalls exactly what is already there. A
-        # recorded ROCm expectation still outranks this, which is what covers a venv whose
-        # ROCm wheel really was replaced.
-        return False
+        # Nothing NAMES the card, so ask the question the installer asks: would this
+        # stack have installed a ROCm wheel here? install_python_stack._has_rocm_gpu()
+        # falls back to the KFD topology exactly so `studio update` can repair a
+        # minimal host with no ROCm userspace, and a card it would repair cannot be
+        # called ineligible here. Without any of those signals the installer would have
+        # left CPU torch deliberately, and claiming a fault offers a repair that
+        # reinstalls what is already there.
+        return _linux_kfd_reports_an_amd_gpu()
     return any(gfx in _ROCM_SUPPORTED_GFX for gfx in candidates)
 
 
@@ -2008,15 +2052,20 @@ def export_capability() -> dict:
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
             "`unsloth studio update` to restore MLX and enable export."
         )
+    elif _gpu_present_but_unusable_message("export", verdict) is not None:
+        # BEFORE the _has_torch() probe below. A wheel whose native runtime will not load
+        # is classified from disk by detection, and _has_torch() reports it as absent
+        # while re-running the import that failed -- so asking that first both reported
+        # "PyTorch is not installed" for a PyTorch that is, and retried a seconds-long
+        # import on every request that renders this.
+        reason = verdict[0]
+        message = _gpu_present_but_unusable_message("export", verdict)
     elif not _has_torch():
         reason = "pytorch_not_installed"
         message = (
             "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
             "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
         )
-    elif _gpu_present_but_unusable_message("export", verdict) is not None:
-        reason = verdict[0]
-        message = _gpu_present_but_unusable_message("export", verdict)
     else:
         reason = "no_accelerator"
         message = (
@@ -2093,15 +2142,18 @@ def video_capability() -> dict:
             "Video generation requires Apple Silicon. This Intel Mac has no Metal (MPS) device "
             "for the video pipelines to run on."
         )
+    elif _gpu_present_but_unusable_message("video generation", verdict) is not None:
+        # Same ordering as export_capability, for the same reason: the mismatch is
+        # already derived, and _has_torch() would retry the import that failed and then
+        # tell the user to install the PyTorch they have.
+        reason = verdict[0]
+        message = _gpu_present_but_unusable_message("video generation", verdict)
     elif not _has_torch():
         reason = "pytorch_not_installed"
         message = (
             "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
             "Intel GPU. Install PyTorch to enable video generation."
         )
-    elif _gpu_present_but_unusable_message("video generation", verdict) is not None:
-        reason = verdict[0]
-        message = _gpu_present_but_unusable_message("video generation", verdict)
     else:
         reason = "no_accelerator"
         message = (

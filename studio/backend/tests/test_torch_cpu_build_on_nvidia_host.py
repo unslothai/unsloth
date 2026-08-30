@@ -187,6 +187,10 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
             raise failure
 
         monkeypatch.setattr(nvidia.subprocess, "run", _raise)
+    # This suite runs on a real NVIDIA host, whose /proc/driver/nvidia/gpus the absent-CLI
+    # path now falls back to. Pin it empty: the case under test is a machine with no
+    # NVIDIA driver at all.
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
 
@@ -667,9 +671,26 @@ def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_pat
     assert hw.classify_torch_build() == "torch_cpu_build"
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
 
+    # A recorded cpu counts only when the record says someone NAMED it. setup.ps1
+    # selects /cpu automatically on a GPU-less host and records it identically, so the
+    # tag alone would leave a machine that later gained a card with no repair offered.
     manifest = tmp_path / "unsloth_install_manifest.json"
     manifest.write_text('{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+    manifest.write_text(
+        '{"schema": 1, "expected_torch_tag": "cpu", "expected_torch_tag_pinned": true}',
+        encoding = "utf-8",
+    )
     assert hw.classify_torch_build() is None
+
+    manifest.write_text(
+        '{"schema": 1, "expected_torch_tag": "cpu", "expected_torch_tag_pinned": false}',
+        encoding = "utf-8",
+    )
+    assert hw.classify_torch_build() == "torch_cpu_build", (
+        "an automatic CPU selection is not a choice to protect"
+    )
 
     manifest.write_text('{"schema": 1, "expected_torch_tag": "cu124"}', encoding = "utf-8")
     assert hw.classify_torch_build() == "torch_cpu_build"
@@ -1930,6 +1951,7 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
         raise FileNotFoundError("nvidia-smi")
 
     monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda: [])
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
@@ -2054,3 +2076,131 @@ def test_the_hardware_module_loads_without_the_rest_of_the_package(tmp_path):
             f"{module} is imported at module scope; the no-torch sandbox stubs only "
             "utils.hardware, so import it inside the function that needs it"
         )
+
+
+# ========== Round fifteen ==========
+
+
+def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
+    """/proc/driver/nvidia/gpus is published whatever nvidia-smi's state is.
+
+    install_python_stack._has_usable_nvidia_gpu() falls back to it for the same reason,
+    so without this the installer could select or repair a CUDA wheel on a host where
+    the backend insisted there was no card, and the user got no_gpu with no repair.
+    """
+
+    def _missing(*_a, **_k):
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 2)
+
+    result = nvidia.get_physical_gpu_inventory()
+    assert result["available"] is True
+    assert result["absent"] is False
+    assert [d["vendor"] for d in result["devices"]] == ["nvidia", "nvidia"]
+    # procfs publishes neither, and an invented name is worse than an honest blank.
+    assert [d["name"] for d in result["devices"]] == [None, None]
+    assert [d["memory_total_gb"] for d in result["devices"]] == [None, None]
+    assert result["source"] == "proc-driver-nvidia"
+
+
+def test_a_kfd_confirmed_amd_card_stays_eligible(monkeypatch):
+    """A minimal AMD host with /dev/kfd but no rocminfo or amd-smi.
+
+    install_python_stack._has_rocm_gpu() uses the KFD topology as its fallback exactly
+    so `studio update` can repair CPU-only torch there, so a card the installer would
+    repair cannot be dropped from the evidence here.
+    """
+    monkeypatch.setattr(hw, "_expected_rocm_flavor_was_chosen", lambda: False)
+    monkeypatch.setattr(hw, "_torch_reports_a_hip_runtime", lambda: False)
+    unnamed = [{"vendor": "amd"}]
+
+    monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True)
+    assert hw._devices_that_can_establish_a_mismatch(unnamed) == unnamed
+
+    monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)
+    assert hw._devices_that_can_establish_a_mismatch(unnamed) == []
+
+    # Positive evidence of an unsupported arch still wins over the KFD signal: the
+    # installer would not have shipped a wheel for that card either way.
+    monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True)
+    assert hw._devices_that_can_establish_a_mismatch(
+        [{"vendor": "amd", "gfx_candidates": ["gfx803"]}]
+    ) == []
+
+
+def test_the_kfd_probe_rejects_a_non_amd_node(monkeypatch, tmp_path):
+    """The NVIDIA open kernel module registers KFD nodes of its own.
+
+    Their vendor_id is 4318, not AMD's 4098, and the installer guards on exactly that,
+    so an NVIDIA-only host must not read as AMD here either.
+    """
+    nodes = tmp_path / "nodes"
+    for name, gpu_id, vendor in (("0", "0", "4098"), ("1", "5555", "4318")):
+        node = nodes / name
+        node.mkdir(parents = True)
+        (node / "gpu_id").write_text(gpu_id, encoding = "utf-8")
+        (node / "properties").write_text(f"vendor_id {vendor}\n", encoding = "utf-8")
+
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    real_listdir, real_open = hw.os.listdir, open
+    monkeypatch.setattr(
+        hw.os,
+        "listdir",
+        lambda path: real_listdir(nodes) if "kfd" in str(path) else real_listdir(path),
+    )
+    monkeypatch.setattr(
+        hw.os.path,
+        "join",
+        lambda *parts: str(nodes.joinpath(*parts[1:])) if "kfd" in parts[0] else "/".join(parts),
+    )
+    assert hw._linux_kfd_reports_an_amd_gpu() is False, (
+        "a CPU node and an NVIDIA-owned node are not an AMD GPU"
+    )
+
+    (nodes / "1" / "properties").write_text("vendor_id 4098\n", encoding = "utf-8")
+    assert hw._linux_kfd_reports_an_amd_gpu() is True
+    assert real_open is open
+
+
+def test_the_installer_records_who_named_the_flavor(tmp_path, monkeypatch):
+    """The manifest has to carry the provenance, or the backend cannot ask.
+
+    setup.ps1 publishes UNSLOTH_EXPECTED_TORCH_TAG for an automatic /cpu choice exactly
+    as it does for a pinned one, so the handover variable alone is not evidence.
+    """
+    import importlib.util
+    import pathlib
+
+    root = pathlib.Path(hw.__file__).resolve().parents[3]
+    spec = importlib.util.spec_from_file_location(
+        "_install_manifest_probe", root / "install_manifest.py"
+    )
+    manifest_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(manifest_mod)
+
+    monkeypatch.setattr(manifest_mod, "venv_root", lambda: tmp_path)
+    monkeypatch.setattr(manifest_mod, "manifest_path", lambda root = None: tmp_path / "m.json")
+    monkeypatch.setattr(manifest_mod, "requirement_digests", lambda *_a, **_k: {})
+    monkeypatch.setattr(manifest_mod, "installed_requirements_root", lambda *_a, **_k: None)
+    monkeypatch.setattr(manifest_mod, "_installed_version", lambda *_a, **_k: "0")
+
+    import json as _json
+
+    manifest_mod.write_manifest(expected_torch_tag = "cpu", expected_torch_tag_pinned = False)
+    written = _json.loads((tmp_path / "m.json").read_text(encoding = "utf-8"))
+    assert written["expected_torch_tag"] == "cpu"
+    assert written["expected_torch_tag_pinned"] is False
+
+    manifest_mod.write_manifest(expected_torch_tag = "cpu", expected_torch_tag_pinned = True)
+    written = _json.loads((tmp_path / "m.json").read_text(encoding = "utf-8"))
+    assert written["expected_torch_tag_pinned"] is True
+
+    # Additive: a caller that says nothing writes no key, and the reader answers False
+    # rather than inventing a choice nobody made.
+    manifest_mod.write_manifest(expected_torch_tag = "cpu")
+    written = _json.loads((tmp_path / "m.json").read_text(encoding = "utf-8"))
+    assert "expected_torch_tag_pinned" not in written
+    monkeypatch.setattr(manifest_mod, "read_manifest", lambda root = None: written)
+    assert manifest_mod.recorded_torch_flavor_was_pinned() is False

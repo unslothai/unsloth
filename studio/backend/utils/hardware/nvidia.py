@@ -342,6 +342,21 @@ def _query_gpu_inventory(caller: str) -> Any:
     return rows
 
 
+def _linux_nvidia_procfs_gpu_count() -> int:
+    """How many GPUs the NVIDIA kernel driver enumerates under /proc, or 0.
+
+    One subdirectory per GPU, published whatever nvidia-smi's state is, which is why the
+    installer falls back to it too. Never raises; 0 on any platform without it.
+    """
+    if platform.system() != "Linux":
+        return 0
+    try:
+        entries = os.listdir("/proc/driver/nvidia/gpus")
+    except OSError:
+        return 0
+    return len(entries)
+
+
 def get_physical_gpu_inventory() -> dict[str, Any]:
     """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch.
 
@@ -351,6 +366,29 @@ def get_physical_gpu_inventory() -> dict[str, Any]:
     structured unavailable result, so this never raises out of an endpoint.
     """
     rows = _query_gpu_inventory("get_physical_gpu_inventory")
+    if rows is NVIDIA_SMI_ABSENT and _linux_nvidia_procfs_gpu_count():
+        # The kernel driver is loaded and enumerating cards; only the CLI is missing.
+        # install_python_stack._has_usable_nvidia_gpu() reads the same directory for the
+        # same reason, so without this the installer can select or repair a CUDA wheel
+        # on a host where the backend insists there is no card at all. No name and no
+        # capacity are published here: procfs gives neither, and an invented one would
+        # be worse than an honest blank.
+        return {
+            "available": True,
+            "source": "proc-driver-nvidia",
+            "devices": [
+                {
+                    "vendor": "nvidia",
+                    "index": ordinal,
+                    "name": None,
+                    "memory_total_gb": None,
+                    "source": "proc-driver-nvidia",
+                }
+                for ordinal in range(_linux_nvidia_procfs_gpu_count())
+            ],
+            "error": None,
+            "absent": False,
+        }
     if rows is NVIDIA_SMI_ABSENT:
         # An answer, and the caller must not read it as "some probe failed": an AMD-only
         # host has no nvidia-smi by design, and marking its inventory unknown would keep

@@ -3005,6 +3005,25 @@ def _expected_torch_flavor_is_explicit() -> bool:
     return bool(_RECORDED_TORCH_TAG)
 
 
+def _expected_torch_flavor_was_pinned() -> bool:
+    """Whether the flavor was NAMED by whoever ran this install.
+
+    Distinct from _expected_torch_flavor_is_explicit(), which counts setup.ps1's
+    handover variable. setup.ps1 publishes that variable for an AUTOMATIC /cpu choice on
+    a GPU-less host exactly as it does for a pinned one, so the handover cannot answer
+    this question. An index pin, an index family, and UNSLOTH_TORCH_BACKEND all can:
+    each of them is someone saying which build they want. Carried forward from the
+    previous manifest, so an update that names nothing does not erase the fact.
+    """
+    if _explicit_torch_index_url() is not None:
+        return True
+    if os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip():
+        return True
+    if _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu"):
+        return True
+    return bool(_RECORDED_TORCH_TAG_PINNED)
+
+
 def _expected_torch_index_url(tag: str) -> str:
     """The wheel index to repair `tag` from.
 
@@ -4052,6 +4071,10 @@ NO_TORCH = _infer_no_torch()
 # before its dependency pass, so by the time _ensure_expected_torch_flavor runs there is
 # nothing left to read. Do not defer this call into main().
 _RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()
+# Whether that record came from someone NAMING a flavor. See
+# _expected_torch_flavor_was_pinned: setup.ps1 publishes an automatic /cpu choice the
+# same way it publishes a pinned one, so the tag alone cannot answer it.
+_RECORDED_TORCH_TAG_PINNED = install_manifest.recorded_torch_flavor_was_pinned()
 
 # UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
 # "cpu"; empty = standalone `studio update`, where we re-detect).
@@ -6376,6 +6399,7 @@ def install_python_stack() -> int:
             # resolves a flavor (every non-Windows path today) carries the record forward
             # instead of erasing it on the next update.
             expected_torch_tag = torch_flavor_tag or _RECORDED_TORCH_TAG,
+            expected_torch_tag_pinned = _expected_torch_flavor_was_pinned(),
         )
         is None
     ):
