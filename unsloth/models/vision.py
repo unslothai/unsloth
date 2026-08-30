@@ -301,8 +301,8 @@ def _attach_bnb_multidevice_hooks(
 ):
     """
     Attach accelerate AlignDevicesHook on a bnb model loaded across multiple
-    devices (or a non-default device).  No-op for single-GPU cuda:0, non-bnb,
-    vLLM, or already-dispatched models.
+    devices.  No-op for a model that sits on a single device, non-bnb, vLLM, or
+    already-dispatched models.
     """
     if fast_inference:
         return
@@ -344,8 +344,29 @@ def _attach_bnb_multidevice_hooks(
     if not cuda_devs:
         return
 
-    default_cuda = torch.device("cuda", 0)
-    if all_devs == {default_cuda}:
+    # Dispatching a model that already sits on one device bridges nothing, and
+    # `dispatch_model` then sets `hf_device_map` -- a single entry off device 0
+    # is exactly what `Accelerator.prepare_model` refuses, so the model cannot
+    # be trained at all. `device_map = "balanced"` reaches this for any small
+    # 4bit model: cuda:0 is the only device both capped and charged the largest
+    # layer, so the unquantized head does not fit and everything lands on the
+    # last card. The cost is that `.to("cuda")` is no longer silently corrected
+    # to `.to(model.device)`, which the notice below explains.
+    if len(all_devs) == 1:
+        device = next(iter(all_devs))
+        if (
+            device.type == "cuda"
+            and (device.index or 0) != 0
+            and DEVICE_COUNT > 1
+        ):
+            print(
+                f"Unsloth: The whole model was placed on {device}, not split "
+                f"across the {DEVICE_COUNT} devices. A `device_map` of "
+                '"balanced" or "auto" does this to small quantized models. Pass '
+                'device_map = "unsloth" for a head-aware split, or '
+                'device_map = {"": 0} to pin it to the first device. Until then, '
+                "send inputs with `.to(model.device)` rather than `.to(\"cuda\")`."
+            )
         return
 
     try:
