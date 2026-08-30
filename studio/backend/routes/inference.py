@@ -23922,6 +23922,30 @@ _SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, generation
 _SERVABLE_SCAN_CACHE_LOCK = threading.Lock()
 
 
+def _servability_generation() -> tuple[int, int, int]:
+    """Every counter the cached servability answer depends on.
+
+    A tuple rather than one number: the three move independently and no single existing
+    counter covers the others, so combining them here is what keeps a stale row from
+    outliving any one of the events that should have retired it. All three are cheap
+    reads of module state; nothing here touches the filesystem.
+
+    Nothing is caught. A missing counter would silently pin this key at a constant and
+    quietly undo the invalidation it exists to provide, which is worse than the import
+    error that says so.
+    """
+    from core.inference.local_model_resolver import index_generation
+    from utils.hardware import hardware as hw
+
+    from hub.utils.inventory_scan import hf_cache_scans_epoch
+
+    return (
+        index_generation(),
+        int(hf_cache_scans_epoch()),
+        int(hw.DETECTION_GENERATION),
+    )
+
+
 def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
     """``(info, is_gguf, quants, resident_key)`` per servable entry, rebuilt only when
     the shared catalog scan is replaced.
@@ -23943,11 +23967,17 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
     # _cached_local_catalog, so a caller that supplies a catalog from anywhere else
     # would otherwise be served the previous scan under an unchanged stamp.
     #
-    # And the resolver generation, because the catalog is the coarser of the two. A
-    # delete invalidates the resolver but leaves _CATALOG_CACHE standing for the rest
-    # of its TTL, and without this the scan would keep advertising the removed model
-    # or quant for that window, which the per-request scan used to drop at once.
-    generation = index_generation()
+    # And every signal the servability decision itself reads, because the catalog is the
+    # coarsest of them and would otherwise pin a stale answer for the rest of its TTL,
+    # where the per-request scan re-derived one each time:
+    #
+    #   resolver index   a model or quant deleted from ./models, an export, a download
+    #   HF cache epoch   a cached Hub repo deleted; deletion.py invalidates only this
+    #   detection gen    hardware.DEVICE changing under the resolver, which is what
+    #                    decides servability for non-GGUF checkpoints. An Apple Silicon
+    #                    MLX self-repair flips CPU to MLX after startup, and an early
+    #                    /v1/models would otherwise hide those checkpoints until the TTL.
+    generation = _servability_generation()
 
     def _fresh():
         entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the tuple cannot tear

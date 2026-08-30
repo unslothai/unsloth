@@ -179,7 +179,7 @@ def test_the_cache_entry_is_published_atomically(stub):
     assert entry is not None and len(entry) == 4, "the tuple must be one object"
     at, cached, generation, rows = entry
     assert at == 111.0 and cached is first and len(rows) == 2
-    assert isinstance(generation, int)
+    assert isinstance(generation, tuple) and len(generation) == 3
 
     inf._servable_catalog_rows(second, 222.0)
     at, cached, _generation, rows = inf._SERVABLE_SCAN_CACHE["entry"]
@@ -325,3 +325,61 @@ def test_the_generation_only_moves_on_invalidation(monkeypatch):
     assert resolver.index_generation() == before
     # Residency is deliberately per call; the scan behind it ran once.
     assert calls["n"] == 15
+
+
+# ----------------------------------------------- every signal servability depends on
+
+
+def test_a_hub_cache_deletion_leaves_the_listing(monkeypatch):
+    """deletion.py invalidates the HF cache scans and nothing else, so the resolver
+    generation alone would keep advertising a deleted cached repo for the catalog TTL."""
+    from hub.utils import inventory_scan
+
+    catalog = _catalog(2, "h")
+    gone: set[str] = set()
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_servable_model",
+        lambda info: None if info.path in gone else (True, ("Q4_K_M",)),
+    )
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
+    monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
+
+    assert len(inf._servable_catalog_rows(catalog, 555.0)) == 2
+    gone.add("/models/h1")
+    inventory_scan.invalidate_hf_cache_scans()
+    assert [r[0].id for r in inf._servable_catalog_rows(catalog, 555.0)] == ["repo/h0"]
+
+
+def test_a_hardware_redetect_reveals_newly_servable_checkpoints(monkeypatch):
+    """local_servable_model decides non-GGUF servability from hardware.DEVICE. An Apple
+    Silicon MLX self-repair flips CPU to MLX after startup, so an early /v1/models must
+    not pin 'unservable' for the rest of the catalog TTL."""
+    from utils.hardware import hardware as hw
+
+    catalog = _catalog(1, "k")
+    servable = {"ok": False}
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_servable_model",
+        lambda info: (False, ()) if servable["ok"] else None,
+    )
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
+    monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
+
+    assert inf._servable_catalog_rows(catalog, 666.0) == []
+    servable["ok"] = True
+    monkeypatch.setattr(hw, "DETECTION_GENERATION", hw.DETECTION_GENERATION + 1)
+    assert len(inf._servable_catalog_rows(catalog, 666.0)) == 1
+
+
+def test_the_generation_key_names_all_three_signals():
+    """A missing counter would silently pin the key and undo the invalidation, so the
+    shape is asserted rather than left to the two behavioural tests above."""
+    from core.inference.local_model_resolver import index_generation
+    from hub.utils.inventory_scan import hf_cache_scans_epoch
+    from utils.hardware import hardware as hw
+
+    assert inf._servability_generation() == (
+        index_generation(),
+        int(hf_cache_scans_epoch()),
+        int(hw.DETECTION_GENERATION),
+    )
