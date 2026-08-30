@@ -1911,8 +1911,8 @@ function NudgeToolCallsToggle() {
           Nudge Tool Calls
         </span>
         <InfoHint>
-          When a tool call cannot be repaired, re-ask the model once so the
-          intended tool still runs. API requests stay opt-in.
+          When a model stops after promising to use a tool, or its tool call
+          cannot be repaired, ask it to continue. API requests stay opt-in.
         </InfoHint>
       </div>
       <Switch
