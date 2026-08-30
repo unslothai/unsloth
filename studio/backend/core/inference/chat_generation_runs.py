@@ -144,14 +144,20 @@ class ChatGenerationLeaseSweeper:
             ),
         )
         # 0 disables the sweep entirely, matching UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S.
-        self._timeout = max(
+        configured = max(
             0.0,
             timeout_s
             if timeout_s is not None
             else _env_seconds("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS),
         )
+        self._timeout = _clamped_lease_timeout(configured)
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+
+    # How long a settled producer gets to notice the cooperative cancel before the task
+    # itself is cancelled. Generous, because unwinding cleanly is much better than being
+    # cancelled mid-teardown, and this only runs for a run already declared dead.
+    _FORCE_CANCEL_GRACE_S = 30.0
 
     @property
     def enabled(self) -> bool:
@@ -212,7 +218,38 @@ class ChatGenerationLeaseSweeper:
                 logger.warning(
                     "chat_generation_lease_cancel_failed", run_id = run_id, error = repr(exc)
                 )
+                continue
+            asyncio.create_task(
+                self._force_cancel_after_grace(supervisor, run_id),
+                name = f"chat-generation-lease-force-cancel:{run_id}",
+            )
         return settled
+
+    async def _force_cancel_after_grace(self, supervisor: Any, run_id: str) -> None:
+        """Escalate from the cooperative cancel to cancelling the producer task.
+
+        supervisor.cancel() sets a threading.Event, and every production run has one, so
+        the task is never cancelled by that path. A producer blocked inside next(gen) does
+        not look at the event until the generator returns, which for the wedge this sweep
+        exists to catch may be never: the row settles, the UI recovers, and the producer
+        goes on holding its activity reservation and engine slot.
+
+        Cancelling the task unwinds the coroutine and releases that bookkeeping. It cannot
+        unblock a thread already inside the engine, and nothing here can; that is a real
+        remaining limitation and the warning says so rather than implying the slot is free.
+        """
+        await asyncio.sleep(self._FORCE_CANCEL_GRACE_S)
+        task = getattr(supervisor, "_tasks", {}).get(run_id)
+        if task is None or task.done():
+            return
+        logger.warning(
+            "chat_generation_run_force_cancelled",
+            run_id = run_id,
+            grace_s = self._FORCE_CANCEL_GRACE_S,
+            note = "producer ignored the cooperative cancel; any engine thread it left "
+            "blocked cannot be reclaimed from here",
+        )
+        task.cancel()
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -248,6 +285,44 @@ def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
 # The admission stream's own comment, matched rather than imported to keep this module
 # free of a routes import at module scope. Pinned by a test against the constant there.
 _ADMISSION_WAIT_MARKER = ": admission-wait"
+
+
+def _minimum_lease_seconds() -> float:
+    """The shortest lease that every renewal source can actually keep up with.
+
+    Our own cadence can be made arbitrarily fine, but the admission stream's keep-alive
+    interval is upstream and is not ours to speed up: a run queued behind another
+    generation only produces a renewable marker that often. A lease shorter than a couple
+    of those intervals therefore expires between markers however fast we poll, and reaps a
+    healthy queued run.
+    """
+    try:
+        from core.inference.llama_admission import llama_admission_config_from_env
+        interval = float(llama_admission_config_from_env().keepalive_interval_s)
+    except Exception:
+        from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
+        interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
+    return max(1.0, interval) * 3.0
+
+
+def _clamped_lease_timeout(configured: float) -> float:
+    """Raise a lease that no renewal source could satisfy, and say so.
+
+    Silently honouring it would reap healthy queued runs, and silently ignoring it would
+    hide that the setting did nothing. Zero still means disabled.
+    """
+    if configured <= 0.0:
+        return 0.0
+    floor = _minimum_lease_seconds()
+    if configured >= floor:
+        return configured
+    logger.warning(
+        "chat_generation_lease_timeout_clamped",
+        configured_s = round(configured, 2),
+        applied_s = round(floor, 2),
+        reason = "shorter than the admission keep-alive cadence could renew",
+    )
+    return floor
 
 
 def _renew_interval_seconds() -> float:

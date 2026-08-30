@@ -726,3 +726,77 @@ def test_the_renewal_interval_stays_under_even_a_one_second_lease(monkeypatch):
     assert runs_mod._renew_interval_seconds() < 4.0
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1200")
     assert runs_mod._renew_interval_seconds() == 30.0
+
+
+def test_a_lease_shorter_than_the_admission_cadence_is_clamped_and_logged(clock):
+    """Our own renewal cadence can be made arbitrarily fine, but the admission stream's
+    keep-alive interval is upstream. A lease shorter than a few of those expires between
+    markers however fast we poll, and reaps a healthy queued run."""
+    floor = runs_mod._minimum_lease_seconds()
+    assert floor > 5.0, "the floor must exceed one admission keep-alive interval"
+    assert runs_mod._clamped_lease_timeout(1.0) == floor
+    assert runs_mod._clamped_lease_timeout(0.0) == 0.0, "zero still means disabled"
+    assert runs_mod._clamped_lease_timeout(1200.0) == 1200.0
+
+    sweeper = runs_mod.ChatGenerationLeaseSweeper(
+        SimpleNamespace(state = SimpleNamespace()), interval_s = 1.0, timeout_s = 1.0
+    )
+    assert sweeper._timeout == floor, "the sweeper must use the clamped value"
+
+
+def test_a_producer_that_ignores_the_cooperative_cancel_is_force_cancelled(clock):
+    """supervisor.cancel() only sets a threading.Event, and every production run has one,
+    so the task is never cancelled by that path. A producer blocked inside next(gen) never
+    reads the event, and would keep its activity reservation after the row was settled.
+
+    Asserted INSIDE the loop: asyncio.run cancels whatever is still pending when it tears
+    the loop down, so checking the task afterwards passes whether or not this code did
+    anything. The first version of this test did exactly that and survived the mutation.
+    """
+    started = asyncio.Event()
+    outcome = {}
+
+    async def _never_finishes():
+        started.set()
+        await asyncio.sleep(3600)
+
+    async def _drive():
+        task = asyncio.create_task(_never_finishes())
+        await started.wait()
+        supervisor = SimpleNamespace(_tasks = {"run-1": task})
+        sweeper = runs_mod.ChatGenerationLeaseSweeper(
+            SimpleNamespace(state = SimpleNamespace()), timeout_s = 60.0
+        )
+        object.__setattr__(sweeper, "_FORCE_CANCEL_GRACE_S", 0.0)
+        await sweeper._force_cancel_after_grace(supervisor, "run-1")
+        for _ in range(20):
+            if task.done():
+                break
+            await asyncio.sleep(0)
+        outcome["cancelled"] = task.cancelled()
+        # Settle it so the loop does not tear down with work outstanding.
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_drive())
+    assert outcome["cancelled"], "the wedged producer was left holding its reservation"
+
+
+def test_force_cancel_leaves_a_producer_that_already_finished_alone(clock):
+    async def _drive():
+        async def _quick():
+            return None
+
+        task = asyncio.create_task(_quick())
+        await task
+        supervisor = SimpleNamespace(_tasks = {"run-1": task})
+        sweeper = runs_mod.ChatGenerationLeaseSweeper(
+            SimpleNamespace(state = SimpleNamespace()), timeout_s = 60.0
+        )
+        object.__setattr__(sweeper, "_FORCE_CANCEL_GRACE_S", 0.0)
+        await sweeper._force_cancel_after_grace(supervisor, "run-1")
+        return task
+
+    task = asyncio.run(_drive())
+    assert not task.cancelled(), "a producer that unwound cleanly must not be cancelled"
