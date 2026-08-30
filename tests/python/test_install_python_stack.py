@@ -355,13 +355,12 @@ class TestSdistOnlyBuildArgs:
         # The unconditional ones are always present.
         assert set(ips.SDIST_ONLY_PACKAGES) <= set(names)
 
-    def test_the_diffusers_pin_is_exempted_on_the_archive_path(self):
-        """The pin is a source ARCHIVE, and uv's no-build refuses to build one, so the
-        install still died here after extras.txt was fixed.
+    def test_the_diffusers_release_is_not_forced_through_a_source_build(self):
+        """The pinned release ships wheels, so forcing a source build defeats the pin."""
+        pin_lines = (ips.REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8").splitlines()
+        pin_options = [line.split("#", 1)[0].strip() for line in pin_lines]
+        assert not any(option.startswith("--no-binary") for option in pin_options)
 
-        Guarded on python >= 3.10 because diffusers-pin.txt resolves a released wheel
-        below that, which must not be forced through a source build.
-        """
         tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
@@ -369,14 +368,12 @@ class TestSdistOnlyBuildArgs:
             req = next((k for k in node.keywords if k.arg == "req"), None)
             if req is None or "diffusers-pin.txt" not in ast.unparse(req.value):
                 continue
-            splat = " ".join(ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred))
-            assert (
-                "_sdist_only_build_args('diffusers')" in splat
-            ), f"the diffusers pin at line {node.lineno} must exempt the source archive"
-            assert "version_info >= (3, 10)" in splat, (
-                "the exemption must be guarded so the pre-3.10 wheel is not forced "
-                f"through a source build (line {node.lineno})"
-            )
+            try:
+                literal_arguments = [ast.literal_eval(argument) for argument in node.args]
+            except (ValueError, TypeError):
+                pytest.fail("the diffusers pin options must remain literal and auditable")
+            assert all(isinstance(argument, str) for argument in literal_arguments)
+            assert not any(argument.startswith("--no-binary") for argument in literal_arguments)
             return
         pytest.fail("no pip_install(req=.../diffusers-pin.txt) call found")
 

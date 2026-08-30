@@ -81,7 +81,7 @@ test("a preflight that loses to generation queues its load until generation ends
   );
   assert.match(
     source,
-    /generateAbort\.current = null;\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current\) replayQueuedTtsPick\(\)/,
+    /generateAbort\.current = null;\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current && modeRef\.current === "speak"\)\s*replayQueuedTtsPick\(\)/,
   );
 });
 
@@ -111,9 +111,15 @@ test("managed completion loads the exact GGUF only when Audio is active and idle
 });
 
 test("switching to Transcribe invalidates a pending staged TTS auto-load", () => {
+  const invalidateStart = source.indexOf("const invalidatePendingTtsSelection");
+  const transitionStart = source.indexOf("const transitionMode", invalidateStart);
+  const invalidateSelection = source.slice(invalidateStart, transitionStart);
+  assert.match(invalidateSelection, /ttsPickGeneration\.current \+= 1;/);
+  assert.match(invalidateSelection, /pendingRoutedTtsPick\.current = null;/);
+  assert.match(invalidateSelection, /invalidatePendingStagedTts\(\);/);
   assert.match(
     source,
-    /if \(nextMode === "transcribe"\) invalidatePendingStagedTts\(\)/,
+    /if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
   );
   assert.match(
     source,
@@ -121,7 +127,7 @@ test("switching to Transcribe invalidates a pending staged TTS auto-load", () =>
   );
   assert.match(
     source,
-    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(!canTransitionAudioMode\(busyRef\.current\)\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingStagedTts\(\)/,
+    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(!canTransitionAudioMode\(busyRef\.current\)\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
     "a rejected mode switch must not discard the still-owned staged load",
   );
 });
