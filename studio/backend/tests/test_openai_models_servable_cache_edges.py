@@ -182,9 +182,11 @@ def test_the_cache_entry_is_published_atomically(stub):
 
     inf._servable_catalog_rows(second, 222.0)
     at, cached, rows = inf._SERVABLE_SCAN_CACHE["entry"]
-    assert (at, cached is second, len(rows)) == (222.0, True, 3), (
-        "stamp, catalog and rows move together"
-    )
+    assert (at, cached is second, len(rows)) == (
+        222.0,
+        True,
+        3,
+    ), "stamp, catalog and rows move together"
 
 
 def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
@@ -210,9 +212,9 @@ def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
     catalog = _catalog(1)
     assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is False
     snapshot["dir"] = "/models/m0/snapshots/new"  # a download moved the pointer
-    assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is True, (
-        "the snapshot must be re-resolved per call, not cached with the scan"
-    )
+    assert (
+        inf._servable_catalog_rows(catalog, 111.0)[0][3] is True
+    ), "the snapshot must be re-resolved per call, not cached with the scan"
     assert seen == ["/models/m0/snapshots/old", "/models/m0/snapshots/new"]
 
 
