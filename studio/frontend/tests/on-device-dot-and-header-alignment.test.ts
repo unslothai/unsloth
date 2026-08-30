@@ -15,6 +15,7 @@ const PICKERS = read(
 );
 const MODELS_TABLE = read("../src/features/hub/catalog/models-table.tsx");
 const HUB_CARD = read("../src/features/hub/catalog/gguf-download-card.tsx");
+const HUB_PAGE = read("../src/features/hub/hub-page.tsx");
 const CATALOG = read(
   "../src/features/model-picker/components/model-selector/model-catalog.ts",
 );
@@ -127,12 +128,14 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   // between them to drift.
   assert.ok(PICKERS.includes("<VramBadge status={fit} />"));
   assert.equal(
-    PICKERS.split(
-      '<VramBadge status={vramStatus} source="device" revealOnHover={!selected} />',
-    ).length - 1,
+    PICKERS.split("<VramBadge status={vramStatus} revealOnHover={!selected} />")
+      .length - 1,
     2,
     "both model row slots reveal on hover",
   );
+  // A selected row is exempt from dimming, so hiding its mark too left it with no verdict at all
+  // until hovered, which is nothing at rest and nothing on touch.
+  assert.match(PICKERS, /exceeds &&\n\s*!selected &&/);
 });
 
 test("chat and the Hub answer the fit question with one formula", () => {
@@ -148,16 +151,39 @@ test("chat and the Hub answer the fit question with one formula", () => {
     "and so does the Recommended fit filter",
   );
   // No copy of the old budget survives in either GGUF path.
-  for (const [name, src] of [
-    ["pickers", PICKERS],
-    ["recommended-fit", RECOMMENDED],
-  ] as const) {
-    assert.ok(!src.includes("* 0.7"), `${name} has no 0.7 budget left`);
-  }
+  assert.ok(
+    !RECOMMENDED.includes("* 0.7"),
+    "recommended-fit has no 0.7 budget left",
+  );
+  assert.ok(!PICKERS.includes("* 0.7"), "pickers has no 0.7 budget left");
+  // model-catalog keeps one, and only for the media pickers: a GGUF offered on Images or Video is
+  // placed by the diffusion backend, whose budget is far below llama.cpp's. On a 64 GiB Mac that
+  // planner allows about 43.5 GiB, this rule 44.8, the llama.cpp rule 62.1. The boundaries are
+  // asserted for real in model-catalog.check.ts.
+  assert.ok(CATALOG.includes("export function classifyMediaGgufFit("));
+  assert.match(
+    PICKERS,
+    /if \(taskScoped\) \{\n\s*return classifyMediaGgufFit\(/,
+  );
+  // And every media call site sets the flag, or the guard silently does nothing.
+  assert.equal(
+    PICKERS.split("taskScoped={Boolean(task)}").length - 1,
+    7,
+    "every task-scoped expander",
+  );
   // The saved VRAM Budget now reaches chat. Moving the slider used to change the Hub's verdicts
   // and leave the picker's untouched.
   assert.ok(PICKERS.includes("useVramBudgetFraction()"));
   assert.ok(PICKERS.includes("budgetFraction,"));
+  // Threaded through the row filters as well. Passing it to the quant rows alone left the parent
+  // rows and the "Fits on device" gate scoring against the 0.97 default.
+  assert.ok(HUB_PAGE.includes("useVramBudgetFraction()"));
+  assert.match(
+    HUB_PAGE,
+    /hfModelFitsDevice\(row\.result, inferenceGpu, budgetFraction\)/,
+  );
+  assert.ok(RECOMMENDED.includes("budgetFraction?: number,"));
+  assert.ok(RECOMMENDED.includes("opts.budgetFraction,"));
 });
 
 test("each fit verdict is an info mark that explains itself", () => {
@@ -229,10 +255,13 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   // This branch used to set "exceeds", the one verdict that says a model will not load. A GGUF is
   // offloaded by llama-server rather than refused, so the row said the opposite of what happens,
   // and it is the verdict shown on the Recommended list where most rows are over budget.
-  assert.ok(
-    PICKERS.includes(
-      'status: exceedsSize(sizeBytes, inferenceGpu) ? "oom" : null,',
-    ),
+  assert.ok(PICKERS.includes("status: ggufRowFit(sizeBytes, inferenceGpu),"));
+  // A boolean here collapsed marginal and partial into "no badge", so a repo whose smallest quant
+  // already needed offload rendered as a clean fit beside variant rows saying otherwise.
+  assert.ok(!PICKERS.includes("exceedsSize"));
+  assert.match(
+    PICKERS,
+    /const ggufRowFit = \([\s\S]{0,200}\): GgufFitClass \| null =>/,
   );
   // Every surviving producer of "exceeds" is a curated torch pipeline, which has no --fit.
   const producers = PICKERS.split("\n").filter(

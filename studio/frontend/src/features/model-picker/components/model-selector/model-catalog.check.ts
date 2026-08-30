@@ -20,6 +20,7 @@ import {
   catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
+  classifyMediaGgufFit,
   curatedArtifactFitsDevice,
   curatedDisplayNameFor,
   curatedRowLabelFor,
@@ -566,6 +567,22 @@ assert.equal(
   classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.8 }),
   "marginal",
 );
+// ── classifyMediaGgufFit ──────────────────────────────────────────────────────
+// Images / Video place a GGUF through the diffusion backend, whose budget on a 64 GiB unified host
+// is (total - 20% reserve) * 0.85 = 43.5 GiB (diffusion_memory.py). This rule allows 44.8; the
+// llama.cpp one allows 62.1 and would promise loads the planner refuses.
+assert.equal(classifyMediaGgufFit(40 * GB, 64, 0), "fits"); // 40 <= 44.8
+assert.equal(classifyMediaGgufFit(50 * GB, 64, 0), "oom"); // past 44.8, no RAM tier
+// The same 50 GiB file reads as fitting under the llama.cpp rule, which is the regression this
+// guard exists to prevent: 50 * 1.15 + 1 = 58.5 <= 64 * 0.97.
+assert.equal(classifyGgufFit(50 * GB, { gpuGb: 64, systemRamGb: 0 }), "fits");
+// A discrete card with RAM keeps the offload tier the rule always had.
+assert.equal(classifyMediaGgufFit(20 * GB, 24, 64), "partial");
+assert.equal(classifyMediaGgufFit(100 * GB, 24, 64), "oom");
+// No GPU: RAM alone, fit or not.
+assert.equal(classifyMediaGgufFit(30 * GB, 0, 64), "fits");
+assert.equal(classifyMediaGgufFit(60 * GB, 0, 64), "oom");
+
 // Only oom fails to load; marginal and partial both run.
 assert.equal(ggufFitRuns("partial"), true);
 assert.equal(ggufFitRuns("oom"), false);

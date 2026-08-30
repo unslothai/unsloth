@@ -147,6 +147,7 @@ import {
   type DeviceBudget,
   artifactForRepoId,
   classifyGgufFit,
+  classifyMediaGgufFit,
   curatedArtifactFitsDevice,
   curatedCapabilitiesFor,
   curatedRowLabelFor,
@@ -171,7 +172,6 @@ import {
 import {
   type FormatFilter,
   estimateQuantBytes,
-  fitsDevice,
   hfModelFitsDevice,
   isMlxId,
   isMobileVariant,
@@ -1467,9 +1467,13 @@ function GgufVariantExpander({
   onDevice = false,
   allowPin = false,
   onHasVision,
+  taskScoped = false,
 }: {
   repoId: string;
   pipelineTag?: string | null;
+  /** True on Images / Video / Audio, where a GGUF is placed by the diffusion backend rather than
+   *  llama-server, so the llama.cpp budget does not apply. */
+  taskScoped?: boolean;
   /** Snapshot the cached listing pinned this repo to, if any. */
   loadId?: string | null;
   /** Cache directory this downloaded row represents, if any. */
@@ -1636,13 +1640,16 @@ function GgufVariantExpander({
       // Permissive only when no budget was measured. A known zero Vulkan budget means every
       // non-empty variant is OOM, which classifyGgufFit cannot tell apart from "not probed yet".
       if (!anyBudgetGb) return budgetKnown ? "oom" : "fits";
+      if (taskScoped) {
+        return classifyMediaGgufFit(sizeBytes, gpuGb ?? 0, systemRamGb ?? 0);
+      }
       return classifyGgufFit(sizeBytes, {
         gpuGb: gpuGb ?? 0,
         systemRamGb: systemRamGb ?? 0,
         budgetFraction,
       });
     },
-    [budgetKnown, anyBudgetGb, gpuGb, systemRamGb, budgetFraction],
+    [budgetKnown, anyBudgetGb, gpuGb, systemRamGb, budgetFraction, taskScoped],
   );
 
   const variantGroups = useMemo(
@@ -2543,6 +2550,10 @@ export function HubModelPicker({
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
+  // The saved VRAM Budget, threaded into every fit call in this component. Passing it to the quant
+  // rows alone left the parent rows and the "Fits on device" filter scoring against the 0.97
+  // default, so lowering the setting moved one and not the other.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   // What the backend actually holds, not the dropdown highlight, which can be a
   // staged pick. The selection alone was wrong: an image or video load evicts
   // the chat model and leaves the pick untouched, so its rows kept the "Loaded"
@@ -3301,7 +3312,11 @@ export function HubModelPicker({
       // The catalog's own verdict where it has one, so this list and the OOM badge on its rows
       // cannot disagree: hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget) ??
-        hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu));
+        hfModelFitsDevice(
+          r,
+          r.isGguf ? rowInferenceGpu : rowGpu,
+          budgetFraction,
+        ));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -3321,6 +3336,7 @@ export function HubModelPicker({
       .filter((r) => !deviceFiltered || fits(r));
     return [...unslothRows, ...communityRows];
   }, [
+    budgetFraction,
     recommendedSearch.results,
     catalogSeedRows,
     downloadedSet,
@@ -3355,22 +3371,29 @@ export function HubModelPicker({
       }
     >();
     /** Size-based verdict for a row whose real footprint we know, against the budget that row
-     *  actually loads into. Same split as the list's own fit filter, so the badge and the
-     *  "Fits on device" gate cannot disagree about one row. */
-    const exceedsSize = (
+     *  actually loads into. Same classifier as the quant rows below it, so the badge and the
+     *  "Fits on device" gate cannot disagree about one row.
+     *
+     *  Returns the verdict, not a boolean. A boolean collapsed `marginal` and `partial` into "no
+     *  badge", so a repo whose SMALLEST quant already needs offload rendered as a clean fit beside
+     *  expanded rows saying the opposite. */
+    const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
-    ) =>
-      (budget.budgetKnown ||
-        budget.memoryTotalGb > 0 ||
-        budget.systemRamAvailableGb > 0) &&
-      sizeBytes != null &&
-      !fitsDevice({
-        sizeBytes,
+    ): GgufFitClass | null => {
+      const anyBudget =
+        budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
+      if (!budget.budgetKnown && !anyBudget) return null;
+      if (sizeBytes == null) return null;
+      // Probed and genuinely zero (a Vulkan device reporting nothing) means nothing fits.
+      if (!anyBudget) return "oom";
+      const fit = classifyGgufFit(sizeBytes, {
         gpuGb: budget.memoryTotalGb,
         systemRamGb: budget.systemRamAvailableGb,
-        budgetKnown: budget.budgetKnown,
+        budgetFraction,
       });
+      return fit === "fits" ? null : fit;
+    };
     // A curated pipeline loads through torch, and a task load puts the whole thing on ONE
     // device, so it is judged there. inferenceGpu is the GGUF backend's inventory, which can
     // be a different install (Vulkan llama.cpp) or the sum of several cards.
@@ -3414,9 +3437,9 @@ export function HubModelPicker({
           (params ? estimateQuantBytes(params) : undefined);
         map.set(r.id, {
           meta,
-          // "oom", not "exceeds": this row is a GGUF, so llama-server offloads it rather than
-          // refusing it, and the mark has to say so. "exceeds" is the torch verdict below.
-          status: exceedsSize(sizeBytes, inferenceGpu) ? "oom" : null,
+          // The classifier's own verdict, so a GGUF row never borrows "exceeds", which is the
+          // torch-only refusal used by the curated branch below.
+          status: ggufRowFit(sizeBytes, inferenceGpu),
           est: sizeBytes ? Math.round(sizeBytes / 1024 ** 3) : 0,
         });
         continue;
@@ -3445,6 +3468,7 @@ export function HubModelPicker({
     }
     return map;
   }, [
+    budgetFraction,
     recommendedSearch.results,
     communityBrowse.results,
     catalogSeedRows,
@@ -4267,9 +4291,11 @@ export function HubModelPicker({
           gpu,
           inferenceGpu,
           taskScoped: Boolean(task),
+          budgetFraction,
         },
       ),
     [
+      budgetFraction,
       catalog,
       catalogFit,
       gpu,
@@ -5238,6 +5264,7 @@ export function HubModelPicker({
         </div>
         {expanderOpen && (
           <GgufVariantExpander
+            taskScoped={Boolean(task)}
             repoId={c.repo_id}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
@@ -6137,6 +6164,7 @@ export function HubModelPicker({
                               !isDirectGguf &&
                               isGgufExpanded(m.id) && (
                                 <GgufVariantExpander
+                                  taskScoped={Boolean(task)}
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
@@ -6290,6 +6318,7 @@ export function HubModelPicker({
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
+                                taskScoped={Boolean(task)}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6428,6 +6457,7 @@ export function HubModelPicker({
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
+                                taskScoped={Boolean(task)}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6523,6 +6553,7 @@ export function HubModelPicker({
                             />
                             {expandedGguf === id && (
                               <GgufVariantExpander
+                                taskScoped={Boolean(task)}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
@@ -6647,6 +6678,7 @@ export function HubModelPicker({
                           />
                           {expandedGguf === id && (
                             <GgufVariantExpander
+                              taskScoped={Boolean(task)}
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
@@ -6762,6 +6794,7 @@ export function HubModelPicker({
                             />
                             {expandedGguf === id && (
                               <GgufVariantExpander
+                                taskScoped={Boolean(task)}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}

@@ -1044,6 +1044,31 @@ export function classifyGgufFit(
   return classifyGgufFitForDevice(sizeBytes, budget);
 }
 
+/** Fit rule for a GGUF the IMAGES / VIDEO / AUDIO pickers offer, which is the one case the shared
+ *  llama.cpp formula must not judge: those loads go through the diffusion backend, whose budget is
+ *  free memory minus a reserve at a 0.85 margin (`diffusion_memory.py`, `_reserve_mib` is 20% on
+ *  unified memory), and which explicitly cannot offload there. On a 64 GiB Mac that planner allows
+ *  about 43.5 GiB where llama.cpp allows 62.1. This rule, the picker's own from before the
+ *  classifiers were merged, allows 44.8, so it is the closer of the two by 18 GiB.
+ *
+ *  It is not the diffusion planner either. It is here so unifying chat's verdict with the Hub's
+ *  does not quietly promise media loads that cannot be placed; a real diffusion predicate is its
+ *  own change. */
+export function classifyMediaGgufFit(
+  sizeBytes: number,
+  gpuGb: number,
+  systemRamGb: number,
+): GgufFitClass {
+  const gpuBudgetGb = gpuGb * 0.7;
+  const totalBudgetGb = gpuBudgetGb + systemRamGb * 0.7;
+  const gb = sizeBytes / 1024 ** 3;
+  if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
+  if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
+  // "partial", where this rule used to say "tight": the state it describes is a spill out of the
+  // card, which is what partial means. Tight now means a full GPU load with no room to spare.
+  return gb <= totalBudgetGb ? "partial" : "oom";
+}
+
 /** Whether a verdict still loads. Only `oom` clears neither budget; `marginal` and `partial` run,
  *  the second by offloading to CPU. */
 export function ggufFitRuns(fit: GgufFitClass): boolean {

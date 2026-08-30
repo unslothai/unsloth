@@ -141,6 +141,9 @@ export function hfModelFitsDevice(
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
   },
+  /** The user's saved VRAM Budget. Omitted scores against the loader's default, so a caller that
+   *  forgets it judges rows on a budget the user has already replaced. */
+  budgetFraction?: number,
 ): boolean {
   if (
     gpu.memoryTotalGb <= 0 &&
@@ -161,6 +164,7 @@ export function hfModelFitsDevice(
     systemRamGb: gpu.systemRamAvailableGb,
     budgetKnown: gpu.budgetKnown,
     requireKnown: true,
+    budgetFraction,
   });
 }
 
@@ -218,6 +222,7 @@ export function searchRowFitsDevice<
     gpu: G;
     inferenceGpu: G;
     taskScoped: boolean;
+    budgetFraction?: number;
   },
 ): boolean {
   const source = opts.isGguf ? opts.inferenceGpu : opts.gpu;
@@ -228,6 +233,7 @@ export function searchRowFitsDevice<
       curatedSizeBytes: row.curatedSizeBytes ?? opts.curatedSizeBytes,
     },
     loadScopedGpu(source, opts.taskScoped),
+    opts.budgetFraction,
   );
 }
 

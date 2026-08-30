@@ -309,7 +309,7 @@ test("GGUF rows keep the inference backend's budget", () => {
   // They load through llama.cpp, so its inventory is the right one for them.
   assert.match(
     declarationText("recommendedMeta"),
-    /exceedsSize\(sizeBytes, inferenceGpu\)/,
+    /ggufRowFit\(sizeBytes, inferenceGpu\)/,
   );
 });
 

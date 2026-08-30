@@ -12,8 +12,8 @@ import {
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { useHubInfiniteScroll } from "@/features/hub";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import {
   type ModelPickTarget,
   type PerModelConfig,
@@ -25,11 +25,12 @@ import {
   resolveInitialConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
-import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
-import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -42,6 +43,7 @@ import {
   useState,
 } from "react";
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
+import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubModelSettingsView } from "./catalog/hub-model-settings-view";
@@ -62,7 +64,6 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
-import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -80,12 +81,6 @@ import { useHubInventory } from "./inventory";
 import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
 import { settingsGgufVariantForRow } from "./inventory/settings-identity";
 import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
-import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
-import {
-  type RefreshSupersession,
-  registerRefresh,
-  supersedingRefresh,
-} from "./lib/superseded-refresh";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -111,8 +106,14 @@ import {
   matchesModelType,
 } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
-import { studioPageForTask } from "./lib/unsloth-support";
+import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
+import {
+  type RefreshSupersession,
+  registerRefresh,
+  supersedingRefresh,
+} from "./lib/superseded-refresh";
 import { fingerprintToken } from "./lib/token-fingerprint";
+import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
@@ -373,6 +374,9 @@ function selectedRepoMatchesRuntime(
 export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
+  // The saved VRAM Budget the loader admits against. The "Fits on device" filter scored against
+  // the 0.97 default without it, so lowering the setting moved the badges and not the filter.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const inferenceGpu = useInferenceGpuInfo();
   // Browser reachability, which is what every client here asks about: the
   // selected model's metadata and the cached feed each issue their own request.
@@ -897,9 +901,11 @@ export function ModelsPage() {
           hfModelFitsDevice(
             row.result,
             row.result.isGguf ? inferenceGpu : gpu,
+            budgetFraction,
           )),
     );
   }, [
+    budgetFraction,
     discoverRows,
     hiddenEmbeddingModelIds,
     isDatasetMode,
@@ -939,9 +945,10 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, inferenceGpu),
+            hfModelFitsDevice(row.result, inferenceGpu, budgetFraction),
         ),
     [
+      budgetFraction,
       hubFeed.trending.results,
       hiddenEmbeddingModelIds,
       modelDiscoveryInventorySignature,
@@ -1322,7 +1329,8 @@ export function ModelsPage() {
       // `task` is not optional here: only CachedModelRepo carries pipelineTag, so every
       // cached GGUF repo (the reported MiniMax-H3 case) reports its modality on `task`.
       const mediaPage = studioPageForTask(
-        taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
+        taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ??
+          undefined,
       );
       // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
       // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
@@ -1330,7 +1338,8 @@ export function ModelsPage() {
       // (left on today's route, and the backend preflight now refuses it by name) and a
       // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
       // the pages' containment check rejects anyway.
-      const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
+      const routeId =
+        runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
       if (
         mediaPage &&
         routableToMediaPage(selectedModel.kind, selectedModel.localSource) &&
@@ -1700,42 +1709,13 @@ export function ModelsPage() {
     ],
   );
 
-  const catalogState = useMemo<ModelsCatalogState>(
-    () => {
-      const typeFilterActive =
-        !isDatasetMode && inventoryTypeFilter !== "all";
-      return {
-        tab,
-        discoverRows: listRows,
-        cachedRows: filteredCachedRows,
-        localRows: filteredLocalRows,
-        selectedId,
-        isLoading,
-        downloadedReady,
-        inventoryError,
-        inventoryWarning,
-        query,
-        activeCheckpoint,
-        activeGgufVariant,
-        searchError,
-        searchFailure,
-        online,
-        isDataset: isDatasetMode,
-        inventoryTokens,
-        scannedCount,
-        loadingIntentCount: discoverFetchIntent,
-        hasMore,
-        manualFetchAvailable: discoverManualFetchAvailable,
-        hasActiveFilters:
-          !isFeedMode &&
-          (deferredFormatFilter !== "all" ||
-            deferredCapabilityFilter !== "all" ||
-            (tab === "downloaded" && typeFilterActive)),
-        typeFilterActive,
-      };
-    },
-    [
+  const catalogState = useMemo<ModelsCatalogState>(() => {
+    const typeFilterActive = !isDatasetMode && inventoryTypeFilter !== "all";
+    return {
       tab,
+      discoverRows: listRows,
+      cachedRows: filteredCachedRows,
+      localRows: filteredLocalRows,
       selectedId,
       isLoading,
       downloadedReady,
@@ -1747,21 +1727,46 @@ export function ModelsPage() {
       searchError,
       searchFailure,
       online,
+      isDataset: isDatasetMode,
       inventoryTokens,
       scannedCount,
+      loadingIntentCount: discoverFetchIntent,
       hasMore,
-      isFeedMode,
-      listRows,
-      filteredCachedRows,
-      filteredLocalRows,
-      isDatasetMode,
-      discoverFetchIntent,
-      discoverManualFetchAvailable,
-      deferredFormatFilter,
-      deferredCapabilityFilter,
-      inventoryTypeFilter,
-    ],
-  );
+      manualFetchAvailable: discoverManualFetchAvailable,
+      hasActiveFilters:
+        !isFeedMode &&
+        (deferredFormatFilter !== "all" ||
+          deferredCapabilityFilter !== "all" ||
+          (tab === "downloaded" && typeFilterActive)),
+      typeFilterActive,
+    };
+  }, [
+    tab,
+    selectedId,
+    isLoading,
+    downloadedReady,
+    inventoryError,
+    inventoryWarning,
+    query,
+    activeCheckpoint,
+    activeGgufVariant,
+    searchError,
+    searchFailure,
+    online,
+    inventoryTokens,
+    scannedCount,
+    hasMore,
+    isFeedMode,
+    listRows,
+    filteredCachedRows,
+    filteredLocalRows,
+    isDatasetMode,
+    discoverFetchIntent,
+    discoverManualFetchAvailable,
+    deferredFormatFilter,
+    deferredCapabilityFilter,
+    inventoryTypeFilter,
+  ]);
 
   const catalogPagination = useMemo<ModelsCatalogPagination>(
     () => ({
@@ -2015,7 +2020,6 @@ export function ModelsPage() {
               <HubDetailView
                 model={selectedModel}
                 preferredGgufFile={preferredGgufFile}
-
                 preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
@@ -2040,7 +2044,6 @@ export function ModelsPage() {
               <HubDetailView
                 model={selectedModel}
                 preferredGgufFile={preferredGgufFile}
-
                 preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
