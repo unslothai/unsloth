@@ -22459,6 +22459,21 @@ class LlamaCppBackend:
                                     env = _mem_env,
                                 ):
                                     run_cmd = _without_subsequence(run_cmd, _mem_managed)
+                                    _retry_load_mode, _ = apply_load_mode_policy(
+                                        [],
+                                        supports_load_mode = bool(
+                                            server_caps.get("supports_load_mode")
+                                        ),
+                                        weights_in_host_memory = False,
+                                        requested_load_mode = load_mode,
+                                        model_memory_settings = _model_memory_settings,
+                                    )
+                                    if _retry_load_mode:
+                                        run_cmd = [
+                                            *run_cmd[:-2],
+                                            *_retry_load_mode,
+                                            *run_cmd[-2:],
+                                        ]
                                     _mem_host_resident = False
                                     # Recorded so a later "keep resident" save is not
                                     # compared against a lock this launch dropped,
