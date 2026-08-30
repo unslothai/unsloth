@@ -5543,6 +5543,7 @@ def _complete_existing_llama_install(
     paired_runtime = True,
     runnable = True,
     runnable_root = None,
+    runtime_line = None,
 ):
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = (
@@ -5557,6 +5558,8 @@ def _complete_existing_llama_install(
         marker["backend_request"] = backend_request
     if runtime_asset is not None:
         marker["runtime_asset"] = runtime_asset
+    if runtime_line is not None:
+        marker["runtime_line"] = runtime_line
     for path in (
         install_dir / f"llama-server{ext}",
         install_dir / f"llama-quantize{ext}",
@@ -5851,12 +5854,8 @@ def test_a_windows_loader_status_is_not_a_successful_probe(tmp_path, monkeypatch
 
 @pytest.mark.parametrize(
     "kwargs",
-    [
-        {"llama_backend": "auto"},
-        {"force_cpu": True},
-        {"override_has_rocm": True},
-    ],
-    ids = ["backend-auto", "cpu-fallback", "rocm-override"],
+    [{"llama_backend": "auto"}, {"force_cpu": True}],
+    ids = ["backend-auto", "cpu-fallback"],
 )
 def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
     tmp_path, monkeypatch, kwargs
@@ -5877,6 +5876,56 @@ def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
         INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK,
         INSTALL_LLAMA_PREBUILT.EXIT_BACKEND_UNAVAILABLE,
     )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"override_has_rocm": True}, {"override_rocm_gfx": "gfx1151"}],
+    ids = ["has-rocm", "rocm-gfx"],
+)
+def test_forwarded_gpu_detection_is_not_a_selection_change(tmp_path, monkeypatch, kwargs):
+    """Both setup entrypoints forward the DETECTED GPU on every AMD host.
+
+    studio/setup.sh builds --rocm-gfx/--has-rocm into _PREBUILT_CMD from its own probe and
+    setup.ps1 does the same in $prebuiltArgs, so treating either as a user choice would
+    take the keep path away from essentially every AMD update.
+    """
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu")
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "", **kwargs)
+
+    assert (install_dir / "llama-server").exists()
+
+
+def test_the_probe_gets_the_runtime_line_the_marker_recorded(tmp_path, monkeypatch):
+    """Same env the real validation path builds, or a healthy pair-less CUDA install dies.
+
+    binary_env puts the detected CUDA toolkit on PATH from runtime_line;
+    validate_prebuilt_choice passes it, so probing without it would exit 0xC0000135 on a
+    Windows install whose DLLs are not already on the inherited PATH.
+    """
+    _listing_failure(monkeypatch, linux_host)
+    seen: list = []
+    real_binary_env = INSTALL_LLAMA_PREBUILT.binary_env
+
+    def _record(*args, **kwargs):
+        seen.append(kwargs.get("runtime_line"))
+        return real_binary_env(*args, **kwargs)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", _record)
+    install_dir = _complete_existing_llama_install(
+        tmp_path, backend = "cpu", runtime_line = "cuda-12.4"
+    )
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    # preflight_linux_installed_binaries builds an env too and passes no runtime_line,
+    # which is correct: it only matters on Windows. What is asserted is that the probe
+    # did not also drop it.
+    assert (
+        "cuda-12.4" in seen
+    ), f"the kept-install probe built its env without the marker's runtime_line: {seen}"
 
 
 def test_a_non_default_published_repo_is_not_answered_with_the_old_install(tmp_path, monkeypatch):

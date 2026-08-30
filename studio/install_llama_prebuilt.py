@@ -6951,7 +6951,12 @@ _ERROR_BAD_EXE_FORMAT = 193
 _NTSTATUS_FAILURE_FLOOR = 0xC0000000
 
 
-def _binary_image_runs(path: Path, install_dir: Path, host: HostInfo) -> bool:
+def _binary_image_runs(
+    path: Path,
+    install_dir: Path,
+    host: HostInfo,
+    runtime_line: str | None = None,
+) -> bool:
     """Whether the OS will actually start ``path``.
 
     ``os.access`` answers "may I execute this", not "is this an executable": a truncated
@@ -6971,7 +6976,10 @@ def _binary_image_runs(path: Path, install_dir: Path, host: HostInfo) -> bool:
         result = run_capture(
             [str(path), "--version"],
             timeout = 60,
-            env = binary_env(path, install_dir, host),
+            # runtime_line, as validate_prebuilt_choice passes it: it is what puts the
+            # detected CUDA toolkit on PATH. Without it a healthy pair-less Windows CUDA
+            # install cannot find its DLLs, exits 0xC0000135, and gets thrown away.
+            env = binary_env(path, install_dir, host, runtime_line = runtime_line),
         )
     except OSError as exc:
         if exc.errno == errno.ENOEXEC or getattr(exc, "winerror", None) == _ERROR_BAD_EXE_FORMAT:
@@ -6995,6 +7003,9 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         return False
     if not _kept_install_payload_is_healthy(install_dir, host):
         return False
+    recorded_runtime_line = (load_prebuilt_metadata(install_dir) or {}).get("runtime_line")
+    if not isinstance(recorded_runtime_line, str):
+        recorded_runtime_line = None
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
     binaries = [runtime_dir / f"llama-{name}{ext}" for name in ("server", "quantize")]
@@ -7026,7 +7037,9 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         probes.append(binary)
     # Last, because it is the only check that spawns anything: neither preflight runs on
     # Windows, and on Linux ldd cannot see a file that is not an executable image at all.
-    return all(_binary_image_runs(binary, install_dir, host) for binary in probes)
+    return all(
+        _binary_image_runs(binary, install_dir, host, recorded_runtime_line) for binary in probes
+    )
 
 
 def existing_install_matches_choice(
@@ -7999,9 +8012,11 @@ def install_prebuilt(
         normalized_requested_llama_tag(llama_tag) != "latest"
         or bool((published_release_tag or "").strip())
         or (bool((published_repo or "").strip()) and published_repo != DEFAULT_PUBLISHED_REPO)
+        # --cpu-fallback only ever arrives from setup.sh's deliberate arm64 recovery, so
+        # it is a mechanism this run chose. --has-rocm and --rocm-gfx are NOT: both setup
+        # entrypoints forward their DETECTED GPU on every AMD host, so counting them here
+        # would take the keep path away from essentially every AMD update.
         or force_cpu
-        or override_has_rocm
-        or bool(override_rocm_gfx)
     )
     # The failure handler can run before selection assigns these.
     host: HostInfo | None = None
