@@ -1809,6 +1809,13 @@ function useStudioRuntimeAdapters(
         // two would read as interrupted and re-enable the composer for a thread the
         // server is still generating on. Close that gap with one more lookup, and only
         // when a message actually names a run the first read missed.
+        if (!activeGenerationRunsLoaded) {
+          // The initial read failed, so this thread has no current answer. Retract any
+          // answer from an earlier load: another tab may have started a run since, and
+          // the stale answer would restore that live reply as interrupted and briefly
+          // enable a conflicting send.
+          markServerActiveGenerationRunsUnknown(remoteId);
+        }
         if (activeGenerationRunsLoaded) {
           let answered = true;
           const known = new Set(activeGenerationRuns.map((run) => run.id));

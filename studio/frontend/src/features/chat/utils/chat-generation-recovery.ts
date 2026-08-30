@@ -290,7 +290,14 @@ export function generationNeedsRecovery(
   // on every recovery trigger is what turned one stuck run into a permanently blocked
   // composer. history.load re-corroborates from /chat-runs/active, which is what clears
   // the marker if the server does still have the run.
-  if (metadata.generationLocallyInterrupted === true) return false;
+  //
+  // Non-terminal only. A run the backend went on to finish is stored completed and
+  // unsettled, which still needs a replay to import its event tail, and /chat-runs/active
+  // excludes completed runs so it can never clear the marker for one. Honouring the
+  // marker there would leave that reply running forever with its tail never imported.
+  if (metadata.generationLocallyInterrupted === true && !TERMINAL.has(status)) {
+    return false;
+  }
   return (
     typeof metadata.generationRunId === "string" &&
     (metadata.generationSettled !== true || !TERMINAL.has(status))
@@ -559,7 +566,12 @@ export function generationIsCorroboratedLive(
   // another follower that republishes the message as running and blocks the composer
   // again. Only the server naming the run live may revive it, and the two checks above
   // are exactly that.
-  if (metadata.generationLocallyInterrupted === true) return false;
+  if (
+    metadata.generationLocallyInterrupted === true &&
+    !TERMINAL.has(String(metadata.generationStatus) as StoredGenerationStatus)
+  ) {
+    return false;
+  }
   // No answer for THIS thread is not a "no". Stay with the persisted status until this
   // thread's own read has landed; the recovery follower settles it from there.
   return threadId === undefined || !serverAnsweredThreads.has(threadId);

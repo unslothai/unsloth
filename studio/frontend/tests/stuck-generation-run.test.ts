@@ -539,3 +539,49 @@ test("a legacy fallback releases the durable claim at once", () => {
     "the pre-admission claim must go before the subscriber-owned stream starts",
   );
 });
+
+test("a completed run overrides the local interruption marker", () => {
+  resetServerActiveGenerationRuns();
+  // The backend resumed and finished after the follower gave up. /chat-runs/active
+  // excludes completed runs, so it can never clear the marker for this one: honouring
+  // it here would leave the reply running forever with its event tail never imported.
+  const finished = {
+    generationRunId: "run-e",
+    generationStatus: "completed",
+    generationSettled: false,
+    generationLocallyInterrupted: true,
+  };
+  assert.equal(generationNeedsRecovery(finished), true);
+  assert.equal(generationIsCorroboratedLive(finished, "t-4"), true);
+  // Still non-terminal, so the marker still holds.
+  assert.equal(
+    generationNeedsRecovery({ ...finished, generationStatus: "running" }),
+    false,
+  );
+});
+
+test("a failed initial active-run read retracts the earlier answer too", () => {
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  assert.match(
+    provider,
+    /if \(!activeGenerationRunsLoaded\) \{[^]*?markServerActiveGenerationRunsUnknown\(remoteId\)/,
+    "the initial-read failure path must retract the stale answer, not only the retry",
+  );
+});
+
+test("the lease is renewed while the model is being prepared", () => {
+  const runs = read("../../backend/core/inference/chat_generation_runs.py");
+  assert.match(runs, /_renew_lease_while_preparing/);
+  assert.match(
+    runs,
+    /_PREPARE_RENEW_MAX = \d+/,
+    "the renewal must be bounded, or a load that never returns is kept alive forever",
+  );
+  const start = runs.indexOf("preparing = asyncio.create_task(");
+  const cancel = runs.indexOf("preparing.cancel()", start);
+  const produce = runs.indexOf("await produce_openai_chat_completions(", start);
+  assert.ok(
+    start > 0 && produce > start && cancel > produce,
+    "the heartbeat must wrap the preparation await and stop when it returns",
+  );
+});

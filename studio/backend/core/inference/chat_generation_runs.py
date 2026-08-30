@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -383,6 +384,28 @@ class ChatGenerationSupervisor:
                 ", ".join(stuck),
             )
 
+    # Renewals while preparation runs, bounded. Unbounded would mean a preparation that
+    # never returns (an engine wedged inside a load) is kept alive forever, which is the
+    # failure this whole file exists to end. The bound is generous: it only has to
+    # outlast a real download, and after it the ordinary lease takes over.
+    _PREPARE_RENEW_INTERVAL_S = 60.0
+    _PREPARE_RENEW_MAX = 120  # two hours of preparation
+
+    async def _renew_lease_while_preparing(self, run_id: str) -> None:
+        """Hold the progress lease open while the model is being prepared.
+
+        Cancelled by the caller the moment preparation returns, so this never overlaps
+        the streaming phase, where real output is the lease.
+        """
+        for _ in range(self._PREPARE_RENEW_MAX):
+            await asyncio.sleep(self._PREPARE_RENEW_INTERVAL_S)
+            try:
+                await asyncio.to_thread(db.touch_progress, run_id)
+            except Exception:
+                # A renewal that cannot be written is not worth failing the generation
+                # over; the run simply ages as it did before.
+                return
+
     async def _produce(
         self,
         run_id: str,
@@ -447,17 +470,28 @@ class ChatGenerationSupervisor:
             from routes.inference import produce_openai_chat_completions
 
             payload = ChatCompletionRequest.model_validate(run["requestPayload"])
-            response = await produce_openai_chat_completions(
-                payload,
-                _background_request(self.app, run_id, cancel_event),
-                owner,
-                cancel_on_disconnect = False,
+            # Automatic switching, idle reload and auto-download all happen inside the
+            # call below, and llama.cpp's own first-token budget only starts after it,
+            # so a lease aged from mark_running would reap a legitimate preparation. One
+            # touch afterwards covers load-plus-prefill but not a single preparation that
+            # is itself longer than the lease, which a large GGUF over a slow link is.
+            preparing = asyncio.create_task(
+                self._renew_lease_while_preparing(run_id),
+                name = f"chat-generation-prepare-lease:{run_id}",
             )
-            # The load is behind us: produce_openai_chat_completions returns once the
-            # model is resident and the stream is open. Automatic switching, idle reload
-            # and auto-download all happen inside that call, while llama.cpp's own
-            # first-token budget only starts after it, so a lease still aged from
-            # mark_running could reap a legitimate load plus a legitimate prefill.
+            try:
+                response = await produce_openai_chat_completions(
+                    payload,
+                    _background_request(self.app, run_id, cancel_event),
+                    owner,
+                    cancel_on_disconnect = False,
+                )
+            finally:
+                preparing.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await preparing
+            # The load is behind us: the stream is open, so streamed output is the lease
+            # from here. Stamped once more so the handover carries no gap.
             await asyncio.to_thread(db.touch_progress, run_id)
             if int(getattr(response, "status_code", 200)) >= 400:
                 raise RuntimeError(f"Local generation returned HTTP {response.status_code}")
