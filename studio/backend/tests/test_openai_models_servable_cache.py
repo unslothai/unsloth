@@ -44,12 +44,8 @@ def _stub(monkeypatch):
         counts["servable"] += 1
         return (True, ("Q4_K_M",))
 
-    monkeypatch.setattr(
-        "core.inference.local_model_resolver.local_servable_model", _servable
-    )
-    monkeypatch.setattr(
-        "core.inference.local_model_resolver.local_load_dir", lambda p: p
-    )
+    monkeypatch.setattr("core.inference.local_model_resolver.local_servable_model", _servable)
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
 
     def _resident(key, **kw):
         counts["resident"] += 1

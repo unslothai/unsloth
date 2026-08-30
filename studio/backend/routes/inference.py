@@ -23984,9 +23984,7 @@ def _servable_catalog_rows(
             info,
             is_gguf,
             quants,
-            _resolves_to_resident(
-                resident_key, llama_only = is_gguf, exact_only = not is_gguf
-            ),
+            _resolves_to_resident(resident_key, llama_only = is_gguf, exact_only = not is_gguf),
         )
         for info, is_gguf, quants, resident_key in _servable_catalog_scan(catalog, catalog_at)
     ]
