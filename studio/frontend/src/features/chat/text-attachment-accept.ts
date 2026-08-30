@@ -606,10 +606,12 @@ function declaredGettextCharset(
     return null;
   }
   const decoder = new TextDecoder("windows-1252");
+  const cut = bytes.length > GETTEXT_HEADER_SCAN_BYTES;
   const fromPrefix = gettextHeaderCharset(
     decoder.decode(bytes.subarray(0, GETTEXT_HEADER_SCAN_BYTES)),
+    cut,
   );
-  if (fromPrefix || bytes.length <= GETTEXT_HEADER_SCAN_BYTES) {
+  if (fromPrefix || !cut) {
     return fromPrefix;
   }
   // A cutoff can also split the entry itself, leaving a match that holds the
@@ -618,9 +620,68 @@ function declaredGettextCharset(
   return gettextHeaderCharset(decoder.decode(bytes));
 }
 
-function gettextHeaderCharset(text: string): string | null {
-  const headerEntry = text.match(GETTEXT_HEADER_ENTRY_RE)?.[1];
-  const charset = headerEntry?.match(GETTEXT_CHARSET_RE)?.[1];
+// The C escapes gettext writes. Anything else stands for itself, which is what
+// \" and \\ need, and leaves an unknown one as the character it escaped.
+const GETTEXT_ESCAPES: Record<string, string> = {
+  a: "\x07",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+};
+
+/**
+ * A gettext string's value: its adjacent literals joined, escapes resolved.
+ *
+ * PO wraps a long string across quoted pieces and concatenates them, so the
+ * header is not the source text. Matching the raw entry instead read a charset
+ * split across two pieces (`charset=windows-` then `1252\n`) as the truncated
+ * label, and a catalog was refused for declaring a charset it does not.
+ */
+function gettextStringValue(raw: string): string {
+  let out = "";
+  let inside = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (!inside) {
+      if (character === '"') inside = true;
+      continue;
+    }
+    if (character === "\\" && index + 1 < raw.length) {
+      const escaped = raw[index + 1];
+      out += GETTEXT_ESCAPES[escaped] ?? escaped;
+      index += 1;
+    } else if (character === '"') {
+      inside = false;
+    } else {
+      out += character;
+    }
+  }
+  return out;
+}
+
+// A line that opens with anything but another quoted piece, which is where a
+// header entry ends.
+const GETTEXT_ENTRY_ENDED_RE = /\r?\n[ \t]*[^ \t"\r\n]/;
+
+/**
+ * @param truncated Whether `text` is a prefix of the file. An entry that runs
+ * to the cut may continue past it, and half a `charset=windows-1252` reads as
+ * the label `windows-`, so the caller is told to look at the whole file rather
+ * than given an answer drawn from half a value.
+ */
+function gettextHeaderCharset(text: string, truncated = false): string | null {
+  const match = text.match(GETTEXT_HEADER_ENTRY_RE);
+  if (!match) {
+    return null;
+  }
+  const after = text.slice((match.index ?? 0) + match[0].length);
+  if (truncated && !GETTEXT_ENTRY_ENDED_RE.test(after)) {
+    return null;
+  }
+  const charset = gettextStringValue(match[1]).match(GETTEXT_CHARSET_RE)?.[1];
   // A .pot template ships the literal placeholder rather than a charset.
   return charset && charset.toUpperCase() !== "CHARSET" ? charset : null;
 }
@@ -860,8 +921,14 @@ function vCardParameterSections(text: string): string[] {
 // An XML prolog names the document's encoding and must be the first thing in it.
 // Read from the bytes rather than the extension, so every XML dialect here
 // (.resx, .xliff, .svg, a text .plist, the project files) is covered at once.
+// The whitespace after the target is what tells a declaration from a processing
+// instruction: `xml-stylesheet` and `xml-model` open with the same five bytes,
+// and neither states what the document is written in.
 const XML_PROLOG_ENCODING_RE =
-  /^<\?xml[^>]*?\sencoding[ \t]*=[ \t]*["\']([A-Za-z0-9._-]+)["\']/i;
+  /^<\?xml[ \t\r\n][^>]*?[ \t\r\n]encoding[ \t]*=[ \t]*["\']([A-Za-z0-9._-]+)["\']/i;
+// XML's own S production. `\s` would also take a form feed or a no-break space,
+// which the grammar does not, so a PI could pass on one of those instead.
+const XML_WHITESPACE_BYTES = new Set([0x20, 0x09, 0x0d, 0x0a]);
 
 /**
  * The encoding an XML declaration names, if the document opens with one.
@@ -875,6 +942,12 @@ const XML_PROLOG_ENCODING_RE =
 function declaredXmlEncoding(bytes: Uint8Array): string | null {
   const decoder = new TextDecoder("windows-1252");
   if (decoder.decode(bytes.subarray(0, 5)).toLowerCase() !== "<?xml") {
+    return null;
+  }
+  // A sixth byte of whitespace, or this is a PI target that merely begins the
+  // same way. Reading one of those as the declaration decoded a UTF-8 document
+  // as a code page, and mojibake is what it returned rather than an error.
+  if (bytes.length < 6 || !XML_WHITESPACE_BYTES.has(bytes[5])) {
     return null;
   }
   const close = bytes.indexOf(0x3e);

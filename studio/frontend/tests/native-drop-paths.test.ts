@@ -2458,3 +2458,78 @@ test("a card every property of which reads still decodes per property", async ()
   assert.match(text, /FN;CHARSET=windows-1252:Café/);
   assert.match(text, /ORG;CHARSET=windows-1251:Пр/);
 });
+
+test("a processing instruction is not read as the document's declaration", async () => {
+  // `xml-stylesheet` and `xml-model` open with the same five bytes as a
+  // declaration. Taking one for the prolog decoded a UTF-8 document as a code
+  // page and returned mojibake, which no error accompanies.
+  const doc =
+    '<?xml-stylesheet type="text/xsl" href="s.xsl" encoding="windows-1252"?>\n' +
+    "<note>café naïve</note>\n";
+  const text = await readTextAttachment(new File([doc], "doc.xml"));
+  assert.match(text, /café naïve/);
+});
+
+test("a declaration still needs only the whitespace its grammar requires", async () => {
+  // The check is a sixth byte of XML's own S, so tab and newline pass with space.
+  const enc = new TextEncoder();
+  for (const space of [" ", "\t", "\n", "\r"]) {
+    const xml = new Uint8Array([
+      ...enc.encode(`<?xml${space}version="1.0" encoding="windows-1252"?><t>Caf`),
+      0xe9,
+      ...enc.encode("</t>"),
+    ]);
+    assert.match(
+      await readTextAttachment(new File([xml], "ui.resx")),
+      /Café/,
+      `whitespace ${JSON.stringify(space)}`,
+    );
+  }
+});
+
+test("a gettext charset split across two literals reads as one label", async () => {
+  // PO concatenates adjacent quoted pieces, so the header is not the source
+  // text. Matching the raw entry read `windows-` and refused the catalog for a
+  // charset it does not declare.
+  const enc = new TextEncoder();
+  const po = new Uint8Array([
+    ...enc.encode(
+      'msgid ""\nmsgstr ""\n' +
+        '"Project-Id-Version: demo\\n"\n' +
+        '"Content-Type: text/plain; charset=windows-"\n' +
+        '"1252\\n"\n\n' +
+        'msgid "cafe"\nmsgstr "caf',
+    ),
+    0xe9,
+    ...enc.encode('"\n'),
+  ]);
+  assert.match(await readTextAttachment(new File([po], "messages.po")), /café/);
+});
+
+test("a header entry the prefix cuts is answered from the whole file", async () => {
+  // The same truncation by a different route: the 64 KiB prefix ends inside the
+  // charset, and the last complete piece stops at `windows-`. An entry that runs
+  // to the cut has to be re-read rather than answered from half a value.
+  const enc = new TextEncoder();
+  const head = 'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=windows-';
+  const comment = "# " + "c".repeat(64 * 1024 - head.length - 4) + "\n";
+  const source = comment + head;
+  // The cut lands inside the value, with the rest of it in the next piece.
+  assert.ok(source.length > 64 * 1024 - 8 && source.length <= 64 * 1024);
+  const po = new Uint8Array([
+    ...enc.encode(`${source}"\n"1252\\n"\n\nmsgid "c"\nmsgstr "caf`),
+    0xe9,
+    ...enc.encode('"\n'),
+  ]);
+  assert.match(await readTextAttachment(new File([po], "big.po")), /café/);
+});
+
+test("escapes in a header entry resolve before the charset is read", async () => {
+  // `\n` is a newline, not the letter: emitting it literally glued the charset
+  // to the header that follows and made `utf-8` read as `utf-8nContent`.
+  const po =
+    'msgid ""\nmsgstr ""\n' +
+    '"Content-Type: text/plain; charset=utf-8\\nContent-Transfer-Encoding: 8bit\\n"\n\n' +
+    'msgid "c"\nmsgstr "café"\n';
+  assert.match(await readTextAttachment(new File([po], "m.po")), /café/);
+});
