@@ -1373,6 +1373,26 @@ class TestNonReservingLoadModesSurvive:
             "dio", supports_load_mode = False, weights_in_host_memory = True
         )
 
+    def test_one_snapshot_drives_application_and_suppression(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
+        snapshot = (False, True)
+        managed, extras = apply_load_mode_policy(
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            requested_load_mode = "none",
+            model_memory_settings = snapshot,
+        )
+        assert (managed, extras) == ([], [])
+        assert model_memory_suppresses_load_mode(
+            "none",
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            model_memory_settings = snapshot,
+        )
+
 
 def _fake_backend(**attrs):
     base = {

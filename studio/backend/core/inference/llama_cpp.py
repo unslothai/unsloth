@@ -21357,7 +21357,12 @@ class LlamaCppBackend:
                 # GPU with full offload it would hold a second copy of the model
                 # in system RAM and do nothing for VRAM, so it is not emitted
                 # and the idle-unload veto carries residency by itself.
-                from utils.model_memory_settings import should_mlock
+                from utils.model_memory_settings import get_model_memory_settings
+
+                _model_memory_settings = get_model_memory_settings()
+                _model_memory_should_mlock = (
+                    _model_memory_settings[0] and not _model_memory_settings[1]
+                )
 
                 # fully_gpu_offloaded is only set by the auto branch. Manual mode
                 # and a user -ngl reach the same placement by their own routes,
@@ -21394,7 +21399,7 @@ class LlamaCppBackend:
                     is_vulkan_backend = is_vulkan_backend,
                     binary = binary,
                     env = _mem_env,
-                    probe_vulkan = should_mlock(),
+                    probe_vulkan = _model_memory_should_mlock,
                     known_vulkan_igpus = _shared_gpu_ids,
                     # Over the built cmd AND the extras, so Unsloth's own --fit
                     # counts and a later user --fit still wins by last-arg.
@@ -21411,6 +21416,7 @@ class LlamaCppBackend:
                     extra_args,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
+                    model_memory_settings = _model_memory_settings,
                 )
                 # After Model Memory and on the extras it returned, because it
                 # defers to those settings: while either one owns host placement
@@ -21460,6 +21466,7 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
+                    model_memory_settings = _model_memory_settings,
                 )
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
@@ -21471,11 +21478,12 @@ class LlamaCppBackend:
                     _resolved_load_mode,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
+                    model_memory_settings = _model_memory_settings,
                 )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
                 self._memory_mlock_applicable = _mem_host_resident
-                if should_mlock() and not _mem_host_resident:
+                if _model_memory_should_mlock and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
                         "offloaded to a discrete GPU; residency is kept by not "
@@ -22366,7 +22374,7 @@ class LlamaCppBackend:
                             # wrong, so llama.cpp may now leave weights in host
                             # RAM. Re-arm residency for the retry (last-wins, so
                             # appending is enough) and re-record the state.
-                            if should_mlock() and not _mem_host_resident:
+                            if _model_memory_should_mlock and not _mem_host_resident:
                                 _run.extend(
                                     ["--load-mode", "mmap+mlock"]
                                     if server_caps.get("supports_load_mode")
@@ -22518,12 +22526,14 @@ class LlamaCppBackend:
                         replay[1:],
                         supports_load_mode = bool(server_caps.get("supports_load_mode")),
                         weights_in_host_memory = True,
+                        model_memory_settings = _model_memory_settings,
                     )
                     fallback_load_mode, fallback_args = apply_load_mode_policy(
                         fallback_args,
                         supports_load_mode = bool(server_caps.get("supports_load_mode")),
                         weights_in_host_memory = True,
                         requested_load_mode = _resolved_load_mode,
+                        model_memory_settings = _model_memory_settings,
                     )
                     fallback_policy_active = bool(
                         fallback_managed
@@ -22531,6 +22541,7 @@ class LlamaCppBackend:
                             _resolved_load_mode,
                             supports_load_mode = bool(server_caps.get("supports_load_mode")),
                             weights_in_host_memory = True,
+                            model_memory_settings = _model_memory_settings,
                         )
                         or fallback_args != replay[1:]
                         or _mem_scrubbed
@@ -22999,7 +23010,7 @@ class LlamaCppBackend:
                             is_vulkan_backend = is_vulkan_backend,
                             binary = binary,
                             env = env,
-                            probe_vulkan = should_mlock(),
+                            probe_vulkan = _model_memory_should_mlock,
                             fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], env),
                         )
                         # Lock-ADDING direction only: `cmd` carries a policy-emitted
@@ -23019,6 +23030,7 @@ class LlamaCppBackend:
                                 # copy would land after the extras and mark
                                 # _memory_policy_active for a launch it never touched.
                                 weights_in_host_memory = _retry_host_resident,
+                                model_memory_settings = _model_memory_settings,
                             )
                             if _retry_managed:
                                 # After the user extras, so llama.cpp's last-wins parse
