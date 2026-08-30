@@ -6635,6 +6635,12 @@ def _marker_selection_patch(
     sms = [str(s).strip() for s in (choice.supported_sms or []) if str(s).strip()]
     if sms and marker.get("supported_sms") != sms:
         patch["supported_sms"] = sms
+    # Same shape as the targets above: the paired cudart archive is in the fingerprint but
+    # not readable back out of it, so an install predating the field only gains it here.
+    # Set, never cleared: reuse requires a fingerprint match, so a bundle with no pair is
+    # one the marker already describes as pair-less.
+    if choice.runtime_name and marker.get("runtime_asset") != choice.runtime_name:
+        patch["runtime_asset"] = choice.runtime_name
     return patch
 
 

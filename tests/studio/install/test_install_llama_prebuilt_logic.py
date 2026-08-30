@@ -3081,6 +3081,59 @@ def test_every_reuse_path_syncs_the_arch_coverage():
     assert 'patch["mapped_targets"] = targets' in patch
 
 
+def test_a_reused_install_backfills_the_paired_runtime_asset(tmp_path: Path):
+    """An install predating runtime_asset only gains it on the reuse path.
+
+    The pairing is in install_fingerprint, but that is a hash: the kept-install payload
+    check reads the field, so without this backfill a paired Windows CUDA tree stays
+    "pair-less" forever and its cudart trio is never required.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "release-1", "llama_backend": "auto", "force_cpu": False}),
+        encoding = "utf-8",
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b9002",
+        name = "app-b9002-windows-cuda-x64.zip",
+        url = "https://example/x",
+        source_label = "published",
+        install_kind = "windows-cuda",
+        runtime_name = "cudart-llama-bin-win-cuda-13.0-x64.zip",
+    )
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice = choice, backend_request = "auto")
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["runtime_asset"] == "cudart-llama-bin-win-cuda-13.0-x64.zip"
+
+
+def test_a_pair_less_reuse_does_not_invent_a_runtime_asset(tmp_path: Path):
+    """Set, never cleared: a bundle with no pair is one the marker already describes."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "release-1", "llama_backend": "auto", "force_cpu": False}),
+        encoding = "utf-8",
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b9002",
+        name = "app-b9002-windows-cpu-x64.zip",
+        url = "https://example/x",
+        source_label = "published",
+        install_kind = "windows-cpu",
+    )
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice = choice, backend_request = "auto")
+
+    assert "runtime_asset" not in json.loads(marker_path.read_text(encoding = "utf-8"))
+
+
 def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
     """A sync that touches other fields must not drop the arch ones (#7624).
     sync_marker_selection reads the marker, applies a patch and writes the whole dict
