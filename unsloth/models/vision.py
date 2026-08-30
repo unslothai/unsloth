@@ -229,15 +229,18 @@ def _attach_bnb_multidevice_hooks(
     """
     if fast_inference:
         return
-    # Before the bnb gate: a dispatched model loses hooks on its tied weights
-    # whatever the quantization, and the load that placed them has already
-    # happened. Nothing to repair on a single-device map.
-    repaired = _repair_tied_module_hooks(model)
-    if repaired:
-        logger.info(
-            f"Unsloth: re-attached dispatch hooks to {repaired} tied module(s) "
-            "accelerate skipped, so a split model runs and trains."
-        )
+    # Before the bnb gate, because a dispatched model loses the hooks on its
+    # tied weights whatever the quantization. Skipped entirely when the
+    # embedding is being offloaded: that path owns the embedding, and
+    # `_embedding_dispatch_device` READS the hook we would add to decide where
+    # to re-send the ids, so adding one here would answer its question wrongly.
+    if not offload_embedding:
+        repaired = _repair_tied_module_hooks(model)
+        if repaired:
+            logger.info(
+                f"Unsloth: re-attached dispatch hooks to {repaired} tied module(s) "
+                "accelerate skipped, so a split model runs and trains."
+            )
     is_bnb = (
         load_in_4bit
         or load_in_8bit
