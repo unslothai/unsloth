@@ -109,27 +109,42 @@ def test_history_grounding_is_still_checked(script):
     """Two of the four turns are answerable only from the earlier ones. Those checks fail
     when history is dropped, rather than when the model is wrong about France."""
     good2 = "you asked about 2"
-    with pytest.raises(AssertionError, match = "paris"):
+    with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
 
-    # Without a turn-2 check a server dropping every turn but the last still passed:
-    # "1" comes from turn 1 and "paris" from turn 3.
+    # The gap #10009 found: 'paris' in the JOINED transcript proves nothing, because
+    # turn 3 supplies it on its own. Checked per turn, a server that answers turn 3 and
+    # then loses the history still fails.
+    lost_after_3 = ["1 is 2", "b", "paris", "Okay, I'm ready."]
     with pytest.raises(AssertionError, match = "history reached the model"):
-        script.check(
-            "noturn2", ["1 is 2", "b", "paris", "paris"], ["1 is 2", "b", "paris", "paris"]
-        )
+        script.check("joined-is-not-enough", lost_after_3, list(lost_after_3))
 
 
-def test_turn_2_is_checked_against_turn_1_not_a_literal(script):
-    """A hardcoded digit would accept a turn 2 that contradicts turn 1. The fixtures carry
-    their own numbers, which is the point: the check reads turn 1 rather than a literal, so
-    it holds whatever PROMPTS asks."""
-    contradiction = ["1 is 3", "the answer was 2", "paris", "paris"]
+def test_grounding_is_asserted_on_a_turn_a_270m_model_can_carry(script):
+    """Which turn holds the grounding assertion is itself the regression risk.
+
+    #10009 put it on turn 2, requiring the reply to restate turn 1's number. On macOS
+    that failed against a server whose history demonstrably arrived: the same run
+    answered the last turn 'The capital of France is Paris.', which its own prompt
+    ("Repeat the city name") cannot produce without turn 3. So an unhelpfully worded
+    turn 2 must not fail, while a last turn that cannot name the city must.
+    """
+    # Exactly the macOS transcript, which is a healthy server.
+    macos = ["58 + 27 = 95", "You haven't provided the previous question.", "paris", "paris"]
+    script.check("macos", macos, list(macos))
+
+    # And the measured reply of a server sent the last prompt with no history at all.
+    no_history = ["58 + 27 = 95", "the answer was 95", "paris", "Okay, I'm ready."]
     with pytest.raises(AssertionError, match = "history reached the model"):
-        script.check("contradiction", contradiction, list(contradiction))
+        script.check("dropped", no_history, list(no_history))
 
-    consistent = ["1 is 3", "the answer was 3", "paris", "paris"]
-    script.check("consistent", consistent, list(consistent))
+
+def test_turn_1_must_still_answer_with_a_number(script):
+    """Turn 1 is what makes the conversation multi-turn; a server that cannot do
+    arithmetic at all is not exercising history."""
+    broken = ["I cannot do arithmetic.", "b", "paris", "paris"]
+    with pytest.raises(AssertionError, match = "should contain a number"):
+        script.check("nonumber", broken, list(broken))
 
 
 def test_the_script_needs_no_environment_to_import(script):
@@ -146,3 +161,56 @@ def test_the_script_needs_no_environment_to_import(script):
             f"{forbidden} moved to module level in {SCRIPT.name}, so importing it now "
             f"needs a running server or the SDKs installed, and these tests cannot run"
         )
+
+
+def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, monkeypatch):
+    """A retry is a way to hide a real fault, so it is pinned by running it.
+
+    The near-tie this exists for flips occasionally; a server that samples disagrees
+    every time. The first must pass and the second must still fail, and the retry must
+    be bounded rather than looping until it gets lucky.
+    """
+    clean = ["58 + 27 = 95", "the answer was 95", "paris", "paris"]
+
+    calls = {"n": 0}
+
+    def always_divergent():
+        calls["n"] += 1
+        # A different last turn every call, so no two replays ever agree.
+        return ["58 + 27 = 95", "the answer was 95", "paris", f"paris {calls['n']}"]
+
+    monkeypatch.setattr(script, "run_openai", always_divergent)
+    monkeypatch.setattr(script, "run_anthropic", always_divergent)
+    with pytest.raises(AssertionError, match = "non-deterministic"):
+        script.main()
+    # Bounded: two runners per attempt, and it must not have looped past ATTEMPTS.
+    assert calls["n"] == 2 * script.ATTEMPTS, calls["n"]
+
+    # And a single flip, followed by agreement, passes.
+    calls["n"] = 0
+
+    def flips_once():
+        calls["n"] += 1
+        if calls["n"] == 2:  # the second replay of the first attempt
+            return ["58 + 27 = 95", "the answer was 95", "paris", "paris!"]
+        return list(clean)
+
+    monkeypatch.setattr(script, "run_openai", flips_once)
+    monkeypatch.setattr(script, "run_anthropic", flips_once)
+    assert script.main() == 0
+
+
+def test_a_non_divergence_failure_is_not_retried(script, monkeypatch):
+    """Retrying an empty reply or a dropped history would just cost three runs and
+    still fail, and would let a broken server look intermittent."""
+    calls = {"n": 0}
+
+    def no_history():
+        calls["n"] += 1
+        return ["58 + 27 = 95", "b", "paris", "Okay, I'm ready."]
+
+    monkeypatch.setattr(script, "run_openai", no_history)
+    monkeypatch.setattr(script, "run_anthropic", no_history)
+    with pytest.raises(AssertionError, match = "history reached the model"):
+        script.main()
+    assert calls["n"] == 2, f"retried a non-divergence failure {calls['n']} times"
