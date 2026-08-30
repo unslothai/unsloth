@@ -105,6 +105,14 @@ def _no_inherited_visibility_mask(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_carried_over_torch_measurement(monkeypatch):
+    """The torch snapshot is cached with a TTL, so one test's fake host would answer
+    for the next one. Both caches start empty here, as they do in a fresh process."""
+    monkeypatch.setattr(hw, "_torch_build_snapshot_cache", None)
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+
+
+@pytest.fixture(autouse = True)
 def _no_background_inventory_refresh(monkeypatch):
     """Keep the non-blocking refresh from probing the REAL host mid-test.
 
@@ -380,6 +388,10 @@ def _system_gpu_info(monkeypatch):
     # answers "unknown" and the first poll publishes nothing. In a running backend
     # _detect_hardware_locked has already done one blocking read by this point.
     hw.get_physical_gpu_inventory()
+    # And the torch measurement, for the same reason: the mismatch report reads a
+    # cached classification rather than importing torch on the request thread, because
+    # the CUDA and XPU availability probes block while a driver is wedged.
+    hw.torch_build_snapshot()
     return main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
 
@@ -793,6 +805,10 @@ def test_the_chat_only_verdict_follows_the_inventory(monkeypatch):
     monkeypatch.setattr(
         hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [{"vendor": "nvidia"}]}
     )
+    # The verdict reads a cached measurement and never probes torch inline, because
+    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
+    # on the real path; measure this fake host the same way.
+    hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
     # And the reverse: a card that went away must not leave a mismatch behind.
@@ -837,6 +853,10 @@ def test_export_and_video_read_the_refreshed_verdict(monkeypatch):
         hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [{"vendor": "nvidia"}]}
     )
 
+    # The verdict reads a cached measurement and never probes torch inline, because
+    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
+    # on the real path; measure this fake host the same way.
+    hw.torch_build_snapshot()
     assert hw.export_capability()["export_unsupported_reason"] == "torch_cpu_build"
     assert hw.video_capability()["video_unsupported_reason"] == "torch_cpu_build"
 
@@ -888,11 +908,16 @@ def test_a_transient_probe_failure_does_not_retire_a_settled_mismatch(monkeypatc
     # the refresh would otherwise read the real build and retire the mismatch for a
     # reason this test is not about.
     monkeypatch.setattr(hw, "classify_torch_build", lambda: "torch_cpu_build")
+    monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
     monkeypatch.setattr(
         hw,
         "get_physical_gpu_inventory",
         lambda **_kw: {"available": False, "devices": [], "unknown": True},
     )
+    # The verdict reads a cached measurement and never probes torch inline, because
+    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
+    # on the real path; measure this fake host the same way.
+    hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
     # A probe that DID answer, and found nothing, still retires it.
@@ -939,8 +964,13 @@ def test_the_health_path_never_waits_on_the_gpu_probe(monkeypatch):
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
 
-    # Cold cache: no probe runs inline, the refresh is handed to a thread, and the
-    # explicit unknown keeps the frozen verdict rather than retiring it.
+    # The verdict reads a cached measurement and never probes torch inline, because
+    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
+    # on the real path; measure this fake host the same way.
+    hw.torch_build_snapshot()
+
+    # Cold inventory cache: no probe runs inline, the refresh is handed to a thread, and
+    # the explicit unknown keeps the frozen verdict rather than retiring it.
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
     assert calls["blocking"] == 0, "nothing may shell out on the request path"
     assert calls["threads"] >= 1
@@ -1137,6 +1167,10 @@ def test_an_accelerator_that_came_back_retires_the_cached_verdict(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
     calls = {"n": 0}
     monkeypatch.setattr(hw, "invalidate_detection", lambda: calls.__setitem__("n", calls["n"] + 1))
+    # The recovery is measured, not probed inline: warm the snapshot the way detection
+    # does, and note that the recovery path drops it again so the fresh pass re-reads
+    # this fake host rather than the answer from before it came back.
+    hw.torch_build_snapshot()
 
     # The current answer is kept for now; the next detection pass publishes the real one.
     assert hw.current_chat_only_verdict() == ("torch_cuda_unavailable", "2.6.0+cu124")
@@ -1345,6 +1379,9 @@ def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
     monkeypatch.setattr(hw, "_discard_detection_locked", lambda: calls.append("discard"))
     monkeypatch.setattr(hw, "start_background_detection", lambda: calls.append("start"))
 
+    # detect_hardware() warms the snapshot on the real path; the verdict itself only
+    # ever reads it non-blocking, so measure this fake host the same way first.
+    hw.torch_build_snapshot()
     hw.current_chat_only_verdict()
 
     # Order matters: discarding after the pass has started would race it, and starting
@@ -1374,7 +1411,11 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
             raise OSError("[WinError 126] cudart64_12.dll could not be loaded")
 
     monkeypatch.setitem(sys.modules, "torch", _Exploding())
-    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+    # _has_torch() is NOT forced here. It reports False for a wheel that will not
+    # import, which is the same answer it gives for one that is not installed at all,
+    # and the early return on it used to keep this host from ever reaching the on-disk
+    # fallback below. Forcing it True hid exactly that.
+    assert hw._has_torch() is False, "the premise: an unimportable torch reads as absent"
 
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.6.0+cu124")
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
@@ -1411,3 +1452,98 @@ def test_the_disk_label_reader_needs_no_interpreter(tmp_path):
 
     with patch.object(hw.importlib.util, "find_spec", side_effect = ValueError("boom")):
         assert hw._installed_torch_label_on_disk() == ""
+
+
+# ========== Round nine ==========
+
+
+def test_an_untagged_xpu_build_is_not_called_a_cpu_wheel(monkeypatch):
+    """torch.version.xpu is the marker, and an untagged wheel can carry it.
+
+    An Arc host whose Level Zero runtime is down has no local version tag and neither
+    a cuda nor a hip one, so it read as a CPU wheel and the UI offered a reinstall,
+    which is the one remedy that cannot help. _torch_reports_an_xpu_runtime() already
+    knew better, so the card established a mismatch and then got the wrong advice.
+    """
+    import sys
+
+    torch = types.ModuleType("torch")
+    torch.__version__ = "2.9.1"  # untagged, as a source or vendor build is
+    torch.version = SimpleNamespace(cuda = None, hip = None, xpu = "20250101")
+    torch.cuda = SimpleNamespace(is_available = lambda: False)
+    torch.xpu = SimpleNamespace(is_available = lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+    # And the plain untagged CPU wheel is still a CPU wheel.
+    torch.version = SimpleNamespace(cuda = None, hip = None, xpu = None)
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+
+def test_the_health_path_never_imports_torch_inline(monkeypatch):
+    """classify_torch_build() imports torch and asks CUDA and XPU if they are available.
+
+    Both block while a driver is wedged or restarting, which is the state
+    torch_cuda_unavailable names, and /api/health and /api/liveness reach them through
+    the chat-only verdict against a two second desktop timeout. Making only the
+    inventory lookup non-blocking still left this on the request thread.
+    """
+    calls = {"probes": 0, "threads": 0}
+
+    def _classify():
+        calls["probes"] += 1
+        return "torch_cpu_build"
+
+    class _Thread:
+        def __init__(self, *a, **k):
+            calls["threads"] += 1
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(hw, "classify_torch_build", _classify)
+    monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
+    monkeypatch.setattr(hw.threading, "Thread", _Thread)
+    monkeypatch.setattr(hw, "_torch_build_snapshot_refreshing", False)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [], "unknown": True}
+    )
+
+    # Cold: nothing is measured on the request thread, the refresh is handed to a
+    # thread, and the frozen verdict stands rather than being downgraded on a guess.
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+    assert calls["probes"] == 0, "no torch probe may run on the health path"
+    assert calls["threads"] == 1
+
+    # Warm: the measurement is read from the cache, still without probing.
+    hw.torch_build_snapshot()
+    assert calls["probes"] == 1
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+    assert calls["probes"] == 1
+
+
+def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeypatch):
+    """The snapshot that said the accelerator was missing must not outlive it.
+
+    Left in place, the fresh detection pass the recovery starts would read the same
+    stale measurement for the rest of its TTL and settle on the verdict it just retired.
+    """
+    import sys
+
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
+    monkeypatch.setattr(hw, "_REDETECTION_REQUESTED", False)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
+    monkeypatch.setattr(hw, "invalidate_detection", lambda: 1)
+    monkeypatch.setattr(hw, "_discard_detection_locked", lambda: None)
+    monkeypatch.setattr(hw, "start_background_detection", lambda: None)
+
+    hw.torch_build_snapshot()
+    assert hw._torch_build_snapshot_cache is not None
+    hw.current_chat_only_verdict()
+    assert hw._torch_build_snapshot_cache is None, (
+        "the recovery must drop the measurement it was taken before"
+    )

@@ -363,6 +363,22 @@ _physical_gpu_inventory_refreshing = False
 # retire the epoch on every call and starve detection of a chance to settle.
 _REDETECTION_REQUESTED = False
 _physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
+# The same treatment for the torch side of the answer. classify_torch_build() imports
+# torch and calls the CUDA and XPU availability probes, and those block while a driver
+# is wedged or restarting -- which IS the torch_cuda_unavailable host. /api/health and
+# /api/liveness reach it through the chat-only verdict, so it cannot run inline there.
+_TORCH_BUILD_SNAPSHOT_TTL_SECONDS = 60.0
+_torch_build_snapshot_lock = threading.Lock()
+_torch_build_snapshot_refresh_lock = threading.Lock()
+_torch_build_snapshot_refreshing = False
+_torch_build_snapshot_cache: Optional[tuple[float, Dict[str, Any]]] = None
+# "No measurement yet", which every caller reads as "keep what you had". Distinct from
+# a measured {"reason": None}, which means torch is genuinely fine.
+_UNKNOWN_TORCH_BUILD_SNAPSHOT: Dict[str, Any] = {
+    "reason": None,
+    "usable": False,
+    "unknown": True,
+}
 
 
 def _probe_physical_gpu_inventory() -> Dict[str, Any]:
@@ -815,7 +831,13 @@ def classify_torch_build() -> Optional[str]:
         # offer a repair whose only effect is to undo the user's own choice.
         return None
     if not _has_torch():
-        return None
+        # Absent and unimportable are not the same thing, and the second is the case
+        # this classifier exists for: a wheel whose native runtime will not load is
+        # exactly "the wheel is right, the environment is not". _has_torch() collapses
+        # both to False, so returning None here left the mismatch report empty on the
+        # broken-runtime host and the System tab said no visible GPU while nvidia-smi
+        # could still enumerate the card.
+        return _classification_from_disk_label()
     try:
         import torch
 
@@ -841,13 +863,18 @@ def classify_torch_build() -> Optional[str]:
         local = version.partition("+")[2].strip().lower()
         cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
         hip_tag = getattr(getattr(torch, "version", None), "hip", None)
+        # torch.version.xpu is None on every non-XPU build and carries the Level Zero
+        # version on an XPU one, so an untagged wheel that sets it is a GPU build whose
+        # runtime is down -- not a CPU wheel. Without it that host was told to reinstall
+        # torch, which is the one thing that would not help.
+        xpu_tag = getattr(getattr(torch, "version", None), "xpu", None)
         if local == "cpu" or local.startswith("cpu."):
             # PyTorch publishes extended CPU local tags such as "2.8.0+cpu.cxx11.abi".
             # An exact match calls those CUDA builds whose runtime failed to start, and
             # the UI then tells the user to check a driver instead of reinstalling the
             # GPU wheel that was never there.
             return "torch_cpu_build"
-        if not local and cuda_tag is None and hip_tag is None:
+        if not local and cuda_tag is None and hip_tag is None and xpu_tag is None:
             # Untagged and built against no GPU runtime: the PyPI macOS/CPU wheel
             # shape. An untagged wheel that DOES set version.cuda (conda builds) is
             # a CUDA build and belongs in the second case.
@@ -862,12 +889,20 @@ def classify_torch_build() -> Optional[str]:
         # change exists to fix, for the runtime-failure case. Classify from the wheel on
         # disk instead, which needs no interpreter.
         logger.debug("torch build classification fell back to the on-disk label: %s", e)
-        label = _installed_torch_label_on_disk()
-        if not label:
-            return None
-        if "+cu" in label or "+rocm" in label or "+xpu" in label:
-            return "torch_cuda_unavailable"
-        return "torch_cpu_build"
+        return _classification_from_disk_label()
+
+
+def _classification_from_disk_label() -> Optional[str]:
+    """Classify from the wheel's own version label, with no interpreter started.
+
+    ``None`` when nothing is installed to read: an absent torch is not a mismatch.
+    """
+    label = _installed_torch_label_on_disk()
+    if not label:
+        return None
+    if "+cu" in label or "+rocm" in label or "+xpu" in label:
+        return "torch_cuda_unavailable"
+    return "torch_cpu_build"
 
 
 # setup.ps1's own rule for what counts as an XPU card, verbatim in intent: only Arc and
@@ -949,6 +984,85 @@ def _installed_torch_label_on_disk() -> str:
     return ""
 
 
+def _run_torch_build_snapshot() -> Dict[str, Any]:
+    """One uncached pass over torch, cached on the way out. Never raises."""
+    global _torch_build_snapshot_cache
+    snapshot = {
+        "reason": classify_torch_build(),
+        "usable": _torch_reports_a_usable_accelerator(),
+        "unknown": False,
+    }
+    _torch_build_snapshot_cache = (time.monotonic(), snapshot)
+    return snapshot
+
+
+def torch_build_snapshot(*, block: bool = True) -> Dict[str, Any]:
+    """``{reason, usable, unknown}`` for this venv's torch, cached with a TTL.
+
+    ``block=False`` for anything on a request path: both probes inside import torch and
+    ask the CUDA and XPU runtimes whether they are available, and a wedged or
+    restarting driver -- the very state ``torch_cuda_unavailable`` names -- can hold
+    those for as long as the driver takes. /api/health and /api/liveness reach here
+    through the chat-only verdict, against a two second desktop timeout, so a
+    non-blocking caller takes the last measurement, kicks the refresh onto a daemon
+    thread, and reads the new one later.
+
+    With nothing measured yet it gets ``unknown``, never a guess: detect_hardware()
+    takes the blocking path on exactly the hosts whose verdict can be re-derived, so
+    the cache is warm before any request can consult it.
+    """
+    now = time.monotonic()
+    cached_entry = _torch_build_snapshot_cache
+    if cached_entry is not None and now - cached_entry[0] < _TORCH_BUILD_SNAPSHOT_TTL_SECONDS:
+        return cached_entry[1]
+    if not block:
+        _schedule_torch_build_snapshot_refresh()
+        return cached_entry[1] if cached_entry is not None else dict(
+            _UNKNOWN_TORCH_BUILD_SNAPSHOT
+        )
+    with _torch_build_snapshot_lock:
+        cached_entry = _torch_build_snapshot_cache
+        if (
+            cached_entry is not None
+            and time.monotonic() - cached_entry[0] < _TORCH_BUILD_SNAPSHOT_TTL_SECONDS
+        ):
+            return cached_entry[1]
+        return _run_torch_build_snapshot()
+
+
+def _schedule_torch_build_snapshot_refresh() -> None:
+    """Refresh the torch snapshot off the caller's thread, one pass at a time."""
+    global _torch_build_snapshot_refreshing
+    with _torch_build_snapshot_refresh_lock:
+        if _torch_build_snapshot_refreshing:
+            return
+        _torch_build_snapshot_refreshing = True
+
+    def _refresh() -> None:
+        global _torch_build_snapshot_refreshing
+        try:
+            with _torch_build_snapshot_lock:
+                _run_torch_build_snapshot()
+        except Exception as e:
+            logger.debug("Background torch build refresh failed: %s", e)
+        finally:
+            with _torch_build_snapshot_refresh_lock:
+                _torch_build_snapshot_refreshing = False
+
+    try:
+        threading.Thread(target = _refresh, name = "torch-build-refresh", daemon = True).start()
+    except Exception as e:
+        logger.debug("Could not start the torch build refresh thread: %s", e)
+        with _torch_build_snapshot_refresh_lock:
+            _torch_build_snapshot_refreshing = False
+
+
+def invalidate_torch_build_snapshot() -> None:
+    """Drop the cached measurement so the next blocking caller re-probes."""
+    global _torch_build_snapshot_cache
+    _torch_build_snapshot_cache = None
+
+
 def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     """``physical_devices`` + ``mismatch`` for a host whose GPUs PyTorch cannot use.
 
@@ -957,7 +1071,9 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     visibility payload and never inside it -- ``devices`` is the runtime-usable list
     that model fit budgets against and that the training device picker pins from.
     """
-    reason = classify_torch_build()
+    # block=False for the same reason the inventory read below is: this is a request
+    # path, and the torch probes can hold for as long as a wedged driver does.
+    reason = torch_build_snapshot(block = False)["reason"]
     if reason is None:
         return {}
     # block=False: this is reached from GET /api/system, which the Resources tab polls
@@ -1327,7 +1443,10 @@ def _detect_hardware_locked() -> DeviceType:
         # two-A4000 host to go buy a GPU. Both probes are bounded and never raise.
         CHAT_ONLY_REASON = "no_gpu"
         if torch_ok:
-            build_reason = classify_torch_build()
+            # Blocking, and the only blocking caller: detection already runs off the
+            # request path, and warming the cache here is what lets /api/health read
+            # the answer later without probing torch itself.
+            build_reason = torch_build_snapshot()["reason"]
             _physical = _devices_that_can_establish_a_mismatch(
                 get_physical_gpu_inventory().get("devices") or []
             )
@@ -1393,6 +1512,9 @@ def _request_hardware_redetection() -> None:
         # The verdict has to be discarded before a pass can be started, and both under
         # the detection lock so a pass already running cannot publish over the reset.
         invalidate_detection()
+        # And the torch measurement, or the fresh pass would re-read the snapshot that
+        # said the accelerator was missing for up to another TTL.
+        invalidate_torch_build_snapshot()
         with _DETECT_LOCK:
             _discard_detection_locked()
         start_background_detection()
@@ -1425,8 +1547,14 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     if reason not in ("no_gpu", "torch_cpu_build", "torch_cuda_unavailable"):
         return reason, detail
     try:
-        build_reason = classify_torch_build()
-        if build_reason is None and _torch_reports_a_usable_accelerator():
+        snapshot = torch_build_snapshot(block = False)
+        if snapshot["unknown"]:
+            # Nothing measured yet, which is not the same as "torch is fine". Keep the
+            # verdict detection published; the refresh this just scheduled answers the
+            # next call.
+            return reason, detail
+        build_reason = snapshot["reason"]
+        if build_reason is None and snapshot["usable"]:
             # The accelerator came BACK: a driver finished restarting, or a usable eGPU
             # was attached. Only reason and detail are refreshed here, so DEVICE and
             # CHAT_ONLY would stay frozen at CPU while this started reporting no_gpu --
