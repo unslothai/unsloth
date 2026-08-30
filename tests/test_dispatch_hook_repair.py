@@ -12,6 +12,7 @@ here is conditioned on the tie.
 These RUN the real function against stubs: a rule fed a hand-written dict passes
 on a function that repairs nothing.
 """
+
 import sys
 import types
 
@@ -35,7 +36,6 @@ NEAR = "cpu"
 
 
 class _Model(torch.nn.Module):
-
     def __init__(
         self,
         device_map,
@@ -471,7 +471,6 @@ def test_the_map_wins_over_a_covering_ancestor():
 
 
 def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
-
     class _Awkward(_CoarseModel):
         def get_input_embeddings(self):
             raise NotImplementedError("this architecture does not say")
