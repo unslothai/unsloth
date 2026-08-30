@@ -129,8 +129,11 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
     iconClassName: "text-sky-600 dark:text-sky-400",
   },
   oom: {
-    label: "Won't fit",
-    tooltip: "Exceeds combined VRAM and system RAM budget.",
+    label: "Does not fit",
+    // Not "won't fit": llama-server never refuses a GGUF on size, it hands it to --fit. Same words
+    // the chat picker uses, where this class and `partial` share one mark.
+    tooltip:
+      "Model doesn't fit but still works with offloading. Expect slower inference.",
     iconClassName: "text-rose-600 dark:text-rose-400",
   },
 };

@@ -651,22 +651,26 @@ const MIGHT_FIT: FitVerdict = {
   tone: AMBER,
   hint: "Fits your GPU with almost no room to spare. If other apps are using VRAM, it offloads and runs slower.",
 };
-/** Past the card, inside VRAM plus RAM: llama-server's --fit puts the rest on CPU. */
+/** Past the card. Every GGUF over budget lands here, however far over, because llama-server never
+ *  refuses one on size: `_select_gpus` returns `(None, use_fit=True)` and `--fit` offloads the
+ *  rest to CPU. Splitting this by how far over only mattered on hosts where the RAM tier exists,
+ *  and it cost the honest answer on the ones where it does not. */
 const OFFLOADS: FitVerdict = {
-  label: "Partial offload",
+  label: "Does not fit",
   tone: ORANGE,
   hint: "Model doesn't fit but still works with offloading. Expect slower inference.",
 };
-/** Clears neither budget. The one verdict here that does not load. */
+/** A torch load, which has no --fit to fall back on: the pipeline goes wholly on the device. */
 const WONT_FIT: FitVerdict = {
   label: "Does not fit",
   tone: ORANGE,
-  hint: "Larger than your VRAM and system RAM together. This model will not load.",
+  hint: "Needs more VRAM than this device has. This model will not load.",
 };
 
 /** What each fit verdict marks and says, keyed by the Hub's classes so one question has one
- *  vocabulary. `tight` and `exceeds` are the training estimator's words for two of the same
- *  states, mapped here rather than given a second set of colours and copy. */
+ *  vocabulary. `tight` and `exceeds` are the training estimator's words, mapped on rather than
+ *  given a second set of colours and copy. `exceeds` is the only one that cannot offload: it
+ *  reaches here from a torch pipeline or the QLoRA estimate, never from a GGUF. */
 const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
   fits: null,
   marginal: MIGHT_FIT,
@@ -677,7 +681,7 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
     tone: ORANGE,
     hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
   },
-  oom: WONT_FIT,
+  oom: OFFLOADS,
   exceeds: WONT_FIT,
 };
 

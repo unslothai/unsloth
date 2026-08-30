@@ -167,10 +167,20 @@ test("each fit verdict is an info mark that explains itself", () => {
   // over budget but still card-sized needs no system RAM, so it fires on unified memory too.
   assert.ok(PICKERS.includes("marginal: MIGHT_FIT"));
   assert.ok(PICKERS.includes("partial: OFFLOADS"));
-  assert.ok(PICKERS.includes("oom: WONT_FIT"));
+  // Every over-budget GGUF says the same thing, however far over. llama-server never refuses one
+  // on size: _select_gpus returns use_fit and --fit offloads the rest. Splitting the copy here hid
+  // the honest answer on unified memory, where the RAM tier cannot fire and everything reads oom.
+  assert.ok(PICKERS.includes("oom: OFFLOADS"));
+  // A torch pipeline has no --fit, so that one keeps a refusal.
+  assert.ok(PICKERS.includes("exceeds: WONT_FIT"));
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Needs more VRAM than this device has. This model will not load."',
+    ),
+  );
+  assert.ok(!PICKERS.includes("Larger than your VRAM and system RAM together"));
   // The training estimator's three words map onto those rather than carrying their own copy.
   assert.ok(PICKERS.includes("tight: MIGHT_FIT"));
-  assert.ok(PICKERS.includes("exceeds: WONT_FIT"));
   // Only oom fails to load, so only its hint says so; partial offloads and runs slower.
   assert.ok(
     PICKERS.includes(
@@ -191,13 +201,18 @@ test("each fit verdict is an info mark that explains itself", () => {
   assert.ok(HUB_CARD.includes(mightFitHint));
   assert.ok(!PICKERS.includes("Loading can fail while other apps"));
   assert.ok(!HUB_CARD.includes("Within the last GB of VRAM headroom"));
-  assert.ok(
-    PICKERS.includes(
-      'hint: "Larger than your VRAM and system RAM together. This model will not load."',
-    ),
+  // The Hub's oom row says it too, so the two surfaces read alike on a host where every
+  // over-budget quant lands in that class.
+  assert.ok(!HUB_CARD.includes('label: "Won\'t fit"'));
+  assert.equal(
+    HUB_CARD.split(
+      '"Model doesn\'t fit but still works with offloading. Expect slower inference."',
+    ).length - 1,
+    2,
+    "partial and oom both",
   );
+
   // Marks are reachable by screen readers without the tooltip.
-  assert.ok(PICKERS.includes('label: "Partial offload"'));
   assert.ok(PICKERS.includes('label: "Might fit"'));
   assert.ok(PICKERS.includes('label: "Does not fit"'));
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
