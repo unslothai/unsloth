@@ -2250,7 +2250,7 @@ def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
 
 
 def test_a_stale_registry_record_cannot_claim_a_longer_named_live_card(monkeypatch):
-    """"RX 7900 XT" is a prefix of a live "RX 7900 XTX".
+    """ "RX 7900 XT" is a prefix of a live "RX 7900 XTX".
 
     Records are walked in LUID order and consume the first live name they match, so the
     stale XT could claim the XTX that is really installed and the inventory would
