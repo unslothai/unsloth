@@ -737,3 +737,101 @@ def test_chained_progress_windows(monkeypatch, tmp_path):
     assert seen["at_whisper_start"] == pytest.approx(0.7)
     assert seen["mid_whisper"] == pytest.approx(0.7 + 0.5 * 0.3)
     assert job["progress"] == 1.0
+
+
+def _slim_phase(**over):
+    phase = {
+        "install_dir": "d",
+        "install_kind": "slim",
+        "repo": "unslothai/whisper.cpp",
+        "asset": None,
+        "backend": "cpu",
+        "script": "s",
+        "pin_release_tag": None,
+    }
+    phase.update(over)
+    return phase
+
+
+def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
+    """The state the pipeline was in for ten days.
+
+    chained_phase_plan waives its pairing gate when llama updates first, assuming the
+    new llama supplies a workable pairing. When no whisper release exists for it, the
+    install exits 2 and a llama update that already landed is reported as failed.
+    """
+    monkeypatch.setattr(
+        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": False}
+    )
+
+    def must_not_install(*_a, **_kw):
+        raise AssertionError("the install cannot succeed, so it must not be attempted")
+
+    monkeypatch.setattr(wupd, "run_chained_phase", must_not_install)
+
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {
+        "skipped": True,
+        "skip_reason": "paired_llama_unavailable",
+    }
+
+
+def test_a_workable_pairing_still_installs(monkeypatch):
+    monkeypatch.setattr(
+        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
+    )
+    monkeypatch.setattr(
+        wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1.9.2-unsloth.12"}
+    )
+
+    result = wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None)
+    assert result == {"to_tag": "v1.9.2-unsloth.12"}
+
+
+@pytest.mark.parametrize("install_kind", ["full", None])
+def test_only_a_slim_install_is_pre_flighted(monkeypatch, install_kind):
+    """A full install carries its own ggml, so llama's build cannot strand it."""
+
+    def must_not_resolve(**_kw):
+        raise AssertionError("pairing is irrelevant to a non-slim install")
+
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", must_not_resolve)
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
+
+    phase = _slim_phase(install_kind = install_kind)
+    assert wupd.run_chained_phase_after_llama(phase, lambda _f: None) == {"to_tag": "v1"}
+
+
+def test_a_pre_flight_that_cannot_answer_still_attempts_the_install(monkeypatch):
+    """Fail towards the install, not the skip.
+
+    The pre-flight exists to avoid an attempt known to be doomed. One that cannot answer
+    knows nothing, so attempting keeps the previous behaviour, exit 2 included, rather
+    than silently skipping an update that would have worked.
+    """
+
+    def boom(**_kw):
+        raise RuntimeError("resolver blew up")
+
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", boom)
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
+
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {"to_tag": "v1"}
+
+
+def test_an_incompatible_release_that_slips_past_the_pre_flight_still_errors(monkeypatch):
+    """The pre-flight narrows when exit 2 happens; it must not swallow it.
+
+    test_whisper_phase_exit_2_is_a_failed_phase pins that an attempted install which
+    turns out incompatible stays an actionable job error rather than a false success.
+    """
+    monkeypatch.setattr(
+        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
+    )
+
+    def exit_2(*_a, **_kw):
+        raise wupd._flow.InstallerExit(2, "installer exited 2: incompatible release")
+
+    monkeypatch.setattr(wupd, "run_chained_phase", exit_2)
+
+    with pytest.raises(wupd._flow.InstallerExit):
+        wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None)

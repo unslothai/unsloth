@@ -1164,6 +1164,15 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             whisper_run = (
                 (lambda set_progress: _whisper.run_repair_phase(whisper_spec, set_progress))
                 if whisper_spec.get("repair")
+                # Pairing was left unchecked by the plan when llama is updating first, so
+                # confirm it once the new llama is actually installed rather than running
+                # an install that can only exit 2 and fail the whole job.
+                else (
+                    lambda set_progress: _whisper.run_chained_phase_after_llama(
+                        whisper_spec, set_progress
+                    )
+                )
+                if llama_spec is not None
                 else (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
             )
 

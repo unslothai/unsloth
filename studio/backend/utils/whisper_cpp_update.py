@@ -577,6 +577,9 @@ def chained_phase_plan(
     plan["update_available"] = True
     plan["phase"] = {
         "install_dir": install_dir,
+        # Only a slim install is pinned to llama's ggml, so only it needs the
+        # pairing re-checked when the llama phase runs first.
+        "install_kind": marker.get("install_kind"),
         "repo": marker.get("published_repo") or DEFAULT_PUBLISHED_REPO,
         "asset": marker.get("asset"),
         "backend": marker.get("backend"),
@@ -592,6 +595,42 @@ def chained_phase_plan(
         "pin_release_tag": None if sys.platform == "darwin" else status.get("latest_tag"),
     }
     return plan
+
+
+def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
+    """Confirm the new llama can actually pair, then run the whisper phase.
+
+    chained_phase_plan skips its pairing gate when the llama phase will run first, on
+    the grounds that llama "supplies the repaired pairing instead". That holds only
+    while a whisper release exists for the llama build being installed, and for ten days
+    it did not: llama shipped b10639, b10672, b10679 and b10687 while the newest whisper
+    bundle stayed pinned to b10472-mix-4b653db. The phase then ran an install that could
+    not succeed, the installer exited 2, and a llama update that had already landed was
+    reported as a failed job.
+
+    So make the check the plan deferred, now that the new llama is in place. A gap is the
+    same clean skip the plan itself would have produced had llama not been updating. It
+    is NOT a way to swallow a failed install: an attempt that does go ahead still
+    surfaces exit 2 as a job error, which is what makes an incompatible release
+    actionable rather than a false success.
+    """
+    if phase.get("install_kind") != "slim":
+        return run_chained_phase(phase, set_progress)
+    try:
+        backend = phase.get("backend")
+        resolved = _resolve_prebuilt_for_host(
+            force_refresh = True,
+            backend = backend if isinstance(backend, str) else None,
+        )
+    except Exception as exc:
+        # Fail towards the install rather than the skip: the pre-flight exists to avoid
+        # an attempt known to be doomed, and a pre-flight that cannot answer knows
+        # nothing. Attempting keeps the old behaviour, including exit 2 if it is wrong.
+        logger.debug("whisper pairing pre-flight failed", error = str(exc))
+        return run_chained_phase(phase, set_progress)
+    if not (resolved or {}).get("prebuilt_available"):
+        return {"skipped": True, "skip_reason": "paired_llama_unavailable"}
+    return run_chained_phase(phase, set_progress)
 
 
 def run_chained_phase(phase: dict, set_progress) -> dict:
