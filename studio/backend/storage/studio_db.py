@@ -603,10 +603,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
+    # Scoped to the two columns _rebuild_chat_attachment_inventory actually reads. The
+    # unscoped version fired on any UPDATE, so a generation status change -- which touches
+    # only metadata_json, from chat_generation_runs_db and research_runs_db -- marked the
+    # inventory dirty, and the next chat autosave paid for a full DELETE + re-hash of every
+    # attachment in every thread while holding the writer lock inside BEGIN IMMEDIATE.
+    # Dropped rather than IF NOT EXISTS: existing installs already carry the unscoped
+    # trigger, and a create would silently keep it.
+    conn.execute("DROP TRIGGER IF EXISTS chat_attachment_inventory_dirty_update")
     conn.execute(
         """
-        CREATE TRIGGER IF NOT EXISTS chat_attachment_inventory_dirty_update
-        AFTER UPDATE ON chat_messages
+        CREATE TRIGGER chat_attachment_inventory_dirty_update
+        AFTER UPDATE OF attachments_json, content_json ON chat_messages
         BEGIN
             INSERT INTO chat_attachment_inventory_state
                 (singleton, inventory_version, dirty, backfilled_at)
@@ -1174,6 +1182,14 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
+    # Under WAL, sqlite still defaults to synchronous=FULL, which fsyncs on every commit
+    # while holding the writer lock. On a machine whose disk is busy -- a Colab session
+    # pulling a multi-GB GGUF, say -- one commit blocked for 37s, and every other writer
+    # (notably the research supervisor's claim_next) spent that whole window timing out
+    # with "database is locked". NORMAL is the documented safe pairing for WAL: it can
+    # lose the last transactions on a host power loss, but never corrupts the database,
+    # which is the right trade for a local UI's settings and chat history.
+    conn.execute("PRAGMA synchronous=NORMAL")
     if not _schema_ready:
         with _schema_lock:
             if not _schema_ready:

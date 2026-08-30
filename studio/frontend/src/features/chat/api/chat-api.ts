@@ -1128,6 +1128,24 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
+/** The server owns this message and will reject every save of it.
+ *
+ * Distinct from a transient failure: retrying can never succeed, so callers must stop
+ * rather than back off. Without this the per-chunk autosave treated the rejection as an
+ * anonymous error and re-sent on the next chunk for the whole generation.
+ */
+export class ChatMessageProtectedError extends Error {
+  readonly messageId: string;
+  readonly threadId: string;
+
+  constructor(threadId: string, messageId: string) {
+    super(`Message ${messageId} is server-managed and cannot be edited`);
+    this.name = "ChatMessageProtectedError";
+    this.threadId = threadId;
+    this.messageId = messageId;
+  }
+}
+
 export async function saveChatMessage(
   message: MessageRecord,
   options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
@@ -1143,6 +1161,9 @@ export async function saveChatMessage(
       body: JSON.stringify(message),
     },
   );
+  if (response.status === 409) {
+    throw new ChatMessageProtectedError(message.threadId, message.id);
+  }
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
   // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
   // edit is one deliberate change and publishes at once.

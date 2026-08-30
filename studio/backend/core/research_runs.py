@@ -1116,6 +1116,16 @@ class ResearchSupervisor:
                 await self._process(run)
             except asyncio.CancelledError:
                 raise
+            except sqlite3.OperationalError as exc:
+                # Losing a race for the writer lock is a normal outcome of polling a
+                # shared database, not a fault: one slow writer elsewhere produced six
+                # identical multi-line tracebacks in a single session. Retry quietly and
+                # let a genuine, non-transient sqlite failure fall through to the
+                # traceback below.
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                logger.warning("research.supervisor_db_busy: %s", exc)
+                await asyncio.sleep(1)
             except Exception:
                 logger.exception("research.supervisor_iteration_failed")
                 await asyncio.sleep(1)

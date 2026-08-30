@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  ChatMessageProtectedError,
   ChatThreadDeletedError,
   batchListChatMessages,
   buildBackendChatExport,
@@ -948,6 +949,19 @@ export async function moveStoredChatItemToProject(
   );
 }
 
+// Messages the server has told us it owns. Once it answers 409 for an id, every later
+// save of that id is rejected too, so the autosave must stop instead of retrying: the
+// per-chunk callers fire every ~300ms for the length of a generation, which turned one
+// 43s response into 54 rejected PUTs. Keyed by thread rather than by a joined string,
+// since message ids are opaque and a separator that cannot collide with one is not worth
+// guessing at.
+const serverOwnedMessageIds = new Map<string, Set<string>>();
+
+/** Forget the server-owned markers for a thread (its ids can be reissued). */
+export function clearServerOwnedChatMessages(threadId: string): void {
+  serverOwnedMessageIds.delete(threadId);
+}
+
 export async function saveStoredChatMessage(
   message: MessageRecord,
 ): Promise<MessageRecord> {
@@ -955,9 +969,24 @@ export async function saveStoredChatMessage(
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
+  if (serverOwnedMessageIds.get(message.threadId)?.has(message.id)) {
+    // The server's copy is authoritative and already persisted; returning the caller's
+    // record keeps the optimistic UI intact without another doomed round trip.
+    return message;
+  }
   await ensureStoredChatThread(message.threadId);
   // The per-chunk autosave behind a streaming response.
-  return saveChatMessage(message, { coalesce: true });
+  try {
+    return await saveChatMessage(message, { coalesce: true });
+  } catch (error) {
+    if (error instanceof ChatMessageProtectedError) {
+      const owned = serverOwnedMessageIds.get(message.threadId) ?? new Set<string>();
+      owned.add(message.id);
+      serverOwnedMessageIds.set(message.threadId, owned);
+      return message;
+    }
+    throw error;
+  }
 }
 
 export async function syncStoredChatMessages(
