@@ -2637,9 +2637,19 @@ def _ensure_xpu_triton() -> None:
 
     Lives here, not in install.sh, because install.sh runs setup.sh which runs this file: one
     copy covers the fresh install AND `unsloth studio update`, which never touches install.sh.
-    Windows is excluded -- studio/setup.ps1 owns the same swap there.
+
+    On Windows setup.ps1 owns the same swap and performs it AFTER this script exits, so
+    running it here as well would be wasted work on that path. A direct
+    `python install_python_stack.py`, which the flavor invariant supports, has no such
+    postlude: the core package install pulls triton-windows unconditionally over torch's
+    XPU triton and nothing puts it back, leaving torch.compile unable to use the XPU.
+    The handover variable is the signal -- setup.ps1 sets it immediately before invoking
+    this file and clears it otherwise, so its absence means nobody is going to do the
+    swap afterwards.
     """
-    if NO_TORCH or IS_MACOS or IS_WINDOWS:
+    if NO_TORCH or IS_MACOS:
+        return
+    if IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
         return
     pin = _explicit_xpu_torch_index_url()
     if pin is None:
@@ -2961,6 +2971,21 @@ def _expected_torch_flavor_tag() -> str:
     return _torch_index_leaf(_detect_cuda_torch_index_url())
 
 
+def _expected_torch_flavor_is_explicit() -> bool:
+    """Whether the expectation came from someone SAYING so, rather than from a probe.
+
+    True for the setup script's handover, an explicit index pin, and the flavor the last
+    completed install recorded: the first three steps of _expected_torch_flavor_tag.
+    False when only the live hardware probe can answer, which is the one case a
+    visibility mask has any business overruling.
+    """
+    if os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
+        return True
+    if _explicit_torch_index_url() is not None:
+        return True
+    return bool(_RECORDED_TORCH_TAG)
+
+
 def _expected_torch_index_url(tag: str) -> str:
     """The wheel index to repair `tag` from.
 
@@ -2994,8 +3019,14 @@ def _explicit_cpu_torch_index_pin() -> bool:
     return pin is not None and _torch_index_leaf(pin) == "cpu"
 
 
-def _installed_flavor_tag_now() -> str:
+def _installed_flavor_tag_now(expected: str = "") -> str:
     """The venv's CURRENT flavor tag, re-probed, or "" when nothing could be read.
+
+    ``expected`` only matters for "cpu": _torch_flavor_tag reads every untagged version
+    as cpu, so a private index serving an untagged CUDA or ROCm wheel would satisfy a
+    CPU expectation here exactly as it did in the pre-repair comparison. The same
+    runtime markers settle it, and the two comparisons have to agree or the repair is
+    accepted on a rule the check that triggered it rejected.
 
     _torch_build_is_gpu answers a weaker question ("can this torch use a GPU at all")
     and is deliberately family-blind, so it cannot tell a repair that installed the
@@ -3005,7 +3036,10 @@ def _installed_flavor_tag_now() -> str:
     """
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if _ran and _importable and _version:
-        return _torch_flavor_tag(_version)
+        tag = _torch_flavor_tag(_version)
+        if expected == "cpu" and tag == "cpu" and (_hip or _cuda):
+            return "rocm" if _hip else "cuda"
+        return tag
     label = _installed_torch_label_on_disk()
     return _torch_flavor_tag(label) if label else ""
 
@@ -3141,13 +3175,20 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
             if not _exact_distribution_spec_is_installed(_spec):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
                 _touched_torch = True
-                pip_install_try(
+                if not pip_install_try(
                     "Re-matching torchao to the repaired torch",
                     "--force-reinstall",
                     "--no-deps",
                     "--no-cache-dir",
                     _spec,
-                )
+                ):
+                    # pip_install_try returns False rather than raising, so an
+                    # unreachable PyPI behind a reachable torch index leaves the
+                    # incompatible build in place while the update reports success.
+                    _safe_print(
+                        f"   [WARN] could not install {_spec} for the repaired torch; the "
+                        f"torchao kernels will fall back to the slow path."
+                    )
         except Exception as e:
             _safe_print(f"   [WARN] could not re-match torchao after the repair: {e}")
     try:
@@ -3158,7 +3199,15 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
                 f"xFormers was built for torch {_built_for}, which is no longer "
                 f"installed -- removing it so attention falls back to torch SDPA"
             )
-            _uninstall_distribution("xformers")
+            if not _uninstall_distribution("xformers"):
+                # Locked files or a read-only environment, both plausible on Windows.
+                # Saying nothing would write a completion manifest over a distribution
+                # whose compiled ops are unavailable and whose torch requirement can
+                # disturb the repaired venv at the next resolve.
+                _safe_print(
+                    "   [WARN] could not remove the mismatched xFormers; its compiled "
+                    "operations will stay unavailable until it is uninstalled by hand."
+                )
     except Exception as e:
         _safe_print(f"   [WARN] could not re-check xFormers after the repair: {e}")
     return not _touched_torch
@@ -3259,7 +3308,15 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         return True
     # Only meaningful for CUDA. An Arc host hides its GPU with a different variable, and
     # reading this one there would make an unrelated NVIDIA mask cancel an XPU repair.
-    if _is_cuda_family_leaf(expected):
+    #
+    # And only when the expectation was INFERRED from the hardware. An emptied mask says
+    # "do not look at my GPUs", which is a reason not to conclude cu124 from an
+    # nvidia-smi probe -- it is not a reason to ignore a cu124 that setup.ps1 published,
+    # that the user pinned, or that the last install recorded. Letting it veto those
+    # reproduced the whole defect: an update inheriting CUDA_VISIBLE_DEVICES="" would
+    # skip the invariant, let the dependency steps put PyPI's CPU wheel in, and record
+    # the CUDA expectation over it.
+    if _is_cuda_family_leaf(expected) and not _expected_torch_flavor_is_explicit():
         _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         if _cvd is not None and _cvd.strip() in ("", "-1"):
             return True
@@ -3314,7 +3371,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         # exit 0 and the manifest would record "rocm" over an environment that never
         # received it. Reachable by running this script directly on Windows with an
         # explicit ROCm pin over an existing non-ROCm build.
-        _now = _installed_flavor_tag_now()
+        _now = _installed_flavor_tag_now(expected)
         if _now == expected:
             return True
         if not _now:
@@ -3361,7 +3418,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # checks it: a misconfigured mirror can answer a /cu128 request with a cached cu124,
     # rocm or xpu wheel, and _torch_build_is_gpu is deliberately family-blind, so the
     # update would exit 0 and record the requested tag over a build that never arrived.
-    _now = _installed_flavor_tag_now()
+    _now = _installed_flavor_tag_now(expected)
     if _now == expected:
         if _resync_torch_coupled_packages(_label_before):
             return True
@@ -3369,7 +3426,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         # uses --no-deps precisely so it cannot, but the verification this function
         # exists for was already behind us at that point, and a silent regression here
         # would be indistinguishable from the bug the whole change is about.
-        _after = _installed_flavor_tag_now()
+        _after = _installed_flavor_tag_now(expected)
         if _after in (expected, ""):
             return True
         _safe_print("   [WARN] the post-repair package resync changed the torch build.")
@@ -6246,6 +6303,12 @@ def install_python_stack() -> int:
         torch_flavor_tag = _expected_torch_flavor_tag()
         if not _ensure_expected_torch_flavor(torch_flavor_tag):
             return 1
+        # A DIRECT run on Windows has no setup.ps1 postlude to swap triton back, and the
+        # core package install above pulls triton-windows over torch's XPU build. The
+        # helper no-ops when setup.ps1 did hand over, since it performs the swap itself
+        # once this exits. After the invariant, for the same reason step 13 puts it
+        # last: the swap keys off the installed +xpu label.
+        _ensure_xpu_triton()
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
