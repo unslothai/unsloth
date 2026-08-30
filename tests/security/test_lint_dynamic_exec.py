@@ -1132,7 +1132,7 @@ def _loaded():
     return module
 
 
-_MEMO_SAMPLE = '''
+_MEMO_SAMPLE = """
 import os
 
 
@@ -1152,7 +1152,7 @@ def outer(name):
             except OSError as error:
                 global missing
     return deferred
-'''
+"""
 
 
 def test_the_scope_walk_memo_answers_what_an_uncached_walk_answers():
@@ -1197,9 +1197,9 @@ def test_the_memo_does_not_carry_between_two_trees_of_the_same_source():
     walked_one = list(module._walk_this_scope(one))
     walked_two = list(module._walk_this_scope(two))
     assert len(walked_one) == len(walked_two)
-    assert not {id(n) for n in walked_one} & {id(n) for n in walked_two}, (
-        "the second tree was answered with nodes from the first"
-    )
+    assert not {id(n) for n in walked_one} & {
+        id(n) for n in walked_two
+    }, "the second tree was answered with nodes from the first"
 
 
 def test_the_declared_locals_memo_survives_a_caller_mutating_the_answer():
@@ -1209,7 +1209,8 @@ def test_the_declared_locals_memo_survives_a_caller_mutating_the_answer():
     module = _loaded()
     tree = ast.parse(_MEMO_SAMPLE)
     function = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "outer"
     )
     first = module._Visitor._declared_locals(function)
