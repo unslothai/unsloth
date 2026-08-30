@@ -121,8 +121,9 @@ def test_history_grounding_is_still_checked(script):
 
 
 def test_turn_2_is_checked_against_turn_1_not_a_literal(script):
-    """A hardcoded digit would accept a turn 2 that contradicts turn 1, and 2 is guessable
-    by a model that never saw the history."""
+    """A hardcoded digit would accept a turn 2 that contradicts turn 1. The fixtures carry
+    their own numbers, which is the point: the check reads turn 1 rather than a literal, so
+    it holds whatever PROMPTS asks."""
     contradiction = ["1 is 3", "the answer was 2", "paris", "paris"]
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("contradiction", contradiction, list(contradiction))

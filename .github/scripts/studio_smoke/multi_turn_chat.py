@@ -34,8 +34,12 @@ MAX_TOKENS = 80
 # Turn 2 asks for the ANSWER, not the question. gemma-3-270m-it answers "What did I ask
 # before?" with "I am doing well! How can I help you today?" whether or not the history is
 # attached, so that phrasing probes nothing.
+#
+# 58+27 rather than 1+1 so the answer cannot be guessed. Deriving the expected value from
+# turn 1 is only worth anything if turn 1 is unpredictable: with a fixed 1+1 it reduces to
+# hardcoding "2", which a history-less server can produce by luck.
 PROMPTS = [
-    "What is 1+1?",
+    "What is 58+27?",
     "What was the answer to my previous question?",
     "What is the capital of France?",
     "Repeat the city name",
@@ -126,12 +130,12 @@ def check(label: str, first: list[str], second: list[str]) -> None:
     # Turn 2 should carry turn 1's answer and turn 4 the city turn 3 produced.
     # Lower-cased substring checks, so formatting jitter is not a failure.
     joined = " ".join(first).lower()
-    assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-    # From turn 1's reply, not a literal: a hardcoded "2" accepts a turn 2 that
-    # contradicts turn 1 ("1 + 1 = 3" then "the answer was 2"). Last number, since
-    # "1 + 1 = 2" restates the operands first. Per turn, since the joined text holds turn 1.
-    # The assertion above guarantees a digit, so this cannot be empty.
-    answer = re.findall(r"\d+", first[0])[-1]
+    numbers = re.findall(r"\d+", first[0])
+    assert numbers, f"{label}: turn-1 answer should contain a number, got {first[0]!r}"
+    # From turn 1's reply, not a literal, so a turn 2 that contradicts turn 1 fails too.
+    # Last number, since "58 + 27 = 95" restates the operands first. Per turn, since the
+    # joined text already holds turn 1.
+    answer = numbers[-1]
     assert answer in first[1], (
         f"{label}: turn 2 must carry turn 1's answer {answer!r}, so history reached the "
         f"model. Got {first[1]!r}"
