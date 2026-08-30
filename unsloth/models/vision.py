@@ -350,52 +350,6 @@ def _lift_endpoint_hooks_onto_adapters(model):
         if wrapper is None:
             continue
 
-        # Two wrapper shapes reach these endpoints and they need different
-        # repairs, so neither is guessed at.
-        #
-        # `modules_to_save` is what the continued pretraining recipe actually
-        # builds -- naming an endpoint in `target_modules` routes it here, not
-        # to a LoRA layer, which a 2xT4 run corrected. `_setup` deepcopies the
-        # original, and the copy CARRIES `_hf_hook`, which peft then rebuilds:
-        # that path works, but only because this file put a hook on the original
-        # first. Its tied branch instead builds a fresh `nn.Linear` sharing the
-        # tied weight, so there is no hook to inherit and peft's own
-        # `hasattr(..., "_hf_hook")` guard finds nothing. Measured on peft
-        # 0.20.0: untied active module hooked, tied active module not.
-        saved = getattr(wrapper, "modules_to_save", None)
-        original = getattr(wrapper, "original_module", None)
-        origin_hook = getattr(original, "_hf_hook", None) if original is not None else None
-        if (
-            saved is not None
-            and origin_hook is not None
-            and getattr(origin_hook, "execution_device", None) is not None
-        ):
-            for active in getattr(saved, "values", lambda: [])():
-                if hasattr(active, "_hf_hook"):
-                    continue
-                try:
-                    add_hook_to_module(
-                        active,
-                        AlignDevicesHook(
-                            execution_device = origin_hook.execution_device,
-                            io_same_device = False,
-                            skip_keys = getattr(origin_hook, "skip_keys", None),
-                        ),
-                    )
-                except Exception as exc:
-                    warnings.warn(
-                        f"Unsloth: could not hook the trainable copy of {get}() "
-                        f"on {origin_hook.execution_device} "
-                        f"({type(exc).__name__}: {exc}). Training the embeddings "
-                        "on a split model may fail at the first tensor that "
-                        "crosses a device.",
-                        RuntimeWarning,
-                        stacklevel = 2,
-                    )
-                    continue
-                lifted += 1
-            continue
-
         if hasattr(wrapper, "_hf_hook"):
             continue
         base = getattr(wrapper, "base_layer", None)
