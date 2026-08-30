@@ -383,3 +383,21 @@ def test_the_generation_key_names_all_three_signals():
         int(hf_cache_scans_epoch()),
         int(hw.DETECTION_GENERATION),
     )
+
+
+def test_deleting_a_finetuned_model_invalidates_the_scan():
+    """An outputs/exports directory can be a registered scan folder, so a model deleted
+    through delete_finetuned_model may be one /v1/models is advertising. Nothing else on
+    that path invalidates, so the route has to do it itself."""
+    import inspect
+
+    from routes import models as models_route
+
+    source = inspect.getsource(models_route.delete_finetuned_model)
+    assert "invalidate_index()" in source, (
+        "the successful deletion branch must retire the cached servability rows"
+    )
+    prune = source.index("_prune_empty_parents(target_path, allowed_root)")
+    assert source.index("invalidate_index()", prune) < source.index(
+        'return {"status": "deleted"', prune
+    ), "the invalidation must happen before the route reports success"

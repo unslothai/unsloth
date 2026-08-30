@@ -1292,8 +1292,8 @@ async def _shared_compat_local_inventory_scan(
             return await hf_cache_scan.shared_scan(
                 _compat_local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: (
-                    collect(expected_epoch, folders, roots)
+                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: collect(
+                    expected_epoch, folders, roots
                 ),
             )
         except _CompatLocalCacheChanged as changed:
@@ -3370,6 +3370,13 @@ async def delete_finetuned_model(
             )
 
         _prune_empty_parents(target_path, allowed_root)
+
+        # An outputs/exports directory can be registered as a custom scan folder, so what
+        # was just removed may be a model /v1/models is advertising. Nothing else on this
+        # path invalidates, and the servability scan is cached against this generation.
+        from core.inference.local_model_resolver import invalidate_index
+
+        invalidate_index()
 
         logger.info("Deleted fine-tuned model at %s", target_path)
         return {"status": "deleted", "path": str(target_path)}
