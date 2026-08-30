@@ -1134,6 +1134,10 @@ export async function getChatMessage(
  * rather than back off. Without this the per-chunk autosave treated the rejection as an
  * anonymous error and re-sent on the next chunk for the whole generation.
  */
+/** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
+const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
+const CONFLICT_KIND_PROTECTED = "protected";
+
 export class ChatMessageProtectedError extends Error {
   readonly messageId: string;
   readonly threadId: string;
@@ -1164,7 +1168,15 @@ export async function saveChatMessage(
       body: JSON.stringify(message),
     },
   );
-  if (response.status === 409) {
+  // Two different failures share this status. A protected message is the server refusing an
+  // edit it owns, and the autosave has to stop rather than resend; a thread-id collision is
+  // an ordinary failure the caller must see, and swallowing it loses the message. Only the
+  // header tells them apart, so anything else -- including a backend too old to send it --
+  // falls through to the normal error path, which is what happens today.
+  if (
+    response.status === 409 &&
+    response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
+  ) {
     // Read the body here rather than letting parseJsonOrThrow do it: a Response body can
     // only be consumed once, and this needs the server's detail to carry into the error.
     const body = await response.json().catch(() => null);

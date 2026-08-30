@@ -247,6 +247,27 @@ test("an ordinary sync does not clear the cache", async () => {
   assert.deepEqual(attempts, ["m1"], "nothing was deleted, so nothing was freed");
 });
 
+test("the cache is bounded, so a long session cannot grow without limit", async () => {
+  // Each entry holds a whole serialized message, generated content included. Only
+  // consecutive resends need recognising, so falling out of the cache costs one request.
+  const ids = Array.from({ length: 40 }, (_, index) => `m${index}`);
+  const { module, attempts } = harness({ rejectIds: new Set(ids) });
+
+  for (const id of ids) {
+    await module.saveStoredChatMessage(message(id));
+  }
+  assert.equal(attempts.length, 40, "each is refused once");
+
+  // Asserted per id rather than by re-walking the whole list: a bounded cache walked in
+  // insertion order misses on every lookup by construction, which measures the walk and
+  // not the bound.
+  await module.saveStoredChatMessage(message("m39"));
+  assert.equal(attempts.length, 40, "the newest entry is still suppressed");
+
+  await module.saveStoredChatMessage(message("m0"));
+  assert.equal(attempts.length, 41, "the oldest fell out of the cap and is sent again");
+});
+
 test("an ordinary failure still propagates", async () => {
   const { module, attempts } = harness({ failWith: new Error("network down") });
 

@@ -966,6 +966,48 @@ export async function moveStoredChatItemToProject(
 // separator that cannot collide with one is not worth guessing at.
 const rejectedChatMessagePayloads = new Map<string, Map<string, string>>();
 
+// A payload holds the whole serialized message, generated content included, and the only
+// production clears are the delete paths, so a long-lived tab that never deletes anything
+// would keep one copy of every long response for the session. Only consecutive resends of
+// the same payload need to be recognised, so a small cap costs nothing real: passing it
+// just means one extra request for whichever message fell out.
+const MAX_REJECTED_PAYLOADS = 32;
+
+/** Least-recently-written first, both across threads and within one. */
+function evictOldestRejectedPayloads(): void {
+  let total = 0;
+  for (const perThread of rejectedChatMessagePayloads.values()) {
+    total += perThread.size;
+  }
+  while (total > MAX_REJECTED_PAYLOADS) {
+    const oldestThread = rejectedChatMessagePayloads.entries().next().value;
+    if (!oldestThread) return;
+    const [threadId, perThread] = oldestThread;
+    const oldestMessage = perThread.keys().next().value;
+    if (oldestMessage === undefined) {
+      rejectedChatMessagePayloads.delete(threadId);
+      continue;
+    }
+    perThread.delete(oldestMessage);
+    if (perThread.size === 0) rejectedChatMessagePayloads.delete(threadId);
+    total -= 1;
+  }
+}
+
+function rememberRejectedPayload(
+  threadId: string,
+  messageId: string,
+  payload: string,
+): void {
+  const perThread = rejectedChatMessagePayloads.get(threadId) ?? new Map<string, string>();
+  // Re-inserted rather than overwritten, so a Map's insertion order stays a usable age.
+  perThread.delete(messageId);
+  perThread.set(messageId, payload);
+  rejectedChatMessagePayloads.delete(threadId);
+  rejectedChatMessagePayloads.set(threadId, perThread);
+  evictOldestRejectedPayloads();
+}
+
 /** Deterministic JSON: key order must not decide whether two payloads look equal. */
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
@@ -1013,6 +1055,9 @@ export async function saveStoredChatMessage(
   }
   const payload = stableStringify(message);
   if (rejectedChatMessagePayloads.get(message.threadId)?.get(message.id) === payload) {
+    // Refresh its age. Without this the message being resent right now is the one aging
+    // out, which is exactly backwards: it is the only entry currently earning its place.
+    rememberRejectedPayload(message.threadId, message.id, payload);
     // This exact payload was just refused, so the server's copy is authoritative for it;
     // returning the caller's record keeps the optimistic UI intact without another doomed
     // round trip. Any payload the client has since moved on from falls through and is sent.
@@ -1024,10 +1069,7 @@ export async function saveStoredChatMessage(
     return await saveChatMessage(message, { coalesce: true });
   } catch (error) {
     if (error instanceof ChatMessageProtectedError) {
-      const rejected =
-        rejectedChatMessagePayloads.get(message.threadId) ?? new Map<string, string>();
-      rejected.set(message.id, payload);
-      rejectedChatMessagePayloads.set(message.threadId, rejected);
+      rememberRejectedPayload(message.threadId, message.id, payload);
       return message;
     }
     throw error;

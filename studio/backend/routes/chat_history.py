@@ -582,6 +582,20 @@ class ChatImportLedgerRecordResponse(BaseModel):
     inserted: int
 
 
+# The client cannot tell the two 409s apart from the status alone, and they mean opposite
+# things: a protected message is the server refusing an edit it owns, so the autosave should
+# stop; a thread collision is an ordinary failure the caller must see and handle. Answering
+# both the same way made the frontend swallow a collision as success. The kind rides in a
+# response header rather than the body so `detail` stays a plain string for every existing
+# client; `expose_headers` in main.py is what lets a cross-origin Studio read it.
+CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
+
+
+def _conflict_headers(exc: Exception) -> dict:
+    kind = "protected" if isinstance(exc, ChatMessageProtectedError) else "thread-collision"
+    return {CONFLICT_KIND_HEADER: kind}
+
+
 @router.get("/threads", response_model = ChatThreadListResponse)
 def list_threads(
     model_type: Optional[str] = Query(None),
@@ -1031,6 +1045,7 @@ def delete_attachment(
             safe_curated_detail(exc),
             event = "chat_history.delete_attachment_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
@@ -1351,6 +1366,7 @@ def save_thread_message(
             safe_curated_detail(exc),
             event = "chat_history.save_message_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
@@ -1394,6 +1410,7 @@ def replace_thread_messages(
             safe_curated_detail(exc),
             event = "chat_history.replace_messages_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 

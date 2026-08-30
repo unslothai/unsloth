@@ -839,6 +839,7 @@ def log_and_http_error(
     *,
     event: str = "request_failed",
     log = None,
+    headers: dict | None = None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose
     ``detail`` is only ``public_message`` -- never the raw exception text.
@@ -860,7 +861,7 @@ def log_and_http_error(
         emitter.warning(f"{event}: {error}")
     else:
         emitter.error(f"{event}: {error}", exc_info = error)
-    return HTTPException(status_code = status_code, detail = public_message)
+    return HTTPException(status_code = status_code, detail = public_message, headers = headers)
 
 
 @contextmanager

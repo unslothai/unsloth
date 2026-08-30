@@ -25,11 +25,12 @@ type Module = {
 };
 
 /** Minimal Response double: records how many times the body was consumed. */
-function jsonResponse(status: number, body: unknown) {
+function jsonResponse(status: number, body: unknown, kind: string | null = "protected") {
   let reads = 0;
   return {
     status,
     ok: status >= 200 && status < 300,
+    headers: { get: (name: string) => (name === "X-Unsloth-Conflict-Kind" ? kind : null) },
     get bodyReads() {
       return reads;
     },
@@ -129,6 +130,32 @@ test("a 409 whose body is not JSON at all does not throw a parse error", async (
     error instanceof module.ChatMessageProtectedError,
     "the conflict must survive an unparseable body",
   );
+});
+
+test("a thread-id collision is not treated as protection", async () => {
+  // The backend answers 409 for ChatMessageConflictError too, meaning the id already
+  // belongs to another thread. saveStoredChatMessage swallows ChatMessageProtectedError and
+  // reports success, so mislabelling this one loses the message with no error anywhere.
+  const { module } = harness(
+    jsonResponse(409, { detail: "Message id already belongs to another thread: m1" }, "thread-collision"),
+  );
+  const error = await module.saveChatMessage(message).catch((e) => e);
+
+  assert.ok(error instanceof Error);
+  assert.ok(
+    !(error instanceof module.ChatMessageProtectedError),
+    "the caller must see this one and handle it",
+  );
+});
+
+test("a backend too old to send the header falls back to the plain error", async () => {
+  // Safe direction: before this change every 409 threw an anonymous error, so an unknown
+  // 409 keeps that behaviour rather than being silently swallowed.
+  const { module } = harness(jsonResponse(409, { detail: "conflict" }, null));
+  const error = await module.saveChatMessage(message).catch((e) => e);
+
+  assert.ok(error instanceof Error);
+  assert.ok(!(error instanceof module.ChatMessageProtectedError));
 });
 
 test("other failures are untouched", async () => {
