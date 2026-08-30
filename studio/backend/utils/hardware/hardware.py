@@ -1192,7 +1192,9 @@ def invalidate_torch_build_snapshot() -> None:
     _torch_build_snapshot_cache = None
 
 
-def _mismatch_verdict_for_this_host(reason: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+def _mismatch_verdict_for_this_host(
+    reason: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
     """``(reason, detail)`` when this host's GPUs are real but PyTorch cannot use them.
 
     ``(None, None)`` otherwise. Blocking, and only detection calls it: it runs off the

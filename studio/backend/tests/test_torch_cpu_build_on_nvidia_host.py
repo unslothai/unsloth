@@ -1670,11 +1670,11 @@ def test_an_unimportable_gpu_wheel_is_a_mismatch_rather_than_a_detection_failure
     import pathlib
 
     source = pathlib.Path(hw.__file__).read_text(encoding = "utf-8")
-    branch = source[source.index("elif TORCH_IMPORT_ERROR is not None:"):]
-    branch = branch[: branch.index("elif platform.system() == \"Darwin\":")]
-    assert "_classification_from_disk_label()" in branch, (
-        "the broken-runtime host must still be classified from the wheel on disk"
-    )
+    branch = source[source.index("elif TORCH_IMPORT_ERROR is not None:") :]
+    branch = branch[: branch.index('elif platform.system() == "Darwin":')]
+    assert (
+        "_classification_from_disk_label()" in branch
+    ), "the broken-runtime host must still be classified from the wheel on disk"
     assert "torch_build_snapshot()" not in branch, (
         "and classified WITHOUT probing: importing torch is what failed here, it takes "
         "seconds to fail on a real broken wheel, and a retry re-runs torch/__init__ "
@@ -1687,9 +1687,15 @@ def test_an_unimportable_gpu_wheel_is_a_mismatch_rather_than_a_detection_failure
 
 
 def test_the_mismatch_verdict_names_the_wheel_it_could_not_import(monkeypatch):
-    monkeypatch.setattr(hw, "torch_build_snapshot", lambda **_kw: {
-        "reason": "torch_cuda_unavailable", "usable": False, "unknown": False,
-    })
+    monkeypatch.setattr(
+        hw,
+        "torch_build_snapshot",
+        lambda **_kw: {
+            "reason": "torch_cuda_unavailable",
+            "usable": False,
+            "unknown": False,
+        },
+    )
     monkeypatch.setattr(
         hw,
         "get_physical_gpu_inventory",
