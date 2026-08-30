@@ -1668,7 +1668,7 @@ def _reconcile_folder(job_id: str) -> None:
                     withheld.update(missing - already_withheld)
                     logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
                     _remove_snapshot(snapshot)
-                if snapshot is None and rel in in_flight:
+                if any(pending.relative_path == rel for pending in in_flight.values()):
                     continue
                 processed += 1
                 update_progress()
