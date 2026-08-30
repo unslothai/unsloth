@@ -7,19 +7,10 @@
 export const RUN_CHECKPOINT_INTERVAL_MS = 8_000;
 
 /**
- * How long one thread may be checkpointed before the schedule gives up on it.
- *
- * The schedule is started on runStart and ended on runEnd, so a run that never reaches a
- * terminal status is checkpointed for the life of the page: four requests every eight
- * seconds, forever, against the same backend the model is on. `isActive` is not a bound,
- * because it reports assistant-ui's `isRunning`, which is the very flag a stuck run holds
- * true. A wall clock is, and it costs only the periodic partial saves: the run's own
- * writes are untouched, and the cap takes a final checkpoint on the way out.
- *
- * Held at the follow deadline in chat-generation-api.ts so a legitimately slow run does
- * not lose its periodic saves while the follower is still waiting on it. The backend
- * settles a dead run well before this, so in practice the cap is only reached when
- * something has already gone wrong.
+ * How long one thread may be checkpointed before the schedule gives up on it. A run that
+ * never reaches a terminal status would otherwise checkpoint for the life of the page.
+ * Held at the follow deadline in chat-generation-api.ts, which the backend settles well
+ * inside, so reaching the cap means something has already gone wrong.
  */
 export const RUN_CHECKPOINT_MAX_DURATION_MS = 30 * 60_000;
 
@@ -72,15 +63,12 @@ export function createRunCheckpointScheduler(
      */
     isActive?: (threadId: string) => boolean;
     /**
-     * Wall-clock cap on one thread's schedule. `isActive` cannot serve as one: it
-     * reports the runtime's own `isRunning`, which a run that never terminalises holds
-     * true, so the two agree forever and the schedule never ends.
+     * Wall-clock cap on one thread's schedule. `isActive` cannot serve as one: it reports
+     * the runtime's own `isRunning`, which a run that never terminalises holds true.
      */
     maxDurationMs?: number;
     /**
-     * Whether `maxDurationMs` applies to this thread. Only a durable run can outlive its
-     * own terminal status, and only for durable runs is the server the other writer. A
-     * subscriber-owned stream (external provider, continuation, tool-enabled) persists
+     * Whether `maxDurationMs` applies to this thread. A subscriber-owned stream persists
      * ONLY through these checkpoints, so capping one would lose everything it streamed
      * after the cap if the page went away before `runEnd`. Omit to cap every thread.
      */

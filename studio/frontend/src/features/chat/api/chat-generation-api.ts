@@ -367,20 +367,13 @@ async function* streamChatGenerationEvents(
 }
 
 /**
- * How long a follower tolerates a run that makes no progress before it gives up.
+ * How long a follower tolerates a run that makes no progress before it gives up. Progress,
+ * not connectedness, ends a follow: every event and every change to the run row resets it.
  *
- * The loop below reconnects for as long as the run is non-terminal, so a run that never
- * reaches a terminal status keeps a reader, a "running" message and the caller's
- * checkpoint schedule alive for the life of the page. Progress, not connectedness, ends a
- * follow, so every event and every change to the run row resets the clock.
- *
- * The client must be the more patient of the two. A prefill emits no events at all while
- * it runs, and the backend allows 1200s for a first token
- * (llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S) before it gives up, then the lease sweeper
- * settles a genuinely dead run within another sweep interval. A deadline under roughly
- * 21 minutes would therefore report "interrupted" over a generation the server is still
- * working on, which is most likely on exactly the slow hardware that needs the long
- * budget. 30 minutes keeps the server authoritative and still bounds the loop.
+ * The client must be the more patient of the two. Prefill emits no events, the backend
+ * allows 1200s for a first token (llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S), and the lease
+ * sweeper then needs another interval, so anything under roughly 21 minutes would report
+ * "interrupted" over a live generation on exactly the slow hardware that needs the budget.
  */
 export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 
@@ -401,8 +394,7 @@ export async function* followChatGenerationRun(
   // The deadline has to reach the open event stream as well as the sleep between
   // reconnects: a stream that stays open and sends nothing parks the reader just as
   // permanently as a reconnect loop that never sees a terminal status. One controller
-  // downstream of the caller's signal covers both, and leaves every `signal?.aborted`
-  // check below meaning "stop following", whichever of the two asked.
+  // downstream of the caller's signal covers both.
   const deadline = new AbortController();
   const callerSignal = options.signal;
   const forwardAbort = () => deadline.abort(callerSignal?.reason);
@@ -413,11 +405,10 @@ export async function* followChatGenerationRun(
   }
   const signal = deadline.signal;
   let stallTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-  // Our deadline and the caller's Stop both abort `signal`, but they must not end the
-  // same way. A caller abort is a clean stop; our deadline means we walked away from a
-  // run the backend may still be working on, so it has to reach the consumer as a
-  // failure. Returning silently let the live durable stream, which only throws for
-  // `failed` and `cancelled`, finalize a still-running run as a complete reply.
+  // Our deadline and the caller's Stop both abort `signal` but must not end the same way.
+  // A caller abort is a clean stop; the deadline means we walked away from a run the
+  // backend may still be working on, so it has to reach the consumer as a failure rather
+  // than finalizing a still-running run as a complete reply.
   let stalled = false;
   let settled = false;
   const noteProgress = (): void => {

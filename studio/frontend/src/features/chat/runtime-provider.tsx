@@ -716,12 +716,11 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     hasRunId &&
     generationStatus === "completed" &&
     custom.generationSettled !== true;
-  // Persisted metadata alone must never restore a running message. A run that never
-  // reached a terminal status still says "running" in storage on every later load, and
-  // `{type:"running"}` unmounts the composer's Send button, so the reply the user cannot
-  // stop is also the one they cannot reply past, reload after reload. Ask whether the run
-  // is corroborated live instead, and otherwise show the partial as interrupted, which
-  // keeps every character of it and offers the Continue bar.
+  // Persisted metadata alone must never restore a running message: a run that never
+  // terminalised still says "running" on every later load, and `{type:"running"}`
+  // unmounts Send, so the reply the user cannot stop is the one they cannot reply past.
+  // Ask whether the run is corroborated live, and otherwise show the partial as
+  // interrupted, which keeps every character and offers the Continue bar.
   const needsGenerationRecovery =
     (generationUnfinished || generationUnsettled) &&
     generationIsCorroboratedLive(custom, m.threadId);
@@ -1768,21 +1767,19 @@ function useStudioRuntimeAdapters(
           activeGenerationRuns = [];
           activeGenerationRunsLoaded = false;
         }
-        // The endpoint is named for active runs, but its reply is only a list of rows: a
-        // run that terminalised between the write and this read comes back with it, and
-        // force-writing `generationSettled: false` over a finished reply revives it as a
-        // running one that no later load can settle. Take the still-live rows only, and
-        // publish them as the corroboration `toThreadMessage` restores a running status
-        // from. A failed read is silence, not a report of "nothing is running", so it
-        // leaves the previous answer standing rather than declaring every reply dead.
+        // The endpoint is named for active runs but returns rows, so a run that
+        // terminalised between the write and this read comes back with it, and
+        // force-writing `generationSettled: false` over a finished reply revives it.
+        // Take the still-live rows only and publish them as the corroboration
+        // `toThreadMessage` restores a running status from. A failed read is silence,
+        // not a report of "nothing is running".
         activeGenerationRuns = activeGenerationRuns.filter(
           (run) => !isTerminalChatGenerationRun(run),
         );
-        // The runs read happens BEFORE the messages read on purpose, so a run created
-        // between the two is still discoverable from the later message metadata. Under
-        // the corroboration rule that gap would now read as interrupted and re-enable the
-        // composer for a thread the server is still generating on, so close it with one
-        // more lookup, and only when a message actually names a run the first read missed.
+        // The runs read happens BEFORE the messages read, so a run created between the
+        // two would read as interrupted and re-enable the composer for a thread the
+        // server is still generating on. Close that gap with one more lookup, and only
+        // when a message actually names a run the first read missed.
         if (activeGenerationRunsLoaded) {
           const known = new Set(activeGenerationRuns.map((run) => run.id));
           const missed = msgs.some((message) => {

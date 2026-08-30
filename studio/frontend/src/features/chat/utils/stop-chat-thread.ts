@@ -11,12 +11,10 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
  * Ask the server to stop whatever it still has running for this thread.
  *
  * The registries below are module-scoped React state, so a page reload empties them, while
- * a durable run is server-owned and outlives the tab that started it. That leaves the state
- * the user actually reported: the UI says a reply is generating, and every stop path says
- * there is nothing to stop. The server's own active-run list is the one place that still
- * knows, so a thread with no local handle falls back to it. Best effort and fire and
- * forget: nothing above this waits on a stop, and a thread with no run just reads an empty
- * list.
+ * a durable run is server-owned and outlives the tab that started it: the UI says a reply
+ * is generating and every stop path says there is nothing to stop. The server's active-run
+ * list still knows, so a thread with no local handle falls back to it. Fire and forget;
+ * a thread with no run just reads an empty list.
  */
 function stopServerRunsForThread(threadId: string): void {
   void getActiveChatGenerationRuns(threadId)

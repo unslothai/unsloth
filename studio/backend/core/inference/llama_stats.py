@@ -149,14 +149,11 @@ class LlamaServerStatsLogger:
                 int(m.get("requests_processing", 0)),
                 int(m.get("requests_deferred", 0)),
             )
-            # A held slot that is not calling llama_decode() is a wedge. Without
-            # this the engine stays "generating" forever and the only symptom is
-            # an endless run of identical info lines.
-            #
-            # A build that does not export n_decode_total reads None here and
-            # therefore never "changes", so it accumulates exactly like a wedge.
-            # Both cases are worth one line, but they say different things, so the
-            # message is chosen at report time rather than by scraping twice.
+            # A held slot not calling llama_decode() is a wedge; without this the
+            # engine stays "generating" forever and the only symptom is an endless
+            # run of identical info lines. A build that does not export
+            # n_decode_total reads None and so never "changes", accumulating the
+            # same way, so the message is chosen at report time.
             decode_calls = m.get("n_decode_total")
             stalled_for = self._stalled_for(now, running, decode_calls)
             if self._stall_timeout and stalled_for >= self._stall_timeout:

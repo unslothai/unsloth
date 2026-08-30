@@ -423,9 +423,8 @@ export function subscribeGenerationRecoveryTriggers(
  * needs to expire it.
  */
 const liveGenerationRuns = new Set<string>();
-// runId -> owning thread, for the runs this tab is streaming. The Set above answers
-// "is this run live"; the checkpoint scheduler needs the inverse, "does this thread have
-// a durable run at all", to tell a durable run from a subscriber-owned stream.
+// runId -> owning thread. The Set above answers "is this run live"; the checkpoint
+// scheduler needs the inverse, "does this thread have a durable run at all".
 const liveGenerationThreads = new Map<string, string>();
 
 /** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
@@ -451,10 +450,8 @@ export function isLiveGenerationRun(runId: string): boolean {
 }
 
 /**
- * Whether `threadId` has a durable run, either streaming here or named by the server.
- *
- * A subscriber-owned stream (external provider, continuation, tool-enabled) has no durable
- * run: the periodic checkpoint is its ONLY persistence, so it must never be capped.
+ * Whether `threadId` has a durable run, either streaming here or named by the server. A
+ * subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence.
  */
 export function threadHasDurableGenerationRun(threadId: string): boolean {
   for (const owner of liveGenerationThreads.values()) {
@@ -469,15 +466,10 @@ export function threadHasDurableGenerationRun(threadId: string): boolean {
 /**
  * Runs the server has named as still going, keyed by the thread whose load asked.
  *
- * Persisted metadata is not evidence of a live run. A run that never reaches a terminal
- * status leaves `generationStatus: "running"` in storage for good, and a reload rebuilds
- * a running message straight back out of it, which is the state no reload can clear.
- * Only `/api/inference/chat-runs/active` can say a run is still going, so a restored
- * message needs a name in this registry, or a claim in `liveGenerationRuns` for the tab
- * that is streaming the run itself.
- *
- * Module state, like the registry above, and for the same reason: a reload is exactly
- * when the previous session's word for it must stop counting.
+ * Persisted metadata is not evidence of a live run: a run that never terminalises leaves
+ * `generationStatus: "running"` in storage for good, and a reload rebuilds a running
+ * message straight back out of it. Only `/api/inference/chat-runs/active` can say a run
+ * is still going. Module state, so a reload drops the previous session's word for it.
  */
 const serverActiveGenerationRuns = new Map<string, string>();
 
@@ -498,13 +490,9 @@ export function syncServerActiveGenerationRuns(
 }
 
 /**
- * Threads the server has successfully answered the active-run question for.
- *
- * Per thread, not per process. "Not in the map" means "never asked" until this thread's
- * own read has landed, so demoting on an empty map would mark a live reply interrupted
- * for anyone whose backend was briefly unreachable as the page came up. And a successful
- * read for thread A says nothing about thread B: keeping one global flag let A's answer
- * turn a FAILED read for B into an authoritative empty list.
+ * Threads the server has successfully answered the active-run question for. Per thread,
+ * not per process: a successful read for thread A says nothing about thread B, and one
+ * global flag let A's answer turn a FAILED read for B into an authoritative empty list.
  */
 const serverAnsweredThreads = new Set<string>();
 

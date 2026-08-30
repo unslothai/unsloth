@@ -29,15 +29,14 @@ _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the
 # run is already being abandoned, and the only question is whether shutdown returns.
 _SHUTDOWN_CANCEL_SECONDS = 5.0
-# Progress lease defaults. A durable run deliberately sets cancel_on_disconnect=False so a
-# closed browser cannot kill a long generation, and nothing else bounds it: a producer that
-# stops producing leaves the thread "generating" forever, which hides Send in the UI and
-# holds the engine slot. Reaping is therefore keyed on progress, never on connectedness.
+# Progress lease defaults. A durable run sets cancel_on_disconnect=False so a closed
+# browser cannot kill a long generation, and nothing else bounds it: a producer that stops
+# producing leaves the thread "generating" forever, hiding Send and holding the engine
+# slot. Reaping is therefore keyed on progress, never on connectedness.
 #
-# The default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S: the request path already
-# refuses to wait longer than that for a first token, so a run whose lease has not moved
-# for longer than the engine's own prefill budget cannot be legitimately prefilling. Slow
-# decode is safe at any speed -- 5 tok/s still renews the lease at least once a second.
+# The default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S, the request path's own
+# first-token budget, so a run whose lease has not moved for longer than that cannot be
+# legitimately prefilling. Slow decode is safe at any speed.
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
 _LEASE_ERROR = "Generation stopped making progress"
