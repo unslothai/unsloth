@@ -3670,6 +3670,19 @@ class FastLlamaModel:
                 clean_gpu_cache()
 
         model = _get_peft_model(model, lora_config)
+
+        # PEFT may have wrapped an endpoint this load repaired; the hook stays on
+        # `base_layer` and the adapter branch reads the caller's tensor.
+        try:
+            from .vision import _lift_endpoint_hooks_onto_adapters
+            _lifted = _lift_endpoint_hooks_onto_adapters(model)
+            if _lifted:
+                logger.info(
+                    f"Unsloth: lifted dispatch hooks onto {_lifted} adapter-wrapped "
+                    "embedding module(s), so a split model trains them."
+                )
+        except Exception as _exc:
+            logger.warning_once(f"Unsloth: could not lift adapter hooks: {_exc}")
         # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
 

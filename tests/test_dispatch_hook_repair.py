@@ -613,3 +613,103 @@ def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
 
     assert repaired >= 1, "one raising accessor aborted the whole repair"
     assert "model" in _hooked(model)
+
+
+def _lift():
+    """The adapter-wrapper lift, loaded the same way as the repair."""
+    import unsloth.models.vision as V
+    return V._lift_endpoint_hooks_onto_adapters
+
+
+class _WrappedModel(torch.nn.Module):
+    """A model whose endpoints are LoRA-style wrappers over hooked modules."""
+
+    def __init__(self, wrap_in = True, wrap_out = True):
+        super().__init__()
+        self.embed = _FakeLora(torch.nn.Embedding(4, 2)) if wrap_in \
+            else torch.nn.Embedding(4, 2)
+        self.head = _FakeLora(torch.nn.Linear(2, 4)) if wrap_out \
+            else torch.nn.Linear(2, 4)
+
+    def get_input_embeddings(self):
+        return self.embed
+
+    def get_output_embeddings(self):
+        return self.head
+
+
+class _FakeLora(torch.nn.Module):
+    """The one structural fact the lift reads: `base_layer` carries the hook.
+
+    Standing in for `peft.tuners.lora.Linear` so the guard does not need peft
+    installed. The device behaviour it models is asserted against the real peft
+    separately, on hardware.
+    """
+
+    def __init__(self, base_layer):
+        super().__init__()
+        self.base_layer = base_layer
+
+
+def test_a_hook_on_base_layer_is_lifted_onto_the_adapter_wrapper():
+    model = _WrappedModel()
+    for m in (model.embed.base_layer, model.head.base_layer):
+        add_hook_to_module(m, AlignDevicesHook(execution_device = torch.device(FAR)))
+
+    lifted = _lift()(model)
+
+    assert lifted == 2, f"lifted {lifted}, so an adapter branch still reads the caller's tensor"
+    assert hasattr(model.embed, "_hf_hook") and hasattr(model.head, "_hf_hook")
+
+
+def test_the_lifted_hook_takes_the_base_layers_execution_device():
+    """A guessed device is worse than none: it relocates a placed module."""
+    model = _WrappedModel(wrap_out = False)
+    add_hook_to_module(
+        model.embed.base_layer,
+        AlignDevicesHook(execution_device = torch.device(FAR), skip_keys = ["past_key_values"]),
+    )
+
+    _lift()(model)
+
+    hook = model.embed._hf_hook
+    assert hook.execution_device == torch.device(FAR), (
+        f"the lifted hook points at {hook.execution_device}, not the base layer's {FAR}"
+    )
+    assert hook.skip_keys == ["past_key_values"], (
+        "the lifted hook drops the skip keys, so it moves tensors dispatch_model excluded"
+    )
+
+
+def test_an_unwrapped_endpoint_is_left_alone():
+    """The overwhelmingly common case: no adapter on the embeddings."""
+    model = _WrappedModel(wrap_in = False, wrap_out = False)
+    add_hook_to_module(model.embed, AlignDevicesHook(execution_device = torch.device(FAR)))
+
+    assert _lift()(model) == 0, "something was lifted onto a module PEFT never wrapped"
+
+
+def test_a_wrapper_whose_base_was_never_hooked_is_left_alone():
+    """Single device, or a base the map never placed. Nothing to mirror."""
+    assert _lift()(_WrappedModel()) == 0
+
+
+def test_a_wrapper_that_already_has_a_hook_is_not_hooked_twice():
+    model = _WrappedModel(wrap_out = False)
+    add_hook_to_module(model.embed.base_layer,
+                       AlignDevicesHook(execution_device = torch.device(FAR)))
+    add_hook_to_module(model.embed, AlignDevicesHook(execution_device = torch.device(FAR)))
+
+    assert _lift()(model) == 0, "a second hook was stacked on the wrapper"
+
+
+def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
+    class _Awkward(_WrappedModel):
+        def get_input_embeddings(self):
+            raise NotImplementedError("this architecture does not say")
+
+    model = _Awkward()
+    add_hook_to_module(model.head.base_layer,
+                       AlignDevicesHook(execution_device = torch.device(FAR)))
+
+    assert _lift()(model) == 1, "one raising accessor aborted the whole lift"

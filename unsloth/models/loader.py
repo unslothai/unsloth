@@ -1184,6 +1184,13 @@ class FastLanguageModel(FastLlamaModel):
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+            # PEFT keeps a repaired endpoint only as `base_layer`, so its hook no
+            # longer covers the adapter branch. Lift it onto the wrapper.
+            try:
+                from .vision import _lift_endpoint_hooks_onto_adapters
+                _lift_endpoint_hooks_onto_adapters(model)
+            except Exception:
+                pass  # never block loading on a placement nicety
             # Re-evaluate grouped MoE now the adapter is attached: an expert-LoRA block falls back
             # to the original loop, an attention-only adapter keeps the grouped path. Guarded.
             try:
@@ -2315,6 +2322,13 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
+            # PEFT keeps a repaired endpoint only as `base_layer`, so its hook no
+            # longer covers the adapter branch. Lift it onto the wrapper.
+            try:
+                from .vision import _lift_endpoint_hooks_onto_adapters
+                _lift_endpoint_hooks_onto_adapters(model)
+            except Exception:
+                pass  # never block loading on a placement nicety
             # Re-evaluate grouped MoE now the adapter is attached: an expert-LoRA block falls back
             # to the original loop, an attention-only adapter keeps the grouped path. Guarded.
             try:

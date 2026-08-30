@@ -312,6 +312,74 @@ def _repair_dispatch_hooks(model):
     return repaired
 
 
+def _lift_endpoint_hooks_onto_adapters(model):
+    """After PEFT wraps a repaired endpoint, lift its hook onto the wrapper.
+
+    An `AlignDevicesHook` wraps the module's OWN forward, so it moves the input
+    inside `base_layer(x)`. `lora.Linear.forward` then reaches for the caller's
+    `x` again for the adapter branch, where it casts dtype and NOT device, and
+    feeds it to `lora_A` -- whose weights PEFT put on the base layer's device via
+    `_move_adapter_to_device_of_base_layer`. On a split model those are different
+    cards, so the adapter branch raises where the base call did not:
+
+        RuntimeError: Expected all tensors to be on the same device, but got
+        mat2 is on cuda:0, different from other tensors on cpu
+
+    Measured on peft 0.20.0, isolated: the base layer alone copes, the wrapper
+    raises, and hooking the wrapper fixes it. It is reachable because unsloth's
+    continued pretraining recipe targets `embed_tokens` and `lm_head` by name,
+    which are exactly the two modules the load rebuilt.
+
+    Only the endpoints are considered. They are the only modules the patching
+    pass replaced, so they are the only ones whose hook this file attached after
+    dispatch; every other adapter wraps a module accelerate hooked itself.
+
+    Returns the number of wrappers lifted, for the caller's log line.
+    """
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+
+    lifted = 0
+    for get in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            wrapper = getattr(model, get, lambda: None)()
+        except Exception:
+            continue  # a model that cannot answer is not one to guess about
+        if wrapper is None or hasattr(wrapper, "_hf_hook"):
+            continue
+        base = getattr(wrapper, "base_layer", None)
+        hook = getattr(base, "_hf_hook", None) if base is not None else None
+        if hook is None or getattr(hook, "execution_device", None) is None:
+            continue  # not a wrapped endpoint, or one dispatch never placed
+        try:
+            add_hook_to_module(
+                wrapper,
+                AlignDevicesHook(
+                    execution_device = hook.execution_device,
+                    # The base layer keeps its own hook, so the inner move still
+                    # happens and is a no-op by the time it runs. Mirroring the
+                    # block shape here rather than inventing a new one.
+                    io_same_device = False,
+                    skip_keys = getattr(hook, "skip_keys", None),
+                ),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Unsloth: could not lift the dispatch hook onto the adapter "
+                f"wrapping {get}() on {hook.execution_device} "
+                f"({type(exc).__name__}: {exc}). Training an adapter that "
+                "targets the embeddings on a split model may fail at the first "
+                "tensor that crosses a device.",
+                RuntimeWarning,
+                stacklevel = 2,
+            )
+            continue
+        lifted += 1
+    return lifted
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -2483,6 +2551,18 @@ class FastBaseModel:
             _LoraModel._create_and_replace = _patched_car
 
         model = _get_peft_model(model, lora_config)
+
+        # PEFT may have wrapped an endpoint this load repaired; the hook stays on
+        # `base_layer` and the adapter branch reads the caller's tensor.
+        try:
+            _lifted = _lift_endpoint_hooks_onto_adapters(model)
+            if _lifted:
+                logger.info(
+                    f"Unsloth: lifted dispatch hooks onto {_lifted} adapter-wrapped "
+                    "embedding module(s), so a split model trains them."
+                )
+        except Exception as _exc:
+            logger.warning_once(f"Unsloth: could not lift adapter hooks: {_exc}")
 
         # Restore original PEFT method
         if _clippable_linear_cls is not None:
