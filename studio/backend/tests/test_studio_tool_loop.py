@@ -1669,9 +1669,7 @@ def test_a_late_id_claims_the_call_a_split_left_waiting(executed):
         [
             [
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}{"b":2}'}}]}),
-                _sse(
-                    {"tool_calls": [{"index": 0, "id": "A", "function": {"name": "web_search"}}]}
-                ),
+                _sse({"tool_calls": [{"index": 0, "id": "A", "function": {"name": "web_search"}}]}),
                 _sse({"tool_calls": [{"index": 0, "id": "B", "function": {"name": "web_fetch"}}]}),
                 _sse(finish = "tool_calls"),
                 _DONE,
