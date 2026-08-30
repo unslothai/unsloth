@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import {
   Popover,
   PopoverContent,
@@ -38,6 +40,11 @@ import {
   deleteCachedModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
+
+import {
+  ggufFilenamesMatch,
+  ggufSelectionOverrideMatchesIntent,
+} from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
@@ -53,12 +60,14 @@ import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
+  CardSettingsButton,
   CardUpdateButton,
   DeleteConfirmDialog,
   UpdateConfirmDialog,
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
@@ -73,6 +82,11 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
+  /** False for a local diffusion / audio / video GGUF: it runs through the media
+   *  planner rather than llama.cpp, so the KV estimator describes the wrong
+   *  runtime -- and it still falls back to the file size, so it draws a
+   *  confident weights-only verdict rather than nothing. */
+  showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
   modelFormat: ModelInventoryFormat | null;
@@ -87,6 +101,9 @@ interface LocalOnDeviceCardProps {
   activeGgufVariant?: string | null;
   isLoading: boolean;
   loadingPhase?: "downloading" | "starting";
+  preferredFile?: string | null;
+  preferredFileIntent?: number;
+
   gpuGb?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
@@ -96,6 +113,15 @@ interface LocalOnDeviceCardProps {
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /**
+   * Open settings for the quant this card is showing. ``quantIsUserPicked`` says whether
+   * it came from this card's selector or was derived from the resident model, which
+   * decides whether a fresher status read may override it.
+   */
+  onOpenSettings?: (
+    ggufVariant: string | null,
+    quantIsUserPicked: boolean,
+  ) => void;
 }
 
 function formatAdapterLabel(
@@ -138,15 +164,15 @@ function BaseModelReference({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+          <span className="shrink-0 text-ui-11 font-medium text-muted-foreground">
             {baseModelSourceLabel(baseModelSource)}
           </span>
-          <span className="truncate text-[12px] font-medium text-foreground">
+          <span className="truncate text-ui-12 font-medium text-foreground">
             {baseModel}
           </span>
         </div>
         {baseModelSummary && (
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          <p className="mt-0.5 truncate text-ui-11 text-muted-foreground">
             {baseModelSummary}
           </p>
         )}
@@ -193,6 +219,7 @@ export function LocalOnDeviceCard({
   sourceLabel,
   source,
   path,
+  showMemoryBar = true,
   isGguf,
   requiresVariant = false,
   modelFormat,
@@ -207,6 +234,9 @@ export function LocalOnDeviceCard({
   activeGgufVariant = null,
   isLoading,
   loadingPhase,
+  preferredFile = null,
+  preferredFileIntent = 0,
+
   gpuGb,
   systemRamGb,
   unsupportedReason,
@@ -214,6 +244,7 @@ export function LocalOnDeviceCard({
   onEject,
   onTrain,
   onChange,
+  onOpenSettings,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -244,10 +275,14 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
-      await deleteCachedModel(repoId, undefined, hfToken || undefined);
+      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
+      // the cache snapshot path: pass it so the delete targets the cache this
+      // card shows instead of falling back to the active cache.
+      await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
     successMessage: () => `Deleted ${repoId}`,
@@ -278,6 +313,8 @@ export function LocalOnDeviceCard({
   const [selectedVariantState, setSelectedVariantState] = useState<{
     key: string;
     quant: string | null;
+    preferredFile?: string | null;
+    preferredFileIntent?: number;
   }>(() => ({
     key: variantKey,
     quant: null,
@@ -298,10 +335,20 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
+        // Both sides measure the same cache; keep the local reading and let the
+        // remote one cover a row the local listing could not price.
+        download_remaining_bytes:
+          variant.download_remaining_bytes ??
+          remoteVariant.download_remaining_bytes,
         update_available: remoteVariant.update_available === true,
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
+  // The same live VRAM Budget the memory bar on this card reads. Without it the
+  // quant menu ranked against the 0.97 default while the bar beside it used the
+  // saved fraction, so an over-budget variant could sit above a smaller one that
+  // actually fits.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
       variants
@@ -310,6 +357,7 @@ export function LocalOnDeviceCard({
             activeGgufVariant: isActive ? activeGgufVariant : null,
             gpuGb,
             systemRamGb,
+            budgetFraction,
           })
         : null,
     [
@@ -319,10 +367,24 @@ export function LocalOnDeviceCard({
       activeGgufVariant,
       gpuGb,
       systemRamGb,
+      budgetFraction,
     ],
   );
+  const preferredQuant = preferredFile
+    ? (variants?.find((variant) =>
+        ggufFilenamesMatch(variant.filename, preferredFile),
+      )?.quant ?? null)
+    : null;
   const selectedVariantOverride =
-    selectedVariantState.key === variantKey ? selectedVariantState.quant : null;
+    selectedVariantState.key === variantKey &&
+    ggufSelectionOverrideMatchesIntent(
+      preferredFile,
+      preferredFileIntent,
+      selectedVariantState.preferredFile,
+      selectedVariantState.preferredFileIntent,
+    )
+      ? selectedVariantState.quant
+      : preferredQuant;
   const selectedQuant =
     selectedVariantOverride &&
     sortedVariants?.some((variant) =>
@@ -338,6 +400,13 @@ export function LocalOnDeviceCard({
         )?.quant ??
         sortedVariants?.[0]?.quant ??
         null);
+  // Only the first branch is a choice; the rest read the store, which can be stale.
+  const quantIsUserPicked = Boolean(
+    selectedVariantOverride &&
+      sortedVariants?.some((variant) =>
+        ggufVariantsMatch(variant.quant, selectedVariantOverride),
+      ),
+  );
   const selectedVariant =
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
@@ -424,7 +493,7 @@ export function LocalOnDeviceCard({
   return (
     <div className="flex w-full flex-col gap-2">
       {showOldCacheHint && (
-        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-[12px] leading-5 text-amber-700 dark:text-amber-300">
+        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={1.75}
@@ -440,7 +509,7 @@ export function LocalOnDeviceCard({
       <div className="hub-download-card">
         <div className="group/dl flex items-center">
           <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-            <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+            <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
               <DotTag
                 tone="success"
                 label={selectedVariantIsActive ? "Loaded" : "On device"}
@@ -452,7 +521,7 @@ export function LocalOnDeviceCard({
                     <button
                       type="button"
                       disabled={currentVariantState.loading}
-                      className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-[10.5px] leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <span className="truncate">
                         {currentVariantState.loading
@@ -464,7 +533,7 @@ export function LocalOnDeviceCard({
                               : "Select"}
                       </span>
                       {selectedVariant && (
-                        <span className="shrink-0 font-sans text-[10px] text-muted-foreground tabular-nums">
+                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
                           {formatBytes(selectedVariant.size_bytes)}
                         </span>
                       )}
@@ -499,6 +568,9 @@ export function LocalOnDeviceCard({
                               setSelectedVariantState({
                                 key: variantKey,
                                 quant: variant.quant,
+
+                                preferredFile,
+                                preferredFileIntent,
                               });
                               setVariantOpen(false);
                             }}
@@ -509,14 +581,14 @@ export function LocalOnDeviceCard({
                                 : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
                             )}
                           >
-                            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-format-gguf">
+                            <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
                               {label}
                             </span>
                             <span className="flex shrink-0 items-center gap-1.5">
                               {isLoaded && (
                                 <DotTag tone="success" label="Loaded" />
                               )}
-                              <span className="text-[10px] text-muted-foreground tabular-nums">
+                              <span className="text-ui-10 text-muted-foreground tabular-nums">
                                 {formatBytes(variant.size_bytes)}
                               </span>
                             </span>
@@ -546,6 +618,15 @@ export function LocalOnDeviceCard({
               )}
             </span>
             <div className="ml-auto flex items-center gap-0.5">
+              {onOpenSettings && (
+                <CardSettingsButton
+                  label={`Settings for ${repoId}`}
+                  // The quant this card resolved, so settings edits what is on screen.
+                  onClick={() =>
+                    onOpenSettings(selectedQuant ?? null, quantIsUserPicked)
+                  }
+                />
+              )}
               {canUpdate && (
                 <CardUpdateButton
                   label={`Update ${repoId}`}
@@ -642,6 +723,31 @@ export function LocalOnDeviceCard({
             </button>
           </div>
         </div>
+        {/* Below the action row, not inside it: the row is a horizontal flex
+            container, so a full-width bar there becomes another flex item and
+            squeezes the Run/Train buttons. */}
+        {/* A direct .gguf path skips variant selection entirely, so selectedQuant
+            is null for exactly the local files this is meant to cover. The path
+            names the weights on its own there, and the backend resolves a
+            direct file without needing a quant to match. */}
+        {showMemoryBar &&
+        (repoId || localGgufPath) &&
+        (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
+          <ModelMemoryBarFor
+            // The card's own path is what Run opens, so it is the identity the
+            // estimate has to use: a repo cached under several roots or revisions
+            // can otherwise resolve a different snapshot and chart weights the
+            // click does not load. It is also the only identity a custom or local
+            // GGUF has, where repoId is null and the bar used to be suppressed
+            // outright despite a perfectly good path being right here.
+            repoId={repoId || localGgufPath}
+            loadId={localGgufPath}
+            quant={selectedQuant ?? ""}
+            sizeBytes={selectedVariant?.size_bytes}
+            gpuGb={gpuGb}
+            className="px-3 pb-2"
+          />
+        ) : null}
       </div>
       {baseModel && (
         <BaseModelReference
@@ -658,12 +764,16 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
+        // Same gate the model row menu applies: when an installed image model still needs these
+        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
           <>
             This will remove{" "}
             <span className="font-medium text-foreground">{repoId}</span> and
             its downloaded files from disk. You can re-download it later.
+            <DeleteImpactSummary impact={deleteImpact} />
           </>
         }
       />

@@ -51,7 +51,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
           </TooltipContent>
         </Tooltip>
       </span>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {EXPORT_METHODS.map((m) => {
           const selected = value === m.value;
           const isDisabled = disabledMethods.includes(m.value);
@@ -123,7 +123,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
                   {m.badge && (
                     <Badge
                       variant="secondary"
-                      className="text-[10px] px-1.5 py-0"
+                      className="text-ui-10 px-1.5 py-0"
                     >
                       {m.badge}
                     </Badge>

@@ -114,7 +114,7 @@ export function ChatTemplateEditorDialog({
           </DialogTitle>
           <DialogDescription>
             {readOnly
-              ? "This is the model's chat template. Custom templates apply to GGUF models for now, so it is view only for safetensors models."
+              ? "This is the model's chat template. This model's backend cannot take a custom one, so it is view only."
               : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
           </DialogDescription>
         </DialogHeader>
@@ -126,13 +126,13 @@ export function ChatTemplateEditorDialog({
             setError(null);
           }}
           readOnly={readOnly}
-          className="min-h-[20rem] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
+          className="min-h-[20rem] max-h-[50dvh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
           rows={14}
           spellCheck={false}
           placeholder={defaultLoading ? "Loading model default..." : ""}
         />
         {readOnly ? null : (
-          <div className="flex items-center justify-between gap-3 px-0.5 text-[11px]">
+          <div className="flex items-center justify-between gap-3 px-0.5 text-ui-11">
             <span
               className={overLimit ? "text-amber-500" : "text-muted-foreground"}
             >

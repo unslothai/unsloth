@@ -16,7 +16,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { TrainIcon } from "../components/train-icon";
-import { useRepoDownload } from "../download-manager";
+import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { deleteCachedModel } from "../inventory";
 import type { ModelInventoryFormat } from "../inventory";
@@ -37,6 +37,7 @@ import {
 } from "./download-card";
 import { QuantOptionsMenu } from "./gguf-download-card";
 import { useCardDelete } from "./use-card-delete";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useDownloadCardState } from "./use-download-card-state";
 
 function formatModelLabel(modelFormat?: ModelInventoryFormat | null): string {
@@ -57,10 +58,12 @@ export function SafetensorsDownloadCard({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
   isLoadingThisModel,
+  cachePath,
   knownBytes,
   onLoad,
   onEject,
@@ -71,11 +74,12 @@ export function SafetensorsDownloadCard({
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
   isLoadingThisModel: boolean;
-  /** Accepted for API parity; the options menu resolves the path itself. */
+  /** Owning cache dir, threaded into delete so it targets this copy. */
   cachePath?: string | null;
   knownBytes?: number | null;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
@@ -100,7 +104,8 @@ export function SafetensorsDownloadCard({
         : null;
   const [deleteRepoOpen, setDeleteRepoOpen] = useState(false);
   const { deleting, runDelete } = useCardDelete({
-    action: () => deleteCachedModel(repoId, undefined, hfToken || undefined),
+    action: () =>
+      deleteCachedModel(repoId, undefined, hfToken || undefined, cachePath ?? undefined),
     resourceName: "model",
     successMessage: () => `Deleted ${repoId}`,
     onSuccess: () => {
@@ -150,6 +155,7 @@ export function SafetensorsDownloadCard({
   }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online]);
 
   const downloading = progress !== null && progress.variant === null;
+  const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
     variant: null,
@@ -158,6 +164,8 @@ export function SafetensorsDownloadCard({
     disabled: isLoadingThisModel || cancelling || repoPeerActive,
     isPartial,
     partialTransport,
+    partialResumable,
+    partialsResumable,
   });
   const showActionPair = isDownloaded && !downloading && (canRun || !!onTrain);
   const showUnavailableAction =
@@ -169,6 +177,14 @@ export function SafetensorsDownloadCard({
     !repoPeerActive &&
     !isActive &&
     !isLoadingThisModel;
+
+  // Same preview the On Device and picker rows run: without it this card kept an enabled Delete
+  // for a companion base an installed image GGUF still needs, and the refusal arrived as a 400
+  // after the user confirmed.
+  const deleteImpact = useDeleteImpact(
+    deleteRepoOpen && Boolean(repoId),
+    repoId ?? "",
+  );
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -183,6 +199,7 @@ export function SafetensorsDownloadCard({
             }}
             title="Delete cached model?"
             deleting={deleting}
+            blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
             onConfirm={() => void runDelete()}
             description={
               <>
@@ -193,13 +210,14 @@ export function SafetensorsDownloadCard({
                   ? ` (${formatBytes(modelTotalBytes)})`
                   : ""}{" "}
                 from disk. You can re-download it later.
+                <DeleteImpactSummary impact={deleteImpact} />
               </>
             }
           />
         }
       >
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+          <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
             {(isActive || isDownloaded) && (
               <DotTag
                 tone="success"
@@ -214,7 +232,8 @@ export function SafetensorsDownloadCard({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={4}>
-                  Partial download. Click to continue.
+                  {/* The badge is a status dot, not a control. */}
+                  {downloadAction.partialHint}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -323,7 +342,8 @@ export function SafetensorsDownloadCard({
             cancelling={downloadAction.cancelling}
             loading={isLoadingThisModel || downloadAction.starting}
             isPartial={downloadAction.isPartial}
-            partialTransport={downloadAction.partialTransport}
+            partialResumable={downloadAction.partialResumable}
+            stopMode={downloadAction.stopMode}
             progressPercent={downloadAction.progressPercent}
             disabled={downloadAction.disabled}
             onClick={downloadAction.onClick}

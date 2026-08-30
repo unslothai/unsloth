@@ -60,6 +60,8 @@ def _exact_git_studio_tag(repo_root: Path) -> str | None:
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = _GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -81,6 +83,8 @@ def _git_branch(repo_root: Path) -> str | None:
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = _GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):

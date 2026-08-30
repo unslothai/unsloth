@@ -40,7 +40,7 @@ def _registrations(source):
 
 
 def test_cpo_registration_matches_orpo():
-    regs = _registrations(open(RL_PATH).read())
+    regs = _registrations(open(RL_PATH, encoding = "utf-8").read())
     shared = {"orpo_trainer_text_tokenizer", "orpo_trainer_processor_pad_token"}
     assert shared <= set(regs.get("orpo_trainer", []))
     assert shared <= set(regs.get("cpo_trainer", []))
@@ -48,7 +48,7 @@ def test_cpo_registration_matches_orpo():
 
 def _load_pad_rewriter():
     """Exec orpo_trainer_processor_pad_token (+ _PAD_FALLBACK) without importing unsloth."""
-    tree = ast.parse(open(RL_PATH).read())
+    tree = ast.parse(open(RL_PATH, encoding = "utf-8").read())
     nodes = []
     for n in tree.body:
         if isinstance(n, ast.Assign) and any(

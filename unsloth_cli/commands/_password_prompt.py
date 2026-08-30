@@ -191,6 +191,10 @@ def prompt_new_password(verify_current: Callable[[str], bool], out: TextIO | Non
             out.write(f"Password must be at least {MIN_PASSWORD_LENGTH} characters. Try again.\n")
             out.flush()
             continue
+        if any(ch.isspace() for ch in password):
+            out.write("Password cannot contain spaces. Try again.\n")
+            out.flush()
+            continue
         if verify_current(password):
             out.write("New password must differ from the current password. Try again.\n")
             out.flush()
@@ -233,6 +237,8 @@ def validate_new_password(candidate: str, verify_current: Callable[[str], bool])
     current password), else None. Same policy as the interactive loop."""
     if len(candidate) < MIN_PASSWORD_LENGTH:
         return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    if any(ch.isspace() for ch in candidate):
+        return "Password cannot contain spaces."
     if verify_current(candidate):
         return "New password must differ from the current password."
     return None

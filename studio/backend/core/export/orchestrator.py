@@ -230,16 +230,20 @@ class ExportOrchestrator:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
+        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-        from .worker import run_export_process
+        cache_env = get_hf_cache_paths().child_env({})
 
-        with native_path_secret_removed_for_child_start():
+        with (
+            child_environment_for_spawn(cache_env),
+            native_path_secret_removed_for_child_start(),
+        ):
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
             self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
-                args = (run_export_process,),
+                args = ("core.export.worker", "run_export_process", cache_env),
                 kwargs = {
                     "cmd_queue": self._cmd_queue,
                     "resp_queue": self._resp_queue,
@@ -571,6 +575,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
+        private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -582,6 +587,7 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "imatrix_file": imatrix_file,
+                "private": private,
             },
         )
 

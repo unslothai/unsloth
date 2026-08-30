@@ -15,18 +15,20 @@ import pytest
 import torch
 
 
-def _has_real_cuda():
-    try:
-        torch.zeros(1).to("cuda")
-        return True
-    except Exception:
-        return False
+def _has_real_gpu():
+    for backend in ("cuda", "xpu"):
+        try:
+            torch.zeros(1).to(backend)
+            return True
+        except Exception:
+            pass
+    return False
 
 
-HAS_REAL_CUDA = _has_real_cuda()
-requires_cuda = pytest.mark.skipif(
-    not HAS_REAL_CUDA,
-    reason = "LlamaRotaryEmbedding builds per-device CUDA caches in __init__",
+HAS_REAL_GPU = _has_real_gpu()
+requires_gpu = pytest.mark.skipif(
+    not HAS_REAL_GPU,
+    reason = "LlamaRotaryEmbedding builds per-device caches in __init__ (needs CUDA or XPU)",
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +54,7 @@ MAX_POS = 131072
 
 
 def _load_class_init():
-    tree = ast.parse(LLAMA_PY.read_text())
+    tree = ast.parse(LLAMA_PY.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == CLASS_NAME:
             for sub in node.body:
@@ -96,7 +98,7 @@ def _iter_names_and_calls(node):
 
 
 def _find_method(source_path, class_name, method_name):
-    for node in ast.walk(ast.parse(source_path.read_text())):
+    for node in ast.walk(ast.parse(source_path.read_text(encoding = "utf-8"))):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for sub in node.body:
                 if isinstance(sub, ast.FunctionDef) and sub.name == method_name:
@@ -105,7 +107,7 @@ def _find_method(source_path, class_name, method_name):
 
 
 def _find_function(source_path, function_name):
-    for node in ast.walk(ast.parse(source_path.read_text())):
+    for node in ast.walk(ast.parse(source_path.read_text(encoding = "utf-8"))):
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             return node
     return None
@@ -360,7 +362,7 @@ def _cos_at_position(rot, position):
 # --- Layer 3: CUDA behavioral guard (real instantiation needs a device) ---
 
 
-@requires_cuda
+@requires_gpu
 def test_constructor_applies_llama3_scaling():
     config = _make_config(LLAMA3_ROPE_SCALING)
     rot = _unsloth_rotary(config)
@@ -371,7 +373,7 @@ def test_constructor_applies_llama3_scaling():
     ), "LlamaRotaryEmbedding built from a llama3 config produced unscaled inv_freq (issue #2405)."
 
 
-@requires_cuda
+@requires_gpu
 def test_constructor_unscaled_config_uses_vanilla_inv_freq():
     rot = _unsloth_rotary(_make_config(None))
     got = rot.inv_freq.float().cpu()
@@ -381,7 +383,7 @@ def test_constructor_unscaled_config_uses_vanilla_inv_freq():
     ), "LlamaRotaryEmbedding with no rope_scaling must use the vanilla inv_freq"
 
 
-@requires_cuda
+@requires_gpu
 def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
     scaled = _unsloth_rotary(_make_config(LLAMA3_ROPE_SCALING))
     unscaled = _unsloth_rotary(_make_config(None))
@@ -397,7 +399,7 @@ def test_cos_cache_differs_between_scaled_and_unscaled_at_long_position():
     )
 
 
-@requires_cuda
+@requires_gpu
 def test_extended_cache_keeps_scaling_after_growth():
     scaled = _unsloth_rotary(_make_config(LLAMA3_ROPE_SCALING))
     # Grow past the initial cache size (mirrors long-context decode).
@@ -456,7 +458,7 @@ def _build_longrope_rotary():
     return rot, config
 
 
-@requires_cuda
+@requires_gpu
 @pytest.mark.parametrize(
     "build", [_build_llama3_rotary, _build_longrope_rotary], ids = ["llama3", "longrope"]
 )

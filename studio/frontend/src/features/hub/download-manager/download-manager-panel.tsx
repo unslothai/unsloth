@@ -73,6 +73,16 @@ function canUseDownloadManager(pathname: string): boolean {
 }
 
 function variantSuffix(job: ManagedDownload): string {
+  if (job.variant?.startsWith("@")) {
+    // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
+    // can be a curated single .safetensors and companion repos carry .safetensors too, so the
+    // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
+    // which would otherwise change label mid-download after a restart.
+    const isModelFile =
+      job.checkpoint ??
+      job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
+    return ` · ${isModelFile ? "Model file" : "Required assets"}`;
+  }
   return job.variant ? ` · ${job.variant}` : "";
 }
 
@@ -108,7 +118,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
+        <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
           {job.repoId}
           <span className="text-muted-foreground">{variantSuffix(job)}</span>
         </span>
@@ -162,10 +172,11 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
             fraction: job.fraction,
           }}
           bytesPerSec={job.bytesPerSec}
+          etaSeconds={job.etaSeconds}
         />
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (
-        <div className="px-0 text-[11px] text-muted-foreground tabular-nums">
+        <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
           <StatusLine job={job} />
         </div>
       ) : null}
@@ -201,8 +212,10 @@ export function DownloadManagerPanel({
       className={cn(
         // Standalone: anchor bottom-right. In a shared stack (positioned=false)
         // flow as a right-aligned row so overlays stack instead of overlapping.
+        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
+        // stack would squeeze the update card instead of this list.
         "pointer-events-none",
-        positioned ? "fixed bottom-4 right-4 z-50" : "flex justify-end",
+        positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}
     >
       {collapsed ? (
@@ -229,9 +242,9 @@ export function DownloadManagerPanel({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="hub-download-panel pointer-events-auto w-[min(400px,calc(100vw-2rem))] overflow-hidden">
+        <div className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground">
+            <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               {headerLabel}
             </span>
             <button
@@ -247,7 +260,7 @@ export function DownloadManagerPanel({
               />
             </button>
           </div>
-          <ul className="max-h-[60vh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
+          <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
             {jobKeys.map((jobKey) => (
               <DownloadRow key={jobKey} jobKey={jobKey} />
             ))}

@@ -11,10 +11,14 @@ export function DownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
   activeQuant,
+  preferredGgufFile = null,
+
+  preferredGgufFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
   systemRamGb,
@@ -25,16 +29,21 @@ export function DownloadSection({
   onEject,
   onTrain,
   onChange,
+  showMemoryBar = true,
 }: {
   repoId: string;
   isGguf: boolean;
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
   activeQuant: string | null;
+  preferredGgufFile?: string | null;
+
+  preferredGgufFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
   systemRamGb?: number;
@@ -45,13 +54,19 @@ export function DownloadSection({
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs, which do not load through
+   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  showMemoryBar?: boolean;
 }) {
-  if (isGguf) {
+  if (isGguf || preferredGgufFile) {
     return (
       <GgufDownloadCard
         repoId={repoId}
         isActive={isActive}
         activeQuant={activeQuant}
+        preferredFile={preferredGgufFile}
+
+        preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         systemRamGb={systemRamGb}
@@ -61,6 +76,7 @@ export function DownloadSection({
         onUseInChat={onUseInChat}
         onEject={onEject}
         onChange={onChange}
+        showMemoryBar={showMemoryBar}
       />
     );
   }
@@ -70,6 +86,7 @@ export function DownloadSection({
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
+      partialResumable={partialResumable}
       modelFormat={modelFormat}
       canRun={canRun}
       isActive={isActive}

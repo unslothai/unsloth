@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   type SidebarItem,
+  DeleteChatFilesSwitch,
   deleteChatItem,
   unarchiveChatItem,
   useChatPreferencesStore,
@@ -22,9 +23,13 @@ import {
 import { toast } from "@/lib/toast";
 import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Button } from "@/components/ui/button";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+/** Archived chats shown per page; "Show more" reveals the next page. */
+const ARCHIVED_PAGE_SIZE = 20;
 
 function formatCreatedAt(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, {
@@ -51,9 +56,18 @@ export function ArchivedChatsView() {
   const confirmDeleteChats = useChatPreferencesStore(
     (s) => s.confirmDeleteChats,
   );
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
+  );
   const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
     null,
   );
+  // Preselected from the preference, so the dialog shows what is about to
+  // happen and can still be turned off for this one chat.
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+  // Pagination: the view remounts with its settings tab, so plain state
+  // restarts from the first page on each visit.
+  const [visibleCount, setVisibleCount] = useState(ARCHIVED_PAGE_SIZE);
 
   // Open an archived chat: leave it archived, just navigate to it.
   function openChat(item: SidebarItem) {
@@ -76,17 +90,22 @@ export function ArchivedChatsView() {
     }
   }
 
-  async function handleDelete(item: SidebarItem) {
+  async function handleDelete(item: SidebarItem, deleteFiles: boolean) {
     try {
       // Pass the open chat id (single or compare) so deleting it resets nav.
-      await deleteChatItem(item, openChatId, (view) => {
-        navigate({
-          to: "/chat",
-          search: item.projectId
-            ? { project: item.projectId }
-            : { new: view.newThreadNonce },
-        });
-      });
+      await deleteChatItem(
+        item,
+        openChatId,
+        (view) => {
+          navigate({
+            to: "/chat",
+            search: item.projectId
+              ? { project: item.projectId }
+              : { new: view.newThreadNonce },
+          });
+        },
+        { deleteFiles },
+      );
       toast.success("Chat deleted");
     } catch (err) {
       toast.error("Failed to delete chat", {
@@ -96,8 +115,13 @@ export function ArchivedChatsView() {
   }
 
   function requestDelete(item: SidebarItem) {
-    if (confirmDeleteChats) setConfirmingDelete(item);
-    else void handleDelete(item);
+    if (confirmDeleteChats) {
+      setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+      setConfirmingDelete(item);
+      return;
+    }
+    // No confirmation to preselect, so the preference is the answer.
+    void handleDelete(item, alwaysDeleteChatFiles);
   }
 
   return (
@@ -113,7 +137,7 @@ export function ArchivedChatsView() {
             <span className="w-32 shrink-0">Date created</span>
             <span className="w-16 shrink-0" />
           </div>
-          {archivedItems.map((item) => (
+          {archivedItems.slice(0, visibleCount).map((item) => (
             <div
               key={item.id}
               className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
@@ -159,6 +183,19 @@ export function ArchivedChatsView() {
               </span>
             </div>
           ))}
+          {archivedItems.length > visibleCount ? (
+            <div className="flex justify-center pt-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setVisibleCount(visibleCount + ARCHIVED_PAGE_SIZE)
+                }
+              >
+                Show more ({archivedItems.length - visibleCount})
+              </Button>
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -179,14 +216,20 @@ export function ArchivedChatsView() {
               ? This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <DeleteChatFilesSwitch
+            id="archived-chat-delete-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
                 const item = confirmingDelete;
+                const deleteFiles = deleteFilesOnDelete;
                 setConfirmingDelete(null);
-                if (item) void handleDelete(item);
+                if (item) void handleDelete(item, deleteFiles);
               }}
             >
               Delete

@@ -188,14 +188,14 @@ function CachedSizeChipLive({
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-[11px] text-white/70"
+                    className="text-ui-11 text-white/70"
                   />
                 </span>
               </li>
             ))}
           </ul>
         ) : (
-          <span className="block max-w-52 text-[11px] leading-4 text-muted-foreground">
+          <span className="block max-w-52 text-ui-11 leading-4 text-muted-foreground">
             {variantMessage}
           </span>
         )}
@@ -225,7 +225,7 @@ export function StatChip({
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-none tabular-nums text-muted-foreground/75",
+        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-ui-10 font-medium leading-none tabular-nums text-muted-foreground/75",
         className,
       )}
     >
@@ -387,7 +387,7 @@ export function buildRowStatusTooltip({
     lines.push(
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
-        . Click Resume to continue.
+        . Open it to finish the download.
       </TooltipLegendRow>,
     );
   } else if (isAvailableOnDevice) {
@@ -449,7 +449,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           }),
     [isDataset, row.id, row.result, deviceType],
   );
-  const unsupported = support?.status === "unsupported";
+  const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const partialRepoId =
     row.isAvailableOnDevice && row.isPartialOnDevice
@@ -482,7 +482,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
-              <p className="truncate text-[12px] font-medium leading-[18px] tracking-[-0.005em] text-foreground">
+              <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
                 {row.repo}
               </p>
               <AccessGlyphs
@@ -518,7 +518,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-[11.5px] leading-[16px] text-muted-foreground/85">
+          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (
@@ -528,7 +528,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 />
               )}
             </span>
-            <span className="shrink-0 text-[10.5px] tabular-nums">
+            <span className="shrink-0 text-ui-10p5 tabular-nums">
               {formatRelativeShort(row.result.updatedAt)}
             </span>
           </div>
@@ -573,6 +573,7 @@ export const InventoryRow = memo(function InventoryRow({
   compact = false,
   onSelect,
   onChange,
+  onOpenSettings,
 }: {
   row: CachedInventoryRow | LocalInventoryRow;
   selected: boolean;
@@ -585,6 +586,8 @@ export const InventoryRow = memo(function InventoryRow({
   compact?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
+  /** Open this model's settings page. Omitted for datasets. */
+  onOpenSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   const rowModelId =
     row.kind === "cache"
@@ -593,16 +596,16 @@ export const InventoryRow = memo(function InventoryRow({
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
   const unsupported = useMemo(() => {
     if (isDataset) return false;
-    return (
-      classifyUnslothSupport({
-        modelId: rowModelId,
-        pipelineTag: row.pipelineTag,
-        tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
-        libraryName: row.libraryName,
-        quantMethod: row.quantMethod,
-        deviceType,
-      }).status === "unsupported"
-    );
+    const classified = classifyUnslothSupport({
+      modelId: rowModelId,
+      pipelineTag: row.pipelineTag,
+      tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
+      libraryName: row.libraryName,
+      quantMethod: row.quantMethod,
+      deviceType,
+    });
+    // Images/Video run these, so they are not unsupported to a user.
+    return classified.status === "unsupported" && !classified.supportedIn;
   }, [
     isDataset,
     rowModelId,
@@ -666,7 +669,7 @@ export const InventoryRow = memo(function InventoryRow({
           <span className="hub-chip tabular-nums">{paramLabel}</span>
         )}
         {quantLabel && (
-          <span className="hub-chip font-mono text-[10.5px] uppercase">
+          <span className="hub-chip font-mono text-ui-10p5 uppercase">
             {quantLabel}
           </span>
         )}
@@ -716,7 +719,7 @@ export const InventoryRow = memo(function InventoryRow({
     ) : null;
 
   const ownerLine = (
-    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
+    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
       <span className="truncate">{subLabel}</span>
       {subLabel.toLowerCase() === "unsloth" && (
         <span
@@ -732,30 +735,40 @@ export const InventoryRow = memo(function InventoryRow({
   const rowPinned =
     cacheDeletableRepoId != null &&
     pinnedKeys.includes(pinKey(cacheDeletableRepoId));
+  // Settings applies to any downloaded model, not just deletable ones, so the menu renders
+  // when either action applies. `deletableRepoId` keeps the delete closures' narrowing.
+  const settingsAction =
+    !isDataset && onOpenSettings ? { onOpen: () => onOpenSettings(row) } : undefined;
+  const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
   const deleteAction =
-    canDelete && cacheDeletableRepoId ? (
+    deletableRepoId || settingsAction ? (
       <ModelRowMenu
-        ariaLabel={`More options for ${cacheDeletableRepoId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
+        settings={settingsAction}
         pin={
-          isDataset
+          isDataset || !deletableRepoId
             ? undefined
             : {
                 pinned: rowPinned,
                 pinLabel: "Pin to top",
                 unpinLabel: "Unpin",
-                onToggle: () => togglePinned(cacheDeletableRepoId),
+                onToggle: () => togglePinned(deletableRepoId),
               }
         }
-        cachePath={isDataset ? undefined : { repoId: cacheDeletableRepoId }}
-        del={{
+        cachePath={
+          isDataset || !deletableRepoId ? undefined : { repoId: deletableRepoId }
+        }
+        del={deletableRepoId ? {
           title: isDataset ? "Delete cached dataset?" : "Delete cached model?",
+          // Datasets have no companion base repo, so only models get a preview.
+          impact: isDataset ? undefined : { repoId: deletableRepoId },
           description: (
             <>
               This will remove{" "}
               <span className="font-medium text-foreground">
-                {cacheDeletableRepoId}
+                {deletableRepoId}
               </span>{" "}
               {isDataset
                 ? "and its downloaded files"
@@ -766,23 +779,32 @@ export const InventoryRow = memo(function InventoryRow({
               disk. You can re-download it later.
             </>
           ),
-          successMessage: `Deleted ${cacheDeletableRepoId}`,
+          successMessage: `Deleted ${deletableRepoId}`,
           onConfirm: async () => {
+            // Delete only the copy this row shows: cache rows carry the owning
+            // cache path, so pass it through and leave other caches untouched.
+            const rowCachePath =
+              row.kind === "cache" ? (row.cachePath ?? undefined) : undefined;
             if (isDataset) {
-              await deleteCachedDataset(cacheDeletableRepoId);
+              await deleteCachedDataset(deletableRepoId, rowCachePath);
             } else {
-              await deleteCachedModel(cacheDeletableRepoId);
+              await deleteCachedModel(
+                deletableRepoId,
+                undefined,
+                undefined,
+                rowCachePath,
+              );
               // Deleted repos can't stay pinned: drop the repo pin and any of
               // its per-quant pins so stale rows don't linger up top.
               const { pinned, togglePinned: toggle } =
                 usePinnedModelsStore.getState();
               for (const key of pinned) {
                 if (
-                  key === pinKey(cacheDeletableRepoId) ||
-                  key.startsWith(`${cacheDeletableRepoId}::`)
+                  key === pinKey(deletableRepoId) ||
+                  key.startsWith(`${deletableRepoId}::`)
                 ) {
                   toggle(
-                    cacheDeletableRepoId,
+                    deletableRepoId,
                     key.includes("::")
                       ? key.slice(key.indexOf("::") + 2)
                       : undefined,
@@ -792,7 +814,7 @@ export const InventoryRow = memo(function InventoryRow({
             }
           },
           onDeleted: onChange,
-        }}
+        } : undefined}
       />
     ) : null;
 
@@ -817,17 +839,17 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
-            className="size-8 shrink-0 rounded-[9px] text-[12px]"
+            className="size-8 shrink-0 rounded-[9px] text-ui-12"
             remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[12.5px] font-semibold leading-[16px] text-foreground">
+              <span className="truncate text-ui-12p5 font-semibold leading-ui-16 text-foreground">
                 {title}
               </span>
               {compactMarkers}
             </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] leading-[14px] text-muted-foreground/75">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-10p5 leading-ui-14 text-muted-foreground/75">
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate">{subLabel}</span>
                 {subLabel.toLowerCase() === "unsloth" && (
@@ -851,7 +873,7 @@ export const InventoryRow = memo(function InventoryRow({
               )}
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-2 text-[10.5px] tabular-nums text-muted-foreground/70">
+          <div className="flex shrink-0 items-center gap-2 text-ui-10p5 tabular-nums text-muted-foreground/70">
             {row.kind === "cache" ? (
               <CachedSizeChip
                 repoId={row.repoId}
@@ -894,7 +916,7 @@ export const InventoryRow = memo(function InventoryRow({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[13.5px] font-semibold leading-[17px] text-foreground">
+              <span className="truncate text-ui-13p5 font-semibold leading-ui-17 text-foreground">
                 {title}
               </span>
               {statusMarkers}
@@ -915,11 +937,11 @@ export const InventoryRow = memo(function InventoryRow({
               cachePath={row.cachePath}
             />
           ) : trailing ? (
-            <span className="truncate text-[11.5px] tabular-nums text-muted-foreground/70">
+            <span className="truncate text-ui-11p5 tabular-nums text-muted-foreground/70">
               {trailing}
             </span>
           ) : sourceLabel ? (
-            <span className="truncate text-[11.5px] text-muted-foreground/55">
+            <span className="truncate text-ui-11p5 text-muted-foreground/55">
               {sourceLabel}
             </span>
           ) : null}

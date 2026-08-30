@@ -7,6 +7,7 @@
 
 import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import * as React from "react";
+import { useWheelScrollRef } from "@/hooks";
 import { createContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -100,13 +101,19 @@ function ComboboxInput({
   disabled = false,
   showTrigger = true,
   showClear = false,
+  startAddon,
   ...props
 }: ComboboxPrimitive.Input.Props & {
   showTrigger?: boolean;
   showClear?: boolean;
+  /** Optional leading content (e.g. a search icon) rendered before the input. */
+  startAddon?: React.ReactNode;
 }): React.ReactElement {
   return (
     <InputGroup className={cn("w-auto", className)}>
+      {startAddon && (
+        <InputGroupAddon align="inline-start">{startAddon}</InputGroupAddon>
+      )}
       <ComboboxPrimitive.Input
         render={<InputGroupInput disabled={disabled} />}
         {...props}
@@ -195,8 +202,11 @@ function ComboboxList({
   className,
   ...props
 }: ComboboxPrimitive.List.Props): React.ReactElement {
+  const listRef = useWheelScrollRef<HTMLDivElement>();
+
   return (
     <ComboboxPrimitive.List
+      ref={listRef}
       data-slot="combobox-list"
       className={cn(
         "no-scrollbar max-h-[min(calc(--spacing(72)---spacing(9)),calc(var(--available-height)---spacing(9)))] scroll-py-1 overflow-y-auto p-1 data-empty:p-0 overflow-y-auto overscroll-contain",
