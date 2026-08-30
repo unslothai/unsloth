@@ -688,9 +688,9 @@ def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_pat
         '{"schema": 1, "expected_torch_tag": "cpu", "expected_torch_tag_pinned": false}',
         encoding = "utf-8",
     )
-    assert hw.classify_torch_build() == "torch_cpu_build", (
-        "an automatic CPU selection is not a choice to protect"
-    )
+    assert (
+        hw.classify_torch_build() == "torch_cpu_build"
+    ), "an automatic CPU selection is not a choice to protect"
 
     manifest.write_text('{"schema": 1, "expected_torch_tag": "cu124"}', encoding = "utf-8")
     assert hw.classify_torch_build() == "torch_cpu_build"
@@ -2125,9 +2125,10 @@ def test_a_kfd_confirmed_amd_card_stays_eligible(monkeypatch):
     # Positive evidence of an unsupported arch still wins over the KFD signal: the
     # installer would not have shipped a wheel for that card either way.
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True)
-    assert hw._devices_that_can_establish_a_mismatch(
-        [{"vendor": "amd", "gfx_candidates": ["gfx803"]}]
-    ) == []
+    assert (
+        hw._devices_that_can_establish_a_mismatch([{"vendor": "amd", "gfx_candidates": ["gfx803"]}])
+        == []
+    )
 
 
 def test_the_kfd_probe_rejects_a_non_amd_node(monkeypatch, tmp_path):
@@ -2155,9 +2156,9 @@ def test_the_kfd_probe_rejects_a_non_amd_node(monkeypatch, tmp_path):
         "join",
         lambda *parts: str(nodes.joinpath(*parts[1:])) if "kfd" in parts[0] else "/".join(parts),
     )
-    assert hw._linux_kfd_reports_an_amd_gpu() is False, (
-        "a CPU node and an NVIDIA-owned node are not an AMD GPU"
-    )
+    assert (
+        hw._linux_kfd_reports_an_amd_gpu() is False
+    ), "a CPU node and an NVIDIA-owned node are not an AMD GPU"
 
     (nodes / "1" / "properties").write_text("vendor_id 4098\n", encoding = "utf-8")
     assert hw._linux_kfd_reports_an_amd_gpu() is True
