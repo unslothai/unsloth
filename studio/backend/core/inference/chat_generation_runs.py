@@ -322,6 +322,12 @@ def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
 # The admission stream's own comment, matched rather than imported to keep this module
 # free of a routes import at module scope. Pinned by a test against the constant there.
 _ADMISSION_WAIT_MARKER = ": admission-wait"
+# The transition out of the queue. Renewed unconditionally, unlike the wait marker: the
+# wait renewals are rate limited, so a run could enter its first-token window with a lease
+# already most of an interval old. The default lease equals the default first-token
+# timeout deliberately, which leaves that difference as negative margin, and a sweep
+# landing in it would settle a run whose prefill is still inside the engine's own budget.
+_ADMISSION_DONE_MARKER = ": admission-done"
 
 
 def _minimum_lease_seconds() -> float:
@@ -719,7 +725,13 @@ class ChatGenerationSupervisor:
                 # the wedge this file exists to reap. Renewing on any byte would keep a
                 # wedged run alive forever. Rate limited because chunk traffic already
                 # renews through append_events.
-                if _ADMISSION_WAIT_MARKER in text:
+                if _ADMISSION_DONE_MARKER in text:
+                    # Once per run, so no rate limit is needed, and skipping it is what
+                    # the item above describes: the prefill and lease budgets must start
+                    # together.
+                    last_keepalive = time.monotonic()
+                    await self._try_touch_progress(run_id)
+                elif _ADMISSION_WAIT_MARKER in text:
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s

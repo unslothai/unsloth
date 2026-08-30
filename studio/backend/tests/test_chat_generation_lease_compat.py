@@ -699,24 +699,44 @@ def test_the_admission_marker_matches_the_route_that_emits_it():
     from routes import inference as inference_route
 
     assert inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(runs_mod._ADMISSION_WAIT_MARKER)
-    # And it must NOT match the stall keep-alive, which is the opposite signal.
-    assert not inference_route._OPENAI_PASSTHROUGH_SSE_KEEPALIVE.startswith(
-        runs_mod._ADMISSION_WAIT_MARKER
+    assert inference_route._OPENAI_ADMISSION_SSE_DONE.startswith(runs_mod._ADMISSION_DONE_MARKER)
+    # And neither may match the stall keep-alive, which is the opposite signal.
+    for marker in (runs_mod._ADMISSION_WAIT_MARKER, runs_mod._ADMISSION_DONE_MARKER):
+        assert not inference_route._OPENAI_PASSTHROUGH_SSE_KEEPALIVE.startswith(marker)
+    # The two must stay distinct, or the done branch would swallow every wait.
+    assert not inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(
+        runs_mod._ADMISSION_DONE_MARKER
     )
 
 
-def test_only_admission_waits_renew_the_lease_from_the_stream():
+def test_only_admission_comments_renew_the_lease_from_the_stream():
     """routes/inference.py emits `: keep-alive` when the generator has produced NOTHING
     for a stall interval, which is the wedge this file exists to reap. Renewing on any
-    byte would keep such a run alive forever."""
+    byte would keep such a run alive forever. Both admission comments are the opposite
+    signal, so both renew, and nothing else may."""
     import inspect
 
     source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce)
-    guard = source.index("_ADMISSION_WAIT_MARKER in text")
+    for marker in ("_ADMISSION_DONE_MARKER in text", "_ADMISSION_WAIT_MARKER in text"):
+        guard = source.index(marker)
+        renew = source.index("_try_touch_progress", guard)
+        # The renewal must sit inside the marker guard, not beside it.
+        assert source[guard:renew].count("\n") < 8, f"the renewal drifted outside {marker}"
+
+
+def test_leaving_the_queue_renews_without_waiting_for_the_rate_limit():
+    """The wait renewals are rate limited, so a run admitted just after one could enter
+    its first-token window with a lease most of an interval old. The default lease equals
+    the default first-token timeout, so that difference is negative margin."""
+    import inspect
+
+    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce)
+    guard = source.index("_ADMISSION_DONE_MARKER in text")
     renew = source.index("_try_touch_progress", guard)
-    # The renewal must sit inside the marker guard, not beside it.
     between = source[guard:renew]
-    assert between.count("\n") < 8, "the renewal drifted outside the admission guard"
+    assert "_renew_interval_seconds()" not in between, (
+        "the admission-done renewal must not be rate limited"
+    )
 
 
 def test_the_renewal_interval_stays_under_the_lease_actually_in_force(monkeypatch):

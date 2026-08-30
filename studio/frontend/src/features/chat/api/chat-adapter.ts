@@ -6117,7 +6117,13 @@ export function createOpenAIStreamAdapter(
                   // lands, so a visibility, pageshow, online or history-load trigger during
                   // this await could otherwise start a recovery that the later claim would
                   // not stop: the scheduler only tests ownership at startup.
-                  claimLiveGenerationRun(cancelId, resolvedThreadId!);
+                  // Provisional: it owns recovery, but it must not make the thread
+                  // bounded before there is a server-side run to fall back on. The await
+                  // below can outlast the checkpoint cap, and a capped thread is dropped
+                  // from the schedule for good.
+                  claimLiveGenerationRun(cancelId, resolvedThreadId!, {
+                    provisional: true,
+                  });
                   try {
                     generationRun = await createChatGenerationRunUntilAbort(
                       {

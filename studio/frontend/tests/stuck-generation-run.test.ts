@@ -41,6 +41,8 @@ const {
   markServerActiveGenerationRunsUnknown,
   forgetServerActiveGenerationRun,
   threadHasDurableGenerationRun,
+  claimLiveGenerationRun,
+  releaseLiveGenerationRun,
   generationNeedsRecovery,
   serverHasAnsweredActiveRuns,
   syncServerActiveGenerationRuns,
@@ -713,4 +715,33 @@ test("a run finished between the two reads never reaches the durable registry", 
     /activeGenerationRuns = activeGenerationRuns\.filter\(\s*\(run\) => !terminalMessageRuns\.has\(run\.assistantMessageId\),\s*\);/,
     "the list itself must be filtered, so sync and overlay both see it",
   );
+});
+
+
+test("a pre-admission claim does not make the thread bounded yet", () => {
+  resetServerActiveGenerationRuns();
+  // The claim is taken before the create POST so a recovery trigger during that await
+  // cannot start a second follower. It must not also cap the checkpoints: until the POST
+  // lands there is no server-side run, so those checkpoints are the only persistence, and
+  // createChatGenerationRun retries transient failures until aborted, so the await can
+  // outlast the 30 minute cap. A capped thread is dropped from the schedule for good.
+  claimLiveGenerationRun("run-1", "thread-1", { provisional: true });
+  assert.equal(threadHasDurableGenerationRun("thread-1"), false);
+
+  // Admission succeeded: the second, non-provisional claim confirms it.
+  claimLiveGenerationRun("run-1", "thread-1");
+  assert.equal(threadHasDurableGenerationRun("thread-1"), true);
+  releaseLiveGenerationRun("run-1");
+  assert.equal(threadHasDurableGenerationRun("thread-1"), false);
+});
+
+test("releasing a provisional claim clears it rather than leaving it bounded", () => {
+  resetServerActiveGenerationRuns();
+  // The legacy fallback path releases without ever admitting. A stale provisional entry
+  // would then make the NEXT claim of the same id read as unbounded.
+  claimLiveGenerationRun("run-2", "thread-2", { provisional: true });
+  releaseLiveGenerationRun("run-2");
+  claimLiveGenerationRun("run-2", "thread-2");
+  assert.equal(threadHasDurableGenerationRun("thread-2"), true);
+  releaseLiveGenerationRun("run-2");
 });

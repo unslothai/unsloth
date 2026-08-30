@@ -440,10 +440,33 @@ const liveGenerationRuns = new Set<string>();
 // scheduler needs the inverse, "does this thread have a durable run at all".
 const liveGenerationThreads = new Map<string, string>();
 
+/**
+ * Runs claimed before the server admitted them.
+ *
+ * The claim is taken before admission on purpose, so a recovery trigger during that await
+ * cannot start a second follower. Boundedness is a different question: until the POST
+ * lands there is no server-side run, so the thread's periodic checkpoints are still its
+ * only persistence and capping them would lose whatever arrived after the cap. Admission
+ * can take arbitrarily long, because createChatGenerationRun retries transient failures
+ * until it is aborted, so this is reachable well past the cap.
+ */
+const provisionalGenerationRuns = new Set<string>();
+
 /** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
-export function claimLiveGenerationRun(runId: string, threadId?: string): void {
+export function claimLiveGenerationRun(
+  runId: string,
+  threadId?: string,
+  options?: { provisional?: boolean },
+): void {
   liveGenerationRuns.add(runId);
   if (threadId) liveGenerationThreads.set(runId, threadId);
+  // A later non-provisional claim for the same id is what confirms admission, so this
+  // clears as well as sets.
+  if (options?.provisional) {
+    provisionalGenerationRuns.add(runId);
+  } else {
+    provisionalGenerationRuns.delete(runId);
+  }
 }
 
 /**
@@ -455,6 +478,7 @@ export function claimLiveGenerationRun(runId: string, threadId?: string): void {
 export function releaseLiveGenerationRun(runId: string): void {
   liveGenerationRuns.delete(runId);
   liveGenerationThreads.delete(runId);
+  provisionalGenerationRuns.delete(runId);
 }
 
 /** Whether this tab is the one streaming `runId`. */
@@ -467,8 +491,8 @@ export function isLiveGenerationRun(runId: string): boolean {
  * subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence.
  */
 export function threadHasDurableGenerationRun(threadId: string): boolean {
-  for (const owner of liveGenerationThreads.values()) {
-    if (owner === threadId) return true;
+  for (const [runId, owner] of liveGenerationThreads.entries()) {
+    if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
   }
   for (const owner of serverActiveGenerationRuns.values()) {
     if (owner === threadId) return true;
@@ -549,6 +573,7 @@ export function resetServerActiveGenerationRuns(): void {
   serverAnsweredThreads.clear();
   liveGenerationThreads.clear();
   liveGenerationRuns.clear();
+  provisionalGenerationRuns.clear();
 }
 
 /** Whether the server has named `runId` as still going in this session. */
