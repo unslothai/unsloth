@@ -839,7 +839,7 @@ def log_and_http_error(
     *,
     event: str = "request_failed",
     log = None,
-    headers: dict | None = None,
+    headers: Optional[dict] = None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose
     ``detail`` is only ``public_message`` -- never the raw exception text.

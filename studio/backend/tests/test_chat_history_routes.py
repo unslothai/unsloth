@@ -11,6 +11,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from typing import Optional
 from fastapi import HTTPException
 from pydantic import ValidationError
 
@@ -1297,7 +1298,7 @@ def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch
     assert len(reaps) == 1, "a replay behind a completed reap must not touch the registry"
 
 
-def _conflict_kind(exc_info) -> str | None:
+def _conflict_kind(exc_info) -> Optional[str]:
     return (exc_info.value.headers or {}).get(chat_history.CONFLICT_KIND_HEADER)
 
 
