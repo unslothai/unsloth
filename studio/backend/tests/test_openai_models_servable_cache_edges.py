@@ -28,9 +28,7 @@ import routes.inference as inf  # noqa: E402
 @pytest.fixture(autouse = True)
 def _clean_cache():
     def _reset():
-        inf._SERVABLE_SCAN_CACHE["at"] = None
-        inf._SERVABLE_SCAN_CACHE["rows"] = []
-        inf._SERVABLE_SCAN_CACHE["catalog"] = None
+        inf._SERVABLE_SCAN_CACHE["entry"] = None
 
     _reset()
     yield
@@ -136,7 +134,7 @@ def test_an_empty_catalog_is_cached_without_confusing_a_miss(stub):
 def test_no_stamp_never_populates_the_cache(stub):
     catalog = _catalog(2)
     inf._servable_catalog_rows(catalog)
-    assert inf._SERVABLE_SCAN_CACHE["at"] is None
+    assert inf._SERVABLE_SCAN_CACHE["entry"] is None
     inf._servable_catalog_rows(catalog)
     assert stub["servable"] == 4
 
@@ -168,7 +166,54 @@ def test_a_raising_resolver_is_not_cached_as_an_empty_catalog(monkeypatch):
     monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
     with pytest.raises(RuntimeError):
         inf._servable_catalog_rows(_catalog(1), 111.0)
-    assert inf._SERVABLE_SCAN_CACHE["at"] is None, "a failed scan must not be cached"
+    assert inf._SERVABLE_SCAN_CACHE["entry"] is None, "a failed scan must not be cached"
+
+
+def test_the_cache_entry_is_published_atomically(stub):
+    # The fast path reads without the lock. Three separate fields could be caught
+    # half-replaced: old stamp and old catalog still matching while rows already held
+    # the next catalog's rows, so an in-flight request got another catalog's models.
+    first, second = _catalog(2, "a"), _catalog(3, "b")
+    inf._servable_catalog_rows(first, 111.0)
+    entry = inf._SERVABLE_SCAN_CACHE["entry"]
+    assert entry is not None and len(entry) == 3, "the triple must be one object"
+    at, cached, rows = entry
+    assert at == 111.0 and cached is first and len(rows) == 2
+
+    inf._servable_catalog_rows(second, 222.0)
+    at, cached, rows = inf._SERVABLE_SCAN_CACHE["entry"]
+    assert (at, cached is second, len(rows)) == (222.0, True, 3), (
+        "stamp, catalog and rows move together"
+    )
+
+
+def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
+    # A non-GGUF HF repo path resolves to a snapshot dir. A download can move that
+    # pointer inside the catalog's 30s lifetime, and caching the resolved dir would
+    # report a freshly loaded model as unloaded until the catalog expired.
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_servable_model",
+        lambda info: (False, ()),  # non-GGUF, so residency goes through local_load_dir
+    )
+    snapshot = {"dir": "/models/m0/snapshots/old"}
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_load_dir", lambda p: snapshot["dir"]
+    )
+    seen: list[str] = []
+
+    def _resident(key, **kw):
+        seen.append(key)
+        return key == "/models/m0/snapshots/new"
+
+    monkeypatch.setattr(inf, "_resolves_to_resident", _resident)
+
+    catalog = _catalog(1)
+    assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is False
+    snapshot["dir"] = "/models/m0/snapshots/new"  # a download moved the pointer
+    assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is True, (
+        "the snapshot must be re-resolved per call, not cached with the scan"
+    )
+    assert seen == ["/models/m0/snapshots/old", "/models/m0/snapshots/new"]
 
 
 def test_large_catalog_stays_correct(stub):

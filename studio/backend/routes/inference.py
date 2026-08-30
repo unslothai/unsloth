@@ -23915,7 +23915,10 @@ async def _cached_local_catalog() -> list:
     return _CATALOG_CACHE["models"]
 
 
-_SERVABLE_SCAN_CACHE: dict = {"at": None, "rows": [], "catalog": None}
+# One tuple, published in a single assignment: the fast path below reads it without the
+# lock, and three separate fields could be caught half-replaced -- old stamp and old
+# catalog still matching while `rows` already held the next catalog's rows.
+_SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, rows)
 _SERVABLE_SCAN_CACHE_LOCK = threading.Lock()
 
 
@@ -23935,18 +23938,20 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
     # Identity as well as the stamp: _CATALOG_CACHE["at"] only advances inside
     # _cached_local_catalog, so a caller that supplies a catalog from anywhere else
     # would otherwise be served the previous scan under an unchanged stamp.
-    def _fresh() -> bool:
-        return (
-            catalog_at is not None
-            and _SERVABLE_SCAN_CACHE["at"] == catalog_at
-            and _SERVABLE_SCAN_CACHE["catalog"] is catalog
-        )
+    def _fresh():
+        entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the triple cannot tear
+        if entry is None or catalog_at is None:
+            return None
+        at, cached_catalog, rows = entry
+        return rows if at == catalog_at and cached_catalog is catalog else None
 
-    if _fresh():
-        return _SERVABLE_SCAN_CACHE["rows"]
+    hit = _fresh()
+    if hit is not None:
+        return hit
     with _SERVABLE_SCAN_CACHE_LOCK:
-        if _fresh():
-            return _SERVABLE_SCAN_CACHE["rows"]
+        hit = _fresh()
+        if hit is not None:
+            return hit
         scanned = []
         for info in catalog:
             if getattr(info, "task", None) in (
@@ -23960,13 +23965,12 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
             if servable is None:
                 continue
             is_gguf, quants = servable
-            path = getattr(info, "path", None)
-            # the load dir, since an HF cache repo loads as a snapshot exact_only cannot match.
-            scanned.append((info, is_gguf, quants, path if is_gguf else local_load_dir(path)))
+            # The source path, not the resolved load dir: an HF repo's snapshot pointer can
+            # move within the catalog's lifetime, and a cached snapshot path would then
+            # report a freshly loaded model as unloaded. Residency resolves it per call.
+            scanned.append((info, is_gguf, quants, getattr(info, "path", None)))
         if catalog_at is not None:
-            _SERVABLE_SCAN_CACHE["rows"] = scanned
-            _SERVABLE_SCAN_CACHE["catalog"] = catalog
-            _SERVABLE_SCAN_CACHE["at"] = catalog_at
+            _SERVABLE_SCAN_CACHE["entry"] = (catalog_at, catalog, scanned)
         return scanned
 
 
@@ -23977,15 +23981,22 @@ def _servable_catalog_rows(
     from disk. Module scope, and always called through ``asyncio.to_thread``: the file
     checks stat many files and the residency check reads the inference singleton.
 
-    Residency is read per request; only the scan is cached."""
+    Residency is read per request; only the scan is cached. That includes resolving the
+    HF snapshot a non-GGUF path currently points at, since a download can move it inside
+    the catalog's lifetime and a cached snapshot would report a loaded model as unloaded."""
+    from core.inference.local_model_resolver import local_load_dir
     return [
         (
             info,
             is_gguf,
             quants,
-            _resolves_to_resident(resident_key, llama_only = is_gguf, exact_only = not is_gguf),
+            _resolves_to_resident(
+                path if is_gguf else local_load_dir(path),
+                llama_only = is_gguf,
+                exact_only = not is_gguf,
+            ),
         )
-        for info, is_gguf, quants, resident_key in _servable_catalog_scan(catalog, catalog_at)
+        for info, is_gguf, quants, path in _servable_catalog_scan(catalog, catalog_at)
     ]
 
 

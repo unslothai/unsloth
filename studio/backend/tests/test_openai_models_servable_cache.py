@@ -22,13 +22,9 @@ import routes.inference as inf
 
 @pytest.fixture(autouse = True)
 def _clean_cache():
-    inf._SERVABLE_SCAN_CACHE["at"] = None
-    inf._SERVABLE_SCAN_CACHE["rows"] = []
-    inf._SERVABLE_SCAN_CACHE["catalog"] = None
+    inf._SERVABLE_SCAN_CACHE["entry"] = None
     yield
-    inf._SERVABLE_SCAN_CACHE["at"] = None
-    inf._SERVABLE_SCAN_CACHE["rows"] = []
-    inf._SERVABLE_SCAN_CACHE["catalog"] = None
+    inf._SERVABLE_SCAN_CACHE["entry"] = None
 
 
 def _catalog(n = 3):
