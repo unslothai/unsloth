@@ -1047,10 +1047,18 @@ function scheduleGenerationRecovery(
         followStalled = true;
       }
       if (followStalled || generationNeedsRecovery(currentMetadata)) {
+        // Fence the run before presenting the reply as resumable. Settling only in this
+        // tab leaves the row queued/running/cancelling, and create_run refuses a thread
+        // that already has an active generation, so Continue and the next message would
+        // both 409 against a reply the UI had just declared finished. Best effort, and
+        // not sufficient on its own: a producer wedged inside the engine stays in
+        // `cancelling`, which is still active. That case is what the server-side sweeper
+        // settles, and this path is reachable mainly when the sweeper is disabled.
+        serverCancel();
         // The follow returned with the run still non-terminal, so its no-progress
         // deadline expired. Settle the reply here rather than leaving a message that
         // says "running" until the next reload, which is what keeps Send unmounted.
-        // Everything replayed so far is kept, and the Continue bar can resume it.
+        // Everything replayed so far is kept.
         await commit(
           {
             ...currentMetadata,

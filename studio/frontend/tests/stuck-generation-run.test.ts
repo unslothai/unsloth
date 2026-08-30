@@ -818,3 +818,81 @@ test("a repeated keep-alive stamp does NOT hold the follower open", async () => 
     globalThis.fetch = original;
   }
 });
+
+test("a frozen stamp does not rearm across SSE reconnects", async () => {
+  // The stream generator is re-invoked on every reconnect, so a per-connection memory of
+  // the last stamp treats the FIRST keep-alive of each connection as progress. Behind a
+  // flapping proxy that reconnects more often than the deadline, a wedged run would rearm
+  // the follower forever. The memory therefore lives in the follower, not the stream.
+  const api = await import("../src/features/chat/api/chat-generation-api");
+  const encoder = new TextEncoder();
+  const original = globalThis.fetch;
+  let connections = 0;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes("/events")) {
+      connections += 1;
+      // Each connection: one keep-alive carrying the SAME frozen stamp, then EOF, which
+      // sends the follower around the reconnect loop again.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(": keep-alive 7\n\n"));
+          controller.close();
+        },
+      });
+      init?.signal?.addEventListener("abort", () => {});
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    // The snapshot re-read between reconnects: still running, still frozen.
+    return new Response(
+      JSON.stringify({ id: "r", status: "running", lastEventSeq: 0, updatedAt: 7 }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    let stalled = false;
+    const follow = (async () => {
+      try {
+        for await (const _u of api.followChatGenerationRun("r", {
+          initialRun: { id: "r", status: "running", lastEventSeq: 0, updatedAt: 7 } as never,
+          // Long enough for the 500ms-and-doubling reconnect backoff to produce several
+          // connections inside one deadline, which is the situation being tested.
+          stallTimeoutMs: 2_500,
+        })) {
+          // Never terminal; only the deadline can end this.
+        }
+      } catch (error) {
+        stalled = error instanceof api.ChatGenerationStalledError;
+      }
+    })();
+    const timedOut = Symbol("timed out");
+    const outcome = await Promise.race([
+      follow.then(() => "settled"),
+      new Promise((r) => setTimeout(() => r(timedOut), 20_000)),
+    ]);
+    assert.notEqual(outcome, timedOut, "reconnects kept the follower alive indefinitely");
+    assert.equal(stalled, true, "a frozen stamp must not rearm on reconnect");
+    assert.ok(connections > 1, `expected several reconnects, saw ${connections}`);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a stalled follower fences the server run before offering Continue", () => {
+  // Settling only in this tab leaves the row queued/running/cancelling, and create_run
+  // refuses a thread that already has an active generation, so Continue and the next
+  // message would both 409 against a reply the UI had just declared finished.
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const settle = provider.indexOf("followStalled || generationNeedsRecovery(currentMetadata)");
+  assert.ok(settle > 0, "the stall settle branch moved");
+  const commit = provider.indexOf("incomplete: { reason: \"interrupted\" as const }", settle);
+  assert.ok(commit > settle, "the interrupted commit moved");
+  const cancel = provider.indexOf("serverCancel();", settle);
+  assert.ok(
+    cancel > settle && cancel < commit,
+    "the run must be fenced server-side BEFORE the reply is presented as resumable",
+  );
+});

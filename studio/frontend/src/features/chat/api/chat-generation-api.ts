@@ -330,13 +330,13 @@ async function* streamChatGenerationEvents(
   after: number,
   signal?: AbortSignal,
   /**
-   * Called for real progress only: any event, or a keep-alive whose progress stamp has
-   * moved. NOT for every byte. The stream emits nothing but keep-alives across
-   * preparation and admission waits, and those keep coming for as long as the socket
-   * holds, so treating arrival as progress would make the caller's deadline unreachable
-   * on a wedged run.
+   * Called for each event, and for each keep-alive with that keep-alive's progress
+   * stamp. A keep-alive is only progress if the stamp MOVED, which this generator cannot
+   * decide: it is re-invoked on every reconnect, so a per-connection memory would treat
+   * the first keep-alive after each reconnect as progress and a wedged run behind a
+   * flapping proxy would rearm the caller's deadline forever.
    */
-  onActivity?: () => void,
+  onActivity?: (keepAliveStamp?: string) => void,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
     `/api/inference/chat-runs/${encodeURIComponent(id)}/events?after=${Math.max(0, after)}`,
@@ -348,7 +348,6 @@ async function* streamChatGenerationEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let lastKeepAliveStamp: string | null = null;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -361,16 +360,12 @@ async function* streamChatGenerationEvents(
         const data: string[] = [];
         for (const line of block.split("\n")) {
           if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
-          // Bytes alone are not progress: the server sends one of these every 15s for as
-          // long as the connection holds, so rearming on arrival would keep a follower
-          // alive forever on a wedged run. The stamp is the run's own, moved by the lease
-          // renewals, so it advances through a long preparation and freezes on a wedge.
+          // Reported, not judged. Whether this counts as progress depends on the last
+          // stamp seen across ALL connections for this run, and this generator is
+          // re-invoked on every reconnect, so only the caller can hold that.
           else if (line.startsWith(KEEPALIVE_PREFIX)) {
             const stamp = line.slice(KEEPALIVE_PREFIX.length).trim();
-            if (stamp !== "" && stamp !== lastKeepAliveStamp) {
-              lastKeepAliveStamp = stamp;
-              onActivity?.();
-            }
+            if (stamp !== "") onActivity?.(stamp);
           }
         }
         if (data.length > 0) {
@@ -436,7 +431,14 @@ export async function* followChatGenerationRun(
   // on, so it must reach the consumer as a failure rather than a complete reply.
   let stalled = false;
   let settled = false;
-  const noteProgress = (): void => {
+  // Spans reconnects on purpose: see the onActivity contract in
+  // streamChatGenerationEvents.
+  let lastKeepAliveStamp: string | null = null;
+  const noteProgress = (keepAliveStamp?: string): void => {
+    if (keepAliveStamp !== undefined) {
+      if (keepAliveStamp === lastKeepAliveStamp) return;
+      lastKeepAliveStamp = keepAliveStamp;
+    }
     if (signal.aborted) return;
     if (stallTimer !== undefined) globalThis.clearTimeout(stallTimer);
     stallTimer = globalThis.setTimeout(() => {
