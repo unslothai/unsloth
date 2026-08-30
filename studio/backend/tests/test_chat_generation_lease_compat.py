@@ -719,13 +719,25 @@ def test_only_admission_waits_renew_the_lease_from_the_stream():
     assert between.count("\n") < 8, "the renewal drifted outside the admission guard"
 
 
-def test_the_renewal_interval_stays_under_even_a_one_second_lease(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1")
-    assert runs_mod._renew_interval_seconds() < 1.0
-    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "4")
-    assert runs_mod._renew_interval_seconds() < 4.0
+def test_the_renewal_interval_stays_under_the_lease_actually_in_force(monkeypatch):
+    """Under the APPLIED lease, not the configured one.
+
+    A lease below the admission cadence is raised to the floor before the sweeper uses
+    it, so pacing renewals against the raw value buys nothing: the run cannot be reaped
+    before the floor either way, and at one second it means four SQLite writes per second
+    for as long as a model takes to prepare.
+    """
+    for configured in ("1", "4", "1200"):
+        monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", configured)
+        applied = runs_mod._applied_lease_timeout(float(configured))
+        interval = runs_mod._renew_interval_seconds()
+        # Three renewals inside every window, however short the lease is configured.
+        assert interval * 3.0 <= applied
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1200")
     assert runs_mod._renew_interval_seconds() == 30.0
+    # The point of the change: a one second lease no longer buys a 250ms write cadence.
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1")
+    assert runs_mod._renew_interval_seconds() > 1.0
 
 
 def test_a_lease_shorter_than_the_admission_cadence_is_clamped_and_logged(clock):

@@ -356,6 +356,28 @@ async def test_a_nan_timeout_does_not_silently_disable_reaping(monkeypatch, cloc
     assert await sweeper.sweep_once() == ["run-1"]
 
 
+@pytest.mark.parametrize("raw", ["1e308", "1e306", "1.5e308"])
+def test_an_oversized_but_finite_timeout_is_clamped(monkeypatch, raw):
+    """Finite is not the same as usable: the multiply to milliseconds overflows first."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", raw)
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
+    assert sweeper._timeout == runs_mod._MAX_ENV_SECONDS
+    # The conversion every consumer performs must survive the applied value.
+    assert isinstance(int(sweeper._timeout * 1000), int)
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_timeout_leaves_a_fresh_run_alone_without_raising(
+    monkeypatch, clock
+):
+    """The end state: the sweep completes instead of raising OverflowError every pass."""
+    _running_run()
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1e308")
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
+    assert await sweeper.sweep_once() == []
+    assert runs_db.get_run("run-1", "alice")["status"] == "running"
+
+
 def test_a_non_finite_interval_falls_back_to_the_default(monkeypatch):
     """An inf interval would park the sweep loop until shutdown; nan sleeps forever too."""
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_SWEEP_INTERVAL_S", "inf")

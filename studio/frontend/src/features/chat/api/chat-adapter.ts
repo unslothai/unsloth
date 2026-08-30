@@ -272,6 +272,7 @@ import {
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
+  ChatGenerationStalledError,
   chatGenerationStopPlan,
   isLegacyFallbackChatGenerationAdmissionError,
   type ChatGenerationRun,
@@ -5045,6 +5046,11 @@ export function createOpenAIStreamAdapter(
       let generationFirstChunkAt: number | undefined;
       let generationChunkCount = 0;
       let generationStopRequested = false;
+      // Set when the follower's no-progress deadline fires on THIS stream, as opposed to
+      // on a recovery follower. Both have to persist the marker: without it the metadata
+      // still reads running and unsettled, so the next reload attaches another follower
+      // and blocks the composer for another full deadline.
+      let generationStalled = false;
       const generationCustom = () =>
         generationRunId
           ? {
@@ -5058,6 +5064,7 @@ export function createOpenAIStreamAdapter(
                 generationSeq,
                 generationRun?.lastEventSeq ?? Number.POSITIVE_INFINITY,
               ),
+              generationLocallyInterrupted: generationStalled,
               serverManaged: true,
             }
           : {};
@@ -6155,29 +6162,38 @@ export function createOpenAIStreamAdapter(
             }
 
             const durableStream = async function* () {
-              for await (const update of followChatGenerationRun(
-                generationRunId!,
-                {
-                  initialRun: generationRun!,
-                  replayFrom: 0,
-                  signal: runSignal,
-                },
-              )) {
-                generationRun = update.run;
-                generationStatus = update.run.status;
-                if (update.event) {
-                  generationSeq = Math.max(generationSeq, update.event.seq);
-                  if (update.event.type === "chunk") {
-                    const chunk = update.event.payload as OpenAIChatChunk;
-                    if (generationChunkCountsTowardTiming(chunk)) {
-                      generationChunkCount += 1;
-                      if (generationChunkHasSubstantiveDelta(chunk)) {
-                        generationFirstChunkAt ??= update.event.createdAt;
+              try {
+                for await (const update of followChatGenerationRun(
+                  generationRunId!,
+                  {
+                    initialRun: generationRun!,
+                    replayFrom: 0,
+                    signal: runSignal,
+                  },
+                )) {
+                  generationRun = update.run;
+                  generationStatus = update.run.status;
+                  if (update.event) {
+                    generationSeq = Math.max(generationSeq, update.event.seq);
+                    if (update.event.type === "chunk") {
+                      const chunk = update.event.payload as OpenAIChatChunk;
+                      if (generationChunkCountsTowardTiming(chunk)) {
+                        generationChunkCount += 1;
+                        if (generationChunkHasSubstantiveDelta(chunk)) {
+                          generationFirstChunkAt ??= update.event.createdAt;
+                        }
                       }
+                      yield chunk;
                     }
-                    yield chunk;
                   }
                 }
+              } catch (error) {
+                if (!(error instanceof ChatGenerationStalledError)) throw error;
+                // End the stream rather than rethrow, so everything replayed so far is
+                // kept and the Continue bar can resume it, exactly as the recovery
+                // follower settles a stalled run. The status checks below stay quiet
+                // because a stalled run is still non-terminal.
+                generationStalled = true;
               }
               if (generationStatus === "failed") {
                 throw new ChatGenerationTerminalError(

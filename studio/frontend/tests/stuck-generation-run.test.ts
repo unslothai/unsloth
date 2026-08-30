@@ -540,6 +540,32 @@ test("a legacy fallback releases the durable claim at once", () => {
   );
 });
 
+test("the initial durable stream marks itself interrupted when it stalls", () => {
+  // The recovery follower is not the only one holding the deadline. The adapter runs its
+  // own follower for the first stream of a turn, and when THAT one gives up the persisted
+  // metadata still reads running and unsettled. Without the marker, generationNeedsRecovery
+  // stays true, the next reload attaches another follower, and the composer is blocked for
+  // another full deadline.
+  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const stream = adapter.indexOf("const durableStream = async function* () {");
+  assert.ok(stream > 0, "the durable stream moved");
+  const caught = adapter.indexOf("instanceof ChatGenerationStalledError", stream);
+  assert.ok(caught > 0, "the adapter's own follower must catch the stall");
+  const marked = adapter.indexOf("generationStalled = true;", caught);
+  assert.ok(marked > 0, "catching the stall without recording it changes nothing");
+  // Recording it is only useful if it reaches the metadata that survives a reload.
+  const custom = adapter.indexOf("const generationCustom = ()");
+  assert.ok(custom > 0 && custom < stream, "the metadata builder moved");
+  const persisted = adapter.indexOf(
+    "generationLocallyInterrupted: generationStalled,",
+    custom,
+  );
+  assert.ok(
+    persisted > custom && persisted < stream,
+    "the stall marker must be persisted alongside generationSettled",
+  );
+});
+
 test("a completed run overrides the local interruption marker", () => {
   resetServerActiveGenerationRuns();
   // The backend resumed and finished after the follower gave up. /chat-runs/active

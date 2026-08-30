@@ -39,6 +39,9 @@ _SHUTDOWN_CANCEL_SECONDS = 5.0
 # The default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S, the request path's own
 # first-token budget, so a run whose lease has not moved for longer than that cannot be
 # legitimately prefilling. Slow decode is safe at any speed.
+# A century, well clear of any real lease and far below the point where a
+# conversion to integer milliseconds overflows.
+_MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
 _LEASE_ERROR = "Generation stopped making progress"
@@ -135,6 +138,20 @@ def _env_seconds(name: str, default: float) -> float:
             reason = "not a finite number",
         )
         return default
+    if value > _MAX_ENV_SECONDS:
+        # Finite is not the same as usable. Every consumer converts to integer
+        # milliseconds, and anything past about 1.8e305 overflows to inf on the
+        # multiply alone, so the sweep would raise once per pass and reap nothing.
+        # Clamped rather than rejected: a value this large already means "never reap",
+        # and a century of lease preserves that intent without the arithmetic hazard.
+        logger.warning(
+            "chat_generation_lease_env_clamped",
+            variable = name,
+            value = raw,
+            applied_s = _MAX_ENV_SECONDS,
+            reason = "larger than can be converted to integer milliseconds",
+        )
+        return _MAX_ENV_SECONDS
     return value
 
 
@@ -325,24 +342,33 @@ def _minimum_lease_seconds() -> float:
     return max(1.0, interval) * 3.0
 
 
+def _applied_lease_timeout(configured: float) -> float:
+    """The lease actually in force, without the warning. Zero still means disabled.
+
+    Separate from the logging wrapper because the renewal cadence consults this on every
+    keep-alive, and warning once per keep-alive would bury the one line that matters.
+    """
+    if configured <= 0.0:
+        return 0.0
+    return max(configured, _minimum_lease_seconds())
+
+
 def _clamped_lease_timeout(configured: float) -> float:
     """Raise a lease that no renewal source could satisfy, and say so.
 
     Silently honouring it would reap healthy queued runs, and silently ignoring it would
     hide that the setting did nothing. Zero still means disabled.
     """
-    if configured <= 0.0:
-        return 0.0
-    floor = _minimum_lease_seconds()
-    if configured >= floor:
-        return configured
+    applied = _applied_lease_timeout(configured)
+    if applied == configured:
+        return applied
     logger.warning(
         "chat_generation_lease_timeout_clamped",
         configured_s = round(configured, 2),
-        applied_s = round(floor, 2),
+        applied_s = round(applied, 2),
         reason = "shorter than the admission keep-alive cadence could renew",
     )
-    return floor
+    return applied
 
 
 def _renew_interval_seconds() -> float:
@@ -354,7 +380,9 @@ def _renew_interval_seconds() -> float:
     three renewals inside every window, and the floor keeps a very short lease from turning
     into a write per second.
     """
-    lease = _env_seconds("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS)
+    lease = _applied_lease_timeout(
+        _env_seconds("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS)
+    )
     if lease <= 0.0:  # sweeping disabled, so cadence only controls write volume
         return 30.0
     # The floor has to stay UNDER the lease, not at a round number: a one second floor
