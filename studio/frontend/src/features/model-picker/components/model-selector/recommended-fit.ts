@@ -5,6 +5,7 @@
 // model fits the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import { classifyMediaGgufFit } from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 const MLX_RE = /-MLX(?:$|-)/i;
@@ -96,6 +97,9 @@ export function fitsDevice(opts: {
   budgetKnown?: boolean;
   requireKnown?: boolean;
   budgetFraction?: number;
+  /** Images / Video: the row is placed by the diffusion backend, not llama-server, so it is judged
+   *  by the media rule the quant rows under it use. */
+  mediaLoad?: boolean;
 }): boolean {
   const {
     sizeBytes,
@@ -104,6 +108,7 @@ export function fitsDevice(opts: {
     budgetKnown,
     requireKnown,
     budgetFraction,
+    mediaLoad,
   } = opts;
   // Unified-memory hosts (Mac / no discrete GPU) report system RAM but no GPU, so the budget must
   // include RAM. Only an entirely unknown budget fits freely.
@@ -111,6 +116,11 @@ export function fitsDevice(opts: {
     Math.max(0, gpuGb ?? 0) > 0 || Math.max(0, systemRamGb ?? 0) > 0;
   if (!anyBudget) return !budgetKnown;
   if (sizeBytes && sizeBytes > 0) {
+    if (mediaLoad) {
+      return (
+        classifyMediaGgufFit(sizeBytes, gpuGb ?? 0, systemRamGb ?? 0) !== "oom"
+      );
+    }
     return (
       classifyGgufFit(sizeBytes, { gpuGb, systemRamGb, budgetFraction }) !==
       "oom"
@@ -141,9 +151,10 @@ export function hfModelFitsDevice(
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
   },
-  /** The user's saved VRAM Budget. Omitted scores against the loader's default, so a caller that
-   *  forgets it judges rows on a budget the user has already replaced. */
-  budgetFraction?: number,
+  /** `budgetFraction` is the user's saved VRAM Budget: omitted scores against the loader's default,
+   *  so a caller that forgets it judges rows on a budget the user has already replaced.
+   *  `mediaLoad` picks the diffusion rule for an Images / Video row. */
+  opts: { budgetFraction?: number; mediaLoad?: boolean } = {},
 ): boolean {
   if (
     gpu.memoryTotalGb <= 0 &&
@@ -164,7 +175,8 @@ export function hfModelFitsDevice(
     systemRamGb: gpu.systemRamAvailableGb,
     budgetKnown: gpu.budgetKnown,
     requireKnown: true,
-    budgetFraction,
+    budgetFraction: opts.budgetFraction,
+    mediaLoad: opts.mediaLoad,
   });
 }
 
@@ -233,7 +245,9 @@ export function searchRowFitsDevice<
       curatedSizeBytes: row.curatedSizeBytes ?? opts.curatedSizeBytes,
     },
     loadScopedGpu(source, opts.taskScoped),
-    opts.budgetFraction,
+    // A task-scoped row is a media load, so it takes the media rule as well as the single-device
+    // budget. Without this the search gate disagreed with the quant rows it gates.
+    { budgetFraction: opts.budgetFraction, mediaLoad: opts.taskScoped },
   );
 }
 

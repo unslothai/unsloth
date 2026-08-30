@@ -165,6 +165,11 @@ test("chat and the Hub answer the fit question with one formula", () => {
     PICKERS,
     /if \(taskScoped\) \{\n\s*return classifyMediaGgufFit\(/,
   );
+  // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
+  // reads as fitting while everything inside it reads as oom.
+  assert.match(PICKERS, /Boolean\(task\)\n\s*\? classifyMediaGgufFit\(/);
+  assert.ok(PICKERS.includes("mediaLoad: taskScoped && r.isGguf,"));
+  assert.ok(RECOMMENDED.includes("mediaLoad: opts.taskScoped }"));
   // And every media call site sets the flag, or the guard silently does nothing.
   assert.equal(
     PICKERS.split("taskScoped={Boolean(task)}").length - 1,
@@ -180,10 +185,14 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(HUB_PAGE.includes("useVramBudgetFraction()"));
   assert.match(
     HUB_PAGE,
-    /hfModelFitsDevice\(row\.result, inferenceGpu, budgetFraction\)/,
+    /hfModelFitsDevice\(row\.result, inferenceGpu, \{ budgetFraction \}\)/,
   );
-  assert.ok(RECOMMENDED.includes("budgetFraction?: number,"));
-  assert.ok(RECOMMENDED.includes("opts.budgetFraction,"));
+  assert.ok(
+    RECOMMENDED.includes(
+      "opts: { budgetFraction?: number; mediaLoad?: boolean } = {},",
+    ),
+  );
+  assert.ok(RECOMMENDED.includes("budgetFraction: opts.budgetFraction,"));
 });
 
 test("each fit verdict is an info mark that explains itself", () => {

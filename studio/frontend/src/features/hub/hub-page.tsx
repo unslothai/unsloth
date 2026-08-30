@@ -901,7 +901,7 @@ export function ModelsPage() {
           hfModelFitsDevice(
             row.result,
             row.result.isGguf ? inferenceGpu : gpu,
-            budgetFraction,
+            { budgetFraction },
           )),
     );
   }, [
@@ -945,7 +945,7 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, inferenceGpu, budgetFraction),
+            hfModelFitsDevice(row.result, inferenceGpu, { budgetFraction }),
         ),
     [
       budgetFraction,

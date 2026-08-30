@@ -84,7 +84,11 @@ test("a listing row that passes the filters takes over its seed, in catalog orde
 });
 
 test("device fit is judged on whichever row renders", () => {
-  const small = { memoryTotalGb: 6, systemRamAvailableGb: 0, budgetKnown: true };
+  const small = {
+    memoryTotalGb: 6,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
   const big = { memoryTotalGb: 80, systemRamAvailableGb: 0, budgetKnown: true };
   const listedLtx: Row = {
     id: LTX,
@@ -129,7 +133,11 @@ test("device fit is judged on whichever row renders", () => {
 });
 
 test("an unlisted seed is sized from its id, and hidden when it cannot be", () => {
-  const small = { memoryTotalGb: 6, systemRamAvailableGb: 0, budgetKnown: true };
+  const small = {
+    memoryTotalGb: 6,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
   // "LTX-2.3" has no "<n>B" token, so requireKnown hides it; "klein-9B" reads
   // as 9B -> 3.6 GB, inside the 4.2 GB budget.
   assert.equal(hfModelFitsDevice(SEEDS[0], small), false);
@@ -161,7 +169,11 @@ const seed = (id: string, catalog = IMAGE_CATALOG): Row => ({
 
 test("a catalog-sized seed is judged on the catalog size, not on its id", () => {
   // 24 GB card -> 16.8 GB budget.
-  const card = { memoryTotalGb: 24, systemRamAvailableGb: 0, budgetKnown: true };
+  const card = {
+    memoryTotalGb: 24,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
   const sdxl = seed(SDXL);
   const wan = seed(WAN, VIDEO_CATALOG);
   // SDXL Turbo is 8 GB but its id has no "<n>B" token to guess from; Wan 2.2
@@ -185,7 +197,11 @@ test("a catalog-sized seed is judged on the catalog size, not on its id", () => 
 });
 
 test("a listing row still overrides the catalog size it seeded with", () => {
-  const card = { memoryTotalGb: 24, systemRamAvailableGb: 0, budgetKnown: true };
+  const card = {
+    memoryTotalGb: 24,
+    systemRamAvailableGb: 0,
+    budgetKnown: true,
+  };
   // GGUF groups carry no catalog size, so an unsized GGUF seed stays hidden.
   assert.equal(curatedSizeBytesFor(LTX, VIDEO_CATALOG), undefined);
   assert.equal(hfModelFitsDevice({ id: LTX, isGguf: true }, card), false);
@@ -340,4 +356,28 @@ test("a GPU-less host keeps its unified-memory budget", () => {
     systemRamAvailableGb: 64,
   };
   assert.equal(loadScopedGpu(mac, true), mac);
+});
+
+test("a media row is judged by the rule its quant rows use", () => {
+  // Images / Video place a GGUF through the diffusion backend, whose budget on a 64 GiB unified
+  // host is (total - 20% reserve) * 0.85 = 43.5 GiB (diffusion_memory.py). llama.cpp allows 62.1.
+  // Judging the parent row by one and its quants by the other let a row read as fitting while
+  // everything inside it read as oom.
+  const mac = { memoryTotalGb: 64, systemRamAvailableGb: 0, budgetKnown: true };
+  const row = {
+    id: "unsloth/Some-Image-Model-GGUF",
+    isGguf: true,
+    // 50 GiB, which the two rules disagree about: 50 > 44.8, but 50 * 1.15 + 1 = 58.5 <= 62.1.
+    curatedSizeBytes: 50 * 1024 ** 3,
+  };
+  assert.equal(
+    hfModelFitsDevice(row, mac),
+    true,
+    "chat keeps the llama.cpp rule",
+  );
+  assert.equal(
+    hfModelFitsDevice(row, mac, { mediaLoad: true }),
+    false,
+    "a media row does not",
+  );
 });

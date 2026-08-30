@@ -3312,11 +3312,10 @@ export function HubModelPicker({
       // The catalog's own verdict where it has one, so this list and the OOM badge on its rows
       // cannot disagree: hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget) ??
-        hfModelFitsDevice(
-          r,
-          r.isGguf ? rowInferenceGpu : rowGpu,
+        hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu, {
           budgetFraction,
-        ));
+          mediaLoad: taskScoped && r.isGguf,
+        }));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -3387,11 +3386,20 @@ export function HubModelPicker({
       if (sizeBytes == null) return null;
       // Probed and genuinely zero (a Vulkan device reporting nothing) means nothing fits.
       if (!anyBudget) return "oom";
-      const fit = classifyGgufFit(sizeBytes, {
-        gpuGb: budget.memoryTotalGb,
-        systemRamGb: budget.systemRamAvailableGb,
-        budgetFraction,
-      });
+      // Images / Video place this GGUF through the diffusion backend, so it takes the same rule
+      // its quant rows take. Judging the parent by llama.cpp's budget and the children by the
+      // media one let a row read as fitting while everything inside it read as oom.
+      const fit = Boolean(task)
+        ? classifyMediaGgufFit(
+            sizeBytes,
+            budget.memoryTotalGb,
+            budget.systemRamAvailableGb,
+          )
+        : classifyGgufFit(sizeBytes, {
+            gpuGb: budget.memoryTotalGb,
+            systemRamGb: budget.systemRamAvailableGb,
+            budgetFraction,
+          });
       return fit === "fits" ? null : fit;
     };
     // A curated pipeline loads through torch, and a task load puts the whole thing on ONE
