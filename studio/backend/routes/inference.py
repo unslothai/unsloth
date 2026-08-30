@@ -23918,7 +23918,12 @@ async def _cached_local_catalog() -> list:
 # One tuple, published in a single assignment: the fast path below reads it without the
 # lock, and three separate fields could be caught half-replaced -- old stamp and old
 # catalog still matching while `rows` already held the next catalog's rows.
-_SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, generation, rows)
+# How long a scan may answer without any counter having moved. Bounds the one case the
+# counters cannot see, a file added or removed from a scan folder outside Studio, while
+# still collapsing the burst of polls that motivated the cache: at 5s a client polling
+# every second still takes four hits out of five.
+_SERVABLE_SCAN_TTL_S = 5.0
+_SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, generation, at, rows)
 _SERVABLE_SCAN_CACHE_LOCK = threading.Lock()
 
 
@@ -23977,28 +23982,41 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
     #                    decides servability for non-GGUF checkpoints. An Apple Silicon
     #                    MLX self-repair flips CPU to MLX after startup, and an early
     #                    /v1/models would otherwise hide those checkpoints until the TTL.
-    def _fresh(generation):
+    def _fresh():
+        """Read the entry and the generation as one validated snapshot.
+
+        Generation, entry, generation. The counter only ever advances, so equal ends mean
+        no invalidation landed between them; an unequal pair means one did and the rows in
+        hand may predate it. Without the second read a delete that completes between the
+        generation read and the entry read is accepted anyway, on the lock-free path and
+        under the lock alike, since invalidate_index does not take this lock.
+        """
+        before = _servability_generation()
         entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the tuple cannot tear
         if entry is None or catalog_at is None:
             return None
-        at, cached_catalog, cached_generation, rows = entry
-        if cached_generation != generation:
+        at, cached_catalog, cached_generation, scanned_at, rows = entry
+        if cached_generation != before or _servability_generation() != before:
+            return None
+        # Its own TTL as well as the generation. The counters cover Studio's own download
+        # and delete paths; a file removed from a scan folder by hand moves none of them,
+        # and the per-request scan used to notice that immediately. A directory mtime
+        # would not help: editing or deleting a file inside a nested directory does not
+        # bump the root's mtime, which is why the resolver's own mtime memo was dropped.
+        if time.monotonic() - scanned_at > _SERVABLE_SCAN_TTL_S:
             return None
         return rows if at == catalog_at and cached_catalog is catalog else None
 
-    hit = _fresh(_servability_generation())
+    hit = _fresh()
     if hit is not None:
         return hit
     with _SERVABLE_SCAN_CACHE_LOCK:
-        # Re-read under the lock rather than reusing the generation from before it. A
-        # caller that waited here can have been overtaken by an invalidation, and the
-        # entry the first scanner published carries the generation it started with, so
-        # comparing against the stale one would accept rows examined before the delete
-        # or download that invalidation announced.
-        generation = _servability_generation()
-        hit = _fresh(generation)
+        hit = _fresh()
         if hit is not None:
             return hit
+        # Captured before the scan: an invalidation that lands while it runs must make
+        # the stored entry stale rather than be stamped in as if the scan had seen it.
+        generation = _servability_generation()
         scanned = []
         for info in catalog:
             if getattr(info, "task", None) in (
@@ -24020,7 +24038,13 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
             # The generation read BEFORE the scan, not after: an invalidation that
             # landed while the scan ran would otherwise be stamped in as if the scan
             # had seen it, and the very delete this guards against would be cached.
-            _SERVABLE_SCAN_CACHE["entry"] = (catalog_at, catalog, generation, scanned)
+            _SERVABLE_SCAN_CACHE["entry"] = (
+                catalog_at,
+                catalog,
+                generation,
+                time.monotonic(),
+                scanned,
+            )
         return scanned
 
 
