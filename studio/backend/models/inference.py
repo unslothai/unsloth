@@ -2832,6 +2832,27 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
+class ResponsesCustomToolCallInputItem(BaseModel):
+    """A prior assistant custom_tool_call replayed by a Responses client."""
+
+    type: Literal["custom_tool_call"]
+    id: Optional[str] = None
+    call_id: str
+    name: str
+    input: str = Field(..., description = "Raw freeform input the model produced.")
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesCustomToolCallOutputInputItem(BaseModel):
+    """A client result for a prior custom_tool_call."""
+
+    type: Literal["custom_tool_call_output"]
+    id: Optional[str] = None
+    call_id: str
+    output: Union[str, list]
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
@@ -2861,6 +2882,10 @@ def _responses_input_item_discriminator(v: Any) -> str:
         return "function_call"
     if t == "function_call_output":
         return "function_call_output"
+    if t == "custom_tool_call":
+        return "custom_tool_call"
+    if t == "custom_tool_call_output":
+        return "custom_tool_call_output"
     if r is not None or t == "message":
         return "message"
     return "unknown"
@@ -2871,6 +2896,8 @@ ResponsesInputItem = Annotated[
         Annotated[ResponsesInputMessage, Tag("message")],
         Annotated[ResponsesFunctionCallInputItem, Tag("function_call")],
         Annotated[ResponsesFunctionCallOutputInputItem, Tag("function_call_output")],
+        Annotated[ResponsesCustomToolCallInputItem, Tag("custom_tool_call")],
+        Annotated[ResponsesCustomToolCallOutputInputItem, Tag("custom_tool_call_output")],
         Annotated[ResponsesUnknownInputItem, Tag("unknown")],
     ],
     Discriminator(_responses_input_item_discriminator),
@@ -2907,12 +2934,12 @@ class ResponsesRequest(BaseModel):
 
     # OpenAI function-calling fields, forwarded via the Chat Completions
     # pass-through. Plain list so built-in tool shapes round-trip without
-    # validation errors; the translator forwards only ``type=="function"`` entries.
+    # validation errors; the translator forwards functions and Codex apply_patch.
     tools: Optional[list[dict]] = Field(
         None,
         description = (
-            "Responses-shape function tool definitions. Entries with "
-            '`type="function"` are translated to the Chat Completions nested '
+            "Responses-shape tool definitions. Function tools and Codex's "
+            "custom `apply_patch` are translated to the Chat Completions nested "
             "shape before being forwarded to llama-server; other tool types "
             "(built-in web_search, file_search, mcp, ...) are accepted for SDK "
             "compatibility but ignored on the llama-server passthrough."
@@ -2991,10 +3018,22 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
+class ResponsesOutputCustomToolCall(BaseModel):
+    """A freeform custom-tool call returned by the Responses API."""
+
+    type: Literal["custom_tool_call"] = "custom_tool_call"
+    id: str = Field(default_factory = lambda: f"ctc_{uuid.uuid4().hex[:12]}")
+    call_id: str
+    name: str
+    input: str
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+
 ResponsesOutputItem = Union[
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
 ]
 
 

@@ -1030,6 +1030,7 @@ def collect_local_models(
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
+    from hub.utils import gguf as gguf_utils
     from utils.models.model_config import detect_gguf_model
 
     sources = sources or _compat_local_inventory_sources()
@@ -1138,6 +1139,7 @@ def collect_local_models(
                     is not None
                 ):
                     custom_models.append(model)
+            custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -1156,7 +1158,19 @@ def collect_local_models(
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
         semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
-        key = f"{semantic_id}\x00custom" if model.source == "custom" else semantic_id
+        if model.source == "custom":
+            physical_identity = gguf_utils.local_path_physical_identity(model.path)
+            if (
+                model.model_id
+                and model.model_id.startswith("ollama/")
+                and any(
+                    part in (".studio_links", "ollama_links") for part in Path(model.path).parts
+                )
+            ):
+                physical_identity = "\x00".join((model.model_id, physical_identity))
+            key = "\x00".join((physical_identity, model.model_format or "", "custom"))
+        else:
+            key = semantic_id
         existing = deduped.get(key)
         prefer_model = existing is None
         if existing is not None and model.source == existing.source == "hf_cache":
@@ -1169,8 +1183,11 @@ def collect_local_models(
         if prefer_model:
             deduped[key] = model
 
+    deduped_values = list(deduped.values())
+    custom_values = [model for model in deduped_values if model.source == "custom"]
     models = sorted(
-        deduped.values(),
+        [model for model in deduped_values if model.source != "custom"]
+        + gguf_utils.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )

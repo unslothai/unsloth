@@ -22,6 +22,7 @@ reads no globals, so the whole decision table is testable directly.
 from __future__ import annotations
 
 import os
+import struct
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Mapping, Optional, Sequence
@@ -102,6 +103,15 @@ class PlanOptions:
     # target GGUF's tensor table. Subtracting from the budget also reaches
     # max_context_for. 0 keeps the pure-layout behaviour.
     extra_resident_bytes: int = 0
+    # The fixed per-device cost of a LAYER SPLIT, charged once for every device
+    # after the first. Separate from overhead_bytes_per_device because it is not
+    # per-device in the same sense: the first device's share is already folded
+    # into the compute buffer above, which is why every other site in
+    # llama_cpp.py applies it as ``max(0, n_gpus - 1) * ...`` and skips it
+    # entirely at k=1. Folded into the flat per-device term instead, it withheld
+    # a GiB of a single card that nothing was ever going to allocate, which is
+    # deficit the planner then spilled real blocks to cover.
+    pipeline_overhead_bytes: int = 0
     # Host RAM this planner refuses to spend, so a spill does not push the box
     # into swap.
     host_ram_headroom_bytes: int = 2 * GIB
@@ -161,9 +171,11 @@ class Plan:
 
 def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions) -> int:
     """Total creditable VRAM: every device pays the fixed per-device overhead,
-    then the pool pays once for whatever sits on a card outside the layout."""
+    the split pays for each device AFTER the first, then the pool pays once for
+    whatever sits on a card outside the layout."""
     pooled = sum(max(0, v - opts.overhead_bytes_per_device) for v in vram_bytes_per_device)
-    return pooled - max(0, opts.extra_resident_bytes)
+    split = max(0, len(vram_bytes_per_device) - 1) * max(0, opts.pipeline_overhead_bytes)
+    return pooled - split - max(0, opts.extra_resident_bytes)
 
 
 def _select_blocks(
@@ -346,7 +358,7 @@ def plan_placement(
     *,
     opts: Optional[PlanOptions] = None,
     kv_bytes_floor: int = 0,
-    split_weights_per_device: Sequence[int] = (),
+    split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Plan:
     """Decide the placement for one launch.
@@ -488,7 +500,7 @@ def _kv_modes(opts: PlanOptions) -> tuple[bool, ...]:
     return (False, True) if opts.allow_kv_quant else (False,)
 
 
-def _device_slots(n_slots: int, split_weights: Sequence[int]) -> list[list[int]]:
+def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int]]:
     """Which of the ``n_slots`` layer rows land on which device.
 
     Mirrors llama.cpp's default tensor split exactly: free VRAM per device
@@ -497,25 +509,30 @@ def _device_slots(n_slots: int, split_weights: Sequence[int]) -> list[list[int]]
     the output row (:1467). With every layer offloaded ``i_gpu_start`` is 0 and
     ``act_gpu_layers`` is ``n_layer_all + 1``, which is ``n_slots`` here.
     """
+
+    def f32(value: float) -> float:
+        return struct.unpack("=f", struct.pack("=f", value))[0]
+
     weights = [max(0, v) for v in split_weights]
     total = sum(weights)
     if total <= 0:
         return [list(range(n_slots))] + [[] for _ in weights[1:]]
     cumulative: list[float] = []
-    running = 0.0
+    running = f32(0.0)
     for w in weights:
-        running += w
-        cumulative.append(running / total)
+        running = f32(running + f32(w))
+        cumulative.append(running)
+    cumulative = [f32(value / running) for value in cumulative]
     slots: list[list[int]] = [[] for _ in weights]
     for row in range(n_slots):
-        fraction = row / n_slots
+        fraction = f32(f32(row) / f32(n_slots))
         # std::upper_bound: first cumulative strictly greater than fraction.
         device = next((i for i, c in enumerate(cumulative) if c > fraction), len(weights) - 1)
         slots[device].append(row)
     return slots
 
 
-def _per_device_shortfall(
+def _per_device_usage(
     layout: ModelLayout,
     opts: PlanOptions,
     n_ctx: int,
@@ -525,24 +542,11 @@ def _per_device_shortfall(
     *,
     quantised: bool,
     kv_bytes_floor: int,
-    split_weights_per_device: Sequence[int] = (),
+    split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
-) -> Optional[str]:
-    """``None`` when every device provably fits, else why it cannot be shown to.
-
-    A pooled budget is not a per-device fit test, and it does not become one just
-    because every spillable block was taken. llama.cpp hands out CONTIGUOUS ROW
-    RANGES sized by free memory, so a device's share of the ROWS is proportional
-    to its free VRAM while its share of the BYTES is not: what stays resident
-    differs row by row (a block with a shared expert keeps more than a plain
-    dense one), and the budget subtracts a FIXED per-device overhead, which
-    already breaks proportionality on mixed cards -- 24 GiB and 8 GiB split the
-    rows 75/25 but the budgets 77.6/22.4, so the small card is over on a load the
-    pool says fits. A per-device shortfall is a hard throw (llama-model.cpp:1731)
-    and ``--fit off`` means common/fit.cpp never runs to catch it.
-    """
+) -> tuple[Optional[str], list[int], list[list[int]]]:
     if len(vram_bytes_per_device) <= 1:
-        return None
+        return None, [], []
     # These three shapes -- recurrent hybrid, n_attention_layers short of
     # n_layers, sliding window -- are only a problem when the cache has to be
     # spread evenly for want of anything better. A vector removes that guess;
@@ -555,38 +559,43 @@ def _per_device_shortfall(
         weights = []
     if uneven_cache and not weights:
         if layout.recurrent_bytes > 0:
-            return "the recurrent state's per-layer split is not visible in the layout"
+            return "the recurrent state's per-layer split is not visible in the layout", [], []
         if layout.n_attention_layers != layout.n_layers:
             return (
                 f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
-                "and the layout does not say which"
+                "and the layout does not say which",
+                [],
+                [],
             )
         return (
             "the cache is per-layer uneven (sliding-window attention) and no per-layer "
-            "vector was supplied to say which layers are full-context"
+            "vector was supplied to say which layers are full-context",
+            [],
+            [],
         )
     if layout.has_excluded_blocks:
-        return "the GGUF carries trailing blocks that shift llama.cpp's row count"
+        return "the GGUF carries trailing blocks that shift llama.cpp's row count", [], []
 
     n_slots = layout.n_layers + 1
     if n_slots <= 1:
-        return None
+        return None, [], []
     cache = (
         0
         if opts.kv_on_host
         else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     )
-    # Scaled to the total the caller already priced. Uniform when unsupplied.
+    # Scaled without under-booking the caller's total. Uniform when unsupplied.
     total_weight = sum(weights)
     if weights and total_weight > 0:
-        kv_by_layer = [cache * w // total_weight for w in weights]
+        kv_by_layer = [(cache * w + total_weight - 1) // total_weight for w in weights]
     else:
-        per = cache // layout.n_layers if layout.n_layers else 0
+        per = (cache + layout.n_layers - 1) // layout.n_layers if layout.n_layers else 0
         kv_by_layer = [per] * layout.n_layers
     by_index = {b.index: b for b in layout.blocks}
     output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
 
     slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
+    usage: list[int] = []
     for device, rows in enumerate(slots):
         used = 0
         for row in rows:
@@ -605,13 +614,123 @@ def _per_device_shortfall(
         # devices[0] once -sm none has already pruned the list.
         if device == 0:
             used += max(0, opts.extra_resident_bytes)
-        headroom = max(0, vram_bytes_per_device[device] - opts.overhead_bytes_per_device)
-        if used > headroom:
+        usage.append(used)
+    return None, usage, slots
+
+
+def _per_device_shortfall(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    n_ctx: int,
+    spilled_indices: set[int],
+    spill_lm_head: bool,
+    vram_bytes_per_device: Sequence[int],
+    *,
+    quantised: bool,
+    kv_bytes_floor: int,
+    split_weights_per_device: Sequence[float] = (),
+    kv_layer_weights: Sequence[int] = (),
+) -> Optional[str]:
+    """``None`` when every device provably fits, else why it cannot be shown to.
+
+    A pooled budget is not a per-device fit test, and it does not become one just
+    because every spillable block was taken. llama.cpp hands out CONTIGUOUS ROW
+    RANGES sized by free memory, so a device's share of the ROWS is proportional
+    to its free VRAM while its share of the BYTES is not: what stays resident
+    differs row by row (a block with a shared expert keeps more than a plain
+    dense one), and the budget subtracts a FIXED per-device overhead, which
+    already breaks proportionality on mixed cards -- 24 GiB and 8 GiB split the
+    rows 75/25 but the budgets 77.6/22.4, so the small card is over on a load the
+    pool says fits. A per-device shortfall is a hard throw (llama-model.cpp:1731)
+    and ``--fit off`` means common/fit.cpp never runs to catch it.
+    """
+    error, usage, slots = _per_device_usage(
+        layout,
+        opts,
+        n_ctx,
+        spilled_indices,
+        spill_lm_head,
+        vram_bytes_per_device,
+        quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        split_weights_per_device = split_weights_per_device,
+        kv_layer_weights = kv_layer_weights,
+    )
+    if error is not None:
+        return error
+    for device, (used, rows) in enumerate(zip(usage, slots)):
+        fixed_reserve = max(0, opts.overhead_bytes_per_device)
+        if device > 0:
+            fixed_reserve += max(0, opts.pipeline_overhead_bytes)
+        raw_vram = max(0, vram_bytes_per_device[device])
+        headroom = max(0, raw_vram - fixed_reserve)
+        if used + fixed_reserve > raw_vram:
             return (
                 f"device {device} would still hold {used / GIB:.2f} GiB of its "
                 f"{len(rows)}-row share against {headroom / GIB:.2f} GiB usable"
             )
     return None
+
+
+def _select_blocks_per_device(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    n_ctx: int,
+    vram_bytes_per_device: Sequence[int],
+    *,
+    quantised: bool,
+    kv_bytes_floor: int,
+    spill_lm_head: bool = False,
+    split_weights_per_device: Sequence[float] = (),
+    kv_layer_weights: Sequence[int] = (),
+) -> Optional[list[BlockLayout]]:
+    error, usage, slots = _per_device_usage(
+        layout,
+        opts,
+        n_ctx,
+        set(),
+        spill_lm_head,
+        vram_bytes_per_device,
+        quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        split_weights_per_device = split_weights_per_device,
+        kv_layer_weights = kv_layer_weights,
+    )
+    if error is not None:
+        return None
+    by_index = {block.index: block for block in layout.blocks}
+    chosen: list[BlockLayout] = []
+    for device, (used, rows) in enumerate(zip(usage, slots)):
+        fixed_reserve = max(0, opts.overhead_bytes_per_device)
+        if device > 0:
+            fixed_reserve += max(0, opts.pipeline_overhead_bytes)
+        deficit = used + fixed_reserve - max(0, vram_bytes_per_device[device])
+        if deficit <= 0:
+            continue
+        candidates = [
+            by_index[row] for row in rows if row in by_index and by_index[row].spillable_bytes > 0
+        ]
+        local, freed = _select_blocks(candidates, deficit, opts.spill_order)
+        if freed < deficit:
+            return None
+        chosen.extend(local)
+    if (
+        _per_device_shortfall(
+            layout,
+            opts,
+            n_ctx,
+            {block.index for block in chosen},
+            spill_lm_head,
+            vram_bytes_per_device,
+            quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
+            split_weights_per_device = split_weights_per_device,
+            kv_layer_weights = kv_layer_weights,
+        )
+        is not None
+    ):
+        return None
+    return chosen
 
 
 def _plan_at(
@@ -623,7 +742,7 @@ def _plan_at(
     quantised: bool,
     kv_bytes_floor: int = 0,
     vram_bytes_per_device: Sequence[int] = (),
-    split_weights_per_device: Sequence[int] = (),
+    split_weights_per_device: Sequence[float] = (),
     kv_layer_weights: Sequence[int] = (),
 ) -> Optional[Plan]:
     """One pass of the ladder at a fixed context and cache dtype."""
@@ -650,37 +769,25 @@ def _plan_at(
             ),
         )
 
-    n_devices = len(vram_bytes_per_device)
     deficit = needed - budget
     chosen, freed = _select_blocks(layout.blocks, deficit, opts.spill_order)
     if freed >= deficit:
-        spillable = [b for b in layout.blocks if b.spillable_bytes > 0]
-        if n_devices > 1 and len(chosen) < len(spillable):
-            # A pooled budget is not a per-device fit test for a PARTIAL spill.
-            # llama.cpp fixes the split before any override exists -- free memory
-            # per device at llama-model.cpp:1425-1433, prefix-summed at :1439-1447,
-            # then upper_bound on the normalised LAYER INDEX at :1457, so each
-            # device owns a contiguous index range -- and -ot only swaps a tensor's
-            # buffer type in llama_model_loader::create_tensor
-            # (llama-model-loader.cpp:1177-1203), leaving dev_layer(il) untouched
-            # (llama-model.cpp:1467-1474). Nothing rebalances afterwards and with
-            # --fit off common/fit.cpp never runs, so a subset of indices sitting
-            # in one device's range relieves only that device: the aggregate
-            # deficit is covered while a single card is still over, and a
-            # per-device shortfall is a hard throw (llama-model.cpp:1731-1733).
-            # Which rows the chosen indices land on is exactly what makes it
-            # uneven, so no arithmetic rescues it. Abstain: --fit on is per-device
-            # aware (common/fit.cpp:646-651, :687, :705). A FULL spill IS
-            # checkable, and is checked below rather than assumed.
-            return Plan(
-                n_ctx = n_ctx,
-                reason = (
-                    f"a partial spill ({len(chosen)} of {len(spillable)} blocks) across "
-                    f"{n_devices} devices cannot be checked against a pooled budget, "
-                    "because llama.cpp assigns contiguous layer ranges per device and "
-                    "-ot does not move a layer; leaving llama.cpp's own fitter to place it"
-                ),
+        if len(vram_bytes_per_device) > 1:
+            per_device = _select_blocks_per_device(
+                layout,
+                opts,
+                n_ctx,
+                vram_bytes_per_device,
+                quantised = quantised,
+                kv_bytes_floor = kv_bytes_floor,
+                split_weights_per_device = split_weights_per_device,
+                kv_layer_weights = kv_layer_weights,
             )
+            if per_device is not None:
+                per_device_freed = sum(block.spillable_bytes for block in per_device)
+                if needed - per_device_freed <= budget:
+                    chosen = per_device
+                    freed = per_device_freed
         uneven = _per_device_shortfall(
             layout,
             opts,
@@ -694,10 +801,40 @@ def _plan_at(
             kv_layer_weights = kv_layer_weights,
         )
         if uneven is not None:
+            if opts.allow_lm_head_spill and layout.lm_head_bytes:
+                with_head = _select_blocks_per_device(
+                    layout,
+                    opts,
+                    n_ctx,
+                    vram_bytes_per_device,
+                    quantised = quantised,
+                    kv_bytes_floor = kv_bytes_floor,
+                    spill_lm_head = True,
+                    split_weights_per_device = split_weights_per_device,
+                    kv_layer_weights = kv_layer_weights,
+                )
+                if with_head is not None:
+                    with_head_freed = sum(block.spillable_bytes for block in with_head)
+                    with_head_freed += layout.lm_head_bytes
+                    if needed - with_head_freed <= budget:
+                        return _finish(
+                            layout,
+                            opts,
+                            n_ctx,
+                            with_head,
+                            True,
+                            host_ram_bytes,
+                            quantised = quantised,
+                            kv_bytes_floor = kv_bytes_floor,
+                            reason = (
+                                "spilled the output head after its device could not cover "
+                                "the local shortfall with FFN blocks alone"
+                            ),
+                        )
             return Plan(
                 n_ctx = n_ctx,
                 reason = (
-                    f"spilling every block still does not fit device by device: {uneven}; "
+                    f"the selected spill still does not fit device by device: {uneven}; "
                     "leaving llama.cpp's own fitter to place it"
                 ),
             )

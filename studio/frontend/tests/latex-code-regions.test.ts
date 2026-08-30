@@ -135,3 +135,36 @@ test("same-line nested items set the continuation content column", () => {
     "-   - item\n\n        $x$",
   );
 });
+
+test("a fence's backticks do not stand in for an inline span", () => {
+  // findInlineCodeRegions returns early when no backtick sits outside a block
+  // region, because the mask it would build turns every backtick inside one
+  // into a space and can only yield no spans. The early return has to agree
+  // with the scan it replaces in both directions, so pin both.
+  const fence = "```python\ndef step(lr):\n    return lr\n```";
+
+  // All backticks inside the fence: nothing is an inline span, so currency in
+  // prose is still escaped and currency inside the fence is still left alone.
+  assert.equal(
+    preprocessLaTeX(`${fence}\n\ncosts $5 a run\n`),
+    `${fence}\n\ncosts \\$5 a run\n`,
+  );
+  assert.equal(
+    preprocessLaTeX("```sh\nrun --seed $1\n```\n"),
+    "```sh\nrun --seed $1\n```\n",
+  );
+
+  // One backtick outside the fence, so the scan still has to run: the inline
+  // span protects its own currency while prose currency is escaped.
+  assert.equal(
+    preprocessLaTeX(`${fence}\n\n\`cost $5\` and $6 in prose\n`),
+    `${fence}\n\n\`cost $5\` and \\$6 in prose\n`,
+  );
+
+  // An inline span before the fence, which the region scan reaches only after
+  // the fence has been masked out.
+  assert.equal(
+    preprocessLaTeX(`\`keep $7\` then\n\n${fence}\n\nand $8\n`),
+    `\`keep $7\` then\n\n${fence}\n\nand \\$8\n`,
+  );
+});
