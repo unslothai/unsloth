@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// saveChatMessage turns the server's 409 into a typed error so the per-chunk autosave can
-// tell "the server owns this, stop" from "the network blipped, retry". The autosave is not
-// its only caller though: a manual edit (update-thread-message) rolls the UI back and
-// rethrows, and that message is shown to the user, so the server's own wording has to
-// survive the conversion rather than being replaced by a generic one.
+// saveChatMessage turns a protected 409 into a typed error so the autosave can tell "stop"
+// from "retry". A manual edit rethrows to the user, so the server's wording must survive.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -37,7 +34,6 @@ function jsonResponse(status: number, body: unknown, kind: string | null = "prot
     async json() {
       reads += 1;
       if (reads > 1) {
-        // What a real Response does; a double that allowed it would hide the bug.
         throw new TypeError("Body has already been consumed.");
       }
       if (body === undefined) throw new SyntaxError("Unexpected end of JSON input");
@@ -108,8 +104,6 @@ test("a 409 becomes the typed error, carrying the server's wording", async () =>
 });
 
 test("the body is read exactly once", async () => {
-  // A Response body is single-use. Reading it here and then letting parseJsonOrThrow read
-  // it again would throw a TypeError that masks the real conflict.
   const response = jsonResponse(409, { detail: "nope" });
   const { module } = harness(response);
   await module.saveChatMessage(message).catch(() => {});
@@ -133,9 +127,6 @@ test("a 409 whose body is not JSON at all does not throw a parse error", async (
 });
 
 test("a thread-id collision is not treated as protection", async () => {
-  // The backend answers 409 for ChatMessageConflictError too, meaning the id already
-  // belongs to another thread. saveStoredChatMessage swallows ChatMessageProtectedError and
-  // reports success, so mislabelling this one loses the message with no error anywhere.
   const { module } = harness(
     jsonResponse(409, { detail: "Message id already belongs to another thread: m1" }, "thread-collision"),
   );
@@ -149,8 +140,6 @@ test("a thread-id collision is not treated as protection", async () => {
 });
 
 test("a backend too old to send the header falls back to the plain error", async () => {
-  // Safe direction: before this change every 409 threw an anonymous error, so an unknown
-  // 409 keeps that behaviour rather than being silently swallowed.
   const { module } = harness(jsonResponse(409, { detail: "conflict" }, null));
   const error = await module.saveChatMessage(message).catch((e) => e);
 

@@ -377,10 +377,8 @@ def test_the_migration_is_skipped_once_the_scoped_trigger_is_installed(db):
 def test_a_lost_create_race_cannot_raise(db):
     """The interleave itself, forced rather than raced for.
 
-    Timing this out of two live threads does not work: every DDL statement takes the
-    writer lock, so the window between the drop committing and the create is far too
-    narrow to sample. Driving the four statements by hand is the same sequence with the
-    scheduler taken out, and it shows what each half does.
+    Racing two threads for it does not work: every DDL statement takes the writer lock, so
+    the window between the drop committing and the create is too narrow to sample.
     """
     setup = studio_db.get_connection()
     try:
@@ -397,8 +395,8 @@ def test_a_lost_create_race_cannot_raise(db):
         first.execute(studio_db._INVENTORY_UPDATE_TRIGGER_SQL)
         first.commit()
 
-        # Without IF NOT EXISTS this is the crash: it comes straight out of get_connection,
-        # so the second process fails to open the database at all.
+        # Without IF NOT EXISTS this raises out of get_connection, so the second process
+        # cannot open the database at all.
         unguarded = studio_db._INVENTORY_UPDATE_TRIGGER_SQL.replace("IF NOT EXISTS ", "")
         with pytest.raises(sqlite3.OperationalError, match = "already exists"):
             second.execute(unguarded)
@@ -421,10 +419,9 @@ def test_a_lost_create_race_cannot_raise(db):
 
 
 def test_the_drop_and_the_create_share_one_writer_lock():
-    """Held across both, so no opener ever sees the table without its trigger.
+    """Held across both, so no opener sees the table without its trigger.
 
-    sqlite3.Connection is a C type and cannot be monkeypatched, so this uses a double and
-    asserts the statement order the fix depends on.
+    sqlite3.Connection is a C type and cannot be monkeypatched, hence the double.
     """
 
     class Connection:

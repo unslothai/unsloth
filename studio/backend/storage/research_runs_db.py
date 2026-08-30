@@ -870,11 +870,9 @@ _CLAIMABLE_SQL = """SELECT r.id FROM research_runs r
 def _has_claimable(now: int) -> bool:
     """Read-only probe for claimable work, taking no write lock.
 
-    The supervisor polls twice a second for the whole life of the process, and almost
-    every poll finds nothing. Opening BEGIN IMMEDIATE first meant an idle Studio grabbed
-    studio.db's writer lock 2x/second forever, so any genuinely slow writer elsewhere
-    turned into a stream of "database is locked" failures here. Checking first costs one
-    indexed read and keeps the write lock for polls that will actually claim something.
+    The supervisor polls twice a second forever and almost every poll finds nothing, so
+    opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock 2x/second and
+    any slow writer elsewhere became a stream of "database is locked" here.
     """
     conn = get_connection()
     try:

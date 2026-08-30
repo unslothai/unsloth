@@ -848,14 +848,9 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    # exc_info=error works for both structlog and stdlib loggers.
-    #
-    # A 4xx is a normal outcome the caller is expected to handle, not a server fault, so it
-    # is logged as a single warning line without a traceback. Logging it at error with
-    # exc_info made routine client behaviour indistinguishable from a real failure: one
-    # streamed generation put 54 rejected message saves in the log, each with a full
-    # stack, burying everything else. 5xx keeps error + traceback -- that is a server bug
-    # and the stack is the only way to find it.
+    # A 4xx is a normal outcome the caller handles, so one warning line and no traceback:
+    # at error with exc_info, one generation buried the log under 54 rejected saves. 5xx
+    # keeps the traceback, since that is a server bug. exc_info works for structlog too.
     emitter = log or logger
     if 400 <= status_code < 500:
         emitter.warning(f"{event}: {error}")

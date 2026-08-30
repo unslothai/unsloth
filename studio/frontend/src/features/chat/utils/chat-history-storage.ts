@@ -949,28 +949,14 @@ export async function moveStoredChatItemToProject(
   );
 }
 
-// Payloads the server answered 409 for. The per-chunk callers fire every ~300ms for the
-// length of a generation, so resending a payload the server just refused turned one 43s
-// response into 54 rejected PUTs.
-//
-// Keyed by the payload, not by the message id, because a 409 on this route is not proof of
-// permanent ownership. `PUT /threads/{t}/messages/{id}` answers 409 for both
-// ChatMessageProtectedError and ChatMessageConflictError, and even a protected message may
-// be refused only transiently: _safe_generation_assistant_update rejects a save whose
-// generationSeq lost a race to the producer while still permitting the later monotonic and
-// terminal writes that carry usage, timing and response details. Suppressing by id would
-// drop those permanently, so only a byte-identical resend is skipped. That is what the
-// storm was, and a payload the client has actually moved on from is always retried.
-//
-// Keyed by thread rather than by a joined string, since message ids are opaque and a
-// separator that cannot collide with one is not worth guessing at.
+// Payloads the server answered 409 for, so the ~300ms autosave stops resending them.
+// Keyed by payload, not by id: a protected message can be refused transiently, when its
+// generationSeq lost a race, and blocking the id would drop the terminal write
+// (_safe_generation_assistant_update).
 const rejectedChatMessagePayloads = new Map<string, Map<string, string>>();
 
-// A payload holds the whole serialized message, generated content included, and the only
-// production clears are the delete paths, so a long-lived tab that never deletes anything
-// would keep one copy of every long response for the session. Only consecutive resends of
-// the same payload need to be recognised, so a small cap costs nothing real: passing it
-// just means one extra request for whichever message fell out.
+// Entries hold whole messages, and only the delete paths clear them. Exceeding the cap
+// costs one extra request for whichever message fell out.
 const MAX_REJECTED_PAYLOADS = 32;
 
 /** Least-recently-written first, both across threads and within one. */
@@ -1000,7 +986,6 @@ function rememberRejectedPayload(
   payload: string,
 ): void {
   const perThread = rejectedChatMessagePayloads.get(threadId) ?? new Map<string, string>();
-  // Re-inserted rather than overwritten, so a Map's insertion order stays a usable age.
   perThread.delete(messageId);
   perThread.set(messageId, payload);
   rejectedChatMessagePayloads.delete(threadId);
@@ -1024,18 +1009,12 @@ function stableStringify(value: unknown): string {
     .join(",")}}`;
 }
 
-// Every entry, not just the deleted thread's. A 409 can mean the id already belongs to a
-// different thread, and that rejection is recorded under the thread we were writing TO, so
-// deleting the thread that actually owns the id frees it while leaving the stale entry
-// somewhere else in the map. The next attempt would then be skipped as a resend and the
-// message would never be persisted. Deleting a thread is rare and user-driven, so dropping
-// the whole cache costs at most one extra request per protected message.
+// Every entry, not just the deleted thread's: a collision is recorded under the thread we
+// wrote TO, so deleting the thread that OWNS the id frees it elsewhere in the map.
 export function clearServerOwnedChatMessages(): void {
   rejectedChatMessagePayloads.clear();
 }
 
-// Tombstoning a thread is the point its message ids stop mattering, so the two always
-// happen together: without this the map would only ever grow across a long-lived session.
 function forgetChatThread(threadId: string): void {
   markChatThreadDeleted(threadId);
   clearServerOwnedChatMessages();
@@ -1055,12 +1034,8 @@ export async function saveStoredChatMessage(
   }
   const payload = stableStringify(message);
   if (rejectedChatMessagePayloads.get(message.threadId)?.get(message.id) === payload) {
-    // Refresh its age. Without this the message being resent right now is the one aging
-    // out, which is exactly backwards: it is the only entry currently earning its place.
+    // Refresh: otherwise the message being resent right now is the one aging out.
     rememberRejectedPayload(message.threadId, message.id, payload);
-    // This exact payload was just refused, so the server's copy is authoritative for it;
-    // returning the caller's record keeps the optimistic UI intact without another doomed
-    // round trip. Any payload the client has since moved on from falls through and is sent.
     return message;
   }
   await ensureStoredChatThread(message.threadId);
@@ -1085,10 +1060,8 @@ export async function syncStoredChatMessages(
   if (isChatThreadDeleted(threadId)) return [];
   await ensureStoredChatThread(threadId);
   const synced = await syncChatMessages(threadId, messages, options);
-  // Deleting rows frees their ids, which is the other way a cached cross-thread collision
-  // stops being true (the thread itself survives, so the tombstone path never runs). Only
-  // on a sync that actually asked for deletions: an ordinary sync runs constantly, and
-  // clearing there would put the request storm straight back.
+  // Deleting rows frees their ids while the thread survives, so no tombstone runs. Gated on
+  // an actual deletion: an ordinary sync runs constantly and would undo the whole cache.
   if (options.pruneMissing || (options.deletedMessageIds?.length ?? 0) > 0) {
     clearServerOwnedChatMessages();
   }

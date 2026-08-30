@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The server-owned message map in chat-history-storage is keyed by thread, so without a
-// matching removal it would only ever grow across a long-lived session. Tombstoning a
-// thread is the point its message ids stop mattering, so the two are paired in
-// forgetChatThread/forgetChatThreads.
-//
-// Asserted at the source level rather than by driving one delete path: there are four
-// call sites and a future edit that calls the tombstone helpers directly would silently
-// reintroduce the leak on whichever path a runtime test did not happen to cover.
+// Asserted at the source level: a future edit calling the tombstone helpers directly would
+// reintroduce the leak on whichever delete path a runtime test did not cover.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -105,8 +99,6 @@ test("both wrappers exist and each clears the map", () => {
 });
 
 test("at least one real delete path is wired to a wrapper", () => {
-  // Guards against the wrappers existing but nothing using them, which would leave
-  // clearServerOwnedChatMessages dead again.
   const sf = parseModule();
   const used: string[] = [];
   const visit = (node: ts.Node): void => {

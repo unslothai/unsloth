@@ -582,12 +582,9 @@ class ChatImportLedgerRecordResponse(BaseModel):
     inserted: int
 
 
-# The client cannot tell the two 409s apart from the status alone, and they mean opposite
-# things: a protected message is the server refusing an edit it owns, so the autosave should
-# stop; a thread collision is an ordinary failure the caller must see and handle. Answering
-# both the same way made the frontend swallow a collision as success. The kind rides in a
-# response header rather than the body so `detail` stays a plain string for every existing
-# client; `expose_headers` in main.py is what lets a cross-origin Studio read it.
+# Both conflicts are 409 and mean opposite things: protected means stop resending, a thread
+# collision means surface the failure. In a header, not the body, so `detail` stays a plain
+# string for existing clients; main.py must expose it for a cross-origin Studio to read it.
 CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
 
 

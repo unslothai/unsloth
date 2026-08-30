@@ -283,13 +283,10 @@ _INVENTORY_UPDATE_TRIGGER_SQL = f"""
 def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
     """Swap the unscoped trigger for the scoped one, safely for concurrent openers.
 
-    Two Studio processes on one studio.db each have their own `_schema_ready`, and DDL
-    does not open a transaction under sqlite3's legacy transaction control (only DML
-    does), so a bare DROP + CREATE pair can interleave as drop/drop/create/create and the
-    second CREATE raises "trigger already exists" out of `get_connection`. Three guards:
-    skip entirely when the scoped trigger is already installed, hold the writer lock
-    across the pair, and keep IF NOT EXISTS on the create so even a lost race cannot
-    raise.
+    DDL does not open a transaction under sqlite3's legacy transaction control, only DML
+    does, so a bare DROP + CREATE pair can interleave across processes as
+    drop/drop/create/create and the second CREATE raises out of `get_connection`. Hence:
+    skip when already scoped, hold the writer lock across the pair, IF NOT EXISTS on top.
     """
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
@@ -648,13 +645,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
-    # Scoped to the two columns _rebuild_chat_attachment_inventory actually reads. The
-    # unscoped version fired on any UPDATE, so a generation status change -- which touches
-    # only metadata_json, from chat_generation_runs_db and research_runs_db -- marked the
-    # inventory dirty, and the next chat autosave paid for a full DELETE + re-hash of every
-    # attachment in every thread while holding the writer lock inside BEGIN IMMEDIATE.
-    # Dropped rather than IF NOT EXISTS: existing installs already carry the unscoped
-    # trigger, and a create would silently keep it.
+    # Scoped to the columns _rebuild_chat_attachment_inventory reads: unscoped, a generation
+    # status change (metadata_json only) dirtied the inventory, so the next autosave re-hashed
+    # every attachment under the writer lock. Dropped, since a create would keep the old one.
     _replace_inventory_update_trigger(conn)
     conn.execute(
         """

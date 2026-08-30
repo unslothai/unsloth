@@ -1122,13 +1122,10 @@ class ResearchSupervisor:
             except asyncio.CancelledError:
                 raise
             except sqlite3.OperationalError as exc:
-                # Losing a race for the writer lock is a normal outcome of polling a
-                # shared database, not a fault: one slow writer elsewhere produced six
-                # identical multi-line tracebacks in a single session. Only the busy case
-                # is quietened; anything else keeps the traceback it had before. Both
-                # still sleep and continue, because re-raising here would escape the
-                # while loop and stop the supervisor for the life of the process --
-                # the sibling `except Exception` below cannot catch a raise from here.
+                # Losing the writer lock is normal for polling, not a fault, and produced
+                # six tracebacks in one session. Only that case is quietened. Neither may
+                # re-raise: that escapes the while loop and stops the supervisor for the
+                # life of the process, and the sibling `except Exception` cannot catch it.
                 if is_sqlite_busy_error(exc):
                     logger.warning("research.supervisor_db_busy: %s", exc)
                 else:

@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The per-chunk autosave used to treat the server's 409 as an anonymous error and re-send
-// on the very next chunk. One 43s generation in a live session produced 54 rejected PUTs,
-// each logging a full traceback server-side.
-//
-// The stop is scoped to the exact payload that was refused, not to the message id. A 409 on
-// this route is not proof of permanent ownership: it also covers a message id colliding with
-// another thread, and even a protected message may be refused only because its generationSeq
-// lost a race, with the later monotonic and terminal writes still permitted. So a resend of
-// the same bytes is dropped and anything the client has moved on to is sent.
+// The autosave used to re-send on the next chunk after a 409, turning one 43s generation
+// into 54 rejected PUTs. The stop is scoped to the refused payload, not the message id: a
+// 409 is not proof of ownership, so only a resend of the same bytes is dropped.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -102,8 +96,6 @@ test("a rejected message is never sent again", async () => {
 test("the rejection resolves rather than throwing, so the stream keeps following", async () => {
   const { module } = harness({ rejectIds: new Set(["m1"]) });
   const record = message("m1");
-  // The caller's optimistic record comes back: the server's copy is already durable, and
-  // throwing here would abort the recovery loop that is still reading the generation.
   assert.deepEqual(await module.saveStoredChatMessage(record), record);
 });
 
@@ -141,10 +133,6 @@ test("clearing lets a reissued id save again", async () => {
 });
 
 test("a later monotonic update is still sent after a stale-seq rejection", async () => {
-  // _safe_generation_assistant_update refuses an autosave whose generationSeq lost the race
-  // to the producer, then permits the next one. The recovery follower keeps going and its
-  // terminal write carries contextUsage, timings and response details, so muting the id here
-  // would drop all of them on reload.
   const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
 
   await module.saveStoredChatMessage({ ...message("m1"), metadata: { generationSeq: 4 } });
@@ -175,8 +163,6 @@ test("growing streamed content is never mistaken for a resend", async () => {
 });
 
 test("key order does not decide whether two payloads are the same", async () => {
-  // Two call sites build the record with different property order. Without a stable
-  // serialization the storm would come straight back for whichever one loses the race.
   const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
 
   await module.saveStoredChatMessage({
@@ -198,11 +184,6 @@ test("key order does not decide whether two payloads are the same", async () => 
 });
 
 test("deleting a thread frees ids cached under every other thread", async () => {
-  // A 409 also means "this id already belongs to another thread". That rejection is
-  // recorded under the thread being written TO, so deleting the thread that actually owns
-  // the id makes the same payload valid while the stale entry sits elsewhere in the map.
-  // Clearing only the deleted thread's bucket would skip the now-valid write and the
-  // message would be gone after a reload.
   const { module, attempts } = harness({ rejectIds: new Set(["m1", "m2"]) });
 
   await module.saveStoredChatMessage(message("m1", "target"));
@@ -221,9 +202,6 @@ test("deleting a thread frees ids cached under every other thread", async () => 
 });
 
 test("pruning messages frees their ids too", async () => {
-  // Deleting one message calls syncStoredChatMessages with pruneMissing, and the backend
-  // removes the row while the thread survives, so no tombstone runs. The id is free but
-  // the collision is still cached, and the identical payload would be skipped.
   const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
 
   await module.saveStoredChatMessage(message("m1", "target"));
@@ -237,7 +215,6 @@ test("pruning messages frees their ids too", async () => {
 });
 
 test("an ordinary sync does not clear the cache", async () => {
-  // syncStoredChatMessages runs constantly. Clearing on every call would put the storm back.
   const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
 
   await module.saveStoredChatMessage(message("m1", "target"));
@@ -248,8 +225,6 @@ test("an ordinary sync does not clear the cache", async () => {
 });
 
 test("the cache is bounded, so a long session cannot grow without limit", async () => {
-  // Each entry holds a whole serialized message, generated content included. Only
-  // consecutive resends need recognising, so falling out of the cache costs one request.
   const ids = Array.from({ length: 40 }, (_, index) => `m${index}`);
   const { module, attempts } = harness({ rejectIds: new Set(ids) });
 
@@ -258,9 +233,8 @@ test("the cache is bounded, so a long session cannot grow without limit", async 
   }
   assert.equal(attempts.length, 40, "each is refused once");
 
-  // Asserted per id rather than by re-walking the whole list: a bounded cache walked in
-  // insertion order misses on every lookup by construction, which measures the walk and
-  // not the bound.
+  // Per id, not by re-walking: a bounded cache walked in insertion order misses every
+  // lookup by construction, measuring the walk rather than the bound.
   await module.saveStoredChatMessage(message("m39"));
   assert.equal(attempts.length, 40, "the newest entry is still suppressed");
 
@@ -271,13 +245,10 @@ test("the cache is bounded, so a long session cannot grow without limit", async 
 test("an ordinary failure still propagates", async () => {
   const { module, attempts } = harness({ failWith: new Error("network down") });
 
-  // Only the permanent 409 is swallowed. A transient failure must still reach the caller,
-  // which retries it -- turning that into a silent success would lose the message.
   await assert.rejects(
     () => module.saveStoredChatMessage(message("m9")),
     /network down/,
   );
-  // And it must not be marked server-owned, or one blip would mute the message for good.
   await assert.rejects(() => module.saveStoredChatMessage(message("m9")));
   assert.deepEqual(attempts, ["m9", "m9"]);
 });

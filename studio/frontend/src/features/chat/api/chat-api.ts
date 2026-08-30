@@ -1143,9 +1143,7 @@ export class ChatMessageProtectedError extends Error {
   readonly threadId: string;
 
   constructor(threadId: string, messageId: string, detail?: string) {
-    // Keep the server's own wording when it sent one. A manual edit surfaces this text
-    // to the user, and replacing a specific explanation with a generic one would be a
-    // regression for the caller that is not the autosave.
+    // Keep the server's wording: a manual edit surfaces this text to the user.
     super(detail || `Message ${messageId} is server-managed and cannot be edited`);
     this.name = "ChatMessageProtectedError";
     this.threadId = threadId;
@@ -1168,17 +1166,14 @@ export async function saveChatMessage(
       body: JSON.stringify(message),
     },
   );
-  // Two different failures share this status. A protected message is the server refusing an
-  // edit it owns, and the autosave has to stop rather than resend; a thread-id collision is
-  // an ordinary failure the caller must see, and swallowing it loses the message. Only the
-  // header tells them apart, so anything else -- including a backend too old to send it --
-  // falls through to the normal error path, which is what happens today.
+  // Two failures share this status: a protected message, where the autosave must stop, and
+  // a thread-id collision, which the caller must see or the message is lost. Only the header
+  // separates them, so anything else (an older backend included) takes the normal error path.
   if (
     response.status === 409 &&
     response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
   ) {
-    // Read the body here rather than letting parseJsonOrThrow do it: a Response body can
-    // only be consumed once, and this needs the server's detail to carry into the error.
+    // Read here, not in parseJsonOrThrow: a body is single-use.
     const body = await response.json().catch(() => null);
     throw new ChatMessageProtectedError(
       message.threadId,
