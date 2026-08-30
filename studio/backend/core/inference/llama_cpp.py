@@ -18197,13 +18197,20 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
-                    # Vulkan reports total 0 only for integrated GPUs. Their
-                    # free "VRAM" is the same host pool the RAM guard prices.
-                    _shared_gpu_ids = (
-                        {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
-                        if is_vulkan_backend
-                        else set()
-                    )
+                    # vulkan reports total 0 only for integrated GPUs. no rows means
+                    # the probe failed, so keep the snapshot unknown and re-probe later.
+                    if is_vulkan_backend:
+                        _shared_gpu_ids = (
+                            {
+                                idx
+                                for idx, _free in _detected_gpus
+                                if total_by_idx.get(idx, 1) <= 0
+                            }
+                            if _gpu_mem
+                            else None
+                        )
+                    else:
+                        _shared_gpu_ids = set()
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is

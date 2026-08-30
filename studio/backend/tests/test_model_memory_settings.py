@@ -2111,6 +2111,17 @@ class TestADefaultLaunchRecordsItsApplicability:
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "_shared_gpu_ids: Optional[set[int]] = None" in source
 
+    def test_an_empty_vulkan_inventory_keeps_the_snapshot_unknown(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        start = source.index("if is_vulkan_backend:", source.index("_detected_gpus = list(gpus)"))
+        block = source[start : source.index("# The --fit fallback", start)]
+        assert "if _gpu_mem" in block
+        assert "else None" in block
+
 
 class TestPairedWritesAreInvalidatedTogether:
     """The write commits both keys in one transaction, so a reader must never
