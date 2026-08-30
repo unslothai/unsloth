@@ -2493,11 +2493,11 @@ def test_the_evidence_pattern_is_never_narrowed():
 def test_a_socketed_file_renders_what_it_always_rendered():
     """The gate must not touch evidence for anything that still fires."""
     source = (
-        'import os, socket, subprocess\n'
-        'def go():\n'
-        '    s = socket.socket()\n'
+        "import os, socket, subprocess\n"
+        "def go():\n"
+        "    s = socket.socket()\n"
         '    s.connect(("h", 1))\n'
-        '    os.dup2(s.fileno(), 0)\n'
+        "    os.dup2(s.fileno(), 0)\n"
         '    subprocess.call("/bin/sh")\n'
     )
     found = _reverse_shell_findings(source)

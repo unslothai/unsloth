@@ -767,8 +767,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     # dup2 counts only alongside a socket; see RE_FD_DUP.
     # dup2 counts only alongside a socket; see RE_REVERSE_SHELL_WITHOUT_DUP.
     has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) and (
-        bool(RE_SOCKET_USE.search(content))
-        or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
+        bool(RE_SOCKET_USE.search(content)) or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
     )
     has_remote_code = bool(RE_REMOTE_CODE.search(content))
     has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
