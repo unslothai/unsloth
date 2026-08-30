@@ -1829,16 +1829,14 @@ def test_the_supported_arch_set_matches_the_installer(monkeypatch):
     import pathlib
     import re
 
-    setup = (
-        pathlib.Path(hw.__file__).parents[3] / "setup.sh"
-    ).read_text(encoding = "utf-8")
-    block = setup[setup.index("_setup_supported_gfx_from_name()"):]
+    setup = (pathlib.Path(hw.__file__).parents[3] / "setup.sh").read_text(encoding = "utf-8")
+    block = setup[setup.index("_setup_supported_gfx_from_name()") :]
     block = block[: block.index("esac")]
     shipped = set(re.findall(r'_sup_gfx_out="(gfx[0-9a-f]+)"', block))
     assert shipped, "the installer's arch table moved"
-    assert shipped == set(hw._ROCM_SUPPORTED_GFX), (
-        "the backend must decline exactly the cards the installer declines"
-    )
+    assert shipped == set(
+        hw._ROCM_SUPPORTED_GFX
+    ), "the backend must decline exactly the cards the installer declines"
 
 
 def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):

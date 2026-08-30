@@ -1085,10 +1085,18 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
 # make that GPU usable.
 _ROCM_SUPPORTED_GFX = frozenset(
     {
-        "gfx1030", "gfx1032", "gfx1034",
-        "gfx1100", "gfx1101", "gfx1102", "gfx1103",
-        "gfx1150", "gfx1151", "gfx1152",
-        "gfx1200", "gfx1201",
+        "gfx1030",
+        "gfx1032",
+        "gfx1034",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1103",
+        "gfx1150",
+        "gfx1151",
+        "gfx1152",
+        "gfx1200",
+        "gfx1201",
     }
 )
 
@@ -1134,7 +1142,9 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
     """
     candidates = [
         str(gfx).lower()
-        for gfx in (device.get("gfx_candidates") or ([device.get("gfx")] if device.get("gfx") else []))
+        for gfx in (
+            device.get("gfx_candidates") or ([device.get("gfx")] if device.get("gfx") else [])
+        )
         if gfx
     ]
     if not candidates:
