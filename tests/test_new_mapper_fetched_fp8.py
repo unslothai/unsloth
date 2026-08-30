@@ -1,26 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression tests for what ``_get_new_mapper`` hands back to the upgrade probe.
+"""What ``_get_new_mapper`` hands back to the upgrade probe.
 
-``test_new_mapper_no_global_leak.py`` serves the repo's own ``mapper.py`` as both installed
-and fetched source, so it cannot tell a fetched table from a fresh copy of the installed one.
-Two gaps it misses:
+``test_new_mapper_no_global_leak.py`` serves the repo's own ``mapper.py`` as both the
+installed and the fetched source, so it cannot tell the two apart. Two gaps: an fp8
+repo only the FETCHED mapper knows, and a fetched file with no fp8 tables at all, where
+reading them with ``[]`` raises ``KeyError`` and takes the 4bit half down with it.
 
-1. The probe must answer for an fp8 repo only the FETCHED mapper knows, so an extra ``"8"``
-   entry is spliced into the fetched source only. Isolating the exec without returning the
-   fetched fp8 tables would silently drop the fp8 half of the upgrade check.
-2. The probe must survive a fetched ``mapper.py`` with no fp8 tables (anything older, or a
-   future rename): reading them with ``[]`` raises ``KeyError`` into the bare ``except``,
-   taking the 4bit half, the probe's whole purpose, down with it.
-
-Both of the above only reach the block table. The last two tests take the row branch, which
-``load_in_fp8 = True`` plus ``UNSLOTH_HAS_FBGEMM`` selects ahead of block: deleting that branch,
-or dropping ``_resolve_with_mappers``' ``fp8_row`` argument so it falls back to the installed
-table, both leave every other test here green.
-
-``loader_utils`` imports torch, so ast-extract the resolvers and run them against a stubbed
-``requests``, as in ``tests/test_bad_mappings_redirect.py``.
+The last two tests take the ROW branch, which nothing else here covers.
 """
 
 import ast
@@ -40,6 +28,12 @@ _NEW_ROW = "unsloth/Zeta-9B-Only-On-Main-FP8-Row"
 _ANCHOR = '    "unsloth/Kimi-K2-Instruct-BF16" : ('
 # Row table only, so the block branch cannot answer for it and mask a row-path regression.
 _ROW_ONLY = "zeta-org/Zeta-9B-Row-Only-FP8"
+
+
+def _loader_utils_globals():
+    """The real loader_utils module globals, for anything the stand-in needs verbatim."""
+    import unsloth.models.loader_utils as loader_utils
+    return vars(loader_utils)
 
 
 def _mapper_source():
@@ -70,9 +64,43 @@ def _without_fp8_tables(source):
     )
 
 
+class _FakeRaw:
+    """`read1` over a fixed list of chunks, returning b"" at the end."""
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+
+    def read1(self, amount = -1):
+        return next(self._chunks, b"")
+
+
 class _FakeResponse:
-    def __init__(self, text):
-        self.text = text
+    """The streaming half of `requests.Response`: the probe caps while READING and
+    follows redirects by hand, so a fake without status and headers hides both."""
+
+    def __init__(
+        self,
+        text,
+        chunks = None,
+        status_code = 200,
+        headers = None,
+    ):
+        self.encoding = "utf-8"
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._chunks = chunks if chunks is not None else [text.encode("utf-8")]
+        self._raw = None
+
+    def iter_content(self, chunk_size = 1):
+        yield from self._chunks
+
+    @property
+    def raw(self):
+        """`read1` returns what ONE socket read produced, so the deadline is checked
+        between reads. `iter_content` is kept so the fake matches the real object."""
+        if self._raw is None:
+            self._raw = _FakeRaw(self._chunks)
+        return self._raw
 
     def __enter__(self):
         return self
@@ -81,9 +109,16 @@ class _FakeResponse:
         return False
 
 
-def _install_fake_requests(monkeypatch, text):
+def _install_fake_requests(
+    monkeypatch,
+    text,
+    chunks = None,
+):
     module = types.ModuleType("requests")
-    module.get = lambda url, timeout = None: _FakeResponse(text)
+    module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
+    module.get = lambda url, timeout = None, stream = False, allow_redirects = True: (
+        _FakeResponse(text, chunks)
+    )
     monkeypatch.setitem(sys.modules, "requests", module)
 
 
@@ -99,6 +134,11 @@ def _load_resolver(installed_source):
     """Stand-in for loader_utils' module globals, built from `installed_source`."""
     from unsloth_zoo.utils import Version
 
+    # loader_utils imports this from .mapper; _get_new_mapper derives the fetched tables
+    # with it, so the stand-in globals need it or the probe NameErrors into its own bare
+    # except and returns empty tables.
+    from unsloth.models.mapper import build_mappers
+
     mapper_ns = {}
     exec(compile(installed_source, "mapper.py", "exec"), mapper_ns)
 
@@ -108,6 +148,10 @@ def _load_resolver(installed_source):
         "MAP_TO_UNSLOTH_16bit": mapper_ns["MAP_TO_UNSLOTH_16bit"],
         "FLOAT_TO_FP8_BLOCK_MAPPER": mapper_ns["FLOAT_TO_FP8_BLOCK_MAPPER"],
         "FLOAT_TO_FP8_ROW_MAPPER": mapper_ns["FLOAT_TO_FP8_ROW_MAPPER"],
+        "build_mappers": build_mappers,
+        # Imported from loader_utils rather than rebuilt, so a new helper added there
+        # cannot silently drop out of this stand-in and make the probe look broken.
+        "_MAPPER_HELPERS": _loader_utils_globals()["_MAPPER_HELPERS"],
         "SUPPORTS_FOURBIT": True,
         "transformers_version": Version("4.57.6"),
         "Version": Version,
@@ -206,3 +250,34 @@ def test_probe_answers_for_a_row_only_repo_the_fetched_mapper_knows(monkeypatch)
         )
 
     assert namespace["FLOAT_TO_FP8_ROW_MAPPER"] is installed_row
+
+
+def test_a_fetched_mapper_that_uses_update_still_installs_its_entries(monkeypatch):
+    """`.update({...})` adds entries exactly as the subscript spelling does; both are
+    asserted, so this cannot pass by the probe reading neither."""
+    installed = _mapper_source()
+    namespace = _load_resolver(installed)
+
+    both = installed + (
+        f"\nFLOAT_TO_FP8_ROW_MAPPER.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n"
+        f"FLOAT_TO_FP8_ROW_MAPPER[{_NEW_OFFICIAL.lower()!r}] = {_NEW_ROW!r}\n"
+    )
+    _install_fake_requests(monkeypatch, both)
+
+    fetched = namespace["_get_new_mapper"]()
+    row_table = fetched[4]
+    assert row_table.get(_ROW_ONLY.lower()) == _NEW_ROW, f"update() entry missing: {row_table}"
+    assert row_table.get(_NEW_OFFICIAL.lower()) == _NEW_ROW, f"subscript entry missing: {row_table}"
+
+
+def test_update_on_a_name_the_probe_does_not_export_is_ignored(monkeypatch):
+    """The receiver has to name one of the five tables, or nothing is read from it."""
+    installed = _mapper_source()
+    namespace = _load_resolver(installed)
+
+    _install_fake_requests(
+        monkeypatch,
+        installed + f"\nSOMETHING_ELSE.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n",
+    )
+    fetched = namespace["_get_new_mapper"]()
+    assert _ROW_ONLY.lower() not in fetched[4]

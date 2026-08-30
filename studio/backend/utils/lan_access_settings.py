@@ -52,7 +52,7 @@ def _resolve_host_addresses(host: str, port: int) -> tuple:
     literal = _normalized_ip(host)
     if literal is not None:
         return (literal,)
-    if not isinstance(host, str) or not isinstance(port, int) or port <= 0:
+    if not isinstance(host, str) or not isinstance(port, int) or port < 0:
         return ()
     try:
         infos = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
@@ -205,8 +205,11 @@ def configure_lan_access(
     app_state, *, port: int, bind_host: str, secure: bool, is_colab: bool, frontend_served: bool
 ) -> None:
     """Publish immutable launch policy used by every settings request."""
+    from utils.host_policy import wildcard_ip_versions
+
     app_state.lan_access_port = port
-    app_state.lan_access_wildcard_bind = bind_host in ("0.0.0.0", "::")
+    app_state.lan_access_wildcard_ip_versions = wildcard_ip_versions(bind_host)
+    app_state.lan_access_wildcard_bind = bool(app_state.lan_access_wildcard_ip_versions)
     app_state.lan_access_bind_host = bind_host
     app_state.lan_access_launch_addresses = tuple(
         str(address) for address in _resolve_host_addresses(bind_host, port)
@@ -234,14 +237,17 @@ def _launch_urls(app_state) -> list[str]:
     sharing, and behind NAT that address reaches nothing on the LAN.
     """
     if getattr(app_state, "lan_access_wildcard_bind", False):
-        cached = getattr(app_state, "lan_access_wildcard_urls", None)
-        if cached is None:
-            from lan_access import detect_lan_addresses
-            cached = _listener_urls(
-                detect_lan_addresses(), getattr(app_state, "lan_access_port", None)
-            )
-            app_state.lan_access_wildcard_urls = cached
-        return list(cached)
+        from lan_access import detect_lan_addresses
+
+        addresses = []
+        for ip_version in getattr(app_state, "lan_access_wildcard_ip_versions", ()) or (4,):
+            for address in detect_lan_addresses(ip_version):
+                if address not in addresses:
+                    addresses.append(address)
+        return _listener_urls(
+            addresses,
+            getattr(app_state, "lan_access_port", None),
+        )
     url = getattr(app_state, "server_url", None)
     return [url] if url else []
 
@@ -249,7 +255,11 @@ def _launch_urls(app_state) -> list[str]:
 def _listener_urls(addresses, port: Optional[int]) -> list[str]:
     if not port:
         return []
-    return [f"http://{address}:{port}" for address in addresses]
+    urls = []
+    for address in addresses:
+        url_host = f"[{address}]" if ":" in address else address
+        urls.append(f"http://{url_host}:{port}")
+    return urls
 
 
 def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> list[str]:
@@ -274,12 +284,39 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
 
 
 def _has_keyless_lan_url(urls: list[str]) -> bool:
+    """Whether any of these URLs is one a keyless caller can actually reach.
+
+    Resolution alone is not enough: `keyless_api_access._host_authority_is_direct` refuses a
+    `Host` that names anything, so a hostname bind yields a URL that resolves to a private
+    address and is still refused. Reporting it eligible is what made the LAN panel advertise
+    `Bearer not-needed` against a URL that answers 401, so the literal is required here too.
+
+    Admission decides, through the shared
+    `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is what
+    let an IPv4-mapped literal like `::ffff:192.168.1.24` be advertised while admission
+    refused it: `_normalized_ip` un-maps, which is exactly what that form is refused for.
+    """
+    import ipaddress
     from urllib.parse import urlparse
+
+    from utils.keyless_api_access import (
+        KEYLESS_SCOPE_INFERENCE,
+        keyless_authority_address_allowed,
+    )
+
     for url in urls:
         parsed = urlparse(url)
-        if parsed.hostname and _all_addresses_are(
-            parsed.hostname, parsed.port or 80, _private_non_loopback
-        ):
+        if not parsed.hostname:
+            continue
+        try:
+            # urlparse already strips the IPv6 brackets and lowercases; parse the
+            # remaining literal without normalising it
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            continue
+        if not keyless_authority_address_allowed(address, KEYLESS_SCOPE_INFERENCE):
+            continue
+        if _all_addresses_are(parsed.hostname, parsed.port or 80, _private_non_loopback):
             return True
     return False
 
@@ -339,6 +376,8 @@ def lan_access_status(app) -> dict:
         "can_start": controllable and not running,
         "can_stop": controllable and running,
         "block_reason": block_reason,
+        "bind_host": getattr(app_state, "lan_access_bind_host", None),
+        "wildcard_bind": bool(getattr(app_state, "lan_access_wildcard_bind", False)),
         "serves_web_ui": frontend_served,
         "keyless_lan_eligible": _has_keyless_lan_url(urls),
         "keyless_scope": keyless_scope,

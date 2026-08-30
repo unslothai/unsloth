@@ -1596,7 +1596,7 @@ _SELECTED_DENOISER_INDEX = "diffusion_pytorch_model.safetensors.index.json"
 
 
 def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
-    """Whether *snapshot* itself carries a ROOT ``model_index.json``.
+    """Whether *snapshot* carries a conventional or modular root pipeline index.
 
     The snapshot-scoped twin of :func:`repo_has_pipeline_index`, for callers that already know the
     ONE directory their row loads from. ``from_pretrained`` reads the manifest at the root of the
@@ -1605,13 +1605,16 @@ def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
     if snapshot is None:
         return False
     try:
-        return (Path(snapshot) / "model_index.json").is_file()
+        root = Path(snapshot)
+        return (root / "model_index.json").is_file() or (
+            root / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 
 
 def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
-    """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
+    """The denoiser subdirs this pipeline's root manifest declares, or None.
 
     Read off the manifest rather than the fixed ``_DENOISER_DIRS`` pair because multi-DiT pipelines
     carry more than one (Ideogram 4 adds ``unconditional_transformer/``, Wan 2.2's A14B experts
@@ -1623,7 +1626,10 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
     prove absent and the caller must not hunt for directories that layout never had.
     """
     try:
-        with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
+        manifest_path = snapshot / "model_index.json"
+        if not manifest_path.is_file():
+            manifest_path = snapshot / "modular_model_index.json"
+        with manifest_path.open("r", encoding = "utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError, RecursionError):
         # RecursionError (deeply nested json) would escape the caller's fail-open guard.

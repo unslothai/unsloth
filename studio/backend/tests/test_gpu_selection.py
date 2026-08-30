@@ -410,8 +410,11 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["index_kind"], "relative")
-        self.assertEqual(result["devices"][0]["index"], 0)
-        self.assertEqual(result["devices"][0]["visible_ordinal"], 0)
+        device = result["devices"][0]
+        self.assertEqual(device["index"], 0)
+        self.assertEqual(device["visible_ordinal"], 0)
+        self.assertTrue(device["shared_memory"])
+        self.assertEqual(device["shared_memory_host_backed_gb"], 64.0)
 
     def test_discrete_vulkan_inference_gpu_info(self):
         with (
