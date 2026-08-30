@@ -363,10 +363,17 @@ async function* streamChatGenerationEvents(
  * The loop below reconnects for as long as the run is non-terminal, so a run that never
  * reaches a terminal status keeps a reader, a "running" message and the caller's
  * checkpoint schedule alive for the life of the page. Progress, not connectedness, ends a
- * follow, so every event and every change to the run row resets the clock. Generous enough
- * that a cold local model's prefill cannot trip it.
+ * follow, so every event and every change to the run row resets the clock.
+ *
+ * The client must be the more patient of the two. A prefill emits no events at all while
+ * it runs, and the backend allows 1200s for a first token
+ * (llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S) before it gives up, then the lease sweeper
+ * settles a genuinely dead run within another sweep interval. A deadline under roughly
+ * 21 minutes would therefore report "interrupted" over a generation the server is still
+ * working on, which is most likely on exactly the slow hardware that needs the long
+ * budget. 30 minutes keeps the server authoritative and still bounds the loop.
  */
-export const CHAT_GENERATION_STALL_TIMEOUT_MS = 15 * 60_000;
+export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 
 /** Replay from the caller's applied cursor and reconnect until the run is terminal. */
 export async function* followChatGenerationRun(

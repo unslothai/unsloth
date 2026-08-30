@@ -32,18 +32,16 @@ class LlamaServerStatsLogger:
         base_url,
         logger,
         interval_s = 10.0,
-        stall_timeout_s = 180.0,
-        on_stall = None,
+        stall_timeout_s = 600.0,
     ):
         self._url = f"{base_url.rstrip('/')}/metrics"
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
         self._thread = None
-        # Stall watchdog: a held slot whose cumulative counters never advance.
+        # Stall reporting: a held slot that is not calling llama_decode() at all.
         self._stall_timeout = max(0.0, float(stall_timeout_s))
-        self._on_stall = on_stall
-        self._last_counters = None
+        self._last_decode = None
         self._stall_since = None
         self._stall_reported = False
         self._unmeasurable_reported = False
@@ -72,47 +70,53 @@ class LlamaServerStatsLogger:
                 continue
         return out
 
-    def _stalled_for(self, now, running, predicted, prompt):
-        """Seconds the engine has held work without advancing either counter.
+    def _stalled_for(self, now, running, decode_calls):
+        """Seconds the engine has held a slot without calling llama_decode().
 
-        Progress is measured on the cumulative counters, never on the rate
-        gauges: llama-server can keep reporting a stale-but-nonzero
-        predicted_tokens_seconds while decode is wedged, so a rate-based check
-        would miss exactly the case this exists to catch. Prefill counts as
-        progress -- a large prompt legitimately generates no tokens for a long
-        time -- so both counters must be static to call it a stall.
+        Progress is n_decode_total, NOT the token counters. llama-server updates
+        tokens_predicted_total once per generation, from callback_on_reset when
+        the slot is released, and flushes prompt_tokens_total only on a decode
+        that produced output. Both therefore sit still for the whole of a healthy
+        long prefill and a healthy long decode, so treating them as a liveness
+        signal would flag every slow generation. n_decode_total increments on
+        every llama_decode() call, which is the thing that actually stops when
+        the engine is wedged.
+
+        Known blind spot: the counter's own help text excludes speculative and
+        multimodal decoding, so a long image or audio encode can look static.
+        That is one reason this only ever reports and never cancels anything.
         """
-        counters = (predicted, prompt)
-        if not running or counters != self._last_counters:
-            self._last_counters = counters
+        if not running or decode_calls != self._last_decode:
+            self._last_decode = decode_calls
             self._stall_since = now if running else None
-            self._stall_reported = False  # progress re-arms the watchdog
+            self._stall_reported = False  # progress re-arms the report
             return 0.0
         if self._stall_since is None:
             self._stall_since = now
             return 0.0
         return now - self._stall_since
 
-    def _report_stall(self, running, waiting, stalled_for, predicted, prompt):
+    def _report_stall(self, running, waiting, stalled_for, decode_calls):
+        """Log only. Cancelling a generation on this evidence is not safe.
+
+        A held slot with no decode calls is the signature of a wedge, but the
+        scrape cannot prove the engine is not about to resume, and it cannot see
+        which of several in-flight generations owns the slot. Studio reaps a run
+        that stops making progress from its own token stream instead, where the
+        signal is per token and unambiguous. This exists so a wedge is visible in
+        the log at all: the incident that prompted it ran 22 minutes without a
+        single line above info.
+        """
         self._stall_reported = True
         self._log.warning(
-            "engine_stall_detected",
+            "engine_no_decode_progress",
             running = running,
             waiting = waiting,
             stalled_s = round(stalled_for, 1),
-            tokens_predicted_total = predicted,
-            prompt_tokens_total = prompt,
+            n_decode_total = decode_calls,
+            detail = "llama-server holds a slot but has not called llama_decode(); "
+                     "a wedged engine looks like this, and so does a long multimodal encode",
         )
-        if self._on_stall is None:
-            return
-        try:  # a failing reap hook must not kill the daemon thread
-            self._on_stall(
-                running = running,
-                waiting = waiting,
-                stalled_s = stalled_for,
-            )
-        except Exception as exc:
-            self._log.warning("engine_stall_reap_failed", error = repr(exc))
 
     def _run(self):
         misses = 0
@@ -145,31 +149,29 @@ class LlamaServerStatsLogger:
                 int(m.get("requests_processing", 0)),
                 int(m.get("requests_deferred", 0)),
             )
-            # A slot held with both counters frozen is a wedge, not slow decode:
-            # without this the engine stays "generating" forever and the only
-            # symptom is an endless run of identical info lines.
+            # A held slot that is not calling llama_decode() is a wedge. Without
+            # this the engine stays "generating" forever and the only symptom is
+            # an endless run of identical info lines.
             #
-            # Only act when progress is actually measurable. A build that does
-            # not export these counter names reads 0.0 through .get() forever,
-            # which is indistinguishable from a wedge -- reaping on that would
-            # kill healthy generations, so say so once and never reap instead.
-            measurable = "tokens_predicted_total" in m and "prompt_tokens_total" in m
-            if not measurable:
-                if not self._unmeasurable_reported:
-                    self._unmeasurable_reported = True
-                    self._log.warning(
-                        "engine_progress_unmeasurable",
-                        missing = sorted({"tokens_predicted_total", "prompt_tokens_total"} - set(m)),
-                        detail = "stall watchdog disabled; llama-server /metrics lacks the token counters",
-                    )
-            else:
-                stalled_for = self._stalled_for(now, running, predicted, prompt)
-                if (
-                    self._stall_timeout
-                    and stalled_for >= self._stall_timeout
-                    and not self._stall_reported
-                ):
-                    self._report_stall(running, waiting, stalled_for, predicted, prompt)
+            # A build that does not export n_decode_total reads None here and
+            # therefore never "changes", so it accumulates exactly like a wedge.
+            # Both cases are worth one line, but they say different things, so the
+            # message is chosen at report time rather than by scraping twice.
+            decode_calls = m.get("n_decode_total")
+            stalled_for = self._stalled_for(now, running, decode_calls)
+            if self._stall_timeout and stalled_for >= self._stall_timeout:
+                if decode_calls is None:
+                    if not self._unmeasurable_reported:
+                        self._unmeasurable_reported = True
+                        self._log.warning(
+                            "engine_progress_unmeasurable",
+                            missing = "n_decode_total",
+                            held_s = round(stalled_for, 1),
+                            detail = "cannot tell a wedged engine from a working one; "
+                                     "llama-server /metrics lacks the decode counter",
+                        )
+                elif not self._stall_reported:
+                    self._report_stall(running, waiting, stalled_for, decode_calls)
             # Gate on real activity this tick so a stale gauge never logs at idle.
             if running or waiting or gen_delta or prompt_delta:
                 self._log.info(
@@ -181,11 +183,7 @@ class LlamaServerStatsLogger:
                 )
 
 
-def maybe_start_stats_logger(
-    base_url,
-    logger,
-    on_stall = None,
-):
+def maybe_start_stats_logger(base_url, logger):
     """Start a stats logger unless UNSLOTH_STUDIO_ENGINE_STATS disables it."""
     if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
         return None
@@ -193,18 +191,17 @@ def maybe_start_stats_logger(
         interval = float(os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", "10"))
     except ValueError:
         interval = 10.0
-    # Generously above any legitimate prefill; 0 disables the watchdog and keeps
-    # the poller as a pure logger.
+    # Generously above any legitimate pause between decode calls; 0 silences the
+    # stall line and keeps the poller as a pure stats logger.
     try:
-        stall_timeout = float(os.environ.get("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", "180"))
+        stall_timeout = float(os.environ.get("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", "600"))
     except ValueError:
-        stall_timeout = 180.0
+        stall_timeout = 600.0
     sl = LlamaServerStatsLogger(
         base_url,
         logger,
         interval,
         stall_timeout_s = stall_timeout,
-        on_stall = on_stall,
     )
     sl.start()
     return sl

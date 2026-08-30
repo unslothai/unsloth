@@ -37,6 +37,8 @@ const {
   generationIsCorroboratedLive,
   isServerActiveGenerationRun,
   loadGenerationOverlaySnapshot,
+  resetServerActiveGenerationRuns,
+  serverHasAnsweredActiveRuns,
   syncServerActiveGenerationRuns,
 } = await import("../src/features/chat/utils/chat-generation-recovery.ts");
 
@@ -65,6 +67,34 @@ const run = (
 });
 
 // A. the corroboration gate
+
+test("before the server has answered, a live reply is not demoted", () => {
+  // First load with the backend briefly unreachable: there is no previous answer to
+  // leave standing, so an empty map must read as "never asked", not "nothing is
+  // running". Demoting here would mark a live generation interrupted.
+  resetServerActiveGenerationRuns();
+  assert.equal(serverHasAnsweredActiveRuns(), false);
+  assert.equal(
+    generationIsCorroboratedLive({
+      generationRunId: "run-unknown",
+      generationStatus: "running",
+      generationSettled: false,
+    }),
+    true,
+    "silence from the server is not a report that the run is dead",
+  );
+  // One successful read, and the gate becomes authoritative.
+  syncServerActiveGenerationRuns("thread-1", []);
+  assert.equal(serverHasAnsweredActiveRuns(), true);
+  assert.equal(
+    generationIsCorroboratedLive({
+      generationRunId: "run-unknown",
+      generationStatus: "running",
+      generationSettled: false,
+    }),
+    false,
+  );
+});
 
 test("persisted running metadata is not on its own evidence of a live run", () => {
   syncServerActiveGenerationRuns("thread-1", []);
@@ -276,7 +306,15 @@ test("progress rearms the deadline instead of ending the follow", async () => {
 });
 
 test("the default deadline outlasts any reasonable generation", () => {
-  assert.equal(CHAT_GENERATION_STALL_TIMEOUT_MS, 15 * 60_000);
+  // The client has to be the more patient of the two. A prefill emits no events while it
+  // runs, the backend allows 1200s for a first token, and the lease sweeper needs another
+  // interval to settle a genuinely dead run. A deadline under roughly 21 minutes would
+  // report "interrupted" over a generation the server is still working on.
+  assert.equal(CHAT_GENERATION_STALL_TIMEOUT_MS, 30 * 60_000);
+  assert.ok(
+    CHAT_GENERATION_STALL_TIMEOUT_MS > 1_200_000 + 60_000,
+    "the follow deadline must outlast the backend first-token budget plus a sweep",
+  );
 });
 
 // C. the stop path after a reload

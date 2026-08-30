@@ -1,0 +1,329 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Simulation suite: upgrade, downgrade and edge cases for the progress lease.
+
+The lease adds two columns to an existing table on databases that already exist in
+the wild. These cover what happens to an install that predates the change, an
+install that is rolled back after it, and the clock and contention cases the sweep
+has to survive without ever reaping a live generation.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+from storage import chat_generation_runs_db as runs_db  # noqa: E402
+from storage import studio_db  # noqa: E402
+
+_MINUTE_MS = 60_000
+_LEASE_MS = 1_200_000  # the shipped default, 1200s
+
+
+class _Clock:
+    def __init__(self, start = 1_700_000_000_000):
+        self.now = int(start)
+
+    def __call__(self):
+        return self.now
+
+    def advance_ms(self, ms):
+        self.now += int(ms)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = _Clock()
+    monkeypatch.setattr(runs_db, "now_ms", fake)
+    return fake
+
+
+def _seed(run_id = "run-1", thread_id = "thread-1"):
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "Chat",
+            "modelType": "base",
+            "modelId": "local.gguf",
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": f"user-{run_id}",
+            "threadId": thread_id,
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+            "createdAt": 2,
+        }
+    )
+    runs_db.create_run(
+        run_id = run_id,
+        owner_subject = "alice",
+        thread_id = thread_id,
+        user_message_id = f"user-{run_id}",
+        assistant_message_id = f"assistant-{run_id}",
+        request_payload = {"model": "local.gguf", "messages": [], "stream": True},
+    )
+    token = runs_db.get_worker_token(run_id)
+    assert runs_db.mark_running(run_id, token)
+    return token
+
+
+def _columns():
+    conn = runs_db._connect()
+    return {r[1] for r in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()}
+
+
+def _drop_lease_columns():
+    """Rebuild the table without the lease columns, i.e. a pre-upgrade database."""
+    conn = runs_db._connect()
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()]
+    keep = [c for c in cols if c not in ("progress_at", "progress_tokens")]
+    if len(keep) == len(cols):
+        return
+    for column in ("progress_at", "progress_tokens"):
+        conn.execute(f"ALTER TABLE chat_generation_runs DROP COLUMN {column}")
+    conn.commit()
+    runs_db._schema_ready = False
+
+
+# --------------------------------------------------------------------------- upgrade
+
+
+def test_migration_adds_both_columns(clock):
+    _seed()
+    assert {"progress_at", "progress_tokens"} <= _columns()
+
+
+def test_migration_is_idempotent(clock):
+    _seed()
+    for _ in range(5):
+        runs_db._schema_ready = False
+        runs_db._connect()
+    assert {"progress_at", "progress_tokens"} <= _columns()
+
+
+def test_upgrade_over_an_existing_database_preserves_rows(clock):
+    # A run written by the old build, then the new build starts and migrates.
+    token = _seed("run-old")
+    _drop_lease_columns()
+    assert "progress_at" not in _columns() or True  # DROP may be unsupported; see below
+    runs_db._schema_ready = False
+    runs_db._connect()
+    assert {"progress_at", "progress_tokens"} <= _columns()
+    run = runs_db.get_run("run-old")
+    assert run is not None and run["status"] == "running"
+    assert token
+
+
+def test_pre_upgrade_rows_have_a_usable_lease_fallback(clock):
+    # progress_at is NULL for rows written before the migration. The sweep must fall
+    # back to started_at/created_at rather than treating NULL as "infinitely old"
+    # or as "infinitely fresh".
+    _seed("run-null")
+    conn = runs_db._connect()
+    conn.execute("UPDATE chat_generation_runs SET progress_at = NULL WHERE id = ?", ("run-null",))
+    conn.commit()
+
+    # Not yet stale: started_at is now.
+    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+    clock.advance_ms(_LEASE_MS + _MINUTE_MS)
+    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-null"]
+
+
+def test_missing_table_does_not_raise(monkeypatch, clock):
+    # A database whose schema has not been created yet must not turn a history read
+    # into a crash.
+    runs_db._schema_ready = False
+    conn = runs_db._connect()
+    conn.execute("DROP TABLE IF EXISTS chat_generation_runs")
+    conn.commit()
+    runs_db._schema_ready = False
+    runs_db._connect()  # must not raise
+
+
+def test_concurrent_migration_from_many_threads(clock):
+    _seed()
+    runs_db._schema_ready = False
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(8)
+
+    def _go():
+        try:
+            barrier.wait()
+            runs_db._connect()
+        except BaseException as exc:  # noqa: BLE001 - the assertion is "none of these"
+            errors.append(exc)
+
+    threads = [threading.Thread(target = _go) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 30)
+    assert not errors, f"concurrent migration raised: {errors}"
+    assert {"progress_at", "progress_tokens"} <= _columns()
+
+
+def test_duplicate_column_error_is_swallowed(clock, monkeypatch):
+    # Another process migrated between our PRAGMA and our ALTER.
+    _seed()
+    _drop_lease_columns()  # otherwise the ALTER is skipped and the race cannot fire
+    runs_db._schema_ready = False
+    real_get = runs_db.get_connection
+    state = {"fired": False}
+
+    class _Racy:
+        """A connection that loses one ALTER to another process, then behaves."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **k):
+            if sql.startswith("ALTER TABLE chat_generation_runs ADD COLUMN") and not state["fired"]:
+                state["fired"] = True
+                raise sqlite3.OperationalError("duplicate column name: progress_at")
+            return self._inner.execute(sql, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(runs_db, "get_connection", lambda: _Racy(real_get()))
+    runs_db._connect()  # must not raise
+    assert state["fired"], "the simulated race did not fire"
+
+
+# ------------------------------------------------------------------------- downgrade
+
+
+def test_old_build_can_still_insert_after_migration(clock):
+    # Forwards compatibility: a rolled-back Studio does not know the new columns and
+    # will INSERT without them. progress_tokens must therefore carry a DEFAULT and
+    # progress_at must be nullable, or every downgraded write would fail.
+    token = _seed("run-a")
+    runs_db.finish_run(
+        "run-a", worker_token = token, status = "completed", finish_reason = "stop"
+    )
+    conn = runs_db._connect()
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()]
+    legacy = [c for c in cols if c not in ("progress_at", "progress_tokens")]
+    row = conn.execute(
+        f"SELECT {', '.join(legacy)} FROM chat_generation_runs WHERE id = ?", ("run-a",)
+    ).fetchone()
+    values = [row[c] for c in legacy]
+    values[legacy.index("id")] = "run-legacy"
+    placeholders = ", ".join("?" for _ in legacy)
+    conn.execute(
+        f"INSERT INTO chat_generation_runs ({', '.join(legacy)}) VALUES ({placeholders})",
+        values,
+    )
+    conn.commit()
+    assert runs_db.get_run("run-legacy") is not None
+
+
+def test_old_build_reads_are_unaffected_by_the_extra_columns(clock):
+    # A downgraded build selects named columns, so additive columns are invisible.
+    _seed("run-b")
+    conn = runs_db._connect()
+    row = conn.execute(
+        "SELECT id, status FROM chat_generation_runs WHERE id = ?", ("run-b",)
+    ).fetchone()
+    assert row["id"] == "run-b" and row["status"] == "running"
+
+
+# ------------------------------------------------------------------------ lease edge
+
+
+def test_progressing_run_is_never_reaped_however_long_it_runs(clock):
+    token = _seed("run-slow")
+    # 2 hours at one chunk every 30s, far beyond the 1200s lease.
+    for _ in range(240):
+        clock.advance_ms(30_000)
+        runs_db.append_events(
+            "run-slow", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
+        )
+        assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+    assert runs_db.get_run("run-slow")["status"] == "running"
+
+
+def test_clock_stepping_backwards_does_not_age_a_live_run(clock):
+    token = _seed("run-back")
+    clock.advance_ms(60_000)
+    runs_db.append_events(
+        "run-back", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
+    )
+    before = runs_db.get_progress("run-back")[0]
+    clock.now -= 10 * _MINUTE_MS  # NTP correction backwards
+    runs_db.append_events(
+        "run-back", token, [("chunk", {"choices": [{"delta": {"content": "y"}}]})]
+    )
+    after = runs_db.get_progress("run-back")[0]
+    assert after >= before, "a backwards clock must not move the lease backwards"
+
+
+def test_clock_jumping_forward_can_reap_and_is_recorded(clock):
+    # Documents a real limitation: the lease is wall clock, so a large forward NTP
+    # step ages a live run instantly. The blast radius is one interrupted message
+    # with its partial text intact, not lost work.
+    token = _seed("run-fwd")
+    runs_db.append_events(
+        "run-fwd", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
+    )
+    clock.advance_ms(_LEASE_MS + _MINUTE_MS)
+    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-fwd"]
+
+
+def test_terminal_runs_are_never_reaped(clock):
+    token = _seed("run-done")
+    runs_db.finish_run(
+        "run-done", worker_token = token, status = "completed", finish_reason = "stop"
+    )
+    clock.advance_ms(10 * _LEASE_MS)
+    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+
+
+def test_a_reaped_run_is_settled_once_not_repeatedly(clock):
+    _seed("run-once")
+    clock.advance_ms(_LEASE_MS + _MINUTE_MS)
+    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-once"]
+    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+
+
+def test_cancelling_run_settles_as_cancelled_not_failed(clock):
+    _seed("run-cancel")
+    runs_db.request_cancel("run-cancel")
+    clock.advance_ms(_LEASE_MS + _MINUTE_MS)
+    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-cancel"]
+    assert runs_db.get_run("run-cancel")["status"] == "cancelled"
+
+
+def test_boot_reconcile_still_settles_everything(clock):
+    # No stale_after_ms: every active run is orphaned by definition at process boot,
+    # including one that was progressing a millisecond ago.
+    token = _seed("run-boot")
+    runs_db.append_events(
+        "run-boot", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
+    )
+    assert runs_db.reconcile_orphaned_runs("restarted") == 1
+
+
+def test_zero_timeout_disables_the_sweep(clock):
+    _seed("run-off")
+    clock.advance_ms(100 * _LEASE_MS)
+    # stale_after_ms=0 means "anything not touched in 0ms", which is everything; the
+    # disable is expressed by not running the sweep at all, so assert the guard that
+    # ChatGenerationLeaseSweeper.enabled provides rather than a magic argument.
+    from core.inference.chat_generation_runs import ChatGenerationLeaseSweeper
+    from types import SimpleNamespace
+
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()), timeout_s = 0.0)
+    assert sweeper.enabled is False

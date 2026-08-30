@@ -168,9 +168,10 @@ test("an isActive that always returns true behaves like no isActive at all", asy
 });
 
 test("the staleness bound is generous enough for a long legitimate run", () => {
-  // Fifteen minutes. Tripping it costs only the periodic partial saves, never the run's
-  // own writes, so the bound is set to outlast any answer a user waits through.
-  assert.equal(RUN_CHECKPOINT_MAX_DURATION_MS, 15 * 60_000);
+  // Thirty minutes, held at the follow deadline. Tripping it costs only the periodic
+  // partial saves, never the run's own writes, so the bound is set to outlast any answer
+  // a user waits through, including a prefill the backend still allows 1200s for.
+  assert.equal(RUN_CHECKPOINT_MAX_DURATION_MS, 30 * 60_000);
   assert.ok(
     RUN_CHECKPOINT_MAX_DURATION_MS / RUN_CHECKPOINT_INTERVAL_MS >= 100,
     "the cap must leave room for a hundred checkpoints before it fires",

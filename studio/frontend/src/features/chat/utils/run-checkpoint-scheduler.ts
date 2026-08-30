@@ -15,8 +15,13 @@ export const RUN_CHECKPOINT_INTERVAL_MS = 8_000;
  * because it reports assistant-ui's `isRunning`, which is the very flag a stuck run holds
  * true. A wall clock is, and it costs only the periodic partial saves: the run's own
  * writes are untouched, and the cap takes a final checkpoint on the way out.
+ *
+ * Held at the follow deadline in chat-generation-api.ts so a legitimately slow run does
+ * not lose its periodic saves while the follower is still waiting on it. The backend
+ * settles a dead run well before this, so in practice the cap is only reached when
+ * something has already gone wrong.
  */
-export const RUN_CHECKPOINT_MAX_DURATION_MS = 15 * 60_000;
+export const RUN_CHECKPOINT_MAX_DURATION_MS = 30 * 60_000;
 
 /** Injectable so a test can drive the schedule without real time passing. */
 export type RunCheckpointTimers = {

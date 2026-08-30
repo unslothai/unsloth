@@ -472,6 +472,27 @@ export function syncServerActiveGenerationRuns(
     if (owner === threadId) serverActiveGenerationRuns.delete(runId);
   }
   for (const runId of runIds) serverActiveGenerationRuns.set(runId, threadId);
+  serverHasAnswered = true;
+}
+
+/**
+ * Whether the server has successfully answered the active-run question even once.
+ *
+ * Until it has, "not in the map" means "never asked", not "not running". On a first load
+ * where that read failed there is no previous answer to leave standing, so demoting on an
+ * empty map would mark a live reply interrupted for anyone whose backend was briefly
+ * unreachable as the page came up. Silence is not a report.
+ */
+let serverHasAnswered = false;
+
+export function serverHasAnsweredActiveRuns(): boolean {
+  return serverHasAnswered;
+}
+
+/** Test-only: forget that the server ever answered. */
+export function resetServerActiveGenerationRuns(): void {
+  serverActiveGenerationRuns.clear();
+  serverHasAnswered = false;
 }
 
 /** Whether the server has named `runId` as still going in this session. */
@@ -490,5 +511,9 @@ export function generationIsCorroboratedLive(
 ): boolean {
   const runId = metadata.generationRunId;
   if (typeof runId !== "string") return false;
-  return isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId);
+  if (isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId)) return true;
+  // No answer yet is not a "no". Stay with the persisted status until the server has
+  // actually told us what is running at least once; the recovery follower settles it
+  // from there, and every later load has an answer to work from.
+  return !serverHasAnswered;
 }
