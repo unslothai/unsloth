@@ -644,17 +644,18 @@ interface FitVerdict {
 const AMBER = "!text-yellow-600 dark:!text-yellow-400";
 const ORANGE = "!text-orange-600 dark:!text-orange-300";
 
-/** Over budget but still card-sized: it loads, and can fail when something else holds VRAM. */
+/** Over budget but still card-sized. `_select_gpus` scores against FREE VRAM, so whether this
+ *  lands on the GPU depends on what else is resident; missing it costs speed, not the load. */
 const MIGHT_FIT: FitVerdict = {
   label: "Might fit",
   tone: AMBER,
-  hint: "Only fits by using nearly all your VRAM. Loading can fail while other apps hold GPU memory.",
+  hint: "Fits your GPU with almost no room to spare. If other apps are using VRAM, it offloads and runs slower.",
 };
 /** Past the card, inside VRAM plus RAM: llama-server's --fit puts the rest on CPU. */
 const OFFLOADS: FitVerdict = {
   label: "Partial offload",
   tone: ORANGE,
-  hint: "Model doesn't fit but can still work with offloading. Expect slower inference.",
+  hint: "Model doesn't fit but still works with offloading. Expect slower inference.",
 };
 /** Clears neither budget. The one verdict here that does not load. */
 const WONT_FIT: FitVerdict = {

@@ -23,10 +23,10 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
-import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -59,7 +59,6 @@ import {
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
-import { formatBytes } from "../lib/format";
 import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
@@ -75,6 +74,7 @@ import {
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
@@ -92,7 +92,6 @@ import {
   GgufDownloadStatusCard,
   GgufDownloadingFallbackCard,
 } from "./gguf-status-cards";
-import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
 import { useDownloadCardState } from "./use-download-card-state";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
@@ -111,14 +110,16 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
   },
   marginal: {
     label: "Might fit",
+    // Not "loading can fail": _select_gpus scores against FREE VRAM and hands a miss to --fit, so
+    // a busy card costs speed rather than the load. Same words the chat picker uses.
     tooltip:
-      "Might fit. Within the last GB of VRAM headroom, so loading can fail if other apps are using GPU memory.",
+      "Fits your GPU with almost no room to spare. If other apps are using VRAM, it offloads and runs slower.",
     iconClassName: "text-amber-600 dark:text-amber-400",
   },
   partial: {
     label: "Partial offload",
     tooltip:
-      "Partial offload possible. Exceeds VRAM but fits with system RAM offload. Inference will be slower.",
+      "Model doesn't fit but still works with offloading. Expect slower inference.",
     iconClassName: "text-sky-600 dark:text-sky-400",
   },
   ram: {
@@ -822,7 +823,11 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
+  const deleteImpact = useDeleteImpact(
+    deleteTarget !== null,
+    repoId,
+    deleteTarget,
+  );
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;

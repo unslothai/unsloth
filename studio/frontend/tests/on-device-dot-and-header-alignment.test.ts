@@ -14,6 +14,7 @@ const PICKERS = read(
   "../src/features/model-picker/components/model-selector/pickers.tsx",
 );
 const MODELS_TABLE = read("../src/features/hub/catalog/models-table.tsx");
+const HUB_CARD = read("../src/features/hub/catalog/gguf-download-card.tsx");
 const CATALOG = read(
   "../src/features/model-picker/components/model-selector/model-catalog.ts",
 );
@@ -173,9 +174,23 @@ test("each fit verdict is an info mark that explains itself", () => {
   // Only oom fails to load, so only its hint says so; partial offloads and runs slower.
   assert.ok(
     PICKERS.includes(
-      'hint: "Model doesn\'t fit but can still work with offloading. Expect slower inference."',
+      'hint: "Model doesn\'t fit but still works with offloading. Expect slower inference."',
     ),
   );
+  // The Hub says it in the same words, which is the point of sharing the classifier.
+  assert.ok(
+    HUB_CARD.includes(
+      '"Model doesn\'t fit but still works with offloading. Expect slower inference."',
+    ),
+  );
+  // Neither surface claims a marginal load can fail. _select_gpus scores against FREE VRAM and
+  // hands a miss to --fit, so a busy card costs speed, not the load.
+  const mightFitHint =
+    "Fits your GPU with almost no room to spare. If other apps are using VRAM, it offloads and runs slower.";
+  assert.ok(PICKERS.includes(mightFitHint));
+  assert.ok(HUB_CARD.includes(mightFitHint));
+  assert.ok(!PICKERS.includes("Loading can fail while other apps"));
+  assert.ok(!HUB_CARD.includes("Within the last GB of VRAM headroom"));
   assert.ok(
     PICKERS.includes(
       'hint: "Larger than your VRAM and system RAM together. This model will not load."',
