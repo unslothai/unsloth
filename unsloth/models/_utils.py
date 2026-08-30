@@ -2873,9 +2873,7 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     # accelerate compares a bound method against the enum and is always True. That
     # fires the "can't train a model loaded with device_map='auto' in any distributed
     # mode" guard on a single device, which is the case this whole block exists for.
-    accelerate.accelerator.Accelerator.distributed_type = property(
-        lambda self: DistributedType.NO
-    )
+    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
 
 
 # to move multiple tensors to the same device

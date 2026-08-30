@@ -88,9 +88,7 @@ def test_patched_distributed_type_reads_as_no():
         print(value == DistributedType.NO, value != DistributedType.NO)
         """
     )
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output = True, text = True
-    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
     assert result.returncode == 0, result.stderr
     value, comparisons = result.stdout.strip().splitlines()[-2:]
     assert value == repr(accelerate.utils.dataclasses.DistributedType.NO), value
