@@ -18014,7 +18014,7 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
-                _shared_gpu_ids: set[int] = set()
+                _shared_gpu_ids: Optional[set[int]] = None
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls

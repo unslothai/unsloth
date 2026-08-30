@@ -2067,6 +2067,30 @@ class TestADefaultLaunchRecordsItsApplicability:
             is True
         )
 
+    def test_an_unknown_vulkan_snapshot_reprobes_before_skipping_mlock(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_run_vulkan_probe",
+            staticmethod(lambda _binary = None: [{"index": 0, "is_igpu": True}]),
+        )
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                is_vulkan_backend = True,
+                probe_vulkan = True,
+                known_vulkan_igpus = None,
+            )
+            is True
+        )
+
+        import inspect
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_shared_gpu_ids: Optional[set[int]] = None" in source
+
 
 class TestPairedWritesAreInvalidatedTogether:
     """The write commits both keys in one transaction, so a reader must never
