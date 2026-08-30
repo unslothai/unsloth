@@ -5542,6 +5542,7 @@ def _complete_existing_llama_install(
     runtime_asset = None,
     paired_runtime = True,
     runnable = True,
+    runnable_root = None,
 ):
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = (
@@ -5570,10 +5571,17 @@ def _complete_existing_llama_install(
         elif path.name == "UNSLOTH_PREBUILT_INFO.json":
             path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
         elif path.name.startswith("llama-"):
+            # The root copy can rot on its own when symlinking was unavailable, and it is
+            # the one _find_llama_server_binary reaches first.
+            ok = (
+                runnable
+                if path.parent != install_dir
+                else (runnable if runnable_root is None else runnable_root)
+            )
             # A runnable stub, not an empty file: the kept-install check execs these now,
             # and a zero-byte file that kept its mode bits is ENOEXEC, which is the
             # corruption runnable = False exists to cover.
-            path.write_text("#!/bin/sh\nexit 0\n" if runnable else "", encoding = "utf-8")
+            path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
             # Match setup.sh's executable reuse gate.
             os.chmod(path, 0o755 if executable else 0o644)
         else:
@@ -5799,6 +5807,85 @@ def test_release_listing_failure_does_not_keep_a_corrupt_binary(
 
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+def test_a_rotten_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, monkeypatch):
+    """Probe what inference launches, which is the root copy, not build/bin.
+
+    LlamaCppBackend._find_llama_server_binary searches <install>/llama-server before
+    <install>/build/bin/llama-server. Normally the first is a symlink to the second, but
+    when symlink creation was unavailable it is a separate file that can rot alone.
+    """
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", runnable_root = False)
+    assert os.access(install_dir / "build" / "bin" / "llama-server", os.X_OK)
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+def test_a_windows_loader_status_is_not_a_successful_probe(tmp_path, monkeypatch):
+    """CreateProcess succeeding is not the binary starting.
+
+    A missing dependent DLL exits 0xC0000135, which Python reports as a large POSITIVE
+    return code, so "not negative" would read it as healthy. The payload groups cannot
+    cover it either: the Windows CPU group is only llama.dll.
+    """
+    _listing_failure(monkeypatch, _windows_host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "run_capture",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0xC0000135, "", ""),
+    )
+    install_dir = _complete_existing_llama_install(tmp_path, backend = "cuda", windows = True)
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"llama_backend": "auto"},
+        {"force_cpu": True},
+        {"override_has_rocm": True},
+    ],
+    ids = ["backend-auto", "cpu-fallback", "rocm-override"],
+)
+def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
+    tmp_path, monkeypatch, kwargs
+):
+    """ "auto" is a request to re-detect, not the absence of one.
+
+    Keeping the tree would leave both the old backend and its marker exactly as they were
+    while reporting success, which is the same substitution the explicit-version guard
+    already refuses.
+    """
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "", **kwargs)
+
+    assert caught.value.code in (
+        INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK,
+        INSTALL_LLAMA_PREBUILT.EXIT_BACKEND_UNAVAILABLE,
+    )
+
+
+def test_a_non_default_published_repo_is_not_answered_with_the_old_install(tmp_path, monkeypatch):
+    """A different release repo is a live choice the old tree cannot satisfy."""
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu")
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "someone-else/llama.cpp", "")
 
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 

@@ -6944,6 +6944,11 @@ _BROKEN_IMAGE_SIGNALS = frozenset(
 )
 # Windows' "%1 is not a valid Win32 application", its answer to a corrupt image.
 _ERROR_BAD_EXE_FORMAT = 193
+# Windows reports a loader failure as the NTSTATUS itself, not as a signal: CreateProcess
+# succeeds and the process exits 0xC0000135 (missing DLL), 0xC0000142 (DLL init failed) or
+# 0xC0000005 (access violation). Python surfaces those as large positive return codes. The
+# range is unreachable on POSIX, where an exit status is 0-255, so it needs no host guard.
+_NTSTATUS_FAILURE_FLOOR = 0xC0000000
 
 
 def _binary_image_runs(path: Path, install_dir: Path, host: HostInfo) -> bool:
@@ -6978,6 +6983,9 @@ def _binary_image_runs(path: Path, install_dir: Path, host: HostInfo) -> bool:
     if result.returncode < 0 and -result.returncode in _BROKEN_IMAGE_SIGNALS:
         log(f"kept install rejected: {path.name} died on signal {-result.returncode}")
         return False
+    if result.returncode >= _NTSTATUS_FAILURE_FLOOR:
+        log(f"kept install rejected: {path.name} exited 0x{result.returncode:08X} (loader failure)")
+        return False
     return True
 
 
@@ -6998,9 +7006,27 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         preflight_macos_installed_binaries(binaries, install_dir, host)
     except Exception:
         return False
+    # The root-level copies too, and first: LlamaCppBackend._find_llama_server_binary
+    # searches <install>/llama-server BEFORE <install>/build/bin/llama-server, so that is
+    # what inference launches. It is normally a symlink to the one above, and resolve()
+    # collapses it; when symlinking was unavailable it is a separate file that can rot on
+    # its own. confirm_install_tree already required both to exist on POSIX.
+    probes: list[Path] = []
+    seen: set[Path] = set()
+    for binary in [install_dir / p.name for p in binaries] + binaries:
+        if not binary.exists():
+            continue
+        try:
+            key = binary.resolve()
+        except OSError:
+            key = binary
+        if key in seen:
+            continue
+        seen.add(key)
+        probes.append(binary)
     # Last, because it is the only check that spawns anything: neither preflight runs on
     # Windows, and on Linux ldd cannot see a file that is not an executable image at all.
-    return all(_binary_image_runs(binary, install_dir, host) for binary in binaries)
+    return all(_binary_image_runs(binary, install_dir, host) for binary in probes)
 
 
 def existing_install_matches_choice(
@@ -7964,8 +7990,18 @@ def install_prebuilt(
     instruction_cleanup_root: Path | None = None,
 ) -> None:
     choice: AssetChoice | None = None
-    explicit_version_request = normalized_requested_llama_tag(llama_tag) != "latest" or bool(
-        (published_release_tag or "").strip()
+    # Anything this RUN asked for that keeping the old tree would silently ignore. Read
+    # from the parameters before the body mutates them (force_cpu becomes True further
+    # down for a stored "cpu" choice, which is the opposite of a request made here).
+    # backend_mandatory joins it in the handler, because it is only known after the
+    # marker is read; it starts False, so a failure before that keeps today's behaviour.
+    explicit_version_request = (
+        normalized_requested_llama_tag(llama_tag) != "latest"
+        or bool((published_release_tag or "").strip())
+        or (bool((published_repo or "").strip()) and published_repo != DEFAULT_PUBLISHED_REPO)
+        or force_cpu
+        or override_has_rocm
+        or bool(override_rocm_gfx)
     )
     # The failure handler can run before selection assigns these.
     host: HostInfo | None = None
@@ -8243,6 +8279,10 @@ def install_prebuilt(
         if (
             (not preserve_backend or satisfied_stored_backend)
             and not explicit_version_request
+            # A backend named on this run is a live instruction even when it is "auto":
+            # that asks for re-detection, and answering it with the tree already on disk
+            # leaves both the old backend and its marker exactly as they were.
+            and not backend_mandatory
             and host is not None
             and _existing_install_runs(install_dir, host)
         ):
