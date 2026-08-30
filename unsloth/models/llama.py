@@ -2945,6 +2945,32 @@ class FastLlamaModel:
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
 
+        # AFTER post_patch, not only at load. The attach above runs while the
+        # model is still the one transformers returned; `post_patch` rebuilds
+        # and re-ties parts of it, and the hook on a tied module does not
+        # survive that. Measured on 2x Tesla T4 with the planner's own map:
+        # 395 modules carried a hook, `model.embed_tokens` did not, and the
+        # first embedding lookup raised about tensor devices. Repairing here
+        # instead made the same split train to 2.662875493367513, which is the
+        # single-card loss to the last digit.
+        #
+        # Idempotent: it skips any module that already has a hook, so the
+        # attach above keeps whatever it managed to place.
+        try:
+            from unsloth.models.vision import _repair_tied_module_hooks
+
+            _repaired = _repair_tied_module_hooks(model)
+            if _repaired:
+                logger.info(
+                    f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                    "after patching, so a split model trains."
+                )
+        except Exception as _exc:
+            logger.warning(
+                f"Unsloth: could not check the dispatch hooks after patching "
+                f"({type(_exc).__name__}: {_exc})."
+            )
+
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
             layer.self_attn.apply_qkv = original_apply_qkv

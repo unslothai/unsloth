@@ -185,6 +185,13 @@ def _repair_tied_module_hooks(model):
     except ImportError:
         return 0
 
+    # Every mapped module that lacks a hook, not only the ones on a far card.
+    # This restores what `dispatch_model` would have done: it hooks each entry
+    # in the map, which is why 395 modules carried one in the measured run and
+    # only the tied pair did not. A hook whose execution device is where the
+    # module already sits is a no-op move, so matching that behaviour is both
+    # simpler and safer than guessing which device counts as "main" -- a guess
+    # that inverts the moment the far side holds more entries than the near one.
     repaired = 0
     for name, device in device_map.items():
         if not name:
@@ -213,9 +220,22 @@ def _repair_tied_module_hooks(model):
                 module,
                 AlignDevicesHook(execution_device = execution_device, io_same_device = True),
             )
-            repaired += 1
-        except Exception:
+        except Exception as exc:
+            # Never silently: a repair that reports success while attaching
+            # nothing leaves the original index_select crash in place and hides
+            # the reason. `init_hook` moves the module's tensors to the
+            # execution device, so this is where a device the map names but the
+            # machine does not have shows up.
+            warnings.warn(
+                f"Unsloth: could not re-attach a dispatch hook to {name!r} on "
+                f"{execution_device} ({type(exc).__name__}: {exc}). Training a "
+                "model split across devices may fail at the first tensor that "
+                "crosses one.",
+                RuntimeWarning,
+                stacklevel = 2,
+            )
             continue
+        repaired += 1
     return repaired
 
 
