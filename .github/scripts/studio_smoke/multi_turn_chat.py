@@ -42,6 +42,7 @@ class Nondeterministic(AssertionError):
     main() can tell this one failure apart from the others and retry only it.
     """
 
+
 # Turn 2 cannot be answered without turn 1, and turn 4 without turn 3, so a server that
 # drops history fails here rather than returning something plausible.
 #
