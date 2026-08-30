@@ -779,16 +779,21 @@ const META_COLUMN = {
   badge: "min-w-min min-[560px]:w-[24px]",
   // One glyph plus the disk mark (18 + 4 + 14).
   badgeMid: "min-w-min min-[560px]:w-[36px]",
-  // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
-  // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
-  badgeWide: "min-w-min min-[560px]:w-[68px]",
+  // On Device draws the vision badge and no disk mark: 26px is that badge measured, so rows with
+  // and without one still line up. One slot sized for both lists left ~44px empty on every row.
+  badgeDevice: "min-w-min min-[560px]:w-[26px]",
+  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[36px]",
   // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
   vram: "min-w-min min-[560px]:w-[4em]",
-  // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
-  param: "min-w-min min-[560px]:w-[3.6em]",
+  // Device rows hug the chip. A column sized for "235B" spends 6.1px in front of a "30B", and that
+  // leftover IS the gap to the modality mark; -ml-0.5 against the cluster's gap-1 makes it 2px. In
+  // exchange a wider label pulls that row's name and quant chip left. Hub keeps its "2779.5B".
+  param: "min-w-min -ml-0.5",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
-  // "536 MB".
-  size: "min-w-min min-[560px]:w-[4.2em]",
+  // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a
+  // spaced "536 MB" needs. The surplus sat between the parameter chip and the size.
+  size: "min-w-min min-[560px]:w-[3.2em]",
   // The format dot that leads the row; the name lives in its tooltip.
   format: "min-[560px]:w-[14px]",
 } as const;
@@ -888,15 +893,18 @@ function ModelRow({
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
+  const aligned = alignMeta !== undefined;
   // Reserve only what this picker's scope can draw. The Images and Audio pickers draw no glyph and
   // Video draws one, so holding the chat row's slot open there is dead space on every row.
+  // Unscoped chat splits again by list: On Device marks vision, Hub marks the disk.
   const badgeColumn =
     capabilityScope === null || capabilityScope.length > 1
-      ? META_COLUMN.badgeWide
+      ? alignMeta === "device"
+        ? META_COLUMN.badgeDevice
+        : META_COLUMN.badgeWide
       : capabilityScope.length === 1
         ? META_COLUMN.badgeMid
         : META_COLUMN.badge;
-  const aligned = alignMeta !== undefined;
   // One dot per row. A second format shares the first's colour anyway, so it
   // rides along in the tooltip instead of pushing the name out of line.
   const formatDot = parsed.formats[0]
@@ -925,13 +933,18 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full flex-col items-stretch px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it
+        // on 10px, level with the section labels at px-2.5. Inside a w-full button, so the hover
+        // pill itself does not move.
+        "flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
       )}
     >
-      <span className="flex w-full items-center gap-2">
+      {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
+          first meta mark. 4px is the rhythm the meta columns already keep among themselves. */}
+      <span className="flex w-full items-center gap-1">
         <span className="flex min-w-0 flex-1 items-baseline">
           {/* Fixed slot, so names start on one line with or without a dot. */}
           {aligned ? (
@@ -967,7 +980,8 @@ function ModelRow({
           {alignMeta === "device" ? (
             <span
               className={cn(
-                "ml-1.5 flex shrink-0 items-center self-center text-ui-9",
+                // ml-0.5: the chip carries px-1 of its own, so 2px still leaves 6px of air.
+                "ml-0.5 flex shrink-0 items-center self-center text-ui-9",
                 META_COLUMN.quant,
               )}
             >
@@ -997,7 +1011,8 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                "flex shrink-0 items-center justify-center gap-1 text-ui-10",
+                // Right, not centre: slack belongs to the name, not split either side of a glyph.
+                "flex shrink-0 items-center justify-end gap-1 text-ui-10",
                 badgeColumn,
               )}
             >

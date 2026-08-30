@@ -3625,6 +3625,13 @@ def unsloth_compile_transformers(
     return_logits = False,
     unsloth_force_compile = False,
 ):
+    # Again here, not only at import: a dotenv or config loader can populate
+    # `UNSLOTH_FORCE_CUSTOM_DTYPE` after this package was imported, and the compiler
+    # below reaches the older `unsloth_zoo` reader that still `eval`s the dtype field.
+    # Idempotent, so a registered or already sanitized value is unchanged.
+    from ._custom_dtype import neutralize_inherited_custom_dtype
+
+    neutralize_inherited_custom_dtype()
     if Version(torch_version) < Version("2.4.0"):
         print(
             "="

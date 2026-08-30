@@ -507,7 +507,7 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
 test("the trained-model list applies the native-aware macOS policy", () => {
   assert.match(
     audioPageSource,
-    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(lora\.audio_type, lora\.export_type\)/,
+    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(\s*lora\.audio_type,\s*lora\.export_type,?\s*\)/,
   );
 });
 

@@ -1415,6 +1415,9 @@ app.add_middleware(
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
+    # allow_headers is the REQUEST side; a response header is unreadable to JS unless
+    # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
+    expose_headers = ["X-Unsloth-Conflict-Kind"],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight
     # already cached by the browser does not. Measured in WebKit: with Starlette's
     # 600s default, a state-changing request still REACHED the server after remote

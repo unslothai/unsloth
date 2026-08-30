@@ -2468,6 +2468,7 @@ type ChatRuntimeStore = {
   activePresetSource: ChatPresetSource;
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
+  loraInventorySettled: boolean;
   runningByThreadId: Record<string, boolean>;
   /**
      * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
@@ -3742,6 +3743,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activePresetSource: getPresetSource("Default"),
   models: [],
   loras: [],
+  loraInventorySettled: false,
   runningByThreadId: {},
   localRunByThreadId: {},
   runOwnerByThreadId: {},
@@ -4113,7 +4115,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { activePresetSource };
     }),
   setModels: (models) => set({ models }),
-  setLoras: (loras) => set({ loras }),
+  setLoras: (loras) => set({ loras, loraInventorySettled: true }),
   setThreadRunning: (threadId, running, options) =>
     set((state) => {
       const next = { ...state.runningByThreadId };
