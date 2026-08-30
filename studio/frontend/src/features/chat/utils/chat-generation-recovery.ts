@@ -285,16 +285,13 @@ export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
   const status = String(metadata.generationStatus) as StoredGenerationStatus;
-  // A follower that hit its no-progress deadline stamped this. The run may well still be
-  // alive server-side, so the row is deliberately left non-terminal, but re-following it
-  // on every recovery trigger is what turned one stuck run into a permanently blocked
-  // composer. history.load re-corroborates from /chat-runs/active, which is what clears
-  // the marker if the server does still have the run.
+  // Stamped by a follower that hit its no-progress deadline. Re-following on every
+  // recovery trigger is what turned one stuck run into a permanently blocked composer;
+  // history.load clears the marker if /chat-runs/active still names the run.
   //
-  // Non-terminal only. A run the backend went on to finish is stored completed and
-  // unsettled, which still needs a replay to import its event tail, and /chat-runs/active
-  // excludes completed runs so it can never clear the marker for one. Honouring the
-  // marker there would leave that reply running forever with its tail never imported.
+  // Non-terminal only: a run the backend finished is stored completed and unsettled, and
+  // /chat-runs/active excludes completed runs, so honouring the marker there would leave
+  // that reply running forever with its event tail never imported.
   if (metadata.generationLocallyInterrupted === true && !TERMINAL.has(status)) {
     return false;
   }
@@ -443,12 +440,10 @@ const liveGenerationThreads = new Map<string, string>();
 /**
  * Runs claimed before the server admitted them.
  *
- * The claim is taken before admission on purpose, so a recovery trigger during that await
- * cannot start a second follower. Boundedness is a different question: until the POST
- * lands there is no server-side run, so the thread's periodic checkpoints are still its
- * only persistence and capping them would lose whatever arrived after the cap. Admission
- * can take arbitrarily long, because createChatGenerationRun retries transient failures
- * until it is aborted, so this is reachable well past the cap.
+ * The early claim stops a recovery trigger starting a second follower during that await.
+ * Boundedness is separate: until the POST lands the thread's checkpoints are its only
+ * persistence, and createChatGenerationRun retries until aborted, so the await can outlast
+ * the cap.
  */
 const provisionalGenerationRuns = new Set<string>();
 
@@ -460,8 +455,7 @@ export function claimLiveGenerationRun(
 ): void {
   liveGenerationRuns.add(runId);
   if (threadId) liveGenerationThreads.set(runId, threadId);
-  // A later non-provisional claim for the same id is what confirms admission, so this
-  // clears as well as sets.
+  // A later non-provisional claim confirms admission, so this clears as well as sets.
   if (options?.provisional) {
     provisionalGenerationRuns.add(runId);
   } else {
@@ -527,9 +521,8 @@ export function syncServerActiveGenerationRuns(
 }
 
 /**
- * Threads the server has successfully answered the active-run question for. Per thread,
- * not per process: a successful read for thread A says nothing about thread B, and one
- * global flag let A's answer turn a FAILED read for B into an authoritative empty list.
+ * Threads the server has answered the active-run question for. Per thread, not per
+ * process: one global flag let A's answer turn a FAILED read for B into an empty list.
  */
 const serverAnsweredThreads = new Set<string>();
 

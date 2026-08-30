@@ -5046,10 +5046,9 @@ export function createOpenAIStreamAdapter(
       let generationFirstChunkAt: number | undefined;
       let generationChunkCount = 0;
       let generationStopRequested = false;
-      // Set when the follower's no-progress deadline fires on THIS stream, as opposed to
-      // on a recovery follower. Both have to persist the marker: without it the metadata
-      // still reads running and unsettled, so the next reload attaches another follower
-      // and blocks the composer for another full deadline.
+      // Set when the no-progress deadline fires on THIS stream rather than on a recovery
+      // follower. Both must persist the marker, or the next reload attaches another
+      // follower and blocks the composer for a further deadline.
       let generationStalled = false;
       const generationCustom = () =>
         generationRunId
@@ -6117,10 +6116,9 @@ export function createOpenAIStreamAdapter(
                   // lands, so a visibility, pageshow, online or history-load trigger during
                   // this await could otherwise start a recovery that the later claim would
                   // not stop: the scheduler only tests ownership at startup.
-                  // Provisional: it owns recovery, but it must not make the thread
-                  // bounded before there is a server-side run to fall back on. The await
-                  // below can outlast the checkpoint cap, and a capped thread is dropped
-                  // from the schedule for good.
+                  // Provisional: it owns recovery without marking the thread bounded.
+                  // The await below can outlast the checkpoint cap, and a capped thread
+                  // is dropped from the schedule for good.
                   claimLiveGenerationRun(cancelId, resolvedThreadId!, {
                     provisional: true,
                   });
@@ -6142,11 +6140,9 @@ export function createOpenAIStreamAdapter(
                     // Durable recovery does not yet replay server-side tool events.
                     // Use the subscriber-owned stream for this policy-forced case.
                     generationDecision = "legacy";
-                    // And drop the pre-admission claim now rather than in the outer
-                    // finally. The thread association is what marks a stream durable, and
-                    // this one is about to become subscriber-owned: leaving it would let
-                    // the checkpoint cap fire on a stream whose only persistence is those
-                    // checkpoints, losing whatever it streamed past the cap.
+                    // Dropped here rather than in the outer finally: this stream is about
+                    // to become subscriber-owned, and leaving the claim would let the cap
+                    // fire on a stream whose only persistence is those checkpoints.
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
@@ -6195,16 +6191,13 @@ export function createOpenAIStreamAdapter(
                 }
               } catch (error) {
                 if (!(error instanceof ChatGenerationStalledError)) throw error;
-                // End the stream rather than rethrow, so everything replayed so far is
-                // kept, exactly as the recovery follower settles a stalled run. The
-                // status checks below stay quiet because a stalled run is still
-                // non-terminal.
+                // End the stream rather than rethrow, keeping everything replayed so
+                // far, as the recovery follower does. The checks below stay quiet
+                // because a stalled run is still non-terminal.
                 generationStalled = true;
-                // Both halves are needed and they do different jobs. The marker stops
-                // the next reload attaching another follower; this is what makes the
-                // final yield carry `incomplete`, without which assistant-ui treats the
-                // partial reply as finished and offers no Continue until a reload
-                // rebuilds the reason from persisted metadata.
+                // Different job from the marker: this is what makes the final yield
+                // carry `incomplete`, without which assistant-ui reads the partial reply
+                // as finished and offers no Continue until a reload rebuilds the reason.
                 incompleteReason = "interrupted";
               }
               if (generationStatus === "failed") {

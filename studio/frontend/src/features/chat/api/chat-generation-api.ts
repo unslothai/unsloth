@@ -328,9 +328,8 @@ async function* streamChatGenerationEvents(
   signal?: AbortSignal,
   /**
    * Called for every byte the server sends, including the keep-alive comments this
-   * generator drops. The stream stays open across model preparation and admission waits
-   * and emits nothing else for their whole duration, so without this the consumer's loop
-   * never advances and the snapshot poll after it never runs.
+   * generator drops. The stream emits nothing else across preparation and admission
+   * waits, so without this the consumer's loop never advances.
    */
   onActivity?: () => void,
 ): AsyncGenerator<ChatGenerationEvent> {
@@ -375,19 +374,16 @@ async function* streamChatGenerationEvents(
 }
 
 /**
- * How long a follower tolerates a run that makes no progress before it gives up. Progress,
- * not connectedness, ends a follow: every event and every change to the run row resets it.
+ * How long a follower tolerates a run that makes no progress. Progress, not connectedness,
+ * ends a follow: every event and every change to the run row resets it.
  *
- * This is a deadline on SILENCE, not on duration, which is what lets it stay short while
- * the backend tolerates far longer work. Model preparation and admission waits emit no
- * events for their whole duration, but the event stream keeps sending keep-alive comments
- * throughout, and those count: `streamChatGenerationEvents` reports every byte it reads,
- * comments included. So a two hour download rearms this deadline every fifteen seconds,
- * and only a server that has genuinely gone quiet for half an hour trips it.
+ * A deadline on SILENCE rather than duration, which is what lets it stay short while the
+ * backend tolerates far longer work. Preparation and admission waits emit no events, but
+ * the stream keeps sending keep-alive comments and `streamChatGenerationEvents` reports
+ * every byte, so a two hour download rearms this every fifteen seconds.
  *
- * The `updatedAt` the lease renewals move is a second, weaker signal, reachable only once
- * the stream closes and the snapshot poll runs. It cannot carry this on its own, because
- * a stream that stays open is exactly the case that needs covering.
+ * The `updatedAt` lease renewals move is a weaker second signal, reachable only once the
+ * stream closes, so it cannot carry this alone: an open stream is the case needing cover.
  */
 export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 
@@ -405,10 +401,9 @@ export async function* followChatGenerationRun(
   const { replayFrom } = options;
   const stallTimeoutMs =
     options.stallTimeoutMs ?? CHAT_GENERATION_STALL_TIMEOUT_MS;
-  // The deadline has to reach the open event stream as well as the sleep between
-  // reconnects: a stream that stays open and sends nothing parks the reader just as
-  // permanently as a reconnect loop that never sees a terminal status. One controller
-  // downstream of the caller's signal covers both.
+  // The deadline must reach the open stream as well as the sleep between reconnects: a
+  // stream that stays open and sends nothing parks the reader just as permanently. One
+  // controller downstream of the caller's signal covers both.
   const deadline = new AbortController();
   const callerSignal = options.signal;
   const forwardAbort = () => deadline.abort(callerSignal?.reason);
@@ -419,10 +414,9 @@ export async function* followChatGenerationRun(
   }
   const signal = deadline.signal;
   let stallTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-  // Our deadline and the caller's Stop both abort `signal` but must not end the same way.
-  // A caller abort is a clean stop; the deadline means we walked away from a run the
-  // backend may still be working on, so it has to reach the consumer as a failure rather
-  // than finalizing a still-running run as a complete reply.
+  // Both abort `signal` but must not end the same way: a caller abort is a clean stop,
+  // while the deadline means we walked away from a run the backend may still be working
+  // on, so it must reach the consumer as a failure rather than a complete reply.
   let stalled = false;
   let settled = false;
   const noteProgress = (): void => {

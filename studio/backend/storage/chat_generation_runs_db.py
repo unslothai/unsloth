@@ -65,10 +65,9 @@ def _connect() -> sqlite3.Connection:
                 conn.commit()
                 _schema_ready = True
     except sqlite3.OperationalError:
-        # A writer is holding the database. These columns are additive, so let this call
-        # through and migrate on a later one rather than turning contention into a failed
-        # history read. The lease paths cannot assume the columns exist after this, which
-        # is what _without_lease_columns below is for.
+        # A writer holds the database. The columns are additive, so let this call through
+        # and migrate later rather than turning contention into a failed history read;
+        # _without_lease_columns below covers the paths that then cannot assume them.
         conn.rollback()
     except Exception:
         conn.close()
@@ -780,11 +779,10 @@ def reconcile_runs(
             if not _missing_lease_columns(exc):
                 raise
             # Contention blocked the migration, so no run can persist progress. Falling
-            # back to started_at/created_at is NOT more conservative, it is the opposite:
-            # those stamps are older than the lease by the whole life of the run, so a
-            # run that appended a chunk moments ago is reaped once its total AGE passes
-            # the timeout. A boot reconcile passes no stale_after_ms and is unaffected,
-            # because every active run is orphaned by definition at process start.
+            # back to started_at/created_at is not conservative but the opposite: those
+            # stamps are older by the whole life of the run, so one that streamed a chunk
+            # moments ago is reaped once its total AGE passes the timeout. Boot reconcile
+            # passes no stale_after_ms and is unaffected.
             if stale_after_ms is not None:
                 conn.rollback()
                 return []

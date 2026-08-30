@@ -150,11 +150,10 @@ class LlamaServerStatsLogger:
                 int(m.get("requests_processing", 0)),
                 int(m.get("requests_deferred", 0)),
             )
-            # A held slot not calling llama_decode() is a wedge; without this the
-            # engine stays "generating" forever and the only symptom is an endless
-            # run of identical info lines. A build that does not export
-            # n_decode_total reads None and so never "changes", accumulating the
-            # same way, so the message is chosen at report time.
+            # A held slot not calling llama_decode() is a wedge, and its only symptom
+            # is an endless run of identical info lines. A build without n_decode_total
+            # reads None and never "changes", accumulating the same way, so the message
+            # is chosen at report time.
             decode_calls = m.get("n_decode_total")
             stalled_for = self._stalled_for(now, running, decode_calls)
             if self._stall_timeout and stalled_for >= self._stall_timeout:
@@ -181,18 +180,16 @@ class LlamaServerStatsLogger:
                 )
 
 
-# A year. Any poll interval or stall timeout beyond this already means "never", and
-# staying far below the platform time_t boundary keeps the wait itself legal.
+# A year. Beyond this already means "never", and it keeps the timed wait itself legal.
 _MAX_ENV_SECONDS = 365.0 * 24.0 * 60.0 * 60.0
 
 
 def _env_float(name, default, logger):
     """Seconds from the environment, rejecting anything that would silently do nothing.
 
-    float() accepts non-finite text, and both spellings disable the very reporting they
-    were set to configure: nan loses every comparison, so max() keeps the other operand
-    and the stall line never arms, while inf can never be reached by an elapsed time and
-    would park the poll loop in stop.wait() until shutdown.
+    float() accepts non-finite text, and both spellings disable the reporting they were
+    set to configure: max() drops nan so the stall line never arms, and an elapsed time
+    can never reach inf.
     """
     raw = os.environ.get(name)
     if raw is None:
@@ -210,12 +207,9 @@ def _env_float(name, default, logger):
         )
         return default
     if value > _MAX_ENV_SECONDS:
-        # threading.Event.wait() turns its timeout into an absolute deadline, and one far
-        # enough out raises "timestamp out of range for platform time_t" the moment the
-        # wait is actually entered. That kills the poll thread, taking the engine stats
-        # and the stall report with it, which is the opposite of what a long interval
-        # asks for. Measured on this platform: a century still waits, 1e10 seconds does
-        # not, so the cap sits well below the boundary rather than at it.
+        # Event.wait() builds an absolute deadline, and one far enough out raises
+        # "timestamp out of range for platform time_t" once the wait is entered, killing
+        # the poll thread. Measured: a century still waits, 1e10 seconds does not.
         logger.warning(
             "engine_stats_env_clamped",
             variable = name,
