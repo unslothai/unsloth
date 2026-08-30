@@ -31,12 +31,9 @@ MAX_TOKENS = 80
 # Turn 2 cannot be answered without turn 1, and turn 4 without turn 3, so a server that
 # drops history fails here rather than returning something plausible.
 #
-# Turn 2 asks for the ANSWER rather than the question. "What did I ask before?" reads like
-# the stronger history probe but is not one: gemma-3-270m-it, the model this smoke runs,
-# replies "I am doing well! How can I help you today?" to it, with or without the history
-# attached. Nothing asserted that reply, so a server that dropped every turn before the
-# last still passed. Asking for the answer gets "The answer to your previous question was
-# 2.", which cannot be produced without turn 1 and is checked below.
+# Turn 2 asks for the ANSWER, not the question. gemma-3-270m-it answers "What did I ask
+# before?" with "I am doing well! How can I help you today?" whether or not the history is
+# attached, so that phrasing probes nothing.
 PROMPTS = [
     "What is 1+1?",
     "What was the answer to my previous question?",
@@ -130,12 +127,10 @@ def check(label: str, first: list[str], second: list[str]) -> None:
     # Lower-cased substring checks, so formatting jitter is not a failure.
     joined = " ".join(first).lower()
     assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-    # Taken from turn 1's reply rather than hardcoded, and asserted per turn rather than
-    # over the joined transcript. A literal "2" would accept a turn 2 that CONTRADICTS
-    # turn 1 ("1 + 1 = 3" then "the answer was 2"), and is guessable by a model that never
-    # saw the history; a joined check would pass on turn 1's own text. The last number is
-    # the answer: "1 + 1 = 2" restates the operands first.
-    # The assertion above guarantees a digit, so this cannot come back empty.
+    # From turn 1's reply, not a literal: a hardcoded "2" accepts a turn 2 that
+    # contradicts turn 1 ("1 + 1 = 3" then "the answer was 2"). Last number, since
+    # "1 + 1 = 2" restates the operands first. Per turn, since the joined text holds turn 1.
+    # The assertion above guarantees a digit, so this cannot be empty.
     answer = re.findall(r"\d+", first[0])[-1]
     assert answer in first[1], (
         f"{label}: turn 2 must carry turn 1's answer {answer!r}, so history reached the "

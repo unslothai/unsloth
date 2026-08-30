@@ -112,8 +112,8 @@ def test_history_grounding_is_still_checked(script):
     with pytest.raises(AssertionError, match = "paris"):
         script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
 
-    # Turn 2 has its own check now. Without it a server that dropped every turn before the
-    # last still passed: "1" comes from turn 1 and "paris" from turn 3.
+    # Without a turn-2 check a server dropping every turn but the last still passed:
+    # "1" comes from turn 1 and "paris" from turn 3.
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check(
             "noturn2", ["1 is 2", "b", "paris", "paris"], ["1 is 2", "b", "paris", "paris"]
