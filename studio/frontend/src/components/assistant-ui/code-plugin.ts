@@ -61,7 +61,12 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
-const normalizeLanguage = (language: string): BundledLanguage => {
+/**
+ * The fence tag as Shiki will see it: lower-cased, aliases resolved. Exported so that anything
+ * keying a per-grammar cache uses the same identity `highlight` does -- `py` and `Python` are one
+ * grammar here, and two keys anywhere else means the same grammar is warmed twice.
+ */
+export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];
   return alias ?? (key as BundledLanguage);
@@ -73,6 +78,21 @@ const normalizeLanguage = (language: string): BundledLanguage => {
 // text, keeping the 250 ms plain-tail cadence.
 export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
+// Shiki's own tokenizer guard is a wall clock: a line that takes longer than
+// `tokenizeTimeLimit` (default 500 ms) is abandoned part-way and the rest of it
+// is emitted as one uncoloured token. Dual themes are two passes with two
+// separate budgets, and only the first pays to compile the grammar's regexes,
+// so a loaded machine drops the light theme to plain and keeps the dark one
+// correct -- for the same line, in the same result. Committed lines are never
+// re-tokenized, so that half-plain line is then cached for the life of the
+// fence. Bound the work by line length instead: same protection against a
+// minified blob (~120 ms at this length, growing quadratically past it, which
+// is VS Code's `editor.maxTokenizationLineLength` default for the same reason),
+// but the output depends on the source rather than on the host.
+export const TOKENIZE_LIMITS = {
+  tokenizeTimeLimit: 0,
+  tokenizeMaxLineLength: 20_000,
+} as const;
 // An unvirtualized thread mounts every fence. Bound both their count and source
 // size; token data measured roughly 30 bytes per source character.
 const MAX_FENCES = 512;
@@ -328,6 +348,7 @@ export function createCodePlugin(
         lang,
         themes,
         grammarState: fence.state,
+        ...TOKENIZE_LIMITS,
       });
 
     // Commit every newly completed line.
@@ -392,7 +413,7 @@ export function createCodePlugin(
     try {
       result = tokenize(fence, highlighter, code, language, themes);
     } catch (error) {
-      console.error("[Studio Code] Failed to highlight code:", error);
+      console.error("[Unsloth Code] Failed to highlight code:", error);
       resetFence(fence);
       // A fence that never produced tokens has no anchor to match on, so a
       // block that keeps failing would strand a new one on every render.
@@ -447,7 +468,7 @@ export function createCodePlugin(
         resume(highlighter);
       })
       .catch((error) => {
-        console.error("[Studio Code] Failed to highlight code:", error);
+        console.error("[Unsloth Code] Failed to highlight code:", error);
         highlighters.delete(key);
         // Failed callbacks must not pin fences or fire after a later retry.
         for (const waiting of fences) {

@@ -301,6 +301,75 @@ def test_measures_by_cell_does_not_mix_readings_between_cells():
     assert by_cell[(10_000, 1)]["menu_open_ms"].value == pytest.approx(900.0)
 
 
+def test_the_wire_integrity_counters_may_be_zero():
+    """Zero here is the GOOD outcome and the one that makes the denominator trustworthy: no SSE
+    frame failed to parse, and no unterminated frame was left buffered at the window's close. A
+    clean run tripped the bare-zero ban and no report could be built from it at all."""
+    validate_payload(
+        {
+            "excluded_cells": [],
+            "blk": {
+                "wire_parse_failures": 0,
+                "wire_pending_chars": 0,
+                "wire_parse_failures_in_window": 0,
+                "wire_pending_chars_at_close": 0,
+            },
+        }
+    )
+
+
+def test_a_wire_character_count_of_zero_is_still_a_failure():
+    """The exemption is deliberately the counters and not the count. `wireChars` at zero means
+    nothing was ever counted, which is a broken instrument rather than a clean stream, and it must
+    stay loud."""
+    with pytest.raises(PayloadSchemaError):
+        validate_payload({"excluded_cells": [], "blk": {"wire_chars": 0}})
+
+
+def test_a_thread_that_was_not_yanked_back_can_still_be_reported():
+    """The block `runtime/session.py` writes as `scroll_intent`, with the reading that broke CI.
+
+    `detached_samples: 7, yanked_back_samples: 0` is the GOOD outcome -- the user scrolled away and
+    the app left them there -- and it made the whole payload unrenderable: the real-path CI session
+    ran every action, wrote its cell, and then `--report` refused with `bare zeros found:
+    $.cells[0].scroll_intent.yanked_back_samples = 0`. The block is derived from the same page-side
+    read as `follow`, which is covered by its own `follow_attempted`, so it carries the same
+    attestation rather than a new exemption.
+    """
+    validate_payload(
+        {
+            "excluded_cells": [],
+            "cells": [
+                {
+                    "row_type": "cell",
+                    "completed": True,
+                    "scroll_intent": {
+                        "follow_attempted": True,
+                        "detached_samples": 7,
+                        "yanked_back_samples": 0,
+                        "gated": False,
+                        "reason": "counts legitimate re-pins as well as yanks",
+                    },
+                }
+            ],
+        }
+    )
+
+
+def test_the_scroll_intent_block_still_attests_in_the_session_layer():
+    """The exemption is an attestation, so it lives with the writer and can be dropped there.
+
+    Pinned at the source because the payload shape that fails is only produced by a live run: a
+    `scroll_intent` block written without `follow_attempted` passes every unit test in this file
+    and refuses the first real session that reaches the report step.
+    """
+    session = (Path(__file__).resolve().parents[2] / "runtime" / "session.py").read_text(
+        encoding = "utf-8"
+    )
+    block = session[session.index('row["scroll_intent"] = {') :][:2_000]
+    assert '"follow_attempted": bool(follow.get("follow_attempted"))' in block
+
+
 # ── ran is not "did what it claimed" ────────────────────────────────────────────────────────
 
 
@@ -332,6 +401,79 @@ def test_an_action_whose_assertion_passed_is_still_a_reading():
         {**_action("c1", "keystroke", ran = True, timings = {"p95_ms": 12.0}), "expect_ok": True},
     ]
     assert measures_from_records(recs)[10_000]["keystroke_p95_ms"].value == 12.0
+
+
+# ── the composer click, which is the driver's cost and not the build's ───────────────────────
+
+
+def test_setup_windows_are_excluded_so_the_click_does_not_become_the_worst_frame():
+    """`setup:composer_click` is mostly Playwright's injected actionability script, which blocks
+    the page's main thread exactly as app work would. Pooled into the film it would peg
+    `max_frame_ms` against a 2,000 ms anchor on every run, probe or no probe."""
+    film = _window("c1", [200.0] * 10, duration_ms = 2000.0, kind = "action")
+    click = _window("c1", [11_000.0], duration_ms = 11_000.0, kind = "setup")
+
+    with_click = measures_from_records([_cell(), film, click])[10_000]
+    without = measures_from_records([_cell(), film])[10_000]
+
+    assert with_click["max_frame_ms"].value == pytest.approx(200.0)
+    assert with_click["max_frame_ms"].value == pytest.approx(without["max_frame_ms"].value)
+    assert with_click["jank_index"].value == pytest.approx(without["jank_index"].value)
+    assert with_click["time_in_jank_pct"].value == pytest.approx(without["time_in_jank_pct"].value)
+
+
+def test_setup_is_a_declared_window_kind():
+    from studiobench.runtime.types import WINDOW_KINDS
+    assert "setup" in WINDOW_KINDS
+
+
+def test_a_probe_payload_with_legitimate_zeros_still_validates():
+    """An unseeded rung has no code blocks, and `performance.now()` is coarsened to 100 us, so
+    `code_token_spans`, `blur_inpage_ms` and `forced_layout_ms` can all be a true 0. Before the
+    attestation was written next to them, `--report` refused the whole payload of a run that
+    completed."""
+    cell = _cell()
+    cell["composer_click_ms"] = 120.0
+    cell["click_attribution"] = {
+        "click_attribution_attempted": True,
+        "first_touch_ms": 10.0,
+        "touch_decay_ms": [10.0, 0.0],
+        "blur_inpage_ms": 0.0,
+        "forced_layout_ms": 0.0,
+        "code_token_spans": 0,
+    }
+    validate_payload(_payload_with(cell))
+
+
+def test_the_same_probe_payload_without_the_attestation_is_still_refused():
+    """The exemption must come from the flag, not from the key names: an unattested zero is the
+    thing the walk exists to catch."""
+    cell = _cell()
+    cell["click_attribution"] = {"code_token_spans": 0}
+    with pytest.raises(PayloadSchemaError, match = "code_token_spans"):
+        validate_payload(_payload_with(cell))
+
+
+def _payload_with(cell):
+    return {
+        "schema": "studiobench/payload/1",
+        "source": "recorder_rows",
+        "complete": True,
+        "truncated_records": 0,
+        "record_counts": {"cells": 1},
+        "header": {},
+        "selfcheck": [],
+        "windows": [],
+        "actions": [],
+        "cells": [cell],
+        "samples": [],
+        "surfaces": [],
+        "crashes": [],
+        "arms": [],
+        "unknown_rows": [],
+        "footer": None,
+        "excluded_cells": [],
+    }
 
 
 # ---------------------------------------------------------------------------------------

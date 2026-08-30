@@ -1052,7 +1052,7 @@ export function DiffusionTrainPanel({
       return;
     }
     if (!outputDir.trim()) {
-      toast.error("Name the adapter (this becomes its folder under Studio outputs).");
+      toast.error("Name the adapter (this becomes its folder under Unsloth outputs).");
       return;
     }
     // Require a trigger prompt whenever ANY image lacks a caption: without an instance_prompt the backend silently skips every uncaptioned image.

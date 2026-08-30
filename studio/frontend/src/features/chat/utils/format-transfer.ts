@@ -16,12 +16,20 @@ export function formatRate(bytesPerSecond: number): string {
 }
 
 /**
+ * Beyond a day the number is noise. The hub formatter has clamped since #7679;
+ * this one did not, so one estimate read "> 24h left" on a hub row and an
+ * unbounded hour count on the model-load toast.
+ */
+const MAX_DISPLAYABLE_ETA_SECONDS = 24 * 60 * 60;
+
+/**
  * Format an ETA in seconds as a short string (e.g. 125 → "2m 5s", 3725 →
  * "1h 2m"). Returns `"--"` for non-finite or non-positive inputs.
  */
 export function formatEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "--";
   const s = Math.round(seconds);
+  if (s >= MAX_DISPLAYABLE_ETA_SECONDS) return "> 24h";
   if (s < 60) return `${s}s`;
   if (s < 3600) {
     const m = Math.floor(s / 60);

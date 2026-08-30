@@ -16,6 +16,7 @@ parses tool calls from the cumulative text and dispatches via
 
 import bisect
 import inspect
+import json
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -62,6 +63,7 @@ from core.inference.chat_template_helpers import (
     append_assistant_turn,
     trailing_assistant_text,
 )
+from core.inference.passthrough_healing import nudge_enabled
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -726,6 +728,10 @@ def run_safetensors_tool_loop(
             if not isinstance(cumulative, str):
                 continue  # defensive: pipeline yields only strings
 
+            # Deltas by length: this needs snapshots that only grow. A producer that
+            # rebuilds its text each step can revise one instead, and diffing that
+            # splices two renderings together -- which is why the MLX text producer
+            # withholds while it is matching stop sequences.
             delta = cumulative[len(prev_cumulative) :]
             prev_cumulative = cumulative
             if not delta:
@@ -1017,16 +1023,15 @@ def run_safetensors_tool_loop(
             )
             if not safety_tc:
                 # Re-prompt once on plan-without-action, before any tool runs
-                # (GGUF loop parity). The retry is gated on nudge_tool_calls so
-                # Unsloth callers (which send True) always nudge, while API callers
-                # who omit the flag keep today's no-reprompt behavior (opt-in).
+                # (GGUF loop parity). Omitted flags follow the shared process
+                # default, while explicit request values win.
                 intent_text = _reprompt_intent_text(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
                 if (
                     auto_heal_tool_calls
-                    and nudge_tool_calls
+                    and nudge_enabled(nudge_tool_calls)
                     and active_tools
                     and reprompt_count < MAX_ACT_REPROMPTS
                     and not rag_autoinjected
@@ -1175,7 +1180,7 @@ def run_safetensors_tool_loop(
         # abort it and drop the parallel calls that follow.
         deferred_noop_msgs: list = []
 
-        for tc in tool_calls or []:
+        for _call_index, tc in enumerate(tool_calls or []):
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
             provisional_match = (
@@ -1342,6 +1347,73 @@ def run_safetensors_tool_loop(
                             + estimate_messages_tokens_dense(tools or []),
                             reply_returns = True,
                         )
+                    # And what a RESULT may add, which is the same question asked of
+                    # every tool rather than of retrieval alone. This loop has no rolling
+                    # fit behind it either, so a `cat` of a file the model just wrote is
+                    # protected as the newest exchange and there is nothing downstream to
+                    # evict it.
+                    if context_length and _accepts_kwarg(execute_tool, "result_budget_tokens"):
+                        from core.inference.context_window import (
+                            estimate_messages_tokens_conservative as _spent_tokens,
+                            estimate_messages_tokens_dense as _dense_tokens,
+                            tool_result_budget,
+                        )
+
+                        # The window itself as well, not only the room: nothing in the
+                        # tools layer can see a native model's context length (its probe
+                        # answers for a resident GGUF), and a cap with no window to size
+                        # against falls back to the window-independent constant.
+                        if _accepts_kwarg(execute_tool, "context_tokens"):
+                            kwargs["context_tokens"] = int(context_length)
+                        # Tool results are counted TWICE, which charges them two
+                        # characters per token instead of four. The estimator's rate is an
+                        # English one, and this budget exists because the results these
+                        # tools return are base64, minified JSON, hashes and command
+                        # output, which run nearer two. Under-pricing what is already in
+                        # the conversation hands the next call room that is occupied, and
+                        # this loop has no exact count and no rolling fit to catch it.
+                        results = [
+                            message for message in conversation if message.get("role") == "tool"
+                        ]
+                        # Removed from the thread below rather than added on top of it:
+                        # the conservative estimate already prices every message it is
+                        # given, so leaving the results in and adding them again charges
+                        # them twice, and a CJK result twice over at a token per character
+                        # each time. A thread with one sizable earlier result would then
+                        # report no room while it still had plenty.
+                        rest = [
+                            message for message in conversation if message.get("role") != "tool"
+                        ]
+                        # Split across the calls still to run in this batch, and after
+                        # their arguments, exactly as the GGUF loop does: one turn can
+                        # call several tools and each call is appended only as it runs,
+                        # so sizing a result as if it were alone lets the first take the
+                        # room the rest of the batch still needs.
+                        pending = list(tool_calls or [])[_call_index + 1 :]
+                        pending_args = [
+                            {"role": "assistant", "content": json.dumps(call, default = str)}
+                            for call in pending
+                        ]
+                        kwargs["result_budget_tokens"] = tool_result_budget(
+                            int(context_length),
+                            max_tokens,
+                            # Conservative for the thread as a whole, not only for the
+                            # tool turns doubled below: a user or assistant turn can hold
+                            # a pasted blob or a block of minified JSON, and priced at the
+                            # English rate it reports a third of what it costs. Nothing
+                            # here can measure exactly, and the room this produces is what
+                            # the next result is admitted against.
+                            _spent_tokens(rest)
+                            + _spent_tokens(tools or [])
+                            # Every ASCII character of a result at two per token, not only
+                            # its unbroken runs: a result is `hexdump`, `ls -l` or a stack
+                            # trace as often as it is a blob, and those carry spaces.
+                            + _spent_tokens(results, dense_ascii = True)
+                            # Doubled for the same reason the results above are: a pending
+                            # call can carry base64, minified JSON or a block of code, and
+                            # nothing on this path can price a string exactly.
+                            + 2 * _dense_tokens(pending_args),
+                        ) // (len(pending) + 1)
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
