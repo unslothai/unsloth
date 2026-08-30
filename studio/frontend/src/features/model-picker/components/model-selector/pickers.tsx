@@ -116,6 +116,7 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
+  audioPipelineTagFor,
   audioPickIsRoutable,
   localAudioRowIsUndecodableGguf,
   communityAudioRowIsRunnable,
@@ -123,6 +124,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   macTtsHubRowIsRunnable,
+  nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
   taskCatalogFormatMatches,
@@ -777,16 +779,21 @@ const META_COLUMN = {
   badge: "min-w-min min-[560px]:w-[24px]",
   // One glyph plus the disk mark (18 + 4 + 14).
   badgeMid: "min-w-min min-[560px]:w-[36px]",
-  // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
-  // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
-  badgeWide: "min-w-min min-[560px]:w-[68px]",
+  // On Device draws the vision badge and no disk mark: 26px is that badge measured, so rows with
+  // and without one still line up. One slot sized for both lists left ~44px empty on every row.
+  badgeDevice: "min-w-min min-[560px]:w-[26px]",
+  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[36px]",
   // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
   vram: "min-w-min min-[560px]:w-[4em]",
-  // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
-  param: "min-w-min min-[560px]:w-[3.6em]",
+  // Device rows hug the chip. A column sized for "235B" spends 6.1px in front of a "30B", and that
+  // leftover IS the gap to the modality mark; -ml-0.5 against the cluster's gap-1 makes it 2px. In
+  // exchange a wider label pulls that row's name and quant chip left. Hub keeps its "2779.5B".
+  param: "min-w-min -ml-0.5",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
-  // "536 MB".
-  size: "min-w-min min-[560px]:w-[4.2em]",
+  // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a
+  // spaced "536 MB" needs. The surplus sat between the parameter chip and the size.
+  size: "min-w-min min-[560px]:w-[3.2em]",
   // The format dot that leads the row; the name lives in its tooltip.
   format: "min-[560px]:w-[14px]",
 } as const;
@@ -886,15 +893,18 @@ function ModelRow({
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
+  const aligned = alignMeta !== undefined;
   // Reserve only what this picker's scope can draw. The Images and Audio pickers draw no glyph and
   // Video draws one, so holding the chat row's slot open there is dead space on every row.
+  // Unscoped chat splits again by list: On Device marks vision, Hub marks the disk.
   const badgeColumn =
     capabilityScope === null || capabilityScope.length > 1
-      ? META_COLUMN.badgeWide
+      ? alignMeta === "device"
+        ? META_COLUMN.badgeDevice
+        : META_COLUMN.badgeWide
       : capabilityScope.length === 1
         ? META_COLUMN.badgeMid
         : META_COLUMN.badge;
-  const aligned = alignMeta !== undefined;
   // One dot per row. A second format shares the first's colour anyway, so it
   // rides along in the tooltip instead of pushing the name out of line.
   const formatDot = parsed.formats[0]
@@ -923,13 +933,18 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full flex-col items-stretch px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it
+        // on 10px, level with the section labels at px-2.5. Inside a w-full button, so the hover
+        // pill itself does not move.
+        "flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
       )}
     >
-      <span className="flex w-full items-center gap-2">
+      {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
+          first meta mark. 4px is the rhythm the meta columns already keep among themselves. */}
+      <span className="flex w-full items-center gap-1">
         <span className="flex min-w-0 flex-1 items-baseline">
           {/* Fixed slot, so names start on one line with or without a dot. */}
           {aligned ? (
@@ -965,7 +980,8 @@ function ModelRow({
           {alignMeta === "device" ? (
             <span
               className={cn(
-                "ml-1.5 flex shrink-0 items-center self-center text-ui-9",
+                // ml-0.5: the chip carries px-1 of its own, so 2px still leaves 6px of air.
+                "ml-0.5 flex shrink-0 items-center self-center text-ui-9",
                 META_COLUMN.quant,
               )}
             >
@@ -995,7 +1011,8 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                "flex shrink-0 items-center justify-center gap-1 text-ui-10",
+                // Right, not centre: slack belongs to the name, not split either side of a glyph.
+                "flex shrink-0 items-center justify-end gap-1 text-ui-10",
                 badgeColumn,
               )}
             >
@@ -2111,8 +2128,6 @@ const MEDIA_PAGE_TASKS: readonly string[] = [
 ];
 
 /** The page that runs this task, or null when chat should handle the pick. */
-const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
-
 function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
@@ -2337,6 +2352,7 @@ function localPathTooltip(
 function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
+  audioType?: string | null,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2344,6 +2360,7 @@ function localModelMeta(
     isDownloaded: true,
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
+    audioType: audioType ?? null,
   };
 }
 
@@ -3553,6 +3570,7 @@ export function HubModelPicker({
                         (artifact) => artifact.format === "gguf",
                       ),
                   ),
+                  audioType: c.audio_type,
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
@@ -3783,6 +3801,7 @@ export function HubModelPicker({
             task: pickedTask,
             isGguf: Boolean(meta.isGguf || meta.ggufFilename),
             isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+            audioType: meta.audioType,
             isLocalCheckpoint:
               meta.source === "lora" ||
               meta.source === "exported" ||
@@ -3812,6 +3831,8 @@ export function HubModelPicker({
                       : (meta.ggufVariant ?? undefined),
                     // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
                     task: pickedTask ?? undefined,
+                    audioType: meta.audioType ?? undefined,
+                    loadId: meta.loadId ?? undefined,
                   }
                 : diffusionRouteSearch(id, meta),
           });
@@ -3839,6 +3860,9 @@ export function HubModelPicker({
             exportType: m.exportType,
             isDirectGguf: m.isDirectGguf,
           }),
+      )
+      .filter((m) =>
+        nativeAudioCheckpointIsLoadable(m.audioType, m.exportType),
       )
       .filter((m) => {
         const text = normalizeForSearch(
@@ -5174,6 +5198,7 @@ export function HubModelPicker({
                 loadId: c.load_id,
                 isDownloaded: true,
                 pipelineTag: c.task ?? null,
+                audioType: c.audio_type ?? null,
               })
             }
             vramStatus={null}
@@ -5192,6 +5217,7 @@ export function HubModelPicker({
                   isDownloaded: true,
                   isGguf: false,
                   pipelineTag: c.task ?? null,
+                  audioType: c.audio_type ?? null,
                 })
               }
             />
@@ -5272,6 +5298,7 @@ export function HubModelPicker({
                 isDownloaded: true,
                 isGguf: model.isGguf === true,
                 pipelineTag,
+                audioType: model.audioType ?? null,
               })
             }
             vramStatus={null}
@@ -5943,7 +5970,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -5984,7 +6011,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6088,7 +6115,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6129,7 +6156,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6220,7 +6247,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6257,7 +6284,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6269,7 +6296,7 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                              resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6484,7 +6511,7 @@ export function HubModelPicker({
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
-                              resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
@@ -6667,22 +6694,6 @@ export function HubModelPicker({
 
 /** Fine-tuned model rows for the On Device tab's Fine-tuned section. Plugs into
  * that section's roving list and shared GGUF-expand state. */
-/** Codec -> the Hub pipeline tag the media routing understands, else undefined.
- *
- * A local checkpoint never gets the ASR tag: it would route to the Audio page, which hands
- * the filesystem path to /audio/stt/load, and the sidecar's resolve_model_id takes only a
- * curated key or an `owner/model` Hub id, so the row is advertised and then 422s. TTS is
- * fine, since that loads through the main slot, which does accept a local path. */
-function audioPipelineTagFor(
-  audioType?: string | null,
-  isLocalCheckpoint = false,
-): string | undefined {
-  if (!audioType) return undefined;
-  if (audioType === "whisper")
-    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
-  return TTS_CODECS.has(audioType) ? "text-to-speech" : undefined;
-}
-
 function FineTunedRows({
   adapters,
   value,
@@ -6723,6 +6734,7 @@ function FineTunedRows({
         const isExported = adapter.source === "exported";
         const isMerged = adapter.exportType === "merged";
         const isGguf = adapter.exportType === "gguf";
+        const isLora = !isLocal && !isMerged && !isGguf;
         const isExportedGguf = isExported && isGguf;
         const canDelete = canDeleteLoraModel(adapter);
         const isTrainingFull = isTraining && isMerged;
@@ -6737,10 +6749,11 @@ function FineTunedRows({
         // The pipeline tag is what onSelect routes on, so carry the detected codec as one.
         const selectionMeta: ModelSelectorChangeMeta = {
           source: isLocal ? "local" : isExported ? "exported" : "lora",
-          isLora: !isLocal && !isMerged && !isGguf,
+          isLora,
           isDownloaded: true,
           isGguf: isLocalDirectGguf,
-          pipelineTag: audioPipelineTagFor(adapter.audioType, true),
+          pipelineTag: audioPipelineTagFor(adapter.audioType, true, isLora),
+          audioType: adapter.audioType ?? null,
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);

@@ -69,9 +69,35 @@ const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
+const LINK_REFERENCE_RE =
+  /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
+
+function hasGlobalLinkReference(markdown: string): boolean {
+  return LINK_REFERENCE_RE.test(markdown) && LINK_DEFINITION_RE.test(markdown);
+}
+
+export function markdownRenderScope(markdown: string): "blocks" | "document" {
+  return hasGlobalLinkReference(markdown) ? "document" : "blocks";
+}
+
+export function markdownRenderKey(markdown: string): string {
+  if (markdownRenderScope(markdown) === "blocks") {
+    return "blocks";
+  }
+  return `document:${markdown
+    .split("\n")
+    .filter((line) => LINK_DEFINITION_RE.test(line))
+    .join("\n")}`;
+}
+
+export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
+  return markdownRenderScope(markdown) === "document"
+    ? [markdown]
+    : parseMarkdownIntoBlocks(markdown);
+}
 
 // Where remend believes the emphasis scan sits with respect to math.
 //
@@ -1155,7 +1181,7 @@ export class IncrementalMarkdownCache {
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
     ...this.committedBlocks,
-    ...parseMarkdownIntoBlocks(markdown),
+    ...parseMarkdownIntoRenderableBlocks(markdown),
   ];
 
   // Streamdown memoises the whole component on the Markdown string and ignores
@@ -1303,6 +1329,7 @@ export class IncrementalMarkdownCache {
     // `"para\r"`, nothing is ever committed, and the whole reply re-repairs and
     // re-lexes on every frame. Normalise first so both sides speak LF.
     const markdown = normalizeLineEndings(rawMarkdown);
+    const globalLinkReference = markdownRenderScope(markdown) === "document";
 
     // Tokens arrive faster than frames, so the coalescer hands the same text to
     // several renders. Nothing about the result can differ, and repeating the
@@ -1324,10 +1351,10 @@ export class IncrementalMarkdownCache {
     const repaired =
       this.repairOpenFence() ?? repairTail(this.tail, this.context);
 
-    // Streamdown deliberately turns a repaired document containing footnotes
-    // into one block so definitions can resolve references anywhere in the
-    // document. Such a construct is globally scoped and cannot retain a prefix.
+    // globally scoped definitions must stay in the same rendered document as
+    // their uses, so neither construct can retain an independently parsed prefix.
     if (
+      globalLinkReference ||
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired)
     ) {

@@ -15,6 +15,7 @@ No GPU/network: only file names and sizes are inspected.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import types
@@ -39,6 +40,214 @@ def _touch(path: Path) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0")
     return path
+
+
+def _empty_compat_sources(tmp_path: Path):
+    empty = tmp_path / "empty"
+    return models_route._CompatLocalInventorySources(
+        empty / "active",
+        empty / "legacy",
+        empty / "default",
+        (),
+        (),
+    )
+
+
+def test_compat_inventory_groups_custom_gguf_variants(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-Q4_K_M.gguf")
+    _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_preserves_distinct_custom_ggufs(tmp_path):
+    root = tmp_path / "custom"
+    holder = root / "publisher"
+    first = _touch(holder / "model-a-Q4_K_M.gguf")
+    second = _touch(holder / "model-b-Q4_K_M.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {Path(row.path) for row in rows} == {first, second}
+
+
+def test_compat_inventory_dedupes_overlapping_custom_roots(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-Q4_K_M.gguf")
+    _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_dedupes_nested_quant_root(tmp_path):
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    _touch(model / "model-a-Q4_K_M.gguf")
+    quant_dir = model / "Q8_0"
+    _touch(quant_dir / "model-a-Q8_0.gguf")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(quant_dir)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
+
+
+def test_compat_inventory_preserves_nested_independent_model_root(tmp_path):
+    root = tmp_path / "custom"
+    parent = root / "parent"
+    _touch(parent / "parent-Q4_K_M.gguf")
+    (parent / "config.json").write_text("{}", encoding = "utf-8")
+    child = parent / "child"
+    _touch(child / "child-Q8_0.gguf")
+    (child / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(child)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("custom", parent),
+        ("custom", child),
+    }
+
+
+def test_compat_inventory_keeps_custom_section_copy(tmp_path):
+    root = tmp_path / "models"
+    model = root / "publisher"
+    q4 = _touch(model / "model-Q4_K_M.gguf")
+    q8 = _touch(model / "model-Q8_0.gguf")
+
+    rows = models_route.collect_local_models(
+        root,
+        custom_folders = [{"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("models_dir", model),
+        ("custom", q4),
+        ("custom", q8),
+    }
+
+
+def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
+    root = tmp_path / "models"
+    holder = root / "publisher"
+    first = _touch(holder / "model-a-Q4_K_M.gguf")
+    second = _touch(holder / "model-b-Q4_K_M.gguf")
+    empty = _empty_compat_sources(tmp_path)
+    sources = empty._replace(lm_dirs = (root,))
+
+    rows = models_route.collect_local_models(
+        root,
+        custom_folders = [],
+        sources = sources,
+    )
+
+    assert {(row.source, Path(row.path)) for row in rows} == {
+        ("models_dir", holder),
+        ("lmstudio", first),
+        ("lmstudio", second),
+    }
+
+
+def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
+    root = tmp_path / "ollama"
+    digest = "sha256-model"
+    _touch(root / "blobs" / digest)
+    manifest = json.dumps(
+        {
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": digest.replace("-", ":", 1),
+                }
+            ]
+        }
+    )
+    tags = root / "manifests" / "registry.ollama.ai" / "library" / "model"
+    tags.mkdir(parents = True)
+    for tag in ("latest", "v1"):
+        (tags / tag).write_text(manifest, encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert {row.model_id for row in rows} == {"ollama/model:latest", "ollama/model:v1"}
+
+
+def test_compat_inventory_preserves_same_ollama_tag_from_distinct_stores(tmp_path):
+    roots = [tmp_path / "ollama-one", tmp_path / "ollama-two"]
+    for index, root in enumerate(roots):
+        digest = f"sha256-model-{index}"
+        _touch(root / "blobs" / digest)
+        tag = root / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
+        tag.parent.mkdir(parents = True)
+        tag.write_text(
+            json.dumps(
+                {
+                    "layers": [
+                        {
+                            "mediaType": "application/vnd.ollama.image.model",
+                            "digest": digest.replace("-", ":", 1),
+                        }
+                    ]
+                }
+            ),
+            encoding = "utf-8",
+        )
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)} for root in roots],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [row.model_id for row in rows] == ["ollama/model:latest"] * 2
+    assert len({Path(row.path).resolve() for row in rows}) == 2
+
+
+def test_compat_inventory_dedupes_lmstudio_publisher_named_ollama(tmp_path):
+    root = tmp_path / "lmstudio"
+    model = root / "ollama" / "foo"
+    _touch(model / "foo-Q4_K_M.gguf")
+    (model / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(root)}, {"path": str(model)}],
+        sources = _empty_compat_sources(tmp_path),
+    )
+
+    assert [Path(row.path) for row in rows] == [model]
 
 
 def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
@@ -375,6 +584,53 @@ def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypa
     assert opened == []
 
 
+def test_local_classification_probes_the_hf_cache_snapshot(tmp_path):
+    from hub.services.models import catalog_classification as classification
+
+    repo = tmp_path / "models--unsloth--csm-1b"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "added_tokens_decoder": {
+                    "0": {"content": "<|AUDIO|>"},
+                    "1": {"content": "<|audio_eos|>"},
+                }
+            }
+        ),
+        encoding = "utf-8",
+    )
+    model = LocalModelInfo(
+        id = "unsloth/csm-1b",
+        display_name = "csm-1b",
+        path = str(repo),
+        source = "hf_cache",
+        model_id = "unsloth/csm-1b",
+    )
+
+    assert classification._local_model_classification(model) == ("text-to-speech", "csm")
+
+
+def test_local_task_probes_the_hf_cache_pipeline_snapshot(tmp_path):
+    repo = tmp_path / "models--hf-internal-testing--tiny-sdxl-pipe"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model_index.json").write_text(
+        json.dumps({"_class_name": "StableDiffusionXLPipeline"}),
+        encoding = "utf-8",
+    )
+    model = LocalModelInfo(
+        id = "hf-internal-testing/tiny-sdxl-pipe",
+        display_name = "tiny-sdxl-pipe",
+        path = str(repo),
+        source = "hf_cache",
+        model_id = "hf-internal-testing/tiny-sdxl-pipe",
+    )
+
+    assert models_route._local_model_task(model) == "text-to-image"
+
+
 def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path, monkeypatch):
     """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
     is not reachable from the one page whose pick would pull it down, and lists in Chat
@@ -469,6 +725,60 @@ def test_local_task_none_for_plain_llm(tmp_path):
     _touch(d / "config.json")
     _touch(d / "model.safetensors")
     assert models_route._local_model_task(_local(d, model_id = "meta-llama/Llama-3.1-8B")) is None
+
+
+def test_local_task_tags_minimax_music3_modular_pipeline(tmp_path):
+    d = tmp_path / "music3"
+    d.mkdir()
+    (d / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+
+    assert models_route._local_model_task(_local(d, model_format = "safetensors")) == (
+        "text-to-speech"
+    )
+
+
+def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch, tmp_path):
+    models_dir = tmp_path / "models"
+    d = models_dir / "music3"
+    d.mkdir(parents = True)
+    (d / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+    sources = models_route._CompatLocalInventorySources(
+        hf_cache_dir = models_dir,
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        known_hf_caches = (),
+    )
+
+    def scan(_models_root, *, custom_folders, sources):
+        return [_local(d, model_format = "safetensors", id = str(d))]
+
+    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(models_route, "collect_local_models", scan)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    response = asyncio.run(
+        models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")
+    )
+
+    assert response.models[0].task == "text-to-speech"
+    assert response.models[0].audio_type == "minimax_music3"
 
 
 def test_local_task_tags_video_pipeline_dir(tmp_path):

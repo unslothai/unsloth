@@ -163,7 +163,7 @@ class LocalModelInfo(BaseModel):
     )
     audio_type: Optional[str] = Field(
         None,
-        description = "Detected output-audio codec used to decide whether Audio can run the row",
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
     )
     base_model: Optional[str] = Field(
         None,
@@ -264,6 +264,7 @@ class CachedGgufResponse(BaseModel):
 
 
 class CachedModelRepo(CachedRepoBase):
+    audio_type: Optional[str] = None
     quant_method: Optional[str] = None
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
