@@ -4809,6 +4809,16 @@ def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     return list(tokens)
 
 
+def _replace_subsequence(tokens: List[str], run: List[str], replacement: List[str]) -> List[str]:
+    """Replace the first exact managed argv block while preserving its position."""
+    if not run:
+        return list(tokens)
+    for i in range(len(tokens) - len(run) + 1):
+        if tokens[i : i + len(run)] == run:
+            return [*tokens[:i], *replacement, *tokens[i + len(run) :]]
+    return list(tokens)
+
+
 def _subsequence_index(tokens: List[str], run: List[str], hint: int) -> int:
     """Where ``run`` sits in ``tokens``, given it was appended at ``hint``.
 
@@ -21530,6 +21540,7 @@ class LlamaCppBackend:
 
                 # User pass-through args go last. Placement flags are removed
                 # below when the Unsloth picker owns the GPU selection.
+                _emit_extra_args: list[str] = []
                 if _mem_extras:
                     _emit_extra_args = list(_mem_extras)
                     if gpu_ids is not None:
@@ -21545,6 +21556,11 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
+                _mem_policy_argv = [
+                    *_mem_managed,
+                    *_load_mode_managed,
+                    *(str(arg) for arg in _emit_extra_args),
+                ]
 
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
@@ -22454,9 +22470,16 @@ class LlamaCppBackend:
                                     binary = binary,
                                     env = _mem_env,
                                 ):
-                                    run_cmd = _without_subsequence(run_cmd, _mem_managed)
-                                    _retry_load_mode, _ = apply_load_mode_policy(
-                                        [],
+                                    _retry_managed, _retry_extras = apply_model_memory_policy(
+                                        extra_args,
+                                        supports_load_mode = bool(
+                                            server_caps.get("supports_load_mode")
+                                        ),
+                                        weights_in_host_memory = False,
+                                        model_memory_settings = _model_memory_settings,
+                                    )
+                                    _retry_load_mode, _retry_extras = apply_load_mode_policy(
+                                        _retry_extras,
                                         supports_load_mode = bool(
                                             server_caps.get("supports_load_mode")
                                         ),
@@ -22464,12 +22487,20 @@ class LlamaCppBackend:
                                         requested_load_mode = load_mode,
                                         model_memory_settings = _model_memory_settings,
                                     )
-                                    if _retry_load_mode:
-                                        run_cmd = [
-                                            *run_cmd[:-2],
-                                            *_retry_load_mode,
-                                            *run_cmd[-2:],
-                                        ]
+                                    if gpu_ids is not None:
+                                        _retry_extras = self._strip_device_extra_args(
+                                            _retry_extras
+                                        )
+                                    _retry_policy_argv = [
+                                        *_retry_managed,
+                                        *_retry_load_mode,
+                                        *(str(arg) for arg in _retry_extras),
+                                    ]
+                                    run_cmd = _replace_subsequence(
+                                        run_cmd,
+                                        _mem_policy_argv,
+                                        _retry_policy_argv,
+                                    )
                                     _mem_host_resident = False
                                     # Recorded so a later "keep resident" save is not
                                     # compared against a lock this launch dropped,

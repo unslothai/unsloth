@@ -2622,6 +2622,53 @@ class TestFitOffRetryDropsTheLock:
         retry = [*retry[:-2], *retry_mode, *retry[-2:]]
         assert retry == ["--fit", "on", "--load-mode", "dio", "--fit", "off"]
 
+    def test_the_retry_restores_stripped_hand_typed_extras(self):
+        from core.inference.llama_cpp import _replace_subsequence
+
+        settings = (True, False)
+        original_extras = ["--load-mode", "dio", "--temp", "0.7"]
+        managed, initial_extras = apply_model_memory_policy(
+            original_extras,
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            model_memory_settings = settings,
+        )
+        initial_mode, initial_extras = apply_load_mode_policy(
+            initial_extras,
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            requested_load_mode = None,
+            model_memory_settings = settings,
+        )
+        initial_policy = [*managed, *initial_mode, *initial_extras]
+
+        retry_managed, retry_extras = apply_model_memory_policy(
+            original_extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            model_memory_settings = settings,
+        )
+        retry_mode, retry_extras = apply_load_mode_policy(
+            retry_extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            requested_load_mode = None,
+            model_memory_settings = settings,
+        )
+        retry_policy = [*retry_managed, *retry_mode, *retry_extras]
+        run = ["llama-server", *initial_policy, "--device", "Vulkan0", "--fit", "off"]
+        assert _replace_subsequence(run, initial_policy, retry_policy) == [
+            "llama-server",
+            "--load-mode",
+            "dio",
+            "--temp",
+            "0.7",
+            "--device",
+            "Vulkan0",
+            "--fit",
+            "off",
+        ]
+
     def test_the_dropped_launch_does_not_demand_a_reload(self, monkeypatch):
         """mlock_applicable goes False with the lock, so a later residency save
         is not compared against a lock this launch deliberately dropped."""
@@ -2652,9 +2699,10 @@ class TestFitOffRetryDropsTheLock:
         for needle in (
             "self._weights_in_host_memory(",
             "fully_gpu_offloaded = True",
-            "_without_subsequence(run_cmd, _mem_managed)",
+            "_replace_subsequence(",
+            "_mem_policy_argv",
+            "_retry_policy_argv",
             "requested_load_mode = load_mode",
-            "*_retry_load_mode",
             "_mem_host_resident = False",
             "self._memory_mlock_applicable = False",
             "resolve_effective_memory_state(run_cmd, env)",
