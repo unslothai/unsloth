@@ -747,8 +747,13 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
     has_fs_enum = bool(RE_FS_ENUM.search(content))
     # dup2 counts only alongside a socket; see RE_FD_DUP.
-    has_socket_dup = bool(RE_FD_DUP.search(content)) and bool(RE_SOCKET_USE.search(content))
-    has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) or has_socket_dup
+    has_named_rev_shell = bool(RE_REVERSE_SHELL.search(content))
+    has_socket_dup = (
+        not has_named_rev_shell
+        and bool(RE_FD_DUP.search(content))
+        and bool(RE_SOCKET_USE.search(content))
+    )
+    has_rev_shell = has_named_rev_shell or has_socket_dup
     has_remote_code = bool(RE_REMOTE_CODE.search(content))
     has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
     has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
@@ -840,15 +845,18 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Reverse / bind shell
     if has_rev_shell:
-        # A socket-backed dup2 records both halves, so the baseline entry
-        # reopens when either the descriptor handling or the socket changes.
-        evidence = _extract_evidence(content, RE_REVERSE_SHELL)
+        # has_socket_dup is only set when no named alternative matched, so a file
+        # that fires on both keeps the evidence it already had and every reviewed
+        # baseline entry for it stays matched. The dup2 pairing writes its own
+        # evidence, recording both halves so the entry reopens when either the
+        # descriptor handling or the socket changes.
         if has_socket_dup:
-            dup_evidence = (
+            evidence = (
                 f"Dup: {_extract_evidence(content, RE_FD_DUP)}\n"
                 f"Socket: {_extract_evidence(content, RE_SOCKET_USE)}"
             )
-            evidence = f"{evidence}\n{dup_evidence}" if evidence else dup_evidence
+        else:
+            evidence = _extract_evidence(content, RE_REVERSE_SHELL)
         findings.append(
             Finding(
                 CRITICAL,

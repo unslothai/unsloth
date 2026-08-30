@@ -2441,3 +2441,30 @@ def test_committed_baseline_covers_the_zoo_url_guard():
     }
     assert "Harvests environment variables/secrets AND makes network calls" in checks
     assert "Accesses cloud metadata/IMDS AND makes network calls" in checks
+
+
+def test_a_named_reverse_shell_keeps_its_original_evidence():
+    """A file that fires on a named alternative must not have its evidence grown.
+
+    The evidence is what evidence_hash is taken over, so widening it reopens
+    every reviewed baseline entry for that file. multiprocess/tests/__init__.py
+    holds a socket, a connect, a subprocess AND a dup2, and appending the dup2
+    pairing to its evidence turned two allowlisted findings back into CRITICALs
+    and reddened the hf-stack and studio shards.
+    """
+    source = (
+        'import os, socket, subprocess\n'
+        'def helper():\n'
+        '    s = socket.socket()\n'
+        '    s.connect(("h", 1))\n'
+        '    subprocess.call("/bin/sh")\n'
+        'def redirect(fd):\n'
+        '    os.dup2(fd, 1)\n'
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1
+    code_only = sp._strip_noncode(source)
+    assert found[0].evidence == sp._extract_evidence(code_only, sp.RE_REVERSE_SHELL), (
+        "evidence for a named alternative must be exactly what it always was"
+    )
+    assert "Dup:" not in found[0].evidence
