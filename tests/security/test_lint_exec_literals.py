@@ -29,7 +29,11 @@ def _module():
     return module
 
 
-def _findings(tmp_path, source, name = "sample.py"):
+def _findings(
+    tmp_path,
+    source,
+    name = "sample.py",
+):
     sample = tmp_path / name
     sample.write_text(source, encoding = "utf-8")
     return _module().scan_file(sample, name)
@@ -70,14 +74,29 @@ def test_a_written_out_value_is_left_alone(tmp_path, description):
 def test_a_notebook_cell_is_read_as_python(tmp_path):
     """The notebooks in this repository are the maintained source, not the .py files."""
     sample = tmp_path / "demo.ipynb"
-    sample.write_text(json.dumps({
-        "cells": [
-            {"cell_type": "markdown", "metadata": {}, "source": ["# not code\n"]},
-            {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
-             "source": ["%pip install unsloth\n", "name = input()\n", 'exec(f"import {name}")\n']},
-        ],
-        "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
-    }))
+    sample.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {"cell_type": "markdown", "metadata": {}, "source": ["# not code\n"]},
+                    {
+                        "cell_type": "code",
+                        "metadata": {},
+                        "execution_count": None,
+                        "outputs": [],
+                        "source": [
+                            "%pip install unsloth\n",
+                            "name = input()\n",
+                            'exec(f"import {name}")\n',
+                        ],
+                    },
+                ],
+                "metadata": {},
+                "nbformat": 4,
+                "nbformat_minor": 5,
+            }
+        )
+    )
     found = _module().scan_file(sample, "demo.ipynb")
     assert len(found) == 1, found
 
@@ -85,12 +104,29 @@ def test_a_notebook_cell_is_read_as_python(tmp_path):
 def test_a_magic_line_does_not_shift_the_reported_line_number(tmp_path):
     """A `%magic` is blanked rather than dropped, so the number still points at the cell."""
     sample = tmp_path / "demo.ipynb"
-    sample.write_text(json.dumps({
-        "cells": [{"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
-                   "source": ["%pip install unsloth\n", "!echo hi\n", "import os\n",
-                              'exec(f"import {os.name}")\n']}],
-        "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
-    }))
+    sample.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {
+                        "cell_type": "code",
+                        "metadata": {},
+                        "execution_count": None,
+                        "outputs": [],
+                        "source": [
+                            "%pip install unsloth\n",
+                            "!echo hi\n",
+                            "import os\n",
+                            'exec(f"import {os.name}")\n',
+                        ],
+                    }
+                ],
+                "metadata": {},
+                "nbformat": 4,
+                "nbformat_minor": 5,
+            }
+        )
+    )
     found = _module().scan_file(sample, "demo.ipynb")
     assert [f["line"] for f in found] == [4], found
 
@@ -109,7 +145,9 @@ def test_the_gate_fails_on_a_call_the_baseline_does_not_have(tmp_path):
     sample.write_text('def f(n):\n    exec(f"import {n}")\n')
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), "--paths", str(sample)],
-        capture_output = True, text = True, cwd = SCRIPT.parents[1],
+        capture_output = True,
+        text = True,
+        cwd = SCRIPT.parents[1],
     )
     assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
     assert "not in the baseline" in proc.stdout, proc.stdout
@@ -184,5 +222,7 @@ def test_an_entry_with_no_justification_fails_the_gate(tmp_path, monkeypatch):
 def test_every_baseline_entry_carries_a_reason():
     """The committed baseline, not a synthetic one."""
     document = json.loads(BASELINE.read_text(encoding = "utf-8"))
-    bare = [e["file"] for e in document["entries"] if not e.get("reason") or e["reason"] == "REVIEW ME"]
+    bare = [
+        e["file"] for e in document["entries"] if not e.get("reason") or e["reason"] == "REVIEW ME"
+    ]
     assert not bare, bare

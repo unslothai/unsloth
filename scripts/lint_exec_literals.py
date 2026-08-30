@@ -48,11 +48,24 @@ BASELINE_PATH = Path(__file__).resolve().parent / "exec_literals_baseline.json"
 
 # Not part of any commit, or not ours to fail on. `tests` is excluded because a test
 # legitimately keeps a real `exec` around as the thing it is asserting about.
-EXCLUDED_PARTS = frozenset({
-    "tests", "node_modules", "build", "dist", ".venv", "venv", "site-packages",
-    ".git", ".tox", ".mypy_cache", ".pytest_cache", "__pycache__", ".ipynb_checkpoints",
-    ".eggs",
-})
+EXCLUDED_PARTS = frozenset(
+    {
+        "tests",
+        "node_modules",
+        "build",
+        "dist",
+        ".venv",
+        "venv",
+        "site-packages",
+        ".git",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        "__pycache__",
+        ".ipynb_checkpoints",
+        ".eggs",
+    }
+)
 
 
 def _is_written_out(node: ast.AST) -> bool:
@@ -146,7 +159,9 @@ def collect(targets: list[str]) -> list[dict]:
         else:
             # A target that resolves to nothing means the gate covers less than it
             # claims to, which is a silent hole rather than a passing run.
-            raise SystemExit(f"{target}: scan target does not exist, so nothing under it was checked")
+            raise SystemExit(
+                f"{target}: scan target does not exist, so nothing under it was checked"
+            )
         for path in paths:
             if not path.is_file():
                 continue
@@ -191,11 +206,16 @@ def main() -> int:
         # Existing reasons are carried over. Rebuilding the list from scratch reset
         # every hand-written justification to nothing, which is how a reviewed entry
         # silently becomes an unreviewed one.
-        reasons = {(e["file"], e["sink"], e["digest"]): e.get("reason", "") for e in document["entries"]}
+        reasons = {
+            (e["file"], e["sink"], e["digest"]): e.get("reason", "") for e in document["entries"]
+        }
         document["entries"] = sorted(
             (
                 {
-                    "file": f, "sink": s, "digest": d, "count": n,
+                    "file": f,
+                    "sink": s,
+                    "digest": d,
+                    "count": n,
                     "reason": reasons.get((f, s, d), "REVIEW ME"),
                 }
                 for (f, s, d), n in _counted(found).items()
@@ -222,7 +242,8 @@ def main() -> int:
         return 1
 
     unreviewed = sorted(
-        (e["file"], e["sink"]) for e in document["entries"]
+        (e["file"], e["sink"])
+        for e in document["entries"]
         if not e.get("reason") or e["reason"] == "REVIEW ME"
     )
     if unreviewed:
@@ -245,15 +266,15 @@ def main() -> int:
     return 0
 
 
-_BAD = '''
+_BAD = """
 def f(name):
     exec(f"import {name}")
     eval("torch." + name)
     compile(source, "<x>", "exec")
     exec("import MODULE".replace("MODULE", name))
-'''
+"""
 
-_GOOD = '''
+_GOOD = """
 import re
 def f(name, source):
     exec("import torch")
@@ -262,7 +283,7 @@ def f(name, source):
     re.compile(name)          # not the builtin
     model.eval()              # not the builtin
     exec()                    # no arguments
-'''
+"""
 
 
 def self_test() -> int:
