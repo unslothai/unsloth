@@ -2951,8 +2951,6 @@ def _expected_torch_flavor_tag() -> str:
             return "rocm"
         if _is_cuda_family_leaf(leaf) or leaf in ("xpu", "cpu"):
             return leaf
-    if _RECORDED_TORCH_TAG:
-        return _RECORDED_TORCH_TAG
     # A resolved backend is a stated choice, not a probe result. setup.sh documents
     # UNSLOTH_TORCH_BACKEND=cpu, and an AMD host taking it recorded nothing at all
     # here, because the NVIDIA probe below answers "" for it; the backend then
@@ -2961,10 +2959,19 @@ def _expected_torch_flavor_tag() -> str:
     # vocabulary names, and only when they agree with the wheel actually installed --
     # a backend is what THIS run asked for, and if the install did not take, recording
     # it would assert something untrue about the venv.
+    #
+    # Ahead of the manifest, not after it: the manifest describes the PREVIOUS install,
+    # and a reinstall that deliberately changes flavor (UNSLOTH_TORCH_BACKEND=cpu over a
+    # cu124 venv) would otherwise re-record the old tag, so the next launch would call
+    # the new CPU wheel a mismatch and a later unpinned update would restore CUDA over
+    # the choice the user just made. The installed-wheel agreement above is what keeps
+    # this from outranking the manifest on a run whose own install has not happened yet.
     if _TORCH_BACKEND in ("cpu", "rocm", "xpu"):
         _installed = _torch_flavor_tag(_installed_torch_version_label())
         if _installed == _TORCH_BACKEND:
             return _TORCH_BACKEND
+    if _RECORDED_TORCH_TAG:
+        return _RECORDED_TORCH_TAG
     # _detect_cuda_torch_index_url honours UNSLOTH_TORCH_INDEX_URL / _FAMILY before it
     # probes, so a pin answers here without an nvidia-smi call; without one, an absent
     # NVIDIA GPU means no CUDA expectation exists to enforce.

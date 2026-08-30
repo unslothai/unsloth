@@ -1547,3 +1547,160 @@ def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeyp
     assert (
         hw._torch_build_snapshot_cache is None
     ), "the recovery must drop the measurement it was taken before"
+
+
+# ========== Round ten ==========
+
+
+def test_a_vendor_mask_does_not_hide_another_vendors_card(monkeypatch):
+    """A hybrid NVIDIA + Arc host with ZE_AFFINITY_MASK="".
+
+    The mask hides the Arc and nothing else, but it was cancelling the whole
+    classification, so a CPU-only wheel went unreported for the NVIDIA card the user
+    never masked. The Arc still has to drop out of the mismatch inventory: it is
+    hidden on purpose, and counting it would offer a repair for a chosen configuration.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "")
+    hybrid = [
+        {"vendor": "nvidia", "name": "NVIDIA RTX A4000"},
+        {"vendor": "intel", "name": "Intel(R) Arc(TM) A770"},
+    ]
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": hybrid, "unknown": False}
+    )
+
+    assert hw.classify_torch_build() == "torch_cpu_build"
+    kept = hw._devices_that_can_establish_a_mismatch(hybrid)
+    assert [d["vendor"] for d in kept] == ["nvidia"]
+
+    # Mask the NVIDIA card as well and the host really is all masked off, which is a
+    # configuration rather than a fault.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert hw.classify_torch_build() is None
+    assert hw._devices_that_can_establish_a_mismatch(hybrid) == []
+
+
+def test_an_intel_only_host_still_reads_an_emptied_ze_mask_as_deliberate(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "-1")
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"devices": [{"vendor": "intel", "name": "Arc A770"}], "unknown": False},
+    )
+    assert hw.classify_torch_build() is None
+
+
+def test_an_untagged_conda_cuda_build_that_will_not_import_is_not_a_cpu_wheel(monkeypatch):
+    """torch/version.py records the runtime even when the wheel carries no local tag.
+
+    The importable path already reads exactly these attributes, so reading only
+    __version__ on the failure path gave the same installation the opposite diagnosis
+    and sent the user to reinstall a GPU wheel it already has.
+    """
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.9.1")
+    monkeypatch.setattr(
+        hw, "_installed_torch_markers_on_disk", lambda: {"cuda": "12.8", "hip": None, "xpu": None}
+    )
+    assert hw._classification_from_disk_label() == "torch_cuda_unavailable"
+
+    for marker in ("hip", "xpu"):
+        monkeypatch.setattr(
+            hw,
+            "_installed_torch_markers_on_disk",
+            lambda marker = marker: {"cuda": None, "hip": None, "xpu": None} | {marker: "1.0"},
+        )
+        assert hw._classification_from_disk_label() == "torch_cuda_unavailable"
+
+    # No markers and no tag: a CPU wheel that will not import is a broken CPU install.
+    monkeypatch.setattr(
+        hw, "_installed_torch_markers_on_disk", lambda: {"cuda": None, "hip": None, "xpu": None}
+    )
+    assert hw._classification_from_disk_label() == "torch_cpu_build"
+
+    # Nothing installed at all is not a claim about anything.
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "")
+    assert hw._classification_from_disk_label() is None
+
+
+def test_the_marker_reader_parses_both_shapes_torch_has_shipped(tmp_path):
+    """Parsed, not executed: this runs when importing torch is the thing that fails."""
+    package = tmp_path / "torch"
+    package.mkdir()
+    (package / "version.py").write_text(
+        "from typing import Optional\n"
+        "__version__ = '2.9.1'\n"
+        "debug = False\n"
+        "cuda: Optional[str] = '12.8'\n"
+        "hip = None\n"
+        "xpu: Optional[str] = None\n",
+        encoding = "utf-8",
+    )
+
+    class _Spec:
+        submodule_search_locations = [str(package)]
+
+    import types as _types
+
+    original = hw.importlib.util.find_spec
+    hw.importlib.util.find_spec = lambda name: _Spec() if name == "torch" else original(name)
+    try:
+        assert hw._installed_torch_markers_on_disk() == {
+            "cuda": "12.8",
+            "hip": None,
+            "xpu": None,
+        }
+    finally:
+        hw.importlib.util.find_spec = original
+    assert isinstance(_types, _types.ModuleType)
+
+
+def test_an_unimportable_gpu_wheel_is_a_mismatch_rather_than_a_detection_failure():
+    """detection_failed sends the user to the server log; the mismatch offers the repair.
+
+    _has_torch() is False for a wheel whose runtime will not load, so detection took
+    the TORCH_IMPORT_ERROR arm and never reached the classification -- and the verdict
+    refresh deliberately freezes detection_failed, so nothing revisited it later.
+    """
+    import pathlib
+
+    source = pathlib.Path(hw.__file__).read_text(encoding = "utf-8")
+    branch = source[source.index("elif TORCH_IMPORT_ERROR is not None:"):]
+    branch = branch[: branch.index("elif platform.system() == \"Darwin\":")]
+    assert "_classification_from_disk_label()" in branch, (
+        "the broken-runtime host must still be classified from the wheel on disk"
+    )
+    assert "torch_build_snapshot()" not in branch, (
+        "and classified WITHOUT probing: importing torch is what failed here, it takes "
+        "seconds to fail on a real broken wheel, and a retry re-runs torch/__init__ "
+        "against the partial module tree the first attempt left behind"
+    )
+    assert branch.index("detection_failed") < branch.index("_mismatch_verdict_for_this_host"), (
+        "detection_failed stays the default; the mismatch only replaces it when the "
+        "inventory actually found a card"
+    )
+
+
+def test_the_mismatch_verdict_names_the_wheel_it_could_not_import(monkeypatch):
+    monkeypatch.setattr(hw, "torch_build_snapshot", lambda **_kw: {
+        "reason": "torch_cuda_unavailable", "usable": False, "unknown": False,
+    })
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"devices": [{"vendor": "nvidia", "name": "A4000"}], "unknown": False},
+    )
+    # _torch_version_label imports torch, which is the thing that fails here.
+    monkeypatch.setattr(hw, "_torch_version_label", lambda: None)
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.6.0+cu124")
+
+    assert hw._mismatch_verdict_for_this_host() == ("torch_cuda_unavailable", "2.6.0+cu124")
+
+    # No card the OS can see: the caller's own plain answer is the honest one.
+    monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": []})
+    assert hw._mismatch_verdict_for_this_host() == (None, None)

@@ -16,6 +16,7 @@ Usage:
         ...
 """
 
+import ast
 import copy
 import gc
 import glob
@@ -719,6 +720,60 @@ def _torch_version_label() -> Optional[str]:
         return None
 
 
+# Which vendor each visibility variable addresses. A mask hides that vendor's devices
+# and nothing else, which is the whole point of the per-vendor filtering below.
+_VISIBILITY_MASK_VENDORS: Dict[str, str] = {
+    "CUDA_VISIBLE_DEVICES": "nvidia",
+    "HIP_VISIBLE_DEVICES": "amd",
+    "ROCR_VISIBLE_DEVICES": "amd",
+    "ZE_AFFINITY_MASK": "intel",
+}
+
+
+def _mask_is_emptied(var: str) -> bool:
+    """True when ``var`` is set to a value that hides every device it addresses.
+
+    Set-but-empty and "-1" are the two spellings; a mask NAMING devices is not this,
+    since that host expects those devices to work.
+    """
+    value = os.environ.get(var)
+    return value is not None and value.strip() in ("", "-1")
+
+
+def _masks_hide_every_accelerator() -> bool:
+    """True when the masks account for every accelerator this host has.
+
+    Then torch reporting none is the configuration working, not a broken install, and
+    the whole classification is suppressed. A mask that covers only SOME of the cards
+    is not this: an emptied ZE_AFFINITY_MASK beside an unmasked NVIDIA GPU hides the
+    Arc and nothing else, and cancelling the classification there would let a CPU-only
+    wheel go unreported for a card the user never masked. Those cards are dropped from
+    the mismatch inventory instead.
+
+    An inventory that found nothing, or could not answer, stays conservative: a mask
+    may well be hiding the only accelerator, and that is the case this existed for.
+    """
+    masked = _vendors_masked_off()
+    if not masked:
+        return False
+    try:
+        devices = get_physical_gpu_inventory(block = False).get("devices") or []
+    except Exception:
+        devices = []
+    if not devices:
+        return True
+    return all(device.get("vendor") in masked for device in devices)
+
+
+def _vendors_masked_off() -> set:
+    """Vendors whose devices are all hidden by a mask that can take effect here."""
+    return {
+        _VISIBILITY_MASK_VENDORS[var]
+        for var in _relevant_visibility_masks()
+        if _mask_is_emptied(var) and var in _VISIBILITY_MASK_VENDORS
+    }
+
+
 def _relevant_visibility_masks() -> tuple[str, ...]:
     """The visibility variables that can actually hide a GPU on THIS host.
 
@@ -822,10 +877,8 @@ def classify_torch_build() -> Optional[str]:
     # broken install -- but nothing is broken and nothing needs repairing, so it must
     # not be reported as a mismatch. Same rule the installers apply before touching a
     # wheel. A mask naming devices is not this: that host expects those to work.
-    for var in _relevant_visibility_masks():
-        value = os.environ.get(var)
-        if value is not None and value.strip() in ("", "-1"):
-            return None
+    if _masks_hide_every_accelerator():
+        return None
     if _expected_cpu_flavor_was_chosen():
         # A CPU wheel is what this install ASKED for. Reporting it as a mismatch would
         # offer a repair whose only effect is to undo the user's own choice.
@@ -898,9 +951,14 @@ def _classification_from_disk_label() -> Optional[str]:
     ``None`` when nothing is installed to read: an absent torch is not a mismatch.
     """
     label = _installed_torch_label_on_disk()
-    if not label:
+    markers = _installed_torch_markers_on_disk()
+    if not label and not any(markers.values()):
         return None
     if "+cu" in label or "+rocm" in label or "+xpu" in label:
+        return "torch_cuda_unavailable"
+    if any(markers.values()):
+        # Untagged but built against a GPU runtime, which the importable path reads the
+        # same way. The wheel is right and the environment is not.
         return "torch_cuda_unavailable"
     return "torch_cpu_build"
 
@@ -926,8 +984,15 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
     name, which is exactly why the expectation and the runtime are consulted too.
     """
     xpu_expected = _expected_xpu_flavor_was_chosen() or _torch_reports_an_xpu_runtime()
+    # A hybrid host is the reason this is per vendor rather than host-wide: an emptied
+    # ZE_AFFINITY_MASK beside an unmasked NVIDIA card hides the Arc and nothing else, so
+    # cancelling the whole classification would let a CPU wheel go unreported for a
+    # card the user never masked.
+    masked_off = _vendors_masked_off()
     keep: list[Dict[str, Any]] = []
     for device in devices:
+        if device.get("vendor") in masked_off:
+            continue
         if device.get("vendor") != "intel":
             keep.append(device)
             continue
@@ -952,6 +1017,13 @@ def _expected_xpu_flavor_was_chosen() -> bool:
 
 def _torch_reports_an_xpu_runtime() -> bool:
     """Whether the installed torch is an XPU build, however unusable it currently is."""
+    if TORCH_IMPORT_ERROR is not None:
+        # It cannot report anything, and asking costs a full torch/__init__ against the
+        # partial module tree the failed import left behind -- seconds, on the host
+        # where the import is what broke. The wheel on disk answers this instead.
+        return "+xpu" in _installed_torch_label_on_disk() or bool(
+            _installed_torch_markers_on_disk()["xpu"]
+        )
     try:
         import torch
         if "+xpu" in str(getattr(torch, "__version__", "")).lower():
@@ -982,6 +1054,51 @@ def _installed_torch_label_on_disk() -> str:
         except OSError:
             continue
     return ""
+
+
+def _installed_torch_markers_on_disk() -> Dict[str, Optional[str]]:
+    """``{cuda, hip, xpu}`` as recorded in the installed torch/version.py.
+
+    The version LABEL is not the whole story: a conda or source CUDA build is untagged
+    and records its runtime here instead, and the importable path already reads exactly
+    these three attributes. Without them the failure path gave the same installation the
+    opposite diagnosis, telling the user to reinstall a GPU wheel it already has rather
+    than to fix the driver. Parsed, not executed, for the same reason as the label.
+    Never raises; a value the file does not set reads as None.
+    """
+    markers: Dict[str, Optional[str]] = {"cuda": None, "hip": None, "xpu": None}
+    try:
+        spec = importlib.util.find_spec("torch")
+    except Exception:
+        return markers
+    locations = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    for location in locations:
+        try:
+            with open(os.path.join(location, "version.py"), encoding = "utf-8") as fh:
+                source = fh.read()
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            # `cuda = '12.8'` and the annotated `cuda: Optional[str] = '12.8'` are both
+            # shapes torch has shipped.
+            if isinstance(node, ast.Assign):
+                names = [n.id for n in node.targets if isinstance(n, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names = [node.target.id]
+            else:
+                continue
+            value = getattr(node, "value", None)
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+                continue
+            for name in names:
+                if name in markers:
+                    markers[name] = value.value
+        return markers
+    return markers
 
 
 def _run_torch_build_snapshot() -> Dict[str, Any]:
@@ -1055,10 +1172,58 @@ def _schedule_torch_build_snapshot_refresh() -> None:
             _torch_build_snapshot_refreshing = False
 
 
+def _seed_torch_build_snapshot(reason: Optional[str]) -> None:
+    """Record a classification that was reached without probing torch.
+
+    The broken-runtime host is classified from the wheel on disk, and that answer is
+    exactly what the request paths need; letting them re-measure would put the import
+    that already failed back on the health thread.
+    """
+    global _torch_build_snapshot_cache
+    _torch_build_snapshot_cache = (
+        time.monotonic(),
+        {"reason": reason, "usable": False, "unknown": False},
+    )
+
+
 def invalidate_torch_build_snapshot() -> None:
     """Drop the cached measurement so the next blocking caller re-probes."""
     global _torch_build_snapshot_cache
     _torch_build_snapshot_cache = None
+
+
+def _mismatch_verdict_for_this_host(reason: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """``(reason, detail)`` when this host's GPUs are real but PyTorch cannot use them.
+
+    ``(None, None)`` otherwise. Blocking, and only detection calls it: it runs off the
+    request path, and the blocking pass is what warms the caches that /api/health then
+    reads without probing anything itself.
+    """
+    if reason is None:
+        reason = torch_build_snapshot()["reason"]
+    if reason is None:
+        return None, None
+    if not _devices_that_can_establish_a_mismatch(
+        get_physical_gpu_inventory().get("devices") or []
+    ):
+        # Torch cannot use a GPU and the OS finds none either: the caller's plain
+        # answer, whichever one it is, is the honest one.
+        return None, None
+    # The wheel on disk names itself when torch cannot be imported. Asked FIRST in that
+    # case rather than as a fallback: _torch_version_label imports torch, which is the
+    # thing that failed, and retrying it costs seconds on exactly that host.
+    if TORCH_IMPORT_ERROR is not None:
+        detail = _installed_torch_label_on_disk() or None
+    else:
+        detail = _torch_version_label() or _installed_torch_label_on_disk() or None
+    logger.warning(
+        "GPUs are present on this host but PyTorch cannot use them (%s%s); "
+        "Train/Export disabled (chat-only). Repair the installation to restore GPU "
+        "support.",
+        reason,
+        f", installed {detail}" if detail else "",
+    )
+    return reason, detail
 
 
 def _torch_gpu_mismatch_report() -> Dict[str, Any]:
@@ -1430,6 +1595,21 @@ def _detect_hardware_locked() -> DeviceType:
     elif TORCH_IMPORT_ERROR is not None:
         # torch installed but broken, so this host was never measured. "no_gpu" would lie.
         CHAT_ONLY_REASON = "detection_failed"
+        # It can still be measured from the wheel on disk, and this is the host that
+        # most needs it: a cu124 build whose cudart will not load is the same fault the
+        # rest of this change reports, but detection_failed sends the user to the server
+        # log instead of offering the repair, and the verdict refresh deliberately
+        # freezes detection_failed so nothing revisits it later.
+        # Classified from the wheel on DISK, not by probing: importing torch is the
+        # thing that just failed here, it takes seconds to fail on a real broken wheel,
+        # and a second attempt re-runs torch/__init__ against the partial module tree
+        # the first one left. Seeded into the snapshot so /api/health reads the answer
+        # without attempting the import either.
+        _disk_reason = _classification_from_disk_label()
+        _seed_torch_build_snapshot(_disk_reason)
+        _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
+        if _build_reason is not None:
+            CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
@@ -1441,23 +1621,9 @@ def _detect_hardware_locked() -> DeviceType:
         # two-A4000 host to go buy a GPU. Both probes are bounded and never raise.
         CHAT_ONLY_REASON = "no_gpu"
         if torch_ok:
-            # Blocking, and the only blocking caller: detection already runs off the
-            # request path, and warming the cache here is what lets /api/health read
-            # the answer later without probing torch itself.
-            build_reason = torch_build_snapshot()["reason"]
-            _physical = _devices_that_can_establish_a_mismatch(
-                get_physical_gpu_inventory().get("devices") or []
-            )
-            if build_reason is not None and _physical:
-                CHAT_ONLY_REASON = build_reason
-                CHAT_ONLY_DETAIL = _torch_version_label()
-                logger.warning(
-                    "GPUs are present on this host but PyTorch cannot use them (%s%s); "
-                    "Train/Export disabled (chat-only). Repair the installation to "
-                    "restore GPU support.",
-                    build_reason,
-                    f", installed {CHAT_ONLY_DETAIL}" if CHAT_ONLY_DETAIL else "",
-                )
+            _build_reason, _build_detail = _mismatch_verdict_for_this_host()
+            if _build_reason is not None:
+                CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
