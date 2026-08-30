@@ -23918,7 +23918,7 @@ async def _cached_local_catalog() -> list:
 # One tuple, published in a single assignment: the fast path below reads it without the
 # lock, and three separate fields could be caught half-replaced -- old stamp and old
 # catalog still matching while `rows` already held the next catalog's rows.
-_SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, rows)
+_SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, generation, rows)
 _SERVABLE_SCAN_CACHE_LOCK = threading.Lock()
 
 
@@ -23932,17 +23932,30 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
     touches no filesystem. Keyed on the catalog stamp like ``_validated_media_picks``, so
     a rescan is what invalidates it and nothing goes stale behind a separate TTL.
     """
-    from core.inference.local_model_resolver import local_load_dir, local_servable_model
+    from core.inference.local_model_resolver import (
+        index_generation,
+        local_load_dir,
+        local_servable_model,
+    )
     from hub.services.models.catalog_classification import _UNSUPPORTED_DIFFUSION_TASK
 
     # Identity as well as the stamp: _CATALOG_CACHE["at"] only advances inside
     # _cached_local_catalog, so a caller that supplies a catalog from anywhere else
     # would otherwise be served the previous scan under an unchanged stamp.
+    #
+    # And the resolver generation, because the catalog is the coarser of the two. A
+    # delete invalidates the resolver but leaves _CATALOG_CACHE standing for the rest
+    # of its TTL, and without this the scan would keep advertising the removed model
+    # or quant for that window, which the per-request scan used to drop at once.
+    generation = index_generation()
+
     def _fresh():
-        entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the triple cannot tear
+        entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the tuple cannot tear
         if entry is None or catalog_at is None:
             return None
-        at, cached_catalog, rows = entry
+        at, cached_catalog, cached_generation, rows = entry
+        if cached_generation != generation:
+            return None
         return rows if at == catalog_at and cached_catalog is catalog else None
 
     hit = _fresh()
@@ -23970,7 +23983,10 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
             # report a freshly loaded model as unloaded. Residency resolves it per call.
             scanned.append((info, is_gguf, quants, getattr(info, "path", None)))
         if catalog_at is not None:
-            _SERVABLE_SCAN_CACHE["entry"] = (catalog_at, catalog, scanned)
+            # The generation read BEFORE the scan, not after: an invalidation that
+            # landed while the scan ran would otherwise be stamped in as if the scan
+            # had seen it, and the very delete this guards against would be cached.
+            _SERVABLE_SCAN_CACHE["entry"] = (catalog_at, catalog, generation, scanned)
         return scanned
 
 

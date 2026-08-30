@@ -577,6 +577,17 @@ def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
     return False
 
 
+# Bumped by every invalidate_index() call. A cache built on top of this index can key
+# on it and be dropped by the same call that drops the index, rather than each new
+# invalidation site having to remember one more cache to clear.
+_generation = 0
+
+
+def index_generation() -> int:
+    """How many times the local scan has been invalidated since this process started."""
+    return _generation
+
+
 def invalidate_index(*, additions_only: bool = False) -> None:
     """Mark the cached scan stale.
 
@@ -585,9 +596,10 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     Other invalidations retain the allocation but revoke that trust, since a scan
     root may have been removed. Ordinary TTL expiry is likewise not additions-only.
     """
-    global _scan, _warm_pending
+    global _scan, _warm_pending, _generation
     with _lock:
         now = time.monotonic()
+        _generation += 1
         timestamp, retained = _scan
         # Publish entries and their trust state together. A lock-free reader sees
         # either the complete old snapshot or the complete invalidated one, never a

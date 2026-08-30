@@ -170,23 +170,24 @@ def test_a_raising_resolver_is_not_cached_as_an_empty_catalog(monkeypatch):
 
 
 def test_the_cache_entry_is_published_atomically(stub):
-    # The fast path reads without the lock. Three separate fields could be caught
+    # The fast path reads without the lock. Separate fields could be caught
     # half-replaced: old stamp and old catalog still matching while rows already held
     # the next catalog's rows, so an in-flight request got another catalog's models.
     first, second = _catalog(2, "a"), _catalog(3, "b")
     inf._servable_catalog_rows(first, 111.0)
     entry = inf._SERVABLE_SCAN_CACHE["entry"]
-    assert entry is not None and len(entry) == 3, "the triple must be one object"
-    at, cached, rows = entry
+    assert entry is not None and len(entry) == 4, "the tuple must be one object"
+    at, cached, generation, rows = entry
     assert at == 111.0 and cached is first and len(rows) == 2
+    assert isinstance(generation, int)
 
     inf._servable_catalog_rows(second, 222.0)
-    at, cached, rows = inf._SERVABLE_SCAN_CACHE["entry"]
+    at, cached, _generation, rows = inf._SERVABLE_SCAN_CACHE["entry"]
     assert (at, cached is second, len(rows)) == (
         222.0,
         True,
         3,
-    ), "stamp, catalog and rows move together"
+    ), "stamp, catalog, generation and rows move together"
 
 
 def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
@@ -226,3 +227,101 @@ def test_large_catalog_stays_correct(stub):
     rows = inf._servable_catalog_rows(catalog, 111.0)
     assert len(rows) == 500
     assert stub["servable"] == 500, "second call must be free"
+
+
+# ------------------------------------------------------- deletion during the catalog TTL
+
+
+def test_a_deleted_model_leaves_the_listing_within_the_catalog_ttl(monkeypatch):
+    """A delete invalidates the resolver, not _CATALOG_CACHE, so the catalog behind this
+    cache can stay standing for the rest of its 30s TTL. Keying on the resolver
+    generation is what stops the removed model being advertised for that window, which
+    the per-request scan used to drop at once."""
+    from core.inference import local_model_resolver as resolver
+
+    catalog = _catalog(2, "d")
+    gone: set[str] = set()
+
+    def _servable(info):
+        return None if info.path in gone else (True, ("Q4_K_M",))
+
+    monkeypatch.setattr("core.inference.local_model_resolver.local_servable_model", _servable)
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
+    monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
+
+    assert [r[0].id for r in inf._servable_catalog_rows(catalog, 111.0)] == ["repo/d0", "repo/d1"]
+    gone.add("/models/d1")
+    # Same catalog, same stamp: without the generation this still answers from the cache.
+    resolver.invalidate_index()
+    assert [r[0].id for r in inf._servable_catalog_rows(catalog, 111.0)] == ["repo/d0"]
+
+
+def test_an_additions_only_invalidation_also_refreshes_the_scan(monkeypatch):
+    """A finished download invalidates additions-only, and a new quant must appear
+    without waiting out the catalog TTL."""
+    from core.inference import local_model_resolver as resolver
+
+    catalog = _catalog(1, "q")
+    quants = {"/models/q0": ("Q4_K_M",)}
+
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_servable_model",
+        lambda info: (True, quants[info.path]),
+    )
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
+    monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
+
+    assert inf._servable_catalog_rows(catalog, 222.0)[0][2] == ("Q4_K_M",)
+    quants["/models/q0"] = ("Q8_0", "Q4_K_M")
+    resolver.invalidate_index(additions_only = True)
+    assert inf._servable_catalog_rows(catalog, 222.0)[0][2] == ("Q8_0", "Q4_K_M")
+
+
+def test_an_invalidation_during_a_scan_is_not_stamped_in(monkeypatch):
+    """The generation is read before the scan, so an invalidation that lands while the
+    scan runs makes the stored entry stale rather than being cached as already seen."""
+    from core.inference import local_model_resolver as resolver
+
+    catalog = _catalog(1, "r")
+    state = {"racing": True}
+
+    def _servable(info):
+        if state["racing"]:
+            state["racing"] = False
+            resolver.invalidate_index()
+        return (True, ("Q4_K_M",))
+
+    monkeypatch.setattr("core.inference.local_model_resolver.local_servable_model", _servable)
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
+    monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
+
+    inf._servable_catalog_rows(catalog, 333.0)
+    entry = inf._SERVABLE_SCAN_CACHE["entry"]
+    assert entry is not None
+    assert entry[2] != resolver.index_generation(), "the racing scan must not read as fresh"
+
+
+def test_the_generation_only_moves_on_invalidation(monkeypatch):
+    """A quiet process must still get the cache: if the generation drifted on its own,
+    every request would rescan and the fix would undo the performance work."""
+    from core.inference import local_model_resolver as resolver
+
+    before = resolver.index_generation()
+    catalog = _catalog(3, "s")
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.local_servable_model",
+        lambda info: (True, ("Q4_K_M",)),
+    )
+    monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
+    calls = {"n": 0}
+
+    def _resident(key, **kw):
+        calls["n"] += 1
+        return False
+
+    monkeypatch.setattr(inf, "_resolves_to_resident", _resident)
+    for _ in range(5):
+        inf._servable_catalog_rows(catalog, 444.0)
+    assert resolver.index_generation() == before
+    # Residency is deliberately per call; the scan behind it ran once.
+    assert calls["n"] == 15
