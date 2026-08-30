@@ -3,39 +3,15 @@
 
 """A dispatched module must carry a hook, including after we rebuild it.
 
-`accelerate.dispatch_model` hooks every name in the device map, tied or not.
-What loses the hook is our own patching pass: `post_patch` calls
-`unsloth_zoo.patching_utils.patch_model_and_tokenizer`, which builds a brand new
-`torch.nn.Embedding` around the existing weight and a brand new
-`torch.nn.Linear` for the lm_head, then installs them through
-`set_input_embeddings` / `set_output_embeddings`. The weights come across; the
-`_hf_hook` does not, because it belonged to the module object just replaced.
+`dispatch_model` hooks every map entry; `post_patch` then installs a NEW
+Embedding and Linear over the same weights, so `_hf_hook` dies with the old
+module and a split model raises `index is on cuda:0, different from other
+tensors on cuda:1`. `tie_word_embeddings = False` fails identically, so nothing
+here is conditioned on the tie.
 
-On one card that is invisible. On a split model those two are usually the ones
-the planner put on the other card, so they become the only modules with nothing
-to move their input to them.
-
-Measured on 2x Tesla T4, `unsloth/Qwen3-0.6B` in 4bit, map placing
-`embed_tokens` and `lm_head` on cuda:1 and the 30 layers on cuda:0:
-
-    modules_with_hf_hook   395
-    embedding_has_hook     False
-    train                  RuntimeError ... index is on cuda:0, different from
-                           other tensors on cuda:1 ... wrapper_CUDA__index_select
-
-while the same model at `device_map = {"": 0}` trained to loss 2.662875493367513.
-
-Reproduced away from a two-card machine as well, since `cpu` and `cuda:0` are
-two real devices: dispatch a tied model with the embedding on the card and the
-layers on the host, rebuild the embeddings the way `post_patch` does, and the
-same `index_select` error appears. `tie_word_embeddings = False` fails
-identically, which is why nothing here is conditioned on the tie.
-
-These RUN `_repair_dispatch_hooks` against stub modules. A rule fed a
-hand-written dict would pass on a function that repairs nothing, which is the
-failure this file exists to prevent.
+These RUN the real function against stubs: a rule fed a hand-written dict passes
+on a function that repairs nothing.
 """
-
 import sys
 import types
 
@@ -48,23 +24,17 @@ from accelerate.hooks import AlignDevicesHook, add_hook_to_module  # noqa: E402
 
 
 def _repair():
-    """The real function, imported without dragging in unsloth's CUDA stack."""
     from unsloth.models.vision import _repair_dispatch_hooks
     return _repair_dispatch_hooks
 
 
-# `init_hook` MOVES the module's tensors to the execution device, so naming a
-# CUDA device needs that card to exist -- and the CPU runner this suite also
-# runs on has none. "meta" is a real device everywhere and accelerate handles it
-# explicitly, so the attach is exercised for real with no GPU at all; "cpu"
-# stands in for a module the repair must leave alone. The integer -> "cuda:N"
-# mapping is checked separately, without attaching anything.
+# `init_hook` moves real tensors, so a CUDA name needs that card and the CPU
+# runner has none. "meta" is real everywhere; "cpu" must be left alone.
 FAR = "meta"
 NEAR = "cpu"
 
 
 class _Model(torch.nn.Module):
-    """A stand-in with the shape that matters: named submodules and a map."""
 
     def __init__(
         self,
@@ -85,7 +55,6 @@ def _hooked(model):
 
 
 def test_a_tied_module_the_map_placed_gets_its_hook_back():
-    """The measured failure: in the map, on the far card, no hook."""
     model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": NEAR})
     assert not hasattr(model.embed_tokens, "_hf_hook"), "fixture is not the broken state"
 
@@ -99,12 +68,7 @@ def test_a_tied_module_the_map_placed_gets_its_hook_back():
 
 
 def test_a_bare_integer_names_the_card_the_map_meant(monkeypatch):
-    """`hf_device_map` gives CUDA entries as bare ints.
-
-    torch reads an int as a device index only when paired with a type, so an
-    unconverted `1` would send the ids somewhere the map never named. Captured
-    rather than attached, since attaching would need that second card present.
-    """
+    """`hf_device_map` gives CUDA entries as bare ints; torch needs the type."""
     import accelerate.hooks as ah
 
     seen = {}
@@ -129,11 +93,6 @@ def test_a_bare_integer_names_the_card_the_map_meant(monkeypatch):
 
 
 def test_a_failed_attach_is_reported_not_swallowed():
-    """A repair that counts a module it never hooked is worse than none.
-
-    The original crash stands and its reason is hidden. `init_hook` moves the
-    module's tensors, so a map naming a device this machine lacks lands here.
-    """
     model = _Model({"embed_tokens": "cuda:99", "layer": NEAR})
     with pytest.warns(RuntimeWarning, match = "could not re-attach"):
         repaired = _repair()(model)
@@ -154,7 +113,6 @@ def test_a_module_that_already_has_a_hook_is_left_alone():
 
 
 def test_a_single_device_map_is_left_completely_alone():
-    """The overwhelmingly common case must cost nothing and change nothing."""
     # Entries that WOULD attach, so dropping the early return changes the
     # count. A map of unattachable devices passes either way and proves nothing.
     model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": FAR})
@@ -180,14 +138,6 @@ def test_a_cpu_or_disk_entry_is_never_hooked_here():
 
 
 def test_a_torch_device_cpu_entry_is_never_hooked_either():
-    """A map may hold `torch.device("cpu")` rather than the string.
-
-    `dispatch_model` takes `Union[str, int, torch.device]` and writes back what
-    it was given, so both spellings reach `hf_device_map`. They must be read the
-    same way: `torch.device("cpu") != "cpu"`, so an identity test passes the
-    offloaded module straight through to the hook, which is the exact opposite
-    of what the cpu branch is for.
-    """
     model = _Model({"embed_tokens": torch.device("cpu"), "lm_head": FAR, "layer": NEAR})
     assert _repair()(model) == 1, "only `lm_head` is repairable here"
     assert "embed_tokens" not in _hooked(model), (
@@ -197,13 +147,7 @@ def test_a_torch_device_cpu_entry_is_never_hooked_either():
 
 
 def test_the_llama_loader_stands_aside_under_vllm():
-    """`fast_inference` means vLLM owns the weights, not this module tree.
-
-    `_attach_bnb_multidevice_hooks` opens with that test, and the repair that
-    runs at the end of the llama loader has to make the same call: hooking an HF
-    module tree that is not the one executing moves tensors for nothing.
-    Read off the source, since the decision is the caller's.
-    """
+    """vLLM owns the weights; the HF tree this would hook is not what runs."""
     import ast
     import inspect
     import textwrap
@@ -239,20 +183,12 @@ def test_the_llama_loader_stands_aside_under_vllm():
 
 
 def test_a_name_the_model_does_not_have_is_skipped_not_invented():
-    """A map naming a module this build lacks must not raise during a load."""
     model = _Model({"embed_tokens": FAR, "does.not.exist": FAR, "layer": NEAR})
     assert _repair()(model) == 1, "the one real far-device name was not repaired"
     assert "embed_tokens" in _hooked(model)
 
 
 def test_the_repair_stands_aside_for_an_offloaded_embedding():
-    """`_embedding_dispatch_device` READS this hook to place the ids.
-
-    With `offload_embedding` the weight is on the CPU and the offload pre-hook
-    has already sent the ids there; a hook naming the card the map wanted would
-    answer that question with the wrong device. Read off the caller, since the
-    decision lives there rather than in the repair.
-    """
     import ast
     import inspect
 
@@ -291,27 +227,7 @@ def test_the_repair_stands_aside_for_an_offloaded_embedding():
     reason = "needs two real devices; `cpu` plus one card is enough, a CPU-only runner is not",
 )
 def test_the_whole_sequence_against_real_accelerate():
-    """Dispatch, rebuild the embeddings, crash, repair, and check the tie.
-
-    Everything above drives the repair against stubs, which is the right way to
-    test the rules but cannot say whether the repair fixes the thing it was
-    written for. This runs the real sequence: `dispatch_model` splits a tied
-    model, the embeddings are rebuilt exactly as `patch_model_and_tokenizer`
-    rebuilds them, the forward raises, and the repair makes it run.
-
-    The last assertion is the one no loss comparison can make.
-    `AlignDevicesHook.init_hook` calls `set_module_tensor_to_device`, which
-    REPLACES the Parameter object, and replacing one half of a tied pair unties
-    it. The forward output does not change, so a matching loss proves nothing;
-    only a full finetune would ever notice its two halves had stopped sharing a
-    gradient. It holds because `set_module_tensor_to_device` returns early when
-    the parameter is already on the target device, which it always is here --
-    the weight was moved by the dispatch, and only the hook went missing.
-
-    `cpu` stands in for the card holding the layers and `cuda:0` for the card
-    holding the embedding, so the embedding is the one module NOT on the main
-    device. That is what makes its missing hook fatal.
-    """
+    """dispatch, rebuild as `post_patch` does, repair, then train."""
     from accelerate import dispatch_model
 
     transformers = pytest.importorskip("transformers")
@@ -390,24 +306,12 @@ def test_the_whole_sequence_against_real_accelerate():
 
 
 def test_a_torch_device_with_an_index_is_still_read_as_cpu():
-    """`torch.device("cpu", 0)` is a legal spelling and its `.type` is "cpu".
-
-    Comparing `str()` gives "cpu:0", which matches neither guard entry, so the
-    offloaded module is hooked as if it were on an accelerator. Reading `.type`
-    is what makes every spelling of the same device land in the same branch.
-    """
     model = _Model({"embed_tokens": torch.device("cpu", 0), "lm_head": FAR, "layer": NEAR})
     assert _repair()(model) == 1, "only `lm_head` is repairable here"
     assert "embed_tokens" not in _hooked(model)
 
 
 def test_the_repaired_hook_carries_the_models_skip_keys(monkeypatch):
-    """`dispatch_model` passes `_skip_keys_device_placement`; so must the repair.
-
-    Every decoder checked reports `["past_key_values"]`. Those are the keys
-    accelerate deliberately does NOT move alongside the inputs, so a hook
-    without them relocates a cache the model expects to stay where it is.
-    """
     import accelerate.hooks as ah
 
     seen = {}
@@ -425,18 +329,7 @@ def test_the_repaired_hook_carries_the_models_skip_keys(monkeypatch):
 
 
 def test_io_same_device_follows_the_root_hook(monkeypatch):
-    """Only the ROOT gets `io_same_device` from `dispatch_model`.
-
-    Setting it on a submodule copies that block's whole output back to the
-    incoming card, and the next block's hook copies it over again, so a run of
-    rebuilt blocks round-trips the hidden states at every layer. Measured on the
-    split repro, False gives byte-identical logits and the output still comes
-    back to the caller, because the root's hook does that and survives the
-    embedding rebuild.
-
-    It stays True in the one case where nothing else would return the output: a
-    model with no root hook at all.
-    """
+    """dispatch sets it on the root only; on a submodule it double-copies."""
     import accelerate.hooks as ah
 
     seen = {}
@@ -488,12 +381,6 @@ def _repairs_last_in(func):
 
 
 def test_the_vision_loader_repairs_after_its_own_patching_pass():
-    """`patch_model_and_tokenizer` runs inside `FastBaseModel.from_pretrained`.
-
-    It rebuilds the same two modules the load just hooked, so a repair that runs
-    only at the attach site is undone before the function returns and a split
-    VLM still meets the cross-device `index_select`.
-    """
     from unsloth.models.vision import FastBaseModel
 
     repair_lines, replacer_lines = _repairs_last_in(FastBaseModel.from_pretrained)
@@ -506,12 +393,6 @@ def test_the_vision_loader_repairs_after_its_own_patching_pass():
 
 
 def test_the_loader_repairs_after_resizing_the_vocabulary():
-    """`resize_token_embeddings` is the last module swap of all.
-
-    It runs in `loader.py` AFTER `from_pretrained` has returned and done its own
-    repair, and it builds a new embedding (and a new tied head) without carrying
-    the `_hf_hook` across.
-    """
     import ast
     import inspect
 
@@ -539,12 +420,7 @@ def test_the_loader_repairs_after_resizing_the_vocabulary():
 
 
 class _CoarseModel(torch.nn.Module):
-    """A model whose embedding is covered by an ANCESTOR entry, not a key.
-
-    `dispatch_model` hooks such a module anyway, because it walks the subtree an
-    entry covers, so a repair that iterates map keys alone leaves exactly the
-    module the patching pass rebuilt without a hook.
-    """
+    """An endpoint covered by an ANCESTOR entry, which dispatch hooks anyway."""
 
     def __init__(self, device_map):
         super().__init__()
@@ -574,7 +450,6 @@ def test_an_embedding_covered_only_by_an_ancestor_entry_is_repaired():
 
 
 def test_a_root_entry_covers_both_rebuilt_modules():
-    """A `""` root key covers everything, and names nothing."""
     model = _CoarseModel({"": FAR, "model.layer": NEAR})
 
     _repair()(model)
@@ -583,12 +458,7 @@ def test_a_root_entry_covers_both_rebuilt_modules():
 
 
 def test_the_map_wins_over_a_covering_ancestor():
-    """A module the map NAMES keeps its own device, not an ancestor's.
-
-    Resolution is a fallback for names the map omits. If it ever overrode a
-    real entry, a coarse ancestor would silently relocate a module the planner
-    placed deliberately.
-    """
+    """Resolution is a fallback; overriding a real entry would relocate it."""
     model = _CoarseModel({"": NEAR, "model.embed_tokens": FAR})
 
     _repair()(model)
@@ -601,7 +471,6 @@ def test_the_map_wins_over_a_covering_ancestor():
 
 
 def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
-    """`get_input_embeddings` raising must not take the whole repair down."""
 
     class _Awkward(_CoarseModel):
         def get_input_embeddings(self):
@@ -616,7 +485,6 @@ def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
 
 
 def _lift():
-    """The adapter-wrapper lift, loaded the same way as the repair."""
     import unsloth.models.vision as V
     return V._lift_endpoint_hooks_onto_adapters
 
@@ -641,12 +509,7 @@ class _WrappedModel(torch.nn.Module):
 
 
 class _FakeLora(torch.nn.Module):
-    """The one structural fact the lift reads: `base_layer` carries the hook.
-
-    Standing in for `peft.tuners.lora.Linear` so the guard does not need peft
-    installed. The device behaviour it models is asserted against the real peft
-    separately, on hardware.
-    """
+    """Stands in for `peft.tuners.lora.Linear`: `base_layer` carries the hook."""
 
     def __init__(self, base_layer):
         super().__init__()
@@ -684,7 +547,6 @@ def test_the_lifted_hook_takes_the_base_layers_execution_device():
 
 
 def test_an_unwrapped_endpoint_is_left_alone():
-    """The overwhelmingly common case: no adapter on the embeddings."""
     model = _WrappedModel(wrap_in = False, wrap_out = False)
     add_hook_to_module(model.embed, AlignDevicesHook(execution_device = torch.device(FAR)))
 
@@ -692,7 +554,6 @@ def test_an_unwrapped_endpoint_is_left_alone():
 
 
 def test_a_wrapper_whose_base_was_never_hooked_is_left_alone():
-    """Single device, or a base the map never placed. Nothing to mirror."""
     assert _lift()(_WrappedModel()) == 0
 
 

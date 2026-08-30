@@ -1075,12 +1075,8 @@ class FastLanguageModel(FastLlamaModel):
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
-            # `resize_token_embeddings` builds a NEW embedding (and, when tied, a
-            # new output head) and the `_hf_hook` does not travel to the
-            # replacement. On a model the loader split across cards that is the
-            # last module swap of all, after every repair inside
-            # `from_pretrained`, so without this the ids reach a card the weight
-            # is no longer on and the load ends in `index_select`.
+            # `resize_token_embeddings` rebuilds the embedding, dropping `_hf_hook`;
+            # this is the last module swap of all, after every repair above.
             try:
                 from unsloth.models.vision import _repair_dispatch_hooks
                 _repaired = _repair_dispatch_hooks(model)
@@ -1184,8 +1180,6 @@ class FastLanguageModel(FastLlamaModel):
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
-            # PEFT keeps a repaired endpoint only as `base_layer`, so its hook no
-            # longer covers the adapter branch. Lift it onto the wrapper.
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)
@@ -2153,12 +2147,8 @@ class FastModel(FastBaseModel):
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
-            # `resize_token_embeddings` builds a NEW embedding (and, when tied, a
-            # new output head) and the `_hf_hook` does not travel to the
-            # replacement. On a model the loader split across cards that is the
-            # last module swap of all, after every repair inside
-            # `from_pretrained`, so without this the ids reach a card the weight
-            # is no longer on and the load ends in `index_select`.
+            # `resize_token_embeddings` rebuilds the embedding, dropping `_hf_hook`;
+            # this is the last module swap of all, after every repair above.
             try:
                 from unsloth.models.vision import _repair_dispatch_hooks
                 _repaired = _repair_dispatch_hooks(model)
@@ -2322,8 +2312,6 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
-            # PEFT keeps a repaired endpoint only as `base_layer`, so its hook no
-            # longer covers the adapter branch. Lift it onto the wrapper.
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)
