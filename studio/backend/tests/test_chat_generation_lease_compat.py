@@ -11,6 +11,7 @@ has to survive without ever reaping a live generation.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sqlite3
 import sys
@@ -23,6 +24,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from core.inference import chat_generation_runs as runs_mod  # noqa: E402
 from storage import chat_generation_runs_db as runs_db  # noqa: E402
 from storage import studio_db  # noqa: E402
 
@@ -477,3 +479,79 @@ def test_touch_progress_survives_a_blocked_migration(clock, monkeypatch):
     _seed()
     with _migration_blocked(monkeypatch):
         runs_db.touch_progress("run-1")  # must not raise
+
+
+# ---------------------------------------------- the lease during model preparation
+
+
+def _supervisor():
+    """Bare instance: only the heartbeat is under test, not the supervisor's wiring."""
+    sup = runs_mod.ChatGenerationSupervisor.__new__(runs_mod.ChatGenerationSupervisor)
+    return sup
+
+
+def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatch):
+    """A single preparation phase can outlast the lease on its own, a large GGUF over a
+    slow link being the case. Behavioural rather than source-pinned: the point is that
+    the lease actually moves, not that the call is present."""
+    _seed()
+    sup = _supervisor()
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_INTERVAL_S", 0.0, raising = False)
+    ticks = {"n": 0}
+    real_sleep = asyncio.sleep
+
+    async def _sleep(_seconds):
+        # Each tick is one renewal interval of wall clock, so a preparation far longer
+        # than the lease is simulated without waiting one.
+        ticks["n"] += 1
+        clock.advance_ms(60_000)
+        await real_sleep(0)
+
+    monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
+
+    async def _run():
+        task = asyncio.create_task(sup._renew_lease_while_preparing("run-1"))
+        while ticks["n"] < 40:  # 40 minutes, twice the 1200s lease
+            await real_sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_run())
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "a preparation longer than the lease must not be reaped"
+    )
+
+
+def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
+    """Unbounded renewal would keep a preparation that never returns alive forever,
+    which is the failure this file exists to end."""
+    _seed()
+    sup = _supervisor()
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX", 3, raising = False)
+    real_sleep = asyncio.sleep
+
+    async def _sleep(_seconds):
+        clock.advance_ms(60_000)
+        await real_sleep(0)
+
+    monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
+    # Runs to completion on its own rather than being cancelled: the bound is the exit.
+    asyncio.run(sup._renew_lease_while_preparing("run-1"))
+    clock.advance_ms(10 * _LEASE_MS)
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
+
+
+def test_a_renewal_that_cannot_be_written_does_not_fail_the_generation(clock, monkeypatch):
+    _seed()
+    sup = _supervisor()
+    real_sleep = asyncio.sleep
+
+    async def _sleep(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(
+        runs_db, "touch_progress", lambda _id: (_ for _ in ()).throw(RuntimeError("gone"))
+    )
+    asyncio.run(sup._renew_lease_while_preparing("run-1"))  # must not raise
