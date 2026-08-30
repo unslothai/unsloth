@@ -734,9 +734,9 @@ def test_leaving_the_queue_renews_without_waiting_for_the_rate_limit():
     guard = source.index("_ADMISSION_DONE_MARKER in text")
     renew = source.index("_try_touch_progress", guard)
     between = source[guard:renew]
-    assert "_renew_interval_seconds()" not in between, (
-        "the admission-done renewal must not be rate limited"
-    )
+    assert (
+        "_renew_interval_seconds()" not in between
+    ), "the admission-done renewal must not be rate limited"
 
 
 def test_the_renewal_interval_stays_under_the_lease_actually_in_force(monkeypatch):
