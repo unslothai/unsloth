@@ -263,8 +263,7 @@ def test_the_repair_stands_aside_for_an_offloaded_embedding():
     calls = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "id", None) == "_repair_dispatch_hooks"
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_repair_dispatch_hooks"
     ]
     assert calls, "the loader no longer repairs tied hooks at all"
 
@@ -330,7 +329,12 @@ def test_the_whole_sequence_against_real_accelerate():
     torch.manual_seed(0)
     model = transformers.AutoModelForCausalLM.from_config(config).to(torch.float32).eval()
 
-    device_map = {"model.embed_tokens": 0, "lm_head": 0, "model.norm": "cpu", "model.rotary_emb": "cpu"}
+    device_map = {
+        "model.embed_tokens": 0,
+        "lm_head": 0,
+        "model.norm": "cpu",
+        "model.rotary_emb": "cpu",
+    }
     for i in range(config.num_hidden_layers):
         device_map[f"model.layers.{i}"] = "cpu"
     dispatch_model(model, device_map = device_map, main_device = "cpu")
@@ -350,9 +354,9 @@ def test_the_whole_sequence_against_real_accelerate():
     model.lm_head = lm_head
     model.tie_weights()
 
-    assert not hasattr(model.get_input_embeddings(), "_hf_hook"), (
-        "the rebuild kept the hook, so there is nothing here to repair"
-    )
+    assert not hasattr(
+        model.get_input_embeddings(), "_hf_hook"
+    ), "the rebuild kept the hook, so there is nothing here to repair"
 
     ids = torch.randint(0, 128, (2, 6))
     with pytest.raises(RuntimeError, match = "same device"):
@@ -366,9 +370,9 @@ def test_the_whole_sequence_against_real_accelerate():
         "the repair untied the pair, so a full finetune silently stops sharing "
         "one gradient between the embedding and the lm_head"
     )
-    assert model.get_input_embeddings().weight.data_ptr() == pointer_before, (
-        "the repair reallocated a weight that was already on its mapped device"
-    )
+    assert (
+        model.get_input_embeddings().weight.data_ptr() == pointer_before
+    ), "the repair reallocated a weight that was already on its mapped device"
 
     with torch.no_grad():
         model(ids)  # the crash above is gone
@@ -380,6 +384,6 @@ def test_the_whole_sequence_against_real_accelerate():
     input_grad = model.get_input_embeddings().weight.grad
     output_grad = model.lm_head.weight.grad
     assert input_grad is not None and output_grad is not None
-    assert input_grad.data_ptr() == output_grad.data_ptr(), (
-        "the tied pair accumulated two separate gradients after the repair"
-    )
+    assert (
+        input_grad.data_ptr() == output_grad.data_ptr()
+    ), "the tied pair accumulated two separate gradients after the repair"
