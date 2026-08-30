@@ -713,3 +713,68 @@ def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
     add_hook_to_module(model.head.base_layer, AlignDevicesHook(execution_device = torch.device(FAR)))
 
     assert _lift()(model) == 1, "one raising accessor aborted the whole lift"
+
+
+class _FakeModulesToSave(torch.nn.Module):
+    """The shape the continued pretraining recipe builds.
+
+    Naming an endpoint in `target_modules` routes it to `modules_to_save`, not
+    to a LoRA layer -- corrected by a 2xT4 run after the LoRA guards were
+    written. peft deepcopies `original_module` for the untied case, so the copy
+    carries the hook; for a TIED endpoint it builds a fresh `nn.Linear` instead
+    and there is nothing to inherit.
+    """
+
+    def __init__(self, original, active_hooked):
+        super().__init__()
+        self.original_module = original
+        active = torch.nn.Linear(2, 4)
+        if active_hooked:
+            add_hook_to_module(active, AlignDevicesHook(execution_device = torch.device(FAR)))
+        self.modules_to_save = torch.nn.ModuleDict({"default": active})
+
+
+class _SaveModel(torch.nn.Module):
+    def __init__(self, wrapper):
+        super().__init__()
+        self.wrapper = wrapper
+
+    def get_input_embeddings(self):
+        return self.wrapper
+
+    def get_output_embeddings(self):
+        return None
+
+
+def _hooked_original():
+    original = torch.nn.Linear(2, 4)
+    add_hook_to_module(original, AlignDevicesHook(
+        execution_device = torch.device(FAR), skip_keys = ["past_key_values"]))
+    return original
+
+
+def test_the_tied_branchs_unhooked_copy_gets_a_hook():
+    """peft's tied branch builds a fresh Linear, so no hook is inherited."""
+    model = _SaveModel(_FakeModulesToSave(_hooked_original(), active_hooked = False))
+
+    assert _lift()(model) == 1, (
+        "the trainable copy is still unhooked, so training the embeddings on a "
+        "split model crosses devices at the first lookup"
+    )
+    hook = model.wrapper.modules_to_save["default"]._hf_hook
+    assert hook.execution_device == torch.device(FAR)
+    assert hook.skip_keys == ["past_key_values"]
+
+
+def test_the_untied_branchs_copy_is_left_alone():
+    """The deepcopy already carries a hook and peft rebuilt it."""
+    model = _SaveModel(_FakeModulesToSave(_hooked_original(), active_hooked = True))
+
+    assert _lift()(model) == 0, "a second hook was stacked on peft's own"
+
+
+def test_a_modules_to_save_wrapper_whose_original_was_never_hooked_is_left_alone():
+    """Single device, so there was nothing to mirror in the first place."""
+    model = _SaveModel(_FakeModulesToSave(torch.nn.Linear(2, 4), active_hooked = False))
+
+    assert _lift()(model) == 0
