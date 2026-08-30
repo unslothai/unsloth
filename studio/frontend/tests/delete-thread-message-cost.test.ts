@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MessageRepository } from "@assistant-ui/core/internal";
+import * as dedupeSiblings from "../src/features/chat/utils/dedupe-identical-user-siblings.ts";
 import * as researchSync from "../src/features/chat/utils/research-message-sync.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -71,6 +72,7 @@ function harness(): Harness {
         },
       },
       "./research-message-sync": researchSync,
+      "./dedupe-identical-user-siblings": dedupeSiblings,
     },
   );
   return { module, calls, synced, stored };
