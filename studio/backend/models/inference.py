@@ -3265,6 +3265,9 @@ class AnthropicThinkingConfig(BaseModel):
     model_config = {"extra": "allow"}
 
 
+_ANTHROPIC_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
+
+
 class AnthropicMessagesRequest(BaseModel):
     model: str = "default"
     max_tokens: Optional[int] = None
@@ -3301,6 +3304,9 @@ class AnthropicMessagesRequest(BaseModel):
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
     ] = None
     preserve_thinking: Optional[bool] = None
+    # Anthropic's current spelling of the effort dial. Claude Code sends the tier
+    # here, never in reasoning_effort, so without this the level is dropped.
+    output_config: Optional[dict] = None
     session_id: Optional[str] = None
     thread_id: Optional[str] = Field(
         None,
@@ -3324,6 +3330,22 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
+
+    @model_validator(mode = "after")
+    def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
+        if self.reasoning_effort is not None or not isinstance(self.output_config, dict):
+            return self
+        # Only once thinking is already on. `reasoning_effort` is the x-unsloth
+        # override that deliberately outranks `thinking` (a named level means
+        # "think"), but Claude Code sends output_config.effort on EVERY request,
+        # including with thinking off -- adopting it there would re-enable
+        # thinking the caller switched off and pin the level the user never set.
+        if self.resolved_enable_thinking() is not True:
+            return self
+        effort = self.output_config.get("effort")
+        if isinstance(effort, str) and effort in _ANTHROPIC_EFFORT_LEVELS:
+            self.reasoning_effort = effort
+        return self
 
     def resolved_enable_thinking(self) -> Optional[bool]:
         """Effective on/off, preferring the x-unsloth field over `thinking`."""
