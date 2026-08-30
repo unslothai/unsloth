@@ -1979,7 +1979,9 @@ def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
     starts = {"n": 0}
     monkeypatch.setattr(hw, "invalidate_detection", lambda: 1)
     monkeypatch.setattr(hw, "_discard_detection_locked", lambda: None)
-    monkeypatch.setattr(hw, "start_background_detection", lambda: starts.__setitem__("n", starts["n"] + 1))
+    monkeypatch.setattr(
+        hw, "start_background_detection", lambda: starts.__setitem__("n", starts["n"] + 1)
+    )
 
     hw.torch_build_snapshot()
     hw.current_chat_only_verdict()
@@ -1989,11 +1991,11 @@ def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
     # The pass settles. ensure_hardware_detected is what the recovery actually starts,
     # so that is where the guard has to come down.
     source = _hardware_source()
-    ensure = source[source.index("def ensure_hardware_detected("):]
+    ensure = source[source.index("def ensure_hardware_detected(") :]
     ensure = ensure[: ensure.index("def _detect_hardware_locked(")]
-    assert "_REDETECTION_REQUESTED = False" in ensure, (
-        "a settled background pass must release the guard, or there is never a second one"
-    )
+    assert (
+        "_REDETECTION_REQUESTED = False" in ensure
+    ), "a settled background pass must release the guard, or there is never a second one"
     assert ensure.index("DETECTION_COMPLETE.set()") < ensure.index(
         "_REDETECTION_REQUESTED = False"
     ), "released only once the pass has actually published"
@@ -2027,5 +2029,4 @@ def test_one_capability_response_describes_one_host(monkeypatch):
 
 def _hardware_source() -> str:
     import pathlib
-
     return pathlib.Path(hw.__file__).resolve().read_text(encoding = "utf-8")
