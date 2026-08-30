@@ -28,6 +28,7 @@ import {
   hasResearchMetadata,
   reconcileServerManagedMessages,
 } from "./research-message-sync";
+import { dedupeIdenticalUserSiblings } from "./dedupe-identical-user-siblings";
 
 // A copy of the list, not of what is in it. assistant-ui replaces parts and attachments
 // rather than mutating them, and the records built from these are serialized straight
@@ -116,15 +117,20 @@ export async function syncExportedRepositoryToBackend(
 ): Promise<void> {
   // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
   // this used to make every save pay for the same GET /threads/{id} twice.
-  const records = exp.messages.map(({ message, parentId }) =>
-    exportedItemToRecord(remoteId, parentId, message),
+  const { records, collapsedIds } = dedupeIdenticalUserSiblings(
+    exp.messages.map(({ message, parentId }) =>
+      exportedItemToRecord(remoteId, parentId, message),
+    ),
   );
   await syncStoredChatMessages(
     remoteId,
     await withStoredResearchMessages(remoteId, records),
     {
       pruneMissing: options.pruneMissing,
-      deletedMessageIds: options.deletedMessageIds,
+      deletedMessageIds: [
+        ...(options.deletedMessageIds ?? []),
+        ...collapsedIds,
+      ],
     },
   );
 }

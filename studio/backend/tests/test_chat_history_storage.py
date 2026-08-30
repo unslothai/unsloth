@@ -1184,3 +1184,62 @@ def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, mon
 
     replay = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
     assert replay == ([], ["src"])
+
+
+def test_sync_chat_messages_collapses_identical_user_siblings(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    attachment = {
+        "id": "att-1",
+        "type": "document",
+        "name": "doc.md",
+        "contentType": "text/markdown",
+        "content": [{"type": "text", "text": "[Markdown: doc.md]\nhello"}],
+        "status": {"type": "complete"},
+    }
+    prior = {
+        "id": "prior",
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Hello"}],
+        "createdAt": 1,
+    }
+    canonical_user = {
+        "id": "user-a",
+        "threadId": "thread-1",
+        "parentId": "prior",
+        "role": "user",
+        "content": [{"type": "text", "text": "Please review this document."}],
+        "attachments": [attachment],
+        "createdAt": 2,
+    }
+    duplicate_user = {
+        **canonical_user,
+        "id": "user-b",
+        "attachments": [{**attachment, "id": "att-2"}],
+        "createdAt": 3,
+    }
+    assistant = {
+        "id": "assistant-1",
+        "threadId": "thread-1",
+        "parentId": "user-b",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Summary."}],
+        "createdAt": 4,
+    }
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [prior, canonical_user, duplicate_user, assistant],
+        prune_missing = True,
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        [prior, canonical_user, duplicate_user, assistant],
+    )
+
+    by_id = {message["id"]: message for message in messages}
+    assert set(by_id) == {"prior", "user-a", "assistant-1"}
+    assert by_id["assistant-1"]["parentId"] == "user-a"
+    assert studio_db.get_chat_message("thread-1", "user-b") is None
