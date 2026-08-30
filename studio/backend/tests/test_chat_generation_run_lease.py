@@ -367,9 +367,7 @@ def test_an_oversized_but_finite_timeout_is_clamped(monkeypatch, raw):
 
 
 @pytest.mark.asyncio
-async def test_an_oversized_timeout_leaves_a_fresh_run_alone_without_raising(
-    monkeypatch, clock
-):
+async def test_an_oversized_timeout_leaves_a_fresh_run_alone_without_raising(monkeypatch, clock):
     """The end state: the sweep completes instead of raising OverflowError every pass."""
     _running_run()
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1e308")
