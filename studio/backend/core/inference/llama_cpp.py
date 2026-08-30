@@ -3523,13 +3523,14 @@ def _spilled_decode_threads(
     physical: Optional[int] = None
     logical: Optional[int] = None
     affinity_count: Optional[int] = None
-    if sys.platform.startswith("linux") and os.uname().machine.lower() in ("x86_64", "amd64"):
+    if sys.platform.startswith("linux"):
         if hasattr(os, "sched_getaffinity"):
             try:
                 affinity_count = len(os.sched_getaffinity(0))
             except OSError:
                 pass
-        physical = _linux_math_core_count()
+        if os.uname().machine.lower() in ("x86_64", "amd64"):
+            physical = _linux_math_core_count()
     try:
         import psutil
 
@@ -3542,10 +3543,11 @@ def _spilled_decode_threads(
                 physical = int(answer)
     except Exception:
         pass
+    if logical is None:
+        logical = os.cpu_count()
     if affinity_count is not None and logical is not None and affinity_count < logical:
         return None
     if physical is None:
-        logical = os.cpu_count()
         physical = logical if logical and logical <= 4 else (logical // 2 if logical else 4)
     if requested is None:
         return physical

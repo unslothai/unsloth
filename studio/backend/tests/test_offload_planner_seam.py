@@ -1720,6 +1720,11 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads(monkeypatch):
     try:
         for logical, expected in ((2, 2), (4, 4), (8, 4), (16, 8), (None, 4)):
             monkeypatch.setattr(llama_mod.os, "cpu_count", lambda answer = logical: answer)
+            monkeypatch.setattr(
+                llama_mod.os,
+                "sched_getaffinity",
+                lambda _pid, answer = logical: set(range(answer or 1)),
+            )
             assert llama_mod._spilled_decode_threads() == expected
     finally:
         if saved is None:
@@ -1845,6 +1850,28 @@ def test_inherited_linux_cpu_affinity_declines_spill_pricing(monkeypatch):
 
     monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)))
     assert llama_mod._spilled_decode_threads() == 8
+
+
+def test_inherited_linux_arm_cpu_affinity_declines_spill_pricing(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _ArmHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 72 if logical else 36
+
+    import sys
+
+    monkeypatch.setattr(llama_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        llama_mod.os,
+        "uname",
+        lambda: SimpleNamespace(machine = "aarch64"),
+        raising = False,
+    )
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(4)), raising = False)
+    monkeypatch.setitem(sys.modules, "psutil", _ArmHost)
+    assert llama_mod._spilled_decode_threads() is None
 
 
 def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
