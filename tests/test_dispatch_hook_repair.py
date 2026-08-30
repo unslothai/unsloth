@@ -704,7 +704,7 @@ def test_a_wrapper_that_already_has_a_hook_is_not_hooked_twice():
     assert _lift()(model) == 0, "a second hook was stacked on the wrapper"
 
 
-def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
+def test_a_lift_on_a_model_that_cannot_answer_for_its_embeddings_is_skipped():
     class _Awkward(_WrappedModel):
         def get_input_embeddings(self):
             raise NotImplementedError("this architecture does not say")
