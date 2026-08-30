@@ -7816,7 +7816,9 @@ class LlamaCppBackend:
             # fit probe already records iGPU ordinals for normal launches. A
             # standalone bookkeeping call without that snapshot stays conservative.
             if known_vulkan_igpus is not None:
-                return bool(known_vulkan_igpus)
+                if gpu_indices is None:
+                    return bool(known_vulkan_igpus)
+                return bool(set(known_vulkan_igpus).intersection(gpu_indices))
             return not probe_vulkan or self._vulkan_targets_are_igpus(binary, gpu_indices)
         return self._amd_apu_wants_unified_memory(gpu_indices)
 

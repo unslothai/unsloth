@@ -2067,6 +2067,30 @@ class TestADefaultLaunchRecordsItsApplicability:
             is True
         )
 
+    def test_the_fit_probe_snapshot_only_classifies_targeted_vulkan_igpus(self, monkeypatch):
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                is_vulkan_backend = True,
+                gpu_indices = [1],
+                probe_vulkan = False,
+                known_vulkan_igpus = {0},
+            )
+            is False
+        )
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                is_vulkan_backend = True,
+                gpu_indices = [0, 1],
+                probe_vulkan = False,
+                known_vulkan_igpus = {0},
+            )
+            is True
+        )
+
     def test_an_unknown_vulkan_snapshot_reprobes_before_skipping_mlock(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
 
