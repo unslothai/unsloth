@@ -36,6 +36,7 @@ import inspect
 import subprocess
 import types
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -373,6 +374,12 @@ def _system_gpu_info(monkeypatch):
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
     # 10s TTL on the endpoint's own cache, so a sibling test's reading would answer.
     monkeypatch.setattr(main, "_system_gpu_cache", None)
+    # Warm the inventory the way startup does. The mismatch report reads it WITHOUT
+    # blocking, because /api/system is polled every three seconds and a hung nvidia-smi
+    # would stall the request for the probe's whole timeout; a cold cache therefore
+    # answers "unknown" and the first poll publishes nothing. In a running backend
+    # _detect_hardware_locked has already done one blocking read by this point.
+    hw.get_physical_gpu_inventory()
     return main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
 
@@ -483,6 +490,17 @@ def test_export_and_video_stop_saying_no_accelerator_was_found(monkeypatch):
 
 def test_a_genuinely_gpu_less_host_keeps_the_old_wording(monkeypatch):
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    # This suite runs on a real NVIDIA box, and the capability helpers read the live host
+    # through get_device() and the verdict refresh. Without these the refresh correctly
+    # notices the accelerator this test is pretending not to have.
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
+    monkeypatch.setattr(hw, "classify_torch_build", lambda: None)
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"available": False, "devices": [], "unknown": False},
+    )
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "no_gpu")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
     monkeypatch.setattr(hw, "_has_torch", lambda: True)
@@ -866,6 +884,10 @@ def test_a_transient_probe_failure_does_not_retire_a_settled_mismatch(monkeypatc
     """
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    # The premise is a CPU-only wheel; the suite's own host has a working CUDA one, and
+    # the refresh would otherwise read the real build and retire the mismatch for a
+    # reason this test is not about.
+    monkeypatch.setattr(hw, "classify_torch_build", lambda: "torch_cpu_build")
     monkeypatch.setattr(
         hw,
         "get_physical_gpu_inventory",
@@ -1298,3 +1320,98 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     capsys.readouterr()
     assert nvidia._query_gpu_inventory("test") is None
     assert '"level": "warning"' in capsys.readouterr().out
+
+
+# ========== Round eight ==========
+
+
+def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
+    """Retiring the epoch alone did nothing, so the round-six fix never took effect.
+
+    invalidate_detection leaves DEVICE set and DETECTION_COMPLETE raised, so /api/health
+    kept reading the settled snapshot and start_background_detection returned at once
+    because DEVICE was not None. The process stayed chat-only until restart, which is
+    exactly what the fix claimed to solve.
+    """
+    import sys
+
+    calls = []
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
+    monkeypatch.setattr(hw, "_REDETECTION_REQUESTED", False)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
+    monkeypatch.setattr(hw, "invalidate_detection", lambda: calls.append("epoch") or 1)
+    monkeypatch.setattr(
+        hw, "_discard_detection_locked", lambda: calls.append("discard")
+    )
+    monkeypatch.setattr(hw, "start_background_detection", lambda: calls.append("start"))
+
+    hw.current_chat_only_verdict()
+
+    # Order matters: discarding after the pass has started would race it, and starting
+    # before the discard is the no-op this fixes.
+    assert calls == ["epoch", "discard", "start"]
+
+
+def test_the_system_mismatch_report_does_not_block(monkeypatch):
+    # GET /api/system is polled every three seconds with _system_gpu_cache_lock held for
+    # the whole call, so a hung nvidia-smi would stall it for the probe's full timeout
+    # and queue every concurrent read behind it.
+    source = inspect.getsource(hw._torch_gpu_mismatch_report)
+    assert "get_physical_gpu_inventory(block=False)" in source.replace(" ", "")
+
+
+def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
+    """A CUDA wheel whose native runtime will not load.
+
+    Returning None meant the mismatch report never ran, so a GPU host published no
+    physical_devices and the System tab said no visible GPU while nvidia-smi could
+    enumerate the card: the central failure, for the runtime-failure case.
+    """
+    import sys
+
+    class _Exploding:
+        def __getattr__(self, _name):
+            raise OSError("[WinError 126] cudart64_12.dll could not be loaded")
+
+    monkeypatch.setitem(sys.modules, "torch", _Exploding())
+    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.6.0+cu124")
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+    for label in ("2.11.0+rocm7.2", "2.9.1+xpu"):
+        monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda label = label: label)
+        assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+    # A CPU wheel that will not import is a broken CPU install, not a GPU one.
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+    # Nothing readable on disk either: unknown, and unknown is not a claim.
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "")
+    assert hw.classify_torch_build() is None
+
+
+def test_the_disk_label_reader_needs_no_interpreter(tmp_path):
+    # The point of reading version.py is that importing torch is the thing that fails.
+    pkg = tmp_path / "torch"
+    pkg.mkdir()
+    (pkg / "version.py").write_text(
+        '__version__ = "2.6.0+cu124"\ncuda = "12.4"\n', encoding = "utf-8"
+    )
+    with patch.object(
+        hw.importlib.util,
+        "find_spec",
+        return_value = SimpleNamespace(submodule_search_locations = [str(pkg)]),
+    ):
+        assert hw._installed_torch_label_on_disk() == "2.6.0+cu124"
+
+    with patch.object(hw.importlib.util, "find_spec", return_value = None):
+        assert hw._installed_torch_label_on_disk() == ""
+
+    with patch.object(
+        hw.importlib.util, "find_spec", side_effect = ValueError("boom")
+    ):
+        assert hw._installed_torch_label_on_disk() == ""

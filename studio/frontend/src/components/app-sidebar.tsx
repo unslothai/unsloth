@@ -588,6 +588,21 @@ const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
+// The backend refreshes its physical GPU inventory on a 60s TTL and can reclassify a host
+// without a restart: attach an eGPU to a CPU-torch machine and no_gpu becomes
+// torch_cpu_build, or a driver finishes restarting and the host stops being chat-only at
+// all. Nothing else re-reads the verdict, so without this the new hint is unreachable for
+// the rest of the session. Matched to that TTL rather than to SELF_HEAL_POLL_MS: polling
+// faster than the backend can change its answer is pure request traffic.
+const INVENTORY_POLL_MS = 60000;
+// The verdicts the inventory can still move. Everything else describes something a probe
+// cannot change (an Intel Mac stays an Intel Mac), and polling those forever would be a
+// request a minute for the life of the session on hosts working exactly as intended.
+const INVENTORY_SENSITIVE_REASONS = new Set([
+  "no_gpu",
+  "torch_cpu_build",
+  "torch_cuda_unavailable",
+]);
 
 /** One workflow in the list under the Images row. */
 function WorkflowChoice({
@@ -839,7 +854,9 @@ export function AppSidebar() {
     // recovery poll in the app, and the sidebar is mounted on every route that gates on the
     // verdict (studio-page reads the same store, so it recovers with it; video-page reads the
     // backend's video verdict instead and needs nothing from here).
-    if (selfHealSettled && !capabilitiesUnknown) return;
+    const inventorySensitive =
+      chatOnly && INVENTORY_SENSITIVE_REASONS.has(chatOnlyReason ?? "");
+    if (selfHealSettled && !capabilitiesUnknown && !inventorySensitive) return;
     let pollingSince = 0;
     // Which read currently owns the guard. A read that outlived the stall window is replaced,
     // and the replacement takes the guard with it; without an owner the abandoned read's
@@ -858,7 +875,11 @@ export function AppSidebar() {
         .finally(() => {
           if (owned === pollOwner) pollingSince = 0;
         });
-    }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
+    }, capabilitiesUnknown
+      ? VERDICT_UNKNOWN_POLL_MS
+      : selfHealSettled
+        ? INVENTORY_POLL_MS
+        : SELF_HEAL_POLL_MS);
     return () => window.clearInterval(id);
   }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 

@@ -19,6 +19,7 @@ Usage:
 import copy
 import gc
 import glob
+import importlib.util
 import json
 import os
 import platform
@@ -853,8 +854,20 @@ def classify_torch_build() -> Optional[str]:
             return "torch_cpu_build"
         return "torch_cuda_unavailable"
     except Exception as e:
-        logger.debug("torch build classification failed: %s", e)
-        return None
+        # torch is INSTALLED but will not import: a native runtime DLL that cannot load
+        # is the common shape, and it is exactly "the wheel is right, the environment is
+        # not". Returning None here meant the mismatch report never ran, so a GPU host
+        # published no physical_devices and the System tab said no visible GPU while
+        # nvidia-smi or sysfs could enumerate the card -- the central failure this whole
+        # change exists to fix, for the runtime-failure case. Classify from the wheel on
+        # disk instead, which needs no interpreter.
+        logger.debug("torch build classification fell back to the on-disk label: %s", e)
+        label = _installed_torch_label_on_disk()
+        if not label:
+            return None
+        if "+cu" in label or "+rocm" in label or "+xpu" in label:
+            return "torch_cuda_unavailable"
+        return "torch_cpu_build"
 
 
 # setup.ps1's own rule for what counts as an XPU card, verbatim in intent: only Arc and
@@ -913,6 +926,29 @@ def _torch_reports_an_xpu_runtime() -> bool:
         return False
 
 
+def _installed_torch_label_on_disk() -> str:
+    """``torch.__version__`` read out of the installed torch/version.py, or "".
+
+    No interpreter is started, which is the point: this is reached when importing torch
+    is the thing that fails. The installers read the same file for the same reason.
+    Never raises.
+    """
+    try:
+        spec = importlib.util.find_spec("torch")
+    except Exception:
+        return ""
+    locations = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    for location in locations:
+        try:
+            with open(os.path.join(location, "version.py"), encoding = "utf-8") as fh:
+                for line in fh:
+                    if line.startswith("__version__"):
+                        return line.partition("=")[2].strip().strip("\"'").lower()
+        except OSError:
+            continue
+    return ""
+
+
 def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     """``physical_devices`` + ``mismatch`` for a host whose GPUs PyTorch cannot use.
 
@@ -924,7 +960,11 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     reason = classify_torch_build()
     if reason is None:
         return {}
-    inventory = get_physical_gpu_inventory()
+    # block=False: this is reached from GET /api/system, which the Resources tab polls
+    # every three seconds while _system_gpu_cache_lock is held for the whole call. A
+    # hung nvidia-smi would stall that request for the probe's full timeout every time
+    # the TTL expired, and queue every concurrent system read behind it.
+    inventory = get_physical_gpu_inventory(block = False)
     physical = _devices_that_can_establish_a_mismatch(inventory.get("devices") or [])
     if not physical:
         # Torch cannot use a GPU and there is no GPU: "no_gpu" is the honest answer
@@ -1346,10 +1386,19 @@ def _request_hardware_redetection() -> None:
         return
     try:
         _REDETECTION_REQUESTED = True
+        # Retiring the epoch alone is NOT enough, which is what made the first version
+        # of this ineffective: invalidate_detection leaves DEVICE set and
+        # DETECTION_COMPLETE raised, so /api/health keeps reading the settled snapshot
+        # and start_background_detection returns immediately because DEVICE is not None.
+        # The verdict has to be discarded before a pass can be started, and both under
+        # the detection lock so a pass already running cannot publish over the reset.
         invalidate_detection()
+        with _DETECT_LOCK:
+            _discard_detection_locked()
+        start_background_detection()
         logger.info(
-            "An accelerator became usable after startup; retiring the cached hardware "
-            "verdict so the next detection pass republishes it."
+            "An accelerator became usable after startup; discarded the cached hardware "
+            "verdict and started a fresh detection pass."
         )
     except Exception as e:
         _REDETECTION_REQUESTED = False

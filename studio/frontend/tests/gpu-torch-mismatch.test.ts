@@ -336,3 +336,50 @@ test("the repair row hides itself for an externally started backend", async () =
     "and list it as a dependency, or the context freezes on the first render's value",
   );
 });
+
+// The verdict can change without a restart, so the sidebar has to keep asking.
+//
+// The backend refreshes its physical inventory on a 60s TTL and can reclassify a host:
+// attach an eGPU to a CPU-torch machine and no_gpu becomes torch_cpu_build. The polling
+// effect stopped at the first settled verdict that was neither provisional nor
+// mlx_unavailable, so nothing re-read it and the new hint was unreachable for the rest
+// of the session, with Train and Video still saying the machine needs a GPU.
+test("the sidebar keeps polling while the inventory can still change the verdict", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    source,
+    /INVENTORY_SENSITIVE_REASONS = new Set\(\[[^\]]*"no_gpu"[^\]]*"torch_cpu_build"[^\]]*"torch_cuda_unavailable"/s,
+    "the three verdicts the inventory can move must all keep the poll alive",
+  );
+
+  // And only those three: an Intel Mac stays an Intel Mac, and polling forever on a
+  // host that is working as intended is a request a minute for nothing.
+  const set = source.slice(
+    source.indexOf("INVENTORY_SENSITIVE_REASONS = new Set(["),
+  );
+  const listed = set.slice(0, set.indexOf("]"));
+  for (const settled of ["mlx_unavailable", "intel_mac", "detection_failed"]) {
+    assert.ok(
+      !listed.includes(settled),
+      `${settled} cannot change on a probe and must not keep polling`,
+    );
+  }
+
+  assert.match(
+    source,
+    /if \(selfHealSettled && !capabilitiesUnknown && !inventorySensitive\) return;/,
+    "the early return has to consider the inventory-sensitive case",
+  );
+  // Matched to the backend's own TTL: polling faster than it can change its answer is
+  // pure request traffic.
+  assert.match(source, /const INVENTORY_POLL_MS = 60000;/);
+  assert.match(
+    source,
+    /selfHealSettled\s*\?\s*INVENTORY_POLL_MS\s*:\s*SELF_HEAL_POLL_MS/,
+    "a settled host polls at the inventory cadence, not the self-heal one",
+  );
+});

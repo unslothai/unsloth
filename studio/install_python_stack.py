@@ -2953,6 +2953,18 @@ def _expected_torch_flavor_tag() -> str:
             return leaf
     if _RECORDED_TORCH_TAG:
         return _RECORDED_TORCH_TAG
+    # A resolved backend is a stated choice, not a probe result. setup.sh documents
+    # UNSLOTH_TORCH_BACKEND=cpu, and an AMD host taking it recorded nothing at all
+    # here, because the NVIDIA probe below answers "" for it; the backend then
+    # published no CPU choice, and the next launch found the AMD card beside a CPU
+    # wheel and called the deliberate install broken. Only the families this
+    # vocabulary names, and only when they agree with the wheel actually installed --
+    # a backend is what THIS run asked for, and if the install did not take, recording
+    # it would assert something untrue about the venv.
+    if _TORCH_BACKEND in ("cpu", "rocm", "xpu"):
+        _installed = _torch_flavor_tag(_installed_torch_version_label())
+        if _installed == _TORCH_BACKEND:
+            return _TORCH_BACKEND
     # _detect_cuda_torch_index_url honours UNSLOTH_TORCH_INDEX_URL / _FAMILY before it
     # probes, so a pin answers here without an nvidia-smi call; without one, an absent
     # NVIDIA GPU means no CUDA expectation exists to enforce.
