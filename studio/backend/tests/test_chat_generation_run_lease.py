@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -461,3 +462,84 @@ def test_start_lease_sweeper_is_idempotent(monkeypatch):
         await first.stop()
 
     asyncio.run(main())
+
+
+_ABANDONED_SWEEP_PROGRAM = '''
+import asyncio, sys, threading
+sys.path.insert(0, {backend!r})
+from types import SimpleNamespace
+from core.inference import chat_generation_runs as m
+from storage import chat_generation_runs_db as db
+
+parked = threading.Event()
+def _never_returns(*a, **k):
+    parked.set()
+    threading.Event().wait(600)   # a sweep on SQLite's writer lock
+db.reconcile_runs = _never_returns
+
+async def main():
+    sweeper = m.ChatGenerationLeaseSweeper(
+        SimpleNamespace(state = SimpleNamespace()), interval_s = 0.01, timeout_s = 600.0
+    )
+    sweeper.start()
+    for _ in range(500):
+        if parked.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert parked.is_set(), "the sweep never reached the database"
+    await sweeper.stop()
+
+asyncio.run(main())
+'''
+
+
+def test_an_abandoned_sweep_cannot_hold_the_process_open():
+    """Asserts the PROCESS exits, not merely that stop() returned.
+
+    asyncio.to_thread runs on non-daemon executor threads that an atexit hook joins, so a
+    sweep parked on the writer lock kept the interpreter alive indefinitely after shutdown
+    had given up on it. Studio Desktop allows five seconds for a graceful backend exit
+    before force-killing, and stops the backend this way before it updates, so that hang
+    is user visible. A stop() that returns proves nothing here; only exit does.
+    """
+    import subprocess
+
+    program = _ABANDONED_SWEEP_PROGRAM.format(backend = str(Path(__file__).resolve().parent.parent))
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", program], timeout = 60, capture_output = True, text = True
+        )
+    except subprocess.TimeoutExpired:
+        raise AssertionError(
+            "the process never exited: an abandoned sweep is still holding it open"
+        ) from None
+    assert done.returncode == 0, f"stderr: {done.stderr[-2000:]}"
+
+
+@pytest.mark.asyncio
+async def test_stopping_the_sweeper_does_not_spend_the_desktop_exit_budget(monkeypatch):
+    """Desktop force-kills after five seconds, so the sweeper's own budget must be small.
+
+    Letting a parked sweep finish buys nothing: the boot reconcile settles every active
+    run anyway, so this work is redundant at shutdown.
+    """
+    import time as _time
+
+    parked = threading.Event()
+
+    def _never_returns(*a, **k):
+        parked.set()
+        threading.Event().wait(60)
+
+    monkeypatch.setattr(runs_db, "reconcile_runs", _never_returns)
+    sweeper = _sweeper(interval_s = 0.01, timeout_s = 600.0)
+    sweeper.start()
+    for _ in range(500):
+        if parked.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert parked.is_set(), "the sweep never reached the database"
+    started = _time.monotonic()
+    await sweeper.stop()
+    elapsed = _time.monotonic() - started
+    assert elapsed < 2.0, f"sweeper.stop() took {elapsed:.2f}s of the graceful-exit budget"

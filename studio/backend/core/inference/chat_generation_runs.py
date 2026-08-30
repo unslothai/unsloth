@@ -31,6 +31,9 @@ _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the
 # run is already being abandoned, and the only question is whether shutdown returns.
 _SHUTDOWN_CANCEL_SECONDS = 5.0
+# The sweeper's own shutdown budget, far below the producers'. Its work is redundant
+# at shutdown and Desktop force-kills the backend after five seconds.
+_SWEEP_SHUTDOWN_SECONDS = 0.5
 # A durable run sets cancel_on_disconnect=False, so reaping is keyed on progress rather
 # than on connectedness. The default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S, the
 # request path's own first-token budget: a lease older than that cannot be legitimate
@@ -148,6 +151,41 @@ def _env_seconds(name: str, default: float) -> float:
     return value
 
 
+async def _sweep_in_daemon_thread(fn, /, *args, **kwargs):
+    """Run one blocking sweep on a daemon thread.
+
+    Not asyncio.to_thread: its executor threads are non-daemon and joined by an atexit
+    hook, so a sweep parked on SQLite's writer lock keeps the whole process alive long
+    after shutdown gave up waiting for it. Studio Desktop allows five seconds for a
+    graceful backend exit before force-killing, and stops the backend this way before it
+    updates, so an unbounded exit is a user-visible hang. A daemon thread abandoned here
+    cannot hold the interpreter open.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def _settle(setter, value):
+        # The loop can be closed already: this thread outlived the shutdown that
+        # abandoned it, which is exactly the case the daemon thread exists to make safe.
+        try:
+            loop.call_soon_threadsafe(lambda: future.done() or setter(value))
+        except RuntimeError:
+            pass
+
+    def _runner():
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - relayed to the awaiting caller
+            _settle(future.set_exception, exc)
+        else:
+            _settle(future.set_result, result)
+
+    threading.Thread(
+        target = _runner, name = "chat-lease-sweep", daemon = True
+    ).start()
+    return await future
+
+
 class ChatGenerationLeaseSweeper:
     """Periodically settle durable runs whose progress lease has expired.
 
@@ -223,7 +261,7 @@ class ChatGenerationLeaseSweeper:
     async def sweep_once(self) -> list[str]:
         if not self.enabled:
             return []
-        settled = await asyncio.to_thread(
+        settled = await _sweep_in_daemon_thread(
             db.reconcile_runs,
             error = _LEASE_ERROR,
             stale_after_ms = int(self._timeout * 1000),
@@ -280,8 +318,12 @@ class ChatGenerationLeaseSweeper:
         task, self._task = self._task, None
         if task is None:
             return
-        # asyncio.wait, never wait_for(gather(...)); see stop() for why.
-        _done, pending = await asyncio.wait({task}, timeout = _SHUTDOWN_GRACE_SECONDS)
+        # A short wait, not the producer grace. Letting a sweep finish at shutdown buys
+        # nothing: the boot reconcile settles every active run anyway, so its work is
+        # redundant here, while a sweep parked on the writer lock would otherwise spend
+        # Studio Desktop's whole graceful-exit budget before producers are even signalled.
+        # asyncio.wait, never wait_for(gather(...)); see ChatGenerationSupervisor.stop.
+        _done, pending = await asyncio.wait({task}, timeout = _SWEEP_SHUTDOWN_SECONDS)
         if not pending:
             return
         task.cancel()
