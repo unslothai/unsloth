@@ -2453,18 +2453,18 @@ def test_a_named_reverse_shell_keeps_its_original_evidence():
     and reddened the hf-stack and studio shards.
     """
     source = (
-        'import os, socket, subprocess\n'
-        'def helper():\n'
-        '    s = socket.socket()\n'
+        "import os, socket, subprocess\n"
+        "def helper():\n"
+        "    s = socket.socket()\n"
         '    s.connect(("h", 1))\n'
         '    subprocess.call("/bin/sh")\n'
-        'def redirect(fd):\n'
-        '    os.dup2(fd, 1)\n'
+        "def redirect(fd):\n"
+        "    os.dup2(fd, 1)\n"
     )
     found = _reverse_shell_findings(source)
     assert len(found) == 1
     code_only = sp._strip_noncode(source)
-    assert found[0].evidence == sp._extract_evidence(code_only, sp.RE_REVERSE_SHELL), (
-        "evidence for a named alternative must be exactly what it always was"
-    )
+    assert found[0].evidence == sp._extract_evidence(
+        code_only, sp.RE_REVERSE_SHELL
+    ), "evidence for a named alternative must be exactly what it always was"
     assert "Dup:" not in found[0].evidence
