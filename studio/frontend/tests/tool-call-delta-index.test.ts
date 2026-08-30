@@ -110,7 +110,7 @@ function accumulate(
       !fragment.arguments &&
       Boolean(name) &&
       Boolean(matched?.toolName) &&
-      name !== matched?.toolName &&
+      !name.startsWith(matched?.toolName ?? "") &&
       scan.holdsOneCompleteDocument();
 
     if (segments.length > 1) {
@@ -723,5 +723,22 @@ test("a withheld split tail does not take the next round's arguments", () => {
       ["tool_call_1", "{}"],
       ["tool_call_2", '{"query":"second"}'],
     ],
+  );
+});
+
+// Two dialects the accumulator already supports, together: arguments ahead of
+// the name, then the whole name resent as it grows. Reading the second name as
+// a new call left the arguments on a "web" call nothing can run and executed
+// web_search with nothing.
+test("a growing name after early arguments still names one call", () => {
+  const parts = accumulate([
+    { index: 0, arguments: '{"query":"first"}' },
+    { index: 0, name: "web", arguments: "" },
+    { index: 0, name: "web_search", arguments: "" },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [["web_search", '{"query":"first"}']],
   );
 });

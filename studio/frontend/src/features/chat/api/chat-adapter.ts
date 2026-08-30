@@ -7000,9 +7000,10 @@ export function createOpenAIStreamAdapter(
                     !argsFragment &&
                     Boolean(nameFragment) &&
                     Boolean(matched?.toolName) &&
-                    // A resent whole name is the same call; a second call with
-                    // that name arrives with its own arguments and splits there.
-                    nameFragment !== matched?.toolName &&
+                    // A whole name resent as it grows is the same call. A second
+                    // call on that tool arrives with its own arguments and splits
+                    // at their boundary.
+                    !nameFragment.startsWith(matched?.toolName ?? "") &&
                     scan.holdsOneCompleteDocument();
                   const existing = namedNextCall ? undefined : matched;
 
