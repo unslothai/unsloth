@@ -47,6 +47,7 @@ import {
   type ChatGenerationRun,
   getActiveChatGenerationRuns,
   followChatGenerationRun,
+  isTerminalChatGenerationRun,
 } from "./api/chat-generation-api";
 import {
   TEXT_ATTACHMENT_ACCEPT,
@@ -93,10 +94,12 @@ import {
 import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
+  generationIsCorroboratedLive,
   generationNeedsRecovery,
   isLiveGenerationRun,
   generationRawContent,
   loadGenerationOverlaySnapshot,
+  syncServerActiveGenerationRuns,
   recoveredContentToImport,
   recoveredReasoningSummaryMetadata,
   recoveredGenerationFinalMetadata,
@@ -701,14 +704,33 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
     | undefined;
-  const restoredStatus = restoredAssistantStatus({ custom });
   const generationStatus = custom.generationStatus;
-  const needsGenerationRecovery =
-    typeof custom.generationRunId === "string" &&
+  const hasRunId = typeof custom.generationRunId === "string";
+  const generationUnfinished =
+    hasRunId &&
     (generationStatus === "queued" ||
       generationStatus === "running" ||
-      generationStatus === "cancelling" ||
-      (generationStatus === "completed" && custom.generationSettled !== true));
+      generationStatus === "cancelling");
+  const generationUnsettled =
+    hasRunId &&
+    generationStatus === "completed" &&
+    custom.generationSettled !== true;
+  // Persisted metadata alone must never restore a running message. A run that never
+  // reached a terminal status still says "running" in storage on every later load, and
+  // `{type:"running"}` unmounts the composer's Send button, so the reply the user cannot
+  // stop is also the one they cannot reply past, reload after reload. Ask whether the run
+  // is corroborated live instead, and otherwise show the partial as interrupted, which
+  // keeps every character of it and offers the Continue bar.
+  const needsGenerationRecovery =
+    (generationUnfinished || generationUnsettled) &&
+    generationIsCorroboratedLive(custom);
+  const restoredCustom =
+    generationUnfinished &&
+    !needsGenerationRecovery &&
+    custom.incomplete === undefined
+      ? { ...custom, incomplete: { reason: "interrupted" as const } }
+      : custom;
+  const restoredStatus = restoredAssistantStatus({ custom: restoredCustom });
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -719,7 +741,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     >["content"],
     status: needsGenerationRecovery ? { type: "running" } : restoredStatus,
     metadata: {
-      custom,
+      custom: restoredCustom,
       ...(savedTiming ? { timing: savedTiming } : {}),
       steps: [],
       unstable_annotations: [],
@@ -791,40 +813,17 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
-    const publish = async (run: ChatGenerationRun) => {
-      const status = run.status;
-      const runModel = useChatRuntimeStore
-        .getState()
-        .models.find((model) => model.id === run.requestPayload.model);
-      const lengthLimited =
-        run.finishReason === "length" ||
-        budgetImpliesTruncation({
-          isMlx: runModel?.isMlx === true,
-          maxTokens: run.requestPayload.max_tokens,
-          completionTokens,
-        });
-      let nextMetadata = generationRecoveryMetadata({
-        current: currentMetadata,
-        runId,
-        status,
-        cursor,
-        lastEventSeq: run.lastEventSeq,
-        lengthLimited,
-        firstChunkAt,
-        totalChunks,
-        usage: recoveryUsage,
-        timings: recoveryTimings,
-      });
-      if (nextMetadata.generationSettled === true) {
-        nextMetadata = recoveredGenerationFinalMetadata({
-          current: nextMetadata,
-          run,
-          usage: recoveryUsage,
-          timings: recoveryTimings,
-          firstChunkAt,
-          totalChunks,
-        });
-      }
+    /**
+     * Write one state of the reply to storage and to every view showing it.
+     *
+     * `running` is the caller's, not derived here: a follow that hit its no-progress
+     * deadline settles the message while its persisted run status is still non-terminal,
+     * which is exactly the pair `generationNeedsRecovery` reads as "still going".
+     */
+    const commit = async (
+      nextMetadata: Record<string, unknown>,
+      running: boolean,
+    ) => {
       currentMetadata = nextMetadata;
       const content = parseAssistantContent(
         reasoningOpen ? `${raw}</think>` : raw,
@@ -860,7 +859,7 @@ function scheduleGenerationRecovery(
                       item.message.content,
                       content,
                     ),
-                    status: generationNeedsRecovery(nextMetadata)
+                    status: running
                       ? { type: "running" as const }
                       : restoredAssistantStatus({ custom: nextMetadata }),
                     metadata: {
@@ -876,6 +875,43 @@ function scheduleGenerationRecovery(
           // Storage remains authoritative if the thread unmounted between awaits.
         }
       }
+    };
+
+    const publish = async (run: ChatGenerationRun) => {
+      const status = run.status;
+      const runModel = useChatRuntimeStore
+        .getState()
+        .models.find((model) => model.id === run.requestPayload.model);
+      const lengthLimited =
+        run.finishReason === "length" ||
+        budgetImpliesTruncation({
+          isMlx: runModel?.isMlx === true,
+          maxTokens: run.requestPayload.max_tokens,
+          completionTokens,
+        });
+      let nextMetadata = generationRecoveryMetadata({
+        current: currentMetadata,
+        runId,
+        status,
+        cursor,
+        lastEventSeq: run.lastEventSeq,
+        lengthLimited,
+        firstChunkAt,
+        totalChunks,
+        usage: recoveryUsage,
+        timings: recoveryTimings,
+      });
+      if (nextMetadata.generationSettled === true) {
+        nextMetadata = recoveredGenerationFinalMetadata({
+          current: nextMetadata,
+          run,
+          usage: recoveryUsage,
+          timings: recoveryTimings,
+          firstChunkAt,
+          totalChunks,
+        });
+      }
+      await commit(nextMetadata, generationNeedsRecovery(nextMetadata));
     };
 
     try {
@@ -986,6 +1022,19 @@ function scheduleGenerationRecovery(
           lastPublishedStatus = update.run.status;
           await publish(update.run);
         }
+      }
+      if (generationNeedsRecovery(currentMetadata)) {
+        // The follow returned with the run still non-terminal, so its no-progress
+        // deadline expired. Settle the reply here rather than leaving a message that
+        // says "running" until the next reload, which is what keeps Send unmounted.
+        // Everything replayed so far is kept, and the Continue bar can resume it.
+        await commit(
+          {
+            ...currentMetadata,
+            incomplete: { reason: "interrupted" as const },
+          },
+          false,
+        );
       }
     } finally {
       const store = useChatRuntimeStore.getState();
@@ -1700,6 +1749,7 @@ function useStudioRuntimeAdapters(
         };
         let msgs: MessageRecord[];
         let activeGenerationRuns: ChatGenerationRun[];
+        let activeGenerationRunsLoaded: boolean;
         try {
           const snapshot = await loadGenerationOverlaySnapshot(
             remoteId,
@@ -1708,12 +1758,30 @@ function useStudioRuntimeAdapters(
           );
           msgs = snapshot.messages;
           activeGenerationRuns = snapshot.activeRuns;
+          activeGenerationRunsLoaded = snapshot.activeRunsLoaded;
         } catch (error) {
           if (!isExpectedBackgroundChatStorageError(error)) {
             throw error;
           }
           msgs = [];
           activeGenerationRuns = [];
+          activeGenerationRunsLoaded = false;
+        }
+        // The endpoint is named for active runs, but its reply is only a list of rows: a
+        // run that terminalised between the write and this read comes back with it, and
+        // force-writing `generationSettled: false` over a finished reply revives it as a
+        // running one that no later load can settle. Take the still-live rows only, and
+        // publish them as the corroboration `toThreadMessage` restores a running status
+        // from. A failed read is silence, not a report of "nothing is running", so it
+        // leaves the previous answer standing rather than declaring every reply dead.
+        activeGenerationRuns = activeGenerationRuns.filter(
+          (run) => !isTerminalChatGenerationRun(run),
+        );
+        if (activeGenerationRunsLoaded) {
+          syncServerActiveGenerationRuns(
+            remoteId,
+            activeGenerationRuns.map((run) => run.id),
+          );
         }
         for (const run of activeGenerationRuns) {
           const assistant = msgs.find(

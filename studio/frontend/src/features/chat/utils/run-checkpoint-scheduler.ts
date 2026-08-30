@@ -6,10 +6,24 @@
 /** Quiet time after a checkpoint settles before the next one is taken. */
 export const RUN_CHECKPOINT_INTERVAL_MS = 8_000;
 
+/**
+ * How long one thread may be checkpointed before the schedule gives up on it.
+ *
+ * The schedule is started on runStart and ended on runEnd, so a run that never reaches a
+ * terminal status is checkpointed for the life of the page: four requests every eight
+ * seconds, forever, against the same backend the model is on. `isActive` is not a bound,
+ * because it reports assistant-ui's `isRunning`, which is the very flag a stuck run holds
+ * true. A wall clock is, and it costs only the periodic partial saves: the run's own
+ * writes are untouched, and the cap takes a final checkpoint on the way out.
+ */
+export const RUN_CHECKPOINT_MAX_DURATION_MS = 15 * 60_000;
+
 /** Injectable so a test can drive the schedule without real time passing. */
 export type RunCheckpointTimers = {
   setTimeout: (callback: () => void, ms: number) => number;
   clearTimeout: (handle: number) => void;
+  /** Omit to read the wall clock. Only the staleness bound consults it. */
+  now?: () => number;
 };
 
 export type RunCheckpointScheduler = {
@@ -29,6 +43,7 @@ export type RunCheckpointScheduler = {
 type ThreadState = {
   handle: number | null;
   stopped: boolean;
+  startedAt: number;
 };
 
 const noop = (): void => {};
@@ -51,11 +66,19 @@ export function createRunCheckpointScheduler(
      * checkpoint for the life of the page. Omit it to treat every thread as active.
      */
     isActive?: (threadId: string) => boolean;
+    /**
+     * Wall-clock cap on one thread's schedule. `isActive` cannot serve as one: it
+     * reports the runtime's own `isRunning`, which a run that never terminalises holds
+     * true, so the two agree forever and the schedule never ends.
+     */
+    maxDurationMs?: number;
   } = {},
 ): RunCheckpointScheduler {
   const intervalMs = options.intervalMs ?? RUN_CHECKPOINT_INTERVAL_MS;
   const timers = options.timers ?? defaultTimers;
   const isActive = options.isActive;
+  const maxDurationMs = options.maxDurationMs ?? RUN_CHECKPOINT_MAX_DURATION_MS;
+  const now = timers.now ?? (() => Date.now());
   const threads = new Map<string, ThreadState>();
 
   /** Never let a caller's throw escape the timer: that would strand the Map entry. */
@@ -88,8 +111,9 @@ export function createRunCheckpointScheduler(
           schedule(threadId, state);
         }
       };
-      if (!isRunning(threadId)) {
-        // A missed runEnd also lost the final save, so take one on the way out.
+      // Both exits take a final save: a schedule that ends without one has lost
+      // whatever the last interval produced, exactly as a missed runEnd would.
+      if (!isRunning(threadId) || now() - state.startedAt >= maxDurationMs) {
         stop(threadId);
         void runSave(threadId).then(noop, noop);
         return;
@@ -118,7 +142,11 @@ export function createRunCheckpointScheduler(
       if (threads.has(threadId)) {
         return;
       }
-      const state: ThreadState = { handle: null, stopped: false };
+      const state: ThreadState = {
+        handle: null,
+        stopped: false,
+        startedAt: now(),
+      };
       threads.set(threadId, state);
       schedule(threadId, state);
     },

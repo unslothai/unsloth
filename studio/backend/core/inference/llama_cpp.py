@@ -5508,6 +5508,53 @@ class CountAborted(Exception):
 _PROC_ROOT = "/proc"
 
 
+def _reap_stalled_generation(*, running, waiting, stalled_s):
+    """Cancel the oldest in-flight generation when the engine stops progressing.
+
+    Called from the stats poller's daemon thread once per stall episode. Only the
+    OLDEST entry is signalled, never cancel_all(): llama-server's counters are
+    engine-wide, so a freeze proves nothing is decoding, but Studio can also be
+    holding generations merely queued behind the wedge and those are innocent.
+
+    Signalling the cancel event is the same teardown a user-pressed Stop takes --
+    the stream closes its own upstream response, which is how llama-server is
+    told to abort. Nothing here touches the process.
+    """
+    from state import active_generations
+
+    entries = active_generations.snapshot()
+    if not entries:
+        # A held slot with nothing registered is llama-server's to explain; say
+        # so rather than killing a process on the strength of one metric.
+        logger.warning(
+            "engine_stall_no_owner",
+            running = running,
+            waiting = waiting,
+            stalled_s = round(stalled_s, 1),
+        )
+        return
+    oldest = entries[0]  # snapshot() sorts by started_at
+    cancelled = 0
+    if oldest.get("run_id"):
+        cancelled = active_generations.cancel_run(oldest["run_id"])
+    if not cancelled and oldest.get("thread_id"):
+        cancelled = active_generations.cancel_thread(oldest["thread_id"])
+    if not cancelled and len(entries) == 1:
+        # A first turn racing persistence has neither id yet. It is the only
+        # thing in flight, so cancelling everything cancels exactly it.
+        cancelled = active_generations.cancel_all()
+    logger.warning(
+        "engine_stall_reaped",
+        running = running,
+        waiting = waiting,
+        stalled_s = round(stalled_s, 1),
+        cancelled = cancelled,
+        thread_id = oldest.get("thread_id"),
+        run_id = oldest.get("run_id"),
+        in_flight = len(entries),
+    )
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -23711,7 +23758,9 @@ class LlamaCppBackend:
                         from core.inference.llama_stats import maybe_start_stats_logger
                         if self._stats_logger is not None:
                             self._stats_logger.stop()
-                        self._stats_logger = maybe_start_stats_logger(self.base_url, logger)
+                        self._stats_logger = maybe_start_stats_logger(
+                            self.base_url, logger, on_stall = _reap_stalled_generation,
+                        )
                     except Exception as e:
                         logger.debug(f"engine-stats logger not started: {e}")
                 else:

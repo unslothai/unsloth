@@ -92,12 +92,24 @@ export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
   threadId: string,
   listActiveRuns: (id: string) => Promise<TRun[]>,
   listMessages: (id: string) => Promise<TMessage[]>,
-): Promise<{ messages: TMessage[]; activeRuns: TRun[] }> {
+): Promise<{
+  messages: TMessage[];
+  activeRuns: TRun[];
+  /**
+   * False when the active-run read failed, so its empty list is "unknown", not "none".
+   * A caller that decides a reply is dead from an absent run has to tell the two apart.
+   */
+  activeRunsLoaded: boolean;
+}> {
   // Runs first closes the create-between-snapshots gap. If a run commits after
   // this read, the later message snapshot already carries its durable metadata.
-  const activeRuns = await listActiveRuns(threadId).catch(() => []);
+  let activeRunsLoaded = true;
+  const activeRuns = await listActiveRuns(threadId).catch(() => {
+    activeRunsLoaded = false;
+    return [];
+  });
   const messages = await listMessages(threadId);
-  return { messages, activeRuns };
+  return { messages, activeRuns, activeRunsLoaded };
 }
 
 type RecoveryUsage = {
@@ -430,4 +442,53 @@ export function releaseLiveGenerationRun(runId: string): void {
 /** Whether this tab is the one streaming `runId`. */
 export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
+}
+
+/**
+ * Runs the server has named as still going, keyed by the thread whose load asked.
+ *
+ * Persisted metadata is not evidence of a live run. A run that never reaches a terminal
+ * status leaves `generationStatus: "running"` in storage for good, and a reload rebuilds
+ * a running message straight back out of it, which is the state no reload can clear.
+ * Only `/api/inference/chat-runs/active` can say a run is still going, so a restored
+ * message needs a name in this registry, or a claim in `liveGenerationRuns` for the tab
+ * that is streaming the run itself.
+ *
+ * Module state, like the registry above, and for the same reason: a reload is exactly
+ * when the previous session's word for it must stop counting.
+ */
+const serverActiveGenerationRuns = new Map<string, string>();
+
+/**
+ * Replace what the server last said about `threadId`. Call only after a SUCCESSFUL read
+ * of the active-run list: a failed read is not a report of "nothing is running", and
+ * treating it as one would mark a live reply interrupted.
+ */
+export function syncServerActiveGenerationRuns(
+  threadId: string,
+  runIds: Iterable<string>,
+): void {
+  for (const [runId, owner] of [...serverActiveGenerationRuns]) {
+    if (owner === threadId) serverActiveGenerationRuns.delete(runId);
+  }
+  for (const runId of runIds) serverActiveGenerationRuns.set(runId, threadId);
+}
+
+/** Whether the server has named `runId` as still going in this session. */
+export function isServerActiveGenerationRun(runId: string): boolean {
+  return serverActiveGenerationRuns.has(runId);
+}
+
+/**
+ * Whether a restored assistant message may be shown as still generating.
+ *
+ * The corroboration gate: unfinished metadata says only that this reply once had a run,
+ * never that the run is still alive.
+ */
+export function generationIsCorroboratedLive(
+  metadata: Record<string, unknown>,
+): boolean {
+  const runId = metadata.generationRunId;
+  if (typeof runId !== "string") return false;
+  return isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId);
 }

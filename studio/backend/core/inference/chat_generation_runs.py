@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
 from typing import Any, AsyncIterator
@@ -28,6 +29,18 @@ _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the
 # run is already being abandoned, and the only question is whether shutdown returns.
 _SHUTDOWN_CANCEL_SECONDS = 5.0
+# Progress lease defaults. A durable run deliberately sets cancel_on_disconnect=False so a
+# closed browser cannot kill a long generation, and nothing else bounds it: a producer that
+# stops producing leaves the thread "generating" forever, which hides Send in the UI and
+# holds the engine slot. Reaping is therefore keyed on progress, never on connectedness.
+#
+# The default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S: the request path already
+# refuses to wait longer than that for a first token, so a run whose lease has not moved
+# for longer than the engine's own prefill budget cannot be legitimately prefilling. Slow
+# decode is safe at any speed -- 5 tok/s still renews the lease at least once a second.
+_LEASE_TIMEOUT_SECONDS = 1200.0
+_LEASE_SWEEP_INTERVAL_SECONDS = 60.0
+_LEASE_ERROR = "Generation stopped making progress"
 
 
 class _SSEDecoder:
@@ -96,6 +109,135 @@ async def _close_iterator(iterator: AsyncIterator[Any] | None) -> None:
             await close()
         except Exception:
             pass
+
+
+def _env_seconds(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+class ChatGenerationLeaseSweeper:
+    """Periodically settle durable runs whose progress lease has expired.
+
+    reconcile_orphaned_runs used to run exactly once, at process boot, so a run that
+    wedged while Studio kept running was never repaired and browser reloads could not
+    clear it. This runs the same reconciliation on an interval, bounded to runs that
+    have made no progress for the lease timeout so a live generation is never reaped.
+    """
+
+    def __init__(
+        self,
+        app: Any,
+        *,
+        interval_s: float | None = None,
+        timeout_s: float | None = None,
+    ) -> None:
+        self.app = app
+        self._interval = max(
+            1.0,
+            interval_s
+            if interval_s is not None
+            else _env_seconds(
+                "UNSLOTH_STUDIO_CHAT_RUN_LEASE_SWEEP_INTERVAL_S", _LEASE_SWEEP_INTERVAL_SECONDS
+            ),
+        )
+        # 0 disables the sweep entirely, matching UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S.
+        self._timeout = max(
+            0.0,
+            timeout_s
+            if timeout_s is not None
+            else _env_seconds(
+                "UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS
+            ),
+        )
+        self._task: asyncio.Task | None = None
+        self._stop_event = asyncio.Event()
+
+    @property
+    def enabled(self) -> bool:
+        return self._timeout > 0.0
+
+    def start(self) -> None:
+        if self._task is not None or not self.enabled:
+            return
+        self._task = asyncio.create_task(self._run(), name = "chat-generation-lease-sweeper")
+
+    async def _run(self) -> None:
+        while True:
+            waiter = asyncio.ensure_future(self._stop_event.wait())
+            done, _pending = await asyncio.wait({waiter}, timeout = self._interval)
+            if done:
+                return
+            waiter.cancel()
+            try:
+                await self.sweep_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # One failed sweep (a locked database, a torn-down home in tests) must
+                # not retire the watchdog for the life of the process.
+                logger.warning("chat_generation_lease_sweep_failed", error = repr(exc))
+
+    async def sweep_once(self) -> list[str]:
+        if not self.enabled:
+            return []
+        settled = await asyncio.to_thread(
+            db.reconcile_runs,
+            error = _LEASE_ERROR,
+            stale_after_ms = int(self._timeout * 1000),
+        )
+        if not settled:
+            return []
+        supervisor = getattr(getattr(self.app, "state", None), "chat_generation_supervisor", None)
+        for run_id in settled:
+            logger.warning(
+                "chat_generation_run_lease_expired",
+                run_id = run_id,
+                idle_s = round(self._timeout, 1),
+            )
+            if supervisor is None:
+                continue
+            # The row is settled, but a producer wedged inside the engine is still
+            # holding its slot and activity reservation; cancel unwinds it.
+            try:
+                supervisor.cancel(run_id)
+            except Exception as exc:
+                logger.warning(
+                    "chat_generation_lease_cancel_failed", run_id = run_id, error = repr(exc)
+                )
+        return settled
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        task, self._task = self._task, None
+        if task is None:
+            return
+        # Same idiom as ChatGenerationSupervisor.stop(): asyncio.wait, never
+        # wait_for(gather(...)), so a sweep parked in the database cannot make
+        # shutdown itself unbounded.
+        _done, pending = await asyncio.wait({task}, timeout = _SHUTDOWN_GRACE_SECONDS)
+        if not pending:
+            return
+        task.cancel()
+        _done, pending = await asyncio.wait({task}, timeout = _SHUTDOWN_CANCEL_SECONDS)
+        if pending:
+            logger.warning(
+                "The chat generation lease sweeper did not stop within the shutdown budget"
+            )
+
+
+def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
+    """Attach one lease sweeper to the app and start it. Idempotent per app."""
+    state = getattr(app, "state", None)
+    sweeper = getattr(state, "chat_generation_lease_sweeper", None)
+    if sweeper is None:
+        sweeper = ChatGenerationLeaseSweeper(app)
+        if state is not None:
+            state.chat_generation_lease_sweeper = sweeper
+    sweeper.start()
+    return sweeper
 
 
 class ChatGenerationSupervisor:
@@ -208,6 +350,11 @@ class ChatGenerationSupervisor:
 
     async def stop(self) -> None:
         self._stopping = True
+        # Before the runs, so the sweeper cannot settle a run as stalled while shutdown
+        # is already settling it as interrupted.
+        sweeper = getattr(getattr(self.app, "state", None), "chat_generation_lease_sweeper", None)
+        if sweeper is not None:
+            await sweeper.stop()
         tasks = list(self._tasks.items())
         self._shutdown_runs.update(run_id for run_id, _task in tasks)
         for run_id, _task in tasks:

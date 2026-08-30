@@ -682,6 +682,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
 
+    try:
+        # The boot pass above only settles runs orphaned by the previous process. A run
+        # that wedges while this one keeps serving needs the same reconciliation on an
+        # interval, bounded to runs whose progress lease has expired.
+        from core.inference.chat_generation_runs import start_lease_sweeper
+        start_lease_sweeper(app)
+    except Exception as exc:
+        _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
