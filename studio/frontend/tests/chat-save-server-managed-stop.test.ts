@@ -19,6 +19,11 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 type Module = {
   saveStoredChatMessage: (message: Record<string, unknown>) => Promise<unknown>;
   clearServerOwnedChatMessages: () => void;
+  syncStoredChatMessages: (
+    threadId: string,
+    messages: unknown[],
+    options?: { pruneMissing?: boolean; deletedMessageIds?: string[] },
+  ) => Promise<unknown>;
 };
 
 class FakeProtectedError extends Error {}
@@ -41,6 +46,10 @@ function harness(options: { rejectIds?: Set<string>; failWith?: Error } = {}) {
           return message;
         },
         notifyChatHistoryUpdated: () => {},
+        syncChatMessages: async (
+          _threadId: string,
+          messages: unknown[],
+        ) => messages,
         getChatThread: async () => ({ id: "t1" }),
         saveChatThread: async () => {},
       },
@@ -209,6 +218,33 @@ test("deleting a thread frees ids cached under every other thread", async () => 
     ["m1", "m2", "m1", "m2"],
     "the delete can free an id cached under any thread, so every entry goes",
   );
+});
+
+test("pruning messages frees their ids too", async () => {
+  // Deleting one message calls syncStoredChatMessages with pruneMissing, and the backend
+  // removes the row while the thread survives, so no tombstone runs. The id is free but
+  // the collision is still cached, and the identical payload would be skipped.
+  const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
+
+  await module.saveStoredChatMessage(message("m1", "target"));
+  await module.syncStoredChatMessages("other", [], {
+    pruneMissing: true,
+    deletedMessageIds: ["m1"],
+  });
+  await module.saveStoredChatMessage(message("m1", "target"));
+
+  assert.deepEqual(attempts, ["m1", "m1"], "the id was freed, so retry it");
+});
+
+test("an ordinary sync does not clear the cache", async () => {
+  // syncStoredChatMessages runs constantly. Clearing on every call would put the storm back.
+  const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
+
+  await module.saveStoredChatMessage(message("m1", "target"));
+  await module.syncStoredChatMessages("target", [], { pruneMissing: false });
+  await module.saveStoredChatMessage(message("m1", "target"));
+
+  assert.deepEqual(attempts, ["m1"], "nothing was deleted, so nothing was freed");
 });
 
 test("an ordinary failure still propagates", async () => {

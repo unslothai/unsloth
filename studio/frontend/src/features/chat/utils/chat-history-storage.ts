@@ -1042,7 +1042,15 @@ export async function syncStoredChatMessages(
   if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
   await ensureStoredChatThread(threadId);
-  return syncChatMessages(threadId, messages, options);
+  const synced = await syncChatMessages(threadId, messages, options);
+  // Deleting rows frees their ids, which is the other way a cached cross-thread collision
+  // stops being true (the thread itself survives, so the tombstone path never runs). Only
+  // on a sync that actually asked for deletions: an ordinary sync runs constantly, and
+  // clearing there would put the request storm straight back.
+  if (options.pruneMissing || (options.deletedMessageIds?.length ?? 0) > 0) {
+    clearServerOwnedChatMessages();
+  }
+  return synced;
 }
 
 export async function saveStoredChatThread(
