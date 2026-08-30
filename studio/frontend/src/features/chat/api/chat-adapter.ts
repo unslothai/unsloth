@@ -6966,10 +6966,13 @@ export function createOpenAIStreamAdapter(
                   );
                   if (
                     stablePartId &&
+                    call.function?.name &&
                     existingIndex !== -1 &&
                     toolCallParts[existingIndex].toolCallId !== stablePartId
                   ) {
-                    // A late id claims the first call a split left waiting.
+                    // A late id that also names its call claims the first one a
+                    // split left waiting. A bare id has nothing to match on, so
+                    // it stays with the call this slot has open.
                     const unclaimed = findUnclaimedToolCallPartIndex(
                       toolCallParts,
                       idx,

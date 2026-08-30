@@ -1686,6 +1686,58 @@ def test_a_late_id_claims_the_call_a_split_left_waiting(executed):
     ]
 
 
+def test_a_late_id_claims_a_split_call_that_inherited_a_name(executed):
+    """A split hands its name down, so only the missing id marks a call waiting."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"name": "web_search", "arguments": '{"a":1}{"b":2}'},
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "id": "A", "function": {"name": "web_search"}}]}),
+                _sse({"tool_calls": [{"index": 0, "id": "B", "function": {"name": "web_fetch"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [WEB, FETCH])
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"a": 1}),
+        ("web_fetch", {"b": 2}),
+    ]
+
+
+def test_a_turn_of_only_withheld_calls_still_closes_their_cards(executed):
+    """Every call withheld leaves the call list empty, and cards still open."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}{"b":2}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert _event_ids(lines, "tool_start") == ["tool_call_0", "tool_call_1"]
+    assert _event_ids(lines, "tool_end") == ["tool_call_0", "tool_call_1"]
+
+
 def test_late_names_fill_the_calls_a_split_left_waiting(executed):
     """Both documents arrive before either name, so both calls wait for one."""
     transport = FakeTransport(

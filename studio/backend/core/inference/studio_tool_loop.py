@@ -582,6 +582,13 @@ class _Turn:
             # for every tool round, so after a fork the bare argument fragments
             # belong to the newer call.
             key: Any = self.open_key_by_index.get(index, index)
+            claimed_waiting = False
+            # Only a fragment that also names its call can claim one a split left
+            # waiting. A bare id has nothing to match on, so it stays with the
+            # call this index has open, which is also where the client put it.
+            names_its_call = isinstance(raw_call.get("function"), dict) and bool(
+                raw_call["function"].get("name")
+            )
             if isinstance(call_id, str) and call_id:
                 open_id = self.by_index.get(key, {}).get("id")
                 if open_id and open_id != call_id:
@@ -597,12 +604,14 @@ class _Turn:
                     else:
                         # A split can leave calls waiting for an identity; the id
                         # claims the first of those before opening a new call.
-                        waiting = self._unclaimed_key(index)
+                        waiting = self._unclaimed_key(index) if names_its_call else None
+                        claimed_waiting = waiting is not None
                         key = waiting if waiting is not None else (index, call_id)
-                elif not open_id:
+                elif not open_id and names_its_call:
                     waiting = self._unclaimed_key(index)
                     if waiting is not None:
                         key = waiting
+                        claimed_waiting = True
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
@@ -667,6 +676,7 @@ class _Turn:
                 closed = _ArgumentBoundaries()
                 closed.closed = True
                 self.boundaries[key] = closed
+                self.split_keys.add(key)
                 for segment in segments[1:]:
                     key = (index, "split", len(self.order))
                     self.by_index[key] = {
@@ -709,7 +719,12 @@ class _Turn:
                 # starts with what we have is the whole name resent; anything
                 # else continues it.
                 accumulated = named["function"]["name"]
-                if name_fragment.startswith(accumulated):
+                if claimed_waiting:
+                    # The id names the call it just claimed. Whatever name that
+                    # call carried was inherited from the split, not a fragment
+                    # this one continues.
+                    named["function"]["name"] = name_fragment
+                elif name_fragment.startswith(accumulated):
                     named["function"]["name"] = name_fragment
                 else:
                     named["function"]["name"] = accumulated + name_fragment
@@ -731,12 +746,15 @@ class _Turn:
             streamed.add(call["card_id"])
 
     def _unclaimed_key(self, index: int) -> Any:
-        """First call at ``index`` that no id and no name has claimed yet."""
+        """First call at ``index`` no provider id has claimed yet.
+
+        Not "and no name": a split hands its own name down to every segment, so
+        a named segment can still be waiting for the id that belongs to it.
+        """
         for key in self.order:
             if (key[0] if isinstance(key, tuple) else key) != index:
                 continue
-            call = self.by_index[key]
-            if not call.get("id") and not call["function"]["name"]:
+            if not self.by_index[key].get("id"):
                 return key
         return None
 
@@ -1291,6 +1309,28 @@ async def stream_with_studio_tools(
             if (truncated or tool_choice == "none")
             else turn.calls(used_call_ids, streamed_call_ids)
         )
+        # Close cards for unfinished split calls that will not run. A truncated
+        # turn closes every card of its own further up, so only this path is left.
+        if not truncated and tool_choice != "none":
+            for withheld_call in turn.withheld():
+                withheld_id = withheld_call.get("card_id")
+                withheld_function = withheld_call.get("function")
+                withheld_name = (
+                    withheld_function.get("name") if isinstance(withheld_function, dict) else ""
+                )
+                if not isinstance(withheld_id, str) or not withheld_id:
+                    continue
+                if not isinstance(withheld_name, str):
+                    withheld_name = ""
+                for card_line in _unrun_call_card(
+                    tool_name = withheld_name,
+                    tool_call_id = withheld_id,
+                    # Cut off mid-write, so there is nothing well formed to show.
+                    arguments = {},
+                    result = _TOOL_UNFINISHED,
+                    provenance = _unrun_provenance(withheld_name, round_id + 1),
+                ):
+                    yield card_line
         if not calls:
             # No tool this turn. A model that only said what it was about to do
             # gets one nudge to actually do it, the same recovery the local loops
@@ -1369,26 +1409,6 @@ async def stream_with_studio_tools(
             break
 
         round_id += 1
-        # Close cards for unfinished split calls that will not run.
-        for withheld_call in turn.withheld():
-            withheld_id = withheld_call.get("card_id")
-            withheld_function = withheld_call.get("function")
-            withheld_name = (
-                withheld_function.get("name") if isinstance(withheld_function, dict) else ""
-            )
-            if not isinstance(withheld_id, str) or not withheld_id:
-                continue
-            if not isinstance(withheld_name, str):
-                withheld_name = ""
-            for card_line in _unrun_call_card(
-                tool_name = withheld_name,
-                tool_call_id = withheld_id,
-                # Cut off mid-write, so there is nothing well formed to show.
-                arguments = {},
-                result = _TOOL_UNFINISHED,
-                provenance = _unrun_provenance(withheld_name, round_id),
-            ):
-                yield card_line
         assistant_tool_calls: list[dict[str, Any]] = []
         tool_messages: list[dict[str, Any]] = []
         noop_messages: list[dict[str, Any]] = []

@@ -156,8 +156,9 @@ export function mintStreamedToolCallId(
   return `tool_call_${next}`;
 }
 
-/** Return the first part in `deltaIndex`'s slot that no id and no name has
- * claimed, or -1. A late id claims one of these before opening a new call. */
+/** Return the first part in `deltaIndex`'s slot no provider id has claimed, or
+ * -1. Not "and unnamed": a split hands its name down to every segment, so a
+ * named one can still be waiting for the id that belongs to it. */
 export function findUnclaimedToolCallPartIndex(
   parts: readonly StreamedToolCallPart[],
   deltaIndex: number | undefined,
@@ -165,13 +166,7 @@ export function findUnclaimedToolCallPartIndex(
   if (deltaIndex === undefined) return -1;
   for (let i = 0; i < parts.length; i += 1) {
     const part = parts[i];
-    if (
-      part._delta_index === deltaIndex &&
-      !part._has_stable_id &&
-      !part.toolName
-    ) {
-      return i;
-    }
+    if (part._delta_index === deltaIndex && !part._has_stable_id) return i;
   }
   return -1;
 }

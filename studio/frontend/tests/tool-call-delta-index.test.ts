@@ -94,6 +94,7 @@ function accumulate(
     );
     if (
       fragment.id &&
+      fragment.name &&
       target !== -1 &&
       parts[target].toolCallId !== fragment.id
     ) {
@@ -778,6 +779,25 @@ test("a split whose document never parses counts as unfinished", () => {
 test("a late id claims the first call a split left waiting", () => {
   const parts = accumulate([
     { index: 0, arguments: '{"a":1}{"b":2}' },
+    { id: "A", index: 0, name: "web_search", arguments: "" },
+    { id: "B", index: 0, name: "web_fetch", arguments: "" },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.toolName, part.argsText]),
+    [
+      ["A", "web_search", '{"a":1}'],
+      ["B", "web_fetch", '{"b":2}'],
+    ],
+  );
+});
+
+// The split hands its own name down to every segment, so a named segment can
+// still be waiting for the id that belongs to it. Requiring the name to be
+// missing bound the first id to the second document and opened an empty third.
+test("a late id claims a split call that inherited a name", () => {
+  const parts = accumulate([
+    { index: 0, name: "web_search", arguments: '{"a":1}{"b":2}' },
     { id: "A", index: 0, name: "web_search", arguments: "" },
     { id: "B", index: 0, name: "web_fetch", arguments: "" },
   ]);
