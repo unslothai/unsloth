@@ -1895,7 +1895,7 @@ def test_the_supported_arch_set_matches_the_installer(monkeypatch):
 
     root = pathlib.Path(hw.__file__).resolve().parents[4]
     install_sh = (root / "install.sh").read_text(encoding = "utf-8")
-    block = install_sh[install_sh.index("_amd_arch_index_family_for_gfx()"):]
+    block = install_sh[install_sh.index("_amd_arch_index_family_for_gfx()") :]
     block = block[: block.index("esac")]
     # Only the case LABELS: the values on the right are index families (gfx103X-all),
     # not architectures, and a bare regex over the block would collect their prefixes.
@@ -1914,6 +1914,7 @@ def test_the_supported_arch_set_matches_the_installer(monkeypatch):
     )
     stack = (root / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     assert "gfx906" in stack, "the gfx906 path this set carries has gone"
+
 
 def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):
     """No rocminfo and no amd-smi is the common case on the host in question."""
