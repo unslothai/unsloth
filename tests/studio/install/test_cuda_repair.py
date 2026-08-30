@@ -7,6 +7,7 @@ returns early on Windows because setup.ps1 owns torch there, which left the upda
 with no flavor invariant at all. See the bottom of this file."""
 
 import importlib.util
+import inspect
 import re
 import subprocess
 import sys
@@ -790,9 +791,11 @@ def _run_flavor_invariant(
                 raise subprocess.TimeoutExpired(cmd, 90)
             result.returncode = torch_rc
             out = _flavor_probe_stdout(state["version"])
-            if probe_cuda is not None or probe_hip is not None:
+            if (probe_cuda is not None or probe_hip is not None) and state["version"] == installed:
                 # An untagged wheel from a private index that DOES carry a runtime, which
-                # the tag alone cannot express. Overridden rather than derived.
+                # the tag alone cannot express. Overridden rather than derived, and only
+                # while the PRE-repair wheel is installed: whatever the repair puts there
+                # reports its own markers, and a real CPU wheel carries none.
                 out = _MARK + (f"{state['version']}|{probe_hip or ''}|{probe_cuda or ''}\n")
         else:
             result.returncode = 0
@@ -970,10 +973,28 @@ class TestExpectedTorchFlavorSkips:
         mock_pip.assert_not_called()
 
     @pytest.mark.parametrize("cvd", ["", "-1", " ", "  -1 "])
-    def test_hidden_cuda_devices_is_a_no_op(self, cvd):
-        ok, mock_pip = _run_flavor_invariant(cvd = cvd)
+    def test_hidden_cuda_devices_is_a_no_op_for_an_inferred_expectation(self, cvd):
+        # An emptied mask says "do not look at my GPUs", so an expectation that could
+        # only have come from looking at them has nothing left to stand on.
+        ok, mock_pip = _run_flavor_invariant(cvd = cvd, expected_env = None)
         assert ok is True
         mock_pip.assert_not_called()
+
+    @pytest.mark.parametrize("cvd", ["", "-1", " ", "  -1 "])
+    def test_a_mask_does_not_veto_an_explicit_expectation(self, cvd):
+        # The mask is a reason not to CONCLUDE cu124 from nvidia-smi. It is not a reason
+        # to ignore a cu124 setup.ps1 published, that the user pinned, or that the last
+        # install recorded. Letting it reproduced the whole defect: an update inheriting
+        # CUDA_VISIBLE_DEVICES="" skipped the invariant, took PyPI's CPU wheel from the
+        # dependency steps, and recorded the CUDA expectation over it.
+        for kwargs in (
+            {"expected_env": "cu124"},
+            {"expected_env": None, "index_family": "cu124"},
+            {"expected_env": None, "recorded": "cu124"},
+        ):
+            ok, mock_pip = _run_flavor_invariant(cvd = cvd, repaired = "2.10.0+cu124", **kwargs)
+            assert ok is True, kwargs
+            assert mock_pip.call_count == 1, kwargs
 
     def test_an_explicit_visible_device_still_repairs(self):
         ok, mock_pip = _run_flavor_invariant(cvd = "0", repaired = "2.10.0+cu124")
@@ -1799,3 +1820,111 @@ class TestTheResidentXformersBuildIsReadFromDisk:
     def test_a_find_spec_that_raises_reads_as_unknown(self):
         with patch.object(stack_mod.importlib.util, "find_spec", side_effect = ValueError("boom")):
             assert stack_mod._resident_xformers_build_torch() is None
+
+
+class TestTheResyncNoticesItsOwnFailures:
+    """Both halves report failure by return value, not by raising.
+
+    Ignoring that let the update write a completion manifest over an incompatible
+    torchao, or over an xFormers whose removal was blocked, with nothing said.
+    """
+
+    def _resync_with(
+        self,
+        *,
+        torchao_ok = True,
+        uninstall_ok = True,
+    ):
+        with (
+            patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.10.0+cu124"),
+            patch.object(stack_mod, "_exact_distribution_spec_is_installed", return_value = False),
+            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.11.0+cu128"),
+            patch.object(stack_mod, "pip_install_try", return_value = torchao_ok),
+            patch.object(stack_mod, "_uninstall_distribution", return_value = uninstall_ok),
+            patch.object(stack_mod, "_note", lambda *a, **k: None),
+        ):
+            return stack_mod._resync_torch_coupled_packages("2.11.0+cu124")
+
+    def test_a_torchao_install_that_did_not_take_is_reported(self, capsys):
+        # PyPI blocked behind a reachable torch index is the concrete case.
+        self._resync_with(torchao_ok = False)
+        assert "could not install" in capsys.readouterr().out
+
+    def test_an_xformers_removal_that_was_blocked_is_reported(self, capsys):
+        # Locked files or a read-only environment, both plausible on Windows.
+        self._resync_with(uninstall_ok = False)
+        out = capsys.readouterr().out
+        assert "could not remove the mismatched xFormers" in out
+
+    def test_a_clean_pass_says_nothing(self, capsys):
+        self._resync_with()
+        out = capsys.readouterr().out
+        assert "[WARN]" not in out
+
+    def test_a_failure_still_does_not_fail_the_update(self):
+        # Secondary to the flavor invariant, which has just fixed the real defect. The
+        # return value reports whether torch may have MOVED, not whether all was well.
+        assert self._resync_with(torchao_ok = False, uninstall_ok = False) is False
+
+
+class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
+    def test_an_untagged_gpu_wheel_does_not_satisfy_a_cpu_expectation(self):
+        # _torch_flavor_tag reads every untagged version as cpu, so a private index that
+        # answers a /cpu repair with an untagged CUDA wheel would be accepted by the
+        # post-repair check under the very rule the pre-repair check rejected it on.
+        with (
+            patch.object(
+                stack_mod,
+                "_probe_torch_runtime",
+                return_value = (True, True, "2.6.0", "", "12.4"),
+            ),
+        ):
+            assert stack_mod._installed_flavor_tag_now("cpu") == "cuda"
+            # And the ROCm spelling, since the two warnings differ.
+            with patch.object(
+                stack_mod,
+                "_probe_torch_runtime",
+                return_value = (True, True, "2.6.0", "6.4", ""),
+            ):
+                assert stack_mod._installed_flavor_tag_now("cpu") == "rocm"
+
+    def test_a_genuine_untagged_cpu_wheel_still_reads_as_cpu(self):
+        with patch.object(
+            stack_mod,
+            "_probe_torch_runtime",
+            return_value = (True, True, "2.6.0", "", ""),
+        ):
+            assert stack_mod._installed_flavor_tag_now("cpu") == "cpu"
+
+    def test_the_adjustment_is_scoped_to_a_cpu_expectation(self):
+        # Under a cu124 expectation an untagged wheel is still "cpu": the repair is
+        # right either way, and only the CPU comparison needed the markers.
+        with patch.object(
+            stack_mod,
+            "_probe_torch_runtime",
+            return_value = (True, True, "2.6.0", "", "12.4"),
+        ):
+            assert stack_mod._installed_flavor_tag_now("cu124") == "cpu"
+            assert stack_mod._installed_flavor_tag_now() == "cpu"
+
+
+class TestTheWindowsXpuTritonSwapReachesADirectRun:
+    """setup.ps1 performs the swap after this script exits; a direct run has no such
+    postlude, and the core install pulls triton-windows over torch's XPU triton."""
+
+    def test_the_handover_variable_gates_it(self):
+        source = inspect.getsource(stack_mod._ensure_xpu_triton)
+        assert "if NO_TORCH or IS_MACOS:" in source, "Windows must no longer be excluded outright"
+        assert (
+            'IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG"' in source
+        ), "under setup.ps1 the swap is still that script's job"
+
+    def test_the_windows_branch_runs_it_after_the_invariant(self):
+        source = inspect.getsource(stack_mod.install_python_stack)
+        marker = "if IS_WINDOWS and not NO_TORCH:"
+        assert marker in source
+        block = source[source.index(marker) :][:1200]
+        assert "_ensure_expected_torch_flavor" in block
+        assert "_ensure_xpu_triton()" in block
+        # After, for the reason step 13 puts it last: the swap keys off the +xpu label.
+        assert block.index("_ensure_expected_torch_flavor") < block.index("_ensure_xpu_triton()")
