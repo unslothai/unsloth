@@ -1710,3 +1710,76 @@ def test_the_mismatch_verdict_names_the_wheel_it_could_not_import(monkeypatch):
     # No card the OS can see: the caller's own plain answer is the honest one.
     monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": []})
     assert hw._mismatch_verdict_for_this_host() == (None, None)
+
+
+# ========== Round eleven ==========
+
+
+def test_cuda_visible_devices_masks_an_amd_host_too(monkeypatch):
+    """HIP honours CUDA_VISIBLE_DEVICES alongside its own variables.
+
+    This module's own visibility resolver reads all three together on an AMD host, so
+    mapping the variable to NVIDIA alone had an AMD-only box launched with
+    CUDA_VISIBLE_DEVICES="" reported as broken and offered a repair for a mask its
+    owner set on purpose.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    amd = [{"vendor": "amd", "name": "Radeon RX 7900 XT"}]
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": amd, "unknown": False}
+    )
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert hw.classify_torch_build() is None
+    assert hw._devices_that_can_establish_a_mismatch(amd) == []
+
+    # And a mask NAMING devices is not a mask at all: that host expects them to work.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+    assert hw._devices_that_can_establish_a_mismatch(amd) == amd
+
+
+def test_the_health_path_never_retries_a_failed_torch_import(monkeypatch):
+    """The label was read with _torch_version_label(), which imports torch.
+
+    On the broken-runtime host that import is what fails: it can take seconds, and
+    _has_torch() purges the partial module afterwards, so each call genuinely re-runs
+    the native load. /api/health, /api/liveness and GET /api/system all reach it.
+    """
+    calls = {"n": 0}
+
+    def _label():
+        calls["n"] += 1
+        return "should not be reached"
+
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", "OSError('libcudart.so.12')")
+    monkeypatch.setattr(hw, "_torch_version_label", _label)
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.6.0+cu124")
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
+    monkeypatch.setattr(
+        hw, "classify_torch_build", lambda: "torch_cuda_unavailable"
+    )
+    monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {
+            "devices": [{"vendor": "nvidia", "name": "A4000"}],
+            "sources": ["nvidia-smi"],
+            "unknown": False,
+        },
+    )
+    hw.torch_build_snapshot()
+
+    assert hw.current_chat_only_verdict() == ("torch_cuda_unavailable", "2.6.0+cu124")
+    report = hw._torch_gpu_mismatch_report()
+    assert report["mismatch"]["torch_version"] == "2.6.0+cu124"
+    assert calls["n"] == 0, "the failed import must not be retried on a request path"
+
+    # A healthy host still reports the live version, which is the more precise one.
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
+    monkeypatch.setattr(hw, "_torch_version_label", lambda: "2.11.0+cpu")
+    assert hw._reported_torch_label() == "2.11.0+cpu"

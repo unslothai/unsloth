@@ -711,6 +711,22 @@ def _schedule_physical_gpu_inventory_refresh() -> None:
             _physical_gpu_inventory_refreshing = False
 
 
+def _reported_torch_label(published: Optional[str] = None) -> Optional[str]:
+    """The version to show for this torch, without ever retrying a failed import.
+
+    ``_torch_version_label()`` imports torch, and on a host whose native runtime will
+    not load that import is the thing that fails: it can take seconds, and _has_torch()
+    purges the partial module afterwards so the next attempt genuinely re-runs the
+    native load. /api/health and /api/liveness reach the label through the chat-only
+    verdict, so on exactly the host this feature exists for it would block the event
+    loop on every call. Whatever detection already published wins, then the label the
+    wheel carries on disk.
+    """
+    if TORCH_IMPORT_ERROR is not None:
+        return published or _installed_torch_label_on_disk() or None
+    return _torch_version_label() or _installed_torch_label_on_disk() or None
+
+
 def _torch_version_label() -> Optional[str]:
     """``torch.__version__`` when it can be read, else None. Never raises."""
     try:
@@ -722,11 +738,15 @@ def _torch_version_label() -> Optional[str]:
 
 # Which vendor each visibility variable addresses. A mask hides that vendor's devices
 # and nothing else, which is the whole point of the per-vendor filtering below.
-_VISIBILITY_MASK_VENDORS: Dict[str, str] = {
-    "CUDA_VISIBLE_DEVICES": "nvidia",
-    "HIP_VISIBLE_DEVICES": "amd",
-    "ROCR_VISIBLE_DEVICES": "amd",
-    "ZE_AFFINITY_MASK": "intel",
+_VISIBILITY_MASK_VENDORS: Dict[str, frozenset] = {
+    # HIP honours CUDA_VISIBLE_DEVICES as well as its own variables, which is why the
+    # visibility resolver in this module reads all three together on an AMD host. An
+    # AMD-only box launched with CUDA_VISIBLE_DEVICES="" is a deliberately masked host,
+    # and mapping the variable to NVIDIA alone had it offered a repair for that.
+    "CUDA_VISIBLE_DEVICES": frozenset({"nvidia", "amd"}),
+    "HIP_VISIBLE_DEVICES": frozenset({"amd"}),
+    "ROCR_VISIBLE_DEVICES": frozenset({"amd"}),
+    "ZE_AFFINITY_MASK": frozenset({"intel"}),
 }
 
 
@@ -767,11 +787,11 @@ def _masks_hide_every_accelerator() -> bool:
 
 def _vendors_masked_off() -> set:
     """Vendors whose devices are all hidden by a mask that can take effect here."""
-    return {
-        _VISIBILITY_MASK_VENDORS[var]
-        for var in _relevant_visibility_masks()
-        if _mask_is_emptied(var) and var in _VISIBILITY_MASK_VENDORS
-    }
+    masked: set = set()
+    for var in _relevant_visibility_masks():
+        if _mask_is_emptied(var):
+            masked |= _VISIBILITY_MASK_VENDORS.get(var, frozenset())
+    return masked
 
 
 def _relevant_visibility_masks() -> tuple[str, ...]:
@@ -1211,13 +1231,7 @@ def _mismatch_verdict_for_this_host(
         # Torch cannot use a GPU and the OS finds none either: the caller's plain
         # answer, whichever one it is, is the honest one.
         return None, None
-    # The wheel on disk names itself when torch cannot be imported. Asked FIRST in that
-    # case rather than as a fallback: _torch_version_label imports torch, which is the
-    # thing that failed, and retrying it costs seconds on exactly that host.
-    if TORCH_IMPORT_ERROR is not None:
-        detail = _installed_torch_label_on_disk() or None
-    else:
-        detail = _torch_version_label() or _installed_torch_label_on_disk() or None
+    detail = _reported_torch_label()
     logger.warning(
         "GPUs are present on this host but PyTorch cannot use them (%s%s); "
         "Train/Export disabled (chat-only). Repair the installation to restore GPU "
@@ -1255,7 +1269,9 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
         "physical_devices": physical,
         "mismatch": {
             "reason": reason,
-            "torch_version": _torch_version_label(),
+            # GET /api/system is a request path too, so this must not retry a failed
+            # import either; CHAT_ONLY_DETAIL is what detection already published.
+            "torch_version": _reported_torch_label(CHAT_ONLY_DETAIL),
             "physical_count": len(physical),
             "sources": inventory.get("sources") or [],
         },
@@ -1737,7 +1753,9 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
         if build_reason is not None and _devices_that_can_establish_a_mismatch(
             inventory.get("devices") or []
         ):
-            return build_reason, _torch_version_label()
+            # Not _torch_version_label(): this line is on the health path, and a broken
+            # runtime would have it retry the import that already failed, every call.
+            return build_reason, _reported_torch_label(detail)
         if inventory.get("unknown"):
             # The probe declined to answer, which is not the same as finding nothing.
             # Downgrading a settled mismatch to no_gpu on a timeout would hand the user
