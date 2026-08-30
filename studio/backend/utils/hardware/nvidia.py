@@ -295,7 +295,16 @@ def _query_gpu_inventory(caller: str) -> Optional[list[dict[str, Any]]]:
             env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
+    except FileNotFoundError as e:
+        # No nvidia-smi at all, which is the NORMAL state of every CPU-only, AMD and
+        # Intel host. The physical inventory calls this unconditionally on a 60 second
+        # refresh reached from the health and system polls, so warning here would put a
+        # line in production logs every minute on machines that are working correctly.
+        logger.debug("nvidia-smi is not installed (%s): %s", caller, e)
+        return None
     except (OSError, subprocess.TimeoutExpired) as e:
+        # Past this point an nvidia-smi WAS found, so a failure is worth saying loudly:
+        # a hung driver or a permission problem is a real fault on an NVIDIA host.
         logger.warning("nvidia-smi query failed in %s: %s", caller, e)
         return None
     if result.returncode != 0:

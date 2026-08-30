@@ -423,11 +423,17 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                 # say so, which keeps a settled verdict rather than inventing one.
                 unknown = True
                 continue
-            _corroborated = [
-                luid
-                for luid in sorted(records)
-                if _adapter_name_is_live(records[luid].get("name"), _live)
-            ]
+            # Consumed one-to-one. Two identical cards leave two identical registry
+            # records, and if one is removed WMI reports a single live adapter that a
+            # reusable predicate would match to BOTH, reporting a GPU that is gone and
+            # double-counting its VRAM.
+            _unclaimed = list(_live)
+            _corroborated = []
+            for luid in sorted(records):
+                _match = _claim_live_adapter(records[luid].get("name"), _unclaimed)
+                if _match is not None:
+                    _unclaimed.pop(_match)
+                    _corroborated.append(luid)
             for ordinal, luid in enumerate(_corroborated):
                 record = records[luid]
                 dedicated = record.get("dedicated_memory_bytes")
@@ -483,7 +489,11 @@ def _windows_live_adapter_names() -> Optional[list[str]]:
         return None
     try:
         ps = (
-            "(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue"
+            # -ErrorAction Stop, NOT SilentlyContinue: the suppressed form exits 0 with
+            # empty stdout, which is indistinguishable from "no adapters" and would make
+            # the corroboration below drop every real card on a host with damaged WMI.
+            "$ErrorActionPreference='Stop';"
+            "(Get-CimInstance Win32_VideoController"
             ' | Select-Object -ExpandProperty Name) -join "`n"'
         )
         r = subprocess.run(
@@ -501,6 +511,18 @@ def _windows_live_adapter_names() -> Optional[list[str]]:
     if r.returncode != 0:
         return None
     return [line.strip() for line in (r.stdout or "").splitlines() if line.strip()]
+
+
+def _claim_live_adapter(name: Optional[str], live_names: list[str]) -> Optional[int]:
+    """Index of the first unclaimed live adapter this record matches, or None.
+
+    Returned rather than a bool so the caller can consume the entry: see the
+    same-named-duplicates note at the call site.
+    """
+    for index, live in enumerate(live_names):
+        if _adapter_name_is_live(name, [live]):
+            return index
+    return None
 
 
 def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
@@ -708,6 +730,12 @@ def _relevant_visibility_masks() -> tuple[str, ...]:
         devices = []
     if not devices or any(d.get("vendor") == "amd" for d in devices):
         masks.extend(hip_masks)
+    # ZE_AFFINITY_MASK is the XPU equivalent, and the rest of this module already reads
+    # an emptied one as hiding every Intel device. Leaving it out meant a deliberately
+    # masked XPU install was reported as torch_cuda_unavailable and offered a repair for
+    # a configuration the user had chosen.
+    if not devices or any(d.get("vendor") == "intel" for d in devices):
+        masks.append("ZE_AFFINITY_MASK")
     return tuple(masks)
 
 
@@ -790,13 +818,22 @@ def classify_torch_build() -> Optional[str]:
     try:
         import torch
 
-        try:
-            if torch.cuda.is_available():
-                return None
-        except Exception:
-            # A runtime that raises on its own availability probe is exactly the
-            # second case; fall through rather than treating it as "no answer".
-            pass
+        # XPU as well as CUDA. An Intel host that started while its runtime was down
+        # and later recovered has a perfectly healthy +xpu wheel, and asking only about
+        # CUDA kept classifying it as torch_cuda_unavailable forever, so the recovery
+        # branch in current_chat_only_verdict was never reached and the process stayed
+        # chat-only until restart.
+        for _available in (
+            getattr(getattr(torch, "cuda", None), "is_available", None),
+            getattr(getattr(torch, "xpu", None), "is_available", None),
+        ):
+            try:
+                if callable(_available) and _available():
+                    return None
+            except Exception:
+                # A runtime that raises on its own availability probe is exactly the
+                # second case; fall through rather than treating it as "no answer".
+                continue
         version = str(getattr(torch, "__version__", ""))
         # The local version tag, using the same vocabulary the installers read:
         # "2.11.0+cpu" -> "cpu", "2.6.0+cu124" -> "cu124", "2.9.0" -> "".

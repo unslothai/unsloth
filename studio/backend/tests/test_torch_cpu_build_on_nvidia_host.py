@@ -32,6 +32,7 @@ the reports describe; the Windows adapter half is exercised through its own map.
 
 from __future__ import annotations
 
+import inspect
 import subprocess
 import types
 from types import SimpleNamespace
@@ -1141,3 +1142,159 @@ def test_a_host_whose_accelerator_never_came_back_is_not_re_detected(monkeypatch
 
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
     assert calls["n"] == 0
+
+
+# ========== Round seven ==========
+
+
+def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
+    """An Intel host that started while its runtime was down and later recovered.
+
+    Asking only about CUDA classified a perfectly healthy +xpu wheel as
+    torch_cuda_unavailable forever, so the recovery branch was never reached and the
+    process stayed chat-only until restart.
+    """
+    import sys
+
+    xpu = _fake_torch("cuda_dead")
+    xpu.__version__ = "2.9.0+xpu"
+    xpu.xpu = types.SimpleNamespace(is_available = lambda: True)
+    monkeypatch.setitem(sys.modules, "torch", xpu)
+    assert hw.classify_torch_build() is None
+
+    # And while the runtime really is down it is still a fault.
+    xpu.xpu = types.SimpleNamespace(is_available = lambda: False)
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+    # A probe that raises is not an answer either way; the CUDA one is still consulted.
+    def _boom():
+        raise RuntimeError("Level Zero not initialised")
+
+    xpu.xpu = types.SimpleNamespace(is_available = _boom)
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+
+@pytest.mark.parametrize("mask", ["", " ", "-1"])
+def test_an_emptied_xpu_mask_is_a_deliberate_hide(monkeypatch, mask):
+    # The rest of the module already reads an emptied ZE_AFFINITY_MASK as hiding every
+    # Intel device, so a masked XPU install must not be offered a repair for it.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"available": True, "devices": [{"vendor": "intel"}]},
+    )
+    monkeypatch.setenv("ZE_AFFINITY_MASK", mask)
+    assert hw.classify_torch_build() is None
+
+    # A mask that NAMES a device expects it to work.
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+
+def test_the_xpu_mask_is_ignored_on_an_nvidia_only_host(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"available": True, "devices": [{"vendor": "nvidia"}]},
+    )
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "")
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+
+def test_duplicate_registry_records_are_claimed_one_to_one(monkeypatch):
+    """Two identical cards leave two identical registry records.
+
+    Remove one and WMI reports a single live adapter, which a reusable predicate matched
+    to BOTH: a GPU reported that is gone, and its VRAM counted twice.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, "", returncode = 9)
+    monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+            {
+                0x1: {"name": "AMD Radeon RX 7900 XT", "dedicated_memory_bytes": 20 * 1024**3},
+                0x2: {"name": "AMD Radeon RX 7900 XT", "dedicated_memory_bytes": 20 * 1024**3},
+            }
+            if vendor_id == hw._AMD_PCI_VENDOR_ID
+            else {}
+        ),
+    )
+
+    inventory = hw.get_physical_gpu_inventory()
+    assert len(inventory["devices"]) == 1, "one live adapter corroborates one record"
+    assert inventory["devices"][0]["memory_total_gb"] == 20.0
+
+
+def test_both_records_survive_when_both_cards_are_live(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, "", returncode = 9)
+    monkeypatch.setattr(
+        hw,
+        "_windows_live_adapter_names",
+        lambda: ["AMD Radeon RX 7900 XT", "AMD Radeon RX 7900 XT"],
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+            {
+                0x1: {"name": "AMD Radeon RX 7900 XT"},
+                0x2: {"name": "AMD Radeon RX 7900 XT"},
+            }
+            if vendor_id == hw._AMD_PCI_VENDOR_ID
+            else {}
+        ),
+    )
+
+    assert len(hw.get_physical_gpu_inventory()["devices"]) == 2
+
+
+def test_the_live_scan_stops_on_a_cim_failure_rather_than_reporting_none(monkeypatch):
+    """-ErrorAction SilentlyContinue exits 0 with empty stdout.
+
+    That is indistinguishable from "no adapters", so the corroboration would have
+    dropped every real card on a host with damaged WMI, recreating the false no-GPU
+    result this whole change exists to remove.
+    """
+    source = inspect.getsource(hw._windows_live_adapter_names)
+    # The comment above the fix names SilentlyContinue, so check the command itself.
+    command = "".join(line for line in source.splitlines() if not line.strip().startswith("#"))
+    assert "SilentlyContinue" not in command
+    assert "$ErrorActionPreference='Stop'" in command
+
+
+def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
+    """The normal state of every CPU-only, AMD and Intel host.
+
+    The inventory calls this on a 60 second refresh reached from the health and system
+    polls, so a warning here is a line a minute on a machine that is working correctly.
+    """
+
+    def _missing(*_a, **_k):
+        raise FileNotFoundError("nvidia-smi")
+
+    # structlog renders to stdout here, so read that rather than the stdlib records.
+    monkeypatch.setattr(nvidia.subprocess, "run", _missing)
+    capsys.readouterr()
+    assert nvidia._query_gpu_inventory("test") is None
+    assert '"level": "warning"' not in capsys.readouterr().out
+
+    # A driver that IS installed and then hangs is still worth saying loudly.
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    capsys.readouterr()
+    assert nvidia._query_gpu_inventory("test") is None
+    assert '"level": "warning"' in capsys.readouterr().out
