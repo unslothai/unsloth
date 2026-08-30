@@ -1158,7 +1158,7 @@ export const en = {
         noRamReserveHint: "Don't reserve a full copy of the weights in system RAM. Keeps llama.cpp's memory-mapped loading and drops --no-mmap and --mlock. The mapping itself stays, so the pages the loader touches still show against this process until the OS reclaims them.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
         mlockNotApplicable: "The loaded model is fully on the GPU, so there is no copy in system RAM to pin and --mlock is skipped. Keep model in GPU memory still applies: idle auto-unload is off.",
-        mlockUngoverned: "The loaded model uses a runner that Model Memory does not control, so this setting cannot affect the current launch. It remains saved and will apply to the next llama.cpp model you load.",
+        mlockUngoverned: "The loaded model uses a runner whose memory-placement flags Model Memory does not control. Keep Resident still disables idle auto-unload for image and video models. Its llama.cpp memory policy remains saved for the next llama.cpp model you load.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
         reloadRequired: "Reload the model to apply the new memory flags.",
         loadError: "Failed to load model memory settings",

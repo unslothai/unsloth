@@ -1190,7 +1190,7 @@ export const de = {
         noRamReserveHint: "Reserviert keine vollständige Kopie der Gewichte im Arbeitsspeicher. Behält das speicherabgebildete Laden von llama.cpp bei und entfernt --no-mmap und --mlock. Die Abbildung selbst bleibt bestehen, daher zählen die vom Loader berührten Seiten weiterhin zu diesem Prozess, bis das Betriebssystem sie zurückfordert.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
         mlockNotApplicable: "Das geladene Modell liegt vollständig auf der GPU, es gibt also keine Kopie im Arbeitsspeicher zum Fixieren und --mlock entfällt. „Modell im GPU-Speicher behalten“ gilt weiterhin: das automatische Entladen im Leerlauf ist aus.",
-        mlockUngoverned: "Das geladene Modell verwendet einen Runner, den Modellspeicher nicht steuert. Diese Einstellung kann den aktuellen Start daher nicht beeinflussen. Sie bleibt gespeichert und gilt für das nächste geladene llama.cpp-Modell.",
+        mlockUngoverned: "Das geladene Modell verwendet einen Runner, dessen Speicherplatzierungs-Flags Modellspeicher nicht steuert. „Modell im GPU-Speicher behalten“ deaktiviert weiterhin das automatische Entladen im Leerlauf für Bild- und Videomodelle. Die llama.cpp-Speicherrichtlinie bleibt für das nächste geladene llama.cpp-Modell gespeichert.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
         loadError: "Modellspeicher-Einstellungen konnten nicht geladen werden",
