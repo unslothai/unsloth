@@ -13,16 +13,21 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from unsloth_cli.commands.start import (
     _CLAUDE_ENV_UNSET,
+    _CLAUDE_SUBAGENT_SETTINGS_ENV,
     _SUBAGENT_DESCRIPTION,
     _SUBAGENT_INSTRUCTIONS,
     _SUBAGENT_PLAN_DESCRIPTION,
     _SUBAGENT_PLAN_INSTRUCTIONS,
+    _agent_config_path,
     _claude_flags,
     _claude_local_env,
+    _prefer_windows_cmd_sibling,
+    _resolved_launch_command,
     _wsl_shim_env,
 )
 
@@ -143,8 +148,10 @@ def run_local_agent(
     entry = {"id": model, "context_length": window}
     local_env = _claude_local_env(base, key, entry)
     child_env = dict(os.environ)
+    settings = os.environ.get(_CLAUDE_SUBAGENT_SETTINGS_ENV)
+    settings = _agent_config_path(Path(settings), ["claude"]) if settings else None
 
-    executable = shutil.which("claude")
+    executable = _prefer_windows_cmd_sibling(shutil.which("claude"))
     if executable is None:
         raise RuntimeError("`claude` is not installed or is not on PATH.")
     cancel_event = cancel_event or threading.Event()
@@ -154,7 +161,7 @@ def run_local_agent(
         "claude",
         "--model",
         model,
-        *_claude_flags(model),
+        *_claude_flags(model, settings),
         "--permission-mode",
         (
             "plan"
@@ -208,8 +215,10 @@ def run_local_agent(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
+    # Same CR/LF hazard as the Codex bridge: --append-system-prompt and the task
+    # both span lines, so resolve npm shims rather than spawning the .cmd raw.
     process = subprocess.Popen(
-        [executable, *command[1:]],
+        _resolved_launch_command(executable, command[1:], child_env),
         **popen_kwargs,
     )
     deadline = _timeout_seconds()

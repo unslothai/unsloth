@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ChatGPT/Codex public-client OAuth owned by the Studio backend.
+"""ChatGPT/Codex public-client OAuth owned by the Unsloth backend.
 
 OAuth transient material never crosses the API boundary: callers receive only an
 opaque flow id and safe user-facing authorization metadata.
@@ -111,7 +111,7 @@ def _provider_file_lock(provider_id: str) -> FileLock:
 
 @asynccontextmanager
 async def provider_oauth_write_guard(provider_id: str):
-    """Serialize refresh and deletion across Studio workers without blocking the event loop."""
+    """Serialize refresh and deletion across Unsloth workers without blocking the event loop."""
     file_lock = _provider_file_lock(provider_id)
     try:
         await asyncio.to_thread(file_lock.acquire)
@@ -865,7 +865,7 @@ async def resolve_access(
         if not force_refresh and bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS:
             return bundle["access_token"], bundle["account_id"]
 
-        # Multiple Studio workers may share the installation DB. Serialize with
+        # Multiple Unsloth workers may share the installation DB. Serialize with
         # disconnect/delete and re-read so a completed refresh is reused.
         async with provider_oauth_write_guard(provider_id):
             bundle = load_oauth_bundle(provider_id)

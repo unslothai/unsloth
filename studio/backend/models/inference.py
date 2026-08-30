@@ -712,6 +712,269 @@ class ValidateModelResponse(BaseModel):
     )
 
 
+class EstimateMemoryRequest(BaseModel):
+    """Settings a Load-Model panel is about to submit, priced before it submits them.
+
+    Every field mirrors the load request it previews, so the estimate answers for the
+    command that would actually run. Header-only: nothing is read, touched or loaded.
+    """
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization to price (e.g. Q4_K_M); the picked variant."
+    )
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+    native_path_lease: Optional[str] = Field(
+        None,
+        description = "Lease for a picked / drag-dropped .gguf, as /validate takes one.",
+    )
+    n_ctx: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Context length to price (--ctx-size). 0 or omitted prices the "
+        "model's native context, which is what an Auto load asks for.",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache dtype to price. The biggest lever on this estimate at "
+        "long contexts, so omitting it prices a load nobody asked for.",
+    )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = "Serving slots (--parallel); scales both the cache and the buffers.",
+    )
+    n_batch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    n_ubatch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    speculative_type: Optional[str] = Field(
+        None, description = "Speculative mode; decides which drafter's weights are charged."
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = "Draft depth. Sizes the drafter's rollback state, so it moves the "
+        "estimate for every mode that loads a separate drafter.",
+    )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = "Draft KV cache dtype. The drafter keeps its own cache, and at a "
+        "long context that is GB, not a rounding error.",
+    )
+    tensor_parallel: bool = Field(False, description = "Whether tensor mode is requested")
+    disable_vision: bool = Field(
+        False, description = "Vision off, so an image projector's bytes are not charged."
+    )
+    gpu_memory_mode: Optional[str] = Field(
+        None, description = "'auto' or 'manual'; manual splits the weights by gpu_layers."
+    )
+    gpu_layers: Optional[int] = Field(
+        None, ge = 0, description = "Layers pinned to the GPU under manual placement."
+    )
+    n_cpu_moe: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Expert layers held on the CPU (--n-cpu-moe). Not priced; echoed "
+        "back so the panel can say the GPU figure reads high.",
+    )
+    selected_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "GPUs the load is pinned to. Tensor mode replicates its compute "
+        "buffers per device, so the pinned count changes the footprint.",
+    )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = "Pass-through llama-server flags. Read, not just carried: -c, "
+        "-nkvo, --swa-full and the cache-type flags all move this estimate.",
+    )
+
+    _no_booleans = field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
+    )(LoadRequest._no_booleans.__func__)
+
+
+class EstimateMemoryResponse(BaseModel):
+    """Itemized memory an inference load would occupy, or why it could not be sized."""
+
+    available: bool = Field(..., description = "Whether a breakdown could be produced at all.")
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
+        "'unsupported_source' or 'unsizable'.",
+    )
+    weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
+    kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    drafter_runtime_bytes: int = Field(
+        0,
+        description = "A separate drafter's own KV cache and rollback state, on top of "
+        "its file in weights_bytes. Included in total_bytes, and in gpu_bytes unless the "
+        "drafter is CPU-pinned. Reported separately so the itemization accounts for it.",
+    )
+    drafter_runtime_gpu_bytes: int = Field(
+        0,
+        description = "The share of drafter_runtime_bytes that lands on the GPU. Not a "
+        "placement flag, because the term is not placed as one piece: under MTP the "
+        "target-side verification state follows the TARGET cache (so --no-kv-offload "
+        "moves it) while the draft cache follows the drafter (so --spec-draft-ngl 0 "
+        "moves that instead), and the two can go different ways in the same load.",
+    )
+    projector_runtime_bytes: int = Field(
+        0,
+        description = "The vision encoder's buffers, about 0.4x the projector file on top "
+        "of it. Included in total_bytes, and in gpu_bytes unless --no-mmproj-offload "
+        "keeps the projector in host RAM.",
+    )
+    drafter_kv_unsized: bool = Field(
+        False,
+        description = "True when a drafter is charged whose cache could not be sized: "
+        "--spec-draft-hf names a repository whose header is not on this disk. Its weights "
+        "are in weights_bytes but its context-scaled cache is missing, so total_bytes is a "
+        "lower bound.",
+    )
+    adapters_unsized: bool = Field(
+        False,
+        description = "True when a pass-through --lora / --lora-scaled / --control-vector / "
+        "--control-vector-scaled names a file that could not be stat'd. llama.cpp loads every "
+        "one of them into resident tensors on top of the base model, so those bytes are "
+        "missing from total_bytes and it is a lower bound.",
+    )
+    total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
+    gpu_bytes: int = Field(
+        0, description = "The share of total_bytes that lands on the GPU under this offload"
+    )
+    kv_estimable: bool = Field(
+        True,
+        description = "False when the GGUF header lacks the attention dims needed to "
+        "size the cache. kv_bytes is then 0 meaning UNKNOWN and total_bytes is a lower "
+        "bound; rendering it as a confident total is what this flag exists to prevent.",
+    )
+    kv_on_gpu: bool = Field(
+        True, description = "False under --no-kv-offload, which moves the cache to host RAM"
+    )
+    n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    cache_type_kv: Optional[str] = Field(
+        None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
+    )
+    n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
+    layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
+    gpu_layers: Optional[int] = Field(
+        None, description = "Layers charged to the GPU; null under automatic placement"
+    )
+    moe_offload_unmodelled: bool = Field(
+        False,
+        description = "True when --n-cpu-moe is set: experts move per-tensor, not "
+        "per-block, so the GPU/host split above ignores it and reads high.",
+    )
+
+
+class MemoryEstimate(BaseModel):
+    """The canonical answer to "what would this load occupy".
+
+    Studio grew two routes that answer this -- ``POST /inference/estimate-memory``
+    for the Load Model panel and ``GET /models/kv-cache-estimate`` for the Hub
+    memory bar. They share the ``_gguf_memory_breakdown`` planner, so their
+    arithmetic already agrees; this is the shared CONTRACT, so their vocabulary
+    agrees too. Both legacy routes are projections of this model and keep their
+    own shapes exactly.
+
+    The one thing this model deliberately does not have is a field called
+    ``weights_bytes``. That name means different things on the two legacy routes
+    -- every resident file on one, the quant file alone on the other -- and it is
+    the same type on both, so nothing catches a caller reading the wrong one.
+    It is replaced here by two fields that each say which they are, and it is
+    absent rather than redefined so that no future reader can pick it up and
+    guess. See ``core/inference/memory_contract.py`` for the projections.
+    """
+
+    available: bool = Field(..., description = "Whether a breakdown could be produced at all.")
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
+        "'unsupported_source' or 'unsizable'.",
+    )
+
+    # --- the two meanings that used to collide under `weights_bytes` ---
+    quant_file_bytes: int = Field(
+        0,
+        description = "The selected GGUF quant file ALONE, as it sits on disk. This is "
+        "the figure a download size or a weights segment should be drawn from, because "
+        "it is the number the user already saw beside the model.",
+    )
+    resident_files_bytes: int = Field(
+        0,
+        description = "Every file this launch makes resident: the quant file PLUS "
+        "whichever projector and drafter it opens. Always >= quant_file_bytes. This is "
+        "the figure an itemized footprint should be drawn from.",
+    )
+
+    kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    drafter_runtime_bytes: int = Field(
+        0, description = "A separate drafter's own KV cache and rollback state"
+    )
+    drafter_runtime_gpu_bytes: int = Field(
+        0, description = "The share of drafter_runtime_bytes that lands on the GPU"
+    )
+    projector_runtime_bytes: int = Field(
+        0, description = "The vision encoder's buffers, on top of the projector file"
+    )
+    drafter_kv_unsized: bool = Field(
+        False, description = "A charged drafter's cache could not be sized, so totals are a floor"
+    )
+    adapters_unsized: bool = Field(
+        False, description = "A pass-through adapter could not be stat'd, so totals are a floor"
+    )
+
+    total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
+    gpu_bytes: Optional[int] = Field(
+        None,
+        description = "The share of total_bytes that lands on the GPU. Optional because "
+        "None and 0 are DIFFERENT answers here: None is 'the planner did not run', while "
+        "0 is 'this launch puts nothing on the card', which inherited placement such as "
+        "LLAMA_ARG_DEVICE=none really does produce. Collapsing the two sends a caller "
+        "back to summing segments and drawing VRAM pressure for a load that touches no "
+        "card at all.",
+    )
+    gpu_floor_bytes: Optional[int] = Field(
+        None,
+        description = "What still lands on the GPU at the SHORTEST context: drafter "
+        "weights, flat compute buffers, recurrent rollback state. None of it shrinks "
+        "when the context does, so it separates an overage a shorter context fixes from "
+        "one it cannot. None when it was not computed.",
+    )
+
+    kv_estimable: bool = Field(True, description = "False when the header could not size the cache")
+    kv_on_gpu: bool = Field(True, description = "Whether the target cache sits on the GPU")
+    n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    native_context: Optional[int] = Field(
+        None, description = "The model's own trained context length, when readable"
+    )
+    cache_type_kv: Optional[str] = Field(None, description = "KV cache dtype the estimate priced")
+    n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
+    layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
+    gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
+    moe_offload_unmodelled: bool = Field(
+        False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    context_is_pinned: bool = Field(
+        True,
+        description = "False only when the loader is free to shrink the context. A caller "
+        "that softens its verdict for an auto-fitted row has to stop softening here.",
+    )
+    inherited_device_pin: bool = Field(
+        False,
+        description = "An inherited LLAMA_ARG_DEVICE confines the launch to the cards it "
+        "names, so a budget aggregated over the visible inventory describes a pool the "
+        "launch will not open.",
+    )
+    spec_unpriced: bool = Field(
+        False, description = "A speculative term was charged that could not be sized"
+    )
+
+
 class InstallLatestTransformersRequest(BaseModel):
     """Consented request to install the latest transformers release into a sidecar."""
 
@@ -780,7 +1043,10 @@ class _InferenceRuntimeFields(BaseModel):
         "non-diffusion models and whenever the ask and the applied split agree.",
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Audio codec or native generation architecture.",
+    )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     has_video_input: bool = Field(
         False,
@@ -1066,6 +1332,12 @@ class LoadResponse(_InferenceRuntimeFields):
     )
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
+    )
+    memory_warning: Optional[str] = Field(
+        None,
+        description = "Non-blocking advisory about this load, or null. Set when the "
+        "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
+        "them in from disk and generation will be slow. The model still loaded.",
     )
 
 
@@ -1583,10 +1855,49 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    # OpenAI's documented range is [-2, 2] on both penalties. Widening only
+    # admits requests that used to be rejected, so nothing that works today
+    # changes. A negative value boosts repetition wherever the backend applies
+    # the penalty at all.
+    presence_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Presence penalty: charges a token once if it appears. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    frequency_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Frequency penalty: charges a token per occurrence. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    # Ids are not range-checked here: MLX bounds-checks nothing either, so a
+    # stray is dropped at the processors rather than failing the request.
+    logit_bias: Optional[Dict[int, Annotated[float, Field(ge = -100.0, le = 100.0)]]] = Field(
+        None,
+        description = "Additive per-token logit bias keyed by token id, each in [-100, 100]. Ids past the model's logit width are ignored.",
+    )
     stop: Optional[Union[str, list[str]]] = Field(
         None,
         description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
+    )
+    # Declared rather than left to model_extra so the schema documents it and a
+    # backend that cannot constrain decoding can refuse it by name.
+    response_format: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            'Guided decoding contract, typically `{"type": "json_object"}` or'
+            ' a `json_schema`. `{"type": "text"}` names the default and'
+            " constrains nothing. Anything else needs a grammar engine, and a"
+            " backend without one rejects the request rather than answering text"
+            " that ignores the contract."
+        ),
     )
     tools: Optional[list[dict]] = Field(
         None,
@@ -1626,7 +1937,12 @@ class ChatCompletionRequest(BaseModel):
     parallel_tool_calls: Optional[bool] = Field(
         None, description = "Whether to enable parallel function calling during tool use."
     )
-    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "Best-effort deterministic sampling seed.",
+    )
     stream_options: Optional[dict] = Field(
         None,
         description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
@@ -1644,6 +1960,17 @@ class ChatCompletionRequest(BaseModel):
     audio_base64: Optional[str] = Field(
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
+    )
+    audio_instructions: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Scene or music-description instructions for native audio models. "
+            "MiniMax Music 3 requires this alongside lyrics."
+        ),
+    )
+    audio_language: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Target-language hint for native audio models that support it.",
     )
     video_base64: Optional[str] = Field(
         None,
@@ -1708,6 +2035,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool for this turn. Set when the "
+            "composer has Deep Research armed; the model decides whether to use it."
+        ),
+    )
     confirm_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
@@ -1738,11 +2072,10 @@ class ChatCompletionRequest(BaseModel):
     nudge_tool_calls: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
-            "model emitted a tool signal that healing could not repair, retry ONCE with "
-            "a short nudge appended (the retry shares the full prompt prefix, so the "
-            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
-            "the process default."
+            "[x-unsloth] Opt-in tool-call recovery: when a model stalls with a short "
+            "plan instead of calling an available tool, or passthrough healing cannot "
+            "repair a malformed call, retry with a short nudge. Default off; "
+            "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
@@ -1752,8 +2085,35 @@ class ChatCompletionRequest(BaseModel):
             "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
             "limited to client-tool or response_format passthrough and retries after "
             "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
-            "window for plain and Studio-tool chats by dropping complete oldest turns. "
+            "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
             "Both truncation policies preserve system messages and tool-call groups."
+        ),
+    )
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
+            "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
+            "instructions (Studio default). 'rolling' drops oldest complete turns. "
+            "Unset uses UNSLOTH_CONTEXT_POLICY."
+        ),
+    )
+    compaction_headroom_ratio: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 0.9,
+        description = (
+            "[x-unsloth] Extra share of the prompt budget to drop when a rolling "
+            "compaction fires, so the boundary can stay put for a stretch of turns. "
+            "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
+            "for checkpoint compaction. Unset keeps the process default."
+        ),
+    )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] The replayed tool calls were produced by Studio's local "
+            "tool loop rather than by an OpenAI-compatible client tool contract."
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
@@ -1769,12 +2129,12 @@ class ChatCompletionRequest(BaseModel):
     run_tools_locally: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "[x-unsloth] Execute the selected tools on the Unsloth host instead of "
             "asking the provider to run its own hosted builtins. Only meaningful "
             "for providers that ship hosted tools of the same name (OpenAI, "
             "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
             "the same request means hosted search to a client written before "
-            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "Unsloth ran tools for external providers. Omitted keeps the hosted "
             "behaviour, so an older client is unaffected."
         ),
     )
@@ -2153,6 +2513,13 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Append tools from every enabled MCP server",
     )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool. Its schema is in the prompt "
+            "whenever the composer armed research, so the count carries it too."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
@@ -2160,6 +2527,15 @@ class ChatCountTokensRequest(BaseModel):
     auto_heal_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
+    )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Mirrors ChatCompletionRequest: the replayed tool calls came from "
+            "Studio's local tool loop, so _takes_tool_passthrough routes the count the way "
+            "it routes the completion. Declared rather than left to extra='allow', which "
+            "coerces nothing and would read the string 'false' as a claim of ownership."
+        ),
     )
     permission_mode: Optional[str] = Field(
         None,
@@ -2456,6 +2832,27 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
+class ResponsesCustomToolCallInputItem(BaseModel):
+    """A prior assistant custom_tool_call replayed by a Responses client."""
+
+    type: Literal["custom_tool_call"]
+    id: Optional[str] = None
+    call_id: str
+    name: str
+    input: str = Field(..., description = "Raw freeform input the model produced.")
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesCustomToolCallOutputInputItem(BaseModel):
+    """A client result for a prior custom_tool_call."""
+
+    type: Literal["custom_tool_call_output"]
+    id: Optional[str] = None
+    call_id: str
+    output: Union[str, list]
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
@@ -2485,6 +2882,10 @@ def _responses_input_item_discriminator(v: Any) -> str:
         return "function_call"
     if t == "function_call_output":
         return "function_call_output"
+    if t == "custom_tool_call":
+        return "custom_tool_call"
+    if t == "custom_tool_call_output":
+        return "custom_tool_call_output"
     if r is not None or t == "message":
         return "message"
     return "unknown"
@@ -2495,6 +2896,8 @@ ResponsesInputItem = Annotated[
         Annotated[ResponsesInputMessage, Tag("message")],
         Annotated[ResponsesFunctionCallInputItem, Tag("function_call")],
         Annotated[ResponsesFunctionCallOutputInputItem, Tag("function_call_output")],
+        Annotated[ResponsesCustomToolCallInputItem, Tag("custom_tool_call")],
+        Annotated[ResponsesCustomToolCallOutputInputItem, Tag("custom_tool_call_output")],
         Annotated[ResponsesUnknownInputItem, Tag("unknown")],
     ],
     Discriminator(_responses_input_item_discriminator),
@@ -2531,12 +2934,12 @@ class ResponsesRequest(BaseModel):
 
     # OpenAI function-calling fields, forwarded via the Chat Completions
     # pass-through. Plain list so built-in tool shapes round-trip without
-    # validation errors; the translator forwards only ``type=="function"`` entries.
+    # validation errors; the translator forwards functions and Codex apply_patch.
     tools: Optional[list[dict]] = Field(
         None,
         description = (
-            "Responses-shape function tool definitions. Entries with "
-            '`type="function"` are translated to the Chat Completions nested '
+            "Responses-shape tool definitions. Function tools and Codex's "
+            "custom `apply_patch` are translated to the Chat Completions nested "
             "shape before being forwarded to llama-server; other tool types "
             "(built-in web_search, file_search, mcp, ...) are accepted for SDK "
             "compatibility but ignored on the llama-server passthrough."
@@ -2615,10 +3018,22 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
+class ResponsesOutputCustomToolCall(BaseModel):
+    """A freeform custom-tool call returned by the Responses API."""
+
+    type: Literal["custom_tool_call"] = "custom_tool_call"
+    id: str = Field(default_factory = lambda: f"ctc_{uuid.uuid4().hex[:12]}")
+    call_id: str
+    name: str
+    input: str
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+
 ResponsesOutputItem = Union[
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
 ]
 
 
@@ -2906,7 +3321,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     nudge_tool_calls: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
+        description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
 
@@ -3805,6 +4220,42 @@ class AudioSpeechRequest(BaseModel):
         "wav", description = "Output container. Only 'wav' is supported."
     )
     speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    instructions: Optional[str] = Field(
+        None,
+        description = "Scene or music-description instructions for compatible audio models.",
+    )
+    language: Optional[str] = Field(
+        None,
+        description = "Target-language hint for compatible audio models.",
+    )
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "Best-effort deterministic generation seed.",
+    )
+    max_new_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = (
+            "Maximum generated audio tokens/frames; MiniMax Music 3 uses 25 frames per second."
+        ),
+    )
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
+        "provider's /audio/speech and model/voice/speed are forwarded as sent.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Browser-snapshotted connection base URL. Required with a "
+        "legacy encrypted_api_key so an edit cannot route that key to another endpoint.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request key for a browser still holding a legacy "
+        "provider key, used when the connection has none saved server side.",
+    )
 
     @field_validator("response_format", mode = "before")
     @classmethod
@@ -3833,6 +4284,62 @@ class AudioGalleryListResponse(BaseModel):
     has_more: bool = False
     next_before_mtime: Optional[float] = None
     next_before_id: Optional[str] = None
+
+
+# ── OpenAI-compatible videos API (/v1/videos) ──
+
+
+class VideoJobCreateRequest(BaseModel):
+    prompt: str = Field(..., min_length = 1)
+    model: Optional[str] = None
+    seconds: Optional[str] = Field(
+        None, description = "Clip duration in seconds, snapped to the loaded family's frame lattice."
+    )
+    size: Optional[str] = Field(
+        None, description = "'<width>x<height>', a resolution preset of the loaded family."
+    )
+
+    @field_validator("model", "seconds", "size", mode = "before")
+    @classmethod
+    def _blank_means_default(cls, value):
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+
+class VideoJobError(BaseModel):
+    code: str
+    message: str
+
+
+class VideoJob(BaseModel):
+    id: str
+    object: Literal["video"] = "video"
+    model: str
+    status: Literal["queued", "in_progress", "completed", "failed"]
+    progress: int = Field(0, ge = 0, le = 100)
+    created_at: int
+    completed_at: Optional[int] = None
+    expires_at: Optional[int] = None
+    prompt: Optional[str] = None
+    size: str
+    seconds: str
+    error: Optional[VideoJobError] = None
+    remixed_from_video_id: Optional[str] = None
+
+
+class VideoJobListResponse(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[VideoJob] = Field(default_factory = list)
+    first_id: Optional[str] = None
+    last_id: Optional[str] = None
+    has_more: bool = False
+
+
+class VideoJobDeleteResponse(BaseModel):
+    id: str
+    object: Literal["video.deleted"] = "video.deleted"
+    deleted: bool = True
 
 
 # ── Video (local text-to-video) ──
@@ -3981,6 +4488,18 @@ class VideoReferenceVideo(BaseModel):
         description = "Base64/data-URL soundtrack for THIS video. Omitted takes the track "
         "embedded in the file, if it has one; sent explicitly it replaces it.",
     )
+    trim_start_seconds: Optional[float] = Field(
+        None, ge = 0.0, description = "Inclusive start of an explicit video trim, in seconds."
+    )
+    trim_end_seconds: Optional[float] = Field(
+        None, gt = 0.0, description = "Exclusive end of an explicit video trim, in seconds."
+    )
+
+    @model_validator(mode = "after")
+    def _trim_is_a_complete_h3_interval(self) -> "VideoReferenceVideo":
+        from core.inference.video_minimax_h3 import validate_h3_reference_trim
+        validate_h3_reference_trim(self.trim_start_seconds, self.trim_end_seconds)
+        return self
 
 
 class VideoGenerateRequest(BaseModel):

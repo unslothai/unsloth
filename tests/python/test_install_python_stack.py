@@ -355,13 +355,12 @@ class TestSdistOnlyBuildArgs:
         # The unconditional ones are always present.
         assert set(ips.SDIST_ONLY_PACKAGES) <= set(names)
 
-    def test_the_diffusers_pin_is_exempted_on_the_archive_path(self):
-        """The pin is a source ARCHIVE, and uv's no-build refuses to build one, so the
-        install still died here after extras.txt was fixed.
+    def test_the_diffusers_release_is_not_forced_through_a_source_build(self):
+        """The pinned release ships wheels, so forcing a source build defeats the pin."""
+        pin_lines = (ips.REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8").splitlines()
+        pin_options = [line.split("#", 1)[0].strip() for line in pin_lines]
+        assert not any(option.startswith("--no-binary") for option in pin_options)
 
-        Guarded on python >= 3.10 because diffusers-pin.txt resolves a released wheel
-        below that, which must not be forced through a source build.
-        """
         tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
@@ -369,14 +368,12 @@ class TestSdistOnlyBuildArgs:
             req = next((k for k in node.keywords if k.arg == "req"), None)
             if req is None or "diffusers-pin.txt" not in ast.unparse(req.value):
                 continue
-            splat = " ".join(ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred))
-            assert (
-                "_sdist_only_build_args('diffusers')" in splat
-            ), f"the diffusers pin at line {node.lineno} must exempt the source archive"
-            assert "version_info >= (3, 10)" in splat, (
-                "the exemption must be guarded so the pre-3.10 wheel is not forced "
-                f"through a source build (line {node.lineno})"
-            )
+            try:
+                literal_arguments = [ast.literal_eval(argument) for argument in node.args]
+            except (ValueError, TypeError):
+                pytest.fail("the diffusers pin options must remain literal and auditable")
+            assert all(isinstance(argument, str) for argument in literal_arguments)
+            assert not any(argument.startswith("--no-binary") for argument in literal_arguments)
             return
         pytest.fail("no pip_install(req=.../diffusers-pin.txt) call found")
 
@@ -500,6 +497,8 @@ class TestHardenedPipConfigRelaxation:
         def _fake_run(label, cmd, *a, **kw):
             seen["env"] = ips._install_env_for_cmd(cmd)
             seen["cmd"] = cmd
+            # pip_install reads the result to decide whether to attempt recovery.
+            return mock.Mock(returncode = 0, stdout = b"")
 
         with (
             mock.patch.object(ips, "USE_UV", True),
@@ -595,6 +594,8 @@ class TestProgressLineNotes:
             mock.patch.object(ips, "subprocess") as sp,
             mock.patch.object(ips, "run") as fallback,
         ):
+            # pip_install reads the result to decide whether to attempt recovery.
+            fallback.return_value = mock.Mock(returncode = 0, stdout = b"")
             sp.run.return_value = fake
             sp.PIPE, sp.STDOUT = -1, -2
             out = self._render(
@@ -2243,3 +2244,130 @@ class TestDesktopBackendVersionConstraint:
                 else package_name
             )
             assert unsloth_spec == "unsloth"
+
+
+class TestRecordlessDistributionRecovery:
+    """pip cannot replace a .dist-info with no RECORD, and the venv is reused.
+
+    Observed on the Windows startup job: uv wrote pydantic-core, the pip fallback
+    tried to uninstall it, found no RECORD, and the dependency step died. Nothing
+    clears that state, so the same venv failed the same way on every later run.
+    """
+
+    _PIP_OUTPUT = (
+        b"Attempting uninstall: pydantic-core\n"
+        b"  Found existing installation: pydantic-core None\n"
+        b"error: uninstall-no-record-file\n"
+        b"x Cannot uninstall pydantic-core None\n"
+        b"|-> The package's contents are unknown: no RECORD file was found for pydantic-core.\n"
+    )
+
+    def _site_packages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ips.sysconfig, "get_path", lambda name: str(tmp_path))
+        return tmp_path
+
+    def _write_dist_info(self, root, name, *, record: bool):
+        dist_info = root / name
+        dist_info.mkdir()
+        (dist_info / "METADATA").write_text("Name: x\n", encoding = "utf-8")
+        if record:
+            (dist_info / "RECORD").write_text("", encoding = "utf-8")
+        return dist_info
+
+    def test_the_named_stub_is_cleared(self, tmp_path, monkeypatch):
+        root = self._site_packages(tmp_path, monkeypatch)
+        stub = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
+
+        cleared = ips._purge_recordless_distributions(self._PIP_OUTPUT)
+
+        assert cleared == ["pydantic_core-2.46.5.dist-info"]
+        assert not stub.exists()
+
+    def test_a_complete_install_of_the_same_name_is_left_alone(self, tmp_path, monkeypatch):
+        # A RECORD means pip knows what it owns; whatever failed, it was not this.
+        root = self._site_packages(tmp_path, monkeypatch)
+        intact = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = True)
+
+        assert ips._purge_recordless_distributions(self._PIP_OUTPUT) == []
+        assert intact.exists()
+
+    def test_other_packages_are_never_touched(self, tmp_path, monkeypatch):
+        # The blast radius is the names pip named, not every stub in site-packages.
+        root = self._site_packages(tmp_path, monkeypatch)
+        bystander = self._write_dist_info(root, "fastapi-0.121.0.dist-info", record = False)
+
+        assert ips._purge_recordless_distributions(self._PIP_OUTPUT) == []
+        assert bystander.exists()
+
+    def test_an_unrelated_failure_clears_nothing(self, tmp_path, monkeypatch):
+        # No RECORD marker: a different problem, which deleting metadata cannot fix.
+        root = self._site_packages(tmp_path, monkeypatch)
+        stub = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
+
+        assert ips._purge_recordless_distributions(b"ERROR: could not resolve pydantic-core") == []
+        assert stub.exists()
+
+    @pytest.mark.parametrize("output", [None, b"", ""])
+    def test_no_output_is_not_a_reason_to_delete(self, output, tmp_path, monkeypatch):
+        self._site_packages(tmp_path, monkeypatch)
+        assert ips._purge_recordless_distributions(output) == []
+
+    def test_the_name_matches_across_dash_and_underscore_spellings(self, tmp_path, monkeypatch):
+        # pip reports "pydantic-core"; the directory is written "pydantic_core".
+        root = self._site_packages(tmp_path, monkeypatch)
+        stub = self._write_dist_info(root, "pydantic.core-2.46.5.dist-info", record = False)
+
+        assert ips._purge_recordless_distributions(self._PIP_OUTPUT) == [stub.name]
+        assert not stub.exists()
+
+    def test_the_fallback_retries_once_after_clearing(self, tmp_path, monkeypatch):
+        """The recovery is only worth anything if pip_install actually re-runs."""
+        root = self._site_packages(tmp_path, monkeypatch)
+        self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
+        monkeypatch.setattr(ips, "USE_UV", False)
+        monkeypatch.setattr(ips, "CONSTRAINTS", tmp_path / "absent.txt")
+
+        attempts = []
+
+        def fake_run(
+            label,
+            cmd,
+            *,
+            quiet = True,
+            check = True,
+        ):
+            attempts.append(cmd)
+            failed = len(attempts) == 1
+            return types.SimpleNamespace(
+                returncode = 1 if failed else 0,
+                stdout = self._PIP_OUTPUT if failed else b"",
+            )
+
+        monkeypatch.setattr(ips, "run", fake_run)
+        ips.pip_install("studio deps", "pydantic-core")
+
+        assert len(attempts) == 2 and attempts[0] == attempts[1]
+
+    def test_a_failure_it_cannot_recover_from_still_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ips.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(ips, "USE_UV", False)
+        monkeypatch.setattr(ips, "CONSTRAINTS", tmp_path / "absent.txt")
+
+        attempts = []
+
+        def fake_run(
+            label,
+            cmd,
+            *,
+            quiet = True,
+            check = True,
+        ):
+            attempts.append(cmd)
+            return types.SimpleNamespace(returncode = 1, stdout = b"ERROR: no matching distribution")
+
+        monkeypatch.setattr(ips, "run", fake_run)
+        with pytest.raises(SystemExit) as excinfo:
+            ips.pip_install("studio deps", "pydantic-core")
+
+        assert excinfo.value.code == 1
+        assert len(attempts) == 1, "a failure with nothing to clear must not be retried"

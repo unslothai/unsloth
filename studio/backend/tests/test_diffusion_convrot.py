@@ -289,7 +289,7 @@ def test_format_tag_follows_the_rotation():
     [
         (pq.PREQUANT_FORMAT, {}, True),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"]), True),
-        # A rotated artifact tagged v1 loads clean on a Studio predating the online half and
+        # A rotated artifact tagged v1 loads clean on an Unsloth predating the online half and
         # renders wrong pixels. Refuse it here too: whoever wrote the tag is not to be trusted
         # about the rest of the file either.
         (pq.PREQUANT_FORMAT, _meta(["a"]), False),

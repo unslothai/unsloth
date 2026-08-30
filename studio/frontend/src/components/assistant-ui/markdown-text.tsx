@@ -24,6 +24,7 @@ import {
   searchImagesSignature,
 } from "@/features/chat/search-images/search-images";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
@@ -60,10 +61,12 @@ import {
 import {
   DeferredFenceShell,
   fenceMode,
+  trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
+import { withMathBlockMarker } from "./math-block-marker";
 import {
   MarkdownBlockBoundary,
   MarkdownBlockFallbackView,
@@ -76,10 +79,20 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  markdownRenderKey,
+  parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
 
-const math = createMathPlugin({ singleDollarTextMath: true });
+const baseMath = createMathPlugin({ singleDollarTextMath: true });
+// Mark the block that holds each inline maths root, on the way past, so `index.css` has something
+// that can take containment. Composed onto the maths plugin's own rehype pass because that is the
+// only hook here that runs after Streamdown's sanitizer, which strips class names it does not
+// recognise. See `math-block-marker.ts` for why neither plugin prop works.
+const math = {
+  ...baseMath,
+  rehypePlugin: withMathBlockMarker(baseMath.rehypePlugin),
+} satisfies typeof baseMath;
 const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
@@ -498,9 +511,6 @@ function FenceBlock({
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const mode = fenceMode();
-  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
-  // it so that finishing the stream cannot hand it back the plain shell.
-  const reached = useFenceReached(host, mode !== "off", Boolean(isIncomplete));
 
   /*
    * WHICH FENCES THIS COVERS, and which it does not.
@@ -528,6 +538,37 @@ function FenceBlock({
   // tokenize an unknown language as plain text -- which is exactly the grammar work the arm
   // exists to put back.
   const languageToken = language?.trim().split(/\s+/)[0] || null;
+
+  /*
+   * DRIVE THE HIGHLIGHTER OVER THIS FENCE ON DEMAND. The latch owns WHEN; this owns WHAT, because
+   * the plugin instance lives here with the component that renders the block.
+   *
+   * `tokens: true`: `code.highlight` returns synchronously once the grammar is loaded and caches
+   * on the source string, so this is the same object the block's own render is about to ask for,
+   * which is what lets a jump or a print swap straight to a COLOURED block rather than to
+   * streamdown's plain fallback. `tokens: false` highlights "", loading the grammar only.
+   */
+  const warm = useCallback(
+    (tokens: boolean) => {
+      code.highlight({
+        code: tokens ? trimTrailingNewlines(source) : "",
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      }, () => {});
+    },
+    [source, languageToken],
+  );
+
+  // A streaming fence is the one the reader is watching, so it never defers, and the hook latches
+  // it so that finishing the stream cannot hand it back the plain shell.
+  const reached = useFenceReached(
+    host,
+    mode !== "off",
+    Boolean(isIncomplete),
+    languageToken,
+    trimmedLength(source),
+    warm,
+  );
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the
   // document at the deferred size, so the two costs can be told apart. `code.highlight` caches
@@ -580,7 +621,7 @@ function FenceBlock({
  * Every block is rendered inside a boundary. Streamdown fetches the code
  * highlighter and the Mermaid renderer with `React.lazy` the first time a reply
  * needs them, and a rejected import rethrows during render; without this the
- * nearest catcher is the ROUTER's, which replaces all of Studio and takes the
+ * nearest catcher is the ROUTER's, which replaces all of Unsloth and takes the
  * reply and its runtime with it. Per block, so one fence losing its colours
  * costs only that fence.
  */
@@ -708,19 +749,21 @@ const MarkdownTextImpl = () => {
     () =>
       stabilizeStreamingMarkdown(
         preprocessLaTeX(
-          rewriteSearchImageTokens(
-            placeSubjectImages(
-              // No images means nothing to hold back, not even a trailing `[`.
-              holdBackPartialSearchImageToken(
-                displayText,
-                isStreaming && searchImages.size > 0,
+          normalizeEscapedInlineMath(
+            rewriteSearchImageTokens(
+              placeSubjectImages(
+                // no images means nothing to hold back, including a trailing bracket.
+                holdBackPartialSearchImageToken(
+                  displayText,
+                  isStreaming && searchImages.size > 0,
+                ),
+                searchImages,
+                isStreaming,
+                precedingText,
+                messageTexts,
               ),
               searchImages,
-              isStreaming,
-              precedingText,
-              messageTexts,
             ),
-            searchImages,
           ),
         ),
         isStreaming,
@@ -741,6 +784,7 @@ const MarkdownTextImpl = () => {
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -754,10 +798,13 @@ const MarkdownTextImpl = () => {
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={status.type} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+            parseMarkdownIntoBlocksFn={
+              incrementalRender?.parseMarkdownIntoBlocks ??
+              parseMarkdownIntoRenderableBlocks
+            }
             isAnimating={isStreaming}
             animated={STREAMDOWN_IMMEDIATE_UPDATES}
             plugins={STREAMDOWN_PLUGINS}

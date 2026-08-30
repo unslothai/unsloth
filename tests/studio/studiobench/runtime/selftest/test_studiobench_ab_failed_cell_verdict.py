@@ -136,6 +136,86 @@ def test_the_unguarded_render_is_the_wrong_verdict(tmp_path):
     assert "r10K.base.rep0" not in table
 
 
+def test_a_gate_failed_cell_is_a_hole_in_the_plan_too(tmp_path):
+    """`readings_by_arm` drops a COMPLETED cell that failed `thread_complete` or
+    `follows_the_stream` -- the timings of a thread that lost its middle are not a reading of the
+    build -- and the arm intersection takes its healthy partner with it. So the plan has the same
+    hole a dead cell leaves, by a road that reads `completed: True`."""
+
+    records = [
+        {
+            "row_type": "cell",
+            "cell_id": "r10K.base.rep0",
+            "session_id": "sess-1",
+            "completed": True,
+        },
+        {
+            "row_type": "gate",
+            "name": "thread_complete",
+            "passed": False,
+            "cell_id": "r10K.base.rep0",
+            "session_id": "sess-1",
+            "detail": {"probe_attempted": True, "reason": "the thread lost its middle"},
+        },
+    ]
+
+    assert unmeasured_planned_cells(records, ["r10K.base.rep0"], session_id = "sess-1") == [
+        "r10K.base.rep0"
+    ]
+
+
+def test_a_not_measured_gate_row_is_not_a_hole(tmp_path):
+    """The other side of it, and the reason this defers to `failed_invalidating_gates` rather than
+    to any failed gate: an absent instrument is not a missing reading of the plan, and voiding on
+    it would void every run of a harness that is not loaded."""
+
+    records = [
+        {
+            "row_type": "cell",
+            "cell_id": "r10K.base.rep0",
+            "session_id": "sess-1",
+            "completed": True,
+        },
+        {
+            "row_type": "gate",
+            "name": "follows_the_stream",
+            "passed": False,
+            "cell_id": "r10K.base.rep0",
+            "session_id": "sess-1",
+            "detail": {"follow_attempted": False, "reason": "sampler is not installed"},
+        },
+    ]
+
+    assert unmeasured_planned_cells(records, ["r10K.base.rep0"], session_id = "sess-1") == []
+
+
+def test_a_gate_failed_cell_voids_the_table_rather_than_publishing_the_survivors(tmp_path):
+    """End to end through `_render_ab`, which is where the wrong verdict was published."""
+
+    paths = Paths.under(tmp_path / "out")
+    rec = Recorder(paths.payload_jsonl, "sess-1")
+    planned = []
+    for rung, tokens, base_p95, treat_p95 in LADDER:
+        for arm, p95 in (("base", base_p95), ("treatment", treat_p95)):
+            cell_id = f"r{rung}.{arm}.rep0"
+            planned.append(cell_id)
+            rec.emit(_cell_row(cell_id, arm, tokens))
+            rec.emit(_keystroke(cell_id, p95))
+    rec.gate(
+        "thread_complete",
+        False,
+        {"probe_attempted": True, "reason": "the thread lost its middle"},
+        cell_id = "r10K.base.rep0",
+    )
+    rec.close()
+
+    _render_ab(paths, SIDES, "sess-1", "c0ffee", planned = planned)
+    table = (paths.out / "ab.md").read_text(encoding = "utf-8")
+
+    assert "VOID. No numbers are quotable" in table
+    assert "r10K.base.rep0" in table
+
+
 def test_a_complete_plan_is_not_voided(tmp_path):
     records = [_cell_row("r10K.base.rep0", "base", 10_000, completed = True)]
     for row in records:

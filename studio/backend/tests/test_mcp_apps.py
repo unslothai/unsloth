@@ -112,6 +112,29 @@ def test_an_image_block_travels_without_a_second_copy_of_its_bytes():
     assert "A" * 5000 in flat.split(MCP_IMAGES_SENTINEL)[1]
 
 
+def test_an_embedded_resource_image_is_seeded_in_the_shape_the_frontend_fills():
+    """The frontend walks the seed and the image sentinel together, taking the next
+    image for every `type: "image"` block with no `data`. A resource block whose
+    bytes went to the sentinel has to arrive in that shape or the two lists slip
+    and a later block is handed someone else's image."""
+    embedded = SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(
+            uri = "file:///chart.png", blob = "B" * 5000, mimeType = "image/png"
+        ),
+    )
+    flat = _flatten_result(_result(_text("chart"), embedded, _image(data = "C" * 10)), UI)
+    blocks = _envelope(flat)["content"]
+    assert [b["type"] for b in blocks] == ["text", "image", "image"]
+    # Both byte-free, so the frontend fills them in the sentinel's order.
+    for b in blocks[1:]:
+        assert "data" not in b
+        assert b["mimeType"] == "image/png"
+    assert "blob" not in json.dumps(blocks[1])
+    payload = json.loads(flat.split(MCP_IMAGES_SENTINEL)[1])
+    assert [img["data"] for img in payload] == ["B" * 5000, "C" * 10]
+
+
 def test_an_image_over_the_payload_budget_leaves_no_seed_block():
     """It is not in the image sentinel either, so a block for it would be one the
     frontend could never fill."""

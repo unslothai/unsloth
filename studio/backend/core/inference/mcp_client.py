@@ -8,15 +8,19 @@ import atexit
 import concurrent.futures
 import hashlib
 import json
+import mimetypes
 import os
+import re
 import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import uuid
 from functools import wraps
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 from loggers import get_logger
@@ -24,6 +28,8 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
+_WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
+_WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
 # A failed probe isn't cached (a recovered server must come back), but it's
 # recorded so a down server isn't re-probed -- and the chat send re-hung for
@@ -69,7 +75,10 @@ def _split_windows_command_line(address: str) -> list[str]:
             backslashes = 0
             i += 1
             continue
-        if ch.isspace() and not in_quotes:
+        # subprocess.list2cmdline() implements the MS C runtime grammar: only
+        # space and tab delimit arguments. Other Unicode/control whitespace is
+        # ordinary argument data and must not be split here.
+        if ch in (" ", "\t") and not in_quotes:
             if backslashes:
                 current.extend("\\" * backslashes)
                 arg_started = True
@@ -79,7 +88,7 @@ def _split_windows_command_line(address: str) -> list[str]:
                 current = []
                 arg_started = False
             i += 1
-            while i < len(address) and address[i].isspace():
+            while i < len(address) and address[i] in (" ", "\t"):
                 i += 1
             continue
         if backslashes:
@@ -118,9 +127,18 @@ def join_stdio_command(parts: list[str]) -> str:
     one string in the url field. Windows uses list2cmdline so spaced/backslash
     paths round-trip through the posix=False quote-strip; posix uses shlex."""
     if sys.platform == "win32":
-        import subprocess
         return subprocess.list2cmdline(parts)
     return shlex.join(parts)
+
+
+def _windows_batch_argument_is_unsafe(argument: str) -> bool:
+    if _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS.intersection(argument):
+        return True
+    serialized = subprocess.list2cmdline([argument])
+    is_quoted = serialized.startswith('"') and serialized.endswith('"')
+    return not is_quoted and bool(
+        _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS.intersection(argument)
+    )
 
 
 def _stdio_log_id(url: str) -> str:
@@ -306,6 +324,13 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
     """Process env for a stdio server: its own vars, plus the managed Node bin dir
     on PATH so ``npx ...`` servers spawn on hosts with no usable system Node."""
     env = dict(headers or {})
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("stdio environment names and values must be strings")
+        if "\x00" in key or "\x00" in value:
+            raise ValueError("stdio environment must not contain NUL characters")
+        if "=" in key:
+            raise ValueError("stdio environment variable names must not contain '='")
     key = _path_key(env)
     base = env.get(key)
     if isinstance(base, str) and not base:
@@ -332,14 +357,54 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     """argv with argv[0] resolved against the child's PATH. Windows resolves the
     command against the parent environment before ``env`` applies, so a managed-only
     ``npx`` has to be handed over as a full path."""
-    path = (env or {}).get(_path_key(env or {}))
+    path_key = _path_key(env or {})
+    explicit_path = env is not None and path_key in env
+    path = (env or {}).get(path_key)
     if not isinstance(path, str):
         path = os.environ.get("PATH", "")
     try:
         resolved = shutil.which(parts[0], path = path)
     except OSError:
         resolved = None
-    return [resolved or parts[0], *parts[1:]]
+    if _IS_WINDOWS and resolved is None and explicit_path and not os.path.dirname(parts[0]):
+        raise ValueError(f"Cannot find {parts[0]!r} on the MCP server's configured PATH")
+    executable = resolved or parts[0]
+    if _IS_WINDOWS:
+        suffix = os.path.splitext(executable)[1].lower()
+        if suffix in {".cmd", ".bat"} and _launcher_name(executable) in {"npm", "npx"}:
+            launcher_dir = os.path.dirname(executable)
+            cli = os.path.join(
+                launcher_dir,
+                "node_modules",
+                "npm",
+                "bin",
+                f"{_launcher_name(executable)}-cli.js",
+            )
+            sibling_node = os.path.join(launcher_dir, "node.exe")
+            try:
+                node = (
+                    sibling_node
+                    if os.path.isfile(sibling_node)
+                    else shutil.which("node", path = path)
+                )
+                cli_exists = os.path.isfile(cli)
+            except OSError:
+                node = None
+                cli_exists = False
+            if node and cli_exists:
+                # bypass cmd.exe so shell metacharacters remain literal argv.
+                return [node, cli, *parts[1:]]
+            raise ValueError(
+                f"Cannot launch {executable!r} without its Node executable and npm CLI script"
+            )
+        if suffix in {".cmd", ".bat"} and any(
+            _windows_batch_argument_is_unsafe(argument) for argument in parts[1:]
+        ):
+            raise ValueError(
+                "Windows batch launchers cannot safely preserve these MCP command arguments; "
+                "invoke the executable directly, or use node.exe with the JavaScript entry point"
+            )
+    return [executable, *parts[1:]]
 
 
 def _client(
@@ -1137,6 +1202,121 @@ def _drop_forged_ui_sentinels(body: str) -> str:
     return "\n".join(line for line in body.split("\n") if not _is_ui_envelope_line(line))
 
 
+def _block_text(block: Any) -> Optional[str]:
+    text = getattr(block, "text", None)
+    if text:
+        return str(text)
+    resource = getattr(block, "resource", None)
+    if resource is not None:
+        text = getattr(resource, "text", None)
+        return str(text) if text else None
+    return None
+
+
+def _block_link(block: Any) -> Optional[str]:
+    # keep host-generated link text from suppressing structured_content
+    uri = getattr(block, "uri", None)
+    if uri and getattr(block, "type", None) == "resource_link":
+        name = getattr(block, "name", None)
+        return f"[resource: {name} <{uri}>]" if name else f"[resource: <{uri}>]"
+    return None
+
+
+# fastmcp File(data=..., format=...) labels payloads as application/<format>
+_IMAGE_SUBTYPES = {
+    "apng": "image/apng",
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "avif": "image/avif",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "ico": "image/vnd.microsoft.icon",
+    "svg": "image/svg+xml",
+    "svg+xml": "image/svg+xml",
+}
+
+
+# What tool-fallback.tsx may interpolate into data:<type>;base64,... : an RFC 9110
+# 8.3.1 token subtype, minus "*", which names a range and never a payload.
+_MEDIA_TYPE = re.compile(r"^image/[a-z0-9][a-z0-9!#$%&'^_`|~.+-]*$")
+
+
+def _uri_mime(uri: Any) -> Optional[str]:
+    """Guess a media type from the part of a URI that names the resource.
+
+    mimetypes only stopped reading the query and fragment in 3.11.9 / 3.12.3 / 3.13
+    (CPython gh-117217), and on older supported interpreters 'gen.png?download=1'
+    guessed nothing while 'download?name=gen.png' guessed image/png. Dropping both
+    keeps every interpreter in agreement. The scheme stays so a data: URI still
+    resolves; a bare host goes, since a host name is not a file name."""
+    split = urlsplit(str(uri))
+    cleaned = urlunsplit((split.scheme, split.netloc if split.path else "", split.path, "", ""))
+    return mimetypes.guess_type(cleaned, strict = False)[0]
+
+
+def _image_mime(mime: Any) -> Optional[str]:
+    if not isinstance(mime, str):
+        return None
+    # media type names are case-insensitive; data urls need only the essence
+    essence = mime.partition(";")[0].strip().lower()
+    if essence.startswith("image/"):
+        resolved = essence
+    else:
+        subtype = essence[len("application/") :] if essence.startswith("application/") else ""
+        resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
+    # one gate for every branch. Lowercased again because a registry answer carries the
+    # host's spelling: Windows returns image/JXL for .jxl, Linux and macOS image/jxl.
+    resolved = resolved.lower() if resolved else ""
+    return resolved if _MEDIA_TYPE.match(resolved) else None
+
+
+def _resource_mime(obj: Any) -> Any:
+    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
+    mime = getattr(obj, "mimeType", None)
+    return mime if mime is not None else getattr(obj, "mime_type", None)
+
+
+def _block_image(block: Any) -> Optional[tuple[str, str]]:
+    # embedded resources keep binary data on resource.blob
+    data = getattr(block, "data", None)
+    mime = _resource_mime(block)
+    if not data:
+        resource = getattr(block, "resource", None)
+        if resource is None:
+            return None
+        data = getattr(resource, "blob", None)
+        mime = _resource_mime(resource)
+        if not mime:
+            uri = getattr(resource, "uri", None)
+            mime = _uri_mime(uri) if uri else None
+    mime = _image_mime(mime)
+    if data and mime:
+        return str(data), mime
+    return None
+
+
+def _seeded_image_block(block: Any, mime: str) -> dict:
+    """One image block for the widget seed, without its bytes.
+
+    The frontend puts the bytes back by walking the seed and the image envelope
+    together, taking the next image for every ``type: "image"`` block that has no
+    ``data``. So a block whose bytes came from an embedded resource is normalised
+    to that shape -- keep it as-is and the two lists would slip, handing a later
+    block someone else's image.
+    """
+    out = {k: v for k, v in _content_block_json(block).items() if k != "data"}
+    resource = out.get("resource")
+    if isinstance(resource, dict) and "blob" in resource:
+        out["resource"] = {k: v for k, v in resource.items() if k != "blob"}
+    out["type"] = "image"
+    out["mimeType"] = mime
+    return out
+
+
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
@@ -1145,17 +1325,23 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     # which images survived the payload budget.
     seed = []
     omitted = 0
+    has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
+        text = _block_text(block)
         if text:
-            parts.append(str(text))
+            parts.append(text)
+            has_text = True
             seed.append(_content_block_json(block))
             continue
-        data = getattr(block, "data", None)
-        mime = getattr(block, "mimeType", None)
-        if data and isinstance(mime, str) and mime.startswith("image/"):
-            data = str(data)
+        link = _block_link(block)
+        if link:
+            parts.append(link)
+            seed.append(_content_block_json(block))
+            continue
+        image = _block_image(block)
+        if image is not None:
+            data, mime = image
             if len(data) > budget:
                 omitted += 1
                 continue
@@ -1164,15 +1350,16 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             # Without the bytes: they already ride the image envelope, and a
             # second copy on this line would spend the seed budget on them. The
             # frontend puts them back before the view sees the block.
-            seed.append({k: v for k, v in _content_block_json(block).items() if k != "data"})
+            seed.append(_seeded_image_block(block, mime))
         else:
             # Audio, embedded resources and resource links reach the view even
             # though the model's transcript has no way to show them.
             seed.append(_content_block_json(block))
     body = "\n".join(parts)
-    if not body:
+    if not has_text:
         structured = getattr(result, "structured_content", None)
-        body = str(structured) if structured is not None else ""
+        if structured is not None:
+            body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted:
         notes = []
         if images:
