@@ -161,6 +161,10 @@ class LocalModelInfo(BaseModel):
             "those lists."
         ),
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -239,6 +243,7 @@ class CachedRepoBase(BaseModel):
     # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
     # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
+    audio_type: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
@@ -255,9 +260,11 @@ class CachedGgufRepo(CachedRepoBase):
 
 class CachedGgufResponse(BaseModel):
     cached: List[CachedGgufRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class CachedModelRepo(CachedRepoBase):
+    audio_type: Optional[str] = None
     quant_method: Optional[str] = None
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
@@ -278,6 +285,7 @@ class CachedModelRepo(CachedRepoBase):
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class HiddenModelsResponse(BaseModel):

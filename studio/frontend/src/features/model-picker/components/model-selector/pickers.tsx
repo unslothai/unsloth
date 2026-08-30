@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -68,6 +69,10 @@ import {
   useHostClass,
   useInferenceGpuInfo,
 } from "@/hooks";
+import {
+  type ModelMemorySource,
+  useModelMemory,
+} from "@/hooks/use-model-memory";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -111,6 +116,7 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
+  audioPipelineTagFor,
   audioPickIsRoutable,
   localAudioRowIsUndecodableGguf,
   communityAudioRowIsRunnable,
@@ -118,6 +124,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   macTtsHubRowIsRunnable,
+  nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
   taskCatalogFormatMatches,
@@ -772,16 +779,21 @@ const META_COLUMN = {
   badge: "min-w-min min-[560px]:w-[24px]",
   // One glyph plus the disk mark (18 + 4 + 14).
   badgeMid: "min-w-min min-[560px]:w-[36px]",
-  // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
-  // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
-  badgeWide: "min-w-min min-[560px]:w-[68px]",
+  // On Device draws the vision badge and no disk mark: 26px is that badge measured, so rows with
+  // and without one still line up. One slot sized for both lists left ~44px empty on every row.
+  badgeDevice: "min-w-min min-[560px]:w-[26px]",
+  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[36px]",
   // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
   vram: "min-w-min min-[560px]:w-[4em]",
-  // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
-  param: "min-w-min min-[560px]:w-[3.6em]",
+  // Device rows hug the chip. A column sized for "235B" spends 6.1px in front of a "30B", and that
+  // leftover IS the gap to the modality mark; -ml-0.5 against the cluster's gap-1 makes it 2px. In
+  // exchange a wider label pulls that row's name and quant chip left. Hub keeps its "2779.5B".
+  param: "min-w-min -ml-0.5",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
-  // "536 MB".
-  size: "min-w-min min-[560px]:w-[4.2em]",
+  // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a
+  // spaced "536 MB" needs. The surplus sat between the parameter chip and the size.
+  size: "min-w-min min-[560px]:w-[3.2em]",
   // The format dot that leads the row; the name lives in its tooltip.
   format: "min-[560px]:w-[14px]",
 } as const;
@@ -813,6 +825,7 @@ function ModelRow({
   tags,
   alignMeta,
   showSize,
+  memory,
   className,
 }: {
   label: string;
@@ -850,6 +863,10 @@ function ModelRow({
   /** Hold the size column open. Hub rows pass this on the MLX and Safetensors
    *  filters, where a repo is one download with one size. */
   showSize?: boolean;
+  /** Identifies the on-disk model whose VRAM split the row should chart.
+   *  Omit for rows that are not downloaded -- there is nothing to size until
+   *  the weights exist locally. */
+  memory?: ModelMemorySource;
   className?: string;
 }) {
   const exceeds = vramStatus === "exceeds";
@@ -876,15 +893,18 @@ function ModelRow({
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
+  const aligned = alignMeta !== undefined;
   // Reserve only what this picker's scope can draw. The Images and Audio pickers draw no glyph and
   // Video draws one, so holding the chat row's slot open there is dead space on every row.
+  // Unscoped chat splits again by list: On Device marks vision, Hub marks the disk.
   const badgeColumn =
     capabilityScope === null || capabilityScope.length > 1
-      ? META_COLUMN.badgeWide
+      ? alignMeta === "device"
+        ? META_COLUMN.badgeDevice
+        : META_COLUMN.badgeWide
       : capabilityScope.length === 1
         ? META_COLUMN.badgeMid
         : META_COLUMN.badge;
-  const aligned = alignMeta !== undefined;
   // One dot per row. A second format shares the first's colour anyway, so it
   // rides along in the tooltip instead of pushing the name out of line.
   const formatDot = parsed.formats[0]
@@ -893,6 +913,12 @@ function ModelRow({
         label: parsed.formats.map((f) => f.label).join(" · "),
       }
     : null;
+
+  // Only the selected row charts itself. A meter under every row turns a list
+  // you scan into a wall of charts, and a model that comfortably fits is not
+  // news; the one you are actually considering is. At most one bar is on screen.
+  const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
+  const showMemoryBar = memorySegments.status !== "unknown";
 
   const content = (
     <button
@@ -907,147 +933,160 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it
+        // on 10px, level with the section labels at px-2.5. Inside a w-full button, so the hover
+        // pill itself does not move.
+        "flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
       )}
     >
-      <span className="flex min-w-0 flex-1 items-baseline">
-        {/* Fixed slot, so names start on one line with or without a dot. */}
-        {aligned ? (
-          <span
-            className={cn(
-              "mr-1 flex shrink-0 items-center self-center",
-              META_COLUMN.format,
-            )}
-          >
-            {formatDot ? <FormatTag {...formatDot} /> : null}
-          </span>
-        ) : formatDot ? (
-          <span className="mr-1 flex shrink-0 items-center self-center">
-            <FormatTag {...formatDot} />
-          </span>
-        ) : null}
-        {showOwner ? (
-          <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
-            <span className="truncate">{owner}</span>
-            <span className="shrink-0 text-muted-foreground/45">/</span>
-          </span>
-        ) : null}
-        <span className="min-w-0 flex-1 truncate">{name}</span>
-        {/* Here it eats name width instead of moving the meta columns. */}
-        {aligned && loaded && (
-          <DotTag
-            tone="success"
-            label="Loaded"
-            className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
-            dotClassName="size-[5px]"
-          />
-        )}
-        {alignMeta === "device" ? (
-          <span
-            className={cn(
-              "ml-1.5 flex shrink-0 items-center self-center text-ui-9",
-              META_COLUMN.quant,
-            )}
-          >
-            {quantChip ? <QuantChip label={quantChip} /> : null}
-          </span>
-        ) : quantChip ? (
-          <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
-            {quantChip}
-          </span>
-        ) : null}
-        {tags && tags.length > 0 ? (
-          <span className="ml-1.5 flex shrink-0 items-center gap-1 self-center">
-            {tags.map((tag) => (
-              <QuantChip key={tag} label={tag} />
-            ))}
-          </span>
-        ) : null}
-      </span>
-      <span
-        className={cn(
-          "ml-auto flex shrink-0 items-center",
-          aligned ? "gap-1" : "gap-1.5",
-        )}
-      >
-        {/* Capabilities, vision and the Hub lists' "on disk" mark share one
-            column; two of them widen the slot rather than overlap. */}
-        {aligned ? (
-          <span
-            className={cn(
-              "flex shrink-0 items-center justify-center gap-1 text-ui-10",
-              badgeColumn,
-            )}
-          >
-            {showCaps && <CapabilityIcons caps={caps} />}
-            {showVision && <VisionBadge />}
-            {downloaded && !loaded ? <DownloadedBadge /> : null}
-          </span>
-        ) : (
-          <>
-            {showCaps && <CapabilityIcons caps={caps} />}
-            {showVision && <VisionBadge />}
-            {loaded && (
-              <DotTag
-                tone="success"
-                label="Loaded"
-                className="h-[18px] gap-1 rounded-md px-1.5"
-                dotClassName="size-[5px]"
-              />
-            )}
-            {downloaded && !loaded ? <DownloadedBadge /> : null}
-          </>
-        )}
-        {alignMeta === "hub" ? (
-          <span
-            className={cn(
-              "flex shrink-0 items-center justify-end text-ui-9",
-              META_COLUMN.vram,
-            )}
-          >
+      {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
+          first meta mark. 4px is the rhythm the meta columns already keep among themselves. */}
+      <span className="flex w-full items-center gap-1">
+        <span className="flex min-w-0 flex-1 items-baseline">
+          {/* Fixed slot, so names start on one line with or without a dot. */}
+          {aligned ? (
+            <span
+              className={cn(
+                "mr-1 flex shrink-0 items-center self-center",
+                META_COLUMN.format,
+              )}
+            >
+              {formatDot ? <FormatTag {...formatDot} /> : null}
+            </span>
+          ) : formatDot ? (
+            <span className="mr-1 flex shrink-0 items-center self-center">
+              <FormatTag {...formatDot} />
+            </span>
+          ) : null}
+          {showOwner ? (
+            <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
+              <span className="truncate">{owner}</span>
+              <span className="shrink-0 text-muted-foreground/45">/</span>
+            </span>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate">{name}</span>
+          {/* Here it eats name width instead of moving the meta columns. */}
+          {aligned && loaded && (
+            <DotTag
+              tone="success"
+              label="Loaded"
+              className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+              dotClassName="size-[5px]"
+            />
+          )}
+          {alignMeta === "device" ? (
+            <span
+              className={cn(
+                // ml-0.5: the chip carries px-1 of its own, so 2px still leaves 6px of air.
+                "ml-0.5 flex shrink-0 items-center self-center text-ui-9",
+                META_COLUMN.quant,
+              )}
+            >
+              {quantChip ? <QuantChip label={quantChip} /> : null}
+            </span>
+          ) : quantChip ? (
+            <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
+              {quantChip}
+            </span>
+          ) : null}
+          {tags && tags.length > 0 ? (
+            <span className="ml-1.5 flex shrink-0 items-center gap-1 self-center">
+              {tags.map((tag) => (
+                <QuantChip key={tag} label={tag} />
+              ))}
+            </span>
+          ) : null}
+        </span>
+        <span
+          className={cn(
+            "ml-auto flex shrink-0 items-center",
+            aligned ? "gap-1" : "gap-1.5",
+          )}
+        >
+          {/* Capabilities, vision and the Hub lists' "on disk" mark share one
+              column; two of them widen the slot rather than overlap. */}
+          {aligned ? (
+            <span
+              className={cn(
+                // Right, not centre: slack belongs to the name, not split either side of a glyph.
+                "flex shrink-0 items-center justify-end gap-1 text-ui-10",
+                badgeColumn,
+              )}
+            >
+              {showCaps && <CapabilityIcons caps={caps} />}
+              {showVision && <VisionBadge />}
+              {downloaded && !loaded ? <DownloadedBadge /> : null}
+            </span>
+          ) : (
+            <>
+              {showCaps && <CapabilityIcons caps={caps} />}
+              {showVision && <VisionBadge />}
+              {loaded && (
+                <DotTag
+                  tone="success"
+                  label="Loaded"
+                  className="h-[18px] gap-1 rounded-md px-1.5"
+                  dotClassName="size-[5px]"
+                />
+              )}
+              {downloaded && !loaded ? <DownloadedBadge /> : null}
+            </>
+          )}
+          {alignMeta === "hub" ? (
+            <span
+              className={cn(
+                "flex shrink-0 items-center justify-end text-ui-9",
+                META_COLUMN.vram,
+              )}
+            >
+              <VramBadge status={vramStatus} />
+            </span>
+          ) : (
             <VramBadge status={vramStatus} />
-          </span>
-        ) : (
-          <VramBadge status={vramStatus} />
-        )}
-        {aligned ? (
-          <span
-            className={cn(
-              "flex shrink-0 justify-end text-ui-10",
-              alignMeta === "hub" ? META_COLUMN.paramWide : META_COLUMN.param,
-            )}
-          >
-            {paramLabel ? <ParamChip label={paramLabel} /> : null}
-          </span>
-        ) : paramLabel ? (
-          <ParamChip label={paramLabel} />
-        ) : null}
-        {parsed.texts.map((text) => (
-          <span key={text} className="text-ui-10 text-muted-foreground">
-            {text}
-          </span>
-        ))}
-        {/* GGUF repos hold several quants of different sizes, so their rows
-            report one only once expanded, leaving the column an empty gap. */}
-        {alignMeta === "device" || showSize ? (
-          <span
-            className={cn(
-              "shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums",
-              META_COLUMN.size,
-            )}
-          >
-            {parsed.size === undefined ? null : (
+          )}
+          {aligned ? (
+            <span
+              className={cn(
+                "flex shrink-0 justify-end text-ui-10",
+                alignMeta === "hub" ? META_COLUMN.paramWide : META_COLUMN.param,
+              )}
+            >
+              {paramLabel ? <ParamChip label={paramLabel} /> : null}
+            </span>
+          ) : paramLabel ? (
+            <ParamChip label={paramLabel} />
+          ) : null}
+          {parsed.texts.map((text) => (
+            <span key={text} className="text-ui-10 text-muted-foreground">
+              {text}
+            </span>
+          ))}
+          {/* GGUF repos hold several quants of different sizes, so their rows
+              report one only once expanded, leaving the column an empty gap. */}
+          {alignMeta === "device" || showSize ? (
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums",
+                META_COLUMN.size,
+              )}
+            >
+              {parsed.size === undefined ? null : (
+                <SizeText value={parsed.size} />
+              )}
+            </span>
+          ) : aligned ? null : parsed.size !== undefined ? (
+            <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
               <SizeText value={parsed.size} />
-            )}
-          </span>
-        ) : aligned ? null : parsed.size !== undefined ? (
-          <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-            <SizeText value={parsed.size} />
-          </span>
-        ) : null}
+            </span>
+          ) : null}
+        </span>
       </span>
+      {showMemoryBar ? (
+        <ModelMemoryBar segments={memorySegments} compact={true} />
+      ) : null}
     </button>
   );
 
@@ -2089,8 +2128,6 @@ const MEDIA_PAGE_TASKS: readonly string[] = [
 ];
 
 /** The page that runs this task, or null when chat should handle the pick. */
-const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
-
 function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
@@ -2315,6 +2352,7 @@ function localPathTooltip(
 function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
+  audioType?: string | null,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2322,6 +2360,7 @@ function localModelMeta(
     isDownloaded: true,
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
+    audioType: audioType ?? null,
   };
 }
 
@@ -3337,7 +3376,12 @@ export function HubModelPicker({
   const hubEvidenceById = useMemo(() => {
     const map = new Map<
       string,
-      { baseModel?: string | null; tags?: string[]; libraryName?: string | null }
+      {
+        baseModel?: string | null;
+        tags?: string[];
+        libraryName?: string | null;
+        audioType?: string | null;
+      }
     >();
     for (const r of [
       ...results,
@@ -3357,12 +3401,31 @@ export function HubModelPicker({
     // here the same row picked from the unscoped Chat picker was judged on its id alone
     // and refused routing to the page that does list it.
     for (const c of cachedModels) {
-      if (map.has(c.repo_id)) continue;
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
       map.set(c.repo_id, {
         baseModel: null,
         tags: c.tags,
         libraryName: c.library_name,
+        audioType: c.audio_type,
       });
+    }
+    for (const c of cachedGguf) {
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
+      map.set(c.repo_id, { audioType: c.audio_type });
     }
     return map;
   }, [
@@ -3371,6 +3434,7 @@ export function HubModelPicker({
     communityQuerySearch.results,
     communityBrowse.results,
     cachedModels,
+    cachedGguf,
   ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
@@ -3446,10 +3510,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: c.repo_id,
               task: c.task,
+              audioType: c.audio_type,
               isGguf: true,
               isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
-              // _repo_gguf_task reads these off the arch too, so the same rule holds: a
-              // speech tag means llama-csm even when the repo id names another family.
+              // The task and codec both came from GGUF classification; codec provenance
+              // separates runnable Orpheus from unsupported CSM.
               taskFromGgufArch: true,
             }),
         ),
@@ -3493,6 +3558,7 @@ export function HubModelPicker({
                   id: c.repo_id,
                   tags: c.tags,
                   libraryName: c.library_name,
+                  audioType: c.audio_type,
                 }) &&
                 macTtsHubRowIsRunnable({
                   isMac,
@@ -3504,6 +3570,7 @@ export function HubModelPicker({
                         (artifact) => artifact.format === "gguf",
                       ),
                   ),
+                  audioType: c.audio_type,
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
@@ -3550,10 +3617,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
@@ -3596,10 +3664,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(
@@ -3645,10 +3714,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(
@@ -3731,6 +3801,7 @@ export function HubModelPicker({
             task: pickedTask,
             isGguf: Boolean(meta.isGguf || meta.ggufFilename),
             isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+            audioType: meta.audioType,
             isLocalCheckpoint:
               meta.source === "lora" ||
               meta.source === "exported" ||
@@ -3760,6 +3831,8 @@ export function HubModelPicker({
                       : (meta.ggufVariant ?? undefined),
                     // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
                     task: pickedTask ?? undefined,
+                    audioType: meta.audioType ?? undefined,
+                    loadId: meta.loadId ?? undefined,
                   }
                 : diffusionRouteSearch(id, meta),
           });
@@ -3787,6 +3860,9 @@ export function HubModelPicker({
             exportType: m.exportType,
             isDirectGguf: m.isDirectGguf,
           }),
+      )
+      .filter((m) =>
+        nativeAudioCheckpointIsLoadable(m.audioType, m.exportType),
       )
       .filter((m) => {
         const text = normalizeForSearch(
@@ -4748,9 +4824,17 @@ export function HubModelPicker({
   // Not focus-within: the dots menu returns focus to its trigger on close, so
   // the row stayed lit after the pointer left. Keyboard focus and an open menu
   // still light it.
-  const downloadedRowShellClassName = (selected: boolean) =>
+  //
+  // A row carrying a memory bar is two lines tall, and the shell paints the
+  // hover and selected background (the inner button is transparent at these
+  // sites), so the radius relaxes with it or the row renders as a stadium.
+  const downloadedRowShellClassName = (
+    selected: boolean,
+    hasMemoryBar = false,
+  ) =>
     cn(
-      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
+      "group flex items-center transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
+      hasMemoryBar ? "rounded-2xl" : "rounded-full",
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
 
@@ -4768,7 +4852,10 @@ export function HubModelPicker({
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
     return (
-      <div key={optionKey} className={downloadedRowShellClassName(isSelected)}>
+      <div
+        key={optionKey}
+        className={downloadedRowShellClassName(isSelected, true)}
+      >
         {/* Through ModelRow, so a pinned quant lands in the same columns as
             the rows below it. */}
         <div className="min-w-0 flex-1">
@@ -4779,6 +4866,20 @@ export function HubModelPicker({
             )})`}
             meta="GGUF"
             quantChip={ggufQuantChipLabel(entry.quant)}
+            // Same runtime gate the sole-quant row below applies. A pinned quant
+            // can belong to an image, video or audio task, and those load through
+            // the media planner rather than llama.cpp, so the KV estimator is
+            // measuring the wrong runtime -- and it falls back to the file size
+            // when it cannot size the model, so the row draws a confident
+            // weights-only verdict rather than nothing.
+            memory={
+              mediaPageForTask(
+                diffusionTaskById.get(entry.repoId.toLowerCase()),
+              )
+                ? undefined
+                : { repoId: entry.repoId, quant: entry.quant }
+            }
+            gpuGb={inferenceGpu.memoryTotalGb}
             alignMeta="device"
             selected={isSelected}
             loaded={isLoaded}
@@ -4892,7 +4993,10 @@ export function HubModelPicker({
       pipelineTag: c.task ?? null,
     };
     return (
-      <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
+      <div
+        key={c.repo_id}
+        className={downloadedRowShellClassName(isSelected, true)}
+      >
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
@@ -4903,6 +5007,25 @@ export function HubModelPicker({
             )}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={ggufQuantChipLabel(variant.quant)}
+            // Only for models the llama.cpp path actually loads. The Images and
+            // Video pickers deliberately keep diffusion GGUFs listed, and those
+            // run on the diffusion planner with different runtime buffers, on a
+            // single torch device rather than the aggregate inference pool. The
+            // KV estimator has nothing to say about them, and when it returns
+            // unsized the bar falls back to the file size and draws a
+            // weights-only verdict anyway -- a confident number about the wrong
+            // runtime, which is the failure this bar exists to avoid.
+            memory={
+              mediaPageForTask(c.task)
+                ? undefined
+                : {
+                    repoId: c.repo_id,
+                    quant: variant.quant,
+                    sizeBytes: variant.size_bytes,
+                    loadId: c.load_id,
+                  }
+            }
+            gpuGb={inferenceGpu.memoryTotalGb}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
             loaded={rowState.loaded}
@@ -5075,6 +5198,7 @@ export function HubModelPicker({
                 loadId: c.load_id,
                 isDownloaded: true,
                 pipelineTag: c.task ?? null,
+                audioType: c.audio_type ?? null,
               })
             }
             vramStatus={null}
@@ -5093,6 +5217,7 @@ export function HubModelPicker({
                   isDownloaded: true,
                   isGguf: false,
                   pipelineTag: c.task ?? null,
+                  audioType: c.audio_type ?? null,
                 })
               }
             />
@@ -5173,6 +5298,7 @@ export function HubModelPicker({
                 isDownloaded: true,
                 isGguf: model.isGguf === true,
                 pipelineTag,
+                audioType: model.audioType ?? null,
               })
             }
             vramStatus={null}
@@ -5844,7 +5970,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -5885,7 +6011,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -5989,7 +6115,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6030,7 +6156,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6121,7 +6247,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6158,7 +6284,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6170,7 +6296,7 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                              resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6385,7 +6511,7 @@ export function HubModelPicker({
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
-                              resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
@@ -6568,22 +6694,6 @@ export function HubModelPicker({
 
 /** Fine-tuned model rows for the On Device tab's Fine-tuned section. Plugs into
  * that section's roving list and shared GGUF-expand state. */
-/** Codec -> the Hub pipeline tag the media routing understands, else undefined.
- *
- * A local checkpoint never gets the ASR tag: it would route to the Audio page, which hands
- * the filesystem path to /audio/stt/load, and the sidecar's resolve_model_id takes only a
- * curated key or an `owner/model` Hub id, so the row is advertised and then 422s. TTS is
- * fine, since that loads through the main slot, which does accept a local path. */
-function audioPipelineTagFor(
-  audioType?: string | null,
-  isLocalCheckpoint = false,
-): string | undefined {
-  if (!audioType) return undefined;
-  if (audioType === "whisper")
-    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
-  return TTS_CODECS.has(audioType) ? "text-to-speech" : undefined;
-}
-
 function FineTunedRows({
   adapters,
   value,
@@ -6624,6 +6734,7 @@ function FineTunedRows({
         const isExported = adapter.source === "exported";
         const isMerged = adapter.exportType === "merged";
         const isGguf = adapter.exportType === "gguf";
+        const isLora = !isLocal && !isMerged && !isGguf;
         const isExportedGguf = isExported && isGguf;
         const canDelete = canDeleteLoraModel(adapter);
         const isTrainingFull = isTraining && isMerged;
@@ -6638,10 +6749,11 @@ function FineTunedRows({
         // The pipeline tag is what onSelect routes on, so carry the detected codec as one.
         const selectionMeta: ModelSelectorChangeMeta = {
           source: isLocal ? "local" : isExported ? "exported" : "lora",
-          isLora: !isLocal && !isMerged && !isGguf,
+          isLora,
           isDownloaded: true,
           isGguf: isLocalDirectGguf,
-          pipelineTag: audioPipelineTagFor(adapter.audioType, true),
+          pipelineTag: audioPipelineTagFor(adapter.audioType, true, isLora),
+          audioType: adapter.audioType ?? null,
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);

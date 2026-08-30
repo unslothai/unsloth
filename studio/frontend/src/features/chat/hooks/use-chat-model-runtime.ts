@@ -25,6 +25,7 @@ import {
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -32,6 +33,8 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
@@ -74,6 +77,10 @@ import {
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
 import {
+  isIdleUnloadedStatus,
+  isSpeechOnlyStatus,
+} from "../lib/speech-only-status";
+import {
   residentRuntimeMatchesConfig,
   residentSpeculativeNeedsRepair,
 } from "../lib/resident-config-match";
@@ -82,7 +89,7 @@ import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
-  resolveManualAutoCtxPin,
+  resolveExplicitCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -376,24 +383,61 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
 // last and re-pin the model the newer one had just seen released, leaving chat
 // claiming a model that 400s on send until the load finally settled.
 let syncGeneration = 0;
+let loraSyncGeneration = 0;
+let lastIdleUnloadArmed = false;
+
+async function readIdleUnloadArmed(): Promise<boolean> {
+  try {
+    const settings = await loadOpenAIAutoSwitchSettings();
+    lastIdleUnloadArmed = settings.idleUnloadActive;
+  } catch {
+    // Preserve the last answer: treating a settings blip as disarmed would discard the pick.
+  }
+  return lastIdleUnloadArmed;
+}
 
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
+  preserveIdleUnloaded?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
   // Last issued wins: it read the freshest status, whichever answers first.
   const generation = ++syncGeneration;
+  const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
   const superseded = () => generation !== syncGeneration;
+  const loraSuperseded = () =>
+    loraGeneration !== null && loraGeneration !== loraSyncGeneration;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
-    const [listRes, statusRes, lorasRes] = await Promise.all([
+    const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
       getInferenceStatus(),
-      includeLoras ? listLoras() : Promise.resolve(null),
+      // Settled from this request alone. Read out of the aggregate below, a sibling
+      // rejection discarded a good list yet still marked the inventory settled, so a
+      // resident LoRA classified as a base model and pinned a new pair generalized.
+      includeLoras
+        ? listLoras().then(
+            (lorasRes) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                setLoras(lorasRes.loras.map(toLoraSummary));
+              }
+              return lorasRes;
+            },
+            (error) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                useChatRuntimeStore.setState({ loraInventorySettled: true });
+              }
+              throw error;
+            },
+          )
+        : Promise.resolve(null),
+      options?.preserveIdleUnloaded
+        ? readIdleUnloadArmed()
+        : Promise.resolve(false),
     ]);
 
     // Cancellation can land while the requests above are in flight. Bail
@@ -403,13 +447,16 @@ async function syncInferenceStatusToStore(options?: {
     if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelRow));
-    if (lorasRes) {
-      setLoras(lorasRes.loras.map(toLoraSummary));
-    }
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-    if (statusRes.active_model && !isExternalSelectionActive) {
+    // The local selection is re-derived from this status on every mount, so adopting a
+    // TTS model made it the chat model without the user picking it. Read the slot as
+    // empty and the eviction branch below clears the stale pick, as it does for an
+    // image or video load.
+    const chatActiveModel =
+      statusRes.active_model && !isSpeechOnlyStatus(statusRes);
+    if (chatActiveModel && !isExternalSelectionActive) {
       const checkpointId = resolveInferenceCheckpointId(statusRes);
       if (checkpointId) {
         const previousGgufVariant =
@@ -445,8 +492,9 @@ async function syncInferenceStatusToStore(options?: {
           void refreshContextUsage({ threadId: hydrated.activeThreadId });
         }
       }
-    } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // Loading an image or video model evicts the chat one (the GPU arbiter
+    } else if (!chatActiveModel && !isExternalSelectionActive) {
+      if (isIdleUnloadedStatus(statusRes, idleUnloadArmed)) return;
+      // Loading an image, video or audio model evicts the chat one (the GPU arbiter
       // allows a single owner), and nothing else here would say so: the picker
       // keeps the selection, so the header would go on claiming it is loaded
       // and the next prompt would come back a bare 400.
@@ -462,16 +510,22 @@ async function syncInferenceStatusToStore(options?: {
         loadedVisionDisabledByUser: null,
         loadedIsDiffusion: false,
       });
-      // Known resident a moment ago, and nothing loading now. Both matter: a
-      // load in flight has no active model yet either, and clearing there would
-      // wipe the pick the user just made.
-      if (wasResident && selectedCheckpoint && !modelLoading) {
+      // A known prior resident or a definitive speech-only owner both prove the
+      // persisted Chat pick is stale. A load in flight has no active model yet
+      // either, so never clear while one is starting.
+      if (
+        (wasResident || isSpeechOnlyStatus(statusRes)) &&
+        selectedCheckpoint &&
+        !modelLoading
+      ) {
         // Already the clean id the header shows: resolveInferenceCheckpointId
         // put it there, not a load path.
-        toast.info(`${wasResident} is no longer loaded`, {
-          description:
-            "The server released it, which loading an image or video model does. Pick it again to keep chatting.",
-        });
+        if (wasResident) {
+          toast.info(`${wasResident} is no longer loaded`, {
+            description:
+              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+          });
+        }
         // Drop the pick too, which is what a server-side unload already does.
         // Dimming the tick was not enough: the name alone reads as "this is my
         // model" whatever the tick does, and sending to it returns a bare 400.
@@ -480,7 +534,8 @@ async function syncInferenceStatusToStore(options?: {
     }
   } catch (error) {
     // A superseded refresh reports nothing, or a stale failure would raise a
-    // toast about a read whose answer would have been discarded anyway.
+    // toast about a read whose answer would have been discarded anyway. The LoRA
+    // inventory settles from its own request above, never from a sibling's failure.
     if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
@@ -599,7 +654,11 @@ export function useChatModelRuntime() {
   );
 
   const refresh = useCallback(
-    (options?: { signal?: AbortSignal; includeLoras?: boolean }) =>
+    (options?: {
+      signal?: AbortSignal;
+      includeLoras?: boolean;
+      preserveIdleUnloaded?: boolean;
+    }) =>
       syncInferenceStatusToStore(options),
     [],
   );
@@ -612,14 +671,23 @@ export function useChatModelRuntime() {
   useEffect(
     () =>
       subscribeModelLifecycle(({ runtime }) => {
-        // Dictation is a sidecar and takes no GPU ownership, so it evicts
-        // nothing. Chat's own loads already reconcile themselves.
+        // Dictation is a sidecar and evicts nothing; chat's own loads reconcile
+        // themselves. A "tts" load does neither: it is the Audio page taking this very
+        // slot, so read it back like an image or video load.
         if (runtime === "chat" || runtime === "stt") return;
         // Both edges, not only the settle. The arbiter evicts chat inside the
         // image or video load POST, before the download starts, so waiting for
         // the load to finish left the picker and the header naming a model that
         // had already gone and that 400s on send, for the whole download.
         void refresh({ includeLoras: false });
+      }),
+    [refresh],
+  );
+
+  useEffect(
+    () =>
+      subscribeResidentStatusRefresh(() => {
+        void refresh({ includeLoras: false, preserveIdleUnloaded: true });
       }),
     [refresh],
   );
@@ -1526,6 +1594,12 @@ export function useChatModelRuntime() {
               loadSplitRatio = null;
             }
 
+            // The Context Length the USER set for this load, captured before the
+            // clamp below can stand in for it. This, not the n_ctx that goes on
+            // the wire, is what the completed load pins: several send rules put a
+            // positive n_ctx on the wire with the control on Auto, and a pin read
+            // back out of one of those is a number the user never chose.
+            const explicitCtxPin = loadCustomContextLength;
             // Pinning layers on the SAME model keeps the currently resolved
             // context: with no explicit pin, a manual+pinned reload would send 0,
             // which the backend's --fit off branch treats as the NATIVE context --
@@ -1716,14 +1790,10 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
-            // revert it to Auto) and retain the user's requested context so
-            // re-open/re-save keeps the intended override, not the backend's
-            // auto-fit context; null stays null.
-            const keepCustomCtx = resolveManualAutoCtxPin(
-              loadGpuMemoryMode,
-              loadGpuLayers,
-              loadCustomContextLength,
+            // The user's own Context Length (see explicitCtxPin), so an Auto load
+            // stays Auto whatever n_ctx the send rules resolved for it.
+            const keepCustomCtx = resolveExplicitCtxPin(
+              loadResponse.is_gguf ? explicitCtxPin : null,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";

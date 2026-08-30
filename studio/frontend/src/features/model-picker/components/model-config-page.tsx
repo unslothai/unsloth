@@ -80,6 +80,7 @@ import { resolveEstimateContext } from "../model-config/estimate-context";
 import {
   type MemoryFitVerdict,
   formatMemoryGb,
+  glueNoteItems,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -955,7 +956,7 @@ function MemoryBreakdownLine({
       <span className="min-w-0 text-ui-11 leading-relaxed text-muted-foreground">
         {label}
         {note ? (
-          <span className="ml-1 text-muted-foreground/70">{note}</span>
+          <span className="ml-1 text-muted-foreground/70">{glueNoteItems(note)}</span>
         ) : null}
       </span>
       <span
@@ -1035,7 +1036,13 @@ function MemoryEstimateRow({
   );
   return (
     <div className="space-y-2">
-      <div className={ROW_CLASS}>
+      {/* Wraps, unlike the other rows, because this one is the only header carrying a
+          title AND two figures. The panel is w-[min(468px,...)], so under a ~460px
+          window it shrinks with the viewport, and the figures do not shrink: the
+          title absorbed the whole shortfall and truncated to "E..." at 320px. Letting
+          the figures drop to their own line costs a line only where they would not
+          have fitted anyway, and is identical above that width. */}
+      <div className={`${ROW_CLASS} flex-wrap gap-y-1`}>
         <button
           type="button"
           onClick={() => onExpandedChange(!expanded)}
@@ -1053,8 +1060,10 @@ function MemoryEstimateRow({
             strokeWidth={1.75}
           />
         </button>
+        {/* ml-auto so that on the wrapped line, where justify-between has nothing to
+            push against, the figures still sit under the right edge they had. */}
         <div
-          className={`flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
+          className={`ml-auto flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
         >
           {/* One pool: offloading a layer moves it within the same memory rather
               than out of it, so the honest single figure is the total. Reporting
@@ -1997,8 +2006,12 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Apple Silicon specifically, and used ONLY for wording: "Unified" is what
+  // Apple calls its pool, where an AMD APU's is a "Shared" one. It is NOT the
+  // right signal for the capacity question below -- see hasUnifiedMemory.
+  //
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
-  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
+  const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
   const chatTemplateOverrideReason = useChatRuntimeStore(
@@ -2795,6 +2808,46 @@ export function ModelConfigPage({
   // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
   // on 16 GB of VRAM it could not reach.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
+  // Whether the devices THIS LOAD will use draw on one pool with the rest of the
+  // system, from the backend's per-device unified_memory flag rather than from
+  // the platform. Apple Silicon is the obvious case and a ROCm APU is the one
+  // that was being missed: both share the pool, so adding VRAM to system RAM to
+  // reach a machine-wide ceiling counts the same bytes twice.
+  //
+  // Scoped to the devices this load will actually use, and true only when EVERY
+  // one of them is unified.
+  //
+  // Two separate mistakes were made here, so both are written down. Reading the
+  // host-wide flag was the first: an APU beside a discrete card makes it true,
+  // and a pin on the discrete card then collapsed totalCapacityGb from 143.5 GiB
+  // to 15.5 GiB. Narrowing to the pin but keeping `.some()` was the second: an
+  // unpinned load, or a pin naming BOTH, still marked the whole set unified and
+  // reported 62.1 GiB instead of 143.5 GiB. Both produce false "more than this
+  // machine holds" warnings for loads that fit comfortably.
+  //
+  // `.every()` is the right question for CAPACITY: one independent-memory device
+  // in the set means there is real VRAM beside system RAM, so the two are not
+  // one pool. Note use-gpu-info.ts deliberately uses `.some()` for its own flag,
+  // and that is not an inconsistency -- it answers a different question, whether
+  // the aggregate is still a VRAM ceiling a verdict can be measured against, and
+  // one unified part is enough to spoil that.
+  //
+  // The empty set is excluded explicitly, because `[].every()` is true and a
+  // host with no devices at all is not a unified-memory machine.
+  //
+  // The Apple fallback stays host-wide and unconditional: there every device is
+  // the one pool whatever is pinned, and it also covers the window before the
+  // per-device probe lands, so this is never a weaker answer than the platform
+  // check it replaced.
+  const hasUnifiedMemory = useMemo(() => {
+    if (isAppleUnifiedMemory) return true;
+    const governing =
+      pinnedGpuIds && pinnedGpuIds.length > 0
+        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+        : gpuDevices;
+    if (governing.length === 0) return false;
+    return governing.every((device) => device.unifiedMemory === true);
+  }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
   // The VRAM Budget slider sits in this same panel and caps what the next load may
   // claim per GPU, so the verdict has to be measured against the capped figure or the
   // row contradicts the control directly above it. Subscribed as well as read once:
@@ -2821,27 +2874,42 @@ export function ModelConfigPage({
       unsubscribe();
     };
   }, []);
-  // What is free RIGHT NOW on the cards this load may use. _select_gpus admits on
-  // free-minus-reserve, not on the cards' totals, so a training run or another process
-  // holding VRAM changes what will actually happen to this load.
+  // What is free RIGHT NOW on the cards this load may use: _select_gpus admits on
+  // free-minus-reserve, not on totals, so another process holding VRAM changes what
+  // happens to this load.
   //
-  // Used to WARN, never to refuse. The bytes a pending load reclaims -- the resident
-  // chat model's own, which Studio unloads first -- cannot be attributed per device
-  // from here, so raw free memory would call a reload of the loaded model impossible.
-  // Capping the free-based verdict at "tight" is honest under both readings: either
-  // something else really is holding the card, or it is about to be given back.
-  // A fixed Manual placement is launched verbatim: load_model empties its probed GPU
-  // set (gpus = []) and emits --gpu-layers N --fit off, so the server-wide VRAM Budget
-  // never reaches the planner and cannot shrink this load. Discounting capacity by it
-  // there labelled placements that will load fine as exceeding -- a 16 GiB fixed
-  // placement on a 24 GiB card reads as over budget at 50%. Auto is still budgeted,
-  // because Auto is exactly the mode that hands the decision to the planner.
+  // WARNS, never refuses. The bytes a pending load reclaims are mostly the resident
+  // model's own, which Studio unloads first, and cannot be attributed per device from
+  // here, so raw free memory would call reloading the loaded model impossible. Capping
+  // the verdict at "tight" is honest either way.
+  //
+  // A fixed Manual placement is launched verbatim -- load_model empties its probed GPU
+  // set and emits --gpu-layers N --fit off -- so the server-wide VRAM Budget never
+  // reaches the planner. Discounting capacity by it called a 16 GiB fixed placement on
+  // a 24 GiB card over budget at 50%. Auto is still budgeted: Auto is the mode that
+  // hands the decision to the planner.
   const memoryBudgetGovernsLaunch =
     runtimeGpuMemoryMode !== "manual" ||
     (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
   const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
     ? memoryVramBudgetFraction
     : 1;
+  // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of the system
+  // before admitting an offloaded load.
+  //
+  // The HOST reading, not the sum-shaped one beside it, which is zeroed whenever
+  // ANY device shares system RAM -- every dGPU + iGPU box -- so that was
+  // permanently 0 there and the host-pressure advisory could not fire even under
+  // a pin on the discrete card, the one case where host RAM really is a separate
+  // pool.
+  //
+  // Hoisted because the free-capacity memo below needs the same figure: a ROCm
+  // APU's free pool IS this, and two copies of the subtraction is how they would
+  // drift apart.
+  const memoryUsableSystemRamGb = Math.max(
+    0,
+    (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
+  );
   const memoryFreeGpuCapacityGb = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
@@ -2857,8 +2925,31 @@ export function ModelConfigPage({
     // is measured against.
     // The reserve keeps its budget-derived floor even for a fixed Manual placement:
     // what is free right now still constrains the launch, whatever set the number.
-    return aggregateUsableFreeVramGb(pinned, memoryEffectiveBudgetFraction);
-  }, [gpuDevices, pinnedGpuIds, memoryEffectiveBudgetFraction]);
+    const freeVram = aggregateUsableFreeVramGb(
+      pinned,
+      memoryEffectiveBudgetFraction,
+    );
+    // On a ROCm APU this figure is the free space inside a BIOS-carved window,
+    // and resolveMemoryFit asks it the WHOLE-LOAD question as soon as the pool is
+    // single. Those two together warned that a 60 GiB load does not fit a 96 GiB
+    // machine with 60+ GiB free, purely because it exceeds a 48 GiB window.
+    //
+    // The pool's real free memory is the host's, exactly as its real CAPACITY is
+    // the host's RAM rather than the window. Same discriminator as the capacity
+    // side, so the two cannot answer differently: Apple's GPU figure already IS
+    // the pool and is left alone.
+    if (hasUnifiedMemory && !isAppleUnifiedMemory) {
+      return Math.max(freeVram, memoryUsableSystemRamGb);
+    }
+    return freeVram;
+  }, [
+    gpuDevices,
+    pinnedGpuIds,
+    memoryEffectiveBudgetFraction,
+    hasUnifiedMemory,
+    isAppleUnifiedMemory,
+    memoryUsableSystemRamGb,
+  ]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
     totalCapacityGb: memoryTotalCapacityGb,
@@ -2869,11 +2960,25 @@ export function ModelConfigPage({
         pinnedGpuIds && pinnedGpuIds.length > 0
           ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
           : [],
+      hostDevices: gpuDevices,
       hostGpuTotalGb: inferenceGpu.memoryTotalGb,
       hostDedicatedGpuTotalGb: inferenceGpu.dedicatedMemoryTotalGb,
       hostSharesSystemRam: inferenceGpu.sharedMemory,
       systemRamTotalGb: inferenceGpu.systemRamTotalGb,
-      unifiedMemory: isUnifiedMemory,
+      // The GENERAL signal, not the Apple-only one. A ROCm APU reports
+      // unified_memory per device and shares one pool exactly as Apple does, but
+      // reading appleSilicon here charged it as discrete VRAM PLUS host RAM --
+      // the same bytes counted twice, so the panel could report a fit that
+      // cannot happen. The Hub bar gets this right and abstains on this very
+      // flag; this is the panel catching up.
+      unifiedMemory: hasUnifiedMemory,
+      // ...but "one pool" and "how big is the pool" are different questions, and
+      // the two platforms answer the second differently. Apple's memory_total_gb
+      // IS the machine's unified memory; a ROCm APU's is a BIOS-carved window
+      // onto system RAM, so taking it as the ceiling reported 46.56 GiB on a
+      // 96 GiB machine and warned that a 60 GiB load exceeds the host. Only the
+      // Apple half may be read as the whole pool.
+      unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
 
   const rememberChanged = remember !== savedRemember;
@@ -3103,20 +3208,8 @@ export function ModelConfigPage({
               totalCapacityGb={memoryTotalCapacityGb}
               systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
               freeGpuCapacityGb={memoryFreeGpuCapacityGb}
-              usableSystemRamGb={Math.max(
-                0,
-                // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of
-                // the system before it will admit an offloaded load.
-                //
-                // The HOST reading, not the sum-shaped one beside it. That one is
-                // zeroed whenever ANY device on the machine shares system RAM, which
-                // is every dGPU + iGPU box, so this figure was permanently 0 there
-                // and the host-pressure advisory could not fire even under a pin on
-                // the discrete card -- exactly the case where host RAM really is a
-                // separate pool.
-                (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
-              )}
-              isUnifiedMemory={isUnifiedMemory}
+              usableSystemRamGb={memoryUsableSystemRamGb}
+              isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
@@ -3185,7 +3278,7 @@ export function ModelConfigPage({
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
-                    {isUnifiedMemory ? (
+                    {isAppleUnifiedMemory ? (
                       <>
                         Exceeds what fits in unified memory (
                         {loadedMaxContextLength.toLocaleString()} tokens). The

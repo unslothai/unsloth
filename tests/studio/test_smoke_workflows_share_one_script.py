@@ -67,11 +67,11 @@ def test_a_divergent_second_run_is_a_failure_not_a_warning(script):
     Asserted through behaviour rather than the text of the check, so rewriting it is
     fine and weakening it is not.
     """
-    clean = ["1 is 2", "you asked about 1+1", "paris", "paris"]
+    clean = ["1 is 2", "you asked about 2", "paris", "paris"]
     script.check("ok", clean, list(clean))  # the baseline passes, or nothing below means anything
 
     with pytest.raises(AssertionError, match = "non-deterministic"):
-        script.check("drift", clean, ["1 is 2", "you asked about 1+1", "paris", "london"])
+        script.check("drift", clean, ["1 is 2", "you asked about 2", "paris", "london"])
 
 
 def test_trailing_whitespace_alone_is_still_tolerated(script):
@@ -80,7 +80,7 @@ def test_trailing_whitespace_alone_is_still_tolerated(script):
     llama-server varies a final newline between identical greedy runs depending on where
     the stream is closed. Tightening this to an exact match would fail on that.
     """
-    clean = ["1 is 2", "you asked about 1+1", "paris", "paris"]
+    clean = ["1 is 2", "you asked about 2", "paris", "paris"]
     script.check("whitespace", clean, [t + "\n" for t in clean])
 
 
@@ -93,7 +93,7 @@ def test_an_empty_reply_is_a_failure_in_either_run(script):
     Linux copy asserted both before this was consolidated onto the macOS one, which
     asserted only the first.
     """
-    clean = ["1 is 2", "you asked about 1+1", "paris", "paris"]
+    clean = ["1 is 2", "you asked about 2", "paris", "paris"]
     with pytest.raises(AssertionError, match = "empty turn"):
         script.check("first", ["", "b", "paris", "paris"], ["", "b", "paris", "paris"])
     with pytest.raises(AssertionError, match = "empty turn"):
@@ -106,11 +106,30 @@ def test_an_empty_reply_is_a_failure_in_either_run(script):
 
 
 def test_history_grounding_is_still_checked(script):
-    """Two of the four turns are answerable only from the earlier ones. That is what the
-    'paris' check is for: it fails when history is dropped, rather than when the model is
-    wrong about France."""
+    """Two of the four turns are answerable only from the earlier ones. Those checks fail
+    when history is dropped, rather than when the model is wrong about France."""
+    good2 = "you asked about 2"
     with pytest.raises(AssertionError, match = "paris"):
-        script.check("nohistory", ["1 is 2", "b", "c", "d"], ["1 is 2", "b", "c", "d"])
+        script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
+
+    # Without a turn-2 check a server dropping every turn but the last still passed:
+    # "1" comes from turn 1 and "paris" from turn 3.
+    with pytest.raises(AssertionError, match = "history reached the model"):
+        script.check(
+            "noturn2", ["1 is 2", "b", "paris", "paris"], ["1 is 2", "b", "paris", "paris"]
+        )
+
+
+def test_turn_2_is_checked_against_turn_1_not_a_literal(script):
+    """A hardcoded digit would accept a turn 2 that contradicts turn 1. The fixtures carry
+    their own numbers, which is the point: the check reads turn 1 rather than a literal, so
+    it holds whatever PROMPTS asks."""
+    contradiction = ["1 is 3", "the answer was 2", "paris", "paris"]
+    with pytest.raises(AssertionError, match = "history reached the model"):
+        script.check("contradiction", contradiction, list(contradiction))
+
+    consistent = ["1 is 3", "the answer was 3", "paris", "paris"]
+    script.check("consistent", consistent, list(consistent))
 
 
 def test_the_script_needs_no_environment_to_import(script):

@@ -27,7 +27,35 @@ export interface GenerateAudioOptions {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  audio_instructions?: string;
+  audio_language?: string;
+  seed?: number;
   signal?: AbortSignal;
+}
+
+export interface AudioDownloadPlan {
+  entries: {
+    repo_id: string;
+    files: string[];
+    bytes: number;
+    gguf_filename: string | null;
+    checkpoint?: boolean;
+  }[];
+  total_bytes: number;
+  required_bytes?: number;
+  checkpoint_bytes?: number;
+}
+
+export async function getAudioDownloadPlan(
+  modelPath: string,
+  hfToken?: string,
+): Promise<AudioDownloadPlan> {
+  const response = await authFetch("/api/inference/audio/download-plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_path: modelPath, hf_token: hfToken }),
+  });
+  return parseJson<AudioDownloadPlan>(response);
 }
 
 export async function generateAudio(

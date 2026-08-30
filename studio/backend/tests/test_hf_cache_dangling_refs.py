@@ -1559,6 +1559,7 @@ _REPO_INFO_HELPERS = frozenset(
         "_repo_gguf_size_bytes",
         "_repo_has_gguf_files",
         "_repo_non_gguf_model_payload",
+        "catalog_classification._repo_gguf_audio_type",
         "getattr",
     }
 )
@@ -1710,7 +1711,7 @@ def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, 
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
-def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkeypatch):
+def test_task_inventory_preserves_cached_community_tts_codec(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory
@@ -1725,7 +1726,42 @@ def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkey
             }
         },
         refs = {"main": SNAPSHOT},
-        name = "models--community--orpheus-tts",
+        name = "models--community--renamed-checkpoint",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    monkeypatch.setattr(cache_inventory, "detect_local_tts_audio_type", lambda _path: "snac")
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert len(rows) == 1
+    assert rows[0]["task"] == "text-to-speech"
+    assert rows[0]["pipeline_tag"] == "text-to-speech"
+    assert rows[0]["audio_type"] == "snac"
+
+
+def test_active_cache_native_fork_loads_by_detected_snapshot(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference.native_audio import is_native_audio_model
+    from hub.services.models import cache_inventory
+
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"moss_tts_local"}',
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--acme--native-audio-fork",
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
     monkeypatch.setattr(
@@ -1738,9 +1774,12 @@ def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkey
     finally:
         inventory_scan.invalidate_hf_cache_scans()
 
-    assert len(rows) == 1
-    assert rows[0]["task"] == "text-to-speech"
-    assert rows[0]["pipeline_tag"] == "text-to-speech"
+    snapshot = repo_dir / "snapshots" / SNAPSHOT
+    assert rows[0]["repo_id"] == "acme/native-audio-fork"
+    assert rows[0]["audio_type"] == "moss_tts_local"
+    assert rows[0]["load_id"] == str(snapshot)
+    assert rows[0]["capabilities"]["can_chat"] is False
+    assert is_native_audio_model(rows[0]["load_id"])
 
 
 def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):
@@ -3305,6 +3344,17 @@ _CASCADE_INDEX = {
     "text_encoder": ["transformers", "CLIPTextModelWithProjection"],
     "vqgan": ["wuerstchen", "PaellaVQModel"],
 }
+
+
+def test_modular_manifest_is_parsed_before_fixed_denoiser_fallback(tmp_path):
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text(json.dumps(_CASCADE_INDEX))
+    decoder = snapshot / "decoder"
+    decoder.mkdir()
+    (decoder / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
 def test_a_denoiser_missing_half_its_shards_is_not_a_present_denoiser(tmp_path):
