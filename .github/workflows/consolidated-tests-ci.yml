@@ -508,16 +508,26 @@ jobs:
           #
           # loadfile rather than the default `load`: 34 of the 236 files touch sys.modules
           # or importlib.reload, so tests within a file must stay on one worker, in order.
+          #
+          # The mlx family leaves the suite's worst contamination behind and leaves it as a
+          # GLOB rather than a list, because naming the victims is whack-a-mole: they move
+          # every run. tests/mlx_simulation/*_stub.py each install themselves into
+          # sys.modules as mlx, mlx.nn, mlx.utils, mlx.optimizers, mlx_lm or mlx_vlm, and
+          # each of the 43 files importing them installs only the subset it needs. A file
+          # that leaves a PARTIAL mlx behind stops a later file in the same worker from
+          # skipping ("mlx is not installed" is no longer true) and it then hits the gaps.
+          # That is the whole of what Core has been failing on: "NotImplementedError:
+          # mlx-shim: 'mlx.nn.RMSNorm' ... not implemented" and "ModuleNotFoundError: No
+          # module named 'mlx_lm.models.switch_layers'". Measured on the cloned zoo at
+          # 52aff0d: with the family spread over workers the run has 26 failures, 11 of them
+          # order-dependent; with it out, every remaining failure also fails standalone.
           python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
-            --ignore=tests/test_mlx_generate.py \
+            --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
             --ignore=tests/test_hf_xet_fallback.py \
-            --ignore=tests/test_mlx_neftune_quant_map.py \
-            --ignore=tests/test_mlx_gated_delta_vjp.py \
             --ignore=tests/test_gemma3_forced_float32_boundary_dtype.py \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
-            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device \
-            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through
+            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
 
           # One process PER FILE, not one shared by all of them. Without the rerun the
           # ignores above delete the affected tests from CI and the job still goes green;
@@ -553,6 +563,19 @@ jobs:
           python -m pytest -q --tb=short tests/test_mlx_neftune_quant_map.py || _keep "$?"
           python -m pytest -q --tb=short tests/test_mlx_gated_delta_vjp.py || _keep "$?"
           python -m pytest -q --tb=short tests/test_gemma3_forced_float32_boundary_dtype.py || _keep "$?"
+
+          # The rest of the mlx family, one serial alphabetical process. Serial is the point:
+          # the contamination is directional, and alphabetical order is the one ordering that
+          # never puts a partial shim in front of a file that still expects to skip. The
+          # three named above stay per-file because they poison each other even in this
+          # order. 936 passed / 78 skipped in 13s on the cloned zoo at 52aff0d, against 9
+          # failures for the same files spread over xdist workers, so this buys the fix for
+          # about 25 seconds and gives the parallel pass 42 fewer files to schedule.
+          mlx_group=$(ls tests/test_mlx_*.py |
+            grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
+          python -m pytest -q --tb=short $mlx_group \
+            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through \
+            || _keep "$?"
           exit "$rc"
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)

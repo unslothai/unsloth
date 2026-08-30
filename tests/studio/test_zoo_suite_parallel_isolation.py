@@ -99,7 +99,13 @@ ISOLATED = [
 # The zoo suite is the only pytest run in this workflow driven out of the cloned zoo
 # checkout, and it is told apart by the deselect it carries rather than by step order,
 # so re-ordering or renaming steps does not quietly point this guard at another command.
-ZOO_MARKER = "tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through"
+ZOO_MARKER = "--dist loadfile tests/"
+
+# Deselected because it needs a GPU. It rides whichever command owns its file.
+MLX_DESELECT = (
+    "tests/test_mlx_finetune_last_n_layers.py::"
+    "test_get_peft_model_passes_finetune_last_n_layers_through"
+)
 
 
 def _commands() -> list[str]:
@@ -122,6 +128,13 @@ def _zoo_parallel() -> str:
     return hits[0]
 
 
+def _zoo_mlx_group() -> str:
+    """The serial run of the mlx family, found by the glob it builds its file list from."""
+    hits = [c for c in _commands() if "$mlx_group" in c]
+    assert len(hits) == 1, f"expected exactly one serial mlx group run, found {len(hits)}"
+    return hits[0]
+
+
 def _zoo_serial(path: str) -> str:
     """The rerun command for one isolated file. One file per command, on purpose."""
     hits = [c for c in _commands() if "-n 4" not in c and path in c]
@@ -141,7 +154,14 @@ def test_the_zoo_suite_actually_runs_in_parallel() -> None:
 
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str) -> None:
-    assert f"--ignore={path}" in _zoo_parallel(), (
+    cmd = _zoo_parallel()
+    # The mlx three are covered by the family glob rather than by name, which is the
+    # point of the glob: a new test_mlx_*.py is excluded without anyone listing it.
+    covered = f"--ignore={path}" in cmd or (
+        path.rsplit("/", 1)[-1].startswith("test_mlx_")
+        and "--ignore-glob='tests/test_mlx_*.py'" in cmd
+    )
+    assert covered, (
         f"{path} ({reason}) is not ignored by the parallel zoo run, so it goes back to "
         f"failing intermittently depending on which worker picks it up"
     )
@@ -200,11 +220,50 @@ def test_an_isolated_file_does_not_share_its_rerun(path: str, reason: str) -> No
 
 def test_the_deselects_survive_on_the_parallel_run() -> None:
     """
-    The three deselects are the CUDA-only and known-broken cases. They lived on the
-    single command that this change split in two; a split that dropped them would turn
-    a deliberate 'deselected' into a runtime failure on a GPU-less runner.
+    The deselects are the CUDA-only and known-broken cases. They lived on the single
+    command that this change split; a split that dropped one would turn a deliberate
+    'deselected' into a runtime failure on a GPU-less runner. Two ride the parallel run,
+    and the mlx one moved with its file when the family left for the serial group.
     """
     cmd = _zoo_parallel()
     assert (
-        cmd.count("--deselect") == 3
-    ), f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 3"
+        cmd.count("--deselect") == 2
+    ), f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 2"
+    group = _zoo_mlx_group()
+    assert MLX_DESELECT in group, (
+        f"{MLX_DESELECT} is deselected nowhere now that test_mlx_finetune_last_n_layers.py "
+        f"runs in the serial mlx group, so it fails on a GPU-less runner instead"
+    )
+
+
+def test_the_mlx_family_leaves_the_parallel_run_as_a_glob() -> None:
+    """Naming the victims is whack-a-mole: they move every run, so exclude the source.
+
+    Every tests/mlx_simulation stub installs itself into sys.modules, each importing file
+    installs only the subset it needs, and a partial mlx stops a later file in the same
+    worker from skipping. A glob keeps a newly added test_mlx_*.py out of the parallel
+    pass without anyone remembering to list it.
+    """
+    assert "--ignore-glob='tests/test_mlx_*.py'" in _zoo_parallel(), (
+        "the parallel zoo run no longer excludes the mlx family as a glob, so the next "
+        "test_mlx_*.py added upstream goes back to poisoning whichever file follows it"
+    )
+
+
+def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
+    """The group is serial on purpose, and must not double-run the per-file isolated mlx."""
+    assert (
+        "-n " not in _zoo_mlx_group()
+    ), "the mlx group runs under xdist, which is the arrangement it exists to avoid"
+    # The exclusion lives on the `ls | grep -v` that builds the list, not on the pytest
+    # line, so it is read off the step text rather than the command.
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    for path, _ in ISOLATED:
+        name = path.rsplit("/", 1)[-1]
+        if not name.startswith("test_mlx_"):
+            continue
+        stem = name[len("test_mlx_") : -len(".py")]
+        assert f"{stem}|" in text or f"{stem})" in text, (
+            f"{path} has its own process but is not excluded from the mlx group's file "
+            f"list, so it runs twice and brings its shim back into that session"
+        )
