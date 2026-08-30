@@ -3628,7 +3628,14 @@ def _purge_stored_identical_user_siblings(conn: sqlite3.Connection, thread_id: s
     ).fetchall()
     groups: dict[tuple, list] = {}
     for row in rows:
-        key = (row["parent_id"], row["content_json"], row["attachments_json"] or "null")
+        attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
+        key = _user_turn_fingerprint(
+            {
+                "parentId": row["parent_id"],
+                "content": json.loads(row["content_json"]) if row["content_json"] else [],
+                "attachments": attachments,
+            }
+        )
         groups.setdefault(key, []).append(row)
 
     purged: list[str] = []
