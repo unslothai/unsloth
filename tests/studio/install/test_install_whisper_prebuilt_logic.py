@@ -470,7 +470,8 @@ def test_main_maps_unexpected_error_to_exit_error(tmp_path, monkeypatch):
 
 def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
     # An unexpected failure inside the probe maps to prebuilt_available=False, not
-    # a traceback, so the caller falls back cleanly.
+    # a traceback, so the caller falls back cleanly. It is reported as unresolved,
+    # since nothing was learned about whether a prebuilt exists.
     host = _host("linux", "x64")
     monkeypatch.setattr(M, "detect_host", lambda: host)
 
@@ -481,7 +482,46 @@ def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
     rc = M.main(["--resolve-prebuilt", "--output-format", "json"])
     assert rc == M.EXIT_SUCCESS
     payload = json.loads(capsys.readouterr().out.strip())
-    assert payload == {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"}
+    assert payload == {
+        "prebuilt_available": False,
+        "repo": "unslothai/whisper.cpp",
+        "unavailable_reason": "unresolved",
+    }
+
+
+def test_resolve_mode_separates_incompatible_from_unresolved(monkeypatch, capsys):
+    """The probe's negative answer must say WHY it is negative.
+
+    The install path already draws this line: ReleaseCompatibilityError is exit 2 and
+    every other failure is exit 1. Flattening both into a bare prebuilt_available=false
+    left a caller unable to tell a confirmed pairing gap from an unreachable API, so
+    an update was skipped over a network blip.
+    """
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+
+    def incompatible(repo, *, published_release_tag = None):
+        raise ReleaseCompatibilityError("slim bundle requires llama.cpp b2; installed b1")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", incompatible)
+    assert M.main(["--resolve-prebuilt", "--output-format", "json"]) == M.EXIT_SUCCESS
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["prebuilt_available"] is False
+    assert payload["unavailable_reason"] == "incompatible"
+
+
+def test_resolve_mode_reports_an_ordinary_fallback_as_unresolved(monkeypatch, capsys):
+    """A plain PrebuiltFallback is an unsupported platform, a malformed manifest, a
+    checksum failure. _slim_release_incompatibility deliberately excludes those, so
+    they are not a pairing gap either."""
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+
+    def fallback(repo, *, published_release_tag = None):
+        raise M.PrebuiltFallback("manifest omitted an 'artifacts' list")
+
+    monkeypatch.setattr(M, "fetch_release_for_install", fallback)
+    assert M.main(["--resolve-prebuilt", "--output-format", "json"]) == M.EXIT_SUCCESS
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["unavailable_reason"] == "unresolved"
 
 
 # ── --rocm-gfx / --has-rocm overrides (llama parity) ──

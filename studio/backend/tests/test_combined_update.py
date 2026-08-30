@@ -761,7 +761,9 @@ def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
     install exits 2 and a llama update that already landed is reported as failed.
     """
     monkeypatch.setattr(
-        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": False}
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **_kw: {"prebuilt_available": False, "unavailable_reason": "incompatible"},
     )
 
     def must_not_install(*_a, **_kw):
@@ -773,6 +775,26 @@ def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
         "skipped": True,
         "skip_reason": "paired_llama_unavailable",
     }
+
+
+def test_the_pre_flight_probes_the_release_that_would_be_installed(monkeypatch):
+    """Not the download host's latest pointer, which sorts by commit date and can lag
+    the published_at pick the freshness check used (the #6219 class the phase pins
+    against). Probing one release and installing another can skip a valid update or
+    wave through a doomed one."""
+    seen = {}
+
+    def spy(**kw):
+        seen.update(kw)
+        return {"prebuilt_available": True}
+
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", spy)
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "t"})
+
+    phase = _slim_phase(repo = "unslothai/whisper.cpp", pin_release_tag = "v1.9.2-unsloth.12")
+    wupd.run_chained_phase_after_llama(phase, lambda _f: None)
+    assert seen["published_repo"] == "unslothai/whisper.cpp"
+    assert seen["published_release_tag"] == "v1.9.2-unsloth.12"
 
 
 def test_a_workable_pairing_still_installs(monkeypatch):
@@ -801,14 +823,34 @@ def test_only_a_slim_install_is_pre_flighted(monkeypatch, install_kind):
     assert wupd.run_chained_phase_after_llama(phase, lambda _f: None) == {"to_tag": "v1"}
 
 
-def test_a_pre_flight_that_cannot_answer_still_attempts_the_install(monkeypatch):
+@pytest.mark.parametrize(
+    "resolved",
+    [
+        # The resolver ran and could not get an answer: --resolve-prebuilt maps an
+        # unreachable API or an unreadable manifest to exit 0 with no prebuilt, so this
+        # is what a network failure looks like, not a pairing gap.
+        {"prebuilt_available": False, "unavailable_reason": "unresolved"},
+        # An installer that predates unavailable_reason. Unknown, so not a gap.
+        {"prebuilt_available": False},
+        # The wrapper's own fail-open: nonzero exit, timeout, or unparseable output.
+        None,
+    ],
+)
+def test_a_pre_flight_that_cannot_answer_still_attempts_the_install(monkeypatch, resolved):
     """Fail towards the install, not the skip.
 
-    The pre-flight exists to avoid an attempt known to be doomed. One that cannot answer
-    knows nothing, so attempting keeps the previous behaviour, exit 2 included, rather
-    than silently skipping an update that would have worked.
+    The pre-flight exists to avoid an attempt known to be doomed. One that cannot
+    answer knows nothing, so attempting keeps the previous behaviour, exit 2 included,
+    rather than silently skipping an update that would have worked and reporting a
+    pairing gap that was never established.
     """
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", lambda **_kw: resolved)
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
 
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {"to_tag": "v1"}
+
+
+def test_a_probe_that_raises_still_attempts_the_install(monkeypatch):
     def boom(**_kw):
         raise RuntimeError("resolver blew up")
 
