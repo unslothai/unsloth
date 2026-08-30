@@ -366,7 +366,12 @@ def get_physical_gpu_inventory() -> dict[str, Any]:
     structured unavailable result, so this never raises out of an endpoint.
     """
     rows = _query_gpu_inventory("get_physical_gpu_inventory")
-    if rows is NVIDIA_SMI_ABSENT and _linux_nvidia_procfs_gpu_count():
+    # Either way the CLI could not answer: absent, hung past the timeout, or a non-zero
+    # exit. The kernel driver publishes its cards regardless, and on a cold start there
+    # is no settled verdict for the resulting unknown to protect -- the host would be
+    # reported as having no GPU at all, with no repair, for as long as the CLI stays
+    # broken. That is the case this inventory exists for.
+    if (rows is NVIDIA_SMI_ABSENT or rows is None) and _linux_nvidia_procfs_gpu_count():
         # The kernel driver is loaded and enumerating cards; only the CLI is missing.
         # install_python_stack._has_usable_nvidia_gpu() reads the same directory for the
         # same reason, so without this the installer can select or repair a CUDA wheel

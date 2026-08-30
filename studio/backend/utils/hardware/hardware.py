@@ -878,10 +878,22 @@ def _masks_hide_every_accelerator(*, block_inventory: bool = False) -> bool:
 
 def _vendors_masked_off(*, block_inventory: bool = False) -> set:
     """Vendors whose devices are all hidden by a mask that can take effect here."""
+    relevant = _relevant_visibility_masks(block_inventory = block_inventory)
     masked: set = set()
-    for var in _relevant_visibility_masks(block_inventory = block_inventory):
+    for var in relevant:
         if _mask_is_emptied(var):
             masked |= _VISIBILITY_MASK_VENDORS.get(var, frozenset())
+    # HIP reads its own variables FIRST and falls back to CUDA_VISIBLE_DEVICES only when
+    # neither is set, which is the precedence _get_parent_visible_gpu_spec applies in
+    # this same module. An AMD host that NAMES its devices in HIP_VISIBLE_DEVICES while
+    # inheriting an empty CUDA_VISIBLE_DEVICES has not hidden its cards, and treating
+    # the alias as authoritative there suppressed the repair on a working install.
+    if any(
+        os.environ.get(var) is not None and not _mask_is_emptied(var)
+        for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+        if var in relevant
+    ):
+        masked.discard("amd")
     return masked
 
 
@@ -1130,16 +1142,26 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
     return keep
 
 
-# The gfx targets studio/setup.sh and install.ps1 will actually install a ROCm wheel
-# for: RDNA 2, 3, 3.5 and 4. Kept in sync with _setup_supported_gfx_from_name's outputs.
-# An older AMD card (Polaris gfx803, RDNA 1 gfx101x, Vega) is left on CPU torch ON
-# PURPOSE, so counting it as evidence of a broken install offers a repair that cannot
-# make that GPU usable.
+# The gfx targets this stack will actually install a ROCm wheel for. install.sh's
+# _amd_arch_index_family_for_gfx is the map that decides (it mirrors install.ps1's
+# $archFamilyMap), plus gfx906, which install_python_stack.py carries on its ROCm 6.3
+# path. An older AMD card outside this set -- Polaris gfx803, RDNA 1 gfx101x, Vega
+# gfx90c -- is left on CPU torch ON PURPOSE, so counting it as evidence of a broken
+# install offers a repair that cannot make that GPU usable. Missing an arch that IS
+# supported is the opposite failure and just as real, which is what the drift test
+# against install.sh guards.
 _ROCM_SUPPORTED_GFX = frozenset(
     {
+        "gfx906",
+        "gfx908",
+        "gfx90a",
         "gfx1030",
+        "gfx1031",
         "gfx1032",
+        "gfx1033",
         "gfx1034",
+        "gfx1035",
+        "gfx1036",
         "gfx1100",
         "gfx1101",
         "gfx1102",

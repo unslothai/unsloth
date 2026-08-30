@@ -88,12 +88,19 @@ def _smi(
     *,
     returncode: int = 0,
 ):
-    """Pin what nvidia-smi answers, at the subprocess boundary."""
+    """Pin what nvidia-smi answers, at the subprocess boundary.
+
+    The procfs count goes with it. A CLI that cannot answer falls back to
+    /proc/driver/nvidia/gpus, and this suite runs on a real NVIDIA host, so a test
+    simulating a machine with no cards has to simulate the kernel driver's absence too.
+    The fallback's own tests set it back.
+    """
     monkeypatch.setattr(
         nvidia.subprocess,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode = returncode, stdout = stdout),
     )
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
 
 
 @pytest.fixture(autouse = True)
@@ -1876,23 +1883,37 @@ def test_a_rocm_expectation_outranks_the_arch_table(monkeypatch):
 
 
 def test_the_supported_arch_set_matches_the_installer(monkeypatch):
-    """One table in two places drifts. setup.sh is the one that decides."""
+    """One table in two places drifts, and it drifts BOTH ways.
+
+    install.sh's _amd_arch_index_family_for_gfx is the map that decides whether this
+    stack ships a ROCm wheel for a card (it mirrors install.ps1's $archFamilyMap). A gfx
+    it lists but the backend does not is a supported card reported as no_gpu with no
+    repair; one the backend lists but it does not is a repair that cannot help.
+    """
     import pathlib
     import re
 
-    setup = (
-        # resolve(): the suite runs with studio/backend on sys.path and its cwd there,
-        # so hw.__file__ can be relative and parents[3] would climb out of the tree.
-        pathlib.Path(hw.__file__).resolve().parents[3] / "setup.sh"
-    ).read_text(encoding = "utf-8")
-    block = setup[setup.index("_setup_supported_gfx_from_name()") :]
+    root = pathlib.Path(hw.__file__).resolve().parents[4]
+    install_sh = (root / "install.sh").read_text(encoding = "utf-8")
+    block = install_sh[install_sh.index("_amd_arch_index_family_for_gfx()"):]
     block = block[: block.index("esac")]
-    shipped = set(re.findall(r'_sup_gfx_out="(gfx[0-9a-f]+)"', block))
-    assert shipped, "the installer's arch table moved"
-    assert shipped == set(
-        hw._ROCM_SUPPORTED_GFX
-    ), "the backend must decline exactly the cards the installer declines"
+    # Only the case LABELS: the values on the right are index families (gfx103X-all),
+    # not architectures, and a bare regex over the block would collect their prefixes.
+    shipped = {
+        gfx
+        for line in block.splitlines()
+        for gfx in re.findall(r"gfx[0-9a-f]+", line.split(")")[0])
+    }
+    assert len(shipped) > 10, "the installer's arch map moved"
 
+    # gfx906 is not in that map: install_python_stack.py carries it on the ROCm 6.3 path.
+    extra = {"gfx906"}
+    assert set(hw._ROCM_SUPPORTED_GFX) == shipped | extra, (
+        "the backend must accept exactly the architectures the installers ship a wheel "
+        f"for; installer has {sorted(shipped | extra)}"
+    )
+    stack = (root / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert "gfx906" in stack, "the gfx906 path this set carries has gone"
 
 def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):
     """No rocminfo and no amd-smi is the common case on the host in question."""
@@ -2267,3 +2288,68 @@ def test_a_stale_registry_record_cannot_claim_a_longer_named_live_card(monkeypat
     # name spell the same card differently, and one is routinely a prefix of the other.
     assert hw._claim_live_adapter("AMD Radeon RX 7900 XTX", ["AMD Radeon RX 7900 XTX 24GB"]) == 0
     assert hw._claim_live_adapter("Something Else", live) is None
+
+
+# ========== Round seventeen ==========
+
+
+def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
+    """Absent is not the only way the CLI fails to answer.
+
+    A nvidia-smi that hangs past its timeout, or exits non-zero, leaves the kernel
+    driver enumerating cards regardless. On a cold start there is no settled verdict for
+    the resulting unknown to protect, so the host was reported as having no GPU at all,
+    with no repair, for as long as the CLI stayed broken.
+    """
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 1)
+
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _hang)
+    result = nvidia.get_physical_gpu_inventory()
+    assert [d["vendor"] for d in result["devices"]] == ["nvidia"]
+    assert result["source"] == "proc-driver-nvidia"
+
+    # A non-zero exit is the same shape.
+    monkeypatch.setattr(
+        nvidia.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(returncode = 9, stdout = ""),
+    )
+    assert nvidia.get_physical_gpu_inventory()["available"] is True
+
+    # And with no kernel driver either, a broken CLI is still an unanswered probe.
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    assert nvidia.get_physical_gpu_inventory()["error"] is not None
+
+
+def test_hip_visible_devices_outranks_the_cuda_alias(monkeypatch):
+    """HIP reads its own variables first; the alias is only a fallback.
+
+    An AMD host that NAMES its devices in HIP_VISIBLE_DEVICES while inheriting an empty
+    CUDA_VISIBLE_DEVICES has not hidden anything, and _get_parent_visible_gpu_spec in
+    this same module already applies that precedence.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    amd = [{"vendor": "amd", "gfx_candidates": ["gfx1100"]}]
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": amd, "unknown": False}
+    )
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+    assert hw._devices_that_can_establish_a_mismatch(amd) == amd
+
+    # Both emptied really is a hidden host.
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+    assert hw.classify_torch_build() is None
+    assert hw._devices_that_can_establish_a_mismatch(amd) == []
+
+    # And the alias still masks AMD when HIP says nothing at all, which is the ROCm
+    # behaviour the previous round added.
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES")
+    assert hw.classify_torch_build() is None
