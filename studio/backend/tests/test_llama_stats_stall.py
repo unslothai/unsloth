@@ -243,3 +243,26 @@ def test_a_garbage_timeout_still_falls_back_without_warning(monkeypatch):
     cap = _Capture()
     assert ls._env_float("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", 600.0, cap) == 600.0
     assert cap.events == []
+
+
+@pytest.mark.parametrize("raw", ["1e10", "1e18", "1e308"])
+def test_an_oversized_finite_interval_is_clamped(monkeypatch, raw):
+    """Event.wait() turns a timeout into an absolute deadline, and one far enough out
+    raises "timestamp out of range for platform time_t" as soon as the wait is entered,
+    killing the poll thread and taking the stats and the stall report with it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", raw)
+    cap = _Capture()
+    applied = ls._env_float("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", 10.0, cap)
+    assert applied == ls._MAX_ENV_SECONDS
+    assert [ev for ev, _ in cap.events] == ["engine_stats_env_clamped"]
+
+
+def test_the_clamped_interval_is_a_wait_this_platform_accepts():
+    """The end state, exercised rather than asserted about: the applied value must be a
+    timeout threading.Event can actually wait on."""
+    import threading
+
+    event = threading.Event()
+    threading.Timer(0.05, event.set).start()
+    # Raises OverflowError if the cap is ever raised past what time_t can hold.
+    assert event.wait(ls._MAX_ENV_SECONDS) is True

@@ -42,6 +42,9 @@ _SHUTDOWN_CANCEL_SECONDS = 5.0
 # A century, well clear of any real lease and far below the point where a
 # conversion to integer milliseconds overflows.
 _MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
+# The longest admission keep-alive cadence worth deriving a lease from. A day already
+# means the queue never reports, and tripling it stays far inside _MAX_ENV_SECONDS.
+_MAX_ADMISSION_INTERVAL_SECONDS = 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
 _LEASE_ERROR = "Generation stopped making progress"
@@ -339,11 +342,25 @@ def _minimum_lease_seconds() -> float:
     of those intervals therefore expires between markers however fast we poll, and reaps a
     healthy queued run.
     """
+    from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
     try:
         from core.inference.llama_admission import llama_admission_config_from_env
         interval = float(llama_admission_config_from_env().keepalive_interval_s)
     except Exception:
-        from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
+        interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
+    # That parser is not ours and only checks the value is positive, so `inf` reaches here
+    # intact and would make the applied lease infinite, which the sweeper cannot convert
+    # to milliseconds: every pass would raise and nothing would ever be reaped. An
+    # oversized finite cadence does the same thing more quietly, stretching the lease past
+    # any horizon. Neither is a cadence a keep-alive could actually hold, so both fall
+    # back to the shipped default rather than being honoured.
+    if not math.isfinite(interval) or interval > _MAX_ADMISSION_INTERVAL_SECONDS:
+        logger.warning(
+            "chat_generation_admission_cadence_ignored",
+            value = interval,
+            applied_s = DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S,
+            reason = "not a usable keep-alive cadence",
+        )
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
     return max(1.0, interval) * 3.0
 

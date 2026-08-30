@@ -181,6 +181,11 @@ class LlamaServerStatsLogger:
                 )
 
 
+# A year. Any poll interval or stall timeout beyond this already means "never", and
+# staying far below the platform time_t boundary keeps the wait itself legal.
+_MAX_ENV_SECONDS = 365.0 * 24.0 * 60.0 * 60.0
+
+
 def _env_float(name, default, logger):
     """Seconds from the environment, rejecting anything that would silently do nothing.
 
@@ -204,6 +209,21 @@ def _env_float(name, default, logger):
             reason = "not a finite number",
         )
         return default
+    if value > _MAX_ENV_SECONDS:
+        # threading.Event.wait() turns its timeout into an absolute deadline, and one far
+        # enough out raises "timestamp out of range for platform time_t" the moment the
+        # wait is actually entered. That kills the poll thread, taking the engine stats
+        # and the stall report with it, which is the opposite of what a long interval
+        # asks for. Measured on this platform: a century still waits, 1e10 seconds does
+        # not, so the cap sits well below the boundary rather than at it.
+        logger.warning(
+            "engine_stats_env_clamped",
+            variable = name,
+            value = raw,
+            applied_s = _MAX_ENV_SECONDS,
+            reason = "longer than a timed wait can represent",
+        )
+        return _MAX_ENV_SECONDS
     return value
 
 

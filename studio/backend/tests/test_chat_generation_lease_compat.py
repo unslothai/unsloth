@@ -832,3 +832,31 @@ def test_force_cancel_leaves_a_producer_that_already_finished_alone(clock):
 
     task = asyncio.run(_drive())
     assert not task.cancelled(), "a producer that unwound cleanly must not be cancelled"
+
+
+@pytest.mark.parametrize("raw", ["inf", "1e12", "1e308"])
+def test_an_unusable_admission_cadence_does_not_poison_the_lease(monkeypatch, raw):
+    """The admission parser is not ours and only checks the value is positive.
+
+    An infinite cadence made the applied lease infinite, and the sweeper cannot convert
+    that to milliseconds: every pass raised and nothing was ever reaped. An oversized
+    finite one stretched the lease past any horizon instead, which is quieter and just as
+    total.
+    """
+    from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
+
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", raw)
+    assert runs_mod._minimum_lease_seconds() == max(
+        1.0, float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
+    ) * 3.0
+    applied = runs_mod._applied_lease_timeout(1200.0)
+    # The conversion the sweep performs on every pass must survive it.
+    assert int(applied * 1000) == 1_200_000
+
+
+def test_a_reasonable_admission_cadence_still_raises_the_floor(monkeypatch):
+    """The sanitising must not flatten legitimate values: a slower keep-alive genuinely
+    does need a longer minimum lease, which is the whole point of the floor."""
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "20")
+    assert runs_mod._minimum_lease_seconds() == 60.0
+    assert runs_mod._applied_lease_timeout(5.0) == 60.0
