@@ -6190,10 +6190,16 @@ export function createOpenAIStreamAdapter(
               } catch (error) {
                 if (!(error instanceof ChatGenerationStalledError)) throw error;
                 // End the stream rather than rethrow, so everything replayed so far is
-                // kept and the Continue bar can resume it, exactly as the recovery
-                // follower settles a stalled run. The status checks below stay quiet
-                // because a stalled run is still non-terminal.
+                // kept, exactly as the recovery follower settles a stalled run. The
+                // status checks below stay quiet because a stalled run is still
+                // non-terminal.
                 generationStalled = true;
+                // Both halves are needed and they do different jobs. The marker stops
+                // the next reload attaching another follower; this is what makes the
+                // final yield carry `incomplete`, without which assistant-ui treats the
+                // partial reply as finished and offers no Continue until a reload
+                // rebuilds the reason from persisted metadata.
+                incompleteReason = "interrupted";
               }
               if (generationStatus === "failed") {
                 throw new ChatGenerationTerminalError(

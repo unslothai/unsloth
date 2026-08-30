@@ -564,6 +564,14 @@ test("the initial durable stream marks itself interrupted when it stalls", () =>
     persisted > custom && persisted < stream,
     "the stall marker must be persisted alongside generationSettled",
   );
+  // The marker alone only stops the next reload reviving the run. Without an incomplete
+  // reason the final yield writes `incomplete: undefined`, assistant-ui reads the partial
+  // reply as finished, and there is no Continue until a reload rebuilds the reason.
+  const reason = adapter.indexOf('incompleteReason = "interrupted";', caught);
+  assert.ok(
+    reason > caught && reason < adapter.indexOf("if (generationStatus ===", caught),
+    "a stalled initial stream must settle as interrupted, not as completed",
+  );
 });
 
 test("a completed run overrides the local interruption marker", () => {
