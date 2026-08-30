@@ -633,12 +633,13 @@ function DownloadedBadge() {
 }
 
 /** What each fit verdict marks and says. Tight spills past VRAM into system RAM; oom clears
- *  neither budget, so it pages further still. Orange over yellow: a step, not an error. */
+ *  neither budget, so it offloads further still. Both still run, so neither reads as an error:
+ *  orange over red, and yellow one step below it. */
 const VRAM_VERDICT = {
   exceeds: {
     label: "Does not fit",
     tone: "!text-orange-600 dark:!text-orange-300",
-    hint: "Model doesn't fit. Expect much slower inference.",
+    hint: "Model doesn't fit but can still work with offloading. Expect slower inference.",
   },
   tight: {
     label: "Tight fit",

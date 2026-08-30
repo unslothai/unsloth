@@ -124,9 +124,10 @@ test("each fit verdict is an info mark that explains itself", () => {
   // A pill shouted a three letter acronym; the mark says what it means on hover. Tight spills
   // past VRAM into system RAM, oom clears neither budget, so the two hints differ.
   assert.ok(PICKERS.includes("icon={InformationCircleIcon}"));
+  // Neither verdict blocks a load, so both hints say what to expect rather than refusing.
   assert.ok(
     PICKERS.includes(
-      "hint: \"Model doesn't fit. Expect much slower inference.\"",
+      "hint: \"Model doesn't fit but can still work with offloading. Expect slower inference.\"",
     ),
   );
   assert.ok(
