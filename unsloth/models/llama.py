@@ -3156,7 +3156,6 @@ class FastLlamaModel:
         # Idempotent, so anything the load already hooked is left alone.
         try:
             from unsloth.models.vision import _repair_tied_module_hooks
-
             _repaired = _repair_tied_module_hooks(model)
             if _repaired:
                 logger.info(
@@ -3165,8 +3164,7 @@ class FastLlamaModel:
                 )
         except Exception as _exc:
             logger.warning(
-                f"Unsloth: could not check the dispatch hooks "
-                f"({type(_exc).__name__}: {_exc})."
+                f"Unsloth: could not check the dispatch hooks " f"({type(_exc).__name__}: {_exc})."
             )
         return model, tokenizer
 

@@ -53,7 +53,11 @@ FAR = "meta"
 class _Model(torch.nn.Module):
     """A stand-in with the shape that matters: named submodules and a map."""
 
-    def __init__(self, device_map, hooked = ()):
+    def __init__(
+        self,
+        device_map,
+        hooked = (),
+    ):
         super().__init__()
         self.embed_tokens = torch.nn.Embedding(4, 2)
         self.lm_head = torch.nn.Linear(2, 4)
@@ -184,21 +188,22 @@ def test_the_repair_stands_aside_for_an_offloaded_embedding():
     src = inspect.getsource(vision._attach_bnb_multidevice_hooks)
     tree = ast.parse(src.lstrip())
     calls = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and getattr(node.func, "id", None) == "_repair_tied_module_hooks"
     ]
     assert calls, "the loader no longer repairs tied hooks at all"
 
     guarded = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.UnaryOp)
         and isinstance(node.test.op, ast.Not)
         and getattr(node.test.operand, "id", None) == "offload_embedding"
         and any(
-            isinstance(c, ast.Call)
-            and getattr(c.func, "id", None) == "_repair_tied_module_hooks"
+            isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_repair_tied_module_hooks"
             for c in ast.walk(node)
         )
     ]
