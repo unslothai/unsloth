@@ -2392,7 +2392,7 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}(?=\.gguf$|$)", re.IGNORECASE)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
 
 
 def _select_known_quant_match(text: str):

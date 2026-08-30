@@ -232,6 +232,15 @@ def test_split_gguf_shards_stay_grouped(tmp_path):
     assert [Path(row.path) for row in _custom_rows(root)] == [model]
 
 
+def test_pre_quant_split_markers_stay_grouped(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    _write_gguf(model / "model-00001-of-00002-Q4_K_M.gguf")
+    _write_gguf(model / "model-00002-of-00002-Q4_K_M.gguf")
+
+    assert [Path(row.path) for row in _custom_rows(root)] == [model]
+
+
 def test_minimax_h3_partitions_stay_grouped(tmp_path):
     root = tmp_path / "root"
     model = root / "minimax-h3"
@@ -303,19 +312,10 @@ def test_incomplete_direct_split_is_not_collapsed(tmp_path):
     assert {Path(row.path) for row in rows} == {first, third}
 
 
-@pytest.mark.parametrize(
-    "names",
-    [
-        (
-            "alpha-00001-of-00002-final-Q4_K_M.gguf",
-            "alpha-00002-of-00002-final-Q4_K_M.gguf",
-        ),
-        ("model-Q4_K_M-01-of-02.gguf", "model-Q4_K_M-02-of-02.gguf"),
-    ],
-)
-def test_noncanonical_split_like_names_stay_separate(tmp_path, names):
+def test_two_digit_split_like_names_stay_separate(tmp_path):
     root = tmp_path / "root"
     holder = root / "holder"
+    names = ("model-Q4_K_M-01-of-02.gguf", "model-Q4_K_M-02-of-02.gguf")
     expected = {_write_gguf(holder / name) for name in names}
 
     rows = _custom_rows(root)
