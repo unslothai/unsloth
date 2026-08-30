@@ -397,6 +397,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _resolve_hf_cache_dir,
         _is_hidden_model,
     )
+    from hub.utils.gguf import dedupe_custom_gguf_rows, suppress_grouped_gguf_file_rows
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
     from utils.hf_cache_settings import known_hf_hub_caches
     from core.inference.model_ids import public_model_id
@@ -455,14 +456,17 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
+
+        custom_found = []
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                found += (
+                custom_found += dedupe_custom_gguf_rows(
                     _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
+        found += suppress_grouped_gguf_file_rows(custom_found)
     except Exception as exc:
         logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
     for info in found:
