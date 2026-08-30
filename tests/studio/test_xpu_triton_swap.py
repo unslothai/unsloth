@@ -461,20 +461,45 @@ class TestADeadDriverIsNotAFlavourMismatch:
 
 
 class TestPlatformGuards:
-    @pytest.mark.parametrize("flag", ["NO_TORCH", "IS_MACOS", "IS_WINDOWS"])
+    @pytest.mark.parametrize("flag", ["NO_TORCH", "IS_MACOS"])
     def test_skipped_where_it_does_not_apply(self, monkeypatch, tmp_path, flag):
-        # Windows is setup.ps1's job; macOS has no XPU; --no-torch touches no wheels.
+        # macOS has no XPU; --no-torch touches no wheels.
+        monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising = False)
         mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__[flag] = True
         mod.__dict__["_ensure_xpu_triton"].__globals__[flag] = True
         mod.__dict__["_ensure_xpu_triton"]()
         assert log == []
 
+    def test_windows_defers_to_setup_ps1_when_setup_ps1_ran(self, monkeypatch, tmp_path):
+        # setup.ps1 performs the same swap after this file exits, and publishes the
+        # handover variable immediately before invoking it. Doing it here as well is
+        # wasted downloads on the path that carries the whole Windows install.
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "xpu")
+        mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = True
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert log == []
 
-def test_the_swap_is_wired_in_at_both_repair_points():
-    # The final repair pass would otherwise silently undo the first.
+    def test_a_direct_windows_run_does_the_swap_itself(self, monkeypatch, tmp_path):
+        # `python install_python_stack.py` on Windows, which the flavor invariant
+        # supports, has no setup.ps1 postlude: the core package install pulls
+        # triton-windows over torch's XPU triton and nothing puts it back, so
+        # torch.compile loads the CUDA-oriented library on an Intel GPU. The absent
+        # handover variable is the signal that nobody else will fix it.
+        monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising = False)
+        mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = True
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert "INSTALL" in log
+
+
+def test_the_swap_is_wired_in_at_every_repair_point():
+    # The final repair pass would otherwise silently undo the first. The third point is
+    # the Windows flavor invariant (step 13w), which migrates torch on that platform for
+    # the same reason the two Linux passes do.
     src = STACK.read_text(encoding = "utf-8")
-    assert src.count("        _ensure_xpu_triton()") == 2
+    assert src.count("        _ensure_xpu_triton()") == 3
 
 
 def test_the_swap_runs_after_every_torch_migration():
@@ -502,9 +527,16 @@ def test_the_swap_runs_after_every_torch_migration():
         ]
         if "_ensure_xpu_triton" in calls:
             blocks.append(calls)
-    assert len(blocks) == 2, f"expected 2 repair blocks, found {len(blocks)}: {blocks}"
+    assert len(blocks) == 3, f"expected 3 repair blocks, found {len(blocks)}: {blocks}"
     for calls in blocks:
         assert calls[-1] == "_ensure_xpu_triton", calls
+    # Two of them are the Linux repair passes, which run all four migrations first. The
+    # third is step 13w, whose migration is _ensure_expected_torch_flavor -- a call the
+    # walk above does not collect, because its result is branched on rather than
+    # discarded, so it is asserted on the source instead.
+    migrating = [c for c in blocks if "_ensure_cuda_torch" in c]
+    assert len(migrating) == 2, blocks
+    for calls in migrating:
         for migration in (
             "_ensure_cuda_torch",
             "_ensure_rocm_torch",
@@ -512,6 +544,11 @@ def test_the_swap_runs_after_every_torch_migration():
             "_ensure_cpu_torch",
         ):
             assert calls.index(migration) < calls.index("_ensure_xpu_triton"), (migration, calls)
+    src = STACK.read_text(encoding = "utf-8")
+    windows = src[src.index("# 13w."): src.index("# 14.")]
+    assert windows.index("_ensure_expected_torch_flavor") < windows.index(
+        "_ensure_xpu_triton"
+    ), "the Windows swap must follow that platform's torch migration too"
 
 
 def test_install_sh_does_not_carry_a_second_copy():
