@@ -80,10 +80,11 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names = _igpu_flags_and_names(base, lib, 1)
+    flags, names, type_known = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
+    assert type_known == [True]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:
@@ -122,9 +123,12 @@ def _row(
     is_igpu: int,
     total_bytes: int = 0,
     name: str | None = None,
+    type_known: int | None = 1,
 ) -> str:
     row = f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
-    return f"{row}\t{name}" if name is not None else row
+    if type_known is None:
+        return f"{row}\t{name}" if name is not None else row
+    return f"{row}\t{name or ''}\t{type_known}"
 
 
 def _host_memory(monkeypatch, *, available_mib, total_mib):
@@ -216,6 +220,17 @@ def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 6 * 1024, 24 * 1024)], gpus
+
+
+def test_failed_device_type_lookup_keeps_the_snapshot_unknown(tmp_path):
+    binary = _make_vulkan_install(tmp_path)
+    rows = [
+        _row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB, type_known = 0)
+    ]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 6 * 1024, 24 * 1024)]
+    assert gpus.known_vulkan_igpus is None
 
 
 def test_large_discrete_gpu_is_untouched(tmp_path):

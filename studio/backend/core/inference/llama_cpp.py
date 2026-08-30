@@ -5273,6 +5273,14 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     return max(0, free_mib - _IGPU_HOST_RESERVE_MIB)
 
 
+class _VulkanGpuMemoryRows(list):
+    """List-compatible Vulkan memory rows carrying a device-type snapshot."""
+
+    def __init__(self, rows, known_vulkan_igpus: Optional[set[int]]):
+        super().__init__(rows)
+        self.known_vulkan_igpus = known_vulkan_igpus
+
+
 def _resolve_llama_binary(binary: str, *, template_only: bool = False) -> Path:
     """Resolve a managed symlink or shell entrypoint to the real server.
 
@@ -7742,18 +7750,20 @@ class LlamaCppBackend:
         ``_apply_igpu_host_reserve_mib``), so a model "fully offloaded" onto one
         is still backed by pageable host memory and is worth page-locking. Any,
         not every: a mixed selection splits weights onto the iGPU too, and those
-        pages are as evictable as if it were the only device. An unreadable probe
-        answers False.
+        pages are as evictable as if it were the only device. An unreadable or
+        unclassified target answers True so an unknown never suppresses a lock.
         """
         try:
             rows = LlamaCppBackend._run_vulkan_probe(binary)
         except Exception:
-            return False
+            return True
         if not rows:
-            return False
-        wanted = set(gpu_indices) if gpu_indices else None
+            return True
+        wanted = set(gpu_indices) if gpu_indices is not None else None
         selected = [r for r in rows if wanted is None or r["index"] in wanted]
-        return any(r["is_igpu"] for r in selected)
+        return not selected or any(
+            not r.get("type_known", True) or r["is_igpu"] for r in selected
+        )
 
     def _weights_in_host_memory(
         self,
@@ -9183,8 +9193,8 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe (no name); 5 with the name column.
-            if len(parts) not in (4, 5):
+            # 4 columns from an older probe, 5 with a name, 6 with type status.
+            if len(parts) not in (4, 5, 6):
                 continue
             try:
                 rows.append(
@@ -9193,7 +9203,8 @@ class LlamaCppBackend:
                         "free_mib": int(parts[1]) // (1024 * 1024),
                         "is_igpu": parts[2] == "1",
                         "total_mib": int(parts[3]) // (1024 * 1024),
-                        "name": parts[4].strip() if len(parts) == 5 else "",
+                        "name": parts[4].strip() if len(parts) >= 5 else "",
+                        "type_known": len(parts) == 6 and parts[5] == "1",
                     }
                 )
             except ValueError:
@@ -9223,8 +9234,9 @@ class LlamaCppBackend:
         ``_apply_igpu_host_reserve_mib``) and report total 0; discrete cards pass
         their real total through. [] when no Vulkan build or device is reachable.
         """
+        rows = LlamaCppBackend._run_vulkan_probe(binary)
         gpus: list[tuple[int, int, int]] = []
-        for row in LlamaCppBackend._run_vulkan_probe(binary):
+        for row in rows:
             idx, free_mib, is_igpu = row["index"], row["free_mib"], row["is_igpu"]
             # iGPU "total" is shared RAM, not a VRAM budget -> keep 0 so the
             # fit stays on free*frac (the host reserve below is its
@@ -9243,7 +9255,12 @@ class LlamaCppBackend:
                 "Vulkan GPU memory detected: "
                 + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
-        return gpus
+        known_vulkan_igpus = (
+            {row["index"] for row in rows if row["is_igpu"]}
+            if rows and all(row.get("type_known", False) for row in rows)
+            else None
+        )
+        return _VulkanGpuMemoryRows(gpus, known_vulkan_igpus)
 
     @staticmethod
     def _igpu_backed_free_mib(free_mib: int, headroom_mib: int = 0) -> int:
@@ -18017,6 +18034,7 @@ class LlamaCppBackend:
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
                 _shared_gpu_ids: Optional[set[int]] = None
+                _known_vulkan_igpus: Optional[set[int]] = None
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls
@@ -18116,6 +18134,14 @@ class LlamaCppBackend:
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
+                    if is_vulkan_backend:
+                        if hasattr(_gpu_mem, "known_vulkan_igpus"):
+                            _known_vulkan_igpus = _gpu_mem.known_vulkan_igpus
+                        elif _gpu_mem:
+                            # test and custom probes using the legacy list contract
+                            _known_vulkan_igpus = {
+                                idx for idx, _free, total in _gpu_mem if total <= 0
+                            }
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -18197,12 +18223,14 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
-                    # vulkan reports total 0 only for integrated GPUs. no rows means
-                    # the probe failed, so keep the snapshot unknown and re-probe later.
+                    # keep only classified iGPUs this launch can still target; a
+                    # failed inventory or type lookup stays unknown for the later probe.
                     if is_vulkan_backend:
                         _shared_gpu_ids = (
-                            {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
-                            if _gpu_mem
+                            _known_vulkan_igpus.intersection(
+                                idx for idx, _free in _detected_gpus
+                            )
+                            if _known_vulkan_igpus is not None
                             else None
                         )
                     else:

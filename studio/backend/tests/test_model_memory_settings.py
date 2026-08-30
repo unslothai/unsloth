@@ -1239,8 +1239,12 @@ class TestVulkanIgpuDetection:
         rows = [{"index": 0, "is_igpu": False}, {"index": 1, "is_igpu": False}]
         assert self._probe(monkeypatch, rows)("bin", None) is False
 
-    def test_an_unreadable_probe_answers_no(self, monkeypatch):
-        assert self._probe(monkeypatch, [])("bin", None) is False
+    def test_an_unreadable_probe_answers_conservatively(self, monkeypatch):
+        assert self._probe(monkeypatch, [])("bin", None) is True
+
+    def test_an_unknown_device_type_answers_conservatively(self, monkeypatch):
+        rows = [{"index": 0, "is_igpu": False, "type_known": False}]
+        assert self._probe(monkeypatch, rows)("bin", None) is True
 
     def test_a_raising_probe_never_fails_the_load(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1249,7 +1253,7 @@ class TestVulkanIgpuDetection:
             raise OSError("no vulkan loader")
 
         monkeypatch.setattr(LlamaCppBackend, "_run_vulkan_probe", staticmethod(boom))
-        assert LlamaCppBackend._vulkan_targets_are_igpus("bin", None) is False
+        assert LlamaCppBackend._vulkan_targets_are_igpus("bin", None) is True
 
 
 class TestLegacyNegativeEnvAliases:
