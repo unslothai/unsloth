@@ -377,6 +377,50 @@ test("partial saves are serialized before a waiting read", async () => {
   }
 });
 
+test("a committed save publishes when its queued successor fails", async () => {
+  const original = globalThis.fetch;
+  let finishFirst: () => void = () => {
+    assert.fail("the first save did not start");
+  };
+  let puts = 0;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") !== "PUT") {
+      assert.fail("this test only expects saves");
+    }
+    puts += 1;
+    if (puts === 1) {
+      return new Promise<Response>((resolve) => {
+        finishFirst = () =>
+          resolve(
+            new Response(JSON.stringify({ ...API, keep_resident: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+      });
+    }
+    return new Response("failed successor", { status: 503 });
+  }) as typeof fetch;
+
+  const published: boolean[] = [];
+  const stop = subscribeModelMemorySettings((settings) => {
+    published.push(settings.keepResident);
+  });
+  try {
+    const first = updateModelMemorySettings({ keepResident: true });
+    const second = updateModelMemorySettings({ noRamReserve: true });
+    const secondFailure = assert.rejects(second);
+    await Promise.resolve();
+    finishFirst();
+    assert.equal((await first).keepResident, true);
+    await secondFailure;
+    assert.deepEqual(published, [true]);
+  } finally {
+    stop();
+    globalThis.fetch = original;
+  }
+});
+
 test("a later read is NOT served from a cache", async () => {
   calls = [];
   await loadModelMemorySettings();
