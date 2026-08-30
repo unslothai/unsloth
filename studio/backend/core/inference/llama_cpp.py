@@ -22569,6 +22569,9 @@ class LlamaCppBackend:
                     if _cpu_pageable_note:
                         _replay_pageable_override = _cpu_pageable_note
                     _cpu_pageable_note = _cpu_pageable_note or _replay_pageable_override
+                    _fallback_requested_load_mode = (
+                        None if _cpu_pageable_note else load_mode
+                    )
 
                     fallback_managed, fallback_args = apply_model_memory_policy(
                         replay[1:],
@@ -22580,13 +22583,13 @@ class LlamaCppBackend:
                         fallback_args,
                         supports_load_mode = bool(server_caps.get("supports_load_mode")),
                         weights_in_host_memory = True,
-                        requested_load_mode = load_mode,
+                        requested_load_mode = _fallback_requested_load_mode,
                         model_memory_settings = _model_memory_settings,
                     )
                     fallback_policy_active = bool(
                         fallback_managed
                         or model_memory_suppresses_load_mode(
-                            load_mode,
+                            _fallback_requested_load_mode,
                             supports_load_mode = bool(server_caps.get("supports_load_mode")),
                             weights_in_host_memory = True,
                             model_memory_settings = _model_memory_settings,
