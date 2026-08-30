@@ -1355,9 +1355,9 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     # structlog renders to stdout here, so read that rather than the stdlib records.
     monkeypatch.setattr(nvidia.subprocess, "run", _missing)
     capsys.readouterr()
-    assert nvidia._query_gpu_inventory("test") is nvidia.NVIDIA_SMI_ABSENT, (
-        "an absent CLI is its own answer, not the None that means a probe failed"
-    )
+    assert (
+        nvidia._query_gpu_inventory("test") is nvidia.NVIDIA_SMI_ABSENT
+    ), "an absent CLI is its own answer, not the None that means a probe failed"
     assert '"level": "warning"' not in capsys.readouterr().out
 
     # A driver that IS installed and then hangs is still worth saying loudly.
@@ -1905,9 +1905,9 @@ def test_a_cold_start_measures_the_inventory_before_honouring_a_mask(monkeypatch
     snapshot = hw.torch_build_snapshot()
 
     assert probes["n"] >= 1, "the cached pass must measure rather than read a cold cache"
-    assert snapshot["reason"] == "torch_cpu_build", (
-        "a HIP mask says nothing about an NVIDIA card and must not suppress the repair"
-    )
+    assert (
+        snapshot["reason"] == "torch_cpu_build"
+    ), "a HIP mask says nothing about an NVIDIA card and must not suppress the repair"
 
 
 def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
