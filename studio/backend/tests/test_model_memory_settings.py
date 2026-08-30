@@ -1129,9 +1129,10 @@ class TestHostMemoryGate:
             requested_load_mode = "none",
             model_memory_settings = settings,
         )
-        assert resolve_effective_memory_state(
-            [*managed, *preview_mode, *preview_extras], {}
-        ) == (False, True)
+        assert resolve_effective_memory_state([*managed, *preview_mode, *preview_extras], {}) == (
+            False,
+            True,
+        )
 
         managed, extras = apply_model_memory_policy(
             [],
@@ -1146,10 +1147,7 @@ class TestHostMemoryGate:
             requested_load_mode = "none",
             model_memory_settings = settings,
         )
-        assert [*managed, *final_mode, *final_extras] == [
-            "--load-mode",
-            "mmap+mlock",
-        ]
+        assert [*managed, *final_mode, *final_extras] == ["--load-mode", "mmap+mlock"]
 
         import inspect
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1702,7 +1700,9 @@ class TestMlockApplicable:
         monkeypatch.setattr(
             orchestrator,
             "peek_inference_backend",
-            lambda: type("_Orchestrator", (), {"active_model_name": "model", "loading_models": []})(),
+            lambda: type(
+                "_Orchestrator", (), {"active_model_name": "model", "loading_models": []}
+            )(),
         )
         body = rs._model_memory_response()
         assert body.mlock_applicable is False

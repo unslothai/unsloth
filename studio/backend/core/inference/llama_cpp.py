@@ -21515,9 +21515,7 @@ class LlamaCppBackend:
                         _mem_host_resident = True
                         _mem_managed, _mem_extras = apply_model_memory_policy(
                             extra_args,
-                            supports_load_mode = bool(
-                                server_caps.get("supports_load_mode")
-                            ),
+                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
                             weights_in_host_memory = True,
                             model_memory_settings = _model_memory_settings,
                         )
@@ -22509,9 +22507,7 @@ class LlamaCppBackend:
                                         model_memory_settings = _model_memory_settings,
                                     )
                                     if gpu_ids is not None:
-                                        _retry_extras = self._strip_device_extra_args(
-                                            _retry_extras
-                                        )
+                                        _retry_extras = self._strip_device_extra_args(_retry_extras)
                                     _retry_policy_argv = [
                                         *_retry_managed,
                                         *_retry_load_mode,

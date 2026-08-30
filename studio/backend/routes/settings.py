@@ -945,9 +945,7 @@ def _active_launch_placement():
                 return None, False, False
             return _NO_LAUNCH, False, True
         state = getattr(backend, "_memory_state", None)
-        reserves_ram = bool(
-            isinstance(state, (tuple, list)) and len(state) >= 2 and state[1]
-        )
+        reserves_ram = bool(isinstance(state, (tuple, list)) and len(state) >= 2 and state[1])
         return (
             state,
             bool(getattr(backend, "_memory_policy_active", False)),
