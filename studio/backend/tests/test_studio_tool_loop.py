@@ -1613,6 +1613,81 @@ def test_a_growing_name_after_early_arguments_still_names_one_call(executed):
     ]
 
 
+def test_a_split_document_that_never_parses_is_not_run(executed):
+    """A boundary opens before its document parses, so the split can be wrong."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"name": "web_search", "arguments": '{"q":"ok"}{bad'},
+                            }
+                        ]
+                    }
+                ),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": "}"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"q": "ok"}]
+    assert any(loop_mod._TOOL_UNFINISHED in line for line in lines)
+
+
+def test_a_split_call_that_never_gets_a_name_closes_its_card(executed):
+    """Fewer names than documents leaves a card nothing else would close."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}{"b":2}'}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"a": 1}]
+    assert _event_ids(lines, "tool_start") == ["tool_call_1", "tool_call_0"]
+    assert _event_ids(lines, "tool_end") == ["tool_call_1", "tool_call_0"]
+
+
+def test_a_late_id_claims_the_call_a_split_left_waiting(executed):
+    """Documents ahead of both names and ids, then the ids arrive."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}{"b":2}'}}]}),
+                _sse(
+                    {"tool_calls": [{"index": 0, "id": "A", "function": {"name": "web_search"}}]}
+                ),
+                _sse({"tool_calls": [{"index": 0, "id": "B", "function": {"name": "web_fetch"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [WEB, FETCH])
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"a": 1}),
+        ("web_fetch", {"b": 2}),
+    ]
+
+
 def test_late_names_fill_the_calls_a_split_left_waiting(executed):
     """Both documents arrive before either name, so both calls wait for one."""
     transport = FakeTransport(

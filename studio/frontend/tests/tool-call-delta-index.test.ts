@@ -10,6 +10,7 @@ import {
   ToolCallArgumentBoundaries,
   bindStreamedToolCallBackendId,
   findStreamedToolCallPartIndex,
+  findUnclaimedToolCallPartIndex,
   findUnnamedToolCallPartIndex,
   mintStreamedToolCallId,
   resolveToolCallPartId,
@@ -65,7 +66,7 @@ function accumulate(
   const withheld = (part: AccumulatedPart) =>
     splitTails.has(part.toolCallId) &&
     part.result === undefined &&
-    scans.get(part.toolCallId)?.isOpen() === true;
+    scans.get(part.toolCallId)?.isUnfinished() === true;
   for (const event of fragments) {
     if ("toolStart" in event) {
       const at = parts.findIndex((part) => part.toolCallId === event.toolStart);
@@ -86,11 +87,19 @@ function accumulate(
     }
     const fragment = event;
     if (fragment.id) providerIds.add(fragment.id);
-    const target = findStreamedToolCallPartIndex(
+    let target = findStreamedToolCallPartIndex(
       parts,
       fragment.id,
       fragment.index,
     );
+    if (
+      fragment.id &&
+      target !== -1 &&
+      parts[target].toolCallId !== fragment.id
+    ) {
+      const unclaimed = findUnclaimedToolCallPartIndex(parts, fragment.index);
+      if (unclaimed !== -1) target = unclaimed;
+    }
     const slotPart = target === -1 ? undefined : parts[target];
     const matched = slotPart?.result === undefined ? slotPart : undefined;
     const name = fragment.name ?? "";
@@ -747,6 +756,37 @@ test("late names fill the calls a split left waiting, in order", () => {
     [
       ["web_search", '{"a":1}'],
       ["web_fetch", '{"b":2}'],
+    ],
+  );
+});
+
+// The boundary is recorded when the next `{` arrives, before that document has
+// parsed, so a split is already permanent when a later fragment closes it into
+// something malformed. The tail must not then look finished.
+test("a split whose document never parses counts as unfinished", () => {
+  const scan = new ToolCallArgumentBoundaries();
+  assert.deepEqual(scan.feed('{"q":"ok"}{bad'), [10]);
+  scan.feed("}");
+
+  assert.equal(scan.isOpen(), false);
+  assert.equal(scan.isUnfinished(), true);
+});
+
+// Two documents arrive before any identity, then late ids name them. Targeting
+// the open slot bound the first id to the second document, left the first
+// unnamed for the backend to drop, and opened an empty third call.
+test("a late id claims the first call a split left waiting", () => {
+  const parts = accumulate([
+    { index: 0, arguments: '{"a":1}{"b":2}' },
+    { id: "A", index: 0, name: "web_search", arguments: "" },
+    { id: "B", index: 0, name: "web_fetch", arguments: "" },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolCallId, part.toolName, part.argsText]),
+    [
+      ["A", "web_search", '{"a":1}'],
+      ["B", "web_fetch", '{"b":2}'],
     ],
   );
 });

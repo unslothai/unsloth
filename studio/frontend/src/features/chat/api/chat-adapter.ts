@@ -111,6 +111,7 @@ import {
   ToolCallArgumentBoundaries,
   bindStreamedToolCallBackendId,
   findStreamedToolCallPartIndex,
+  findUnclaimedToolCallPartIndex,
   findUnnamedToolCallPartIndex,
   mintStreamedToolCallId,
   resolveToolCallPartId,
@@ -6958,11 +6959,23 @@ export function createOpenAIStreamAdapter(
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
-                  const existingIndex = findStreamedToolCallPartIndex(
+                  let existingIndex = findStreamedToolCallPartIndex(
                     toolCallParts,
                     stablePartId,
                     idx,
                   );
+                  if (
+                    stablePartId &&
+                    existingIndex !== -1 &&
+                    toolCallParts[existingIndex].toolCallId !== stablePartId
+                  ) {
+                    // A late id claims the first call a split left waiting.
+                    const unclaimed = findUnclaimedToolCallPartIndex(
+                      toolCallParts,
+                      idx,
+                    );
+                    if (unclaimed !== -1) existingIndex = unclaimed;
+                  }
                   const slotPart =
                     existingIndex === -1
                       ? undefined
@@ -7414,7 +7427,7 @@ export function createOpenAIStreamAdapter(
           if (
             splitTailPartIds.has(part.toolCallId) &&
             part.result === undefined &&
-            toolArgumentBoundaries.get(part.toolCallId)?.isOpen()
+            toolArgumentBoundaries.get(part.toolCallId)?.isUnfinished()
           ) {
             toolCallParts.splice(i, 1);
           }

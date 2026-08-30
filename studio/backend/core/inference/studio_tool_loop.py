@@ -106,8 +106,7 @@ _TOOL_TRUNCATED = (
 )
 
 _TOOL_UNFINISHED = (
-    "Unsloth did not execute this tool call because the provider never finished writing its "
-    "arguments."
+    "Unsloth did not execute this tool call because the provider never finished writing it."
 )
 
 # Card text for a call the controller skipped. The client already painted a card
@@ -340,6 +339,15 @@ class _ArgumentBoundaries:
     def is_open(self) -> bool:
         """Whether a document has begun here and has not finished."""
         return self.depth > 0
+
+    def unfinished(self) -> bool:
+        """Whether this scan never turned into a valid document.
+
+        The boundary is recorded when the next ``{`` arrives, before that
+        document has parsed, so a split can already be permanent by the time a
+        later fragment closes it into something that does not parse.
+        """
+        return self.depth > 0 or self.invalid
 
     def rebase(self) -> None:
         """Reset offsets after moving the scan to a split call."""
@@ -584,7 +592,17 @@ class _Turn:
                     # back to it: an id beats the latest-index mapping, which only
                     # exists to place the fragments that carry no id.
                     first_id = self.by_index.get(index, {}).get("id")
-                    key = index if first_id == call_id else (index, call_id)
+                    if first_id == call_id:
+                        key = index
+                    else:
+                        # A split can leave calls waiting for an identity; the id
+                        # claims the first of those before opening a new call.
+                        waiting = self._unclaimed_key(index)
+                        key = waiting if waiting is not None else (index, call_id)
+                elif not open_id:
+                    waiting = self._unclaimed_key(index)
+                    if waiting is not None:
+                        key = waiting
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
@@ -712,6 +730,16 @@ class _Turn:
             call["card_id"] = _mint_streamed_tool_call_id(streamed, index)
             streamed.add(call["card_id"])
 
+    def _unclaimed_key(self, index: int) -> Any:
+        """First call at ``index`` that no id and no name has claimed yet."""
+        for key in self.order:
+            if (key[0] if isinstance(key, tuple) else key) != index:
+                continue
+            call = self.by_index[key]
+            if not call.get("id") and not call["function"]["name"]:
+                return key
+        return None
+
     def _unnamed_key(self, index: int) -> Any:
         """First call at ``index`` still waiting for a name, or None."""
         for key in self.order:
@@ -721,13 +749,19 @@ class _Turn:
                 return key
         return None
 
+    def _withheld_split(self, key: Any) -> bool:
+        """A split call this turn will not run: never finished, or never named."""
+        if key not in self.split_keys:
+            return False
+        if self.boundaries.get(key, _EMPTY_BOUNDARIES).unfinished():
+            return True
+        # A provider can send fewer names than documents, and _normalized_call
+        # drops a nameless call, so its card would never be closed either.
+        return not self.by_index[key]["function"]["name"]
+
     def withheld(self) -> list[dict[str, Any]]:
-        """Split calls whose own document never closed, so ``calls`` drops them."""
-        return [
-            self.by_index[key]
-            for key in self.order
-            if key in self.split_keys and self.boundaries.get(key, _EMPTY_BOUNDARIES).is_open()
-        ]
+        """Split calls ``calls`` drops, so the loop can close the cards for them."""
+        return [self.by_index[key] for key in self.order if self._withheld_split(key)]
 
     def calls(
         self,
@@ -750,7 +784,7 @@ class _Turn:
             (key, self.by_index[key]) for key in self.order
         ] + [(None, call) for call in self.healed]
         for position, (key, call) in enumerate(ordered):
-            if key in self.split_keys and self.boundaries.get(key, _EMPTY_BOUNDARIES).is_open():
+            if self._withheld_split(key):
                 # Provider-opened malformed calls retain the existing coercion path.
                 continue
             normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")

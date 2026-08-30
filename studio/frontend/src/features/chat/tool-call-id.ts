@@ -120,6 +120,12 @@ export class ToolCallArgumentBoundaries {
     return this.depth > 0;
   }
 
+  /** Whether this scan never turned into a valid document. A boundary is
+   * recorded when the next `{` arrives, before that document has parsed. */
+  isUnfinished(): boolean {
+    return this.depth > 0 || this.invalid;
+  }
+
   /** Reset offsets after moving the scan to a split call. */
   rebase(text: string): void {
     this.raw = text;
@@ -148,6 +154,26 @@ export function mintStreamedToolCallId(
   let next = 0;
   while (taken.has(`tool_call_${next}`)) next += 1;
   return `tool_call_${next}`;
+}
+
+/** Return the first part in `deltaIndex`'s slot that no id and no name has
+ * claimed, or -1. A late id claims one of these before opening a new call. */
+export function findUnclaimedToolCallPartIndex(
+  parts: readonly StreamedToolCallPart[],
+  deltaIndex: number | undefined,
+): number {
+  if (deltaIndex === undefined) return -1;
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (
+      part._delta_index === deltaIndex &&
+      !part._has_stable_id &&
+      !part.toolName
+    ) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 /** Return the first unnamed part in `deltaIndex`'s slot, or -1. */
