@@ -1869,7 +1869,9 @@ def test_inherited_linux_arm_cpu_affinity_declines_spill_pricing(monkeypatch):
         lambda: SimpleNamespace(machine = "aarch64"),
         raising = False,
     )
-    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(4)), raising = False)
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(4)), raising = False
+    )
     monkeypatch.setitem(sys.modules, "psutil", _ArmHost)
     assert llama_mod._spilled_decode_threads() is None
 
