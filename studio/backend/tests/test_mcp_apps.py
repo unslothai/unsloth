@@ -119,9 +119,7 @@ def test_an_embedded_resource_image_is_seeded_in_the_shape_the_frontend_fills():
     and a later block is handed someone else's image."""
     embedded = SimpleNamespace(
         type = "resource",
-        resource = SimpleNamespace(
-            uri = "file:///chart.png", blob = "B" * 5000, mimeType = "image/png"
-        ),
+        resource = SimpleNamespace(uri = "file:///chart.png", blob = "B" * 5000, mimeType = "image/png"),
     )
     flat = _flatten_result(_result(_text("chart"), embedded, _image(data = "C" * 10)), UI)
     blocks = _envelope(flat)["content"]
