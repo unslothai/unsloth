@@ -1138,8 +1138,11 @@ export class ChatMessageProtectedError extends Error {
   readonly messageId: string;
   readonly threadId: string;
 
-  constructor(threadId: string, messageId: string) {
-    super(`Message ${messageId} is server-managed and cannot be edited`);
+  constructor(threadId: string, messageId: string, detail?: string) {
+    // Keep the server's own wording when it sent one. A manual edit surfaces this text
+    // to the user, and replacing a specific explanation with a generic one would be a
+    // regression for the caller that is not the autosave.
+    super(detail || `Message ${messageId} is server-managed and cannot be edited`);
     this.name = "ChatMessageProtectedError";
     this.threadId = threadId;
     this.messageId = messageId;
@@ -1162,7 +1165,14 @@ export async function saveChatMessage(
     },
   );
   if (response.status === 409) {
-    throw new ChatMessageProtectedError(message.threadId, message.id);
+    // Read the body here rather than letting parseJsonOrThrow do it: a Response body can
+    // only be consumed once, and this needs the server's detail to carry into the error.
+    const body = await response.json().catch(() => null);
+    throw new ChatMessageProtectedError(
+      message.threadId,
+      message.id,
+      formatApiErrorBody(body) ?? undefined,
+    );
   }
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
   // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual

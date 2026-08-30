@@ -1165,12 +1165,49 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
+def is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
+    """Is this the writer lock being held elsewhere, rather than a real fault?
+
+    sqlite reports it as plain OperationalError, so the message is the only signal.
+    Lives here because studio.db is the contended file and several modules need the
+    same answer; storage.api_usage_db delegates to it.
+    """
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
 # sqlite's own default, kept for every caller that may run on the event loop
 _BUSY_TIMEOUT_SECONDS = 5.0
 
 # only for the chat history transactions that run in Starlette's threadpool, where a large clear
 # can hold the writer lock past the default and the failure escapes as an unmapped 500
 _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
+
+
+def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
+    """Drop to synchronous=NORMAL, but only while the file is really in WAL mode.
+
+    Under WAL, sqlite still defaults to synchronous=FULL, which fsyncs on every commit
+    while holding the writer lock. On a machine whose disk is busy -- a Colab session
+    pulling a multi-GB GGUF, say -- one commit blocked for 37s, and every other writer
+    (notably the research supervisor's claim_next) spent that whole window timing out
+    with "database is locked". NORMAL is sqlite's own recommended pairing for WAL: it
+    can lose the last transactions to a host power loss, but the database is never
+    corrupted, and commits stay durable across an application crash either way.
+
+    The WAL check is not decoration. `PRAGMA journal_mode=WAL` silently declines on
+    filesystems without proper shared-memory support (network shares, some FUSE and
+    container-mounted paths, which Windows users hit most often), leaving the file on a
+    rollback journal where NORMAL drops the very fsync that keeps it consistent. Those
+    installs keep FULL and simply do not get the speedup. journal_mode is persistent in
+    the file, so this reads what is actually in force rather than what was requested.
+    """
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    except (sqlite3.Error, TypeError, IndexError):
+        return
+    if isinstance(mode, str) and mode.lower() == "wal":
+        conn.execute("PRAGMA synchronous=NORMAL")
 
 
 def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlite3.Connection:
@@ -1182,14 +1219,6 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
-    # Under WAL, sqlite still defaults to synchronous=FULL, which fsyncs on every commit
-    # while holding the writer lock. On a machine whose disk is busy -- a Colab session
-    # pulling a multi-GB GGUF, say -- one commit blocked for 37s, and every other writer
-    # (notably the research supervisor's claim_next) spent that whole window timing out
-    # with "database is locked". NORMAL is the documented safe pairing for WAL: it can
-    # lose the last transactions on a host power loss, but never corrupts the database,
-    # which is the right trade for a local UI's settings and chat history.
-    conn.execute("PRAGMA synchronous=NORMAL")
     if not _schema_ready:
         with _schema_lock:
             if not _schema_ready:
@@ -1200,6 +1229,7 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
                 except Exception:
                     conn.close()
                     raise
+    _apply_wal_synchronous(conn)
     return conn
 
 

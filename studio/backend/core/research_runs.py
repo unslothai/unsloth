@@ -56,7 +56,12 @@ from core.research.prompts import (
 )
 from loggers import get_logger
 from storage import research_runs_db as db
-from storage.studio_db import get_chat_message, list_chat_messages, upsert_chat_message
+from storage.studio_db import (
+    get_chat_message,
+    is_sqlite_busy_error,
+    list_chat_messages,
+    upsert_chat_message,
+)
 
 logger = get_logger(__name__)
 _URL_BLOCK = re.compile(
@@ -1119,12 +1124,15 @@ class ResearchSupervisor:
             except sqlite3.OperationalError as exc:
                 # Losing a race for the writer lock is a normal outcome of polling a
                 # shared database, not a fault: one slow writer elsewhere produced six
-                # identical multi-line tracebacks in a single session. Retry quietly and
-                # let a genuine, non-transient sqlite failure fall through to the
-                # traceback below.
-                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
-                    raise
-                logger.warning("research.supervisor_db_busy: %s", exc)
+                # identical multi-line tracebacks in a single session. Only the busy case
+                # is quietened; anything else keeps the traceback it had before. Both
+                # still sleep and continue, because re-raising here would escape the
+                # while loop and stop the supervisor for the life of the process --
+                # the sibling `except Exception` below cannot catch a raise from here.
+                if is_sqlite_busy_error(exc):
+                    logger.warning("research.supervisor_db_busy: %s", exc)
+                else:
+                    logger.exception("research.supervisor_iteration_failed")
                 await asyncio.sleep(1)
             except Exception:
                 logger.exception("research.supervisor_iteration_failed")

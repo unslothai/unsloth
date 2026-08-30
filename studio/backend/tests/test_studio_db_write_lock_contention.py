@@ -15,16 +15,27 @@
 """studio.db must not turn one slow writer into a stream of "database is locked".
 
 A live Colab session logged six `research.supervisor_iteration_failed` tracebacks in 37
-seconds while a settings write and a multi-GB model download shared the disk. Each guards a
-distinct link in that chain.
+seconds while a settings write and a multi-GB model download shared the disk. Each test
+here guards a distinct link in that chain, plus the upgrade and downgrade paths, since
+every existing install already carries the old schema.
+
+Nothing here needs a GPU or a network: the behaviour under test is SQLite pragmas, one
+poll query, and log levels.
 """
 
+import asyncio
+import logging
 import sqlite3
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
 import storage.research_runs_db as research_runs_db
 import storage.studio_db as studio_db
+
+FULL, NORMAL = 2, 1
 
 
 @pytest.fixture
@@ -37,84 +48,515 @@ def db(tmp_path, monkeypatch):
     return tmp_path / "studio.db"
 
 
-def test_connections_use_wal_with_normal_sync(db):
-    """synchronous=FULL fsyncs under the writer lock; NORMAL is the WAL-safe pairing."""
-    conn = studio_db.get_connection()
+def _journal_mode(path: Path) -> str:
+    conn = sqlite3.connect(str(path))
     try:
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        # 1 == NORMAL. FULL (2) is what made a single commit block for 37s on a busy disk.
-        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+        return str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
     finally:
         conn.close()
 
 
-def test_claim_next_takes_no_write_lock_when_idle(db):
-    """The supervisor polls twice a second forever; an empty poll must stay a read.
+def _synchronous(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA synchronous").fetchone()[0])
 
-    Holding the writer lock elsewhere and calling claim_next reproduces the original
-    failure exactly: it used to raise OperationalError after the 5s busy timeout.
+
+def _seed_message(
+    conn,
+    thread = "t1",
+    message = "m1",
+):
+    conn.execute(
+        "INSERT OR IGNORE INTO chat_threads (id, title, model_type, created_at, updated_at) "
+        "VALUES (?, 'T', 'gguf', 0, 0)",
+        (thread,),
+    )
+    conn.execute(
+        "INSERT INTO chat_messages "
+        "(id, thread_id, role, content_json, attachments_json, metadata_json, created_at) "
+        "VALUES (?, ?, 'assistant', '[]', '[]', '{}', 0)",
+        (message, thread),
+    )
+    conn.commit()
+
+
+def _dirty(conn) -> int:
+    row = conn.execute(
+        "SELECT dirty FROM chat_attachment_inventory_state WHERE singleton = 1"
+    ).fetchone()
+    return int(row["dirty"])
+
+
+def _hold_writer_lock(conn) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "INSERT INTO app_settings (key, value_json, updated_at) VALUES ('probe','1','0') "
+        "ON CONFLICT(key) DO UPDATE SET value_json='1'"
+    )
+
+
+# --- synchronous=NORMAL, but only where WAL makes it safe -------------------------------
+
+
+def test_wal_database_drops_to_normal(db):
+    """synchronous=FULL fsyncs under the writer lock; NORMAL is the WAL-safe pairing."""
+    assert _journal_mode(db) == "wal"
+    conn = studio_db.get_connection()
+    try:
+        assert _synchronous(conn) == NORMAL
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("mode", ["delete", "truncate", "persist", "memory"])
+def test_non_wal_journal_keeps_full(db, monkeypatch, mode):
+    """PRAGMA journal_mode=WAL silently declines on filesystems without shared memory.
+
+    Network shares and some FUSE or container mounts land there, Windows users most
+    often. A rollback journal needs the fsync NORMAL removes, so those installs keep
+    FULL and simply do not get the speedup.
     """
+    setup = sqlite3.connect(str(db))
+    try:
+        setup.execute(f"PRAGMA journal_mode={mode}")
+        setup.commit()
+    finally:
+        setup.close()
+    assert _journal_mode(db) != "wal"
+
+    monkeypatch.setattr(studio_db, "_schema_ready", True)
+    conn = studio_db.get_connection()
+    try:
+        assert _synchronous(conn) == FULL, f"{mode} must not lose its commit fsync"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, (None,), ("",), (123,), sqlite3.OperationalError("pragma unavailable")],
+)
+def test_unreadable_journal_mode_is_not_treated_as_wal(answer):
+    """An unexpected or failing answer keeps the safe default rather than raising.
+
+    sqlite3.Connection is a C type and cannot be monkeypatched, so this uses a double.
+    """
+
+    class Connection:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, sql, *args):
+            self.executed.append(sql)
+            if isinstance(answer, Exception):
+                raise answer
+            return type("Cursor", (), {"fetchone": lambda _self: answer})()
+
+    conn = Connection()
+    studio_db._apply_wal_synchronous(conn)
+    assert "PRAGMA synchronous=NORMAL" not in conn.executed
+
+
+def test_committed_rows_survive_a_reopen(db):
+    """NORMAL changes fsync timing, not correctness."""
+    conn = studio_db.get_connection()
+    try:
+        _seed_message(conn, "t-durable", "m-durable")
+    finally:
+        conn.close()
+    conn = studio_db.get_connection()
+    try:
+        assert (
+            conn.execute("SELECT id FROM chat_messages WHERE id = 'm-durable'").fetchone()
+            is not None
+        )
+    finally:
+        conn.close()
+
+
+def test_concurrent_openers_all_get_normal(db):
+    results, errors = [], []
+
+    def worker():
+        try:
+            conn = studio_db.get_connection()
+            try:
+                results.append(_synchronous(conn))
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = worker) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, errors
+    assert results == [NORMAL] * 16
+
+
+# --- the attachment inventory is dirtied by attachments, not by bookkeeping -------------
+
+
+@pytest.mark.parametrize(
+    "sql, dirties, why",
+    [
+        (
+            "UPDATE chat_messages SET metadata_json='{\"a\":1}' WHERE id='m1'",
+            False,
+            "a generation status change touches no attachment",
+        ),
+        (
+            "UPDATE chat_messages SET role='user' WHERE id='m1'",
+            False,
+            "role is not an inventory input",
+        ),
+        (
+            "UPDATE chat_messages SET attachments_json='[{}]' WHERE id='m1'",
+            True,
+            "attachments changed",
+        ),
+        (
+            "UPDATE chat_messages SET content_json='[{\"t\":1}]' WHERE id='m1'",
+            True,
+            "inline content can carry data URIs",
+        ),
+        (
+            "UPDATE chat_messages SET attachments_json='[]' WHERE id='m1'",
+            True,
+            "UPDATE OF fires on the SET list, not on a changed value",
+        ),
+        ("DELETE FROM chat_messages WHERE id='m1'", True, "rows went away"),
+    ],
+)
+def test_inventory_trigger_scope(db, sql, dirties, why):
+    """The rebuild re-hashes every attachment in every thread inside BEGIN IMMEDIATE, so
+    dirtying it from an unrelated column is what made an ordinary autosave hold the
+    writer lock for as long as the history was large."""
+    conn = studio_db.get_connection()
+    try:
+        _seed_message(conn)
+        studio_db._mark_chat_attachment_inventory_clean(conn)
+        conn.commit()
+        assert _dirty(conn) == 0
+        conn.execute(sql)
+        conn.commit()
+        assert _dirty(conn) == (1 if dirties else 0), why
+    finally:
+        conn.close()
+
+
+def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
+    """Every existing install already carries the unscoped trigger.
+
+    CREATE TRIGGER IF NOT EXISTS would have kept it silently, so the fix drops first.
+    """
+    path = tmp_path / "studio.db"
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: path)
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DROP TRIGGER IF EXISTS chat_attachment_inventory_dirty_update")
+        conn.execute(
+            """
+            CREATE TRIGGER chat_attachment_inventory_dirty_update
+            AFTER UPDATE ON chat_messages
+            BEGIN
+                INSERT INTO chat_attachment_inventory_state
+                    (singleton, inventory_version, dirty, backfilled_at)
+                VALUES (1, 0, 1, 0)
+                ON CONFLICT(singleton) DO UPDATE SET dirty = 1;
+            END
+            """
+        )
+        conn.commit()
+        assert (
+            "UPDATE OF"
+            not in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='chat_attachment_inventory_dirty_update'"
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    conn = studio_db.get_connection()
+    try:
+        assert (
+            "UPDATE OF attachments_json, content_json"
+            in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='chat_attachment_inventory_dirty_update'"
+            ).fetchone()[0]
+        )
+        _seed_message(conn)
+        studio_db._mark_chat_attachment_inventory_clean(conn)
+        conn.commit()
+        conn.execute("UPDATE chat_messages SET metadata_json='{\"x\":1}' WHERE id='m1'")
+        conn.commit()
+        assert _dirty(conn) == 0
+    finally:
+        conn.close()
+
+
+def test_downgrade_still_sees_attachment_changes(db):
+    """An older Unsloth run against an upgraded database keeps the scoped trigger, since
+    its CREATE TRIGGER IF NOT EXISTS finds the name taken. That is safe: the scoped
+    trigger still fires for everything the inventory derives from."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS chat_attachment_inventory_dirty_update
+            AFTER UPDATE ON chat_messages
+            BEGIN
+                INSERT INTO chat_attachment_inventory_state
+                    (singleton, inventory_version, dirty, backfilled_at)
+                VALUES (1, 0, 1, 0)
+                ON CONFLICT(singleton) DO UPDATE SET dirty = 1;
+            END
+            """
+        )
+        conn.commit()
+        _seed_message(conn)
+        studio_db._mark_chat_attachment_inventory_clean(conn)
+        conn.commit()
+        conn.execute("UPDATE chat_messages SET attachments_json='[{}]' WHERE id='m1'")
+        conn.commit()
+        assert _dirty(conn) == 1
+    finally:
+        conn.close()
+
+
+# --- claim_next: cheap when idle, unchanged when there is work --------------------------
+
+
+def _make_run(
+    run_id = "r1",
+    thread = "t1",
+    status = "queued",
+):
+    studio_db.upsert_chat_thread({"id": thread, "title": "T", "modelType": "gguf", "createdAt": 1})
+    studio_db.upsert_chat_message(
+        {"id": f"u-{run_id}", "threadId": thread, "role": "user", "content": [], "createdAt": 2}
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": f"a-{run_id}",
+            "threadId": thread,
+            "parentId": f"u-{run_id}",
+            "role": "assistant",
+            "content": [],
+            "createdAt": 3,
+        }
+    )
+    research_runs_db.create_run(
+        run_id = run_id,
+        owner_subject = "sub",
+        thread_id = thread,
+        user_message_id = f"u-{run_id}",
+        assistant_message_id = f"a-{run_id}",
+        config = {},
+    )
+    if status != "queued":
+        conn = studio_db.get_connection()
+        try:
+            conn.execute("UPDATE research_runs SET status=? WHERE id=?", (status, run_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def test_idle_poll_takes_no_write_lock(db):
+    """The original failure reproduced: this used to raise after the 5s busy timeout."""
     holder = studio_db.get_connection()
     try:
-        holder.execute("BEGIN IMMEDIATE")
-        holder.execute(
-            "INSERT INTO app_settings (key, value_json, updated_at) VALUES ('probe', '1', '0') "
-            "ON CONFLICT(key) DO UPDATE SET value_json = '1'"
-        )
-        # No commit: the writer lock stays held for the duration of this call.
+        _hold_writer_lock(holder)
+        started = time.monotonic()
         assert research_runs_db.claim_next("worker-1") is None
+        assert time.monotonic() - started < 1.0, "must not have queued behind the writer"
     finally:
         holder.rollback()
         holder.close()
 
 
-def test_metadata_only_update_does_not_dirty_attachment_inventory(db):
-    """A generation status change must not schedule a full attachment rebuild.
+def test_claim_next_still_claims_real_work(db):
+    _make_run()
+    claimed = research_runs_db.claim_next("worker-1")
+    assert claimed is not None and claimed["id"] == "r1"
+    assert research_runs_db.claim_next("worker-2") is None, "the lease excludes others"
 
-    The rebuild re-hashes every attachment in every thread inside BEGIN IMMEDIATE, so
-    dirtying it from an unrelated column is what made an ordinary autosave hold the lock.
-    """
+
+@pytest.mark.parametrize("status", ["planning", "queued", "running", "cancelling"])
+def test_probe_agrees_with_the_transaction_when_claimable(db, status):
+    _make_run(status = status)
+    assert research_runs_db._has_claimable(research_runs_db.now_ms()) is True
+    assert research_runs_db.claim_next("worker-1") is not None
+
+
+@pytest.mark.parametrize(
+    "status", ["completed", "failed", "cancelled", "paused", "awaiting_approval"]
+)
+def test_probe_agrees_with_the_transaction_when_not_claimable(db, status):
+    _make_run(status = status)
+    assert research_runs_db._has_claimable(research_runs_db.now_ms()) is False
+    assert research_runs_db.claim_next("worker-1") is None
+
+
+def test_expired_lease_becomes_claimable_again(db):
+    _make_run()
+    assert research_runs_db.claim_next("worker-1") is not None
+    assert research_runs_db._has_claimable(research_runs_db.now_ms()) is False
     conn = studio_db.get_connection()
     try:
         conn.execute(
-            "INSERT INTO chat_threads (id, title, model_type, created_at, updated_at) "
-            "VALUES ('t1', 'T', 'gguf', 0, 0)"
-        )
-        conn.execute(
-            "INSERT INTO chat_messages "
-            "(id, thread_id, role, content_json, attachments_json, metadata_json, created_at) "
-            "VALUES ('m1', 't1', 'assistant', '[]', '[]', '{}', 0)"
+            "UPDATE research_runs SET lease_expires_at=? WHERE id='r1'",
+            (research_runs_db.now_ms() - 1,),
         )
         conn.commit()
-        studio_db._mark_chat_attachment_inventory_clean(conn)
-        conn.commit()
-
-        def dirty() -> int:
-            row = conn.execute(
-                "SELECT dirty FROM chat_attachment_inventory_state WHERE singleton = 1"
-            ).fetchone()
-            return int(row["dirty"])
-
-        assert dirty() == 0
-        # What chat_generation_runs_db does on every status transition.
-        conn.execute("UPDATE chat_messages SET metadata_json = '{\"a\":1}' WHERE id = 'm1'")
-        conn.commit()
-        assert dirty() == 0, "a metadata-only update must not dirty the inventory"
-
-        # A real attachment change still must.
-        conn.execute("UPDATE chat_messages SET attachments_json = '[{}]' WHERE id = 'm1'")
-        conn.commit()
-        assert dirty() == 1
     finally:
         conn.close()
+    assert research_runs_db._has_claimable(research_runs_db.now_ms()) is True
+    assert research_runs_db.claim_next("worker-2") is not None
+
+
+def test_run_without_a_thread_claim_is_invisible(db):
+    """The probe must reproduce the transaction's join, not just its WHERE clause."""
+    _make_run()
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DELETE FROM research_thread_claims")
+        conn.commit()
+    finally:
+        conn.close()
+    assert research_runs_db._has_claimable(research_runs_db.now_ms()) is False
+    assert research_runs_db.claim_next("worker-1") is None
+
+
+def test_concurrent_workers_claim_a_run_exactly_once(db):
+    _make_run()
+    claims, errors = [], []
+
+    def worker(name):
+        try:
+            if research_runs_db.claim_next(name) is not None:
+                claims.append(name)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = worker, args = (f"w{i}",)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, errors
+    assert len(claims) == 1, f"the read-first probe must not let two workers claim: {claims}"
+
+
+# --- the busy predicate and the supervisor's error ladder -------------------------------
+
+
+@pytest.mark.parametrize(
+    "message, busy",
+    [
+        ("database is locked", True),
+        ("database table is locked", True),
+        ("database is busy", True),
+        ("attempt to write a readonly database", False),
+        ("no such table: research_runs", False),
+        ("disk I/O error", False),
+        ("unable to open database file", False),
+    ],
+)
+def test_busy_predicate(message, busy):
+    assert studio_db.is_sqlite_busy_error(sqlite3.OperationalError(message)) is busy
+
+
+def test_api_usage_db_shares_one_definition():
+    import storage.api_usage_db as api_usage_db
+    assert api_usage_db._is_busy_error(sqlite3.OperationalError("database is locked"))
+    assert not api_usage_db._is_busy_error(sqlite3.OperationalError("disk I/O error"))
+
+
+class _Ladder:
+    """The supervisor's except-ladder without its dependencies.
+
+    Mirrors ResearchSupervisor._loop in core/research_runs.py; the control flow is the
+    point, since the regression this guards was a control-flow one.
+    """
+
+    def __init__(self, raises, logger):
+        self._raises = list(raises)
+        self.logger = logger
+        self.iterations = 0
+        self.survived = False
+
+    async def run(self):
+        for exc in self._raises:
+            self.iterations += 1
+            try:
+                if exc is not None:
+                    raise exc
+            except asyncio.CancelledError:
+                raise
+            except sqlite3.OperationalError as err:
+                if studio_db.is_sqlite_busy_error(err):
+                    self.logger.warning("research.supervisor_db_busy: %s", err)
+                else:
+                    self.logger.exception("research.supervisor_iteration_failed")
+                await asyncio.sleep(0)
+            except Exception:
+                self.logger.exception("research.supervisor_iteration_failed")
+                await asyncio.sleep(0)
+        self.survived = True
+
+
+def _levels(caplog):
+    return [(record.levelname, record.exc_info is not None) for record in caplog.records]
+
+
+def test_lock_contention_is_six_warnings_not_six_tracebacks(caplog):
+    logger = logging.getLogger("test.supervisor.busy")
+    ladder = _Ladder([sqlite3.OperationalError("database is locked")] * 6, logger)
+    with caplog.at_level(logging.WARNING, logger = logger.name):
+        asyncio.run(ladder.run())
+    assert ladder.survived
+    assert _levels(caplog) == [("WARNING", False)] * 6
+
+
+def test_a_real_sqlite_fault_does_not_stop_the_supervisor(caplog):
+    """Re-raising here would escape the while loop, because a sibling `except Exception`
+    cannot catch a raise from its own ladder. The supervisor would stop for the life of
+    the process, silently, which is worse than the log noise this change removes."""
+    logger = logging.getLogger("test.supervisor.fault")
+    ladder = _Ladder([sqlite3.OperationalError("no such table: research_runs"), None, None], logger)
+    with caplog.at_level(logging.ERROR, logger = logger.name):
+        asyncio.run(ladder.run())
+    assert ladder.survived and ladder.iterations == 3
+    assert _levels(caplog) == [("ERROR", True)], "and it keeps its traceback"
+
+
+def test_unrelated_exceptions_are_unchanged(caplog):
+    logger = logging.getLogger("test.supervisor.other")
+    ladder = _Ladder([ValueError("boom"), None], logger)
+    with caplog.at_level(logging.ERROR, logger = logger.name):
+        asyncio.run(ladder.run())
+    assert ladder.survived
+    assert _levels(caplog) == [("ERROR", True)]
+
+
+def test_cancellation_still_propagates():
+    logger = logging.getLogger("test.supervisor.cancel")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_Ladder([asyncio.CancelledError()], logger).run())
+
+
+# --- expected client errors are not server faults ---------------------------------------
 
 
 class _RecordingLogger:
-    """The module logger is structlog, so caplog cannot see it; log_and_http_error
-    accepts an explicit one, which is what the routes pass anyway."""
-
     def __init__(self):
-        self.calls: list[tuple[str, dict]] = []
+        self.calls = []
 
     def warning(self, *args, **kwargs):
         self.calls.append(("warning", kwargs))
@@ -123,56 +565,24 @@ class _RecordingLogger:
         self.calls.append(("error", kwargs))
 
 
-def test_client_errors_log_without_a_traceback():
-    """A 409 is the caller's business, not a server fault: one warning line, no stack.
-
-    Logging it at error with exc_info put 54 full tracebacks in a single session's log.
-    """
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422, 429])
+def test_client_errors_log_one_warning_without_a_traceback(status):
+    """One streamed generation put 54 rejected saves in the log, each with a full stack."""
     from utils.utils import log_and_http_error
 
-    error = ValueError("server-managed generation messages cannot be edited")
-
     log = _RecordingLogger()
-    exc = log_and_http_error(error, 409, "Conflict", event = "chat.conflict", log = log)
-    assert exc.status_code == 409
-    assert exc.detail == "Conflict", "the raw exception text must not reach the client"
-    assert log.calls == [("warning", {})], "4xx: one warning, no exc_info"
+    error = log_and_http_error(ValueError("x"), status, "public", event = "e", log = log)
+    assert error.status_code == status
+    assert error.detail == "public", "the raw exception must never reach the client"
+    assert log.calls == [("warning", {})]
 
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_server_errors_keep_their_traceback(status):
+    from utils.utils import log_and_http_error
+
+    raised = ValueError("x")
     log = _RecordingLogger()
-    log_and_http_error(error, 500, "Boom", event = "server.broke", log = log)
+    log_and_http_error(raised, status, "public", event = "e", log = log)
     level, kwargs = log.calls[0]
-    assert level == "error" and kwargs.get("exc_info") is error, "5xx keeps its traceback"
-
-
-def test_claim_next_still_claims_real_work(db):
-    """The read-first probe is an optimisation, not a suppression: a claimable run must
-    still be claimed, or the supervisor would quietly stop doing its job."""
-    # Through the modules' own APIs, so the fixture cannot drift from the real schema.
-    studio_db.upsert_chat_thread({"id": "t1", "title": "T", "modelType": "gguf", "createdAt": 1})
-    studio_db.upsert_chat_message(
-        {"id": "u1", "threadId": "t1", "role": "user", "content": [], "createdAt": 2}
-    )
-    studio_db.upsert_chat_message(
-        {
-            "id": "a1",
-            "threadId": "t1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": [],
-            "createdAt": 3,
-        }
-    )
-    research_runs_db.create_run(
-        run_id = "r1",
-        owner_subject = "sub",
-        thread_id = "t1",
-        user_message_id = "u1",
-        assistant_message_id = "a1",
-        config = {},
-    )
-
-    assert research_runs_db._has_claimable(research_runs_db.now_ms()) is True
-    claimed = research_runs_db.claim_next("worker-1")
-    assert claimed is not None and claimed["id"] == "r1"
-    # Claimed once: the lease is now held, so the next poll is idle again.
-    assert research_runs_db.claim_next("worker-2") is None
+    assert level == "error" and kwargs.get("exc_info") is raised

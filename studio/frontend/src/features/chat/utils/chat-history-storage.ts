@@ -389,7 +389,7 @@ async function saveLegacyChatThread(
     if (!(error instanceof ChatThreadDeletedError)) {
       throw error;
     }
-    markChatThreadDeleted(thread.id);
+    forgetChatThread(thread.id);
     return undefined;
   }
 }
@@ -962,6 +962,18 @@ export function clearServerOwnedChatMessages(threadId: string): void {
   serverOwnedMessageIds.delete(threadId);
 }
 
+// Tombstoning a thread is the point its message ids stop mattering, so the two always
+// happen together: without this the map would only ever grow across a long-lived session.
+function forgetChatThread(threadId: string): void {
+  markChatThreadDeleted(threadId);
+  clearServerOwnedChatMessages(threadId);
+}
+
+function forgetChatThreads(threadIds: string[]): void {
+  markChatThreadsDeleted(threadIds);
+  for (const threadId of threadIds) clearServerOwnedChatMessages(threadId);
+}
+
 export async function saveStoredChatMessage(
   message: MessageRecord,
 ): Promise<MessageRecord> {
@@ -1011,7 +1023,7 @@ export async function saveStoredChatThread(
     return await writeChatThreadRecord(thread);
   } catch (error) {
     if (error instanceof ChatThreadDeletedError) {
-      markChatThreadDeleted(thread.id);
+      forgetChatThread(thread.id);
     }
     throw error;
   }
@@ -1085,7 +1097,7 @@ export async function deleteStoredChatThreads(
         .catch(() => undefined),
     undefined,
   );
-  markChatThreadsDeleted(ids);
+  forgetChatThreads(ids);
   return kept;
 }
 
@@ -1204,7 +1216,7 @@ async function clearStoredChatsWithAdmissionClosed(
   const deleted = new Set(result.deletedThreadIds);
   result.failedThreadIds = allThreadIds.filter((id) => !deleted.has(id));
 
-  markChatThreadsDeleted(result.deletedThreadIds);
+  forgetChatThreads(result.deletedThreadIds);
   notifyChatHistoryUpdated();
 
   if (result.backend === "failed" && result.legacy === "failed") {
