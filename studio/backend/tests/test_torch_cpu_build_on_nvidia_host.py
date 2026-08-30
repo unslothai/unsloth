@@ -1759,9 +1759,7 @@ def test_the_health_path_never_retries_a_failed_torch_import(monkeypatch):
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.6.0+cu124")
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
-    monkeypatch.setattr(
-        hw, "classify_torch_build", lambda: "torch_cuda_unavailable"
-    )
+    monkeypatch.setattr(hw, "classify_torch_build", lambda: "torch_cuda_unavailable")
     monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
     monkeypatch.setattr(
         hw,
