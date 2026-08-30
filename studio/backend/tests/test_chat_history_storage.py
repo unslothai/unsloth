@@ -1245,9 +1245,7 @@ def test_sync_chat_messages_collapses_identical_user_siblings(tmp_path, monkeypa
     assert studio_db.get_chat_message("thread-1", "user-b") is None
 
 
-def test_sync_purges_stored_user_clones_that_differ_only_by_attachment_id(
-    tmp_path, monkeypatch
-):
+def test_sync_purges_stored_user_clones_that_differ_only_by_attachment_id(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     attachment = {
