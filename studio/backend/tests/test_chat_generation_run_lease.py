@@ -125,7 +125,11 @@ def _running_run(run_id = "run-1", thread_id = "thread-1"):
     return token
 
 
-def _stream(run_id, token, count = 2):
+def _stream(
+    run_id,
+    token,
+    count = 2,
+):
     return runs_db.append_events(
         run_id,
         token,
@@ -146,7 +150,12 @@ def _write_partial_text(message_id, text):
         conn.close()
 
 
-def _sweeper(app = None, *, interval_s = 60.0, timeout_s = 600.0):
+def _sweeper(
+    app = None,
+    *,
+    interval_s = 60.0,
+    timeout_s = 600.0,
+):
     return ChatGenerationLeaseSweeper(
         app if app is not None else SimpleNamespace(state = SimpleNamespace()),
         interval_s = interval_s,
@@ -264,9 +273,7 @@ async def test_sweep_settles_a_stopped_run_as_cancelled(clock):
 async def test_sweep_cancels_the_wedged_producer(clock, capture):
     cancelled = []
     app = SimpleNamespace(
-        state = SimpleNamespace(
-            chat_generation_supervisor = SimpleNamespace(cancel = cancelled.append)
-        )
+        state = SimpleNamespace(chat_generation_supervisor = SimpleNamespace(cancel = cancelled.append))
     )
     _running_run()
     clock.advance_ms(11 * _MINUTE_MS)

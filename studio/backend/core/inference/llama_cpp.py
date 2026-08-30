@@ -23759,7 +23759,9 @@ class LlamaCppBackend:
                         if self._stats_logger is not None:
                             self._stats_logger.stop()
                         self._stats_logger = maybe_start_stats_logger(
-                            self.base_url, logger, on_stall = _reap_stalled_generation,
+                            self.base_url,
+                            logger,
+                            on_stall = _reap_stalled_generation,
                         )
                     except Exception as e:
                         logger.debug(f"engine-stats logger not started: {e}")

@@ -32,7 +32,14 @@ class _Capture:
         pass
 
 
-def _drive(snaps, monkeypatch, *, tick_s = 10.0, stall_timeout_s = 180.0, on_stall = None):
+def _drive(
+    snaps,
+    monkeypatch,
+    *,
+    tick_s = 10.0,
+    stall_timeout_s = 180.0,
+    on_stall = None,
+):
     """Run _run() synchronously over `snaps` on a fake clock, then stop.
 
     Each scrape advances the clock by `tick_s`, mirroring the 10s poll interval
@@ -65,7 +72,12 @@ def _drive(snaps, monkeypatch, *, tick_s = 10.0, stall_timeout_s = 180.0, on_sta
     return cap
 
 
-def _wedged(n, *, predicted = 4096.0, prompt = 512.0):
+def _wedged(
+    n,
+    *,
+    predicted = 4096.0,
+    prompt = 512.0,
+):
     """The user's signature: a held slot whose counters never move."""
     return [
         {
@@ -152,10 +164,18 @@ def test_idle_engine_is_never_reaped(monkeypatch):
 
 def test_recovery_rearms_the_watchdog(monkeypatch):
     # Stall, then progress, then stall again: two distinct episodes.
-    snaps = _wedged(40) + [
-        {"tokens_predicted_total": 5000.0 + i, "prompt_tokens_total": 512.0, "requests_processing": 1.0}
-        for i in range(5)
-    ] + _wedged(40, predicted = 9000.0)
+    snaps = (
+        _wedged(40)
+        + [
+            {
+                "tokens_predicted_total": 5000.0 + i,
+                "prompt_tokens_total": 512.0,
+                "requests_processing": 1.0,
+            }
+            for i in range(5)
+        ]
+        + _wedged(40, predicted = 9000.0)
+    )
     reaped = []
     cap = _drive(snaps, monkeypatch, on_stall = lambda **kw: reaped.append(kw))
     assert len([ev for ev, _ in cap.events if ev == "engine_stall_detected"]) == 2
@@ -181,7 +201,9 @@ def test_stalled_gauge_does_not_mask_a_wedge(monkeypatch):
 
 def test_disabled_by_zero_timeout(monkeypatch):
     reaped = []
-    cap = _drive(_wedged(60), monkeypatch, stall_timeout_s = 0.0, on_stall = lambda **kw: reaped.append(kw))
+    cap = _drive(
+        _wedged(60), monkeypatch, stall_timeout_s = 0.0, on_stall = lambda **kw: reaped.append(kw)
+    )
     assert not [ev for ev, _ in cap.events if ev == "engine_stall_detected"]
     assert not reaped
 
@@ -197,10 +219,7 @@ def test_absent_counters_disable_the_watchdog_instead_of_reaping(monkeypatch):
     assert not [ev for ev, _ in cap.events if ev == "engine_stall_detected"]
     unmeasurable = [kw for ev, kw in cap.events if ev == "engine_progress_unmeasurable"]
     assert len(unmeasurable) == 1, "reported exactly once, not every tick"
-    assert unmeasurable[0]["missing"] == [
-        "prompt_tokens_total",
-        "tokens_predicted_total",
-    ]
+    assert unmeasurable[0]["missing"] == ["prompt_tokens_total", "tokens_predicted_total"]
 
 
 def test_a_raising_callback_does_not_kill_the_poller(monkeypatch):

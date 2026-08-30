@@ -153,17 +153,13 @@ class LlamaServerStatsLogger:
             # not export these counter names reads 0.0 through .get() forever,
             # which is indistinguishable from a wedge -- reaping on that would
             # kill healthy generations, so say so once and never reap instead.
-            measurable = (
-                "tokens_predicted_total" in m and "prompt_tokens_total" in m
-            )
+            measurable = "tokens_predicted_total" in m and "prompt_tokens_total" in m
             if not measurable:
                 if not self._unmeasurable_reported:
                     self._unmeasurable_reported = True
                     self._log.warning(
                         "engine_progress_unmeasurable",
-                        missing = sorted(
-                            {"tokens_predicted_total", "prompt_tokens_total"} - set(m)
-                        ),
+                        missing = sorted({"tokens_predicted_total", "prompt_tokens_total"} - set(m)),
                         detail = "stall watchdog disabled; llama-server /metrics lacks the token counters",
                     )
             else:
@@ -185,7 +181,11 @@ class LlamaServerStatsLogger:
                 )
 
 
-def maybe_start_stats_logger(base_url, logger, on_stall = None):
+def maybe_start_stats_logger(
+    base_url,
+    logger,
+    on_stall = None,
+):
     """Start a stats logger unless UNSLOTH_STUDIO_ENGINE_STATS disables it."""
     if (os.environ.get("UNSLOTH_STUDIO_ENGINE_STATS", "1") or "").strip().lower() in _OFF:
         return None

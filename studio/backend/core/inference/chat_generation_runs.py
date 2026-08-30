@@ -148,9 +148,7 @@ class ChatGenerationLeaseSweeper:
             0.0,
             timeout_s
             if timeout_s is not None
-            else _env_seconds(
-                "UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS
-            ),
+            else _env_seconds("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS),
         )
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()

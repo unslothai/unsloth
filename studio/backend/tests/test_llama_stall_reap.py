@@ -24,7 +24,6 @@ def _clean_registry():
 
 def _reap(**kw):
     from core.inference.llama_cpp import _reap_stalled_generation
-
     _reap_stalled_generation(
         running = kw.get("running", 1),
         waiting = kw.get("waiting", 0),

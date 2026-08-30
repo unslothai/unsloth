@@ -48,9 +48,7 @@ def _connect() -> sqlite3.Connection:
             if not _schema_ready:
                 columns = {
                     row[1]
-                    for row in conn.execute(
-                        "PRAGMA table_info(chat_generation_runs)"
-                    ).fetchall()
+                    for row in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()
                 }
                 for column, spec in (
                     ("progress_at", "INTEGER"),
@@ -59,9 +57,7 @@ def _connect() -> sqlite3.Connection:
                     if column in columns:
                         continue
                     try:
-                        conn.execute(
-                            f"ALTER TABLE chat_generation_runs ADD COLUMN {column} {spec}"
-                        )
+                        conn.execute(f"ALTER TABLE chat_generation_runs ADD COLUMN {column} {spec}")
                     except sqlite3.OperationalError as exc:
                         # Another process migrated the same database first.
                         if "duplicate column" not in str(exc).lower():
@@ -501,9 +497,7 @@ def append_events(
         sequences = _append_events_locked(conn, run_id, batch)
         # The producer's only regular write, so it is also the lease renewal: output
         # reaching the database is the definition of progress this sweep reaps on.
-        _touch_progress_locked(
-            conn, run_id, sum(1 for event in batch if event[0] == "chunk")
-        )
+        _touch_progress_locked(conn, run_id, sum(1 for event in batch if event[0] == "chunk"))
         _commit(conn, notify = True)
         return sequences
     except Exception:
@@ -701,9 +695,7 @@ def wait_for_events(
 
 
 def reconcile_runs(
-    *,
-    error: str = "Studio restarted during generation",
-    stale_after_ms: int | None = None,
+    *, error: str = "Studio restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
     """Settle active runs, returning the ids settled.
 
