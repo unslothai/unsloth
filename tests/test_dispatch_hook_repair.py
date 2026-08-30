@@ -624,12 +624,14 @@ def _lift():
 class _WrappedModel(torch.nn.Module):
     """A model whose endpoints are LoRA-style wrappers over hooked modules."""
 
-    def __init__(self, wrap_in = True, wrap_out = True):
+    def __init__(
+        self,
+        wrap_in = True,
+        wrap_out = True,
+    ):
         super().__init__()
-        self.embed = _FakeLora(torch.nn.Embedding(4, 2)) if wrap_in \
-            else torch.nn.Embedding(4, 2)
-        self.head = _FakeLora(torch.nn.Linear(2, 4)) if wrap_out \
-            else torch.nn.Linear(2, 4)
+        self.embed = _FakeLora(torch.nn.Embedding(4, 2)) if wrap_in else torch.nn.Embedding(4, 2)
+        self.head = _FakeLora(torch.nn.Linear(2, 4)) if wrap_out else torch.nn.Linear(2, 4)
 
     def get_input_embeddings(self):
         return self.embed
@@ -673,12 +675,12 @@ def test_the_lifted_hook_takes_the_base_layers_execution_device():
     _lift()(model)
 
     hook = model.embed._hf_hook
-    assert hook.execution_device == torch.device(FAR), (
-        f"the lifted hook points at {hook.execution_device}, not the base layer's {FAR}"
-    )
-    assert hook.skip_keys == ["past_key_values"], (
-        "the lifted hook drops the skip keys, so it moves tensors dispatch_model excluded"
-    )
+    assert hook.execution_device == torch.device(
+        FAR
+    ), f"the lifted hook points at {hook.execution_device}, not the base layer's {FAR}"
+    assert hook.skip_keys == [
+        "past_key_values"
+    ], "the lifted hook drops the skip keys, so it moves tensors dispatch_model excluded"
 
 
 def test_an_unwrapped_endpoint_is_left_alone():
@@ -696,8 +698,7 @@ def test_a_wrapper_whose_base_was_never_hooked_is_left_alone():
 
 def test_a_wrapper_that_already_has_a_hook_is_not_hooked_twice():
     model = _WrappedModel(wrap_out = False)
-    add_hook_to_module(model.embed.base_layer,
-                       AlignDevicesHook(execution_device = torch.device(FAR)))
+    add_hook_to_module(model.embed.base_layer, AlignDevicesHook(execution_device = torch.device(FAR)))
     add_hook_to_module(model.embed, AlignDevicesHook(execution_device = torch.device(FAR)))
 
     assert _lift()(model) == 0, "a second hook was stacked on the wrapper"
@@ -709,7 +710,6 @@ def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
             raise NotImplementedError("this architecture does not say")
 
     model = _Awkward()
-    add_hook_to_module(model.head.base_layer,
-                       AlignDevicesHook(execution_device = torch.device(FAR)))
+    add_hook_to_module(model.head.base_layer, AlignDevicesHook(execution_device = torch.device(FAR)))
 
     assert _lift()(model) == 1, "one raising accessor aborted the whole lift"
