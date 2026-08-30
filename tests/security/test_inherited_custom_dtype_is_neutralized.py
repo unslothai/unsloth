@@ -25,6 +25,7 @@ def _import_with(value, marker = None):
     """Imports the module in a fresh process with `value` inherited, returns the env."""
     environment = dict(os.environ)
     environment[_ENV_KEY] = value.format(marker = marker) if marker else value
+    environment["UNSLOTH_ALLOW_CPU"] = "1"
     program = (
         "import unsloth.models._custom_dtype as module, os;"
         f"print(repr(os.environ.get({_ENV_KEY!r})))"
