@@ -6949,6 +6949,13 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
         kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
     )
     if not kinds:
+        # A truncated or unrecognised marker names no backend, and returning True here
+        # was a bypass rather than a default: on Windows both preflights are no-ops and
+        # os.access is exists(), so a tree that had also lost llama.dll passed. Fall back
+        # to every kind this platform has instead. Their intersection is what any healthy
+        # install of it holds -- llama.dll on Windows -- so it cannot over-require.
+        kinds = sorted(kind for kind in INSTALL_KIND_BACKENDS if kind.startswith(platform_prefix))
+    if not kinds:
         return True
     # Intersection, not union: a backend maps to more than one kind (rocm to windows-hip
     # and windows-rocm, cuda to linux-cuda and linux-arm64-cuda) and the marker does not

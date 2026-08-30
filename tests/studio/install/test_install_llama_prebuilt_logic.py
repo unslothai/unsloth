@@ -5518,8 +5518,11 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
 
 # Runtime payload each backend's kept-install check requires, per platform. Only what
 # every install kind of that backend agrees on, which is what the check asks for.
-_KEPT_PAYLOAD = {
-    ("linux", "cpu"): [
+# What _kept_install_payload_is_healthy asks of a tree, split the way it asks for it: the
+# intersection over every install kind of the platform, which is what an unreadable marker
+# owes, plus the extra a named backend adds on top.
+_SHARED_PAYLOAD = {
+    "linux": [
         "libllama-common.so",
         "libllama.so",
         "libggml.so",
@@ -5527,8 +5530,9 @@ _KEPT_PAYLOAD = {
         "libggml-cpu.so",
         "libmtmd.so",
     ],
-    ("windows", "cuda"): ["llama.dll", "ggml-cuda.dll"],
+    "windows": ["llama.dll"],
 }
+_BACKEND_PAYLOAD = {("windows", "cuda"): ["ggml-cuda.dll"]}
 
 
 def _complete_existing_llama_install(
@@ -5573,8 +5577,13 @@ def _complete_existing_llama_install(
             # setup.sh's own reuse gate is `-x`, so a tree kept instead of source
             # built has to clear it too; parametrised to cover the tree that does not.
             os.chmod(path, 0o755 if executable else 0o644)
-    if payload and backend is not None:
-        for name in _KEPT_PAYLOAD[("windows" if windows else "linux", backend)]:
+    platform = "windows" if windows else "linux"
+    if payload:
+        # A complete install carries the platform payload whether or not its marker still
+        # says which backend built it.
+        for name in _SHARED_PAYLOAD[platform]:
+            (runtime_dir / name).write_text("", encoding = "utf-8")
+        for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
             (runtime_dir / name).write_text("", encoding = "utf-8")
         if runtime_asset is not None and paired_runtime:
             for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
@@ -5714,6 +5723,33 @@ def test_a_paired_cuda_install_needs_its_cudart_trio(
     )
 
     if kept:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    else:
+        with pytest.raises(SystemExit) as caught:
+            install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+        assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+@pytest.mark.parametrize(
+    ("windows", "host"),
+    [(True, _windows_host), (False, linux_host)],
+    ids = ["windows", "linux"],
+)
+@pytest.mark.parametrize("payload", [True, False], ids = ["intact", "gutted"])
+def test_a_marker_that_names_no_backend_still_owes_the_shared_payload(
+    tmp_path, monkeypatch, windows, host, payload
+):
+    """An unreadable marker asks for what EVERY kind of its platform needs, not nothing.
+
+    Returning early on an unknown backend was a bypass rather than a default: on Windows
+    both preflights are no-ops and os.access is exists(), so a tree that had also lost
+    llama.dll passed. The per-platform intersection cannot over-require -- it is what any
+    healthy install of that platform holds.
+    """
+    _listing_failure(monkeypatch, host)
+    install_dir = _complete_existing_llama_install(tmp_path, windows = windows, payload = payload)
+
+    if payload:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
     else:
         with pytest.raises(SystemExit) as caught:
