@@ -1805,6 +1805,29 @@ function useStudioRuntimeAdapters(
         activeGenerationRuns = activeGenerationRuns.filter(
           (run) => !isTerminalChatGenerationRun(run),
         );
+        // And drop any run the message snapshot already shows as finished. The runs read
+        // happens first, so a run that completed in between is still listed as running
+        // here. Filtering the LIST rather than skipping at the overlay matters: the
+        // registry sync below runs first, and a stale mapping there keeps the thread
+        // reading as durable, so a later subscriber-owned stream on it would be capped
+        // and lose everything it streamed past the cap. In another tab nothing else
+        // would ever remove that mapping.
+        const terminalMessageRuns = new Set(
+          msgs
+            .filter((message) => {
+              const custom = (message.metadata ?? {}) as Record<string, unknown>;
+              const status = custom.generationStatus;
+              return (
+                status === "completed" ||
+                status === "failed" ||
+                status === "cancelled"
+              );
+            })
+            .map((message) => message.id),
+        );
+        activeGenerationRuns = activeGenerationRuns.filter(
+          (run) => !terminalMessageRuns.has(run.assistantMessageId),
+        );
         // The runs read happens BEFORE the messages read, so a run created between the
         // two would read as interrupted and re-enable the composer for a thread the
         // server is still generating on. Close that gap with one more lookup, and only
@@ -1859,20 +1882,7 @@ function useStudioRuntimeAdapters(
             (message) => message.id === run.assistantMessageId,
           );
           if (!assistant) continue;
-          // The runs read happens first, so a run that finished between the two reads is
-          // still listed as running here while the message snapshot already carries its
-          // terminal status. `missed` does not catch it, because the id IS known. Writing
-          // the overlay anyway would push a completed reply back to running and unsettled
-          // and block the composer until some later read happened to succeed.
-          const knownStatus = (assistant.metadata as Record<string, unknown> | undefined)
-            ?.generationStatus;
-          if (
-            knownStatus === "completed" ||
-            knownStatus === "failed" ||
-            knownStatus === "cancelled"
-          ) {
-            continue;
-          }
+
           assistant.metadata = {
             ...(assistant.metadata ?? {}),
             generationRunId: run.id,

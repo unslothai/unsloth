@@ -664,3 +664,19 @@ test("keep-alive comments hold the follower open through a long preparation", as
     globalThis.fetch = original;
   }
 });
+
+test("a run finished between the two reads never reaches the durable registry", () => {
+  // The registry sync runs BEFORE the overlay, so skipping only at the overlay left the
+  // thread reading as durable. In another tab nothing removes that mapping, and the next
+  // subscriber-owned stream on the thread would be capped and lose its tail.
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const filter = provider.indexOf("terminalMessageRuns");
+  const sync = provider.indexOf("syncServerActiveGenerationRuns(", filter);
+  assert.ok(filter > 0, "the terminal-message filter is missing");
+  assert.ok(sync > filter, "the filter must run before the registry sync");
+  assert.match(
+    provider,
+    /activeGenerationRuns = activeGenerationRuns\.filter\(\s*\(run\) => !terminalMessageRuns\.has\(run\.assistantMessageId\),\s*\);/,
+    "the list itself must be filtered, so sync and overlay both see it",
+  );
+});
