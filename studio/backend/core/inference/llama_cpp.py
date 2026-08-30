@@ -4889,6 +4889,14 @@ def _extra_args_tensor_split(
     # merely degenerates on. Rejecting here routes it to the unparseable decline.
     if not parts or any(not math.isfinite(p) or p < 0 for p in parts) or sum(parts) <= 0:
         return None
+    try:
+        running = 0.0
+        for part in parts:
+            running = struct.unpack("=f", struct.pack("=f", running + part))[0]
+    except OverflowError:
+        return None
+    if not math.isfinite(running):
+        return None
     return parts
 
 

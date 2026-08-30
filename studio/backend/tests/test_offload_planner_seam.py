@@ -1491,6 +1491,16 @@ def test_a_non_finite_tensor_split_declines_instead_of_raising(value):
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"]) is not None
 
 
+def test_a_cumulative_float32_tensor_split_overflow_declines_instead_of_raising():
+    from core.inference.llama_cpp import _extra_args_tensor_split
+
+    value = "3e38,3e38"
+    assert _extra_args_tensor_split(["-ts", value], {}) is None
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", value]) is None
+    assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": value}) is None
+
+
 def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
     """_estimate_kv_cache_bytes picks its path BEFORE it looks at the window, and
     the earlier paths price a different quantity: path 1 (MLA) caches one
