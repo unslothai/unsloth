@@ -3486,9 +3486,10 @@ def _linux_math_core_count(
             for cpu, capacity in enumerate(capacities)
             if not online_cpus or cpu in online_cpus
         ]
-        if all(capacity is not None for capacity in active_capacities) and len(
-            set(active_capacities)
-        ) > 1:
+        if (
+            all(capacity is not None for capacity in active_capacities)
+            and len(set(active_capacities)) > 1
+        ):
             fastest = max(capacity for capacity in active_capacities if capacity is not None)
             return hybrid_math_count(
                 {
