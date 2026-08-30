@@ -453,6 +453,12 @@ class ChatGenerationSupervisor:
                 owner,
                 cancel_on_disconnect = False,
             )
+            # The load is behind us: produce_openai_chat_completions returns once the
+            # model is resident and the stream is open. Automatic switching, idle reload
+            # and auto-download all happen inside that call, while llama.cpp's own
+            # first-token budget only starts after it, so a lease still aged from
+            # mark_running could reap a legitimate load plus a legitimate prefill.
+            await asyncio.to_thread(db.touch_progress, run_id)
             if int(getattr(response, "status_code", 200)) >= 400:
                 raise RuntimeError(f"Local generation returned HTTP {response.status_code}")
             iterator = getattr(response, "body_iterator", None)

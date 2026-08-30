@@ -285,6 +285,12 @@ export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
   const status = String(metadata.generationStatus) as StoredGenerationStatus;
+  // A follower that hit its no-progress deadline stamped this. The run may well still be
+  // alive server-side, so the row is deliberately left non-terminal, but re-following it
+  // on every recovery trigger is what turned one stuck run into a permanently blocked
+  // composer. history.load re-corroborates from /chat-runs/active, which is what clears
+  // the marker if the server does still have the run.
+  if (metadata.generationLocallyInterrupted === true) return false;
   return (
     typeof metadata.generationRunId === "string" &&
     (metadata.generationSettled !== true || !TERMINAL.has(status))
@@ -500,6 +506,28 @@ export function serverHasAnsweredActiveRuns(threadId: string): boolean {
   return serverAnsweredThreads.has(threadId);
 }
 
+/**
+ * Forget what the server last said about `threadId`, because the newest read failed.
+ *
+ * The answer is a point in time, not a permanent property. Another tab can start a run
+ * after a successful read, so keeping the old answer once a refresh has failed would
+ * restore that genuinely running reply as interrupted.
+ */
+export function markServerActiveGenerationRunsUnknown(threadId: string): void {
+  serverAnsweredThreads.delete(threadId);
+}
+
+/**
+ * Drop one run from the server-active map now that it has reached a terminal status.
+ *
+ * Only another successful sync would otherwise remove it, so the thread would keep
+ * reading as durable and a later subscriber-owned stream on it would be capped, losing
+ * the periodic saves that are that stream's only persistence.
+ */
+export function forgetServerActiveGenerationRun(runId: string): void {
+  serverActiveGenerationRuns.delete(runId);
+}
+
 /** Test-only: forget every active-run answer. */
 export function resetServerActiveGenerationRuns(): void {
   serverActiveGenerationRuns.clear();
@@ -526,6 +554,12 @@ export function generationIsCorroboratedLive(
   const runId = metadata.generationRunId;
   if (typeof runId !== "string") return false;
   if (isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId)) return true;
+  // A follower already gave up on this run locally. Without this it keeps taking the
+  // benefit of the doubt below, so every online/pageshow/visibility trigger starts
+  // another follower that republishes the message as running and blocks the composer
+  // again. Only the server naming the run live may revive it, and the two checks above
+  // are exactly that.
+  if (metadata.generationLocallyInterrupted === true) return false;
   // No answer for THIS thread is not a "no". Stay with the persisted status until this
   // thread's own read has landed; the recovery follower settles it from there.
   return threadId === undefined || !serverAnsweredThreads.has(threadId);

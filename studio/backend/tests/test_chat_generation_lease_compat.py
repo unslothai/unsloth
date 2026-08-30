@@ -444,3 +444,36 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
     monkeypatch.setattr(runs_db, "get_connection", lambda: _Boom(real_get()))
     with pytest.raises(sqlite3.OperationalError, match = "some_other_column"):
         runs_db.get_progress("run-1")
+
+
+# ------------------------------------------------------------------ load before prefill
+
+
+def test_touch_progress_renews_the_lease_without_recording_output(clock):
+    _seed()
+    clock.advance_ms(_LEASE_MS - 1)
+    runs_db.touch_progress("run-1")
+    clock.advance_ms(_LEASE_MS - 1)
+    # Without the renewal the run is now nearly two lease periods old and would be swept.
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+    _at, tokens = runs_db.get_progress("run-1")
+    assert tokens == 0, "a renewal is not streamed output"
+
+
+def test_a_long_model_load_does_not_consume_the_prefill_budget(clock):
+    """mark_running stamps the lease, then the load runs, then the engine's own
+    first-token budget starts. Ageing from mark_running would reap a legitimate load
+    followed by a legitimate prefill once the two together reached the lease."""
+    _seed()
+    clock.advance_ms(int(0.9 * _LEASE_MS))  # a slow automatic model load
+    runs_db.touch_progress("run-1")  # what _produce does once the stream is open
+    clock.advance_ms(int(0.9 * _LEASE_MS))  # a slow but legitimate prefill
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+    clock.advance_ms(2 * _LEASE_MS)  # now genuinely wedged
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
+
+
+def test_touch_progress_survives_a_blocked_migration(clock, monkeypatch):
+    _seed()
+    with _migration_blocked(monkeypatch):
+        runs_db.touch_progress("run-1")  # must not raise

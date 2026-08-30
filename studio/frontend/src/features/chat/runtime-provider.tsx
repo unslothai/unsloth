@@ -101,6 +101,8 @@ import {
   isLiveGenerationRun,
   generationRawContent,
   loadGenerationOverlaySnapshot,
+  markServerActiveGenerationRunsUnknown,
+  forgetServerActiveGenerationRun,
   syncServerActiveGenerationRuns,
   recoveredContentToImport,
   recoveredReasoningSummaryMetadata,
@@ -1032,6 +1034,13 @@ function scheduleGenerationRecovery(
             lastPublishedStatus = update.run.status;
             await publish(update.run);
           }
+          if (isTerminalChatGenerationRun(update.run)) {
+            // Only another successful active-list sync would otherwise drop it, so the
+            // thread would keep reading as durable and a later subscriber-owned stream
+            // on it would be capped, losing the checkpoints that are its only
+            // persistence.
+            forgetServerActiveGenerationRun(runId);
+          }
         }
       } catch (error) {
         if (!(error instanceof ChatGenerationStalledError)) throw error;
@@ -1046,6 +1055,12 @@ function scheduleGenerationRecovery(
           {
             ...currentMetadata,
             incomplete: { reason: "interrupted" as const },
+            // The run row may still be non-terminal, so without this marker
+            // generationNeedsRecovery stays true and the next online, pageshow or
+            // visibility trigger starts another follower that republishes the message
+            // as running. history.load clears it if /chat-runs/active still names the
+            // run, so the server, not this tab, gets the last word.
+            generationLocallyInterrupted: true,
           },
           false,
         );
@@ -1818,8 +1833,11 @@ function useStudioRuntimeAdapters(
             } catch {
               // `missed` already proved the first list predates this run, so it is not
               // an answer either. Leave the thread unanswered rather than promoting a
-              // list known to be stale.
+              // list known to be stale, and retract any answer from an earlier load:
+              // another tab may have started a run since, and the stale answer would
+              // restore that live reply as interrupted.
               answered = false;
+              markServerActiveGenerationRunsUnknown(remoteId);
             }
           }
           if (answered) {
@@ -1840,6 +1858,10 @@ function useStudioRuntimeAdapters(
             generationStatus: run.status,
             generationSettled: false,
             serverManaged: true,
+            // The server still has this run, which overrules a follower that gave up on
+            // it locally. Clearing the marker here is what lets a genuinely slow run be
+            // picked back up instead of staying interrupted for the life of the page.
+            generationLocallyInterrupted: false,
           };
         }
         // Durable research can outlive this runtime. Reattach its server-owned

@@ -38,6 +38,10 @@ const {
   isServerActiveGenerationRun,
   loadGenerationOverlaySnapshot,
   resetServerActiveGenerationRuns,
+  markServerActiveGenerationRunsUnknown,
+  forgetServerActiveGenerationRun,
+  threadHasDurableGenerationRun,
+  generationNeedsRecovery,
   serverHasAnsweredActiveRuns,
   syncServerActiveGenerationRuns,
 } = await import("../src/features/chat/utils/chat-generation-recovery.ts");
@@ -455,4 +459,83 @@ test("the recovery follower settles when the follow throws a stall", () => {
   const settle = provider.indexOf("generationNeedsRecovery(currentMetadata)", start);
   const caught = provider.indexOf("instanceof ChatGenerationStalledError", start);
   assert.ok(start > 0 && caught > start && settle > caught, "the catch must precede the settle");
+});
+
+test("a failed refresh retracts this thread's earlier answer", () => {
+  resetServerActiveGenerationRuns();
+  syncServerActiveGenerationRuns("t-1", ["run-a"]);
+  assert.equal(serverHasAnsweredActiveRuns("t-1"), true);
+  markServerActiveGenerationRunsUnknown("t-1");
+  assert.equal(
+    serverHasAnsweredActiveRuns("t-1"),
+    false,
+    "an answer is a point in time; a failed refresh must retract it",
+  );
+  // And a run another tab started since must keep the benefit of the doubt.
+  assert.equal(
+    generationIsCorroboratedLive({ generationRunId: "run-b" }, "t-1"),
+    true,
+  );
+});
+
+test("a terminal run stops making its thread durable", () => {
+  resetServerActiveGenerationRuns();
+  syncServerActiveGenerationRuns("t-2", ["run-c"]);
+  assert.equal(threadHasDurableGenerationRun("t-2"), true);
+  forgetServerActiveGenerationRun("run-c");
+  assert.equal(
+    threadHasDurableGenerationRun("t-2"),
+    false,
+    "a subscriber-owned stream started next must not inherit the durable cap",
+  );
+});
+
+test("a locally interrupted follower is not revived by the benefit of the doubt", () => {
+  resetServerActiveGenerationRuns();
+  const stalled = {
+    generationRunId: "run-d",
+    generationLocallyInterrupted: true,
+  };
+  // No answer for this thread, which is normally enough to keep a run running.
+  assert.equal(generationIsCorroboratedLive(stalled, "t-3"), false);
+  assert.equal(generationNeedsRecovery(stalled), false);
+  // The server still naming it live overrules the marker.
+  syncServerActiveGenerationRuns("t-3", ["run-d"]);
+  assert.equal(generationIsCorroboratedLive(stalled, "t-3"), true);
+});
+
+test("the marker is cleared when the server corroborates the run", () => {
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  assert.match(
+    provider,
+    /generationLocallyInterrupted: false,/,
+    "history.load must let the server overrule a follower that gave up locally",
+  );
+  assert.match(
+    provider,
+    /generationLocallyInterrupted: true,/,
+    "the stall settlement must stamp the marker",
+  );
+  assert.match(
+    provider,
+    /markServerActiveGenerationRunsUnknown\(remoteId\)/,
+    "a failed second read must retract this thread's answer",
+  );
+  assert.match(
+    provider,
+    /if \(isTerminalChatGenerationRun\(update\.run\)\) \{\s*\/\/[^]*?forgetServerActiveGenerationRun\(runId\)/,
+    "a terminal run must leave the server-active map",
+  );
+});
+
+test("a legacy fallback releases the durable claim at once", () => {
+  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const fallback = adapter.indexOf('generationDecision = "legacy";\n                    //');
+  assert.ok(fallback > 0, "the legacy-fallback branch moved");
+  const release = adapter.indexOf("releaseLiveGenerationRun(cancelId);", fallback);
+  const nextClaim = adapter.indexOf("claimLiveGenerationRun(", fallback);
+  assert.ok(
+    release > 0 && (nextClaim === -1 || release < nextClaim),
+    "the pre-admission claim must go before the subscriber-owned stream starts",
+  );
 });

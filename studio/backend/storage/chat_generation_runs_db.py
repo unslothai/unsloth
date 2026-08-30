@@ -464,6 +464,22 @@ def get_worker_run(
         conn.close()
 
 
+def touch_progress(run_id: str) -> None:
+    """Renew one run's progress lease without recording any streamed output.
+
+    For work the lease cannot see. Automatic model loading, idle reload and auto-download
+    all happen between mark_running and the first token, and the engine's own first-token
+    budget does not start until after them, so ageing a run from mark_running could reap a
+    legitimate load followed by a legitimate prefill.
+    """
+    conn = _connect()
+    try:
+        _touch_progress_locked(conn, run_id, 0)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_progress(run_id: str) -> tuple[int | None, int] | None:
     """(last progress timestamp, tokens streamed) for one run, or None if unknown."""
     conn = _connect()

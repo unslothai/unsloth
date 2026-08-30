@@ -235,6 +235,7 @@ import {
 } from "../utils/continuation";
 import {
   claimLiveGenerationRun,
+  forgetServerActiveGenerationRun,
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
@@ -6128,6 +6129,12 @@ export function createOpenAIStreamAdapter(
                     // Durable recovery does not yet replay server-side tool events.
                     // Use the subscriber-owned stream for this policy-forced case.
                     generationDecision = "legacy";
+                    // And drop the pre-admission claim now rather than in the outer
+                    // finally. The thread association is what marks a stream durable, and
+                    // this one is about to become subscriber-owned: leaving it would let
+                    // the checkpoint cap fire on a stream whose only persistence is those
+                    // checkpoints, losing whatever it streamed past the cap.
+                    releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
                     if (generationDecision === "durable") return;
@@ -7636,6 +7643,17 @@ export function createOpenAIStreamAdapter(
         // left claimed after its stream died is one this tab would never recover.
         releaseLiveGenerationRun(cancelId);
         if (generationRunId) releaseLiveGenerationRun(generationRunId);
+        // A durable run that finished here is no longer active, and only a later
+        // history load would otherwise say so. Until then the thread reads as durable
+        // and a subscriber-owned stream started on it next would be capped.
+        if (
+          generationRunId &&
+          (generationStatus === "completed" ||
+            generationStatus === "failed" ||
+            generationStatus === "cancelled")
+        ) {
+          forgetServerActiveGenerationRun(generationRunId);
+        }
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.
