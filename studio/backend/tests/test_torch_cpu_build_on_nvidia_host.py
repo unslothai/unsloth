@@ -1544,6 +1544,6 @@ def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeyp
     hw.torch_build_snapshot()
     assert hw._torch_build_snapshot_cache is not None
     hw.current_chat_only_verdict()
-    assert hw._torch_build_snapshot_cache is None, (
-        "the recovery must drop the measurement it was taken before"
-    )
+    assert (
+        hw._torch_build_snapshot_cache is None
+    ), "the recovery must drop the measurement it was taken before"

@@ -1017,9 +1017,7 @@ def torch_build_snapshot(*, block: bool = True) -> Dict[str, Any]:
         return cached_entry[1]
     if not block:
         _schedule_torch_build_snapshot_refresh()
-        return cached_entry[1] if cached_entry is not None else dict(
-            _UNKNOWN_TORCH_BUILD_SNAPSHOT
-        )
+        return cached_entry[1] if cached_entry is not None else dict(_UNKNOWN_TORCH_BUILD_SNAPSHOT)
     with _torch_build_snapshot_lock:
         cached_entry = _torch_build_snapshot_cache
         if (
