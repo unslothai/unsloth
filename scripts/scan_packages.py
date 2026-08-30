@@ -298,9 +298,42 @@ RE_FS_ENUM = re.compile(
     re.DOTALL,
 )
 
-# Reverse shell / bind shell patterns. Every alternative here names two
-# co-occurring signals, or one that has no benign use at all.
+# Reverse shell / bind shell patterns. LEFT EXACTLY AS IT WAS, dup2 included,
+# because this pattern is what the evidence is extracted with. It is re.DOTALL,
+# so a match spans from the first signal to the last and the rendered evidence
+# for a long span is a digest of the whole thing; editing the alternation moves
+# the span, moves the digest, and silently reopens every reviewed baseline entry
+# taken against it. Removing the dup2 branch here un-suppressed 11 entries on
+# the studio and hf-stack shards, multiprocess/tests/__init__.py among them.
+# Whether dup2 alone is enough is decided below instead, where it costs nothing.
 RE_REVERSE_SHELL = re.compile(
+    r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
+    r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
+    r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
+    r"|\bpty\s*\.\s*spawn\b"
+    r"|\bos\s*\.\s*dup2\s*\("
+    r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
+    re.DOTALL,
+)
+
+# The same thing without the dup2 branch, used only to answer "would this file
+# still be a reverse shell if dup2 did not count?".
+#
+# dup2 is the ordinary way to point a file descriptor at a file, and it was the
+# only single-token alternative above, in a pattern whose every other branch
+# names two co-occurring signals. So it fired on capture helpers and redirect
+# plumbing: ten of the nineteen reverse-shell entries in the committed baseline
+# are dup2 with no socket anywhere in the file (click/testing.py,
+# numba/tests/support.py, rich/console.py, torch elastic redirects.py,
+# sentencepiece) and not one is a true positive. triton 3.8.0 shipped an
+# eleventh in _internal_testing.py, which reddened main.
+#
+# A reverse shell dup2s onto a SOCKET, so the socket is the half carrying the
+# meaning. A file with one is judged exactly as before, evidence included; a
+# file without one has to earn the finding on a branch other than dup2. Nothing
+# is lost: a payload has to name socket to obtain the descriptor at all, and the
+# socket + connect + subprocess branch catches it independently.
+RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
     r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
@@ -308,21 +341,6 @@ RE_REVERSE_SHELL = re.compile(
     r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
     re.DOTALL,
 )
-
-# `os.dup2(` used to sit in RE_REVERSE_SHELL as a bare alternative, the only
-# single-token one there, and it was wrong: dup2 is the ordinary way to point a
-# file descriptor at a file, so it fired on capture helpers and redirect
-# plumbing. Ten of the nineteen reverse-shell entries in the committed baseline
-# are that shape, with no socket anywhere in the file (click/testing.py,
-# numba/tests/support.py, rich/console.py, torch elastic redirects.py,
-# sentencepiece) and not one of them is a true positive. triton 3.8.0 shipped an
-# eleventh in _internal_testing.py, which reddened main.
-#
-# A reverse shell dup2s onto a SOCKET, so the socket is the half that carries
-# the meaning; requiring it puts this alternative in line with the three above
-# that already pair two signals. A real payload keeps matching: it has to name
-# socket to obtain the descriptor, and the first alternative catches it besides.
-RE_FD_DUP = re.compile(r"\bos\s*\.\s*dup2\s*\(")
 RE_SOCKET_USE = re.compile(r"\bsocket\b")
 
 # Process injection / code loading from remote
@@ -747,13 +765,11 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
     has_fs_enum = bool(RE_FS_ENUM.search(content))
     # dup2 counts only alongside a socket; see RE_FD_DUP.
-    has_named_rev_shell = bool(RE_REVERSE_SHELL.search(content))
-    has_socket_dup = (
-        not has_named_rev_shell
-        and bool(RE_FD_DUP.search(content))
-        and bool(RE_SOCKET_USE.search(content))
+    # dup2 counts only alongside a socket; see RE_REVERSE_SHELL_WITHOUT_DUP.
+    has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) and (
+        bool(RE_SOCKET_USE.search(content))
+        or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
     )
-    has_rev_shell = has_named_rev_shell or has_socket_dup
     has_remote_code = bool(RE_REMOTE_CODE.search(content))
     has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
     has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
@@ -845,25 +861,15 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Reverse / bind shell
     if has_rev_shell:
-        # has_socket_dup is only set when no named alternative matched, so a file
-        # that fires on both keeps the evidence it already had and every reviewed
-        # baseline entry for it stays matched. The dup2 pairing writes its own
-        # evidence, recording both halves so the entry reopens when either the
-        # descriptor handling or the socket changes.
-        if has_socket_dup:
-            evidence = (
-                f"Dup: {_extract_evidence(content, RE_FD_DUP)}\n"
-                f"Socket: {_extract_evidence(content, RE_SOCKET_USE)}"
-            )
-        else:
-            evidence = _extract_evidence(content, RE_REVERSE_SHELL)
         findings.append(
             Finding(
                 CRITICAL,
                 package,
                 filename,
                 "Reverse shell / bind shell pattern",
-                evidence,
+                # Still RE_REVERSE_SHELL, so every finding that survives the gate
+                # renders byte-identical evidence to before this change.
+                _extract_evidence(content, RE_REVERSE_SHELL),
             )
         )
 
