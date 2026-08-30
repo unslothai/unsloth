@@ -26,6 +26,7 @@ from ._utils import (
     # _is_sdpa_excluded (in _utils) can honor it without a loader -> _utils cycle.
     DISABLE_SDPA_MODEL_NAMES,
 )
+from ._custom_dtype import register_custom_dtype
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger, _vllm_will_load_weights
 from .mistral import FastMistralModel
@@ -1720,7 +1721,7 @@ class FastModel(FastBaseModel):
                     "Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST
                 )
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+            register_custom_dtype(
                 "float16;torch.float16;torch.float16;"
                 "if name.endswith('norm'): "
                 "module._pre_set_compute_dtype = torch.float32\n"
@@ -1756,7 +1757,7 @@ class FastModel(FastBaseModel):
         elif "csm" in model_types_all:
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"  # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"  # Sesame fails
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+            register_custom_dtype(
                 "all;torch.float32;torch.float16;"
                 "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
                 ";"
@@ -1775,7 +1776,7 @@ class FastModel(FastBaseModel):
         elif "falcon_h1" in model_types_all:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+            register_custom_dtype(
                 "float16;torch.float32;torch.float16;"
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"
                 ";"
@@ -1784,7 +1785,7 @@ class FastModel(FastBaseModel):
         elif "nemotron_h" in model_types_all:
             # NemotronH (hybrid Mamba-2 + Transformer) uses same Mamba kernels as Falcon-H1
             # Mamba kernels need float32 Triton precision
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+            register_custom_dtype(
                 "float16;torch.float32;torch.float16;"
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"
                 ";"
@@ -1799,7 +1800,7 @@ class FastModel(FastBaseModel):
             if not (load_in_4bit and _bnb_compatible_quant):
                 # Only upcast MoE biases for MXFP4, not BnB
                 # Set norms to float32 since anyways they get upcasted to float32
-                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+                register_custom_dtype(
                     "all;None;None;"
                     "x = 'gate_up_proj_bias'\n"
                     "if hasattr(module, x): "
@@ -1814,7 +1815,7 @@ class FastModel(FastBaseModel):
             else:
                 # Set down projection compute dtype to be float32 for float16 machines
                 # Set norms to float32 since anyways they get upcasted to float32
-                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (
+                register_custom_dtype(
                     "torch.float16;torch.bfloat16;torch.float16;"
                     "if ('down_projs' in name) and hasattr(module, 'weight') and "
                     "torch.amax(dequantize_module_weight(module)) >= 0:"

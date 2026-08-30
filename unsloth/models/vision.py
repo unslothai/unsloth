@@ -43,6 +43,7 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
+from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -1142,11 +1143,13 @@ class FastBaseModel:
         # Check for custom data-types
         custom_datatype = None
         correct_dtype = None
-        if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
-            custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
-            assert custom_datatype.count(";") >= 4
+        # `custom_datatype` has to stay None when unset: the consumer below tests
+        # `is not None` and would walk every module of every model to `exec("")`.
+        _raw_custom_dtype, _code_is_trusted = trusted_custom_dtype()
+        if _raw_custom_dtype != "":
+            assert _raw_custom_dtype.count(";") >= 4
             checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code = (
-                custom_datatype.split(";", 4)
+                _raw_custom_dtype.split(";", 4)
             )
             # Allow custom dtypes on all runs
             allow_all_runs = checker == "all"
@@ -1155,15 +1158,27 @@ class FastBaseModel:
                 dtype == torch.float16 or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
             )
             if allow_all_runs or allow_float16_runs:
-                if eval(_dtype) is not None:
-                    dtype = eval(_dtype)
-                if eval(_bnb_compute_dtype) is not None:
-                    bnb_compute_dtype = eval(_bnb_compute_dtype)
+                # A table lookup, not eval: these fields NAME a dtype.
+                _resolved_dtype = resolve_dtype(_dtype)
+                if _resolved_dtype is not None:
+                    dtype = _resolved_dtype
+                _resolved_bnb_compute_dtype = resolve_dtype(_bnb_compute_dtype)
+                if _resolved_bnb_compute_dtype is not None:
+                    bnb_compute_dtype = _resolved_bnb_compute_dtype
                 correct_dtype = bnb_compute_dtype
-                custom_datatype = _custom_datatype
-                # Execute code as well
-                if len(execute_code.strip()) != 0:
-                    exec(execute_code)
+                # The last two fields are code, run only when this process set the
+                # variable; an inherited environment picks dtypes but injects nothing.
+                if _code_is_trusted:
+                    custom_datatype = _custom_datatype
+                    # Execute code as well
+                    if len(execute_code.strip()) != 0:
+                        exec(execute_code)
+                else:
+                    logger.warning(
+                        "Unsloth: Ignoring the code in `UNSLOTH_FORCE_CUSTOM_DTYPE` "
+                        "because it was not set by Unsloth."
+                    )
+                    custom_datatype = None
             else:
                 custom_datatype = None
                 correct_dtype = None

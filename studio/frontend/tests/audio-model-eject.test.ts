@@ -201,7 +201,7 @@ test("a dictation model this page did not load survives a mode switch", () => {
   // Eject unloaded a model this page never loaded. Model only, not model plus engine: a
   // "gguf" pick without whisper-server is served by the Transformers fallback and reports
   // residency under that engine, so requiring the requested engine leaked the sidecar.
-  assert.match(source, /claim !== null && claim === sttLoadedModel;/);
+  assert.match(source, /claim !== null &&\s*claim === sttLoadedModel;/);
   // Ownership is claimed after a successful load, not before it: claiming up front left the
   // flag set when a download was cancelled while the backend kept the previous resident
   // model, so leaving Transcribe unloaded another surface's model.

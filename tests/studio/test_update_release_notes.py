@@ -1257,8 +1257,17 @@ def test_link_resolver_leaves_raw_blocks_and_escapes_alone():
 def test_code_span_closers_ignore_backslashes():
     """Escapes are not processed inside a code span, so a run after one closes."""
     src = CODE_SPANS.read_text(encoding = "utf-8")
-    body = src[src.index("export function codeSpans") :]
-    assert body.count("escaped(text") == 1, "only an opener can be escaped"
+    # Counted over the whole module rather than from an exported wrapper: the
+    # scanner has already moved above `codeSpans` once, and a slice anchored on
+    # a wrapper reads as "no opener is escaped either" when that happens.
+    calls = [
+        " ".join(line.split())
+        for line in src.splitlines()
+        if "escaped(" in line and not line.lstrip().startswith("function escaped(")
+    ]
+    assert len(calls) == 1, f"only an opener can be escaped, called at {calls}"
+    # And that one call guards the run that opens a span, not the one closing it.
+    assert '!== "`" || escaped(' in calls[0]
 
 
 # The card's incompressible height, a fixed part plus a part that follows
