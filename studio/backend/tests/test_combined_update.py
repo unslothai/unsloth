@@ -742,7 +742,6 @@ def test_chained_progress_windows(monkeypatch, tmp_path):
 def _slim_phase(**over):
     phase = {
         "install_dir": "d",
-        "install_kind": "slim",
         "repo": "unslothai/whisper.cpp",
         "asset": None,
         "backend": "cpu",
@@ -809,18 +808,48 @@ def test_a_workable_pairing_still_installs(monkeypatch):
     assert result == {"to_tag": "v1.9.2-unsloth.12"}
 
 
-@pytest.mark.parametrize("install_kind", ["full", None])
-def test_only_a_slim_install_is_pre_flighted(monkeypatch, install_kind):
-    """A full install carries its own ggml, so llama's build cannot strand it."""
+def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
+    """The pre-flight asks about the TARGET release, not the installed one.
 
-    def must_not_resolve(**_kw):
-        raise AssertionError("pairing is irrelevant to a non-slim install")
+    A fat marker omits install_kind by design (prebuilt_core: "fat markers keep the
+    legacy payload exactly"), and published releases are slim-only now. So gating the
+    pre-flight on the installed marker would skip it for exactly the host most likely
+    to be handed its first slim bundle, and that host would hit the doomed install this
+    change exists to prevent.
+    """
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **_kw: {"prebuilt_available": False, "unavailable_reason": "incompatible"},
+    )
 
-    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", must_not_resolve)
+    def must_not_install(*_a, **_kw):
+        raise AssertionError("the install cannot succeed, so it must not be attempted")
+
+    monkeypatch.setattr(wupd, "run_chained_phase", must_not_install)
+
+    # No install_kind at all: the legacy fat marker.
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {
+        "skipped": True,
+        "skip_reason": "paired_llama_unavailable",
+    }
+
+
+def test_a_fat_target_release_is_never_reported_incompatible(monkeypatch):
+    """Which is why probing unconditionally costs nothing in correctness.
+
+    _slim_release_incompatibility deliberately explains only a slim pairing failure, so
+    a fat target can answer available or unresolved but never incompatible, and the
+    skip below stays unreachable for it.
+    """
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **_kw: {"prebuilt_available": True, "install_kind": "fat"},
+    )
     monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
 
-    phase = _slim_phase(install_kind = install_kind)
-    assert wupd.run_chained_phase_after_llama(phase, lambda _f: None) == {"to_tag": "v1"}
+    assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {"to_tag": "v1"}
 
 
 @pytest.mark.parametrize(

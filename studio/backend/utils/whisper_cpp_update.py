@@ -590,9 +590,6 @@ def chained_phase_plan(
     plan["update_available"] = True
     plan["phase"] = {
         "install_dir": install_dir,
-        # Only a slim install is pinned to llama's ggml, so only it needs the
-        # pairing re-checked when the llama phase runs first.
-        "install_kind": marker.get("install_kind"),
         "repo": marker.get("published_repo") or DEFAULT_PUBLISHED_REPO,
         "asset": marker.get("asset"),
         "backend": marker.get("backend"),
@@ -627,8 +624,6 @@ def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
     surfaces exit 2 as a job error, which is what makes an incompatible release
     actionable rather than a false success.
     """
-    if phase.get("install_kind") != "slim":
-        return run_chained_phase(phase, set_progress)
     try:
         backend = phase.get("backend")
         repo = phase.get("repo")
@@ -647,6 +642,13 @@ def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
     # manifest and a resolver that never ran all report prebuilt_available=false too,
     # and a pre-flight that could not answer knows nothing. Attempting there keeps the
     # previous behaviour rather than skipping an update that would have worked.
+    #
+    # This asks about the TARGET release, so it needs no test on the installed one. Only
+    # a slim release can be reported incompatible (_slim_release_incompatibility
+    # explains nothing else), and gating on the installed marker instead would miss the
+    # upgrade that matters most: a fat install carries no install_kind at all, by
+    # design, while releases are now slim-only, so exactly the host most likely to
+    # receive its first slim bundle would have skipped the check.
     if (resolved or {}).get("unavailable_reason") == "incompatible":
         return {"skipped": True, "skip_reason": "paired_llama_unavailable"}
     return run_chained_phase(phase, set_progress)
