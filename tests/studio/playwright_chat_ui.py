@@ -338,11 +338,7 @@ def exercise_permission_mode_controls(page, shoot):
     # a box no user ever sees. The floating monitor's own viewport checks below
     # settle the same way rather than measuring immediately.
     def fits_compact(box) -> bool:
-        return (
-            box is not None
-            and box["x"] >= 0
-            and box["x"] + box["width"] <= compact_width
-        )
+        return box is not None and box["x"] >= 0 and box["x"] + box["width"] <= compact_width
 
     deadline = time.time() + 5
     box = pill.bounding_box()
