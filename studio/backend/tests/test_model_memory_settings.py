@@ -1708,6 +1708,30 @@ class TestMlockApplicable:
         assert body.mlock_applicable is False
         assert body.mlock_skip_reason == "ungoverned"
 
+    def test_a_resident_stt_backend_is_ungoverned(self, monkeypatch):
+        import core.inference.gpu_arbiter as arbiter
+        import core.inference.orchestrator as orchestrator
+        import routes.settings as rs
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        monkeypatch.setattr(arbiter, "current_owner", lambda: None)
+        monkeypatch.setattr(
+            orchestrator,
+            "peek_inference_backend",
+            lambda: type(
+                "_Orchestrator",
+                (),
+                {
+                    "active_model_name": None,
+                    "loading_models": [],
+                    "resident_stt_model": lambda self: {"engine": "whisper.cpp"},
+                },
+            )(),
+        )
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is False
+        assert body.mlock_skip_reason == "ungoverned"
+
 
 class TestModelMemoryResponseSnapshot:
     def test_the_launch_placement_is_read_once(self, monkeypatch):

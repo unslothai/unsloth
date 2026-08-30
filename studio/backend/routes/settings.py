@@ -937,10 +937,13 @@ def _active_launch_placement():
             from core.inference.orchestrator import peek_inference_backend
 
             orchestrator = peek_inference_backend()
+            resident_stt_model = getattr(orchestrator, "resident_stt_model", None)
+            stt_model_loaded = bool(resident_stt_model()) if callable(resident_stt_model) else False
             if (
                 current_owner() is not None
                 or bool(getattr(orchestrator, "active_model_name", None))
                 or bool(getattr(orchestrator, "loading_models", None))
+                or stt_model_loaded
             ):
                 return None, False, False
             return _NO_LAUNCH, False, True
