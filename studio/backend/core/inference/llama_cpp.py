@@ -18201,11 +18201,7 @@ class LlamaCppBackend:
                     # the probe failed, so keep the snapshot unknown and re-probe later.
                     if is_vulkan_backend:
                         _shared_gpu_ids = (
-                            {
-                                idx
-                                for idx, _free in _detected_gpus
-                                if total_by_idx.get(idx, 1) <= 0
-                            }
+                            {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
                             if _gpu_mem
                             else None
                         )
