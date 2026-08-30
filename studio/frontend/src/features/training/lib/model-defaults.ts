@@ -9,7 +9,10 @@ import type { ModelDefaultsPatch } from "./model-defaults-edit-policy";
 function toNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
-    const parsed = Number(value);
+    // Do not coerce blank strings to 0.
+    const trimmed = value.trim();
+    if (trimmed === "") return undefined;
+    const parsed = Number(trimmed);
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
@@ -35,17 +38,45 @@ function toStringArray(value: unknown): string[] | undefined {
   return result.length > 0 ? result : undefined;
 }
 
+// The spellings studio/backend/core/training/trainer.py accepts, so a file means
+// the same thing to the picker as it does to the trainer. A quoted "false" read
+// as "leave it at the default" is how a config asking for no checkpointing ended
+// up training with Unsloth GC.
+const GRADIENT_CHECKPOINTING_ALIASES = new Map<
+  string,
+  TrainingConfigState["gradientCheckpointing"]
+>([
+  ["true", "true"],
+  ["1", "true"],
+  ["yes", "true"],
+  ["false", "none"],
+  ["0", "none"],
+  ["no", "none"],
+  ["none", "none"],
+  ["off", "none"],
+  ["unsloth", "unsloth"],
+  ["mlx", "mlx"],
+]);
+
 function toGradientCheckpointing(
   value: unknown,
 ): TrainingConfigState["gradientCheckpointing"] | undefined {
-  if (value === "none" || value === "true" || value === "unsloth" || value === "mlx") {
-    // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
-    if (usePlatformStore.getState().deviceType === "mac" && value === "unsloth") {
-      return "mlx";
-    }
-    return value;
+  // Shipped YAML may decode this value as a boolean.
+  if (typeof value === "boolean") return value ? "true" : "none";
+  if (typeof value !== "string") return undefined;
+  // Blank means absent here too, so it keeps whatever is selected.
+  const resolved = GRADIENT_CHECKPOINTING_ALIASES.get(
+    value.trim().toLowerCase(),
+  );
+  if (resolved === undefined) return undefined;
+  // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
+  if (
+    resolved === "unsloth" &&
+    usePlatformStore.getState().deviceType === "mac"
+  ) {
+    return "mlx";
   }
-  return undefined;
+  return resolved;
 }
 
 export function mapBackendModelConfigToTrainingPatch(
@@ -67,6 +98,19 @@ export function mapBackendModelConfigToTrainingPatch(
   const learningRate = toNumber(training?.learning_rate);
   if (learningRate !== undefined) patch.learningRate = learningRate;
 
+  // Preserve explicit null ("derive it") versus an absent or invalid value.
+  if (Object.hasOwn(training ?? {}, "embedding_learning_rate")) {
+    const raw = training?.embedding_learning_rate;
+    if (raw === null) {
+      patch.embeddingLearningRate = null;
+    } else {
+      const embeddingLearningRate = toNumber(raw);
+      if (embeddingLearningRate !== undefined) {
+        patch.embeddingLearningRate = embeddingLearningRate;
+      }
+    }
+  }
+
   const optim = toStringValue(training?.optim);
   if (optim !== undefined) patch.optimizerType = optim;
 
@@ -79,11 +123,23 @@ export function mapBackendModelConfigToTrainingPatch(
   const gradAccum = toNumber(training?.gradient_accumulation_steps);
   if (gradAccum !== undefined) patch.gradientAccumulation = gradAccum;
 
-  const warmupSteps = toNumber(training?.warmup_steps);
-  if (warmupSteps !== undefined) patch.warmupSteps = warmupSteps;
-
   const maxSteps = toNumber(training?.max_steps);
   if (maxSteps !== undefined) patch.maxSteps = maxSteps;
+
+  const warmupSteps = toNumber(training?.warmup_steps);
+  if (warmupSteps !== undefined) {
+    patch.warmupSteps = warmupSteps;
+  } else {
+    // Ten shipped model_defaults express warmup as a ratio and set no
+    // warmup_steps, default.yaml among them, so reading only warmup_steps left
+    // every one of them on the generic UI default. Materialize with ceil, the
+    // way TrainingArguments.get_warmup_steps does, so a small ratio such as an
+    // imported 0.03 over 10 steps asks for warmup and gets it instead of zero.
+    const warmupRatio = toNumber(training?.warmup_ratio);
+    if (warmupRatio !== undefined && maxSteps !== undefined && maxSteps > 0) {
+      patch.warmupSteps = Math.ceil(warmupRatio * maxSteps);
+    }
+  }
 
   const saveSteps = toNumber(training?.save_steps);
   if (saveSteps !== undefined) patch.saveSteps = saveSteps;
@@ -176,7 +232,8 @@ export function mapBackendModelConfigToTrainingPatch(
   if (wandbProject !== undefined) patch.wandbProject = wandbProject;
 
   const enableTensorboard = toBoolean(logging?.enable_tensorboard);
-  if (enableTensorboard !== undefined) patch.enableTensorboard = enableTensorboard;
+  if (enableTensorboard !== undefined)
+    patch.enableTensorboard = enableTensorboard;
 
   const tensorboardDir = toStringValue(logging?.tensorboard_dir);
   if (tensorboardDir !== undefined) patch.tensorboardDir = tensorboardDir;

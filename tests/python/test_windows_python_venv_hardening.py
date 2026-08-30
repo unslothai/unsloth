@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import run_pwsh
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
@@ -45,7 +47,11 @@ def _link_dir(link: Path, target: Path) -> None:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: $shell is always pwsh or powershell (see POWERSHELLS),
+    # and every venv and rollback case in this file reads its stdout, so an interpreter that
+    # died at startup would surface as install.ps1 losing half a moved environment.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
@@ -160,6 +166,10 @@ def test_rollback_keeps_state_when_the_move_stops_partway(tmp_path: Path, shell:
 $ErrorActionPreference = "Stop"
 $StudioHome = $env:TEST_STUDIO_HOME
 function substep {{ param([string]$Text, [string]$Color) }}
+# The split-move warning goes through install.ps1's UTF-8 stdout sink. Echo it so
+# the assertions below can read it; without this the call is a command-not-found
+# terminating error that the try/catch swallows, and the warning is simply lost.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 function Move-Item {{
     param([string]$LiteralPath, [string]$Destination, [string]$ErrorAction, [switch]$Force)
     if ($env:TEST_ROLLBACK_CASE -eq "partial") {{
@@ -192,7 +202,11 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
     assert state["dir"].startswith(os.path.join(str(tmp_path), "unsloth_studio.rollback.")), out
     assert Path(state["dir"]).is_dir(), out
     # Both halves are named, so the user is not left hunting for the moved tree.
-    assert str(existing) in out and state["dir"] in out, out
+    # Match the warning lines themselves rather than the bare paths: $existing is a
+    # prefix of the rollback dir, so "str(existing) in out" alone is satisfied by the
+    # dir= line and would stay green even with the warning missing entirely.
+    assert f"still in place: {existing}" in out, out
+    assert f"moved aside:    {state['dir']}" in out, out
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -210,6 +224,7 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
@@ -226,6 +241,10 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
+# The merge/restore helpers warn through install.ps1's UTF-8 stdout sink on their
+# conflict branches. This run does not take one, but leaving the sink undefined
+# means any future case that does would die on a command-not-found instead.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 {blocks}
 $script:StudioVenvRollbackActive  = $true
 $script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
@@ -262,6 +281,7 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
@@ -283,6 +303,10 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
+# The merge/restore helpers warn through install.ps1's UTF-8 stdout sink on their
+# conflict branches. This run does not take one, but leaving the sink undefined
+# means any future case that does would die on a command-not-found instead.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 {blocks}
 $script:StudioVenvRollbackActive  = $true
 $script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
@@ -325,6 +349,7 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Test-StudioPathPresent",
             "Remove-StudioVenvTreeWithRetry",
             "Merge-StudioVenvRollbackTree",
             "Restore-StudioVenvRollback",
@@ -347,6 +372,9 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
+# Restore-StudioVenvRollback warns through install.ps1's UTF-8 stdout sink. Echo it
+# rather than swallowing it, so a warning stays visible in the assertion message.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 {blocks}
 $script:StudioVenvRollbackActive  = $true
 $script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
@@ -398,10 +426,11 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     marker = source.index(
         '[System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "")'
     )
-    first_uv_pip = source.index("uv pip install --python $VenvPython")
+    # Anchored past the command token: uv is invoked as the resolved $script:UvExe.
+    first_uv_pip = source.index("pip install --python $VenvPython")
     gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
 
     assert marker < gate < gpu_detection < first_uv_pip
-    assert 'Write-Host "        Managed Python: $VenvPython"' in source
-    assert 'Write-Host "        Recorded base Python home: $recordedBaseHome"' in source
+    assert 'Write-StudioLine "        Managed Python: $VenvPython"' in source
+    assert 'Write-StudioLine "        Recorded base Python home: $recordedBaseHome"' in source
     assert 'return (Exit-InstallFailure "Managed Python is unavailable' in source

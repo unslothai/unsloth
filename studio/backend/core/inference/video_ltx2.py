@@ -32,6 +32,15 @@ logger = get_logger(__name__)
 
 # Companion files (text projections, VAEs incl. vocoder) beside the quants in unsloth's GGUF repo: the official Lightricks weights split out of the combined checkpoint. Keyed by variant.
 LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
+
+
+def _live_cache_dir() -> str:
+    """Unsloth's LIVE hub cache root. Read from utils rather than ``diffusion.hub_cache_dir`` to
+    avoid a circular import, the same way diffusion_auto_policy does."""
+    from utils.hf_cache_settings import active_hf_hub_cache
+    return active_hf_hub_cache()
+
+
 _EXTRAS_TEXT_PROJ = "text_encoders/ltx-2.3-22b-{variant}_embeddings_connectors.safetensors"
 _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
 _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"
@@ -333,12 +342,26 @@ def _split_checkpoint(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return groups
 
 
-def _load_extras_file(filename: str, hf_token: Optional[str]) -> dict[str, Any]:
+def _load_extras_file(
+    filename: str,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
+) -> dict[str, Any]:
     from safetensors.torch import load_file
 
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-    path = hf_hub_download_with_xet_fallback(LTX23_EXTRAS_REPO, filename, hf_token)
+    path = hf_hub_download_with_xet_fallback(
+        LTX23_EXTRAS_REPO,
+        filename,
+        hf_token,
+        # The plan counts an extras file cached under EITHER root and stages neither, so this has to
+        # resolve both or it re-pulls what the planner skipped, inline and outside the manager.
+        reuse_other_cache_root = True,
+        # And a load nobody asked for takes the cached copy or fails: the switch's locality gate
+        # cleared these three artifacts by name, so a miss here is a promise it cannot keep.
+        local_files_only = local_files_only,
+    )
     return load_file(path)
 
 
@@ -439,6 +462,7 @@ def load_ltx23_transformer(
     torch_dtype: Any,
     is_gguf: bool,
     hf_token: Optional[str],
+    local_files_only: bool = False,
 ) -> Any:
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
@@ -452,6 +476,8 @@ def load_ltx23_transformer(
         "subfolder": "transformer",
         "torch_dtype": torch_dtype,
         "token": hf_token,
+        # ``config`` is the BASE REPO, so the 2.0 transformer config is a hub read here.
+        "local_files_only": local_files_only,
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
     if is_gguf:
@@ -460,7 +486,12 @@ def load_ltx23_transformer(
 
 
 def load_ltx23_connectors(
-    connector_state: dict[str, Any], *, variant: str, torch_dtype: Any, hf_token: Optional[str]
+    connector_state: dict[str, Any],
+    *,
+    variant: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
 ) -> Any:
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
@@ -468,7 +499,7 @@ def load_ltx23_connectors(
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
-            _load_extras_file(_EXTRAS_TEXT_PROJ.format(variant = variant), hf_token)
+            _load_extras_file(_EXTRAS_TEXT_PROJ.format(variant = variant), hf_token, local_files_only)
         )
     return _build_from_config(
         LTX2TextConnectors,
@@ -480,11 +511,18 @@ def load_ltx23_connectors(
 
 
 def load_ltx23_vae(
-    vae_state: dict[str, Any], *, variant: str, torch_dtype: Any, hf_token: Optional[str]
+    vae_state: dict[str, Any],
+    *,
+    variant: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
 ) -> Any:
     from diffusers import AutoencoderKLLTX2Video
     if not vae_state:
-        vae_state = _load_extras_file(_EXTRAS_VIDEO_VAE.format(variant = variant), hf_token)
+        vae_state = _load_extras_file(
+            _EXTRAS_VIDEO_VAE.format(variant = variant), hf_token, local_files_only
+        )
     return _build_from_config(
         AutoencoderKLLTX2Video,
         _VIDEO_VAE_CONFIG,
@@ -502,12 +540,15 @@ def load_ltx23_audio_vae_and_vocoder(
     variant: str,
     torch_dtype: Any,
     hf_token: Optional[str],
+    local_files_only: bool = False,
 ) -> tuple[Any, Any]:
     from diffusers import AutoencoderKLLTX2Audio
     from diffusers.pipelines.ltx2.vocoder import LTX2VocoderWithBWE
 
     if not audio_vae_state or not vocoder_state:
-        combined = _load_extras_file(_EXTRAS_AUDIO_VAE.format(variant = variant), hf_token)
+        combined = _load_extras_file(
+            _EXTRAS_AUDIO_VAE.format(variant = variant), hf_token, local_files_only
+        )
         audio_vae_state = {
             k[len("audio_vae.") :]: v for k, v in combined.items() if k.startswith("audio_vae.")
         }
@@ -544,6 +585,7 @@ def load_ltx23_pipeline(
     is_gguf: bool,
     hf_token: Optional[str] = None,
     text_encoder: Optional[Any] = None,
+    local_files_only: bool = False,
 ) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
     (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
@@ -551,7 +593,14 @@ def load_ltx23_pipeline(
 
     ``text_encoder`` supplies an already-built encoder (the caller's pre-cast fp8 Gemma3);
     None builds it dense from the base repo. Because the assembly bypasses
-    ``from_pretrained``, this is the only way an fp8 request reaches the 2.3 path."""
+    ``from_pretrained``, this is the only way an fp8 request reaches the 2.3 path.
+
+    ``local_files_only`` is a load nobody asked for. Because the assembly bypasses
+    ``from_pretrained`` it also bypasses the caller's guarded ``pipe_kwargs``, and it is handed the
+    base REPO ID rather than a staged snapshot (the 2.3 snapshot lacks the base VAEs, so
+    ``_base_local_dir`` is deliberately None here), so without the flag the base config, the
+    scheduler, the tokenizer, the dense Gemma3 encoder and the companion VAE/vocoder artifacts are
+    all fetched by a load that promised to fetch nothing."""
     import transformers
     from diffusers import LTX2Pipeline
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
@@ -582,30 +631,53 @@ def load_ltx23_pipeline(
         torch_dtype = torch_dtype,
         is_gguf = is_gguf,
         hf_token = hf_token,
+        local_files_only = local_files_only,
     )
     connectors = load_ltx23_connectors(
         groups["connectors"],
         variant = variant,
         torch_dtype = torch_dtype,
         hf_token = hf_token,
+        local_files_only = local_files_only,
     )
-    vae = load_ltx23_vae(groups["vae"], variant = variant, torch_dtype = torch_dtype, hf_token = hf_token)
+    vae = load_ltx23_vae(
+        groups["vae"],
+        variant = variant,
+        torch_dtype = torch_dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+    )
     audio_vae, vocoder = load_ltx23_audio_vae_and_vocoder(
         groups["audio_vae"],
         groups["vocoder"],
         variant = variant,
         torch_dtype = torch_dtype,
         hf_token = hf_token,
+        local_files_only = local_files_only,
     )
 
     # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather than drift.
-    index = LTX2Pipeline.load_config(base_repo, token = hf_token)
+    # Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Unsloth's cache
+    # folder is a setting, and the locality gate that cleared this switch reads the live root. An
+    # unpinned lookup after a mid-session change searches the OTHER root, so under
+    # local_files_only it raises for a base that is fully downloaded, after eviction.
+    cache_dir = _live_cache_dir()
+    index = LTX2Pipeline.load_config(
+        base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
+    )
 
     def _sub(name: str, **extra: Any) -> Any:
         library, class_name = index[name]
         module = transformers if library == "transformers" else __import__("diffusers")
         return getattr(module, class_name).from_pretrained(
-            base_repo, subfolder = name, token = hf_token, **extra
+            base_repo,
+            subfolder = name,
+            token = hf_token,
+            # The dense Gemma3 encoder below is the largest of these by far, and every one of them
+            # resolves the hub id: the flag is what keeps each a cache read.
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+            **extra,
         )
 
     scheduler = _sub("scheduler")

@@ -62,7 +62,7 @@ test("migration preserves tuned values while protecting them from model defaults
     16,
   );
 
-  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 20);
+  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 21);
   assert.equal(migrated.learningRate, 0.000031);
   assert.equal(migrated.loraRank, 48);
   assert.equal(migrated.modelDefaultsAppliedFor, "org/model");
@@ -71,6 +71,7 @@ test("migration preserves tuned values while protecting them from model defaults
     learningRateManuallySet: true,
     modelAdapterLearningRate: null,
     datasetFormatBeforeCpt: null,
+    targetModulesBeforeCpt: null,
   });
   assert.equal("wandbToken" in migrated, false);
 });

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +25,8 @@ import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -51,19 +54,19 @@ import {
 import {
   downloadManager,
   useDownloadManagerStore,
+  useHttpPartialsResumable,
   useRepoDownload,
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
-import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
-  ggufVariantDownloadSizeBytes,
+  ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
 import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
@@ -89,6 +92,7 @@ import {
   GgufDownloadStatusCard,
   GgufDownloadingFallbackCard,
 } from "./gguf-status-cards";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
 import { useDownloadCardState } from "./use-download-card-state";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
@@ -246,7 +250,7 @@ interface GgufVariantMenuItem {
 
 function createGgufVariantMenuItems(
   variants: readonly GgufVariantDetail[] | null,
-  resources: { gpuGb?: number; systemRamGb?: number },
+  resources: { gpuGb?: number; systemRamGb?: number; budgetFraction?: number },
 ): GgufVariantMenuItem[] {
   if (!variants) return [];
   return variants.map((variant) => ({
@@ -257,7 +261,7 @@ function createGgufVariantMenuItems(
     fit: classifyGgufFit(variant.size_bytes, resources),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
-    downloadSizeLabel: formatBytes(ggufVariantDownloadSizeBytes(variant)),
+    downloadSizeLabel: ggufVariantTransferLabel(variant),
   }));
 }
 
@@ -506,9 +510,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
               </span>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>
+              {/* Selecting a row only selects it; the card's button starts the
+                  transfer, so do not promise otherwise. */}
               {liveActive
                 ? "Download is running. Select it to view progress."
-                : "Partial download. Select it to continue."}
+                : "Partial download. Select it, then use the button on the card to finish it."}
             </TooltipContent>
           </Tooltip>
         )}
@@ -552,6 +558,7 @@ export function GgufDownloadCard({
   onLoad,
   onEject,
   onChange,
+  showMemoryBar = true,
 }: {
   repoId: string;
   isActive: boolean;
@@ -570,9 +577,17 @@ export function GgufDownloadCard({
   onUseInChat?: () => void;
   onEject?: () => void;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs. They load through a different
+   *  planner onto a single torch device rather than the aggregate inference
+   *  pool, so the llama.cpp estimator has nothing to say about them -- and when
+   *  it returns unsized the bar falls back to the file size and draws a
+   *  weights-only verdict anyway, which is a confident number about the wrong
+   *  runtime. The picker suppresses these rows for the same reason. */
+  showMemoryBar?: boolean;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
+  const partialsResumable = useHttpPartialsResumable();
   const localVariantPath = cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
@@ -611,10 +626,19 @@ export function GgufDownloadCard({
     ReadonlySet<string>
   >(() => new Set<string>());
 
+  // The live VRAM Budget, so the badge and the sort score against the line the
+  // loader will actually admit at. The memory bar on this same row already reads
+  // it; without this the two disagreed for every saved fraction below the default.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
+
   const rawSortedVariants = useMemo(() => {
     if (!variants) return null;
-    return sortDownloadableGgufVariants(variants, { gpuGb, systemRamGb });
-  }, [variants, gpuGb, systemRamGb]);
+    return sortDownloadableGgufVariants(variants, {
+      gpuGb,
+      systemRamGb,
+      budgetFraction,
+    });
+  }, [variants, gpuGb, systemRamGb, budgetFraction]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -636,8 +660,13 @@ export function GgufDownloadCard({
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
   const variantMenuItems = useMemo(
-    () => createGgufVariantMenuItems(sortedVariants, { gpuGb, systemRamGb }),
-    [gpuGb, sortedVariants, systemRamGb],
+    () =>
+      createGgufVariantMenuItems(sortedVariants, {
+        gpuGb,
+        systemRamGb,
+        budgetFraction,
+      }),
+    [gpuGb, sortedVariants, systemRamGb, budgetFraction],
   );
 
   const selectedQuant =
@@ -733,12 +762,16 @@ export function GgufDownloadCard({
   const selectedFit = useMemo(
     () =>
       selected
-        ? classifyGgufFit(selected.size_bytes, { gpuGb, systemRamGb })
+        ? classifyGgufFit(selected.size_bytes, {
+            gpuGb,
+            systemRamGb,
+            budgetFraction,
+          })
         : null,
-    [gpuGb, selected?.size_bytes, systemRamGb],
+    [gpuGb, selected?.size_bytes, systemRamGb, budgetFraction],
   );
   const selectedDownloadSizeLabel = selected
-    ? formatBytes(ggufVariantDownloadSizeBytes(selected))
+    ? ggufVariantTransferLabel(selected)
     : null;
   const updateAvailable =
     selected?.downloaded === true && selected.update_available === true;
@@ -778,6 +811,8 @@ export function GgufDownloadCard({
         : ctaDisabled && !selectedIsActive,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
+    partialResumable: selected?.partial_resumable === true,
+    partialsResumable,
   });
   const selectedLabel = selected ? ggufVariantDisplayLabel(selected) : null;
   const deleteTargetVariant =
@@ -787,6 +822,7 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
+  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
@@ -899,6 +935,7 @@ export function GgufDownloadCard({
               }}
               title="Delete quantization?"
               deleting={deleting}
+              blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
               onConfirm={() => void runDelete()}
               description={
                 <>
@@ -907,6 +944,7 @@ export function GgufDownloadCard({
                     {repoId} ({deleteTargetLabel})
                   </span>{" "}
                   from disk. You can re-download it later.
+                  <DeleteImpactSummary impact={deleteImpact} />
                 </>
               }
             />
@@ -976,9 +1014,11 @@ export function GgufDownloadCard({
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="top" sideOffset={4}>
+                      {/* The badge rides inside the quant trigger, so clicking
+                          it opens the menu. Name the button that acts. */}
                       {selectedLiveActive
-                        ? "Download is running. Click to cancel."
-                        : "Partial download. Click to continue."}
+                        ? "Download is running. Use the button on the right to stop it."
+                        : downloadAction.partialHint}
                     </TooltipContent>
                   </Tooltip>
                 )}
@@ -1154,6 +1194,18 @@ export function GgufDownloadCard({
           )}
         </button>
       </DownloadCard>
+      {/* Only a quant actually on disk gets charted: an undownloaded one has no
+          weights to measure, and the fit badge already tiers those. */}
+      {selected?.downloaded && showMemoryBar ? (
+        <ModelMemoryBarFor
+          repoId={repoId}
+          quant={selected.quant}
+          sizeBytes={selected.size_bytes}
+          gpuGb={gpuGb}
+          showReadout={true}
+          className="px-1"
+        />
+      ) : null}
       {refreshError && (
         <button
           type="button"

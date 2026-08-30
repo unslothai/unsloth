@@ -24,6 +24,7 @@ from routes.inference import _mtp_draft_for_path
 from routes.inference import _native_gguf_companion_usable
 from utils.models.model_config import (
     _local_gguf_companion_search_root,
+    detect_dflash_file,
     detect_dspark_file,
     detect_mtp_file,
 )
@@ -48,6 +49,7 @@ def _request_matches_loaded_settings(
         gguf_mmproj_file = None,
         gguf_mtp_file = draft,
         gguf_dspark_file = detect_dspark_file(model_path, search_root = root),
+        gguf_dflash_file = detect_dflash_file(model_path, search_root = root),
         is_vision = False,
     )
     intent = _resolve_gguf_load_intent(

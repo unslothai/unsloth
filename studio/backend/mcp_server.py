@@ -139,15 +139,18 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_training as start
 
         request = TrainingStartRequest.model_validate(config)
-        # Pass via_api_key explicitly (a direct call leaves it a Depends object).
-        # MCP drives Unsloth like the UI session, so it coexists and frees VRAM.
-        return _dump(await start(request, current_subject = "mcp", via_api_key = False))
+        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
 
     @mcp.tool
-    async def stop_training(save: bool = True) -> dict[str, Any]:
-        """Ask the active training process to stop at its next safe checkpoint."""
+    async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:
+        """Stop the identified training job at its next safe checkpoint."""
         from routes.training import TrainingStopRequest, stop_training as stop
-        return _dump(await stop(TrainingStopRequest(save = save), current_subject = "mcp"))
+        return _dump(
+            await stop(
+                TrainingStopRequest(save = save, expected_job_id = expected_job_id),
+                current_subject = "mcp",
+            )
+        )
 
     @mcp.tool
     async def list_training_runs(limit: int = 50, offset: int = 0) -> dict[str, Any]:
@@ -165,7 +168,10 @@ def create_studio_mcp() -> FastMCP:
         from models.data_recipe import RecipePayload
         from routes.data_recipe.validate import validate
 
-        return _dump(validate(RecipePayload(recipe = recipe)))
+        # Direct call, so the ViaApiKey dependency never runs and its `= False`
+        # default would read as a UI session. This surface is a remote static
+        # bearer, so say so explicitly.
+        return _dump(validate(RecipePayload(recipe = recipe), via_api_key = True))
 
     @mcp.tool
     def get_recipe_job_status(job_id: str) -> dict[str, Any]:
@@ -226,6 +232,7 @@ def create_studio_mcp() -> FastMCP:
         hf_token: str | None = None,
         imatrix: bool = False,
         imatrix_path: str | None = None,
+        private: bool = False,
     ) -> dict[str, Any]:
         """Export the loaded model to GGUF using Unsloth's existing path validation.
 
@@ -245,6 +252,7 @@ def create_studio_mcp() -> FastMCP:
             hf_token = hf_token,
             imatrix = imatrix,
             imatrix_path = imatrix_path,
+            private = private,
         )
         return _dump(await export(request, current_subject = "mcp"))
 

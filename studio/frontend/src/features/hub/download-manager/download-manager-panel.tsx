@@ -73,6 +73,16 @@ function canUseDownloadManager(pathname: string): boolean {
 }
 
 function variantSuffix(job: ManagedDownload): string {
+  if (job.variant?.startsWith("@")) {
+    // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
+    // can be a curated single .safetensors and companion repos carry .safetensors too, so the
+    // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
+    // which would otherwise change label mid-download after a restart.
+    const isModelFile =
+      job.checkpoint ??
+      job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
+    return ` · ${isModelFile ? "Model file" : "Required assets"}`;
+  }
   return job.variant ? ` · ${job.variant}` : "";
 }
 
@@ -162,6 +172,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
             fraction: job.fraction,
           }}
           bytesPerSec={job.bytesPerSec}
+          etaSeconds={job.etaSeconds}
         />
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (

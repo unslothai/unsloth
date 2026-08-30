@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 from loggers import get_logger
 import os
@@ -25,7 +26,13 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
 from utils.hardware import apply_gpu_ids, is_apple_silicon
+
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
@@ -38,6 +45,24 @@ _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 def _ensure_backend_on_path() -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
+
+
+def _native_audio_security_targets_or_error(
+    model_name: str, hf_token: str | None, resp_queue: Any
+) -> list[str] | None:
+    try:
+        from core.inference.native_audio import native_audio_security_targets
+        return native_audio_security_targets(model_name, hf_token = hf_token)
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "error",
+                "error": f"Failed to inspect native audio security metadata: {exc}",
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+        return None
 
 
 def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
@@ -270,11 +295,24 @@ def _run_security_gates(
     # False, so check HF's security scan every load (for a LoRA, the base deserializes).
     from utils.security import evaluate_file_security
 
+    from utils.security import load_scan_target
+
     if compute_subdirs:
         from utils.security import security_load_subdirs
 
-    for target in targets:
-        _subdirs = security_load_subdirs(target, hf_token) if compute_subdirs else ()
+    scoped_targets: list[str] = []
+    consent_load_subdirs: dict[str, tuple] = {}
+    for requested_target in targets:
+        _subdirs = security_load_subdirs(requested_target, hf_token) if compute_subdirs else ()
+        target, _subdirs = load_scan_target(requested_target, _subdirs)
+        if target not in consent_load_subdirs:
+            scoped_targets.append(target)
+            consent_load_subdirs[target] = ()
+        _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[target], *_subdirs)))
+        consent_load_subdirs[target] = _subdirs
+
+    for target in scoped_targets:
+        _subdirs = consent_load_subdirs[target]
         _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
         if _fs.blocked:
             _send_response(
@@ -294,11 +332,12 @@ def _run_security_gates(
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
         _rc = evaluate_remote_code_consent_for_targets(
-            targets,
+            scoped_targets,
             hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = approved_fingerprint,
             subject = subject,
+            load_subdirs_by_target = consent_load_subdirs,
         )
         if _rc.blocked:
             _send_response(
@@ -318,6 +357,28 @@ def _run_security_gates(
             return False
 
     return True
+
+
+def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
+    """Live allocator-owned VRAM this disposable worker will release."""
+    resolved_gpu_ids = config.get("resolved_gpu_ids")
+    device_backend = str(config.get("device_backend") or "")
+    if not resolved_gpu_ids or device_backend not in ("cuda", "xpu"):
+        return None
+    try:
+        import torch
+
+        device_module = torch.cuda if device_backend == "cuda" else torch.xpu
+        memory_reserved = getattr(device_module, "memory_reserved", None)
+        if not callable(memory_reserved):
+            return None
+        return {
+            str(int(physical_id)): int(memory_reserved(local_ordinal)) / float(1024**3)
+            for local_ordinal, physical_id in enumerate(resolved_gpu_ids)
+        }
+    except Exception as exc:
+        logger.warning("Could not report worker-owned GPU memory: %s", exc)
+        return None
 
 
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
@@ -349,7 +410,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
         # the SSM install so a blocked model never triggers a native kernel build.
-        targets = [config["model_name"]]
+        from core.inference.native_audio import native_audio_security_targets
+
+        targets = native_audio_security_targets(
+            config["model_name"], getattr(mc, "audio_type", None), hf_token
+        )
         if mc.is_lora and getattr(mc, "base_model", None):
             targets.append(str(mc.base_model))
         if not _run_security_gates(
@@ -496,30 +561,81 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
-def _drain_skip_generate(cmd: dict, resp_queue: Any, drain_event) -> bool:
+def _drain_skip_generate(
+    cmd: dict,
+    resp_queue: Any,
+    drain_event,
+    *,
+    audio: bool = False,
+) -> bool:
     """Skip a generate queued behind a cancelled one during an unload.
 
     The parent sets ``drain_event`` for the whole unload. Because the parent's
     per-token ``cancel_event`` is cleared at the start of every generate, a cancel
     set while this generate was still queued would otherwise be lost when it is
-    dequeued. If the drain is in effect, emit an immediate (empty) ``gen_done`` so
-    the parent's stream/mailbox drains fast and the switch stays fast, and report
-    the generate was skipped so the caller does not clear the cancel or run it.
+    dequeued. If the drain is in effect, emit an immediate terminal response
+    (``gen_done`` or ``audio_error``) so the parent's mailbox drains fast and the
+    switch stays fast, and report the generate was skipped so the caller does not
+    clear the cancel or run it.
     """
     if drain_event is None or not drain_event.is_set():
         return False
     request_id = cmd.get("request_id", "")
     logger.info("Skipping generate for request %s: unload draining", request_id)
+    response = {
+        "type": "audio_error" if audio else "gen_done",
+        "request_id": request_id,
+        "cancelled": True,
+    }
+    if audio:
+        response["error"] = "Audio generation cancelled"
+    else:
+        response["stats"] = None
+    _send_response(resp_queue, response)
+    return True
+
+
+def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> bool:
+    """Clear stale cancellation and acknowledge when this TTS command owns the worker.
+
+    The durable unload drain is checked on both sides of the clear so an unload
+    landing in that window skips TTS instead of having its shared cancel erased.
+    The parent does not signal request cancellation until it receives audio_started.
+    """
+    if _drain_skip_generate(cmd, resp_queue, drain_event, audio = True):
+        return False
+    cancel_event.clear()
+    if _drain_skip_generate(cmd, resp_queue, drain_event, audio = True):
+        return False
     _send_response(
         resp_queue,
         {
-            "type": "gen_done",
-            "request_id": request_id,
-            "cancelled": True,
-            "stats": None,
+            "type": "audio_started",
+            "request_id": cmd.get("request_id", ""),
         },
     )
     return True
+
+
+def _backend_declares(
+    backend,
+    name: str,
+    method: str = "generate_chat_response",
+) -> bool:
+    """Whether this backend's *method* declares *name*.
+
+    A signature check, not a capability claim: a backend honoring the option
+    through **kwargs would read as False here. That is accurate for the backends
+    that ship today, and failing closed costs the option -- an ignored seed, or
+    a request sampled without its penalty -- never a crash.
+    """
+    generate = getattr(backend, method, None)
+    if generate is None:
+        return False
+    try:
+        return name in inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
@@ -557,9 +673,17 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "enable_thinking",
             "reasoning_effort",
             "preserve_thinking",
+            "continue_final_message",
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
+
+        # These options are MLX-only. The transformers backend declares none of
+        # them and takes no **kwargs, so forwarding unconditionally would turn
+        # its documented "ignores them" behavior into a TypeError.
+        for gated in ("seed", "frequency_penalty", "logit_bias", "stop"):
+            if gated in cmd and _backend_declares(backend, gated):
+                gen_kwargs[gated] = cmd[gated]
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
@@ -597,7 +721,8 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             {
                 "type": "gen_done",
                 "request_id": request_id,
-                # usage/timings from the MLX backend (None elsewhere).
+                # usage/timings from MLX and safetensors, plus "truncated" from
+                # safetensors (None for a backend that reports neither).
                 "stats": getattr(backend, "last_generation_stats", None),
             },
         )
@@ -677,7 +802,7 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
+def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle TTS audio generation — returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
     try:
@@ -691,6 +816,10 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
             max_new_tokens = cmd.get("max_new_tokens", 2048),
             repetition_penalty = cmd.get("repetition_penalty", 1.0),
             use_adapter = cmd.get("use_adapter"),
+            cancel_event = cancel_event,
+            instructions = cmd.get("instructions"),
+            language = cmd.get("language"),
+            seed = cmd.get("seed"),
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
@@ -713,6 +842,11 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": "audio_error",
                 "request_id": request_id,
                 "error": str(exc),
+                # The route's own cancel event is not set when the worker's shared event is
+                # (an unload, a training admission, the GPU arbiter), so without this flag the
+                # orchestrator reports a cancellation as HTTP 500. Matching on the message text
+                # is what AudioGenerationCancelledError exists to avoid.
+                "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
                 "stack": traceback.format_exc(limit = 20),
             },
         )
@@ -755,6 +889,11 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             use_adapter = cmd.get("use_adapter")
             if use_adapter is not None:
                 audio_kwargs["use_adapter"] = use_adapter
+            # MLX-only here too, for the reason the text branch gates it.
+            if "stop" in cmd and _backend_declares(
+                backend, "stop", "generate_audio_input_response"
+            ):
+                audio_kwargs["stop"] = cmd["stop"]
             generator = backend.generate_audio_input_response(**audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
@@ -778,6 +917,8 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             {
                 "type": "gen_done",
                 "request_id": request_id,
+                # Same channel as the text path; the ASR backends reset it per run.
+                "stats": getattr(backend, "last_generation_stats", None),
             },
         )
         logger.info("Finished audio input generation for request_id=%s", request_id)
@@ -905,6 +1046,13 @@ def run_inference_process(
 
     model_name = config["model_name"]
 
+    # These architectures use their publishers' native Transformers/Diffusers
+    # interfaces. Select that backend before the Apple MLX fast-path and before
+    # importing Unsloth; native_audio itself has no eager ML imports.
+    from core.inference.native_audio import is_native_audio_model
+
+    _native_audio_worker = is_native_audio_model(model_name)
+
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
@@ -924,7 +1072,7 @@ def run_inference_process(
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
@@ -1007,6 +1155,15 @@ def run_inference_process(
                             "type": "audio_error",
                             "request_id": cmd.get("request_id"),
                             "error": "Text-to-speech is not supported on the MLX backend yet.",
+                            # Lets the parent raise a typed error, not a generic 500.
+                            "code": AUDIO_UNSUPPORTED_CODE,
+                            # Only some TTS families publish a GGUF build, so name the
+                            # host as the general fix and GGUF as the conditional one.
+                            "hint": (
+                                "Run it on a non-MLX host, or load a GGUF build of it "
+                                "if one is published -- llama.cpp carries the "
+                                "snac/bicodec/dac decoders."
+                            ),
                         },
                     )
                 elif cmd_type == "share_object":
@@ -1023,6 +1180,15 @@ def run_inference_process(
                     cancel_event.set()
                     backend.reset_generation_state()
                     _send_response(resp_queue, {"type": "reset_ack"})
+                elif cmd_type == "gpu_memory":
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "gpu_memory",
+                            "request_id": cmd.get("request_id"),
+                            "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
+                        },
+                    )
                 elif cmd_type == "status":
                     _send_response(
                         resp_queue,
@@ -1064,8 +1230,7 @@ def run_inference_process(
         return
 
     # ── Windows: check Triton availability ──
-    # Placed ahead of the torchao stub below (which imports torch on win32 to detect ROCm),
-    # matching the training and export workers' gate-then-stub ordering.
+    # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
@@ -1134,7 +1299,9 @@ def run_inference_process(
     # are metadata-only, so run them first and refuse a blocked model before any native build.
     # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
     # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
-    _gate_targets = [model_name]
+    _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)
+    if _gate_targets is None:
+        return
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
@@ -1164,18 +1331,24 @@ def run_inference_process(
             resp_queue,
             {
                 "type": "status",
-                "message": "Importing Unsloth...",
+                "message": (
+                    "Importing native audio runtime..."
+                    if _native_audio_worker
+                    else "Importing Unsloth..."
+                ),
             },
         )
 
         _ensure_backend_on_path()
 
-        # Recover from any namespace-package shadow before importing Unsloth.
-        from core.import_guards import ensure_real_packages
+        if _native_audio_worker:
+            from core.inference.native_audio import NativeAudioBackend as InferenceBackend
+        else:
+            # Recover from any namespace-package shadow before importing Unsloth.
+            from core.import_guards import ensure_real_packages
+            ensure_real_packages("unsloth_zoo", "unsloth")
 
-        ensure_real_packages("unsloth_zoo", "unsloth")
-
-        from core.inference.inference import InferenceBackend
+            from core.inference.inference import InferenceBackend
 
         import transformers
 
@@ -1260,8 +1433,9 @@ def run_inference_process(
                 _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "generate_audio":
-                cancel_event.clear()
-                _handle_generate_audio(backend, cmd, resp_queue)
+                if not _prepare_generate_audio(cmd, resp_queue, cancel_event, drain_event):
+                    continue
+                _handle_generate_audio(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "generate_audio_input":
                 cancel_event.clear()
@@ -1282,6 +1456,16 @@ def run_inference_process(
                     resp_queue,
                     {
                         "type": "reset_ack",
+                    },
+                )
+
+            elif cmd_type == "gpu_memory":
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gpu_memory",
+                        "request_id": cmd.get("request_id"),
+                        "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
                     },
                 )
 

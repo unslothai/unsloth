@@ -5,6 +5,10 @@ import { validateHubResourceId } from "@/components/resource-picker/hub-resource
 import type { TranslationKey } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
 import { requiresExplicitCachedDatasetSplit } from "./dataset-split-policy";
+import {
+  validateManualDatasetSplit,
+  validateManualDatasetSubset,
+} from "./manual-dataset-options";
 import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
 import {
@@ -47,7 +51,13 @@ export function hasIncompatibleTrainingModalities(
 ): boolean {
   return (
     (!config.isVisionModel && config.isDatasetImage === true) ||
-    (!config.isAudioModel && config.isDatasetAudio === true)
+    // audioCapabilityUnknown means the repo's tokenizer_config.json was unreadable
+    // (gated, offline, upstream error), not that the model lacks audio. Blocking there
+    // reports a token problem as a capability one; let the run start and fail on the
+    // real download error, which is what a gated text model already does.
+    (!config.audioCapabilityUnknown &&
+      !config.isAudioModel &&
+      config.isDatasetAudio === true)
   );
 }
 
@@ -98,10 +108,35 @@ function validateDatasetSelection(
         errorKey: "studio.datasetPicker.reasonInvalidHubId",
       };
     }
-    if (requiresExplicitCachedDatasetSplit(config)) {
+    if (config.manualDatasetOptionsValid === false) {
+      return {
+        ok: false,
+        errorKey: "studio.dataset.selectors.manualInvalid",
+      };
+    }
+    const requiresSplit = requiresExplicitCachedDatasetSplit(config);
+    if (requiresSplit) {
       return {
         ok: false,
         errorKey: "studio.training.validation.hfDatasetSplitRequired",
+      };
+    }
+    if (
+      validateManualDatasetSubset(config.datasetSubset ?? "") !== null ||
+      validateManualDatasetSplit(
+        config.datasetSplit ?? "",
+        false,
+        !config.datasetStreaming,
+      ) !== null ||
+      validateManualDatasetSplit(
+        config.datasetEvalSplit ?? "",
+        false,
+        !config.datasetStreaming,
+      ) !== null
+    ) {
+      return {
+        ok: false,
+        errorKey: "studio.dataset.selectors.manualInvalid",
       };
     }
   } else if (config.datasetSource === "upload") {

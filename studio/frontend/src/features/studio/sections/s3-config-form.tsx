@@ -115,6 +115,7 @@ export function S3ConfigForm() {
             </Label>
             <Input
               id="s3-access-key"
+              data-reload-snapshot-sensitive
               value={config.accessKeyId ?? ""}
               onChange={(e) => update({ accessKeyId: e.target.value })}
               placeholder={t("studio.dataset.s3.accessKeyIdPlaceholder")}

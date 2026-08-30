@@ -9,6 +9,7 @@ and fingerprint run for real; only the config/file fetch is stubbed.
 """
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from utils.security import (
     evaluate_remote_code_consent_for_targets,
     is_trusted_org_repo,
     remote_code_fingerprint,
+    remote_code_config_paths,
     scan_remote_code_files,
     should_block_remote_code,
 )
@@ -105,6 +107,71 @@ class TestConsentGate:
         assert d.has_remote_code is False
         assert d.blocked is False
         assert "no-op" in d.reason
+
+    def test_load_subdirectory_auto_map_is_scanned(self, tmp_path):
+        model = tmp_path / "model"
+        llm = model / "LLM"
+        llm.mkdir(parents = True)
+        (llm / "config.json").write_text(
+            '{"auto_map":{"AutoModel":"modeling_evil.Model"}}',
+            encoding = "utf-8",
+        )
+        (llm / "modeling_evil.py").write_text(
+            "import subprocess\nsubprocess.Popen(['id'])\n",
+            encoding = "utf-8",
+        )
+
+        decision = evaluate_remote_code_consent_for_targets(
+            [str(model)],
+            trust_remote_code = True,
+            load_subdirs_by_target = {str(model): ("LLM",)},
+        )
+
+        assert decision.has_remote_code is True
+        assert decision.blocked is True
+        assert decision.max_severity == HIGH
+        assert decision.fingerprint
+
+    def test_linked_load_subdirectory_fails_closed(self, tmp_path):
+        model = tmp_path / "model"
+        linked_llm = tmp_path / "linked-llm"
+        model.mkdir()
+        linked_llm.mkdir()
+        (linked_llm / "config.json").write_text(
+            '{"auto_map":{"AutoModel":"modeling_evil.Model"}}',
+            encoding = "utf-8",
+        )
+        (linked_llm / "modeling_evil.py").write_text("VALUE = 1\n", encoding = "utf-8")
+        try:
+            (model / "LLM").symlink_to(linked_llm, target_is_directory = True)
+        except OSError as error:
+            pytest.skip(f"directory symlinks are unavailable: {error}")
+
+        decision = evaluate_remote_code_consent_for_targets(
+            [str(model)],
+            trust_remote_code = True,
+            load_subdirs_by_target = {str(model): ("LLM",)},
+        )
+
+        assert decision.has_remote_code is True
+        assert decision.blocked is True
+        assert decision.approvable is False
+        assert "could not be downloaded and scanned" in decision.findings_summary
+
+    @pytest.mark.parametrize(
+        "subdir",
+        [
+            "../outside",
+            "/outside",
+            "C:/outside",
+            "C:outside",
+            "LLM/C:outside",
+            r"nested\\outside",
+        ],
+    )
+    def test_remote_code_config_paths_reject_escaping_subdirectories(self, subdir):
+        with pytest.raises(ValueError, match = "Invalid remote-code load subdirectory"):
+            remote_code_config_paths((subdir,))
 
     def test_unknown_auto_map_is_scanned_not_skipped(self):
         # Unreadable config (private/gated/offline) is "unknown", not "no code": scan, not no-op.
@@ -590,7 +657,15 @@ class TestStructuredFindingsForDialog:
         # The scan route pins one combined fingerprint over adapter + base, so adapter code is reviewed and approvable too.
         assert "preflight_remote_code_consent_for_targets" in src
 
-    def _run_scan_route(self, monkeypatch, *, adapter, base, in_cache):
+    def _run_scan_route(
+        self,
+        monkeypatch,
+        *,
+        adapter,
+        base,
+        in_cache,
+        seen_targets = None,
+    ):
         """Call scan_model_remote_code with all network/cache deps stubbed; in_cache(repo)
         decides whether a repo pre-existed in cache (so it is not reported scan-created)."""
         import asyncio
@@ -608,7 +683,10 @@ class TestStructuredFindingsForDialog:
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",
-            lambda *_a, **_k: SimpleNamespace(
+            lambda targets, **_k: (
+                seen_targets.extend(targets) if seen_targets is not None else None
+            )
+            or SimpleNamespace(
                 has_remote_code = False,
                 response_payload = lambda: {"has_remote_code": False, "approvable": True},
             ),
@@ -652,6 +730,52 @@ class TestStructuredFindingsForDialog:
         )
         assert payload["scan_created_repos"] == [base]
         assert payload["created_by_scan"] is False
+
+    def test_scan_route_fingerprint_includes_native_audio_companion(self, monkeypatch):
+        model = "multimodalart/higgs-audio-v3-tts-4b-transformers"
+        companion = "bosonai/higgs-audio-v2-tokenizer"
+        targets = []
+
+        self._run_scan_route(
+            monkeypatch,
+            adapter = model,
+            base = None,
+            in_cache = lambda _n: True,
+            seen_targets = targets,
+        )
+
+        assert targets == [model, companion]
+
+    def test_scan_route_rejects_oversized_audio_metadata_as_bad_request(
+        self, monkeypatch, tmp_path
+    ):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        import routes.models as models_route
+        import utils.security as security
+
+        (tmp_path / "config.json").write_text(
+            json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"
+        )
+        (tmp_path / "processor_config.json").write_text(
+            json.dumps({"padding": "x" * 1_000_000}), encoding = "utf-8"
+        )
+        monkeypatch.setattr(models_route, "is_local_path", lambda *_args: True)
+        monkeypatch.setattr(security, "load_scan_target", lambda target, subdirs: (target, subdirs))
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                models_route.scan_model_remote_code(
+                    model_name = str(tmp_path),
+                    hf_token = None,
+                    current_subject = "tester",
+                )
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "security inspection limit" in str(exc_info.value.detail)
 
     def test_scan_route_uses_selected_cached_snapshot(self, monkeypatch, tmp_path):
         import asyncio
@@ -711,7 +835,9 @@ class TestStructuredFindingsForDialog:
             lambda target, *_args, **_kwargs: base_targets.append(target) or "someone/base",
         )
         monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
-        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            remote_code_scan, "external_auto_map_repos", lambda *_args, **_kwargs: set()
+        )
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",
@@ -765,7 +891,9 @@ class TestStructuredFindingsForDialog:
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
-        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            remote_code_scan, "external_auto_map_repos", lambda *_args, **_kwargs: set()
+        )
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",
@@ -839,7 +967,9 @@ class TestStructuredFindingsForDialog:
             lambda target, *_args, **_kwargs: base_targets.append(target) or "someone/base",
         )
         monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
-        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            remote_code_scan, "external_auto_map_repos", lambda *_args, **_kwargs: set()
+        )
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",

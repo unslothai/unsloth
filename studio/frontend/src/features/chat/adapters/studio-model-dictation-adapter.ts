@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -15,7 +16,11 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { encryptProviderApiKey } from "../api/providers-api";
+import { getExternalProviderApiKey } from "../external-providers";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { startDictationLevelMeter } from "./dictation-level";
+import { type SegmentRecorder, createAudioRecorder } from "./pcm-recorder";
 import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
 // Re-exported so the one public entry point for dictation is unchanged.
 export { SttModelNotDownloadedError } from "./stt-errors";
@@ -75,22 +80,104 @@ export function sttEngineFor(model: string): SttEngine {
   return isCuratedSttModel(model) ? "gguf" : "transformers";
 }
 
-/** POST audio to the STT sidecar and return the transcript. */
+function externalSttLanguage(language: string): string | undefined {
+  const normalized = language.trim().replaceAll("_", "-").toLowerCase();
+  if (!normalized || normalized === "auto") {
+    return undefined;
+  }
+  return normalized.split("-", 1)[0] || undefined;
+}
+
+function dictationFilename(contentType: string): string {
+  if (contentType.includes("ogg")) {
+    return "dictation.ogg";
+  }
+  if (contentType.includes("mp4")) {
+    return "dictation.m4a";
+  }
+  if (contentType.includes("wav")) {
+    return "dictation.wav";
+  }
+  return "dictation.webm";
+}
+
+async function sttErrorDetail(response: Response): Promise<string> {
+  const body = (await response.json().catch(() => null)) as {
+    detail?: string;
+    error?: { message?: string };
+  } | null;
+  return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
+}
+
+/** post recorded audio to the selected STT backend and return its transcript. */
 export async function transcribeAudioBlob(
   blob: Blob,
   options: {
     model?: string;
     language?: string;
     engine?: SttEngine;
+    providerId?: string;
     signal?: AbortSignal;
   } = {},
 ): Promise<string> {
   const settings = useVoiceSettingsStore.getState();
-  const model = options.model ?? settings.sttModel;
-  const language = resolveModelDictationLanguage(
-    model,
-    options.language ?? settings.dictationLanguage,
-  );
+  const usesExternalEndpoint = options.providerId !== undefined;
+  const providerId = options.providerId?.trim() ?? "";
+  const model = (
+    options.model ??
+    (usesExternalEndpoint ? settings.sttProviderModel : settings.sttModel)
+  ).trim();
+  const languageSetting = options.language ?? settings.dictationLanguage;
+
+  if (usesExternalEndpoint) {
+    const providersState = useExternalProvidersStore.getState();
+    if (!providersState.connectionsEnabled) {
+      throw new Error(
+        "Connections are disabled. Enable connections before using custom transcription.",
+      );
+    }
+    if (!providerId || !model) {
+      throw new Error(
+        "Custom transcription is not configured. Pick a connection and model in Settings → Voice.",
+      );
+    }
+    const form = new FormData();
+    form.set("file", blob, dictationFilename(blob.type));
+    form.set("provider_id", providerId);
+    form.set("model", model);
+    form.set("response_format", "json");
+    const provider = providersState.providers.find(
+      (candidate) => candidate.id === providerId,
+    );
+    const legacyApiKey = provider?.hasApiKey
+      ? ""
+      : getExternalProviderApiKey(providerId).trim();
+    if (legacyApiKey) {
+      form.set(
+        "encrypted_api_key",
+        await encryptProviderApiKey(legacyApiKey),
+      );
+    }
+    const language = externalSttLanguage(languageSetting);
+    if (language) {
+      form.set("language", language);
+    }
+    const response = await authFetch("/api/inference/audio/transcriptions", {
+      method: "POST",
+      body: form,
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      throw sttRequestError(response.status, await sttErrorDetail(response));
+    }
+    const data = (await response.json()) as { text?: string };
+    if (typeof data.text !== "string") {
+      throw new Error("The transcription endpoint returned no text.");
+    }
+    return data.text.trim();
+  }
+
+  const language = resolveModelDictationLanguage(model, languageSetting);
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
@@ -104,10 +191,7 @@ export async function transcribeAudioBlob(
     },
   );
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    const detail = body?.detail ?? `HTTP ${response.status}`;
+    const detail = await sttErrorDetail(response);
     if (response.status === 501) {
       throw new Error(
         "Speech-to-text is not available on this server. Run `unsloth studio update` to install it.",
@@ -125,6 +209,9 @@ export interface SttDownloadStatus {
   error: string | null;
   /** The last download was stopped by the user rather than failing. */
   cancelled?: boolean;
+  /** Which model that cancellation applies to. `model` goes null once the worker thread
+   *  stops, so this is the only way to tell a settled cancellation from an unrelated one. */
+  cancelled_model?: string | null;
   bytes_total: number | null;
   bytes_done: number | null;
 }
@@ -188,8 +275,9 @@ export async function fetchSttStatus(
 export function sttEngineStatusFor(
   status: SttStatus,
   model: string,
+  engineOverride?: SttEngine,
 ): SttEngineStatus | undefined {
-  const engine = sttEngineFor(model);
+  const engine = engineOverride ?? sttEngineFor(model);
   if (engine === "mtmd") return status.mtmd;
   if (engine === "gguf" && status.gguf?.available) return status.gguf;
   return status.transformers;
@@ -217,13 +305,20 @@ export async function validateSttModel(
 }
 
 /** Load a selected model that is already downloaded. */
-export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
+export function loadSttModel(
+  model: string,
+  engine?: SttEngine,
+  signal?: AbortSignal,
+): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
-  return queueSttLifecycle(async () => {
+  // Announced so the indicator shows the load immediately, as the toast does.
+  return queueSttLifecycle(() =>
+    withModelLoadNotice("stt", model, async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, engine: resolvedEngine }),
+      signal,
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
@@ -232,13 +327,15 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       const detail = body?.detail ?? `HTTP ${response.status}`;
       throw sttRequestError(response.status, detail);
     }
-  });
+    }),
+  );
 }
 
 /** Start a background download of a dictation model. */
 export async function startSttDownload(
   model: string,
   hfToken?: string,
+  engine?: SttEngine,
 ): Promise<void> {
   const response = await authFetch("/api/inference/audio/stt/download", {
     method: "POST",
@@ -246,7 +343,7 @@ export async function startSttDownload(
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),
     },
-    body: JSON.stringify({ model, engine: sttEngineFor(model) }),
+    body: JSON.stringify({ model, engine: engine ?? sttEngineFor(model) }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
@@ -258,11 +355,14 @@ export async function startSttDownload(
 
 /** Stop an in-flight model download. Partial files stay cached, so starting the
  * same download again resumes from where it stopped. */
-export async function cancelSttDownload(model: string): Promise<void> {
+export async function cancelSttDownload(
+  model: string,
+  engine?: SttEngine,
+): Promise<void> {
   const response = await authFetch("/api/inference/audio/stt/download/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, engine: sttEngineFor(model) }),
+    body: JSON.stringify({ model, engine: engine ?? sttEngineFor(model) }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
@@ -273,11 +373,23 @@ export async function cancelSttDownload(model: string): Promise<void> {
 }
 
 /** Release the local STT model and its RAM/VRAM allocations. */
-export function unloadSttModel(): Promise<void> {
+/** Release the dictation sidecar. `model` scopes the release to the model the caller
+ *  claims: another surface can switch the same engine between the ownership check and
+ *  this request arriving, and the backend compares under the sidecar's own lock rather
+ *  than releasing whatever is resident by then. */
+export function unloadSttModel(
+  engine?: SttEngine,
+  model?: string,
+): Promise<void> {
   return queueSttLifecycle(async () => {
-    const response = await authFetch("/api/inference/audio/stt/unload", {
-      method: "POST",
-    });
+    const params = new URLSearchParams();
+    if (engine) params.set("engine", engine);
+    if (model) params.set("model", model);
+    const query = params.size ? `?${params}` : "";
+    const response = await authFetch(
+      `/api/inference/audio/stt/unload${query}`,
+      { method: "POST" },
+    );
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
         detail?: string;
@@ -288,8 +400,8 @@ export function unloadSttModel(): Promise<void> {
 }
 
 /**
- * Local model dictation. Short recordings use one pass; long ones split near
- * Whisper's 30s window. Confirm keeps text, discard removes it, and either
+ * recorded-audio dictation. short recordings use one pass; long ones split near
+ * whisper's 30s window. confirm keeps text, discard removes it, and either
  * releases the microphone immediately.
  */
 export class StudioModelDictationAdapter implements DictationAdapter {
@@ -312,18 +424,30 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     if (!StudioModelDictationAdapter.isSupported()) {
       throw new Error("Recording is not supported in this browser.");
     }
-    beginDictationSession();
 
     // Pin the model, language, and linked chat chosen when recording began, so a
     // mid-session settings change or thread switch cannot affect later segments
     // or relink the saved transcript.
-    const { sttModel: sessionModel, dictationLanguage } =
-      useVoiceSettingsStore.getState();
-    const sessionLanguage = resolveModelDictationLanguage(
-      sessionModel,
-      dictationLanguage,
-    );
-    const sessionEngine = sttEngineFor(sessionModel);
+    const settings = useVoiceSettingsStore.getState();
+    const usesExternalEndpoint = settings.dictationEngine === "custom";
+    const sessionProviderId = usesExternalEndpoint
+      ? settings.sttProviderId.trim()
+      : undefined;
+    const sessionModel = usesExternalEndpoint
+      ? settings.sttProviderModel.trim()
+      : settings.sttModel;
+    if (usesExternalEndpoint && (!sessionProviderId || !sessionModel)) {
+      throw new Error(
+        "Custom transcription is not configured. Pick a connection and model in Settings → Voice.",
+      );
+    }
+    beginDictationSession();
+    const sessionLanguage = usesExternalEndpoint
+      ? settings.dictationLanguage
+      : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
+    const sessionEngine = usesExternalEndpoint
+      ? undefined
+      : sttEngineFor(sessionModel);
     const sessionChatId = resolveDictationChatId(this.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
@@ -360,7 +484,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       chunks: Blob[];
       startedAt: number;
       voiced: boolean;
-      recorder: MediaRecorder;
+      recorder: SegmentRecorder;
     };
     const results: string[] = [];
     const queue: { index: number; blob: Blob }[] = [];
@@ -383,7 +507,10 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       console.error("STT transcription error:", error);
       // An undownloaded model is the ordinary first-run state, not a failure.
       // Point at the download; never start it here.
-      if (error instanceof SttModelNotDownloadedError) {
+      if (
+        !usesExternalEndpoint &&
+        error instanceof SttModelNotDownloadedError
+      ) {
         requestSttDownload(sessionModel);
         finishSession("cancelled");
         return;
@@ -466,6 +593,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             model: sessionModel,
             language: sessionLanguage,
             engine: sessionEngine,
+            providerId: sessionProviderId,
             signal: abortController.signal,
           });
           if (!cancelled) results[item.index] = text;
@@ -506,10 +634,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         chunks: [],
         startedAt: performance.now(),
         voiced: false,
-        recorder: new MediaRecorder(
-          stream,
-          mimeType ? { mimeType } : undefined,
-        ),
+        recorder: createAudioRecorder(stream, mimeType),
       };
       currentSeg = seg;
       silenceMs = 0;
@@ -683,11 +808,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
-        // Warm the model only after mic access. The backend loads cache-only
-        // and never downloads here.
-        void loadSttModel(sessionModel, sessionEngine).catch((error: unknown) =>
-          reportTranscriptionError(error, "preload"),
-        );
+        if (!usesExternalEndpoint && sessionEngine) {
+          // warm the model only after mic access; the backend never downloads here.
+          void loadSttModel(sessionModel, sessionEngine).catch(
+            (error: unknown) => reportTranscriptionError(error, "preload"),
+          );
+        }
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });

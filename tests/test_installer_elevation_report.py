@@ -102,7 +102,8 @@ def test_install_ps1_warns_before_anything_is_created():
         "[System.IO.Directory]::CreateDirectory($envOverride)",
         '$probe = Join-Path $StudioHome (".unsloth-write-probe-',
         'step "winget" "available"',
-        "uv venv $VenvDir --python",
+        # `& $script:UvExe`, not a bare `uv`, since #8161 resolved the binary up front.
+        "venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
         assert notice_idx < src.index(

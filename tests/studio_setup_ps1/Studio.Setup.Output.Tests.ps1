@@ -1,7 +1,7 @@
 <#
-    Pester v5 unit tests for step / substep / Write-StudioStdoutMirror in
-    studio/setup.ps1, guarding the desktop setup log printing every step twice
-    with the first copy split across two lines:
+    Pester v5 unit tests for Write-StudioLine / step / substep /
+    Write-StudioStdoutMirror in studio/setup.ps1, guarding the desktop setup log
+    printing every step twice with the first copy split across two lines:
 
         gpu
       none (chat-only / GGUF)
@@ -13,7 +13,10 @@
     -NoNewline, which a redirected consumer splits at the record boundary.
 
     Invariant now: exactly ONE sink. Redirected -> console handle. Interactive
-    -> Write-Host.
+    -> Write-Host. Every other line in both entry scripts goes through
+    Write-StudioLine for the same reason: Write-Host is written by 5.1's console
+    host on the OEM code page, not by the UTF-8 writer bound to [Console]::Out,
+    so the banner and the footer used to arrive as U+FFFD.
 
     Pure string formatting, so it runs on any pwsh host. Functions are extracted
     and dot-sourced because setup.ps1 is a top-level installer; a missing one
@@ -33,7 +36,7 @@ BeforeAll {
 
     $script:InstallPs1 = Join-Path $PSScriptRoot '..\..\install.ps1'
 
-    foreach ($fn in @('Get-StudioAnsi', 'Write-StudioStdoutMirror', 'step', 'substep')) {
+    foreach ($fn in @('Get-StudioAnsi', 'Write-StudioLine', 'Write-StudioStdoutMirror', 'step', 'substep')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
@@ -60,6 +63,9 @@ BeforeAll {
         [pscustomobject]@{
             Console = $writer.ToString()
             HostRecordCount = @($hostRecords).Count
+            # Rendered to strings: 6>&1 yields InformationRecord objects, and the
+            # tests care about the text the user would have read.
+            HostRecords = @(@($hostRecords) | ForEach-Object { "$_" })
         }
     }
 
@@ -82,6 +88,73 @@ BeforeAll {
         param([string]$Source)
         $stripped = $Source -replace '(?m)#.*$', ''
         return $stripped
+    }
+}
+
+Describe 'Write-StudioLine is the single sink for every non-step line' {
+    BeforeEach {
+        $script:StudioVtOk = $false
+        $env:NO_COLOR = $null
+    }
+
+    It 'writes to the console handle, and nothing to Write-Host, when redirected' {
+        $r = Invoke-CapturingConsoleOut -Redirected $true -Body {
+            Write-StudioLine "plain"
+            Write-StudioLine "colored" -ForegroundColor Red
+        }
+        (Get-EmittedLines $r.Console) | Should -Be @('plain', 'colored')
+        $r.HostRecordCount | Should -Be 0
+    }
+
+    It 'keeps the banner emoji and the U+2500 rule intact when redirected' {
+        $rule = [string]::new([char]0x2500, 52)
+        $sloth = [char]::ConvertFromUtf32(0x1F9A5)
+        $r = Invoke-CapturingConsoleOut -Redirected $true -Body {
+            Write-StudioLine ("  " + $sloth + " Unsloth Studio Setup") -ForegroundColor Green
+            Write-StudioLine "  $rule" -ForegroundColor DarkGray
+        }
+        $lines = Get-EmittedLines $r.Console
+        $lines.Count | Should -Be 2
+        $lines[0] | Should -Be "  $sloth Unsloth Studio Setup"
+        $lines[1] | Should -Be "  $rule"
+    }
+
+    It 'emits a blank line as a blank line, not as nothing' {
+        $r = Invoke-CapturingConsoleOut -Redirected $true -Body { Write-StudioLine "" }
+        $r.Console | Should -Not -BeNullOrEmpty
+        $r.Console.Trim() | Should -BeNullOrEmpty
+    }
+
+    It 'never leaks an ANSI escape onto the redirected sink' {
+        # Enable-StudioVirtualTerminal returns false without a console handle, so
+        # the colored branch must be unreachable there.
+        $r = Invoke-CapturingConsoleOut -Redirected $true -Body {
+            Write-StudioLine "warning" -ForegroundColor Yellow
+        }
+        $r.Console | Should -Not -Match ([regex]::Escape([char]27))
+    }
+
+    It 'stays on Write-Host, message intact, when attached to a console' {
+        $r = Invoke-CapturingConsoleOut -Redirected $false -Body {
+            Write-StudioLine "plain"
+            Write-StudioLine "colored" -ForegroundColor Red
+        }
+        $r.Console | Should -BeNullOrEmpty
+        $r.HostRecordCount | Should -Be 2
+        $r.HostRecords | Should -Be @('plain', 'colored')
+    }
+
+    It 'still prints an interactive blank line' {
+        $r = Invoke-CapturingConsoleOut -Redirected $false -Body { Write-StudioLine "" }
+        $r.HostRecordCount | Should -Be 1
+    }
+
+    It 'passes -ForegroundColor through only when the caller supplied one' {
+        # An omitted color must not become an empty string: Write-Host cannot
+        # bind that to ConsoleColor and the install would abort under "Stop".
+        { Invoke-CapturingConsoleOut -Redirected $false -Body {
+            Write-StudioLine "no color here"
+        } } | Should -Not -Throw
     }
 }
 
@@ -219,10 +292,31 @@ Describe 'Source contracts that keep the fix from regressing' {
         (Get-CodeWithoutComments $src) | Should -Not -Match '-NoNewline'
     }
 
-    It 'does not use -NoNewline in install.ps1 step either (it has no mirror)' {
+    It 'does not use -NoNewline in install.ps1 step either' {
         $src = Get-FunctionSource -Path $script:InstallPs1 -Name 'step'
         $src | Should -Not -BeNullOrEmpty
         (Get-CodeWithoutComments $src) | Should -Not -Match '-NoNewline'
+    }
+
+    It 'defines Write-StudioLine in install.ps1 too, with the same body' {
+        # install.ps1 cannot dot-source setup.ps1, so it holds a copy. A copy
+        # that drifts is a copy that stops routing the installer's own banner.
+        $setup = ((Get-FunctionSource -Path $script:SetupPs1 -Name 'Write-StudioLine') -replace '\s+', ' ').Trim()
+        $install = ((Get-FunctionSource -Path $script:InstallPs1 -Name 'Write-StudioLine') -replace '\s+', ' ').Trim()
+        $setup | Should -Not -BeNullOrEmpty
+        $install | Should -Be $setup
+    }
+
+    It 'defines Write-StudioLine before the first line either script prints' {
+        # PowerShell resolves functions at call time, but a top-level call above
+        # the definition still fails. Comments are stripped first: both scripts
+        # name the helper in the prose above it.
+        foreach ($path in @($script:SetupPs1, $script:InstallPs1)) {
+            $source = Get-CodeWithoutComments (Get-Content -Raw -LiteralPath $path)
+            $definition = $source.IndexOf('function Write-StudioLine')
+            $definition | Should -BeGreaterThan -1
+            $source.IndexOf('Write-StudioLine') | Should -Be ($definition + 'function '.Length)
+        }
     }
 
     It 'sets the UTF-8 console encoding in both entry scripts' {

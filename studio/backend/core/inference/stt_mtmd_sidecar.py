@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp multimodal (mtmd) speech-to-text sidecar for Studio dictation.
+"""llama.cpp multimodal (mtmd) speech-to-text sidecar for Unsloth dictation.
 
 whisper.cpp loads only the Whisper architecture, so newer ASR models run through
 llama.cpp instead: a text model plus an audio mmproj, served by `llama-server`
@@ -15,6 +15,7 @@ files, so downloads run the shared worker twice.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import socket
 import subprocess
@@ -38,13 +39,28 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    SttTranscriptionCancelledError,
+    _SelectedHubFile,
+    _capture_stt_hub_cache,
+    _claim_stt_repository,
+    _close_connection_on_cancel,
     _decode_audio_bounded,
+    _downloaded_file_bytes,
+    _fallback_revisions,
+    _HF_COMMIT_SHA,
+    _prepare_stt_cache_for_http,
+    _read_revision_record,
     _TARGET_SAMPLE_RATE,
     _training_active,
+    _write_revision_record,
     normalize_whisper_language,
 )
 
 logger = get_logger(__name__)
+
+# A blocking unload comes from training claiming the VRAM. Bounded so training is not
+# stalled by a long recording, but long enough that a normal transcription finishes.
+_ACTIVE_REQUEST_DRAIN_TIMEOUT = 30.0
 
 
 @dataclass(frozen = True)
@@ -154,7 +170,7 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
     """Stop a child and wait for it, so its port and VRAM are actually free.
 
     terminate() alone returns before the process has gone, and a child that
-    ignores SIGTERM would hold both until Studio exits.
+    ignores SIGTERM would hold both until Unsloth exits.
     """
     if process is None:
         return
@@ -174,46 +190,111 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
         forget_pid(process.pid)
 
 
-def _cached_main_revision(repo: str) -> Optional[str]:
-    """The commit `main` currently points at in the cache, if it is recorded."""
-    from core.inference.stt_sidecar import _repo_cache_dir
-
-    try:
-        revision = (_repo_cache_dir(repo) / "refs" / "main").read_text(encoding = "utf-8").strip()
-    except OSError:
-        return None
-    return revision or None
-
-
-def _cached_file(model_id: str, filename: str) -> Optional[str]:
+def _cached_file(
+    model_id: str,
+    filename: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
+) -> Optional[str]:
     from huggingface_hub import hf_hub_download
 
     from core.inference.stt_sidecar import _active_hf_hub_cache
+
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
     try:
         return hf_hub_download(
             repo_id = MTMD_STT_MODELS[model_id].repo,
             filename = filename,
+            revision = revision,
             local_files_only = True,
-            # The worker spawns with get_hf_cache_paths(), so a cache relocated
-            # in Studio settings is written there and has to be read there too.
-            cache_dir = str(_active_hf_hub_cache()),
+            cache_dir = str(root),
         )
     except Exception:
         return None
 
 
-def _cached_model_paths(model_id: str) -> Optional[tuple[str, str]]:
+def _cached_model_paths(
+    model_id: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
     """Both cached files, or None when either is missing."""
     spec = MTMD_STT_MODELS[model_id]
-    model = _cached_file(model_id, spec.model_file)
-    mmproj = _cached_file(model_id, spec.mmproj_file)
-    if model is None or mmproj is None:
-        return None
-    return model, mmproj
+    from core.inference.stt_sidecar import _active_hf_hub_cache
+
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+
+    def cached_at(candidate_revision: str) -> Optional[tuple[str, str]]:
+        model = _cached_file(
+            model_id,
+            spec.model_file,
+            hub_cache = root,
+            revision = candidate_revision,
+        )
+        mmproj = _cached_file(
+            model_id,
+            spec.mmproj_file,
+            hub_cache = root,
+            revision = candidate_revision,
+        )
+        if model is None or mmproj is None:
+            return None
+        return model, mmproj
+
+    # Explicit revisions keep both files on the downloaded commit.
+    if revision is not None:
+        return cached_at(revision)
+
+    recorded = _read_revision_record(spec.repo)
+    if recorded:
+        cached = cached_at(recorded)
+        if cached is not None:
+            return cached
+
+    for candidate in _fallback_revisions(spec.repo, hub_cache = root):
+        cached = cached_at(candidate)
+        if cached is not None:
+            _write_revision_record(spec.repo, candidate)
+            return cached
+    return None
+
+
+# The panel polls every model every 750ms, and each answer is two hf_hub_download()
+# calls that stat the snapshot even local-only, so memoise the boolean briefly.
+_DOWNLOADED_PROBE_TTL_SECONDS = 2.0
+_downloaded_probe_lock = threading.Lock()
+_downloaded_probe: dict[str, tuple[float, bool]] = {}
+# Bumped on every invalidation so an in-flight probe cannot overwrite a cleared entry.
+_downloaded_probe_generation = 0
+
+
+def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
+    """Drop memoised answers, for one model or all of them."""
+    global _downloaded_probe_generation
+    with _downloaded_probe_lock:
+        _downloaded_probe_generation += 1
+        if model_id is None:
+            _downloaded_probe.clear()
+        else:
+            _downloaded_probe.pop(model_id, None)
 
 
 def is_model_downloaded(model_id: str) -> bool:
-    return model_id in MTMD_STT_MODELS and _cached_model_paths(model_id) is not None
+    if model_id not in MTMD_STT_MODELS:
+        return False
+    with _downloaded_probe_lock:
+        cached = _downloaded_probe.get(model_id)
+        if cached is not None and time.monotonic() - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:
+            return cached[1]
+        generation = _downloaded_probe_generation
+    downloaded = _cached_model_paths(model_id) is not None
+    with _downloaded_probe_lock:
+        # Timestamp now, not before the probe: a slow cache would store a near-expired entry.
+        if generation == _downloaded_probe_generation:
+            _downloaded_probe[model_id] = (time.monotonic(), downloaded)
+    return downloaded
 
 
 class _MtmdDownloadState:
@@ -226,19 +307,36 @@ class _MtmdDownloadState:
         self._model_id: Optional[str] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
+        self._selected_files: tuple[_SelectedHubFile, ...] = ()
+        self._revision: Optional[str] = None
+        self._hub_cache: Optional[Path] = None
         self._cancelled = False
 
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
-            return {
+            model_id = self._model_id
+            snapshot = {
                 "downloading": downloading,
-                "model": self._model_id if downloading else None,
+                "model": model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
+                # Which model the cancel applies to. "model" goes None once the worker
+                # thread stops, so a settled cancellation was indistinguishable from an
+                # unrelated one and a deferred load restarted the whole download.
+                "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if downloading else None,
-                "bytes_done": self._cache_bytes() if downloading else None,
             }
+            captured = (
+                model_id,
+                self._hub_cache,
+                self._selected_files,
+                self._revision,
+                self._total_bytes,
+            )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
+        return snapshot
 
     def cancel(self) -> bool:
         """Stop an in-flight download. False when none was running."""
@@ -248,21 +346,45 @@ class _MtmdDownloadState:
             self._cancelled = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            from core.inference.stt_download_worker import terminate_download
+            terminate_download(process)
         return True
 
-    def _cache_bytes(self) -> Optional[int]:
-        """Best-effort progress: bytes in this repo's cache blobs."""
-        try:
-            from core.inference.stt_sidecar import _repo_cache_dir
+    def _downloaded_bytes(
+        self,
+        model_id: Optional[str] = None,
+        hub_cache: Optional[Path] = None,
+        selected_files: Optional[tuple[_SelectedHubFile, ...]] = None,
+        revision: Optional[str] = None,
+        total: Optional[int] = None,
+    ) -> Optional[int]:
+        """Count only the two selected files in their three cache forms.
 
-            model_id = self._model_id
-            if not model_id:
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
+        """
+        try:
+            model_id = model_id or self._model_id
+            hub_cache = hub_cache if hub_cache is not None else self._hub_cache
+            selected_files = selected_files if selected_files is not None else self._selected_files
+            revision = revision if revision is not None else self._revision
+            total = total if total is not None else self._total_bytes
+            if not model_id or hub_cache is None or not selected_files:
                 return None
-            blobs = _repo_cache_dir(MTMD_STT_MODELS[model_id].repo) / "blobs"
-            if not blobs.is_dir():
-                return 0
-            return sum(p.stat().st_size for p in blobs.iterdir() if p.is_file())
+            repo = MTMD_STT_MODELS[model_id].repo
+            done = sum(
+                _downloaded_file_bytes(
+                    hub_cache = hub_cache,
+                    repo = repo,
+                    filename = selected.path,
+                    size = selected.size,
+                    blob_key = selected.blob_key,
+                    revision = revision,
+                )
+                for selected in selected_files
+            )
+            return min(done, total) if total is not None else done
         except Exception:
             return None
 
@@ -272,10 +394,16 @@ class _MtmdDownloadState:
         hf_token: Optional[str] = None,
     ) -> None:
         model_id = resolve_mtmd_model_id(model_id)
+        hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # Joining a cancelling run would silently download nothing.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
@@ -283,65 +411,119 @@ class _MtmdDownloadState:
             self._model_id = model_id
             self._error = None
             self._total_bytes = None
+            self._selected_files = ()
+            self._revision = None
+            self._hub_cache = hub_cache
             self._cancelled = False
             self._process = None
-            thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
+            thread = threading.Thread(
+                target = self._run,
+                args = (model_id, hf_token),
+                daemon = True,
+            )
             self._thread = thread
             thread.start()
 
-    def _run(self, model_id: str, hf_token: Optional[str]) -> None:
+    def _run(
+        self,
+        model_id: str,
+        hf_token: Optional[str],
+        hub_cache: Optional[Path] = None,
+    ) -> None:
+        if hub_cache is None:
+            from core.inference.stt_sidecar import _active_hf_hub_cache
+            hub_cache = self._hub_cache or _active_hf_hub_cache()
         spec = MTMD_STT_MODELS[model_id]
+        registry = None
+        owner = None
         try:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
-            total = 0
-            for filename in (spec.model_file, spec.mmproj_file):
-                try:
-                    meta = get_hf_file_metadata(
-                        hf_hub_url(spec.repo, filename), token = hf_token or None
-                    )
-                    total += int(meta.size or 0)
-                except Exception:
-                    pass
-            with self._lock:
-                self._total_bytes = total or None
-
-            from core.inference.stt_download_worker import reap_download, spawn_download
-
-            # One worker per file. Both are required, so a cancel between them
-            # leaves the model not downloaded. The first resolves "main" and the
-            # second is pinned to whatever it landed on, so a repo update
-            # mid-download cannot mix two commits. The first stays unpinned
-            # because hf_hub_download only writes refs/main for a named
-            # revision, and _cached_file() resolves through that ref.
+            selected: list[_SelectedHubFile] = []
             revision: Optional[str] = None
             for filename in (spec.model_file, spec.mmproj_file):
-                process = spawn_download(
-                    ["--repo-id", spec.repo, "--filename", filename]
-                    + (["--revision", revision] if revision else []),
-                    hf_token = hf_token or None,
+                meta = get_hf_file_metadata(
+                    hf_hub_url(spec.repo, filename, revision = revision),
+                    token = hf_token or None,
                 )
-                with self._lock:
-                    if self._cancelled:
-                        process.terminate()
-                    self._process = process
-                stderr = reap_download(process)
-                if process.returncode == 0:
-                    revision = revision or _cached_main_revision(spec.repo)
-                    continue
-                with self._lock:
-                    if self._cancelled or process.returncode < 0:
-                        self._cancelled = True
-                        return
-                detail = (stderr or b"").decode("utf-8", "replace").strip()
-                logger.warning("mtmd STT download failed for %s: %s", model_id, detail)
-                with self._lock:
-                    self._error = f"Download failed for '{model_id}'."
+                if revision is None:
+                    revision = meta.commit_hash
+                    if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
+                        raise RuntimeError("could not resolve an immutable mtmd revision")
+                if meta.commit_hash != revision:
+                    raise RuntimeError("could not pin both mtmd files to one revision")
+                selected.append(
+                    _SelectedHubFile(
+                        path = filename,
+                        size = max(0, int(meta.size or 0)),
+                        blob_key = meta.etag,
+                    )
+                )
+            # A cancel during metadata has no child to stop. Without these the
+            # run still reserves the repo and rewrites the cache after the stop.
+            with self._lock:
+                if self._cancelled:
+                    return
+            registry, owner = _claim_stt_repository(spec.repo)
+            with self._lock:
+                if self._cancelled:
+                    return
+            _prepare_stt_cache_for_http(spec.repo, hub_cache)
+            with self._lock:
+                self._total_bytes = sum(item.size for item in selected) or None
+                self._selected_files = tuple(selected)
+                self._revision = revision
+
+            from core.inference.stt_download_worker import (
+                reap_download,
+                spawn_download,
+                terminate_download,
+            )
+
+            args = ["--repo-id", spec.repo, "--revision", revision]
+            for item in selected:
+                args.extend(("--filename", item.path))
+            process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
+            with self._lock:
+                if self._cancelled:
+                    terminate_download(process)
+                self._process = process
+            stderr = reap_download(process)
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+                cancelled = self._cancelled
+            if process.returncode == 0 and not cancelled:
+                if (
+                    _cached_model_paths(
+                        model_id,
+                        hub_cache = hub_cache,
+                        revision = revision,
+                    )
+                    is None
+                ):
+                    raise RuntimeError("downloaded mtmd files are missing from the captured cache")
+                _write_revision_record(spec.repo, revision)
                 return
-        except Exception as exc:
-            logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
+            with self._lock:
+                if cancelled or process.returncode < 0:
+                    self._cancelled = True
+                    return
+            detail = stderr.decode("utf-8", "replace").strip()
+            logger.warning("mtmd STT download failed for %s: %s", model_id, detail)
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
+        except Exception as exc:
+            with self._lock:
+                if not self._cancelled:
+                    logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
+                    self._error = f"Download failed for '{model_id}'."
+        finally:
+            # Release first: it is the half that would wedge the repository.
+            if registry is not None and owner is not None:
+                registry.release_repository_owner(spec.repo, owner)
+            # The memo is stale however this ended; dropping it now lets the next poll settle.
+            _forget_downloaded_probe(model_id)
 
 
 _download_state = _MtmdDownloadState()
@@ -369,6 +551,7 @@ class MtmdSttSidecar:
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_id: Optional[str] = None
+        self._binary_path_revision: Optional[int] = None
         self._loading = False
         # Published as soon as Popen returns, so a startup can be preempted
         # before _process is assigned (readiness takes up to three minutes).
@@ -377,6 +560,7 @@ class MtmdSttSidecar:
         # training. Kept so a dictation after the run does not stay on CPU.
         self._gpu_disabled = False
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._update_in_progress = False
         self._keep_alive_seconds = keep_alive_seconds
         self._idle_timer: Optional[threading.Timer] = None
@@ -387,16 +571,20 @@ class MtmdSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
-        with self._lock:
-            return self._model_id if self._process_alive() else None
+        # Lock-free: _lock is held across reaps and llama.cpp installs, but the status
+        # route reads this on the event loop. _process_alive() snapshots _process before
+        # poll(), so a concurrent unload is safe.
+        return self._model_id if self._process_alive() else None
 
     @property
     def device(self) -> Optional[str]:
+        # Derived, not a second probe: two probes can straddle the publish and
+        # report a device with no model.
         return "llama.cpp" if self.loaded_model else None
 
     def is_loading(self) -> bool:
-        with self._lock:
-            return self._loading
+        # Bare bool read, for the same reason as loaded_model.
+        return self._loading
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -431,20 +619,97 @@ class MtmdSttSidecar:
         self._cancel_idle_unload_locked()
         self._generation += 1
         process = self._process
-        self._process = None
-        self._port = None
-        self._model_id = None
-        _reap(process)
+        try:
+            # Reap before clearing: a lock-free reader mid-reap must still see the
+            # model, or training starts while the dying server still holds its VRAM.
+            _reap(process)
+        finally:
+            self._process = None
+            self._port = None
+            self._model_id = None
+            self._binary_path_revision = None
 
-    def unload(self) -> None:
+    def _drain_active_requests(self, deadline: float) -> None:
+        """Wait, bounded, for in-flight transcriptions to finish.
+
+        Never called while holding ``_lock``: `transcribe` claims ``_active_requests``
+        under that lock, so waiting there would block the very request being waited on.
+        """
+        while self._active_requests and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+    def _holds_expected_model(self, expected: Optional[str]) -> bool:
+        """Whether the resident model is the one the caller claimed. Call under ``_lock``.
+
+        A caller that owns a specific model must not release whatever happens to be
+        resident: another surface can switch the engine between the ownership check and
+        the request reaching the sidecar.
+        """
+        if expected is None:
+            return True
+        current = self._model_id
+        if current is None:
+            return False
+        if current == expected:
+            return True
+        try:
+            return current == resolve_mtmd_model_id(expected)
+        except Exception:  # noqa: BLE001 - an unresolvable name is not this model
+            return False
+
+    def unload(
+        self,
+        wait: bool = True,
+        expected_model: Optional[str] = None,
+    ) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        `transcribe` runs outside ``_lock`` and counts itself in ``_active_requests``, so
+        that, not the lock, is what says busy here. ``expected_model`` scopes the release
+        to one model, compared under the lock.
+        """
+        if not wait and (self.is_loading() or self._active_requests):
+            return
+        # A blocking caller is training claiming the VRAM, so this cannot wait forever, but
+        # `wait=True` still must not kill llama-server under a live transcription and throw
+        # the recording away. Bounded window, then proceed.
+        drain_deadline = time.monotonic() + _ACTIVE_REQUEST_DRAIN_TIMEOUT
+        if wait:
+            self._drain_active_requests(drain_deadline)
         # A startup has not assigned _process yet, so releasing alone would let
         # it finish and republish the model that was just unloaded. Cancel and
         # settle outside _lock: load() holds _start_lock across startup and
         # takes _lock inside it, so holding _lock here would invert them.
         self.cancel_pending_load()
         self.wait_for_load_to_settle()
-        with self._lock:
-            self._release_locked()
+        while True:
+            if not self._lock.acquire(blocking = wait):
+                return
+            try:
+                # Recheck under the lock. `transcribe` claims _active_requests while holding
+                # it, so a request starting between the drain above and this acquire would
+                # otherwise have llama-server killed underneath it and lose the recording.
+                if not self._holds_expected_model(expected_model):
+                    return
+                busy = bool(self._active_requests)
+                if busy and not wait:
+                    return
+                if not busy or time.monotonic() >= drain_deadline:
+                    if busy:
+                        logger.warning(
+                            "mtmd STT still had %d active request(s) after %.0fs; "
+                            "releasing anyway",
+                            self._active_requests,
+                            _ACTIVE_REQUEST_DRAIN_TIMEOUT,
+                        )
+                    self._release_locked()
+                    return
+            finally:
+                self._lock.release()
+            # Drained outside the lock, then the release is retried under it. A blocking
+            # unload that found the sidecar busy only after acquiring cannot drain in
+            # place without deadlocking the request it is draining.
+            self._drain_active_requests(drain_deadline)
 
     def cancel_pending_load(self) -> bool:
         """Preempt a starting llama-server so training is not raced for VRAM.
@@ -461,6 +726,21 @@ class MtmdSttSidecar:
             return False
         event.set()
         process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            process = self._starting_process
         if process is not None and process.poll() is None:
             try:
                 process.terminate()
@@ -517,20 +797,50 @@ class MtmdSttSidecar:
             )
         return paths
 
-    def load(self, model: Optional[str] = None) -> None:
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
         model_id = resolve_mtmd_model_id(model)
+        from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+        path_revision = custom_llama_cpp_path_revision()
         binary = ensure_engine_available()
         # Startup happens outside _lock (it is slow), so this keeps two callers
         # from each spawning a server and orphaning the first.
         with self._start_lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             self._raise_if_update_in_progress()
-            self._load_locked(model_id, binary)
+            self._load_locked(
+                model_id,
+                binary,
+                request_cancel_event,
+                path_revision = path_revision,
+            )
 
-    def _load_locked(self, model_id: str, binary: str) -> None:
+    def _load_locked(
+        self,
+        model_id: str,
+        binary: str,
+        request_cancel_event: Optional[threading.Event] = None,
+        *,
+        path_revision: Optional[int] = None,
+    ) -> None:
+        if path_revision is None:
+            from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+            path_revision = custom_llama_cpp_path_revision()
         with self._lock:
             training = _training_active()
-            if self._process_alive() and self._model_id == model_id:
+            if (
+                self._process_alive()
+                and self._model_id == model_id
+                and self._binary_path_revision == path_revision
+            ):
                 # Same model, so only the offload mode can differ: a server
                 # started at -ngl 0 during training would otherwise serve every
                 # later dictation on CPU. Restarting for that is an
@@ -540,20 +850,37 @@ class MtmdSttSidecar:
                 if self._gpu_disabled == training or self._active_requests:
                     self._schedule_idle_unload_locked()
                     return
-            # Before the release: a 409 for a model that is not downloaded
-            # must not cost the user the server they were already using.
-            model_path, mmproj_path = self._ensure_model_downloaded(model_id)
-            # Only when there is a live server to protect: a request against a
-            # server that already died must not block recovery.
-            if self._active_requests and self._process_alive():
-                raise SttModelBusyError(
-                    "A transcription is still running on the current dictation model. "
-                    "Try again in a moment."
-                )
-            self._release_locked()
-            cancel_event = threading.Event()
+            # Announced before the slow probe and reap: is_loading() is read lock-free,
+            # so a training start would otherwise see False and wait out the startup in
+            # unload() instead of cancelling this load.
+            cancel_event = (
+                request_cancel_event if request_cancel_event is not None else threading.Event()
+            )
             self._load_cancel_event = cancel_event
+            self._load_owner_cancel_event = request_cancel_event
             self._loading = True
+            released = False
+            try:
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("Dictation model loading was cancelled.")
+                # Before the release: a 409 for a model that is not downloaded
+                # must not cost the user the server they were already using.
+                model_path, mmproj_path = self._ensure_model_downloaded(model_id)
+                # Only when there is a live server to protect: a request against
+                # a server that already died must not block recovery.
+                if self._active_requests and self._process_alive():
+                    raise SttModelBusyError(
+                        "A transcription is still running on the current dictation model. "
+                        "Try again in a moment."
+                    )
+                self._release_locked()
+                released = True
+            finally:
+                # Nothing started, so take the announcement back; past here the startup owns it.
+                if not released:
+                    self._loading = False
+                    self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
             # Re-read last: _release_locked() reaps the old server, which can
             # take seconds, and training admission that already passed its own
             # check cannot come back to cancel this load. Publishing _loading
@@ -598,7 +925,7 @@ class MtmdSttSidecar:
                 # Bundled libs and pip CUDA runtimes on the loader path, secrets
                 # scrubbed, as the chat backend spawns the same binary.
                 env = _llama_server_child_env(binary),
-                # Die with Studio, so a crash never orphans a server on the GPU.
+                # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
             # Published before the wait, so training can preempt a startup that
@@ -621,6 +948,7 @@ class MtmdSttSidecar:
                 self._process = process
                 self._port = port
                 self._model_id = model_id
+                self._binary_path_revision = path_revision
                 self._gpu_disabled = training
                 self._generation += 1
                 self._schedule_idle_unload_locked()
@@ -628,6 +956,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._loading = False
                 self._load_cancel_event = None
+                self._load_owner_cancel_event = None
                 self._starting_process = None
 
     @staticmethod
@@ -648,7 +977,9 @@ class MtmdSttSidecar:
                     if response.status == 200:
                         return True
             except Exception:
-                time.sleep(0.25)
+                pass
+            # Outside the except: a non-200 2xx would otherwise spin this loop with no delay.
+            time.sleep(0.25)
         return False
 
     def transcribe(
@@ -657,6 +988,7 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -665,16 +997,20 @@ class MtmdSttSidecar:
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # No training guard here on purpose: load() starts the server with
         # -ngl 0 --no-mmproj-offload while a run is active, so this transcribes
         # on CPU exactly as whisper.cpp and Transformers do. Refusing after a
         # preload that succeeded only discarded the user's recording.
         # Reject a missing model before decoding, matching the other sidecars.
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        self.load(model_id)
+        self.load(model_id, request_cancel_event = cancel_event)
         with self._lock:
             port = self._port
             if port is None or not self._process_alive():
@@ -695,7 +1031,15 @@ class MtmdSttSidecar:
         try:
             # Outside the lock: a held lock would block unload, including the
             # one a training run performs, for the whole request timeout.
-            text = self._post_transcribe(port, model_id, wav_bytes, audio_seconds)
+            text = self._post_transcribe(
+                port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+        except Exception:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            raise
         finally:
             with self._lock:
                 self._active_requests -= 1
@@ -707,12 +1051,19 @@ class MtmdSttSidecar:
             "model": model_id,
         }
 
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
+
     def _post_transcribe(
         self,
         port: int,
         model_id: str,
         wav_bytes: bytes,
         audio_seconds: Optional[float] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -735,13 +1086,35 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            data = json.dumps(payload).encode("utf-8"),
-            headers = {"Content-Type": "application/json"},
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
-        with urllib.request.urlopen(request, timeout = _TRANSCRIBE_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        cancel_done = threading.Event()
+        if cancel_event is not None:
+            threading.Thread(
+                target = _close_connection_on_cancel,
+                args = (connection, cancel_event, cancel_done),
+                daemon = True,
+            ).start()
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                body = json.dumps(payload).encode("utf-8"),
+                headers = {"Content-Type": "application/json"},
+            )
+            with connection.getresponse() as response:
+                response_body = response.read()
+                if not 200 <= response.status < 300:
+                    raise RuntimeError(
+                        f"MTMD transcription server returned HTTP {response.status}."
+                    )
+                body = json.loads(response_body.decode("utf-8"))
+        finally:
+            cancel_done.set()
+            connection.close()
         choices = body.get("choices") or []
         text = (choices[0].get("message", {}).get("content") or "") if choices else ""
         return _clean_transcript(text, spec.transcript_marker)

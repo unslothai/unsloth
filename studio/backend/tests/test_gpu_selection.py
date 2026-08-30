@@ -358,20 +358,22 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
     def test_uuid_parent_visibility_falls_back_to_torch(self):
         """UUID/MIG masks fall through nvidia to the torch fallback and
         still report visible devices using relative ordinals."""
+        # Inventory shape: this endpoint reads name and total and discards used, so
+        # it asks for the context-free helper.
         fake_torch_devices = [
             {
                 "index": 0,
                 "visible_ordinal": 0,
                 "name": "GPU-A",
                 "total_gb": 24.0,
-                "used_gb": 2.0,
+                "used_gb": None,
             },
             {
                 "index": 1,
                 "visible_ordinal": 1,
                 "name": "GPU-B",
                 "total_gb": 24.0,
-                "used_gb": 3.0,
+                "used_gb": None,
             },
         ]
         with (
@@ -379,7 +381,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2),
             patch(
-                "utils.hardware.hardware._torch_get_per_device_info",
+                "utils.hardware.hardware._torch_get_device_inventory",
                 return_value = fake_torch_devices,
             ),
         ):
@@ -408,8 +410,11 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["index_kind"], "relative")
-        self.assertEqual(result["devices"][0]["index"], 0)
-        self.assertEqual(result["devices"][0]["visible_ordinal"], 0)
+        device = result["devices"][0]
+        self.assertEqual(device["index"], 0)
+        self.assertEqual(device["visible_ordinal"], 0)
+        self.assertTrue(device["shared_memory"])
+        self.assertEqual(device["shared_memory_host_backed_gb"], 64.0)
 
     def test_discrete_vulkan_inference_gpu_info(self):
         with (
@@ -684,6 +689,37 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertEqual(model_size_bytes, 1234)
         self.assertEqual(source, "vllm_utils")
+
+    def test_offline_safetensors_probe_uses_config_without_hub_access(self):
+        config = object()
+        for offline_variable in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            with self.subTest(offline_variable = offline_variable):
+                with (
+                    patch.dict(os.environ, {offline_variable: "true"}, clear = True),
+                    patch("huggingface_hub.model_info") as hub_info,
+                    patch(
+                        "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                        return_value = "unsloth/test",
+                    ),
+                    patch(
+                        "utils.hardware.hardware._load_config_for_gpu_estimate",
+                        return_value = config,
+                    ),
+                    patch(
+                        "utils.hardware.hardware._estimate_fp16_model_size_bytes_from_config",
+                        return_value = 1234,
+                    ),
+                    patch(
+                        "utils.hardware.hardware._get_local_weight_size_bytes",
+                        return_value = None,
+                    ),
+                ):
+                    model_size_bytes, source = _hw_module.estimate_fp16_model_size_bytes(
+                        "unsloth/test"
+                    )
+
+                self.assertEqual((model_size_bytes, source), (1234, "config"))
+                hub_info.assert_not_called()
 
     def test_auto_select_gpu_ids_chooses_smallest_fitting_subset(self):
         fake_devices = {

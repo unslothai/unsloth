@@ -98,3 +98,129 @@ test("a working Recents row clears the kebab on hover", async () => {
     assert.ok(pad >= kebabInset, `${pad}px focus padding, needs ${kebabInset}px`);
   }
 });
+
+// That same column now carries a second meaning: a row whose capability has not been measured
+// yet. On a Mac the platform store seeds chatOnly from the user agent, so Train and Video used
+// to paint disabled (opacity-50, inert) from first load and only recover once /api/health
+// answered -- indistinguishable from a measured "your machine cannot do this".
+test("a pending row spins instead of blacking out", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  const pending = resolveNavRowState({
+    disabled: true,
+    tooltip: "Training needs an NVIDIA or AMD GPU.",
+    pending: true,
+  });
+  assert.equal(pending.disabled, false, "the guessed gray-out still renders");
+  assert.equal(pending.spinner, true, "nothing tells the user the check is still running");
+  assert.equal(
+    pending.tooltip,
+    undefined,
+    "a reason for a verdict nobody has reached yet is shown on hover",
+  );
+});
+
+// Detection is a cold `import torch` and can run for minutes, long enough for a silent
+// spinner to read as a hung row, so it says what it is waiting for. The disabled hint is
+// still withheld: no verdict is in yet.
+test("a pending row says what it is waiting for", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  const pending = resolveNavRowState({
+    disabled: true,
+    tooltip: "Training needs an NVIDIA or AMD GPU.",
+    pending: true,
+    pendingTooltip: "Checking this machine for training support...",
+  });
+  assert.equal(pending.spinner, true);
+  assert.equal(pending.disabled, false);
+  assert.equal(pending.tooltip, "Checking this machine for training support...");
+});
+
+// Having the tooltip is not the same as showing it. Both renderers hid one by default for
+// an enabled row: SidebarMenuButton only on the collapsed rail, MoreMenuItem only when
+// disabled. A pending row is enabled, so the explanation reached neither.
+test("a pending row is marked so both renderers can show its tooltip", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  assert.equal(
+    resolveNavRowState({ pending: true, pendingTooltip: "Checking..." }).pending,
+    true,
+  );
+  assert.equal(resolveNavRowState({ disabled: true, tooltip: "x" }).pending, false);
+  assert.equal(resolveNavRowState({ spinner: true }).pending, false);
+});
+
+test("the expanded row and the flyout both show a pending tooltip", async () => {
+  const [sidebar, appSidebar] = await Promise.all([
+    readFile(new URL("../src/components/ui/sidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8"),
+  ]);
+
+  // The rail-only rule has to make an exception, or an enabled row is silent while expanded.
+  assert.match(
+    sidebar,
+    /hidden=\{isMobile \|\| \(!isDisabled && !alwaysTooltip && state !== "collapsed"\)\}/,
+    "SidebarMenuButton still hides every enabled row's tooltip while expanded",
+  );
+  assert.match(
+    appSidebar,
+    /alwaysTooltip=\{rowState\.pending\}/,
+    "the inline rows never ask for the exception",
+  );
+  // The flyout's title is not conditional on the grey-out any more.
+  assert.match(appSidebar, /^\s*title=\{tooltip\}$/m, "MoreMenuItem drops a pending title");
+  assert.ok(
+    !appSidebar.includes("title={disabled ? tooltip : undefined}"),
+    "MoreMenuItem still gates its title on disabled",
+  );
+});
+
+test("both capability rows carry a pending tooltip", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const row of ["train", "video"]) {
+    const block = source.slice(source.indexOf(`    ${row}: {`));
+    const body = block.slice(0, block.indexOf("\n    },"));
+    assert.match(
+      body,
+      /pendingTooltip: t\("shell\.navigation\.\w+Checking"\)/,
+      `the ${row} row spins without saying why`,
+    );
+  }
+});
+
+test("a measured row is left exactly as it was", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  const measured = resolveNavRowState({
+    disabled: true,
+    tooltip: "Training needs MLX. Run `unsloth studio update` to enable Train.",
+    spinner: false,
+  });
+  assert.equal(measured.disabled, true, "a real chat-only host was let into Train");
+  assert.equal(measured.tooltip, "Training needs MLX. Run `unsloth studio update` to enable Train.");
+  assert.equal(measured.spinner, false);
+
+  // The pre-existing use of the column (a run in progress) is untouched.
+  const working = resolveNavRowState({ spinner: true });
+  assert.equal(working.spinner, true);
+  assert.equal(working.disabled, undefined);
+});
+
+// Two render sites take these props: the inline rows and the More flyout. A row moved into
+// More by Settings -> Appearance must not go back to rendering the guess.
+test("both nav render sites resolve pending the same way", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  const resolves = source.match(/const rowState = resolveNavRowState\(row\);/g) ?? [];
+  assert.equal(resolves.length, 2, `expected both render sites to resolve, got ${resolves.length}`);
+  // And neither passes the raw fields past it.
+  for (const raw of ["disabled={row.disabled}", "tooltip={row.tooltip}", "spinner={row.spinner}"]) {
+    assert.ok(!source.includes(raw), `a render site still passes ${raw} unresolved`);
+  }
+});

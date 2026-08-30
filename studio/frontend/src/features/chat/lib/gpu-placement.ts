@@ -8,6 +8,12 @@
 // llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
 export const GPU_LAYERS_AUTO = -1;
 
+export function shouldHydrateGpuPlacementControls(
+  cpuFallbackReason: "vulkan_startup_crash" | null | undefined,
+): boolean {
+  return cpuFallbackReason !== "vulkan_startup_crash";
+}
+
 /** GPU placement a compare pane loads with.
  *
  * `own` is the pane's per-model config; `shared` is the live-store snapshot taken at

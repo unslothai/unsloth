@@ -6,7 +6,7 @@
 # (install.sh + binary-load assert). Regression guard for the macOS-version
 # selection in studio/install_llama_prebuilt.py.
 
-name: Mac Studio Install Matrix CI
+name: Mac Unsloth Install Matrix CI
 
 on:
   pull_request:
@@ -19,13 +19,70 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      # Reached transitively by the install this workflow asserts on:
+      # install.sh selects studio/setup.sh, which runs install_python_stack.py
+      # (setup.sh:1444), and install_llama_prebuilt.py imports prebuilt_core
+      # (install_llama_prebuilt.py:55).
+      #
+      # Deliberately NOT studio/backend/requirements/** or pyproject.toml, which
+      # install_python_stack.py also consumes: generic install breakage on macOS is
+      # clean-machine-install-ci's job and it lists both on either trigger with 7
+      # macOS legs. Duplicating them here would re-spend the slots this filter saves.
+      - 'studio/install_python_stack.py'
+      - 'studio/prebuilt_core.py'
+      # install_python_stack.py imports this; interrupted-install-ci.yml already
+      # lists it for the same reason.
+      - 'studio/install_manifest.py'
   push:
     branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/setup.sh'
+      - 'install.sh'
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/workflows/studio-mac-install-matrix.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      # Reached transitively by the install this workflow asserts on:
+      # install.sh selects studio/setup.sh, which runs install_python_stack.py
+      # (setup.sh:1444), and install_llama_prebuilt.py imports prebuilt_core
+      # (install_llama_prebuilt.py:55).
+      #
+      # Deliberately NOT studio/backend/requirements/** or pyproject.toml, which
+      # install_python_stack.py also consumes: generic install breakage on macOS is
+      # clean-machine-install-ci's job and it lists both on either trigger with 7
+      # macOS legs. Duplicating them here would re-spend the slots this filter saves.
+      - 'studio/install_python_stack.py'
+      - 'studio/prebuilt_core.py'
+      # install_python_stack.py imports this; interrupted-install-ci.yml already
+      # lists it for the same reason.
+      - 'studio/install_manifest.py'
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -69,15 +126,15 @@ jobs:
           - os: macos-26-intel  # Intel x86_64, macOS 26 (last Intel macOS)
             experimental: true
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 

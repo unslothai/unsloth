@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The direct VC++ runtime download must negotiate TLS 1.2 on legacy protocol defaults."""
+"""The direct VC++ runtime download must negotiate TLS 1.2 and run only Microsoft's binary."""
 
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +26,20 @@ def _download_block() -> str:
     start = source.index(_START)
     end = source.index(_END, start) + len(_END)
     return source[start:end]
+
+
+def test_the_download_is_verified_as_microsoft_signed_before_it_runs():
+    # No pwsh needed: Get-AuthenticodeSignature is Windows-only, so the ordering of the three
+    # steps in the real block is the thing to hold still. A verification placed after
+    # Start-Process, or one that only checks Status, would still "pass" on a swapped binary.
+    block = _download_block()
+    download = block.index("Invoke-WebRequest")
+    verify = block.index("Get-AuthenticodeSignature", download)
+    execute = block.index("Start-Process", verify)
+    assert download < verify < execute
+    assert "SignatureStatus]::Valid" in block
+    # Loose on the quoting, since an RDN value may arrive quoted, strict on the publisher.
+    assert "Microsoft Corporation" in block
 
 
 def _script(starting_protocol: str) -> str:
@@ -45,7 +60,10 @@ Write-Output "AFTER=$([System.Net.ServicePointManager]::SecurityProtocol)"
 
 
 def _run(starting_protocol: str) -> dict[str, str]:
-    result = subprocess.run(
+    # The TLS assertions read the BEFORE/DURING/AFTER lines this script prints, so an
+    # interpreter that never got as far as running the download block would look like
+    # setup.ps1 failing to negotiate TLS 1.2 at all.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script(starting_protocol)],
         check = True,
         capture_output = True,

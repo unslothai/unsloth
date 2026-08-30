@@ -29,13 +29,23 @@ def _studio():
     return _studio_mod
 
 
+class _NoopLauncherUpdate:
+    def __enter__(self):
+        return self
+
+    def validate_launcher(self):
+        pass
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+
 def _neutered(monkeypatch):
     """Stub everything update does after resolving the repo root."""
     studio = _studio()
     seen = {}
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_release_self_exe_lock_windows", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_cleanup_self_exe_lock_windows", lambda *a, **k: None)
+    monkeypatch.setattr(studio, "_WindowsLauncherUpdateTransaction", _NoopLauncherUpdate)
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *a, **k: None, raising = False)
 
@@ -144,7 +154,7 @@ def test_the_override_runs_that_checkouts_setup_script(monkeypatch, tmp_path):
     setup.sh/setup.ps1 build the frontend under their own $SCRIPT_DIR, and the
     editable install of the checkout removes the installed tree the installed
     copy's script would have built into. studio/frontend/dist is gitignored, so
-    running the installed script against a fresh checkout leaves Studio with no
+    running the installed script against a fresh checkout leaves Unsloth with no
     frontend at all.
     """
     import platform as _platform

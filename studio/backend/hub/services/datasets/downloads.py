@@ -144,9 +144,16 @@ def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownlo
 
 
 async def download_dataset_response(
-    body: DownloadDatasetRequest, hf_token: Optional[str] = None
+    body: DownloadDatasetRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_ambient_token: bool = True,
 ) -> dict:
-    """Start a background download for a HuggingFace dataset."""
+    """Start a background download for a HuggingFace dataset.
+
+    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent no token, for
+    repos named over the API rather than chosen here.
+    """
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -158,7 +165,7 @@ async def download_dataset_response(
     key = _download_job_key(repo_id)
 
     # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other Studio request waits behind it.
+    # makes that outlast its 3s budget while every other Unsloth request waits behind it.
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
@@ -181,12 +188,15 @@ async def download_dataset_response(
     )
     generation = _registry.current_generation(key)
     if not claimed:
-        # Pollable when rejected by this repo's own in-flight job; an
-        # in-progress delete leaves no job, so flag it via ``adoptable``.
+        # Pollable when rejected by this repo's own in-flight job, and that is
+        # also the only case that attached to anything; an in-progress delete
+        # leaves no job, so both come from ``adoptable``.
+        adoptable = _registry.adoptable(key)
         return {
             "repo_id": repo_id,
             "state": claim_state,
-            "accepted": _registry.adoptable(key),
+            "accepted": adoptable,
+            "attached": adoptable,
             "generation": generation,
             # An adopted job keeps the transport it started on, so report it
             # rather than let the caller assume the one it asked for.
@@ -210,8 +220,10 @@ async def download_dataset_response(
             hf_token,
             use_xet = use_xet,
             cache_env = cache_env,
+            allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
         label = repo_id,
         log_prefix = "Dataset download",
         logger = logger,
@@ -225,6 +237,7 @@ async def download_dataset_response(
         "repo_id": repo_id,
         "state": state,
         "accepted": True,
+        "attached": False,
         "generation": generation,
         # See models: the resolved transport, which a downgrade can make
         # different from the one requested.

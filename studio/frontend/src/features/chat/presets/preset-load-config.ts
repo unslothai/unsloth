@@ -5,15 +5,20 @@ import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   perModelConfigsEqual,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/apply-per-model-config";
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_PER_MODEL_CONFIG,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
   MLX_KV_BITS,
+  N_BATCH_MAX,
+  N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
+  canonicalizeLoadMode,
+  normalizeCacheRam,
+  normalizeCtxCheckpoints,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
@@ -37,7 +42,14 @@ export type PresetLoadConfig = Pick<
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
+  | "nBatch"
+  | "nUbatch"
+  | "loadMode"
+  | "specDraftCacheDtype"
+  | "ctxCheckpoints"
+  | "cacheRam"
   | "tensorParallel"
+  | "disableVision"
   | "gpuMemoryMode"
   | "gpuLayers"
   | "nCpuMoe"
@@ -54,7 +66,14 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  nBatch: null,
+  nUbatch: null,
+  loadMode: null,
+  specDraftCacheDtype: null,
+  ctxCheckpoints: null,
+  cacheRam: null,
   tensorParallel: false,
+  disableVision: false,
 };
 
 function toComparablePerModelConfig(
@@ -129,9 +148,31 @@ export function normalizePresetLoadConfig(
             Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
           )
         : null,
+    nBatch:
+      typeof partial.nBatch === "number" && Number.isFinite(partial.nBatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nBatch)))
+        : null,
+    nUbatch:
+      typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
+        : null,
+    // Through the same normalizers the per-model store uses, so a hand-edited or
+    // older preset cannot smuggle in a mode or dtype the panel cannot show.
+    loadMode: canonicalizeLoadMode(partial.loadMode),
+    specDraftCacheDtype:
+      typeof partial.specDraftCacheDtype === "string" &&
+      VALID_KV_CACHE_DTYPES.has(partial.specDraftCacheDtype)
+        ? partial.specDraftCacheDtype
+        : null,
+    ctxCheckpoints: normalizeCtxCheckpoints(partial.ctxCheckpoints),
+    cacheRam: normalizeCacheRam(partial.cacheRam),
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
+        : false,
+    disableVision:
+      typeof partial.disableVision === "boolean"
+        ? partial.disableVision
         : false,
     ...(gpuMemoryMode ? { gpuMemoryMode } : {}),
     ...(gpuLayers !== undefined ? { gpuLayers } : {}),
@@ -176,7 +217,14 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
+    nBatch: snapshot.nBatch ?? null,
+    nUbatch: snapshot.nUbatch ?? null,
+    loadMode: snapshot.loadMode ?? null,
+    specDraftCacheDtype: snapshot.specDraftCacheDtype ?? null,
+    ctxCheckpoints: snapshot.ctxCheckpoints ?? null,
+    cacheRam: snapshot.cacheRam ?? null,
     tensorParallel: snapshot.tensorParallel ?? false,
+    disableVision: snapshot.disableVision ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
       ? { gpuMemoryMode: "manual" as const }
       : {}),
@@ -232,7 +280,14 @@ export function applyPresetLoadConfig(
     speculativeType: config.speculativeType ?? null,
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
+    nBatch: config.nBatch ?? null,
+    nUbatch: config.nUbatch ?? null,
+    loadMode: config.loadMode ?? null,
+    specDraftCacheDtype: config.specDraftCacheDtype ?? null,
+    ctxCheckpoints: config.ctxCheckpoints ?? null,
+    cacheRam: config.cacheRam ?? null,
     tensorParallel: config.tensorParallel ?? false,
+    disableVision: config.disableVision ?? false,
     chatTemplateOverride: null,
     gpuMemoryMode: config.gpuMemoryMode,
     gpuLayers: config.gpuLayers,
@@ -264,6 +319,24 @@ export function formatPresetLoadConfigSummary(
   if (config.nParallel != null) {
     parts.push(`${config.nParallel} slots`);
   }
+  if (config.nBatch != null) {
+    parts.push(`Batch ${config.nBatch}`);
+  }
+  if (config.nUbatch != null) {
+    parts.push(`uBatch ${config.nUbatch}`);
+  }
+  if (config.loadMode) {
+    parts.push(`Load ${config.loadMode}`);
+  }
+  if (config.specDraftCacheDtype) {
+    parts.push(`Draft KV ${config.specDraftCacheDtype}`);
+  }
+  if (config.ctxCheckpoints != null) {
+    parts.push(`${config.ctxCheckpoints} checkpoints`);
+  }
+  if (config.cacheRam != null) {
+    parts.push(`Cache RAM ${config.cacheRam}`);
+  }
   if (config.gpuMemoryMode === "manual") {
     parts.push("GPU manual");
   }
@@ -272,6 +345,9 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.tensorParallel) {
     parts.push("TP");
+  }
+  if (config.disableVision) {
+    parts.push("No vision");
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }

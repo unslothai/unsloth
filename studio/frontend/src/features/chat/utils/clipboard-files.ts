@@ -2,10 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
+import {
+  browserClipboardFiles,
+  clipboardAdvertisesFiles,
+  clipboardHasPlainText,
+} from "./clipboard-payload.ts";
 
 const MAX_NATIVE_IMAGE_DIMENSION = 8192;
 const MAX_NATIVE_IMAGE_RGBA_BYTES = 64 * 1024 * 1024;
-const MAX_CLIPBOARD_BYTES = 20 * 1024 * 1024;
+const MAX_CLIPBOARD_BYTES = MAX_AUDIO_SIZE;
+const MAX_CLIPBOARD_NON_AUDIO_BYTES = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_FILES = 8;
 
 type ClipboardPasteEvent = {
@@ -19,52 +26,6 @@ type NativeClipboardFile = {
   readonly mimeType: string;
   readonly base64: string;
 };
-
-function browserClipboardFiles(clipboardData: DataTransfer): File[] {
-  const files = Array.from(clipboardData.files).filter((file) => file.size > 0);
-  if (files.length > 0) return files;
-
-  return Array.from(clipboardData.items)
-    .filter((item) => item.kind === "file")
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => file !== null && file.size > 0);
-}
-
-function clipboardTypes(clipboardData: DataTransfer): string[] {
-  return Array.from(clipboardData.types, (type) => type.toLowerCase());
-}
-
-function clipboardHasLocalFileUri(
-  clipboardData: DataTransfer,
-  types: readonly string[],
-): boolean {
-  const uriTypes = types.filter(
-    (type) => type.includes("uri-list") || type.includes("urilist"),
-  );
-  for (const type of uriTypes) {
-    try {
-      if (
-        clipboardData
-          .getData(type)
-          .split(/\r?\n/)
-          .some((line) => line.trim().toLowerCase().startsWith("file:"))
-      ) {
-        return true;
-      }
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-function clipboardHasPlainText(clipboardData: DataTransfer): boolean {
-  try {
-    return clipboardData.getData("text/plain").length > 0;
-  } catch {
-    return true;
-  }
-}
 
 function validDimension(value: number): boolean {
   return (
@@ -93,13 +54,19 @@ async function readNativeClipboardFiles(): Promise<File[]> {
   let totalBytes = 0;
   const files: File[] = [];
   for (const file of nativeFiles) {
+    if (file.base64.length === 0) continue;
     if (
       !file.name ||
       file.name.length > 255 ||
       file.name.includes("/") ||
-      file.name.includes("\0") ||
-      file.base64.length > Math.ceil((MAX_CLIPBOARD_BYTES * 4) / 3) + 4
+      file.name.includes("\0")
     ) {
+      return [];
+    }
+    const maxFileBytes = file.mimeType.startsWith("audio/")
+      ? MAX_AUDIO_SIZE
+      : MAX_CLIPBOARD_NON_AUDIO_BYTES;
+    if (file.base64.length > Math.ceil((maxFileBytes * 4) / 3) + 4) {
       return [];
     }
     const binary = globalThis.atob(file.base64);
@@ -107,6 +74,7 @@ async function readNativeClipboardFiles(): Promise<File[]> {
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index);
     }
+    if (bytes.byteLength > maxFileBytes) return [];
     totalBytes += bytes.byteLength;
     if (totalBytes > MAX_CLIPBOARD_BYTES) return [];
     files.push(
@@ -123,7 +91,9 @@ async function readLinuxClipboardImage(): Promise<File | null> {
   const { invoke } = await import("@tauri-apps/api/core");
   const raw = await invoke<ArrayBuffer | Uint8Array>("read_native_clipboard_png");
   const png = Uint8Array.from(raw instanceof Uint8Array ? raw : new Uint8Array(raw));
-  if (png.byteLength === 0 || png.byteLength > MAX_CLIPBOARD_BYTES) return null;
+  if (png.byteLength === 0 || png.byteLength > MAX_CLIPBOARD_NON_AUDIO_BYTES) {
+    return null;
+  }
   return new File([png], "pasted-image.png", {
     type: "image/png",
     lastModified: Date.now(),
@@ -161,7 +131,7 @@ async function readNativeClipboardImage(): Promise<File | null> {
       );
       context.putImageData(new ImageData(pixels, width, height), 0, 0);
       const blob = await canvasPng(canvas);
-      if (!blob || blob.size === 0 || blob.size > MAX_CLIPBOARD_BYTES) {
+      if (!blob || blob.size === 0 || blob.size > MAX_CLIPBOARD_NON_AUDIO_BYTES) {
         return null;
       }
       return new File([blob], "pasted-image.png", {
@@ -233,16 +203,13 @@ export function pasteClipboardFiles(
     return;
   }
 
-  const types = clipboardTypes(clipboardData);
-  const advertisesImage = types.some((type) => type.startsWith("image/"));
-  const advertisesFile =
-    types.includes("files") ||
-    types.some((type) => type.includes("copied-files")) ||
-    clipboardHasLocalFileUri(clipboardData, types);
-  if (!advertisesImage && !advertisesFile && clipboardHasPlainText(clipboardData)) {
+  const advertisesFiles = clipboardAdvertisesFiles(clipboardData);
+  const hasUriList = Array.from(clipboardData.types).some((type) =>
+    type.toLowerCase().includes("uri-list"),
+  );
+  if (!advertisesFiles && (clipboardHasPlainText(clipboardData) || hasUriList))
     return;
-  }
 
-  if (advertisesImage || advertisesFile) event.preventDefault();
+  if (advertisesFiles) event.preventDefault();
   addNativeClipboardFiles(addFiles, onError);
 }

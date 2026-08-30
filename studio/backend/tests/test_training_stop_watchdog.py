@@ -46,12 +46,6 @@ _lg = _types.ModuleType("loggers")
 _lg.get_logger = lambda name: logging.getLogger(name)
 _stub("loggers", _lg)
 _stub("structlog", _types.ModuleType("structlog"))
-_mpl = _types.ModuleType("matplotlib")
-_plt = _types.ModuleType("matplotlib.pyplot")
-_plt.Figure = type("Figure", (), {})  # referenced in a class-def annotation
-_mpl.pyplot = _plt
-_stub("matplotlib", _mpl)
-_stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
 _hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
@@ -77,8 +71,6 @@ _TRAINING_MODULE_FILE = sys.modules["core.training.training"].__file__
 for _name in (
     "loggers",
     "structlog",
-    "matplotlib",
-    "matplotlib.pyplot",
     "utils.hardware",
     "utils.native_path_leases",
     "utils.paths",
@@ -412,8 +404,9 @@ def test_finalize_after_escalation_clears_output_dir_on_cancel(monkeypatch):
 def test_stop_training_starts_watchdog_only_when_worker_alive(monkeypatch):
     # No worker -> nothing to escalate; the watchdog must not spawn.
     b = TrainingBackend()
+    b.current_job_id = "job_idle"
     b._proc = None
-    assert b.stop_training(save = True) is True
+    assert b.stop_training(save = True, expected_job_id = "job_idle") is True
     assert b._stop_watchdog is None
 
 
@@ -608,13 +601,13 @@ def test_stop_without_save_creates_missing_row_before_signal(monkeypatch):
     b = TrainingBackend()
     b.current_job_id, b._db_config = "job_missing", {"model_name": "m"}
     b._stop_queue = queue.Queue()
-    assert b.stop_training(save = False) is True
+    assert b.stop_training(save = False, expected_job_id = "job_missing") is True
     assert [run["id"] for run in recs["created"]] == ["job_missing"]
     assert b._stop_queue.get_nowait() == {"type": "stop", "save": False}
 
     b._cancel_requested = b._should_stop = False
     sys.modules["storage.studio_db"].mark_run_cancel_requested = lambda _run_id: False
-    assert b.stop_training(save = False) is False
+    assert b.stop_training(save = False, expected_job_id = "job_missing") is False
     assert not b._cancel_requested and b._stop_queue.empty()
 
     new_queue = queue.Queue()
@@ -627,7 +620,7 @@ def test_stop_without_save_creates_missing_row_before_signal(monkeypatch):
         return True
 
     sys.modules["storage.studio_db"].mark_run_cancel_requested = _supersede
-    assert b.stop_training(save = False) is False
+    assert b.stop_training(save = False, expected_job_id = "job_old") is False
     assert not b._cancel_requested and new_queue.empty()
 
 

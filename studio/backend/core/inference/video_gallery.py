@@ -13,11 +13,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference import gallery_flags
 from loggers import get_logger
 from utils.paths import ensure_dir, studio_root
 
@@ -25,15 +27,115 @@ logger = get_logger(__name__)
 
 # Video ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_JOB_OUTCOME_KEY = "_worker_outcome"
+_job_lock = threading.Lock()
 
 
 def gallery_dir() -> Path:
     return ensure_dir(studio_root() / "videos")
 
 
-def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
+def _job_dir() -> Path:
+    return ensure_dir(gallery_dir() / ".jobs")
+
+
+def _job_path(video_id: str) -> Optional[Path]:
+    if not _ID_RE.match(video_id):
+        return None
+    return _job_dir() / f"{video_id}.json"
+
+
+def _read_job(path: Path, video_id: str) -> Optional[dict[str, Any]]:
+    try:
+        raw = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    return raw if isinstance(raw, dict) and raw.get("id") == video_id else None
+
+
+def _write_job(path: Path, job: dict[str, Any]) -> None:
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(job), encoding = "utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok = True)
+
+
+def save_job(video_id: str, job: dict[str, Any]) -> None:
+    """Atomically persist an OpenAI job, preserving any worker outcome that raced it."""
+    path = _job_path(video_id)
+    if path is None:
+        raise ValueError("Invalid video id.")
+    with _job_lock:
+        existing = _read_job(path, video_id) or {}
+        stored = dict(job)
+        if isinstance(existing.get(_JOB_OUTCOME_KEY), dict):
+            stored[_JOB_OUTCOME_KEY] = existing[_JOB_OUTCOME_KEY]
+        _write_job(path, stored)
+
+
+def record_job_outcome(
+    video_id: str,
+    *,
+    completed_at: int,
+    error: Optional[str] = None,
+) -> None:
+    """Persist a worker result by id before the backend can accept another generation."""
+    path = _job_path(video_id)
+    if path is None:
+        raise ValueError("Invalid video id.")
+    with _job_lock:
+        stored = _read_job(path, video_id) or {"id": video_id}
+        stored[_JOB_OUTCOME_KEY] = {"completed_at": completed_at, "error": error}
+        _write_job(path, stored)
+
+
+def get_job(video_id: str) -> Optional[dict[str, Any]]:
+    path = _job_path(video_id)
+    if path is None:
+        return None
+    with _job_lock:
+        return _read_job(path, video_id)
+
+
+def list_jobs() -> list[dict[str, Any]]:
+    try:
+        paths = list(_job_dir().glob("*.json"))
+    except OSError:
+        return []
+    jobs = []
+    for path in paths:
+        job = get_job(path.stem)
+        if job is not None:
+            jobs.append(job)
+    return jobs
+
+
+def forget_job(video_id: str) -> bool:
+    """Remove a persisted OpenAI job; missing state already satisfies the request."""
+    path = _job_path(video_id)
+    if path is None:
+        return False
+    with _job_lock:
+        try:
+            path.unlink(missing_ok = True)
+        except OSError as exc:
+            logger.warning("video_gallery.forget_job_failed: %s", exc)
+            return False
+    return True
+
+
+def save(
+    mp4_bytes: bytes,
+    meta: dict[str, Any],
+    video_id: Optional[str] = None,
+) -> dict[str, Any]:
     """Persist encoded MP4 bytes plus their recipe sidecar; return the record."""
-    video_id = uuid.uuid4().hex
+    if video_id is None:
+        video_id = uuid.uuid4().hex
+    elif not _ID_RE.match(video_id):
+        raise ValueError("Invalid video id.")
     directory = gallery_dir()
     mp4_path = directory / f"{video_id}.mp4"
     mp4_tmp = directory / f".{video_id}.mp4.tmp"
@@ -56,11 +158,19 @@ def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     return _record(video_id, meta)
 
 
-def _record(video_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+def _record(
+    video_id: str,
+    meta: dict[str, Any],
+    flags: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    # Flags are library state, not recipe: they come from the .flags.json store, never the sidecar.
     return {
         **meta,
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
+        **gallery_flags.flags_for(
+            flags if flags is not None else gallery_flags.read(gallery_dir()), video_id
+        ),
     }
 
 
@@ -77,6 +187,36 @@ def video_path(video_id: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
+def thumbnail(video_id: str) -> Optional[bytes]:
+    """Encode the first frame of an owned clip as the OpenAI-compatible WebP preview."""
+    path = owned_video_path(video_id)
+    if path is None:
+        return None
+    return _thumbnail_webp(path)
+
+
+def _thumbnail_webp(path: Path) -> bytes:
+    import io
+    try:
+        import av
+    except Exception as exc:  # noqa: BLE001 -- no PyAV -> no thumbnail
+        raise RuntimeError("Thumbnail generation needs the 'av' package (PyAV).") from exc
+    try:
+        with av.open(str(path)) as src:
+            if not src.streams.video:
+                raise RuntimeError("Thumbnail generation failed: the clip has no video stream.")
+            frame = next(src.decode(src.streams.video[0]), None)
+            if frame is None:
+                raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
+            buf = io.BytesIO()
+            frame.to_image().save(buf, format = "WEBP", quality = 85, method = 4)
+            return buf.getvalue()
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- surface decoder / WebP encoder failures
+        raise RuntimeError(f"Thumbnail generation failed to decode the clip: {exc}") from exc
+
+
 def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
     """Re-encode a stored MP4 for the Download menu into a TEMP FILE and return its path, or None
     when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). The caller
@@ -86,7 +226,7 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
     export of a clip that size runs to hundreds of MB, and holding it as one ``bytes`` (then again
     in the response) let a couple of concurrent export clicks exhaust the process. The MP4 route
     already streams from disk; this makes the transcodes behave the same way."""
-    # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a guessed stem for a foreign MP4 cannot be re-encoded out either.
+    # Ownership-gate like /file: only transcode an Unsloth-owned clip (readable sidecar), so a guessed stem for a foreign MP4 cannot be re-encoded out either.
     path = owned_video_path(video_id)
     if path is None:
         return None
@@ -259,7 +399,7 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
-# Sidecar keys every genuine Studio record carries. delete()/clear() own a pair only when its sidecar has all of these, so a
+# Sidecar keys every genuine Unsloth record carries. delete()/clear() own a pair only when its sidecar has all of these, so a
 # hand-dropped MP4 with a partial sidecar is neither counted as ours nor destroyed. Key-presence only.
 _REQUIRED_META = (
     "prompt",
@@ -291,8 +431,17 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     return meta
 
 
+def get_record(video_id: str) -> Optional[dict[str, Any]]:
+    if owned_video_path(video_id) is None:
+        return None
+    meta = _read_meta(_sidecar_path(video_id))
+    if meta is None:
+        return None
+    return _record(video_id, meta)
+
+
 def owned_video_path(video_id: str) -> Optional[Path]:
-    """Resolve an id to its MP4 only when it is a Studio-owned clip (a readable sidecar), else
+    """Resolve an id to its MP4 only when it is an Unsloth-owned clip (a readable sidecar), else
     None. The serve and export routes use this instead of video_path() so a guessed stem for a
     hand-dropped/orphan MP4 -- which list_videos/delete/clear already treat as not ours -- can't
     be streamed or transcoded out. Mirrors the delete/clear ownership guard."""
@@ -314,11 +463,16 @@ def list_videos(
     offset: int = 0,
     *,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+    archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A newest-first window of videos for infinite scroll.
+    """A window of videos for infinite scroll: pinned first (most recently pinned leading), then
+    newest-first by MP4 mtime.
 
-    Ordered by MP4 mtime (a cheap stat ~= generation order); only the window's sidecars are read.
-    limit=None returns everything from ``offset`` on. A file without its pair is skipped.
+    mtime is a cheap stat ~= generation order; only the window's sidecars are read. limit=None
+    returns everything from ``offset`` on. A file without its pair is skipped.
+
+    ``archived`` selects WHICH shelf to page over, it does not widen one: False lists only active
+    clips, True lists only archived ones. The archived section needs its own scrollable page.
 
     ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
     all count over the accepted-record domain. Pass the route's schema validator: a sidecar that
@@ -328,7 +482,11 @@ def list_videos(
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
         return []
-    paths.sort(key = _mtime, reverse = True)
+    flags = gallery_flags.read(gallery_dir())
+    # Shelf split and pin sort run on file stems, BEFORE any sidecar is read, so they cost one
+    # dict lookup per file and leave the early break below intact.
+    paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
+    paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
     # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced window would drop valid videos and make has_more wrong.
     want = None if limit is None else offset + limit
     records = []
@@ -336,13 +494,34 @@ def list_videos(
         meta = _read_meta(_sidecar_path(path.stem))
         if meta is None:  # orphan mp4 (no readable sidecar)
             continue
-        record = _record(path.stem, meta)
+        record = _record(path.stem, meta, flags)
         if valid is not None and not valid(record):  # parses but schema-invalid
             continue
         records.append(record)
         if want is not None and len(records) >= want:
             break
     return records[offset:] if limit is None else records[offset : offset + limit]
+
+
+def set_flags(
+    video_id: str,
+    *,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
+) -> Optional[dict[str, Any]]:
+    """Patch one clip's pin/archive flags and return its updated record, or None when the id is
+    not an Unsloth-owned clip. Ownership-gated like delete: a guessed stem for a hand-dropped or
+    orphan MP4 must not become flaggable."""
+    # Ownership check and write under one lock, so a concurrent clear cannot delete the pair
+    # between them and leave this reporting success for a clip that is already gone.
+    with gallery_flags.exclusive(gallery_dir()):
+        if owned_video_path(video_id) is None:
+            return None
+        gallery_flags.set_flags_locked(gallery_dir(), video_id, pinned = pinned, archived = archived)
+        meta = _read_meta(_sidecar_path(video_id))
+    if meta is None:  # raced a delete between the guard and the read
+        return None
+    return _record(video_id, meta)
 
 
 def delete(video_id: str) -> bool:
@@ -365,29 +544,56 @@ def delete(video_id: str) -> bool:
         _sidecar_path(video_id).unlink()
     except OSError:
         pass
+    # Drop the flags with the pair, so the id cannot hand a stale pin to anything.
+    gallery_flags.forget(gallery_dir(), [video_id])
     return True
 
 
-def clear() -> int:
-    """Delete every Studio-owned gallery pair (readable sidecar); return how many were removed.
+def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | list[str]:
+    """Delete owned gallery pairs and return their count, or their ids when requested.
+
+    Archived clips are SPARED by default: archiving is how a user sets something aside, so a
+    "clear the gallery" action that destroyed the archive would defeat it. Pass
+    include_archived=True to remove those too.
+
+    Raises FlagsUnavailable when the archive has to be spared but the flag store cannot be read.
+    Fail CLOSED: read() answers "nothing is archived" for an unreadable store, which here would
+    quietly delete the very archive this promises to keep.
 
     Foreign/orphan MP4s are preserved: list_videos already hides them, so clear must not destroy them."""
     removed = 0
-    try:
-        paths = list(gallery_dir().glob("*.mp4"))
-    except OSError:
-        return 0
-    for path in paths:
-        if _read_meta(_sidecar_path(path.stem)) is None:  # orphan / not ours
-            continue
-        # mp4 first; if it can't be unlinked, leave the sidecar so the video stays listable.
+    directory = gallery_dir()
+    # Hold the flag lock across the whole read-then-delete: an archive landing mid-loop would
+    # otherwise be judged active from the stale snapshot and deleted, after its PATCH had already
+    # reported success.
+    with gallery_flags.exclusive(directory):
+        # Read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted.
+        flags = {} if include_archived else gallery_flags.read_trusted(directory)
         try:
-            path.unlink()
+            paths = list(directory.glob("*.mp4"))
         except OSError:
-            continue
-        removed += 1
-        try:
-            _sidecar_path(path.stem).unlink()
-        except OSError:
-            pass
-    return removed
+            return [] if return_ids else 0
+        cleared: list[str] = []
+        for path in paths:
+            if _read_meta(_sidecar_path(path.stem)) is None:  # orphan / not ours
+                continue
+            if not include_archived and gallery_flags.is_archived(flags, path.stem):
+                continue
+            # mp4 first; if it can't be unlinked, leave the sidecar so the video stays listable.
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed += 1
+            cleared.append(path.stem)
+            try:
+                _sidecar_path(path.stem).unlink()
+            except OSError:
+                pass
+        # Nothing left for an unreadable store to protect once every clip we own is gone, so this is
+        # where the escape hatch escapes: replace it, or every later default clear still refuses.
+        if include_archived and not gallery_flags.is_trusted(directory):
+            gallery_flags.reset_locked(directory)
+        else:
+            gallery_flags.forget_locked(directory, cleared)
+    return cleared if return_ids else removed

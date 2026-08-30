@@ -18,6 +18,7 @@ import {
   deleteDiffusionDatasetImage,
   diffusionDatasetImageUrl,
   fetchGalleryObjectUrl,
+  imageRecordsOnly,
   listDiffusionDatasetImages,
 } from "../api";
 
@@ -144,7 +145,8 @@ export function DatasetShowcase({
       .then((r) => {
         if (cancelled) return;
         // Sample up to MAX_TILES evenly across the folder so the strip represents the whole set, not just the first few files.
-        const all = r.images.map((im) => im.filename);
+        // clips have no thumbnail endpoint, so the strip shows images only.
+        const all = imageRecordsOnly(r.images).map((im) => im.filename);
         if (all.length <= MAX_TILES) {
           setNames(all);
           return;

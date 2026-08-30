@@ -71,7 +71,7 @@ def test_snapshot_is_json_safe_and_ordered_by_start():
     assert [e["thread_id"] for e in snap] == ["first", "second"]
     # The threading.Event must not leak into an HTTP response body.
     assert all("event" not in e for e in snap)
-    assert {"handle", "thread_id", "model", "kind", "started_at"} == set(snap[0])
+    assert {"handle", "thread_id", "run_id", "model", "kind", "started_at"} == set(snap[0])
 
 
 def test_thread_ids_are_deduped_and_skip_unnamed_runs():
@@ -115,6 +115,34 @@ def test_cancel_thread_with_no_match_is_a_no_op():
         assert active_generations.cancel_thread("nope") == 0
         assert active_generations.cancel_thread("") == 0
         assert not a.is_set()
+
+
+def test_cancel_run_targets_only_matching_durable_generation():
+    durable, sibling = threading.Event(), threading.Event()
+    with active_generations.ActiveGeneration(durable, thread_id = "t1", run_id = "run-1"):
+        with active_generations.ActiveGeneration(sibling, thread_id = "t1", run_id = "run-2"):
+            assert active_generations.cancel_run("run-1") == 1
+            assert durable.is_set()
+            assert not sibling.is_set()
+
+
+def test_same_durable_run_and_event_borrows_existing_registration():
+    event = threading.Event()
+    with active_generations.ActiveGeneration(
+        event, run_id = "run-1", thread_id = "stale", model = "stale"
+    ):
+        with active_generations.ActiveGeneration(
+            event, run_id = "run-1", thread_id = "thread-1", model = "local"
+        ):
+            snapshot = active_generations.snapshot()[0]
+            assert (active_generations.count(), snapshot["thread_id"], snapshot["model"]) == (
+                1,
+                "thread-1",
+                "local",
+            )
+            assert active_generations.cancel_all() == 1
+    assert event.is_set()
+    assert active_generations.count() == 0
 
 
 def test_cancel_does_not_unregister_entries():
@@ -1165,7 +1193,7 @@ def _install_completions_stream_mock(monkeypatch, events):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1287,7 +1315,7 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1360,7 +1388,7 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1753,7 +1781,7 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     llama_backend = SimpleNamespace(
         base_url = "http://127.0.0.1:8080",
         context_length = 4096,
-        count_chat_tokens = lambda messages, _unused, tools: 7,
+        count_chat_tokens = lambda messages, _unused, tools, **_kwargs: 7,
     )
 
     async def _build():
@@ -1815,7 +1843,7 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
 
     class _TtsBackend:
         active_model_name = "org/TTS"
-        models = {"org/TTS": {"is_audio": True}}
+        models = {"org/TTS": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
             # Sampled mid-generation: the window a concurrent swap would tear down in.
@@ -2235,7 +2263,7 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
 
     class _BrokenTtsBackend:
         active_model_name = "org/TTS"
-        models = {"org/TTS": {"is_audio": True}}
+        models = {"org/TTS": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
             raise RuntimeError("codec exploded")
@@ -2731,3 +2759,97 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         t.join(timeout = 30)
 
     assert orch._active_cancel_events == sent, "claim order must equal send order"
+
+
+def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
+    # This adapter parses SSE itself, so without its own stamp a reasoning-first
+    # turn would time from the visible text instead.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": "length"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    rows = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert rows, "the stream should have opened a monitor row"
+    assert rows[0]["ttft_ms"] is not None
+    assert rows[0]["stop_reason"] == "length"
+
+
+def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
+    # A tool-call-opening turn already sent client output, so TTFT must stamp there.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "f", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    # append_reply would stamp late; assert it happens at the delta instead.
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert stamped, "the tool-call delta should stamp the first token"
+    [row] = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert row["ttft_ms"] is not None
+    assert row["stop_reason"] == "tool_calls"

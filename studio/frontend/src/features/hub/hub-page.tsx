@@ -6,6 +6,7 @@ import {
   applyActiveModelStatusToStore,
   getInferenceStatus,
   isExternalModelId,
+  isSpeechOnlyStatus,
   listGgufVariants,
   resolveInferenceCheckpointId,
   useChatModelRuntime,
@@ -25,6 +26,8 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
@@ -59,6 +62,7 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -96,6 +100,7 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import { looksLikeLocalPath, routableToMediaPage } from "./lib/local-path";
 import {
   ggufVariantsMatch,
   modelIdsMatch,
@@ -106,6 +111,7 @@ import {
   matchesModelType,
 } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { studioPageForTask } from "./lib/unsloth-support";
 import { fingerprintToken } from "./lib/token-fingerprint";
 import {
   buildDiscoverRows,
@@ -382,12 +388,21 @@ export function ModelsPage() {
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  // Resident, not merely picked. An image or video load evicts the chat model
+  // and leaves the pick alone, so the cards kept saying "Loaded" for weights the
+  // backend had already released. `undefined` is "no status read yet", which
+  // stays as it was rather than flashing "On device" on every launch.
   const activeCheckpoint =
-    checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
+    checkpoint && !isExternalModelId(checkpoint) && residentCheckpoint !== null
+      ? checkpoint
+      : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufContextLength = useChatRuntimeStore(
     (s) => s.ggufContextLength,
   );
+  const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
+    useState(false);
   // Live settings of the loaded model, so its page shows what it is running with.
   const { config: activeModelConfig } = useActiveModelConfig();
   // Shared with the chat model selector: list only models sized for this device.
@@ -429,7 +444,12 @@ export function ModelsPage() {
         adoptResidentModelStatus(
           {
             // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
-            checkpointId: resolveInferenceCheckpointId(status),
+            // Null for a speech model: this page is the other writer of params.checkpoint,
+            // so adopting one here made it the chat model just as the mount sync did.
+            checkpointId: isSpeechOnlyStatus(status)
+              ? null
+              : resolveInferenceCheckpointId(status),
+            speechOnly: isSpeechOnlyStatus(status),
             ggufVariant: status.gguf_variant ?? null,
           },
           {
@@ -464,11 +484,15 @@ export function ModelsPage() {
 
   // Mount, then whenever this tab could have missed an API-driven switch. Re-reading is safe.
   useEffect(() => {
-    void refreshResidentModelStatus();
+    let active = true;
+    void refreshResidentModelStatus().finally(() => {
+      if (active) setInitialResidentStatusSettled(true);
+    });
     const unsubscribe = subscribeResidentStatusRefresh(
       refreshResidentModelStatus,
     );
     return () => {
+      active = false;
       // A response still in flight adopts nothing once the Hub is gone.
       residentStatusSeq.current += 1;
       unsubscribe();
@@ -567,6 +591,7 @@ export function ModelsPage() {
   const [inventoryTypeFilter, setInventoryTypeFilter] =
     useState<ModelTypeFilter>("all");
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
+  const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
   const [sortBrowseActive, setSortBrowseActive] = useState(false);
 
@@ -772,10 +797,29 @@ export function ModelsPage() {
     availableSet,
     partialSet,
     downloadedReady,
+    inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
   } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
+
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      reloadReadySent.current ||
+      !initialResidentStatusSettled ||
+      (isDiscoverTab ? isLoading : !inventorySettled)
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [
+    initialResidentStatusSettled,
+    inventorySettled,
+    isDiscoverTab,
+    isLoading,
+  ]);
 
   const modelDiscoveryInventorySignature = useMemo(
     () => discoveryInventorySignature(effectiveCachedRows, effectiveLocalRows),
@@ -1226,6 +1270,7 @@ export function ModelsPage() {
     () => setFoldersDialogOpen(true),
     [],
   );
+  const handleFreeUpSpace = useCallback(() => setFreeUpSpaceOpen(true), []);
   const handleSwitchDevice = useCallback(
     () => handleTabChange("downloaded"),
     [handleTabChange],
@@ -1249,8 +1294,12 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.round(gpu.memoryTotalGb)} GiB`
+    ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
     : "Unavailable";
+  const gpuSharedLabel =
+    gpu.available && gpu.memorySharedGb > 0
+      ? `${Math.round(gpu.memorySharedGb)} GiB`
+      : null;
   const ramLabel =
     gpu.systemRamTotalGb > 0
       ? `${Math.round(gpu.systemRamTotalGb)} GiB`
@@ -1267,6 +1316,35 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      // An image / video model is run by its own page, not by chat: loading it here evicted
+      // the resident chat model for a llama.cpp load that could only fail. Same resolution
+      // and destination the chat picker uses, so both surfaces route a pick identically.
+      // `task` is not optional here: only CachedModelRepo carries pipelineTag, so every
+      // cached GGUF repo (the reported MiniMax-H3 case) reports its modality on `task`.
+      const mediaPage = studioPageForTask(
+        taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
+      );
+      // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
+      // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
+      // since the loader reuses whichever cache root holds it. That covers a filesystem row
+      // (left on today's route, and the backend preflight now refuses it by name) and a
+      // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
+      // the pages' containment check rejects anyway.
+      const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
+      if (
+        mediaPage &&
+        routableToMediaPage(selectedModel.kind, selectedModel.localSource) &&
+        routeId
+      ) {
+        void navigate({
+          to: `/${mediaPage}`,
+          // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
+          search: diffusionRouteSearch(routeId, {
+            ggufVariant: opts.ggufVariant ?? null,
+          }),
+        });
+        return;
+      }
       const configIdentity = modelConfigIdentity(
         selectedModel.kind,
         selectedModel.resource,
@@ -1292,6 +1370,11 @@ export function ModelsPage() {
         keepSpeculative: hasAppliedConfig,
         throwOnError: true,
         previousConfig,
+        // The runtime store is not enough: applyPerModelConfigToRuntime has no field
+        // for the launch flags, and /load only inherits them from the SAME resident
+        // model, so a cold launch or a switch from another model ran without the
+        // arguments this model was remembered with.
+        ...(rememberedConfig ? { config: rememberedConfig } : {}),
       })
         .then(() => {
           // Read fresh: the load is async, so the checkpoint may have changed.
@@ -1303,7 +1386,7 @@ export function ModelsPage() {
         .catch(() => undefined);
       openNewChat();
     },
-    [openNewChat, selectModel, selectedModel],
+    [navigate, openNewChat, selectModel, selectedModel],
   );
   const handleLoad = useCallback(
     (opts: ModelLoadOptions) =>
@@ -1440,6 +1523,11 @@ export function ModelsPage() {
         isLora: target.meta.isLora,
         keepSpeculative: true,
         forceReload: true,
+        // The submitted config, not only its echo in the runtime store: the store
+        // does not carry llamaExtraArgs, so without this the load omits the field
+        // and the route keeps the resident server's old list. Applying an edit, or
+        // clearing the box, would then do nothing on this page.
+        config,
         previousConfig,
       }).catch(() => undefined);
     },
@@ -1853,6 +1941,7 @@ export function ModelsPage() {
           localCount={visibleLocalCount}
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
+          gpuSharedLabel={gpuSharedLabel}
           ramLabel={ramLabel}
           coreLabel={coreLabel}
           activeCheckpoint={activeCheckpoint}
@@ -1877,6 +1966,7 @@ export function ModelsPage() {
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
+          onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
         />
       </HubTopBar>
@@ -1984,6 +2074,11 @@ export function ModelsPage() {
         open={foldersDialogOpen}
         onOpenChange={setFoldersDialogOpen}
         onInventoryChange={refreshInventory}
+      />
+      <FreeUpSpaceDialog
+        open={freeUpSpaceOpen}
+        onOpenChange={setFreeUpSpaceOpen}
+        onChange={refreshInventory}
       />
       <ExternalLinkConfirmDialog />
     </div>

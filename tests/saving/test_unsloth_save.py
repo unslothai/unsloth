@@ -7,26 +7,49 @@ import importlib
 
 from unsloth import FastLanguageModel, FastModel
 
+# Every param here downloads a checkpoint and merges it on the accelerator;
+# the file was 877s, 29% of the repo's total test time, before its matrix was
+# cut to three models. CI runs it under `-m gpu`.
+pytestmark = pytest.mark.gpu
+
+# One model per save path, and the smallest model that still exercises the path.
+# This file runs in the default `pytest tests/` walk (unlike the rest of
+# tests/saving/, which is gated behind UNSLOTH_RUN_SAVING_SCRIPTS), so every
+# entry here is paid by anyone who runs the suite. The ten-model matrix it grew
+# to cost 877s, 29% of the whole repo's test time; these three cover the same
+# paths. Distinct paths, not distinct checkpoints, are what earn a slot:
+#
+#   * text, 16-bit on disk        -> Qwen2.5-0.5B-Instruct
+#   * text, already 4-bit on disk -> tinyllama-bnb-4bit
+#   * vision                      -> Qwen2.5-VL-3B-Instruct
+#
+# Dropped: tinyllama and Qwen2.5-0.5B (same text path as Qwen2.5-0.5B-Instruct,
+# and the first is 2x its size); Qwen2.5-0.5B-Instruct-bnb-4bit and
+# Phi-4-mini-instruct-bnb-4bit (loading a pre-quantized checkpoint is one path,
+# so it gets one model, not four); Phi-4-mini-instruct (3.8B, adds no path a
+# 0.5B does not); gemma-3-4b-it (vision, but 4B against Qwen2.5-VL's 3B);
+# Llama-3.2-11B-Vision-Instruct-bnb-4bit (11B, and its merged 16-bit write was
+# 21.3GB to $TMPDIR per run).
 model_to_test = [
-    # Text models
-    "unsloth/tinyllama",
-    "unsloth/tinyllama-bnb-4bit",
+    # Text, 16-bit on disk.
     "unsloth/Qwen2.5-0.5B-Instruct",
-    "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit",
-    "unsloth/Phi-4-mini-instruct",
-    "unsloth/Phi-4-mini-instruct-bnb-4bit",
-    "unsloth/Qwen2.5-0.5B",
-    # Vision models
-    "unsloth/gemma-3-4b-it",
-    "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
+    # Text, already 4-bit on disk: from_pretrained has to load a pre-quantized
+    # checkpoint and the merge has to dequantize back out of it.
+    "unsloth/tinyllama-bnb-4bit",
+    # Vision, and the only entry whose merged 16-bit output clears the 5GB
+    # safetensors shard limit -- so it is what keeps sharded output and its
+    # index file covered here. The dedicated sharded-index tests
+    # (vision_models/test_index_file_sharded_model.py,
+    # language_models/test_push_to_hub_merged_sharded_index_file.py) do NOT
+    # cover it in a default run: both are behind UNSLOTH_RUN_SAVING_SCRIPTS.
+    # Keep an entry above 5GB here, or that path stops being exercised.
     "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit",
 ]
 
 torchao_models = [
-    "unsloth/tinyllama",
+    # One model: both entries drove the same save_pretrained_torchao path, and
+    # tinyllama is 1.1B against this one's 0.5B.
     "unsloth/Qwen2.5-0.5B-Instruct",
-    # "unsloth/Phi-4-mini-instruct",
-    # "unsloth/Qwen2.5-0.5B",
     # Skip the -bnb-4bit variants since they're already quantized
 ]
 

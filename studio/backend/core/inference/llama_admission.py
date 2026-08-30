@@ -32,6 +32,9 @@ ADMISSION_QUEUE_TIMEOUT_ENV = "UNSLOTH_LLAMA_ADMISSION_QUEUE_TIMEOUT"
 ADMISSION_KEEPALIVE_INTERVAL_ENV = "UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL"
 ADMISSION_MAX_QUEUE_ENV = "UNSLOTH_LLAMA_ADMISSION_MAX_QUEUE"
 ADMISSION_QUEUE_PER_SLOT_ENV = "UNSLOTH_LLAMA_ADMISSION_QUEUE_PER_SLOT"
+# Off restores slot-only admission. The escape hatch for a backend whose reported
+# context length does not match the cache llama-server actually allocated.
+ADMISSION_KV_BUDGET_ENV = "UNSLOTH_LLAMA_ADMISSION_KV_BUDGET"
 
 # The UNSLOTH_OPENAI_COMPAT_* spellings predate this queue being shared with the
 # Anthropic /v1/messages route (same llama-server slots). Still honored; the
@@ -56,6 +59,11 @@ DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
 # load downshifted to fit VRAM) keeps the depth it had before scaling existed
 # rather than dropping to 16 and rejecting callers that used to queue.
 DEFAULT_ADMISSION_MIN_QUEUE = 64
+# Token accounting is on by default. Slot-only admission overcommits a unified KV
+# cache: llama.cpp with --parallel N --kv-unified allocates ONE cache of n_ctx but
+# reports n_ctx_slot = n_ctx to every slot, so N generations are admitted against a
+# cache that may hold one. When they collide, llama.cpp kills every task involved.
+DEFAULT_ADMISSION_KV_BUDGET = True
 
 
 def _executor_workers() -> int:
@@ -142,6 +150,7 @@ class LlamaAdmissionConfig:
     # Unconditional floor on the scaled line. The env path clears it when the
     # operator sets QUEUE_PER_SLOT, so only the default multiplier is floored.
     min_queue: Optional[int] = DEFAULT_ADMISSION_MIN_QUEUE
+    kv_budget: bool = DEFAULT_ADMISSION_KV_BUDGET
 
     def queue_limit(self, capacity: int) -> Optional[int]:
         """How many callers may line up for a pool of ``capacity`` slots.
@@ -166,6 +175,10 @@ class LlamaAdmissionSnapshot:
     active: int
     queued: int
     free: int = 0
+    # KV tokens held by live leases, and the cache they are drawn from. budget 0
+    # means token accounting is off, so committed carries no meaning.
+    committed: int = 0
+    budget: int = 0
 
 
 class LlamaAdmissionError(Exception):
@@ -276,6 +289,7 @@ def llama_admission_config_from_env() -> LlamaAdmissionConfig:
             DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S,
         ),
         max_queue = max_queue,
+        kv_budget = _bool_env(ADMISSION_KV_BUDGET_ENV, DEFAULT_ADMISSION_KV_BUDGET),
     )
 
 
@@ -285,15 +299,27 @@ class _Waiter:
     future: asyncio.Future
     cancelled: bool = False
     granted_lease: Optional["LlamaAdmissionLease"] = None
+    # KV tokens this caller will occupy once admitted. Read while the head of the
+    # line is considered, so a large request cannot be overtaken by small ones.
+    tokens: int = 0
 
 
 class LlamaAdmissionLease:
-    __slots__ = ("_queue", "_slot", "_released", "_release_lock", "_parked", "_budgeted")
+    __slots__ = (
+        "_queue",
+        "_slot",
+        "_released",
+        "_release_lock",
+        "_parked",
+        "_budgeted",
+        "_tokens",
+    )
 
     def __init__(
         self,
         queue: Optional["LlamaAdmissionQueue"],
         slot: Optional[int] = None,
+        tokens: int = 0,
     ):
         self._queue = queue
         self._slot = slot
@@ -301,6 +327,9 @@ class LlamaAdmissionLease:
         self._release_lock = threading.Lock()
         self._parked = False
         self._budgeted = False
+        # Returned to the queue on release, not on park: a parked holder has
+        # stopped decoding but llama-server still holds its KV until the task ends.
+        self._tokens = max(0, int(tokens or 0))
 
     @property
     def slot(self) -> Optional[int]:
@@ -411,7 +440,7 @@ class LlamaAdmissionLease:
         if queue is not None:
             if parked:
                 queue.unpark()
-            queue.release(self._slot)
+            queue.release(self._slot, self._tokens)
 
     async def __aenter__(self) -> "LlamaAdmissionLease":
         return self
@@ -501,7 +530,7 @@ class LlamaAdmissionQueue:
     are each either free or held by exactly one caller. A caller that finds every
     slot busy waits in arrival order and is handed the next slot to free, so no
     caller is starved. This bounds only the callers that reserve: chat completions
-    and messages do, while /v1/completions, Studio's own chat endpoint and RAG
+    and messages do, while /v1/completions, Unsloth's own chat endpoint and RAG
     captioning all reach llama-server directly, so it is not a global cap.
     Waiting is unbounded in time by default (``queue_timeout_s``
     None); the wait line itself is bounded, and only how many may line up before
@@ -521,6 +550,8 @@ class LlamaAdmissionQueue:
         "_parked",
         "_unpark_tickets",
         "_unpark_seq",
+        "_committed",
+        "_budget",
     )
 
     def __init__(self, key: str):
@@ -541,6 +572,10 @@ class LlamaAdmissionQueue:
         # bare count deadlocked: every approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
         self._unpark_seq = 0
+        # KV tokens held by live leases, against the cache size the caller reports.
+        # 0 budget disables the check, which is what every pre-existing caller gets.
+        self._committed = 0
+        self._budget = 0
 
     def _resize_pool_locked(self, capacity: int) -> None:
         # Slots past a shrunk capacity retire when their holder releases them.
@@ -549,22 +584,69 @@ class LlamaAdmissionQueue:
         self._capacity = capacity
         self._free = [slot for slot in range(capacity) if not self._in_use >> slot & 1]
 
-    def _can_admit_locked(self, reserved: int) -> bool:
+    def _fits_budget_locked(self, tokens: int) -> bool:
+        """Whether ``tokens`` more KV may be committed.
+
+        A caller is always admitted when nothing else holds KV, however large it is.
+        Its request may still be refused by llama-server, but that refusal names both
+        token counts and the setting to change, whereas refusing here would strand it
+        forever.
+
+        The escape asks whether anything is COMMITTED, not whether a slot is held.
+        ``try_park`` hands a slot back while its holder waits on a tool approval, which
+        drops ``_held`` to zero even though llama-server still holds that lease's KV. A
+        held-slot test therefore admitted the next caller unconditionally: park a 1500
+        token lease against a 2048 token budget, and the next 1500 token one sailed
+        through to 3000 committed, which is the collision this accounting exists to stop.
+        """
+        if self._budget <= 0 or tokens <= 0:
+            return True
+        if self._committed == 0:
+            return True
+        return self._committed + tokens <= self._budget
+
+    def _can_admit_locked(
+        self,
+        reserved: int,
+        tokens: int = 0,
+    ) -> bool:
         # Slots still held above a shrunk capacity keep occupying the backend, so
         # count every held slot against the ceiling, not just the ids below it.
         # ``reserved`` holds slots back for approved holders waiting to resume;
         # without it a stream of new arrivals took the next slot, forever.
-        return bool(self._free) and (self._held + reserved) < self._capacity
+        if not (bool(self._free) and (self._held + reserved) < self._capacity):
+            return False
+        # A free slot is not enough: with --kv-unified every slot reports the full
+        # n_ctx, so the pool can hand out more slots than the one cache can serve.
+        return self._fits_budget_locked(tokens)
 
-    def _take_slot_locked(self, reserved: int) -> Optional[int]:
-        if not self._can_admit_locked(reserved):
+    def _take_slot_locked(
+        self,
+        reserved: int,
+        tokens: int = 0,
+    ) -> Optional[int]:
+        if not self._can_admit_locked(reserved, tokens):
             return None
         slot = self._free.pop()
         self._in_use |= 1 << slot
         self._held += 1
+        self._committed += max(0, tokens)
         return slot
 
-    def reserve(self, *, capacity: int, config: LlamaAdmissionConfig) -> LlamaAdmissionReservation:
+    def reserve(
+        self,
+        *,
+        capacity: int,
+        config: LlamaAdmissionConfig,
+        tokens: Optional[int] = None,
+        budget: Optional[int] = None,
+    ) -> LlamaAdmissionReservation:
+        """Take a serving slot, waiting in FIFO order when none is available.
+
+        ``tokens`` is the KV this caller will occupy and ``budget`` the size of the
+        cache it is drawn from. Leaving either unset (or ``kv_budget`` off) keeps
+        the slot-only behaviour every caller had before token accounting existed.
+        """
         capacity = max(1, int(capacity or 1))
         if not config.enabled:
             return LlamaAdmissionReservation(
@@ -573,19 +655,27 @@ class LlamaAdmissionQueue:
                 snapshot = LlamaAdmissionSnapshot(self.key, capacity, 0, 0, capacity),
             )
 
+        if not config.kv_budget:
+            tokens = budget = None
+        cost = max(0, int(tokens or 0))
+
         loop = asyncio.get_running_loop()
         with self._lock:
             self._resize_pool_locked(capacity)
+            # Re-read every reserve: a reload can relaunch llama-server at a
+            # different -c, and a stale budget would keep admitting against a
+            # cache that no longer exists.
+            self._budget = max(0, int(budget or 0))
             self._grant_waiters_locked()
             if not self._waiters:
-                slot = self._take_slot_locked(len(self._unpark_tickets))
+                slot = self._take_slot_locked(len(self._unpark_tickets), cost)
                 if slot is not None:
                     # No snapshot here: callers read it through snapshot_now(),
                     # which re-reads the queue, so building one per admitted
                     # request would be pure allocation on the hot path.
                     return LlamaAdmissionReservation(
                         queue = self,
-                        lease = LlamaAdmissionLease(self, slot),
+                        lease = LlamaAdmissionLease(self, slot, cost),
                     )
             limit = config.queue_limit(self._capacity)
             if limit is not None and self._live_waiters_locked() >= limit:
@@ -596,6 +686,7 @@ class LlamaAdmissionQueue:
             waiter = _Waiter(
                 loop = loop,
                 future = loop.create_future(),
+                tokens = cost,
             )
             self._waiters.append(waiter)
             return LlamaAdmissionReservation(
@@ -612,9 +703,18 @@ class LlamaAdmissionQueue:
         if slot < self._capacity:
             self._free.append(slot)
 
-    def release(self, slot: Optional[int]) -> None:
+    def release(
+        self,
+        slot: Optional[int],
+        tokens: int = 0,
+    ) -> None:
         with self._lock:
             self._release_slot_locked(slot)
+            # Floored at 0 so a double release cannot drive the pool negative and
+            # let the budget admit callers the cache cannot hold. The lease's own
+            # _released guard makes that unreachable; this keeps it unreachable if
+            # a future caller releases by hand.
+            self._committed = max(0, self._committed - max(0, int(tokens or 0)))
             self._grant_waiters_locked()
 
     def try_park(self, slot: Optional[int]) -> bool:
@@ -696,6 +796,9 @@ class LlamaAdmissionQueue:
                     # raising here would both mask their exception and skip the
                     # release below, stranding the slot for the process lifetime.
                     pass
+            # A cancel frees no slot and no tokens, so nothing else re-runs
+            # admission for the waiters this one was blocking.
+            self._grant_waiters_locked()
         if lease_to_release is not None:
             lease_to_release.release()
 
@@ -713,20 +816,28 @@ class LlamaAdmissionQueue:
 
     def _grant_waiters_locked(self) -> None:
         # Dead waiters are skipped as they are popped, so no prune is needed here.
-        while self._waiters and self._can_admit_locked(len(self._unpark_tickets)):
+        # The head's own cost is what is tested, not a zero: granting past a large
+        # waiter whenever a small one fits would starve it for as long as traffic
+        # keeps arriving. Head-of-line blocking is the fair trade here, and it
+        # matches the FIFO the rest of this queue already promises.
+        while self._waiters and self._can_admit_locked(
+            len(self._unpark_tickets), self._waiters[0].tokens
+        ):
             waiter = self._waiters.popleft()
             if waiter.cancelled or waiter.future.done():
                 continue
-            slot = self._take_slot_locked(len(self._unpark_tickets))
-            lease = LlamaAdmissionLease(self, slot)
+            slot = self._take_slot_locked(len(self._unpark_tickets), waiter.tokens)
+            lease = LlamaAdmissionLease(self, slot, waiter.tokens)
             waiter.granted_lease = lease
             try:
                 waiter.loop.call_soon_threadsafe(self._deliver_lease, waiter, lease)
             except RuntimeError:
                 # Waiter's loop is gone. Reclaim the slot; leaving the bit set
-                # would strand it, since _free is rebuilt from the bitmask.
+                # would strand it, since _free is rebuilt from the bitmask. The
+                # tokens go back with it: nothing will ever release this lease.
                 waiter.granted_lease = None
                 self._release_slot_locked(slot)
+                self._committed = max(0, self._committed - max(0, waiter.tokens))
 
     def _deliver_lease(self, waiter: _Waiter, lease: LlamaAdmissionLease) -> None:
         # Runs on the waiter's own loop thread, which is also the only thread that
@@ -768,11 +879,18 @@ class LlamaAdmissionQueue:
             key = self.key,
             capacity = self._capacity,
             active = self._held,
-            queued = len(self._waiters),
-            # What another caller could actually take, so the admission log never
-            # shows free slots next to queued requests: after a shrink, ids below
-            # the new capacity can be free while holdovers still fill the ceiling.
-            free = min(len(self._free), max(0, self._capacity - self._held)),
+            # Resume tickets are approved continuations holding no slot yet; omitting
+            # them would show a full, idle-looking queue while one still waits.
+            queued = len(self._waiters) + len(self._unpark_tickets),
+            # What another caller could actually take, so free never shows next to queued:
+            # after a shrink, ids below the new capacity can be free while holdovers fill
+            # the ceiling, and tickets hold slots back exactly as _can_admit_locked does.
+            free = min(
+                len(self._free),
+                max(0, self._capacity - self._held - len(self._unpark_tickets)),
+            ),
+            committed = self._committed,
+            budget = self._budget,
         )
 
 
@@ -793,6 +911,13 @@ def get_llama_admission_queue(key: str) -> LlamaAdmissionQueue:
             for stale_key in [k for k in _QUEUES if k != key and _QUEUES[k].is_idle()]:
                 del _QUEUES[stale_key]
         return queue
+
+
+def peek_llama_admission_snapshot(key: str) -> Optional[LlamaAdmissionSnapshot]:
+    """Read-only view of one queue's state; never creates a queue."""
+    with _QUEUES_LOCK:
+        queue = _QUEUES.get(key)
+    return queue.snapshot() if queue is not None else None
 
 
 def reset_llama_admission_queues() -> None:

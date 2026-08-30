@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -24,6 +25,7 @@ sys.modules[SPEC.name] = INSTALL_LLAMA_PREBUILT
 SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
+BusyInstallConflict = INSTALL_LLAMA_PREBUILT.BusyInstallConflict
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
 is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
 scrub_env = INSTALL_LLAMA_PREBUILT.scrub_env
@@ -38,6 +40,9 @@ validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
+replace_with_busy_retry = INSTALL_LLAMA_PREBUILT.replace_with_busy_retry
+remove_tree_logged = INSTALL_LLAMA_PREBUILT.remove_tree_logged
+prune_stale_install_side_paths = INSTALL_LLAMA_PREBUILT.prune_stale_install_side_paths
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
 install_prebuilt = INSTALL_LLAMA_PREBUILT.install_prebuilt
@@ -775,7 +780,7 @@ def test_activate_install_tree_preserves_symlink_to_resolved_target(
     assert not (linked_root / "old.txt").exists()
 
 
-def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
+def test_activate_install_tree_keeps_rollback_when_restore_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     install_dir = tmp_path / "llama.cpp"
@@ -817,12 +822,884 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
         return original_replace(src, dst)
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    # A failed rename is retried by a copy, so retention is only reached once
+    # the copy is out of the running too (no space, no permission).
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(errno.ENOSPC, "No space left on device")
+        ),
+    )
+
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at") as excinfo:
+        activate_install_tree(staging_dir, install_dir, host)
+
+    assert "cleaned install state for fresh source build" in str(excinfo.value)
+    assert not install_dir.exists()
+    assert not staging_dir.exists()
+
+    rollbacks = sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "old install\n"
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "rollback after failed activation also failed: restore failed" in output
+    assert "previous install kept at rollback path" in output
+    assert "cleaning staging, install, and failed paths before source build fallback" in output
+    assert "removing failed install path" in output
+    assert "removing rollback path" not in output
+
+
+def _fail_activation_then_restore_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, copy_error: Exception
+) -> tuple[Path, Path]:
+    """Activation fails for a reason that is *not* disk-related, the restore rename
+    then fails, and the copy back that follows raises ``copy_error``."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(copy_error),
+    )
+    return install_dir, staging_dir
+
+
+@pytest.mark.parametrize(
+    "make_copy_error",
+    [
+        # copytree propagates the raw OSError when the destination root itself
+        # cannot be created; per-file failures arrive as Error(list-of-strings)
+        # with errno and the chain already gone, which only the text carries.
+        lambda: OSError(errno.ENOSPC, "No space left on device"),
+        lambda: shutil.Error(
+            [("src", "dst", "[Errno 28] No space left on device: 'llama-server'")]
+        ),
+    ],
+    ids = ["oserror", "shutil_error"],
+)
+def test_activate_install_tree_reports_a_recovery_disk_full_as_out_of_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_copy_error
+):
+    """The copy back is the first step of this path that needs free space -- every
+    step before it renames or deletes -- so a full disk can show up there and
+    nowhere else. Dropping it would leave the caller starting a source build that
+    needs far more room than the copy that just failed."""
+    install_dir, staging_dir = _fail_activation_then_restore_rename(
+        tmp_path, monkeypatch, make_copy_error()
+    )
+
+    with pytest.raises(PrebuiltFallback) as excinfo:
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert INSTALL_LLAMA_PREBUILT._environment_fatal_reason(excinfo.value) == (
+        "no space left on device"
+    )
+    # The point of the retention is unchanged: the previous install still exists.
+    rollbacks = sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "old install\n"
+
+
+def test_activate_install_tree_keeps_the_activation_error_as_the_cause_when_not_out_of_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Only a disk-full recovery failure replaces the cause: an ordinary one still
+    reports the activation error, so the caller keeps its source build fallback."""
+    install_dir, staging_dir = _fail_activation_then_restore_rename(
+        tmp_path, monkeypatch, OSError(errno.EACCES, "Permission denied")
+    )
+
+    with pytest.raises(PrebuiltFallback) as excinfo:
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "activation confirm failed"
+    assert INSTALL_LLAMA_PREBUILT._environment_fatal_reason(excinfo.value) is None
+
+
+def test_activate_install_tree_copies_previous_install_back_when_restore_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    with pytest.raises(PrebuiltFallback, match = "activation failed; restored previous install"):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # A copy is attempted before giving up on the install path itself.
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not (install_dir / "new.txt").exists()
+    assert not staging_dir.exists()
+    assert sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*")) == []
+
+    output = "".join(capsys.readouterr())
+    assert "copying the previous install back" in output
+
+
+def test_activate_install_tree_does_not_follow_a_symlink_out_of_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("precious\n")
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+    try:
+        (install_dir / "link-out").symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    with pytest.raises(PrebuiltFallback):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # Every removal and the copy fallback must treat the link as a link; one
+    # dereference would wipe a directory outside the install.
+    assert (outside / "precious.txt").read_text() == "precious\n"
+    assert (install_dir / "link-out").is_symlink()
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+
+
+def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "payload.txt").write_text("payload\n")
+    destination = tmp_path / "dst"
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    attempts = {"count": 0}
+
+    def sharing_violation(src, dst):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            exc = OSError(errno.EACCES, "The process cannot access the file")
+            exc.winerror = 32
+            raise exc
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", sharing_violation)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    replace_with_busy_retry(source, destination)
+
+    assert attempts["count"] == 3
+    assert (destination / "payload.txt").read_text() == "payload\n"
+
+
+def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    attempts = {"count": 0}
+
+    def denied(src, dst):
+        attempts["count"] += 1
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "posix")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.time,
+        "sleep",
+        lambda _seconds: pytest.fail("POSIX permission errors must not be waited out"),
+    )
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst")
+
+    assert attempts["count"] == 1
+
+
+def test_remove_tree_logged_clears_read_only_files(tmp_path: Path):
+    tree = tmp_path / "tree"
+    (tree / "nested").mkdir(parents = True)
+    locked = tree / "nested" / "locked.bin"
+    locked.write_bytes(b"locked")
+    os.chmod(locked, stat.S_IRUSR)
+
+    remove_tree_logged(tree, "read only tree")
+
+    assert not tree.exists()
+
+
+def test_remove_tree_logged_refuses_a_symlinked_root_without_touching_the_target(tmp_path: Path):
+    target = tmp_path / "outside"
+    target.mkdir()
+    (target / "precious.txt").write_text("precious\n")
+    original_mode = stat.S_IMODE(os.stat(target).st_mode)
+
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    # rmtree reports its refusal to run on a link through the read-only
+    # handler, which must not chmod or delete through it.
+    with pytest.raises(OSError):
+        remove_tree_logged(link, "symlinked tree")
+
+    assert link.is_symlink()
+    assert (target / "precious.txt").read_text() == "precious\n"
+    assert stat.S_IMODE(os.stat(target).st_mode) == original_mode
+
+
+def test_activate_install_tree_leaves_a_symlinked_install_target_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "real-install-elsewhere"
+    target.mkdir()
+    (target / "old.txt").write_text("old install\n")
+    original_mode = stat.S_IMODE(os.stat(target).st_mode)
+
+    install_dir = tmp_path / "llama.cpp"
+    try:
+        install_dir.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # The link is renamed aside as a link, so the tree it points at, outside
+    # anything this installer owns, must come through untouched.
+    assert (install_dir / "new.txt").read_text() == "new install\n"
+    assert (target / "old.txt").read_text() == "old install\n"
+    assert stat.S_IMODE(os.stat(target).st_mode) == original_mode
+
+
+def test_successful_activation_reclaims_side_paths_from_earlier_failed_updates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    stranded = staging_root / "llama.cpp.rollback-20200101000000-1"
+    stranded.mkdir()
+    (stranded / "old.txt").write_text("stranded\n")
+    stale_failed = staging_root / "llama.cpp.failed-20200101000000-1"
+    stale_failed.mkdir()
+    (stale_failed / "junk.txt").write_text("junk\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # A confirmed install is the one moment where a retained copy is provably
+    # not the last one, so that is where accumulated trees are reclaimed.
+    assert (install_dir / "new.txt").read_text() == "new install\n"
+    assert not stranded.exists()
+    assert not stale_failed.exists()
+    assert not (tmp_path / ".staging").exists()
+
+
+def test_failed_activation_does_not_reclaim_side_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    stranded = staging_root / "llama.cpp.rollback-20200101000000-1"
+    stranded.mkdir()
+    (stranded / "old.txt").write_text("stranded\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    with pytest.raises(PrebuiltFallback):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert (stranded / "old.txt").read_text() == "stranded\n"
+
+
+def _fail_restore_and_copy(monkeypatch: pytest.MonkeyPatch, install_dir: Path) -> None:
+    """Force both ways of putting the previous install back to fail."""
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError("restore failed")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(errno.ENOSPC, "No space left on device")
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+
+def test_repeated_retention_keeps_exactly_one_previous_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    staging_root = tmp_path / ".staging"
+
+    for attempt in range(3):
+        install_dir.mkdir(parents = True, exist_ok = True)
+        (install_dir / "old.txt").write_text(f"install {attempt}\n")
+        staging_dir = create_install_staging_dir(install_dir)
+        (staging_dir / "new.txt").write_text("new install\n")
+        _fail_restore_and_copy(monkeypatch, install_dir)
+        with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+            activate_install_tree(staging_dir, install_dir, linux_host())
+        monkeypatch.undo()
+
+    # Each retained tree supersedes the last, so repeated failure parks one
+    # copy rather than one per attempt.
+    rollbacks = sorted(staging_root.glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "install 2\n"
+    assert sorted(staging_root.glob("llama.cpp.failed-*")) == []
+
+
+def _write_usable_install(root: Path, marker: bytes) -> None:
+    """A tree confirm_install_tree accepts, tagged with recognisable bytes."""
+    (root / "build" / "bin").mkdir(parents = True, exist_ok = True)
+    for name in ("llama-server", "llama-quantize"):
+        (root / name).write_bytes(marker)
+        (root / "build" / "bin" / name).write_bytes(marker)
+    (root / "convert_hf_to_gguf.py").write_bytes(marker)
+    (root / "gguf-py").mkdir(exist_ok = True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
+
+
+def test_retention_keeps_a_known_good_install_over_an_unvalidated_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two failed updates in a row must not trade the last good install for a stub.
+
+    Attempt 1 leaves a tree at install_dir that is not a usable install and that
+    cleanup cannot remove, so attempt 2 moves exactly that tree into the new
+    rollback path. Capping retention on the newer path alone would then delete
+    the only llama.cpp the user still has.
+    """
+    good = b"GOOD-LLAMA-CPP\n"
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    _write_usable_install(install_dir, good)
+    staging_root = tmp_path / ".staging"
+    host = linux_host()
+
+    real_confirm = INSTALL_LLAMA_PREBUILT.confirm_install_tree
+    real_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    real_rmtree = INSTALL_LLAMA_PREBUILT.shutil.rmtree
+
+    def confirm_bad_prebuilt(path, host_info, *args, **kwargs):
+        # The staged prebuilt is the broken thing, not the check itself, so a
+        # check of any other tree still reports the truth about that tree.
+        if Path(path) == install_dir:
+            raise RuntimeError("activation confirm failed")
+        return real_confirm(Path(path), host_info, *args, **kwargs)
+
+    def deny_failed_move(src, dst):
+        if "failed-" in Path(dst).name:
+            raise OSError(errno.EACCES, "Access is denied")
+        return real_replace(src, dst)
+
+    def deny_install_dir_rmtree(path, *args, **kwargs):
+        if Path(path) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    # Attempt 1: the failed active install can be neither renamed aside nor
+    # removed, so install_dir is left holding the unusable staged tree while
+    # the working install waits in the rollback path.
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", confirm_bad_prebuilt)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", deny_failed_move)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "rmtree", deny_install_dir_rmtree)
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, host)
+    monkeypatch.undo()
+
+    rollbacks = sorted(staging_root.glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    real_confirm(rollbacks[0], host)
+    with pytest.raises(RuntimeError):
+        real_confirm(install_dir, host)
+
+    # Attempt 2: that unusable tree becomes the new rollback path, and the
+    # restore fails, which is where retention decides what to drop.
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", confirm_bad_prebuilt)
+
+    def deny_restore(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError("restore failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", deny_restore)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(errno.ENOSPC, "No space left on device")
+        ),
+    )
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, host)
+    monkeypatch.undo()
+
+    survivors = [path for path in staging_root.rglob("llama-server") if path.read_bytes() == good]
+    assert survivors, "the last known-good llama.cpp was deleted as superseded"
+    # Still capped at one tree: which one is kept changed, not how many.
+    rollbacks = sorted(staging_root.glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    real_confirm(rollbacks[0], host)
+    assert (rollbacks[0] / "llama-server").read_bytes() == good
+
+
+def test_retention_does_not_copy_a_linked_previous_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    target = tmp_path / "user-checkout"
+    target.mkdir()
+    (target / "old.txt").write_text("user build\n")
+
+    install_dir = tmp_path / "llama.cpp"
+    try:
+        install_dir.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "rollback-" in Path(src).name and Path(dst) == install_dir:
+            raise OSError("restore failed")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+    copied: list[tuple] = []
+    original_copytree = INSTALL_LLAMA_PREBUILT.shutil.copytree
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "copytree",
+        lambda *args, **kwargs: (copied.append(args), original_copytree(*args, **kwargs))[1],
+    )
+
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    # copytree follows its source root even with symlinks = True, so copying a
+    # linked install would replace the user's own checkout link with a real
+    # duplicate of a tree the installer does not own.
+    assert copied == []
+    assert (target / "old.txt").read_text() == "user build\n"
+    assert not (target / "new.txt").exists()
+    assert "previous install is a link; not copying it back" in "".join(capsys.readouterr())
+
+
+def test_prune_stale_install_side_paths_ignores_another_installs_side_paths(tmp_path: Path):
+    # The install directory name comes from UNSLOTH_LLAMA_CPP_PATH, so a glob
+    # metacharacter in it must not reach through to a sibling.
+    bracketed = tmp_path / "llama[1].cpp"
+    bracketed.mkdir()
+    sibling = tmp_path / "llama1.cpp"
+    sibling.mkdir()
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(bracketed)
+    victim = staging_root / "llama1.cpp.rollback-20240101000000-1"
+    victim.mkdir()
+
+    assert prune_stale_install_side_paths(bracketed) == 0
+
+    assert victim.exists()
+
+
+def test_prune_stale_install_side_paths_ignores_a_sibling_named_like_a_side_path(tmp_path: Path):
+    # Two installs in one parent share a .staging root but hold *different*
+    # locks, since install_lock_path keys on the directory name. glob.escape
+    # only neutralises * ? and [, so "<name>.rollback-*" can still run past the
+    # end of <name> into a sibling called "<name>.rollback-special": updating
+    # the first install would delete that sibling's retained rollback tree,
+    # possibly its last copy, along with its live staging dir.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    sibling = tmp_path / "llama.cpp.rollback-special"
+    sibling.mkdir()
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    assert staging_root == INSTALL_LLAMA_PREBUILT.install_staging_root(sibling)
+
+    own_stale = staging_root / "llama.cpp.rollback-20240101000000-1"
+    own_stale.mkdir()
+    own_stale_with_counter = staging_root / "llama.cpp.failed-20240101000000-1-2"
+    own_stale_with_counter.mkdir()
+
+    sibling_sole_copy = staging_root / "llama.cpp.rollback-special.rollback-20240102000000-2"
+    sibling_sole_copy.mkdir()
+    (sibling_sole_copy / "llama-server").write_text("the sibling's only llama.cpp\n")
+    sibling_failed = staging_root / "llama.cpp.rollback-special.failed-20240102000000-2"
+    sibling_failed.mkdir()
+    sibling_live_staging = staging_root / "llama.cpp.rollback-special.staging-abcd1234"
+    sibling_live_staging.mkdir()
+
+    # Its own retained copies are still reclaimed, counter form included.
+    assert prune_stale_install_side_paths(install_dir) == 2
+    assert not own_stale.exists()
+    assert not own_stale_with_counter.exists()
+
+    assert sibling_sole_copy.exists()
+    assert (sibling_sole_copy / "llama-server").read_text() == "the sibling's only llama.cpp\n"
+    assert sibling_failed.exists()
+    assert sibling_live_staging.exists()
+
+    # And the sibling reclaims its own, without touching its staging dir.
+    assert prune_stale_install_side_paths(sibling) == 2
+    assert not sibling_sole_copy.exists()
+    assert not sibling_failed.exists()
+    assert sibling_live_staging.exists()
+
+
+def test_replace_with_busy_retry_rejects_a_zero_attempt_budget(tmp_path: Path):
+    # Falling off the loop would report a move that never happened, the exact
+    # failure the aside-move must never fake.
+    with pytest.raises(ValueError):
+        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst", attempts = 0)
+
+
+def test_readonly_rmtree_handler_only_retries_the_removal_calls(tmp_path: Path):
+    handler = INSTALL_LLAMA_PREBUILT._clear_readonly_and_retry
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    error = PermissionError(errno.EACCES, "Permission denied")
+
+    # rmtree routes lstat/open/scandir/islink/close failures through the same
+    # hook, and none of those takes a lone path.
+    for rejected in (os.open, os.scandir, os.lstat):
+        with pytest.raises(PermissionError):
+            handler(rejected, str(victim), error)
+    with pytest.raises(PermissionError):
+        handler(os.open, str(victim), (type(error), error, None))
+
+    assert victim.exists()
+
+
+def test_readonly_rmtree_handler_never_chmods_through_a_link(tmp_path: Path):
+    target = tmp_path / "outside"
+    target.mkdir()
+    original_mode = stat.S_IMODE(os.stat(target).st_mode)
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    error = OSError("Cannot call rmtree on a symbolic link")
+    with pytest.raises(OSError):
+        INSTALL_LLAMA_PREBUILT._clear_readonly_and_retry(os.rmdir, str(link), error)
+
+    assert link.is_symlink()
+    assert stat.S_IMODE(os.stat(target).st_mode) == original_mode
+
+
+def test_remove_tree_logged_leaves_posix_directory_modes_alone(tmp_path: Path):
+    if os.name == "nt":
+        pytest.skip("the read-only handler is Windows only by design")
+    tree = tmp_path / "tree"
+    unreadable = tree / "unreadable"
+    unreadable.mkdir(parents = True)
+    (unreadable / "file.bin").write_bytes(b"x")
+    os.chmod(unreadable, 0o500)
+    if os.access(unreadable, os.W_OK):  # pragma: no cover - root ignores the mode
+        pytest.skip("cannot make the directory undeletable for this user")
+    try:
+        with pytest.raises(OSError):
+            remove_tree_logged(tree, "unreadable tree")
+        # S_IWRITE is an assignment, not a bit clear, so a handler here would
+        # leave the directory at 0o200 and harder to delete by hand. On POSIX
+        # the unlink permission lives on the parent anyway, so a chmod of this
+        # entry could not have fixed anything.
+        assert stat.S_IMODE(os.stat(unreadable).st_mode) == 0o500
+    finally:
+        if unreadable.exists():
+            os.chmod(unreadable, 0o700)
+
+
+def test_prune_stale_install_side_paths_keeps_the_paths_it_is_told_to_keep(tmp_path: Path):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    staging_root = INSTALL_LLAMA_PREBUILT.install_staging_root(install_dir)
+    keeper = staging_root / "llama.cpp.rollback-20250101000000-2"
+    keeper.mkdir()
+    doomed = staging_root / "llama.cpp.rollback-20200101000000-1"
+    doomed.mkdir()
+
+    assert prune_stale_install_side_paths(install_dir, keep = (keeper, None)) == 1
+
+    assert keeper.exists()
+    assert not doomed.exists()
+
+
+def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def cross_device_replace(src, dst):
+        if Path(src) == install_dir:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    with pytest.raises(
+        PrebuiltFallback,
+        match = "could not be moved aside; previous install left in place",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not staging_dir.exists()
+    assert not (tmp_path / ".staging").exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "existing install could not be moved aside; leaving it in place" in output
+
+
+def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def busy_replace(src, dst):
+        if Path(src) == install_dir:
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", busy_replace)
+
+    with pytest.raises(
+        BusyInstallConflict,
+        match = "appears to still be in use; previous install left in place",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not staging_dir.exists()
+    assert not (tmp_path / ".staging").exists()
+
+
+def test_activate_install_tree_restores_previous_install_when_failed_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "failed-" in Path(dst).name:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    with pytest.raises(
+        PrebuiltFallback,
+        match = "activation failed; restored previous install",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not (install_dir / "new.txt").exists()
+    assert not staging_dir.exists()
+    assert not (tmp_path / ".staging").exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "failed active install could not be moved aside" in output
+    assert "removing failed active install path" in output
+    assert "restored previous install from rollback path" in output
+
+
+def test_activate_install_tree_keeps_rollback_when_failed_install_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def flaky_replace(src, dst):
+        if "failed-" in Path(dst).name:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
+
+    original_rmtree = INSTALL_LLAMA_PREBUILT.shutil.rmtree
+
+    def flaky_rmtree(path, *args, **kwargs):
+        if Path(path) == install_dir:
+            raise OSError(errno.EACCES, "Access is denied")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "rmtree", flaky_rmtree)
+
+    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    rollbacks = sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*"))
+    assert len(rollbacks) == 1
+    assert (rollbacks[0] / "old.txt").read_text() == "old install\n"
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "recovering from the failed activation also failed" in output
+    assert "rollback after failed activation also failed" not in output
+    assert "previous install kept at rollback path" in output
+    assert "removing rollback path" not in output
+
+
+def test_activate_install_tree_cleans_install_when_no_previous_install_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "confirm_install_tree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("activation confirm failed")),
+    )
 
     with pytest.raises(
         PrebuiltFallback,
         match = "activation and rollback failed; cleaned install state for fresh source build",
     ):
-        activate_install_tree(staging_dir, install_dir, host)
+        activate_install_tree(staging_dir, install_dir, linux_host())
 
     assert not install_dir.exists()
     assert not staging_dir.exists()
@@ -830,10 +1707,8 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
 
     captured = capsys.readouterr()
     output = captured.out + captured.err
-    assert "rollback after failed activation also failed: restore failed" in output
-    assert "cleaning staging, install, and rollback paths before source build fallback" in output
-    assert "removing failed install path" in output
-    assert "removing rollback path" in output
+    assert "leaving it in place" not in output
+    assert "previous install kept at" not in output
 
 
 def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
@@ -1331,6 +2206,8 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
+        rocm_gfx = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -1956,6 +2833,360 @@ def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(
     assert existing_install_matches_plan(install_dir, host, plan) is True
 
 
+def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
+    """gfx_target/mapped_targets must be invisible to the fingerprint (#7624): the
+    same asset with the same sha256 is the same install whether or not the marker
+    names its built archs, and leaking them in would stale every existing ROCm install
+    the moment this shipped. Inverse of the cudart-pair test below."""
+    choice_kwargs = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "app-b9001-linux-x64-rocm-gfx110X.tar.gz",
+        url = "https://example.com/x.tar.gz",
+        source_label = "published",
+        install_kind = "linux-rocm",
+        runtime_line = "rocm7",
+        expected_sha256 = "a" * 64,
+    )
+    # The pre-PR marker shape: no arch fields at all.
+    old_choice = AssetChoice(**choice_kwargs)
+    # Verbatim from the published manifest for this asset.
+    new_choice = AssetChoice(
+        **choice_kwargs,
+        gfx_target = "gfx110X",
+        mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+        },
+    )
+    fingerprint_kwargs = dict(
+        llama_tag = "b9001", release_tag = "release-1", approved_checksums = checksums
+    )
+    old_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = old_choice, **fingerprint_kwargs
+    )
+    new_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = new_choice, **fingerprint_kwargs
+    )
+    assert old_fingerprint and old_fingerprint == new_fingerprint, (
+        "recording gfx_target/mapped_targets changed the install fingerprint; "
+        "every existing install would refresh on upgrade"
+    )
+
+    # And end to end through the marker: a marker written with the arch fields
+    # still satisfies the reuse check computed from a choice without them, so an
+    # upgraded client does not decide the install on disk is stale.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = new_choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+    assert marker["gfx_target"] == "gfx110X"
+    assert marker["install_fingerprint"] == old_fingerprint
+
+
+def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
+    """CPU/CUDA/Vulkan/macOS choices never populate the arch fields (#7624): only
+    published_rocm_choice_for_host sets them, so the marker records [] and the runtime
+    gate fails open on a non-ROCm bundle."""
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+        },
+    )
+    for kind, asset in (
+        ("linux-cpu", "app-b9001-linux-x64-cpu.tar.gz"),
+        ("linux-cuda12", "app-b9001-linux-x64-cuda12-portable.tar.gz"),
+        ("linux-vulkan", "app-b9001-linux-x64-vulkan.tar.gz"),
+        ("windows-cpu", "app-b9001-windows-x64-cpu.zip"),
+        ("macos-arm64", "llama-b9001-bin-macos-arm64.tar.gz"),
+    ):
+        install_dir = tmp_path / kind
+        install_dir.mkdir()
+        write_prebuilt_metadata(
+            install_dir,
+            requested_tag = "latest",
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            choice = AssetChoice(
+                repo = "unslothai/llama.cpp",
+                tag = "release-1",
+                name = asset,
+                url = "https://example.com/x",
+                source_label = "published",
+                install_kind = kind,
+                expected_sha256 = "a" * 64,
+            ),
+            approved_checksums = checksums,
+            prebuilt_fallback_used = False,
+        )
+        marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+        assert marker["mapped_targets"] == [], kind
+        assert marker["gfx_target"] is None, kind
+
+
+def _rocm_choice(**overrides):
+    """A published ROCm bundle choice, the shape published_rocm_choice_for_host
+    returns."""
+    fields = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "b10360",
+        name = "app-b10360-linux-x64-rocm-gfx110X.tar.gz",
+        url = "https://example.invalid/app.tar.gz",
+        source_label = "published",
+        install_kind = "app",
+        bundle_profile = "rocm",
+        runtime_line = "rocm",
+        coverage_class = "gfx110X",
+        gfx_target = "gfx110X",
+        mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+    )
+    fields.update(overrides)
+    return AssetChoice(**fields)
+
+
+def _sync_arch_coverage(install_dir, choice):
+    """sync_marker_selection with only the built-arch coverage in play."""
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = choice,
+        backend_request = None,
+        persist_llama_backend = "auto",
+    )
+
+
+def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
+    """An install made before mapped_targets existed must gain it on reuse:
+    write_prebuilt_metadata only runs on a real install and the field sits outside the
+    fingerprint, so without the backfill the gate fails open indefinitely (#7624)."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "b10360", "llama_backend": "auto"}) + "\n",
+        encoding = "utf-8",
+    )
+
+    _sync_arch_coverage(install_dir, _rocm_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+    assert marker["gfx_target"] == "gfx110X"
+    assert marker["release_tag"] == "b10360"  # nothing else lost
+    assert marker["llama_backend"] == "auto"
+
+
+def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
+    """A manifest that corrects mapped_targets for an unchanged asset must reach the
+    marker. Stale coverage is worse than none: too narrow forces a supported GPU to
+    CPU, too wide leaves an unsupported one visible to crash."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "release_tag": "b10360",
+                "gfx_target": "gfx110X",
+                "mapped_targets": ["gfx1100"],
+            }
+        )
+        + "\n",
+        encoding = "utf-8",
+    )
+
+    _sync_arch_coverage(install_dir, _rocm_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+
+
+@pytest.mark.parametrize("targets", [None, [], ["", "   "]])
+def test_a_bundle_that_declares_no_arch_leaves_the_marker_alone(tmp_path: Path, targets):
+    """CUDA, Vulkan, CPU and source builds declare no targets. Absent means "this
+    bundle has none", not "clear what is there": reuse requires a fingerprint match,
+    so the asset is the one the marker already describes."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    original = {
+        "release_tag": "b10360",
+        "gfx_target": "gfx110X",
+        "mapped_targets": ["gfx1100", "gfx1101"],
+    }
+    marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
+
+    _sync_arch_coverage(install_dir, _rocm_choice(gfx_target = None, mapped_targets = targets))
+
+    # The arch fields specifically: the shared writer may still record other
+    # selection fields from this run, which is not what this test is about.
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["gfx_target"] == original["gfx_target"]
+    assert marker["mapped_targets"] == original["mapped_targets"]
+
+
+def test_arch_coverage_sync_survives_a_missing_or_broken_marker(tmp_path: Path):
+    """It runs after the install is already valid, so it must never raise:
+    an unexpected exit here no longer falls back to a source build."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    # No marker at all.
+    _sync_arch_coverage(install_dir, _rocm_choice())
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    assert not marker_path.exists()
+    # A marker that is not JSON, and one that is JSON but not an object.
+    for payload in ("{not json", "[1, 2]"):
+        marker_path.write_text(payload, encoding = "utf-8")
+        _sync_arch_coverage(install_dir, _rocm_choice())
+        assert marker_path.read_text(encoding = "utf-8") == payload
+
+
+def test_every_reuse_path_syncs_the_arch_coverage():
+    """The reuse paths skip write_prebuilt_metadata, so the coverage has to ride the
+    one writer they all share. Source-level because reaching them needs a full install
+    run: pinned on _record_reused_selection, which every reuse path calls."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert source.count("_record_reused_selection(") == 4  # definition + 3 reuse paths
+    patch = source[
+        source.index("def _marker_selection_patch") : source.index("def sync_marker_selection")
+    ]
+    assert 'patch["mapped_targets"] = targets' in patch
+
+
+def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
+    """A sync that touches other fields must not drop the arch ones (#7624).
+    sync_marker_selection reads the marker, applies a patch and writes the whole dict
+    back; a rebuild-from-known-keys implementation would strip mapped_targets on any
+    reused install, turning the gate off unnoticed."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "release_tag": "release-1",
+                "llama_backend": "auto",
+                "force_cpu": False,
+                "gfx_target": "gfx110X",
+                "mapped_targets": ["gfx1100", "gfx1101"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = _rocm_choice(gfx_target = None, mapped_targets = None),
+        backend_request = "cpu",
+        persist_force_cpu = True,
+        persist_llama_backend = "auto",
+        ggml_tree = "tree-abc",
+        rocm_gfx = "gfx1101",
+    )
+
+    marker = json.loads(marker_path.read_text())
+    assert marker["gfx_target"] == "gfx110X"
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101"]
+    # The syncs did their own job too, so this is not passing on a no-op.
+    assert marker["force_cpu"] is True
+    assert marker["rocm_gfx"] == "gfx1101"
+    assert marker["ggml_tree"] == "tree-abc"
+
+
+def _cuda_choice(**overrides):
+    fields = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "b10360",
+        name = "app-b10360-linux-x64-cuda13-older.tar.gz",
+        url = "https://example.invalid/app.tar.gz",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        bundle_profile = "app",
+        runtime_line = "cuda13",
+        coverage_class = "older",
+        supported_sms = ["75", "80", "86", "89"],
+        expected_sha256 = "a" * 64,
+    )
+    fields.update(overrides)
+    return AssetChoice(**fields)
+
+
+def test_write_prebuilt_metadata_records_supported_sms(tmp_path: Path):
+    """The runtime SM gate reads supported_sms from the marker; without it a
+    bundle installed on one GPU fails open when run on another."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    choice = _cuda_choice()
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b10360",
+        release_tag = "b10360",
+        choice = choice,
+        approved_checksums = approved_release_checksums_for_asset(choice.name, "a" * 64),
+        prebuilt_fallback_used = False,
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["supported_sms"] == ["75", "80", "86", "89"]
+
+
+def test_reused_install_backfills_supported_sms(tmp_path: Path):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "b10360", "llama_backend": "auto"}) + "\n",
+        encoding = "utf-8",
+    )
+
+    _sync_arch_coverage(install_dir, _cuda_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["supported_sms"] == ["75", "80", "86", "89"]
+    assert marker["release_tag"] == "b10360"
+
+
+@pytest.mark.parametrize("sms", [None, [], ["", "   "]])
+def test_a_bundle_that_declares_no_sms_leaves_the_marker_alone(tmp_path: Path, sms):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    original = {"release_tag": "b10360", "supported_sms": ["86", "89", "90"]}
+    marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
+
+    _sync_arch_coverage(install_dir, _cuda_choice(supported_sms = sms))
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["supported_sms"] == original["supported_sms"]
+
+
 def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: Path):
     """A pre-#5322 CUDA install must go stale once the choice gains a runtime archive (#5106 fingerprint half)."""
     install_dir = tmp_path / "llama.cpp"
@@ -2385,9 +3616,12 @@ def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
             [plan],
         ),
     )
+    # Trip on the first real step past the skip check. The probe download used to
+    # stand in for it, but it is fetched lazily now and an approved bundle never
+    # reads it, so that tripwire would sit unarmed while the flow ran on.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "download_validation_model",
+        "validate_prebuilt_attempts",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unhealthy install must continue into normal install flow")
         ),
@@ -2536,6 +3770,8 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
+        rocm_gfx = None,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -2685,6 +3921,8 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         quantized_path,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
+        rocm_gfx = None,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -2813,6 +4051,8 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         existing_install_dir = None,
         force_cpu = False,
         llama_backend = None,
+        backend_request = None,
+        rocm_gfx = None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
@@ -3041,6 +4281,98 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
         )
         is False
     )
+
+
+def test_existing_macos_install_that_cannot_load_is_not_reused(tmp_path: Path, monkeypatch):
+    """A bundle that dyld refuses must not be accepted just because its
+    fingerprint matches.
+
+    This is the path that reaches the users who matter: a bundle that cannot
+    load is usually ALREADY installed by the time the installer learns to reject
+    it, and the reuse check ran the Linux preflight only. Re-running the
+    installer then saw a matching fingerprint, kept the broken tree and failed at
+    first launch again.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_macos_install_shape(install_dir)
+
+    host = HostInfo(
+        system = "Darwin",
+        machine = "arm64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        macos_version = (15, 5),
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-macos-arm64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-macos-arm64.tar.gz",
+        source_label = "upstream",
+        install_kind = "macos-arm64",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+            choice.name: ApprovedArtifactHash(
+                asset_name = choice.name,
+                sha256 = choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+    )
+
+    def matches() -> bool:
+        return existing_install_matches_choice(
+            install_dir,
+            host,
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            choice = choice,
+            approved_checksums = checksums,
+        )
+
+    # Loads cleanly -> reuse is correct.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "macos_dyld_load_issues", lambda *a, **k: [])
+    assert matches() is True
+
+    # dyld refuses it -> the cached tree must be rejected so it gets reinstalled.
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "macos_dyld_load_issues",
+        lambda *a, **k: ["llama-server: Library not loaded: /usr/lib/librdma.dylib"],
+    )
+    assert matches() is False
 
 
 def test_paired_runtime_dll_patterns_excludes_executables() -> None:
@@ -3322,7 +4654,13 @@ def _nvidia_linux_host():
     )
 
 
-def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
+def _run_validate_prebuilt_choice(
+    monkeypatch,
+    tmp_path,
+    *,
+    expected_sha256,
+    probe = None,
+):
     """Run validate_prebuilt_choice with heavy steps stubbed; return the quantize/server smoke-test call counts."""
     calls = {"quantize": 0, "server": 0}
     server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
@@ -3370,7 +4708,7 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
         _nvidia_linux_host(),
         tmp_path / "install",
         tmp_path / "work",
-        tmp_path / "stories260K.gguf",
+        probe if probe is not None else tmp_path / "stories260K.gguf",
         requested_tag = "b9998",
         llama_tag = "b9998",
         release_tag = "b9998",
@@ -3403,6 +4741,251 @@ def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
+
+
+def test_validate_prebuilt_choice_never_fetches_probe_for_approved_bundle(tmp_path, monkeypatch):
+    # The probe is only read by the smoke test, so an approved bundle with the flag off
+    # must not fetch it at all: a huggingface.co outage or 429 used to raise
+    # PrebuiltFallback here and force a source build over a file nothing opens.
+    def refuse() -> Path:
+        raise AssertionError("probe model must not be fetched when the smoke test is skipped")
+
+    calls = _run_validate_prebuilt_choice(
+        monkeypatch, tmp_path, expected_sha256 = "ab" * 32, probe = refuse
+    )
+    assert calls == {"quantize": 0, "server": 0}
+
+
+def test_validate_prebuilt_choice_fetches_probe_once_when_validating(tmp_path, monkeypatch):
+    # A hashless build validates, so the probe is fetched -- once for both smoke steps.
+    fetches = []
+    probe_path = tmp_path / "stories260K.gguf"
+
+    def fetch() -> Path:
+        fetches.append(1)
+        return probe_path
+
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None, probe = fetch)
+    assert calls == {"quantize": 1, "server": 1}
+    assert len(fetches) == 1
+
+
+def test_lazy_validation_model_downloads_once_on_first_use(tmp_path, monkeypatch):
+    downloads = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda path, cache_path = None: downloads.append((path, cache_path)),
+    )
+    probe_path = tmp_path / "stories260K.gguf"
+    ensure = INSTALL_LLAMA_PREBUILT.lazy_validation_model(probe_path, tmp_path / "cache.gguf")
+
+    assert downloads == []  # constructing the thunk touches the network never
+    assert ensure() == probe_path
+    assert ensure() == probe_path
+    assert len(downloads) == 1  # and repeat use is served from the first fetch
+
+
+def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch):
+    # End to end over install_prebuilt: the probe download used to run before the
+    # release loop, so a huggingface.co 429 raised PrebuiltFallback and cost a
+    # multi-minute source build over a file an approved bundle never opens.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            choice.name: ApprovedArtifactHash(
+                asset_name = choice.name,
+                sha256 = choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = checksums,
+    )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: ("latest", [plan]),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            urllib.error.HTTPError(
+                INSTALL_LLAMA_PREBUILT.TEST_MODEL_URL, 429, "Too Many Requests", None, None
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_attempts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("reached the install flow")),
+    )
+
+    # Reaching validate_prebuilt_attempts is the point: the rate limit no longer
+    # short-circuits into SystemExit(EXIT_FALLBACK) before the release loop runs.
+    with pytest.raises(AssertionError, match = "reached the install flow"):
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+
+def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, monkeypatch):
+    # validate_prebuilt_attempts catches Exception per candidate, so a probe download
+    # failing inside that try would read as a bad bundle and quietly install the CPU
+    # asset over the healthy GPU one -- re-downloading each time, since the thunk
+    # memoises success but not failure. Hashless attempts always validate, so the
+    # probe has to be resolved before the loop.
+    fetches = []
+
+    def refuse() -> Path:
+        fetches.append(1)
+        raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+            "validation model unavailable: HTTP Error 429: Too Many Requests"
+        )
+
+    attempted: list[str] = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_choice",
+        lambda attempt, *args, **kwargs: attempted.append(attempt.name),
+    )
+
+    def hashless(name: str, install_kind: str) -> AssetChoice:
+        return AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = "release-1",
+            name = name,
+            url = f"https://example.com/{name}",
+            source_label = "direct-upstream",
+            install_kind = install_kind,
+            expected_sha256 = None,  # hashless: the smoke test is its only integrity gate
+        )
+
+    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match = "429"):
+        INSTALL_LLAMA_PREBUILT.validate_prebuilt_attempts(
+            [
+                hashless("llama-b9001-bin-win-cuda-x64.zip", "windows-cuda"),
+                hashless("llama-b9001-bin-win-cpu-x64.zip", "windows-cpu"),
+            ],
+            _nvidia_linux_host(),
+            tmp_path / "install",
+            tmp_path / "work",
+            refuse,
+            requested_tag = "b9001",
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            approved_checksums = ApprovedReleaseChecksums(
+                repo = "unslothai/llama.cpp",
+                release_tag = "release-1",
+                upstream_tag = "b9001",
+                source_commit = None,
+                artifacts = {},
+            ),
+        )
+
+    assert attempted == []  # the CPU asset was never reached
+    assert len(fetches) == 1  # and the probe was not retried per candidate
+
+
+def test_probe_failure_does_not_demote_to_an_older_release(tmp_path, monkeypatch):
+    # The per-release handler in install_prebuilt also swallows PrebuiltFallback and
+    # continues to an older plan, so a probe failure raised inside it would install an
+    # older llama.cpp over a transient 429. The probe does not depend on the release.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    def hashless_plan(release_tag: str, llama_tag: str):
+        choice = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = release_tag,
+            name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz",
+            url = f"https://example.com/{llama_tag}.tar.gz",
+            source_label = "direct-upstream",
+            install_kind = "linux-cpu",
+            expected_sha256 = None,  # hashless plans always smoke-test
+        )
+        return INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+            requested_tag = "latest",
+            llama_tag = llama_tag,
+            release_tag = release_tag,
+            attempts = [choice],
+            approved_checksums = ApprovedReleaseChecksums(
+                repo = "unslothai/llama.cpp",
+                release_tag = release_tag,
+                upstream_tag = llama_tag,
+                source_commit = None,
+                artifacts = {},
+            ),
+        )
+
+    plans = [hashless_plan("release-2", "b9002"), hashless_plan("release-1", "b9001")]
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: _nvidia_linux_host())
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda llama_tag, host, published_repo, published_release_tag: ("latest", plans),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        # The real one wraps transport errors in PrebuiltFallback; mirror that.
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+                "validation model unavailable: HTTP Error 429: Too Many Requests"
+            )
+        ),
+    )
+    validated: list[str] = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_attempts",
+        lambda attempts, *args, **kwargs: validated.append(list(attempts)[0].name),
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    # One clean fallback to the source build, not a silent downgrade to release-1.
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+    assert validated == []
 
 
 def test_staged_validation_enabled_default_off(monkeypatch):
@@ -3610,7 +5193,7 @@ C_OK=""; C_WARN=""; C_ERR=""
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
-_explicit_vulkan_backend=false
+_explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 step() { echo "step: $2"; }
@@ -3642,7 +5225,13 @@ def _setup_sh_routing_block() -> str:
     return setup_sh[start : end + len("\n    fi\n")]
 
 
-def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) -> dict[str, str]:
+def _run_setup_sh_routing(
+    status: int,
+    tmp_path: Path,
+    *,
+    install_exists: bool,
+    explicit_backend: str = "",
+) -> dict[str, str]:
     """Drive the real setup.sh exit-code chain with a stubbed helper result."""
     llama_dir = tmp_path / "llama.cpp"
     if install_exists:
@@ -3656,6 +5245,7 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
             f'LLAMA_CPP_DIR="{llama_dir}"',
             f'_PREBUILT_LOG="{log_path}"',
             f"_PREBUILT_STATUS={status}",
+            f'_explicit_llama_source_backend="{explicit_backend}"',
             _setup_sh_routing_block(),
             _SETUP_SH_HARNESS_TAIL,
         ]
@@ -3674,18 +5264,25 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
     "POSIX script through Git Bash with Windows paths proves nothing about either",
 )
 @pytest.mark.parametrize(
-    "status, expect_source_build, expect_exit",
+    "status, explicit_backend, expect_source_build, expect_exit",
     [
-        (0, False, 0),  # installed and validated
-        (1, False, 1),  # helper error -> fail, never compile
-        (2, True, 0),  # the one status that means "prebuilt unusable, go build"
-        (3, False, 3),  # busy: a source build cannot replace locked binaries
-        (4, False, 0),  # out of disk: compiling needs more, not less
-        (137, False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
+        (0, "", False, 0),  # installed and validated
+        (1, "", False, 1),  # helper error -> fail, never compile
+        (2, "", True, 0),  # automatic selection may fall back to a source build
+        # Exit 2 means the installer had no concrete request to honour; a request
+        # it could not serve arrives as exit 5 instead, so this branch does not
+        # second-guess it from the environment.
+        (2, "cuda", True, 0),
+        (3, "", False, 3),  # busy: a source build cannot replace locked binaries
+        (4, "", False, 0),  # out of disk: compiling needs more, not less
+        (4, "rocm", False, 1),  # an old install cannot satisfy an unchecked request
+        (5, "", False, 1),  # a concrete selection failed; never substitute another
+        (5, "cuda", False, 1),
+        (137, "", False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
     ],
 )
 def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
-    tmp_path, status, expect_source_build, expect_exit
+    tmp_path, status, explicit_backend, expect_source_build, expect_exit
 ):
     """Behavioural cover for the exit-code routing: runs the real block under bash.
 
@@ -3700,13 +5297,147 @@ def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
     if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
         pytest.skip("bash is required to exercise the setup.sh routing block")
 
-    result = _run_setup_sh_routing(status, tmp_path, install_exists = True)
+    result = _run_setup_sh_routing(
+        status, tmp_path, install_exists = True, explicit_backend = explicit_backend
+    )
 
     assert result["returncode"] == expect_exit, result
     if expect_source_build:
         assert "source_build=true" in result["stdout"], result
     else:
         assert "source_build=true" not in result["stdout"], result
+
+
+_SETUP_PS1_HARNESS = """
+$ErrorActionPreference = "Stop"
+$NeedLlamaSourceBuild = $false
+$script:LlamaCppDegraded = $false
+$StudioHomeIsCustom = $false
+$prebuiltOutput = "boom"
+function step { param($a, $b, $c) Write-Output "step: $b" }
+function substep { param($a, $b) Write-Output "substep: $a" }
+function Write-LlamaFailureLog { param($Output) }
+function Mark-StudioOwned { param($Path) }
+function Get-InstalledLlamaPrebuiltRelease { param($InstallDir) return $null }
+function Test-PathQuiet { param($p) return $false }
+function Exit-SetupFailure {
+    param($Message, $Code = 1)
+    Write-Output "setup_fail: $Code"
+    exit $Code
+}
+"""
+
+_SETUP_PS1_HARNESS_TAIL = """
+Write-Output "source_build=$($NeedLlamaSourceBuild.ToString().ToLower())"
+"""
+
+requires_pwsh = pytest.mark.skipif(
+    shutil.which("pwsh") is None, reason = "pwsh is required to execute the setup.ps1 routing block"
+)
+
+
+def _setup_ps1_routing_block() -> str:
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    return _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
+
+
+def _run_setup_ps1_routing(
+    status: int,
+    tmp_path: Path,
+    *,
+    install_exists: bool,
+    explicit_backend: str = "",
+) -> dict[str, str]:
+    """Drive the real setup.ps1 exit-code chain, the mirror of _run_setup_sh_routing."""
+    llama_dir = tmp_path / "llama.cpp"
+    if install_exists:
+        llama_dir.mkdir(parents = True, exist_ok = True)
+    else:
+        tmp_path.mkdir(parents = True, exist_ok = True)
+
+    script = "\n".join(
+        [
+            _SETUP_PS1_HARNESS,
+            f'$LlamaCppDir = "{llama_dir}"',
+            f"$prebuiltExit = {status}",
+            f'$explicitLlamaSourceBackend = "{explicit_backend}"',
+            _setup_ps1_routing_block(),
+            _SETUP_PS1_HARNESS_TAIL,
+        ]
+    )
+    script_path = tmp_path / "routing.ps1"
+    script_path.write_text(script, encoding = "utf-8")
+    # run_pwsh, not subprocess.run: this helper feeds every routing case below, and a pwsh
+    # killed at startup returns rc -6 with empty stdout, which the callers would compare
+    # against the bash mirror and report as setup.ps1 routing the exit code wrongly.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    completed = run_pwsh(
+        [
+            shutil.which("pwsh") or "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(script_path),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    return {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+@requires_pwsh
+@pytest.mark.parametrize("install_exists", [True, False], ids = ["installed", "fresh"])
+@pytest.mark.parametrize("explicit_backend", ["", "cuda", "rocm", "vulkan", "cpu"])
+@pytest.mark.parametrize("status", [0, 1, 2, 3, 4, 5, 137])
+def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_exists, tmp_path):
+    """Windows must route an installer exit exactly as Linux does.
+
+    The two scripts are maintained side by side and the assertions above compare their
+    SOURCE TEXT, which cannot catch a branch that reads the same and behaves differently
+    (a PowerShell `$false` string, an `exit` that does not propagate, a guard whose
+    variable was never set). Running both and comparing the decision is what makes
+    "the mirrored setup.ps1 does the same" a measurement rather than a claim.
+
+    The decision is two values: the process exit code, and whether a source build was
+    queued. Exit 5 must fail closed everywhere -- that is the point of the exit code --
+    while exit 2 stays the one automatic path allowed to fall back to a compile.
+    """
+    if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
+        pytest.skip("bash is required to compare against the setup.sh routing block")
+
+    sh_dir, ps_dir = tmp_path / "sh", tmp_path / "ps"
+    sh_dir.mkdir()
+    ps_dir.mkdir()
+    sh = _run_setup_sh_routing(
+        status,
+        sh_dir,
+        install_exists = install_exists,
+        explicit_backend = explicit_backend,
+    )
+    ps = _run_setup_ps1_routing(
+        status,
+        ps_dir,
+        install_exists = install_exists,
+        explicit_backend = explicit_backend,
+    )
+
+    assert ps["returncode"] == sh["returncode"], {"bash": sh, "pwsh": ps}
+    assert ("source_build=true" in ps["stdout"]) == ("source_build=true" in sh["stdout"]), {
+        "bash": sh,
+        "pwsh": ps,
+    }
+    # Pin the two branches the backend selector depends on, so a future edit that keeps
+    # the halves in step but changes the contract still fails.
+    if status == 5:
+        assert ps["returncode"] == 1
+        assert "source_build=true" not in ps["stdout"]
+    if status == 2:
+        assert "source_build=true" in ps["stdout"]
 
 
 def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
@@ -3719,8 +5450,10 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert "_NEED_LLAMA_SOURCE_BUILD=true" not in sh_else
     assert "setup_fail 1" in sh_else
     assert "prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)" in sh_else
-    # Only status 2 may queue the source build.
+    # Only exit 2 under automatic selection may queue a source build. Exit 5 is
+    # a concrete unavailable or failed request and fails closed.
     assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
+    assert 'elif [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
     assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ]; then' in sh_block
 
     ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
@@ -3729,6 +5462,7 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert "Exit-SetupFailure" in ps_else
     assert "prebuilt helper failed unexpectedly (exit code $prebuiltExit)" in ps_else
     assert ps_block.count("$NeedLlamaSourceBuild = $true") == 1
+    assert "} elseif ($prebuiltExit -eq 5) {" in ps_block
     assert "} elseif ($prebuiltExit -eq 2) {" in ps_block
 
     # Statuses 3 and 4 keep their dedicated branches ahead of the catch-all.
@@ -3900,7 +5634,7 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.tempfile, "NamedTemporaryFile", lambda **kw: _Ctx())
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert marker.read_text(encoding = "utf-8") == original
     assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
@@ -3958,7 +5692,7 @@ def test_reused_install_backfills_the_ggml_tree(tmp_path):
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker.write_text(json.dumps({"release_tag": "b10173-mix-2c8b9c1"}) + "\n", encoding = "utf-8")
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_ggml_tree(install_dir, TREE_A)
+    _sync_ggml_tree(install_dir, TREE_A)
 
     payload = json.loads(marker.read_text(encoding = "utf-8"))
     assert payload["ggml_tree"] == TREE_A
@@ -3977,7 +5711,7 @@ def test_reused_install_keeps_the_ggml_tree_when_the_release_declares_none(tmp_p
         encoding = "utf-8",
     )
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_ggml_tree(install_dir, declared)
+    _sync_ggml_tree(install_dir, declared)
 
     assert json.loads(marker.read_text(encoding = "utf-8"))["ggml_tree"] == TREE_A
 
@@ -3998,7 +5732,7 @@ def test_marker_sync_preserves_the_marker_mode(tmp_path, mode):
     marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding = "utf-8")
     os.chmod(marker, mode)
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert stat.S_IMODE(marker.stat().st_mode) == mode
     assert json.loads(marker.read_text(encoding = "utf-8"))["force_cpu"] is True
@@ -4024,7 +5758,7 @@ def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path,
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_replace_from_tempfile", out_of_space)
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert marker.read_text(encoding = "utf-8") == original
     assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
@@ -4144,20 +5878,59 @@ def test_binary_env_linux_skips_inaccessible_inherited_ld_library_path(monkeypat
 # ── marker sync is advisory, never fatal ──
 
 
+def _reused_choice(install_kind = "linux-cpu"):
+    """The bundle a reuse path re-records the run's selection against."""
+    return AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b10173",
+        name = "bundle.tar.gz",
+        url = "file://bundle",
+        source_label = "published",
+        install_kind = install_kind,
+    )
+
+
+def _sync_force_cpu(install_dir, value = True):
+    """sync_marker_selection with only the deliberate-CPU choice in play."""
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = _reused_choice(),
+        backend_request = "cpu" if value else "auto",
+        persist_force_cpu = value,
+    )
+
+
+def _sync_ggml_tree(install_dir, tree):
+    """sync_marker_selection with only the paired ggml tree in play."""
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = _reused_choice(),
+        backend_request = "auto",
+        ggml_tree = tree,
+    )
+
+
 @pytest.mark.parametrize(
-    "sync, kwargs",
+    "kwargs, install_kind, field, expected",
     [
-        ("sync_marker_force_cpu", {"persist_force_cpu": True}),
-        ("sync_marker_llama_backend", {"llama_backend": "vulkan"}),
+        ({"persist_force_cpu": True, "backend_request": "cpu"}, "linux-cpu", "force_cpu", True),
+        (
+            {"persist_llama_backend": "vulkan", "backend_request": "vulkan"},
+            "linux-vulkan",
+            "llama_backend",
+            "vulkan",
+        ),
+        ({"backend_request": "vulkan"}, "linux-vulkan", "backend_request", "vulkan"),
     ],
 )
-def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
+def test_marker_sync_survives_a_read_only_marker(tmp_path, kwargs, install_kind, field, expected):
     """A shared or admin-owned install must not fail setup on a marker rewrite.
 
-    Re-recording force_cpu / llama_backend runs on the existing-install reuse
-    path. The read is guarded but the write was not, so a read-only marker
-    raised PermissionError out of the helper as EXIT_ERROR -- which no longer
-    falls back to a source build, so it would abort the whole install.
+    Re-recording the run's selection (force_cpu, the legacy backend field, the
+    recorded choice) happens on the existing-install reuse path. The read is
+    guarded but the write was not, so a read-only marker raised PermissionError
+    out of the helper as EXIT_ERROR -- which no longer falls back to a source
+    build, so it would abort the whole install.
     """
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
@@ -4174,7 +5947,9 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
     try:
         # Must not raise: that would surface as EXIT_ERROR and abort setup.
-        getattr(INSTALL_LLAMA_PREBUILT, sync)(install_dir, *kwargs.values())
+        INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+            install_dir, choice = _reused_choice(install_kind), **kwargs
+        )
     finally:
         monkeypatch.undo()
         if marker.exists():
@@ -4184,8 +5959,6 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
     # Silently losing force_cpu would let a later update re-route a deliberate CPU
     # user onto a GPU bundle (#7213). Windows refuses os.replace onto a read-only
     # destination, hence the two-way assert.
-    field = list(kwargs)[0].replace("persist_", "")
-    expected = list(kwargs.values())[0]
     persisted = json.loads(marker.read_text(encoding = "utf-8")).get(field) == expected
     assert persisted or any("WARNING" in line and field in line for line in logged), logged
 
@@ -4205,6 +5978,122 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
     logged: list[str] = []
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+    _sync_force_cpu(install_dir)
 
     assert any("WARNING" in line and "force_cpu" in line for line in logged), logged
+
+
+# The stubs above stand in for these two, so a keyword added to either reaches
+# them as a TypeError raised inside whatever assertion happened to be running.
+# `rocm_gfx` did exactly that to four tests at once. Named here so the next one
+# fails once, in this test, saying which parameter moved.
+_VALIDATOR_KEYWORD_ONLY = {
+    "validate_prebuilt_attempts": (
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "initial_fallback_used",
+        "existing_install_dir",
+        "force_cpu",
+        "llama_backend",
+        "backend_request",
+        "rocm_gfx",
+    ),
+    "validate_prebuilt_choice": (
+        "requested_tag",
+        "llama_tag",
+        "release_tag",
+        "approved_checksums",
+        "prebuilt_fallback_used",
+        "quantized_path",
+        "force_cpu",
+        "llama_backend",
+        "backend_request",
+        "rocm_gfx",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_VALIDATOR_KEYWORD_ONLY))
+def test_the_validator_stubs_still_model_the_real_signature(name):
+    """A stub that has fallen behind its real function is not a stub."""
+    import inspect
+
+    real = getattr(INSTALL_LLAMA_PREBUILT, name)
+    actual = tuple(
+        parameter_name
+        for parameter_name, parameter in inspect.signature(real).parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    )
+    assert actual == _VALIDATOR_KEYWORD_ONLY[name], (
+        f"{name} keyword-only parameters are now {actual}; update the "
+        f"fake_validate stubs in this file, then this list"
+    )
+
+
+def test_supported_sms_stays_out_of_the_install_fingerprint():
+    """The CUDA analog of the mapped_targets fingerprint guard. Backfilling
+    supported_sms onto existing markers only works while it is not hashed: in
+    the payload, every install predating the field reinstalls on upgrade."""
+    base = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "b9001",
+        name = "app-b9001-linux-x64-cuda13-older.tar.gz",
+        url = "https://example.invalid/app.tar.gz",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        bundle_profile = "app",
+        runtime_line = "cuda13",
+        coverage_class = "older",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+        },
+    )
+    kwargs = dict(llama_tag = "b9001", release_tag = "release-1", approved_checksums = checksums)
+    without = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = AssetChoice(**base), **kwargs
+    )
+    with_sms = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = AssetChoice(**base, supported_sms = ["75", "80", "86", "89"]), **kwargs
+    )
+    assert without and without == with_sms, (
+        "recording supported_sms changed the install fingerprint; every existing "
+        "install would refresh on upgrade"
+    )
+
+
+@pytest.mark.parametrize(
+    "install_kind, runtime_line",
+    [("linux-vulkan", "vulkan"), ("linux-cpu", "cpu"), ("linux-rocm", "rocm")],
+)
+def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kind, runtime_line):
+    """The runtime gate has no is_vulkan_backend guard; it stays inert there
+    only because a non-CUDA bundle records an empty list, which reads as unknown
+    coverage. Pin that at the writing end."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    choice = _cuda_choice(install_kind = install_kind, runtime_line = runtime_line, supported_sms = None)
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b10360",
+        release_tag = "b10360",
+        choice = choice,
+        approved_checksums = approved_release_checksums_for_asset(choice.name, "a" * 64),
+        prebuilt_fallback_used = False,
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["supported_sms"] == []

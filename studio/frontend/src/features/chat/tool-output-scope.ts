@@ -5,6 +5,8 @@
 
 import { useAuiState } from "@assistant-ui/react";
 import { createContext, useContext } from "react";
+
+import { stripAnsi } from "../../lib/strip-ansi";
 import type { ModelType } from "./types";
 
 /**
@@ -141,4 +143,13 @@ export function preferFullToolOutput(full: string, result: string): string {
     return `${exitMatch[1]}${full}${hint}`;
   }
   return `${full.replace(/\s+$/, "")}\n\n${result}`;
+}
+
+
+/** Normalize both sources before deciding whether the live stream is fuller. */
+export function preferSanitizedFullToolOutput(
+  full: string,
+  result: string,
+): string {
+  return preferFullToolOutput(stripAnsi(full), stripAnsi(result));
 }
