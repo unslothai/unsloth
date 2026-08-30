@@ -518,9 +518,9 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
             await task
 
     asyncio.run(_run())
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
-        "a preparation longer than the lease must not be reaped"
-    )
+    assert (
+        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+    ), "a preparation longer than the lease must not be reaped"
 
 
 def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
