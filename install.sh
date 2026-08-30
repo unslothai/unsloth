@@ -4568,6 +4568,18 @@ case "$_torch_index_leaf" in
     *)          unset UNSLOTH_TORCH_BACKEND ;;
 esac
 
+# Every value above is derived from the index this script RESOLVED, which on a machine
+# with no GPU is "cpu" whether or not anyone asked for it. setup.sh documents
+# UNSLOTH_TORCH_BACKEND=cpu as a way to state a deliberate CPU install, and the manifest
+# records which of the two it was, so mark this one as derived. Without it every ordinary
+# Linux CPU install is recorded as a deliberate choice, and a machine that later gains a
+# GPU is never offered the repair.
+if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ]; then
+    export UNSLOTH_TORCH_BACKEND_SOURCE="resolved"
+else
+    unset UNSLOTH_TORCH_BACKEND_SOURCE
+fi
+
 # Whether TORCH_INDEX_URL names an actual pip ROCm family (rocm<digit>* / gfx*), gating the
 # ROCm-only side effects below (AMD bitsandbytes, ROCm-torch repair). Digit-gated so a leaf
 # merely STARTING with "rocm" isn't force-repaired from the wrong path.

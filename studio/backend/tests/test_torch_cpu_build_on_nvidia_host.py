@@ -918,7 +918,16 @@ def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
     assert [d["vendor"] for d in inventory["devices"]] == ["intel"]
     assert inventory["devices"][0]["memory_total_gb"] == 16.0
     assert inventory["available"] is True
-    # Devices found is an answer, whatever the nvidia probe did.
+    # Still unknown, because the NVIDIA probe did not answer and contributed no device.
+    # An Intel card is not an answer about an NVIDIA one, and reading it as a complete
+    # inventory let a settled mismatch downgrade itself to no_gpu.
+    assert inventory["unknown"] is True
+
+    # The same host once nvidia-smi answers: a driver that reports no cards IS an answer.
+    _smi(monkeypatch, "", returncode = 0)
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    inventory = hw.get_physical_gpu_inventory()
+    assert [d["vendor"] for d in inventory["devices"]] == ["intel"]
     assert inventory["unknown"] is False
 
 
@@ -2205,3 +2214,56 @@ def test_the_installer_records_who_named_the_flavor(tmp_path, monkeypatch):
     assert "expected_torch_tag_pinned" not in written
     monkeypatch.setattr(manifest_mod, "read_manifest", lambda root = None: written)
     assert manifest_mod.recorded_torch_flavor_was_pinned() is False
+
+
+# ========== Round sixteen ==========
+
+
+def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
+    """A hybrid Intel iGPU plus NVIDIA dGPU host with nvidia-smi timing out.
+
+    The Intel row cancelled the unknown, and _devices_that_can_establish_a_mismatch then
+    discarded the iGPU as ineligible, so the verdict saw neither an eligible card nor an
+    unanswered probe and downgraded a settled mismatch to no_gpu for a cache interval --
+    hiding the repair while the NVIDIA probe was merely unavailable.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    monkeypatch.setattr(
+        hw, "_linux_drm_sysfs_records", lambda: [{"vendor": "intel", "name": None, "index": 0}]
+    )
+
+    def _timeout(*_a, **_k):
+        raise subprocess.TimeoutExpired("nvidia-smi", 10)
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _timeout)
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+
+    inventory = hw.get_physical_gpu_inventory()
+    assert [d["vendor"] for d in inventory["devices"]] == ["intel"]
+    assert inventory["unknown"] is True
+
+    # And once the NVIDIA probe answers with its own card, nothing is outstanding.
+    _smi(monkeypatch, "0, NVIDIA RTX A4000, 16376\n")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    assert hw.get_physical_gpu_inventory()["unknown"] is False
+
+
+def test_a_stale_registry_record_cannot_claim_a_longer_named_live_card(monkeypatch):
+    """"RX 7900 XT" is a prefix of a live "RX 7900 XTX".
+
+    Records are walked in LUID order and consume the first live name they match, so the
+    stale XT could claim the XTX that is really installed and the inventory would
+    publish the removed card's name and its VRAM.
+    """
+    live = ["AMD Radeon RX 7900 XTX"]
+    assert hw._claim_live_adapter("AMD Radeon RX 7900 XTX", live) == 0
+
+    both = ["AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XT"]
+    assert both[hw._claim_live_adapter("AMD Radeon RX 7900 XT", both)] == "AMD Radeon RX 7900 XT"
+    assert both[hw._claim_live_adapter("AMD Radeon RX 7900 XTX", both)] == "AMD Radeon RX 7900 XTX"
+
+    # The prefix rule still has to work: the registry description and the WMI display
+    # name spell the same card differently, and one is routinely a prefix of the other.
+    assert hw._claim_live_adapter("AMD Radeon RX 7900 XTX", ["AMD Radeon RX 7900 XTX 24GB"]) == 0
+    assert hw._claim_live_adapter("Something Else", live) is None

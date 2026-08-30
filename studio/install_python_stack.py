@@ -3019,7 +3019,14 @@ def _expected_torch_flavor_was_pinned() -> bool:
         return True
     if os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip():
         return True
-    if _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu"):
+    # install.sh derives UNSLOTH_TORCH_BACKEND from the index it RESOLVED -- "cpu" on any
+    # machine with no GPU, asked for or not -- and marks it as derived when it does. Only
+    # a value nobody marked is someone stating a preference, which is the form setup.sh
+    # documents ("set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install").
+    if (
+        _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu")
+        and os.environ.get("UNSLOTH_TORCH_BACKEND_SOURCE", "").strip().lower() != "resolved"
+    ):
         return True
     return bool(_RECORDED_TORCH_TAG_PINNED)
 

@@ -389,22 +389,25 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     sources: list[str] = []
     # "No devices" and "no probe could answer" are different facts, and collapsing them
     # let a transient nvidia-smi timeout read as "the GPU disappeared" and flip a
-    # settled mismatch verdict back to no_gpu for a whole cache interval.
-    unknown = False
+    # settled mismatch verdict back to no_gpu for a whole cache interval. Tracked PER
+    # VENDOR: on a hybrid host an Intel sysfs row would otherwise cancel an nvidia-smi
+    # timeout, and since an ordinary iGPU cannot establish a mismatch anyway the verdict
+    # saw neither an eligible card nor an unanswered probe and downgraded itself.
+    unanswered: set = set()
 
     try:
         from . import nvidia
         result = nvidia.get_physical_gpu_inventory()
     except Exception as e:
         logger.debug("NVIDIA physical inventory probe failed: %s", e)
-        unknown = True
+        unanswered.add("nvidia")
     else:
         # An absent nvidia-smi is an answer, not a failure to answer. It is the normal
         # state of every AMD, Intel and CPU-only host, and calling it unknown there kept
         # a settled mismatch alive for good after the card that established it was
         # removed, while /api/system had already dropped the device rows.
         if result.get("error") and not result.get("absent"):
-            unknown = True
+            unanswered.add("nvidia")
         nvidia_devices = result.get("devices") or []
         if nvidia_devices:
             devices.extend(nvidia_devices)
@@ -433,14 +436,14 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
             except Exception as e:
                 logger.debug("Windows %s adapter inventory probe failed: %s", _vendor, e)
                 records = {}
-                unknown = True
+                unanswered.add(_vendor)
             if not records:
                 continue
             if _live is None:
                 # The live scan could not answer. Reporting an uncorroborated record as
                 # a physical GPU is the failure mode above, so contribute nothing and
                 # say so, which keeps a settled verdict rather than inventing one.
-                unknown = True
+                unanswered.add(_vendor)
                 continue
             # Consumed one-to-one. Two identical cards leave two identical registry
             # records, and if one is removed WMI reports a single live adapter that a
@@ -485,7 +488,7 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         except Exception as e:
             logger.debug("Linux DRM sysfs inventory probe failed: %s", e)
             sysfs_devices = []
-            unknown = True
+            unanswered.update(("amd", "intel"))
         if sysfs_devices:
             if any(device.get("vendor") == "amd" for device in sysfs_devices):
                 # The kernel publishes no arch, and the installers only ship a ROCm
@@ -506,9 +509,10 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         "available": bool(devices),
         "devices": devices,
         "sources": sources,
-        # True only when nothing was found AND at least one probe declined to answer.
-        # Devices found is an answer, whatever some other vendor's probe did.
-        "unknown": bool(unknown and not devices),
+        # Unknown while a vendor whose probe declined contributed nothing. Finding an
+        # Intel iGPU is not an answer about the NVIDIA card whose probe timed out, and
+        # treating it as one let a settled mismatch downgrade itself to no_gpu.
+        "unknown": bool(unanswered - {device.get("vendor") for device in devices}),
     }
 
 
@@ -603,6 +607,18 @@ def _claim_live_adapter(name: Optional[str], live_names: list[str]) -> Optional[
     Returned rather than a bool so the caller can consume the entry: see the
     same-named-duplicates note at the call site.
     """
+    candidate = (name or "").strip().lower()
+    if not candidate:
+        return None
+    # Exact first. The registry outlives the hardware, and a stale record whose name is a
+    # PREFIX of a live one -- "AMD Radeon RX 7900 XT" beside a live "RX 7900 XTX" --
+    # would otherwise claim the card that is really there, and the inventory would
+    # publish the removed card's name and VRAM. The prefix rule still has to exist: the
+    # registry carries the driver's description and WMI the display name, and one is
+    # routinely a prefix of the other.
+    for index, live in enumerate(live_names):
+        if live.strip().lower() == candidate:
+            return index
     for index, live in enumerate(live_names):
         if _adapter_name_is_live(name, [live]):
             return index
