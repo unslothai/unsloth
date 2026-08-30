@@ -1133,7 +1133,12 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
     # An Arc card by name does, and so do NVIDIA and AMD unconditionally.
     arc = [{"vendor": "intel", "name": "Intel(R) Arc(TM) A770 Graphics", "index": 0}]
     assert hw._devices_that_can_establish_a_mismatch(arc) == arc
-    others = [{"vendor": "nvidia", "index": 0}, {"vendor": "amd", "index": 0}]
+    # NVIDIA counts unconditionally; an AMD card counts once something can name an
+    # arch this stack ships a wheel for. See the AMD tests below for the rest.
+    others = [
+        {"vendor": "nvidia", "index": 0},
+        {"vendor": "amd", "index": 0, "gfx_candidates": ["gfx1100"]},
+    ]
     assert hw._devices_that_can_establish_a_mismatch(others) == others
 
 
@@ -1740,7 +1745,7 @@ def test_cuda_visible_devices_masks_an_amd_host_too(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    amd = [{"vendor": "amd", "name": "Radeon RX 7900 XT"}]
+    amd = [{"vendor": "amd", "name": "Radeon RX 7900 XT", "gfx_candidates": ["gfx1100"]}]
     monkeypatch.setattr(
         hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": amd, "unknown": False}
     )
@@ -1816,10 +1821,12 @@ def test_an_amd_card_the_installers_decline_is_not_a_broken_install(monkeypatch)
     supported = [{"vendor": "amd", "gfx_candidates": ["gfx1100"]}]
     assert hw._devices_that_can_establish_a_mismatch(supported) == supported
 
-    # A host with no ROCm userspace names no arch, and a card with no arch is kept:
-    # the reported failure was an RX 7900 XT, which this stack does support.
+    # A host with no ROCm userspace names no arch at all. setup.sh detects an AMD host
+    # through rocminfo and amd-smi and nothing else, so that machine was never going to
+    # be given a ROCm wheel and its CPU torch is the intended state: claiming otherwise
+    # offers a repair that reinstalls what is already installed.
     unnamed = [{"vendor": "amd"}]
-    assert hw._devices_that_can_establish_a_mismatch(unnamed) == unnamed
+    assert hw._devices_that_can_establish_a_mismatch(unnamed) == []
 
     # Windows answers by name, through the arch the driver wrote into AdapterFamily.
     assert hw._devices_that_can_establish_a_mismatch([{"vendor": "amd", "gfx": "gfx1201"}])
@@ -1949,3 +1956,76 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     monkeypatch.setattr(nvidia.subprocess, "run", _hang)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     assert hw.get_physical_gpu_inventory()["unknown"] is True
+
+
+# ========== Round fourteen ==========
+
+
+def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
+    """The guard is one request per recovery, not one per process.
+
+    It was cleared only by detect_hardware(), while the recovery starts its pass through
+    start_background_detection(), which runs ensure_hardware_detected(). So the first
+    recovery raised the guard for good: a driver that flapped, or any later lifecycle
+    that published an inventory-sensitive CPU verdict, could never get another pass.
+    """
+    import sys
+
+    monkeypatch.setattr(hw, "_REDETECTION_REQUESTED", False)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
+    starts = {"n": 0}
+    monkeypatch.setattr(hw, "invalidate_detection", lambda: 1)
+    monkeypatch.setattr(hw, "_discard_detection_locked", lambda: None)
+    monkeypatch.setattr(hw, "start_background_detection", lambda: starts.__setitem__("n", starts["n"] + 1))
+
+    hw.torch_build_snapshot()
+    hw.current_chat_only_verdict()
+    assert starts["n"] == 1
+    assert hw._REDETECTION_REQUESTED is True, "one request per recovery, while it runs"
+
+    # The pass settles. ensure_hardware_detected is what the recovery actually starts,
+    # so that is where the guard has to come down.
+    source = _hardware_source()
+    ensure = source[source.index("def ensure_hardware_detected("):]
+    ensure = ensure[: ensure.index("def _detect_hardware_locked(")]
+    assert "_REDETECTION_REQUESTED = False" in ensure, (
+        "a settled background pass must release the guard, or there is never a second one"
+    )
+    assert ensure.index("DETECTION_COMPLETE.set()") < ensure.index(
+        "_REDETECTION_REQUESTED = False"
+    ), "released only once the pass has actually published"
+
+
+def test_one_capability_response_describes_one_host(monkeypatch):
+    """Three reads of a verdict that refreshes on a TTL can disagree.
+
+    An eGPU attached or removed mid-response could give the reason from one host and the
+    message from another, or a reason with no message at all.
+    """
+    verdicts = [
+        ("torch_cpu_build", "2.11.0+cpu"),
+        ("no_gpu", None),
+        (None, None),
+    ]
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        hw, "current_chat_only_verdict", lambda: verdicts.pop(0) if verdicts else (None, None)
+    )
+
+    export = hw.export_capability()
+    assert export["export_unsupported_reason"] == "torch_cpu_build"
+    assert "CPU-only build" in export["export_unsupported_message"]
+    assert len(verdicts) == 2, "the response must be built from ONE reading of the verdict"
+
+
+def _hardware_source() -> str:
+    import pathlib
+
+    return pathlib.Path(hw.__file__).resolve().read_text(encoding = "utf-8")

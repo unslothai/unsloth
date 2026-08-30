@@ -1161,7 +1161,13 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
         if gfx
     ]
     if not candidates:
-        return True
+        # Nothing can name the card. setup.sh detects an AMD host through rocminfo and
+        # amd-smi and nothing else, so a host with neither was never going to be given a
+        # ROCm wheel in the first place and its CPU torch is the intended state. Claiming
+        # otherwise offers a repair that reinstalls exactly what is already there. A
+        # recorded ROCm expectation still outranks this, which is what covers a venv whose
+        # ROCm wheel really was replaced.
+        return False
     return any(gfx in _ROCM_SUPPORTED_GFX for gfx in candidates)
 
 
@@ -1593,6 +1599,7 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     reading it here would bind the pass to the retirement it must lose to. Direct callers
     pass nothing and own the current epoch."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, DETECTION_GENERATION
+    global _REDETECTION_REQUESTED
     with _DETECT_LOCK:
         if epoch is None:
             # A nested read inside an owning scope belongs to that pass, not to whatever
@@ -1637,6 +1644,14 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
         # waiter trusting it could publish training-enabled for a CPU/chat-only host.
         # Unconditional, unlike the counter: re-setting is a no-op and a late waiter needs it.
         DETECTION_COMPLETE.set()
+        if produced_here:
+            # A pass has settled, so a later recovery may ask for another one. Cleared
+            # here as well as in detect_hardware(), because the recovery starts its pass
+            # through start_background_detection(), which runs THIS function: clearing
+            # only there left the guard raised for the life of the process, and a driver
+            # that flapped could never get a second pass. Set after the epoch check
+            # above, so a retired pass does not release a guard it did not satisfy.
+            _REDETECTION_REQUESTED = False
         return DEVICE
 
 
@@ -1915,7 +1930,9 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     return "no_gpu", None
 
 
-def _gpu_present_but_unusable_message(feature: str) -> Optional[str]:
+def _gpu_present_but_unusable_message(
+    feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
+) -> Optional[str]:
     """The capability message for a host whose GPUs are real but unreachable by torch.
 
     ``None`` when this host is not in that state. detect_hardware() records
@@ -1925,7 +1942,11 @@ def _gpu_present_but_unusable_message(feature: str) -> Optional[str]:
     hardware they already own. Both reasons are surfaced verbatim by the Export and
     Video pages and by rejected export API calls.
     """
-    reason, detail = current_chat_only_verdict()
+    # ``verdict`` lets a caller building one response read the verdict ONCE. The
+    # inventory refreshes on a TTL, so an eGPU attached or removed mid-response could
+    # otherwise have one call here select this branch on torch_cpu_build and the next
+    # answer no_gpu, producing a reason and a message that describe different hosts.
+    reason, detail = verdict if verdict is not None else current_chat_only_verdict()
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
@@ -1957,9 +1978,12 @@ def export_capability() -> dict:
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
         }
+    # One read, reused below: see _gpu_present_but_unusable_message. Three separate
+    # reads could observe three different verdicts across a TTL boundary.
+    verdict = current_chat_only_verdict()
     # No accelerator: name the blocker. Detection failure first -- the branches below all
     # describe a measured host, so a broken probe would tell a GPU box to install PyTorch.
-    if current_chat_only_verdict()[0] == "detection_failed":
+    if verdict[0] == "detection_failed":
         reason = "detection_failed"
         message = (
             "Hardware detection failed on this host, so export is disabled. The server log records "
@@ -1977,9 +2001,9 @@ def export_capability() -> dict:
             "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
             "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
         )
-    elif _gpu_present_but_unusable_message("export") is not None:
-        reason = current_chat_only_verdict()[0]
-        message = _gpu_present_but_unusable_message("export")
+    elif _gpu_present_but_unusable_message("export", verdict) is not None:
+        reason = verdict[0]
+        message = _gpu_present_but_unusable_message("export", verdict)
     else:
         reason = "no_accelerator"
         message = (
@@ -2012,7 +2036,8 @@ def video_capability() -> dict:
         }
     # Detection failure first, as in export_capability: the branches below all describe a
     # measured host, so a broken probe would tell a GPU box to go buy a GPU.
-    if current_chat_only_verdict()[0] == "detection_failed":
+    verdict = current_chat_only_verdict()
+    if verdict[0] == "detection_failed":
         reason = "detection_failed"
         message = (
             "Hardware detection failed on this host, so video generation is disabled. The server "
@@ -2061,9 +2086,9 @@ def video_capability() -> dict:
             "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
             "Intel GPU. Install PyTorch to enable video generation."
         )
-    elif _gpu_present_but_unusable_message("video generation") is not None:
-        reason = current_chat_only_verdict()[0]
-        message = _gpu_present_but_unusable_message("video generation")
+    elif _gpu_present_but_unusable_message("video generation", verdict) is not None:
+        reason = verdict[0]
+        message = _gpu_present_but_unusable_message("video generation", verdict)
     else:
         reason = "no_accelerator"
         message = (
