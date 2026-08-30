@@ -833,7 +833,9 @@ def test_studio_default_exposes_parallel_option():
 
 
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
-def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, tmp_path, value, stub_tool_policy_state):
+def test_in_venv_path_passes_parallel_to_run_server(
+    monkeypatch, tmp_path, value, stub_tool_policy_state
+):
     """In-venv path must forward --parallel to
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
