@@ -49,7 +49,7 @@ class _FakeDaemon:
 
         self._server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        threading.Thread(target = self._server.serve_forever, daemon = True).start()
 
     def close(self):
         self._server.shutdown()
@@ -69,12 +69,12 @@ def test_accepts_a_llmman_daemon(daemon):
 
 def test_rejects_a_non_llmman_server(daemon):
     daemon.version = {"hello": "world"}
-    with pytest.raises(RuntimeError, match="not an llmman daemon"):
+    with pytest.raises(RuntimeError, match = "not an llmman daemon"):
         llmman.check_daemon(daemon.url)
 
 
 def test_reports_nothing_listening_actionably():
-    with pytest.raises(RuntimeError, match="llmman serve"):
+    with pytest.raises(RuntimeError, match = "llmman serve"):
         llmman.check_daemon("http://127.0.0.1:1")
 
 
@@ -94,13 +94,13 @@ def test_pull_succeeds_and_forwards_progress(daemon):
 def test_reports_an_in_band_error_at_http_200(daemon):
     # The daemon streams errors in-band, so a 200 does not mean success.
     daemon.pull_body = _ndjson({"status": "pulling"}, {"error": "unauthorized"})
-    with pytest.raises(RuntimeError, match="unauthorized"):
+    with pytest.raises(RuntimeError, match = "unauthorized"):
         llmman.pull(daemon.url, "ref")
 
 
 def test_rejects_a_stream_that_ends_without_success(daemon):
     daemon.pull_body = _ndjson({"status": "pulling blobs"})
-    with pytest.raises(RuntimeError, match="without reporting success"):
+    with pytest.raises(RuntimeError, match = "without reporting success"):
         llmman.pull(daemon.url, "ref")
 
 

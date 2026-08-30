@@ -86,7 +86,7 @@ def check_daemon(base: str) -> None:
     """Confirm an llmman daemon is listening and is actually llmman."""
     url = base + "/api/version"
     try:
-        with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(url, timeout = PROBE_TIMEOUT_SECONDS) as resp:
             if resp.status != 200:
                 raise RuntimeError(
                     f"llmman daemon at {base} answered /api/version with HTTP {resp.status}"
@@ -108,7 +108,11 @@ def check_daemon(base: str) -> None:
         )
 
 
-def pull(base: str, reference: str, progress=None) -> None:
+def pull(
+    base: str,
+    reference: str,
+    progress = None,
+) -> None:
     """Stream POST /api/pull until the daemon reports success.
 
     ``progress`` receives ``(status, completed, total)``. An error can arrive
@@ -118,9 +122,9 @@ def pull(base: str, reference: str, progress=None) -> None:
     body = json.dumps({"model": reference}).encode("utf-8")
     req = urllib.request.Request(
         base + "/api/pull",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        data = body,
+        headers = {"Content-Type": "application/json"},
+        method = "POST",
     )
 
     succeeded = False
@@ -201,10 +205,10 @@ def resolve(reference: str) -> str:
 
     completed = subprocess.run(
         [binary, "resolve", "--no-pull", reference],
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        text=True,
-        check=False,
+        capture_output = True,
+        stdin = subprocess.DEVNULL,
+        text = True,
+        check = False,
     )
     if completed.returncode != 0:
         raise RuntimeError(
@@ -214,7 +218,7 @@ def resolve(reference: str) -> str:
     return parse_resolve_output(completed.stdout, reference)
 
 
-def pull_and_resolve(reference: str, progress=None) -> str:
+def pull_and_resolve(reference: str, progress = None) -> str:
     """Full acquisition: probe the daemon, pull through it, report the path."""
     base = endpoint()
     check_daemon(base)
@@ -258,4 +262,4 @@ def resolve_model(model_name) -> str:
         else:
             logger.info("llmman: %s", status)
 
-    return pull_and_resolve(reference, progress=_progress)
+    return pull_and_resolve(reference, progress = _progress)
