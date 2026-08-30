@@ -2193,6 +2193,19 @@ def test_linux_topology_ignores_python_cpu_count_override(tmp_path, monkeypatch)
     assert llama_mod._linux_math_core_count(tmp_path, vendor_id = "AuthenticAMD") == 4
 
 
+def test_linux_non_hybrid_topology_excludes_offline_cores(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    sibling_sets = ["0,4", "1,5", "2,6", "3,7", "0,4", "1,5", "2,6", "3,7"]
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = tmp_path / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (tmp_path / "online").write_text("0-2,4-6")
+
+    assert _linux_math_core_count(tmp_path, vendor_id = "AuthenticAMD") == 3
+
+
 def test_linux_amd_capacity_classes_keep_all_physical_cores(tmp_path):
     from core.inference.llama_cpp import _linux_math_core_count
     for cpu in range(24):

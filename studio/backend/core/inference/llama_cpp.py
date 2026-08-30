@@ -3353,6 +3353,25 @@ def _linux_math_core_count(
     """
     if logical_cpus is not None and logical_cpus < 1:
         return None
+
+    def cpu_list(path: Path) -> Optional[set[int]]:
+        try:
+            raw = path.read_text(encoding = "utf-8").strip()
+            if not raw:
+                return set()
+            result: set[int] = set()
+            for part in raw.split(","):
+                bounds = [int(value) for value in part.split("-")]
+                if len(bounds) == 1 and bounds[0] >= 0:
+                    result.add(bounds[0])
+                elif len(bounds) == 2 and 0 <= bounds[0] <= bounds[1]:
+                    result.update(range(bounds[0], bounds[1] + 1))
+                else:
+                    return None
+            return result
+        except (OSError, ValueError):
+            return None
+
     if vendor_id is None:
         try:
             vendor_match = re.search(
@@ -3384,28 +3403,16 @@ def _linux_math_core_count(
         cpu += 1
     if not siblings:
         return None
+    online_cpus = cpu_list(cpu_root / "online")
+    active_siblings = {
+        sibling_set
+        for cpu, sibling_set in enumerate(siblings)
+        if not online_cpus or cpu in online_cpus
+    }
+    if not active_siblings:
+        return None
+    physical_count = len(active_siblings)
     if vendor_id == "GenuineIntel":
-
-        def cpu_list(path: Path) -> Optional[set[int]]:
-            try:
-                raw = path.read_text(encoding = "utf-8").strip()
-                if not raw:
-                    return set()
-                result: set[int] = set()
-                for part in raw.split(","):
-                    bounds = [int(value) for value in part.split("-")]
-                    if len(bounds) == 1 and bounds[0] >= 0:
-                        result.add(bounds[0])
-                    elif len(bounds) == 2 and 0 <= bounds[0] <= bounds[1]:
-                        result.update(range(bounds[0], bounds[1] + 1))
-                    else:
-                        return None
-                return result
-            except (OSError, ValueError):
-                return None
-
-        physical_count = len(set(siblings))
-        online_cpus = cpu_list(cpu_root / "online")
         native_count = len(online_cpus) if online_cpus else len(siblings)
 
         def hybrid_math_count(performance_cpus: set[int]) -> int:
@@ -3474,12 +3481,23 @@ def _linux_math_core_count(
             if core_mask == set() and atom_mask:
                 return physical_count
             return 1
-        if all(capacity is not None for capacity in capacities) and len(set(capacities)) > 1:
-            fastest = max(capacity for capacity in capacities if capacity is not None)
+        active_capacities = [
+            capacity
+            for cpu, capacity in enumerate(capacities)
+            if not online_cpus or cpu in online_cpus
+        ]
+        if all(capacity is not None for capacity in active_capacities) and len(
+            set(active_capacities)
+        ) > 1:
+            fastest = max(capacity for capacity in active_capacities if capacity is not None)
             return hybrid_math_count(
-                {index for index, capacity in enumerate(capacities) if capacity == fastest}
+                {
+                    cpu
+                    for cpu, capacity in enumerate(capacities)
+                    if (not online_cpus or cpu in online_cpus) and capacity == fastest
+                }
             )
-    return len(set(siblings))
+    return physical_count
 
 
 def _spilled_decode_threads(
