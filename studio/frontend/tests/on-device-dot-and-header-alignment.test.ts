@@ -43,6 +43,55 @@ test("the scoped badge column reserves the wider on-device marker", () => {
   assert.ok(PICKERS.includes('badgeMid: "min-w-min min-[560px]:w-[36px]"'));
 });
 
+test("the unscoped badge column is sized per list, not to the union of both", () => {
+  // One slot sized for both lists left ~44px of empty column on every On Device row. 26px is the
+  // vision badge measured, so rows with and without one keep the same column positions.
+  assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[26px]"'));
+  assert.ok(PICKERS.includes('badgeWide: "min-w-min min-[560px]:w-[36px]"'));
+  assert.match(
+    PICKERS,
+    /alignMeta === "device"\n\s*\? META_COLUMN\.badgeDevice\n\s*: META_COLUMN\.badgeWide/,
+  );
+});
+
+test("a row's leading dot starts where its section label does", () => {
+  // Section labels sit at px-2.5. The dot is centred in a 14px hover target, so its slot starts
+  // at 10 - (14 - 5) / 2 = 5.5px for the dot to land on 10px. px-2 put it at 12.5px.
+  assert.match(PICKERS, /py-1\.5 pl-\[5\.5px\] pr-2 text-left text-sm/);
+  const label = PICKERS.slice(PICKERS.indexOf("flex items-center justify-between gap-1 px-2.5"));
+  assert.ok(label.startsWith("flex items-center justify-between gap-1 px-2.5"));
+  // The 14px hover target is what makes 5.5 the right number; shrinking it would move the dot.
+  assert.ok(PICKERS.includes('className="flex size-[14px] shrink-0 items-center justify-center"'));
+});
+
+test("the parameter and size columns are sized to the ink they hold", () => {
+  // The widest size formatBytes writes ("128GB", no space) is 29.5px, not the ~40px a spaced
+  // "536 MB" would need.
+  assert.ok(PICKERS.includes('size: "min-w-min min-[560px]:w-[3.2em]"'));
+  // The no-space format is what makes 3.2em enough; a spaced size would need ~4.2em again.
+  assert.match(
+    PICKERS,
+    /No space: "145MB" reads as one value beside the quant chip\./,
+  );
+});
+
+test("the parameter chip hugs its label so the gap to the modality mark is the row's own", () => {
+  // A fixed right-aligned column spends its leftover in front of the chip, and that leftover is
+  // the gap to the modality mark, which no gap setting can undo. Hugging plus -ml-0.5 gives 2px.
+  assert.ok(PICKERS.includes('param: "min-w-min -ml-0.5"'));
+  // Hub keeps a column: its labels run to "2779.5B".
+  assert.ok(PICKERS.includes('paramWide: "min-w-min min-[560px]:w-[5.2em]"'));
+});
+
+test("aligned meta slots spend their slack on the name", () => {
+  // Centring a lone glyph splits the slack either side of it, reading as a gap on both sides.
+  assert.ok(
+    PICKERS.includes(
+      '"flex shrink-0 items-center justify-end gap-1 text-ui-10"',
+    ),
+  );
+});
+
 test("every select-model surface shares that one badge", () => {
   // Images, Video and Audio render the same ModelSelector, so there is no
   // second copy of the badge to keep in step.

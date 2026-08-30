@@ -3691,8 +3691,9 @@ def run(
     cmd: list[str],
     *,
     quiet: bool = True,
+    check: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a command; on failure print output and exit."""
+    """Run a command; on failure print output and exit, unless ``check`` is False."""
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
@@ -3703,13 +3704,72 @@ def run(
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
-        _step("error", f"{label} failed (exit code {result.returncode})", _red)
-        if result.stdout:
-            # Redact before printing: the failing pip command may carry a pinned --index-url
-            # with userinfo/?token= creds, so raw pip error text would leak them.
-            _safe_print(_redact_install_output(result.stdout))
-        sys.exit(result.returncode)
+        if not check:
+            # The caller inspects the failure itself; it is responsible for
+            # reporting and exiting if it cannot recover.
+            return result
+        _report_failed_command(label, result)
     return result
+
+
+def _report_failed_command(label: str, result: subprocess.CompletedProcess[bytes]) -> None:
+    """Print a failed command's redacted output and exit with its code."""
+    _step("error", f"{label} failed (exit code {result.returncode})", _red)
+    if result.stdout:
+        # Redact before printing: the failing pip command may carry a pinned --index-url
+        # with userinfo/?token= creds, so raw pip error text would leak them.
+        _safe_print(_redact_install_output(result.stdout))
+    sys.exit(result.returncode)
+
+
+# pip will not replace a distribution whose .dist-info carries no RECORD -- it cannot
+# know which files to remove -- and an interrupted install (or one uv wrote and pip is
+# now asked to take over) leaves exactly that. The venv is REUSED across runs, so the
+# stub is not transient: once written, every later install of that package dies on it
+# with "The package's contents are unknown", and the dependency step never completes
+# again on that machine. Seen on the Windows startup job, where the whole install is a
+# uv pass that falls back to pip.
+_NO_RECORD_MARKER = "no RECORD file was found"
+_CANNOT_UNINSTALL_RE = re.compile(r"Cannot uninstall ([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _canonical_dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
+    """Delete the .dist-info directories pip named, where they carry no RECORD.
+
+    pip's own hint here is ``--ignore-installed``, which would apply to every
+    package in the command and so silently skip real upgrades too. Dropping just
+    the metadata that blocked it keeps the rest of the environment visible to the
+    retry, and removes nothing that pip itself considers a tracked install.
+    """
+    if not output:
+        return []
+    text = output.decode("utf-8", "replace") if isinstance(output, bytes) else output
+    # Both halves are required: the marker alone can appear in unrelated advice, and
+    # a "Cannot uninstall" without it is a different problem that deleting won't fix.
+    if _NO_RECORD_MARKER not in text:
+        return []
+    blocked = {_canonical_dist_name(n) for n in _CANNOT_UNINSTALL_RE.findall(text)}
+    if not blocked:
+        return []
+    site_packages = sysconfig.get_path("purelib")
+    if not site_packages:
+        return []
+    cleared: list[str] = []
+    for dist_info in sorted(Path(site_packages).glob("*.dist-info")):
+        if _canonical_dist_name(dist_info.name.split("-", 1)[0]) not in blocked:
+            continue
+        if (dist_info / "RECORD").is_file():
+            continue  # complete install; whatever failed, it was not this
+        try:
+            shutil.rmtree(dist_info)
+        except OSError:
+            continue
+        cleared.append(dist_info.name)
+    return cleared
 
 
 # Packages to skip on Windows (require special build steps)
@@ -5073,7 +5133,16 @@ def pip_install(
                 _safe_print(_redact_install_output(result.stdout))
 
         pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
-        run(f"{label} (pip)" if USE_UV else label, pip_cmd)
+        pip_label = f"{label} (pip)" if USE_UV else label
+        result = run(pip_label, pip_cmd, check = False)
+        if result.returncode != 0:
+            # Retry once, and only after clearing something pip named as
+            # unremovable: a blind retry of a failing install just doubles the wait.
+            cleared = _purge_recordless_distributions(result.stdout)
+            if not cleared:
+                _report_failed_command(pip_label, result)
+            _step(_LABEL, f"cleared half-written {', '.join(cleared)}, retrying...", _dim)
+            run(pip_label, pip_cmd)
     finally:
         for temp_req in temp_reqs:
             temp_req.unlink(missing_ok = True)
@@ -5596,20 +5665,15 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
-    # 11b. The pinned Diffusers revision. NOT in base.txt, which is applied early: this must
+    # 11b. The pinned Diffusers release. NOT in base.txt, which is applied early: this must
     #      run after every other requirements file so nothing re-resolves Diffusers back to a
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
     _progress("diffusers pin")
     pip_install(
-        "Installing the pinned Diffusers revision",
+        "Installing the pinned Diffusers release",
         "--no-cache-dir",
-        # The pin is a source ARCHIVE, which uv refuses to build under a user-level
-        # no-build, so a hardened host failed here even once extras.txt succeeded
-        # (#8530). Guarded: python < 3.10 resolves a released wheel from this file that
-        # must not be forced through a source build.
-        *(_sdist_only_build_args("diffusers") if sys.version_info >= (3, 10) else []),
         req = REQ_ROOT / "diffusers-pin.txt",
     )
 

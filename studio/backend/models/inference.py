@@ -1043,7 +1043,10 @@ class _InferenceRuntimeFields(BaseModel):
         "non-diffusion models and whenever the ask and the applied split agree.",
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Audio codec or native generation architecture.",
+    )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     has_video_input: bool = Field(
         False,
@@ -1934,7 +1937,12 @@ class ChatCompletionRequest(BaseModel):
     parallel_tool_calls: Optional[bool] = Field(
         None, description = "Whether to enable parallel function calling during tool use."
     )
-    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "Best-effort deterministic sampling seed.",
+    )
     stream_options: Optional[dict] = Field(
         None,
         description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
@@ -1952,6 +1960,17 @@ class ChatCompletionRequest(BaseModel):
     audio_base64: Optional[str] = Field(
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
+    )
+    audio_instructions: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Scene or music-description instructions for native audio models. "
+            "MiniMax Music 3 requires this alongside lyrics."
+        ),
+    )
+    audio_language: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Target-language hint for native audio models that support it.",
     )
     video_base64: Optional[str] = Field(
         None,
@@ -2813,6 +2832,27 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
+class ResponsesCustomToolCallInputItem(BaseModel):
+    """A prior assistant custom_tool_call replayed by a Responses client."""
+
+    type: Literal["custom_tool_call"]
+    id: Optional[str] = None
+    call_id: str
+    name: str
+    input: str = Field(..., description = "Raw freeform input the model produced.")
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ResponsesCustomToolCallOutputInputItem(BaseModel):
+    """A client result for a prior custom_tool_call."""
+
+    type: Literal["custom_tool_call_output"]
+    id: Optional[str] = None
+    call_id: str
+    output: Union[str, list]
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
@@ -2842,6 +2882,10 @@ def _responses_input_item_discriminator(v: Any) -> str:
         return "function_call"
     if t == "function_call_output":
         return "function_call_output"
+    if t == "custom_tool_call":
+        return "custom_tool_call"
+    if t == "custom_tool_call_output":
+        return "custom_tool_call_output"
     if r is not None or t == "message":
         return "message"
     return "unknown"
@@ -2852,6 +2896,8 @@ ResponsesInputItem = Annotated[
         Annotated[ResponsesInputMessage, Tag("message")],
         Annotated[ResponsesFunctionCallInputItem, Tag("function_call")],
         Annotated[ResponsesFunctionCallOutputInputItem, Tag("function_call_output")],
+        Annotated[ResponsesCustomToolCallInputItem, Tag("custom_tool_call")],
+        Annotated[ResponsesCustomToolCallOutputInputItem, Tag("custom_tool_call_output")],
         Annotated[ResponsesUnknownInputItem, Tag("unknown")],
     ],
     Discriminator(_responses_input_item_discriminator),
@@ -2888,12 +2934,12 @@ class ResponsesRequest(BaseModel):
 
     # OpenAI function-calling fields, forwarded via the Chat Completions
     # pass-through. Plain list so built-in tool shapes round-trip without
-    # validation errors; the translator forwards only ``type=="function"`` entries.
+    # validation errors; the translator forwards functions and Codex apply_patch.
     tools: Optional[list[dict]] = Field(
         None,
         description = (
-            "Responses-shape function tool definitions. Entries with "
-            '`type="function"` are translated to the Chat Completions nested '
+            "Responses-shape tool definitions. Function tools and Codex's "
+            "custom `apply_patch` are translated to the Chat Completions nested "
             "shape before being forwarded to llama-server; other tool types "
             "(built-in web_search, file_search, mcp, ...) are accepted for SDK "
             "compatibility but ignored on the llama-server passthrough."
@@ -2972,10 +3018,22 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
+class ResponsesOutputCustomToolCall(BaseModel):
+    """A freeform custom-tool call returned by the Responses API."""
+
+    type: Literal["custom_tool_call"] = "custom_tool_call"
+    id: str = Field(default_factory = lambda: f"ctc_{uuid.uuid4().hex[:12]}")
+    call_id: str
+    name: str
+    input: str
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+
 ResponsesOutputItem = Union[
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
 ]
 
 
@@ -4162,6 +4220,27 @@ class AudioSpeechRequest(BaseModel):
         "wav", description = "Output container. Only 'wav' is supported."
     )
     speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    instructions: Optional[str] = Field(
+        None,
+        description = "Scene or music-description instructions for compatible audio models.",
+    )
+    language: Optional[str] = Field(
+        None,
+        description = "Target-language hint for compatible audio models.",
+    )
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "Best-effort deterministic generation seed.",
+    )
+    max_new_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = (
+            "Maximum generated audio tokens/frames; MiniMax Music 3 uses 25 frames per second."
+        ),
+    )
     provider_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
@@ -4205,6 +4284,62 @@ class AudioGalleryListResponse(BaseModel):
     has_more: bool = False
     next_before_mtime: Optional[float] = None
     next_before_id: Optional[str] = None
+
+
+# ── OpenAI-compatible videos API (/v1/videos) ──
+
+
+class VideoJobCreateRequest(BaseModel):
+    prompt: str = Field(..., min_length = 1)
+    model: Optional[str] = None
+    seconds: Optional[str] = Field(
+        None, description = "Clip duration in seconds, snapped to the loaded family's frame lattice."
+    )
+    size: Optional[str] = Field(
+        None, description = "'<width>x<height>', a resolution preset of the loaded family."
+    )
+
+    @field_validator("model", "seconds", "size", mode = "before")
+    @classmethod
+    def _blank_means_default(cls, value):
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+
+class VideoJobError(BaseModel):
+    code: str
+    message: str
+
+
+class VideoJob(BaseModel):
+    id: str
+    object: Literal["video"] = "video"
+    model: str
+    status: Literal["queued", "in_progress", "completed", "failed"]
+    progress: int = Field(0, ge = 0, le = 100)
+    created_at: int
+    completed_at: Optional[int] = None
+    expires_at: Optional[int] = None
+    prompt: Optional[str] = None
+    size: str
+    seconds: str
+    error: Optional[VideoJobError] = None
+    remixed_from_video_id: Optional[str] = None
+
+
+class VideoJobListResponse(BaseModel):
+    object: Literal["list"] = "list"
+    data: List[VideoJob] = Field(default_factory = list)
+    first_id: Optional[str] = None
+    last_id: Optional[str] = None
+    has_more: bool = False
+
+
+class VideoJobDeleteResponse(BaseModel):
+    id: str
+    object: Literal["video.deleted"] = "video.deleted"
+    deleted: bool = True
 
 
 # ── Video (local text-to-video) ──

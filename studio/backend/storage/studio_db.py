@@ -266,6 +266,48 @@ def delete_chat_project_workspace(project: dict) -> None:
     delete_project_workspace(project)
 
 
+_INVENTORY_UPDATE_TRIGGER = "chat_attachment_inventory_dirty_update"
+
+_INVENTORY_UPDATE_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS {_INVENTORY_UPDATE_TRIGGER}
+    AFTER UPDATE OF attachments_json, content_json ON chat_messages
+    BEGIN
+        INSERT INTO chat_attachment_inventory_state
+            (singleton, inventory_version, dirty, backfilled_at)
+        VALUES (1, 0, 1, 0)
+        ON CONFLICT(singleton) DO UPDATE SET dirty = 1;
+    END
+"""
+
+
+def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
+    """Swap the unscoped trigger for the scoped one, safely for concurrent openers.
+
+    DDL does not open a transaction under sqlite3's legacy transaction control, only DML
+    does, so a bare DROP + CREATE pair can interleave across processes as
+    drop/drop/create/create and the second CREATE raises out of `get_connection`. Hence:
+    skip when already scoped, hold the writer lock across the pair, IF NOT EXISTS on top.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        (_INVENTORY_UPDATE_TRIGGER,),
+    ).fetchone()
+    # row[0], not row["sql"]: _ensure_schema also runs on connections whose row_factory
+    # is still the default tuple.
+    if row is not None and "UPDATE OF" in (row[0] or ""):
+        return
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(f"DROP TRIGGER IF EXISTS {_INVENTORY_UPDATE_TRIGGER}")
+        conn.execute(_INVENTORY_UPDATE_TRIGGER_SQL)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create tables and indexes if they don't exist. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -603,18 +645,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
-    conn.execute(
-        """
-        CREATE TRIGGER IF NOT EXISTS chat_attachment_inventory_dirty_update
-        AFTER UPDATE ON chat_messages
-        BEGIN
-            INSERT INTO chat_attachment_inventory_state
-                (singleton, inventory_version, dirty, backfilled_at)
-            VALUES (1, 0, 1, 0)
-            ON CONFLICT(singleton) DO UPDATE SET dirty = 1;
-        END
-        """
-    )
+    # Scoped to the columns _rebuild_chat_attachment_inventory reads: unscoped, a generation
+    # status change (metadata_json only) dirtied the inventory, so the next autosave re-hashed
+    # every attachment under the writer lock. Dropped, since a create would keep the old one.
+    _replace_inventory_update_trigger(conn)
     conn.execute(
         """
         CREATE TRIGGER IF NOT EXISTS chat_attachment_inventory_dirty_delete
@@ -1157,12 +1191,49 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
+def is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
+    """Is this the writer lock being held elsewhere, rather than a real fault?
+
+    sqlite reports it as plain OperationalError, so the message is the only signal.
+    Lives here because studio.db is the contended file and several modules need the
+    same answer; storage.api_usage_db delegates to it.
+    """
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
 # sqlite's own default, kept for every caller that may run on the event loop
 _BUSY_TIMEOUT_SECONDS = 5.0
 
 # only for the chat history transactions that run in Starlette's threadpool, where a large clear
 # can hold the writer lock past the default and the failure escapes as an unmapped 500
 _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
+
+
+def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
+    """Drop to synchronous=NORMAL, but only while the file is really in WAL mode.
+
+    Under WAL, sqlite still defaults to synchronous=FULL, which fsyncs on every commit
+    while holding the writer lock. On a machine whose disk is busy -- a Colab session
+    pulling a multi-GB GGUF, say -- one commit blocked for 37s, and every other writer
+    (notably the research supervisor's claim_next) spent that whole window timing out
+    with "database is locked". NORMAL is sqlite's own recommended pairing for WAL: it
+    can lose the last transactions to a host power loss, but the database is never
+    corrupted, and commits stay durable across an application crash either way.
+
+    The WAL check is not decoration. `PRAGMA journal_mode=WAL` silently declines on
+    filesystems without proper shared-memory support (network shares, some FUSE and
+    container-mounted paths, which Windows users hit most often), leaving the file on a
+    rollback journal where NORMAL drops the very fsync that keeps it consistent. Those
+    installs keep FULL and simply do not get the speedup. journal_mode is persistent in
+    the file, so this reads what is actually in force rather than what was requested.
+    """
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    except (sqlite3.Error, TypeError, IndexError):
+        return
+    if isinstance(mode, str) and mode.lower() == "wal":
+        conn.execute("PRAGMA synchronous=NORMAL")
 
 
 def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlite3.Connection:
@@ -1184,6 +1255,7 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
                 except Exception:
                     conn.close()
                     raise
+    _apply_wal_synchronous(conn)
     return conn
 
 
@@ -3827,7 +3899,6 @@ def fork_chat_thread(
         if src is None:
             conn.rollback()
             return None
-        # Verify branch msg belongs to source thread.
         branch_row = conn.execute(
             "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
             (source_thread_id, branch_message_id),
@@ -3835,7 +3906,6 @@ def fork_chat_thread(
         if branch_row is None:
             conn.rollback()
             return None
-        # Walk ancestry from branch msg back to root via parent_id chain.
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()
@@ -3850,7 +3920,6 @@ def fork_chat_thread(
                 (source_thread_id, parent),
             ).fetchone()
         ancestry.reverse()  # root .. branch msg
-        # Map old msg id -> new msg id for parent_id rewriting.
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
         conn.execute(
@@ -4382,10 +4451,11 @@ def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
         conn.close()
 
 
-def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+def upsert_app_settings(settings: dict[str, Any], *, read_back: bool = True) -> dict[str, Any]:
     if not settings:
         return {}
     conn = get_connection()
+    committed = False
     try:
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
@@ -4399,10 +4469,17 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
             [(key, json.dumps(value), now) for key, value in settings.items()],
         )
         conn.commit()
+        committed = True
+        if not read_back:
+            return settings
         rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            if not committed or read_back:
+                raise
 
 
 def upsert_app_setting_map_entry(
