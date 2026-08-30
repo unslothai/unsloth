@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -234,12 +235,19 @@ def test_request_tool_catalog_keeps_only_non_file_tools(no_chat_history, monkeyp
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": "search"}],
         enabled_tools = ["python", "terminal", "edit_file", "web_search"],
+        deep_research_armed = True,
     )
 
     selected = asyncio.run(
         inference._select_request_tools(payload, tools_on = True, mcp_allowed = False)
     )
     assert [entry["function"]["name"] for entry in selected] == ["web_search"]
+    hosted_payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "search"}],
+        enabled_tools = ["web_search"],
+        deep_research_armed = True,
+    )
+    assert inference._selects_only_provider_hosted_tools(hosted_payload, "openai") is True
 
     anthropic = inference._select_anthropic_server_tools(
         tools.ALL_TOOLS,
@@ -431,7 +439,9 @@ def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
         CREATE TABLE chunks_fts(text TEXT, chunk_id TEXT, scope TEXT);
         CREATE TABLE ingestion_jobs(id TEXT PRIMARY KEY, document_id TEXT, scope TEXT);
         CREATE TABLE rag_job_leases(kind TEXT, job_id TEXT);
-        CREATE TABLE linked_folders(id TEXT PRIMARY KEY, scope_type TEXT, scope TEXT);
+        CREATE TABLE linked_folders(
+            id TEXT PRIMARY KEY, scope_type TEXT, scope_id TEXT, scope TEXT
+        );
         CREATE TABLE linked_folder_files(folder_id TEXT, document_id TEXT);
         CREATE TABLE linked_folder_sync_jobs(id TEXT PRIMARY KEY, folder_id TEXT);
         CREATE TABLE linked_folder_retired_scopes(
@@ -468,23 +478,32 @@ def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
         [(f"job-{doc[0]}",) for doc in documents],
     )
     conn.executemany(
-        "INSERT INTO linked_folders VALUES(?,?,?)",
+        "INSERT INTO linked_folders VALUES(?,?,?,?)",
         [
-            ("project-folder", "project", "project-secret"),
-            ("kb-folder", "knowledge_base", "kb_kb-1"),
+            ("project-folder", "project", "project-1", "project-secret"),
+            ("kb-folder", "knowledge_base", "kb-1", "kb_kb-1"),
+            ("orphan-kb-folder", "knowledge_base", "missing", "kb_missing"),
         ],
     )
     conn.executemany(
         "INSERT INTO linked_folder_files VALUES(?,?)",
-        [("project-folder", "project"), ("kb-folder", "kb")],
+        [
+            ("project-folder", "project"),
+            ("kb-folder", "kb"),
+            ("orphan-kb-folder", "project"),
+        ],
     )
     conn.executemany(
         "INSERT INTO linked_folder_sync_jobs VALUES(?,?)",
-        [("sync-project", "project-folder"), ("sync-kb", "kb-folder")],
+        [
+            ("sync-project", "project-folder"),
+            ("sync-kb", "kb-folder"),
+            ("sync-orphan-kb", "orphan-kb-folder"),
+        ],
     )
     conn.executemany(
         "INSERT INTO rag_job_leases VALUES('folder_sync', ?)",
-        [("sync-project",), ("sync-kb",)],
+        [("sync-project",), ("sync-kb",), ("sync-orphan-kb",)],
     )
     conn.commit()
     conn.close()
@@ -524,6 +543,7 @@ def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
             "thread-outside",
             "thread-shared",
             "research_scrape_active",
+            "kb_missing",
         }
         assert {
             row["document_id"] for row in checked.execute("SELECT document_id FROM chunks")
@@ -538,6 +558,30 @@ def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
     assert paths["legacy-kb"].exists()
     assert paths["shared"].exists()
     assert outside.exists()
+
+
+def test_managed_rag_paths_use_their_canonical_identity(monkeypatch, tmp_path):
+    uploads = tmp_path / "uploads"
+    alias = tmp_path / "uploads-alias"
+    uploads.mkdir()
+    alias.mkdir()
+    candidate = alias / "shared.txt"
+    candidate.write_text("shared", encoding = "utf-8")
+    canonical = uploads / candidate.name
+    realpath = os.path.realpath
+
+    def resolve(path):
+        path = os.fspath(path)
+        if path == str(alias):
+            return str(uploads)
+        if path == str(candidate):
+            return str(canonical)
+        return realpath(path)
+
+    monkeypatch.setattr(history_cleanup, "rag_uploads_root", lambda: uploads)
+    monkeypatch.setattr(history_cleanup.os.path, "realpath", resolve)
+
+    assert history_cleanup._managed_path(str(candidate)) == os.path.normcase(str(canonical))
 
 
 def test_no_history_rag_visibility_accepts_legacy_kb_scope(no_chat_history):
@@ -587,6 +631,54 @@ def test_no_history_kb_listing_requires_an_existing_owner(no_chat_history, monke
     with pytest.raises(HTTPException) as missing:
         rag.list_kb_documents("missing", subject = "alice")
     assert missing.value.status_code == 404
+
+
+def test_no_history_ownerless_kb_folders_cannot_be_seen_or_synced(
+    no_chat_history, monkeypatch, tmp_path
+):
+    db_path = tmp_path / "rag-folders.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE knowledge_bases(id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO knowledge_bases VALUES('kb-1')")
+
+    def connection():
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    folders = {
+        "orphan": {
+            "id": "orphan",
+            "scope_type": "knowledge_base",
+            "scope_id": "missing",
+            "scope": "kb_missing",
+        },
+        "legacy": {
+            "id": "legacy",
+            "scope_type": "knowledge_base",
+            "scope_id": "stale",
+            "scope": "kb_kb-1",
+        },
+    }
+    enqueued = []
+    monkeypatch.setattr(rag, "_require_rag", lambda: None)
+    monkeypatch.setattr(rag, "_rag_connection", connection)
+    monkeypatch.setattr(rag.folder_sync, "get_folder", folders.get)
+    monkeypatch.setattr(
+        rag.folder_sync,
+        "request_sync",
+        lambda folder_id, **_kwargs: enqueued.append(folder_id),
+    )
+
+    rag._require_visible_folder("legacy")
+    with pytest.raises(HTTPException) as hidden:
+        rag.sync_folder("orphan", subject = "alice")
+    assert hidden.value.status_code == 404
+    assert enqueued == []
+
+    with pytest.raises(HTTPException) as missing_scope:
+        rag.list_linked_folders(scope_type = "knowledge_base", scope_id = "missing", subject = "alice")
+    assert missing_scope.value.status_code == 404
 
 
 def test_policy_off_kb_listing_keeps_orphan_cleanup_contract(monkeypatch, tmp_path):

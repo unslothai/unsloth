@@ -3429,6 +3429,13 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
+def _deep_research_requested(payload) -> bool:
+    if not getattr(payload, "deep_research_armed", False):
+        return False
+    from utils import chat_history_policy
+    return not chat_history_policy.disabled()
+
+
 def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> bool:
     """True when the request's tool selection is nothing but the provider's own
     hosted builtins, so the provider must execute them as it always has.
@@ -3454,7 +3461,7 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # Armed research appends Studio's own deep_research past every filter below, and no
     # provider can run it, so such a selection is never purely hosted. Without this the
     # request proxies through, the tool is never offered and arming research does nothing.
-    if getattr(payload, "deep_research_armed", False):
+    if _deep_research_requested(payload):
         return False
     enabled = getattr(payload, "enabled_tools", None)
     # None means "every local tool"; an empty list selects nothing and never
@@ -4660,7 +4667,7 @@ async def _select_request_tools(
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
     # which know this field.
-    if getattr(payload, "deep_research_armed", None):
+    if _deep_research_requested(payload):
         # Appended past every filter above, including the tools_on gate: arming research in the
         # composer is what offers this tool, and it is the only way the model can start a run.
         from core.inference.tools import DEEP_RESEARCH_TOOL

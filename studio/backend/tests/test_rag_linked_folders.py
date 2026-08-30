@@ -318,6 +318,8 @@ def test_kb_only_scheduler_does_not_enqueue_or_claim_project_folders(rag_home):
     from core.rag import job_leases
 
     _, kb_folder = _folder(rag_home)
+    with _connection() as conn:
+        store.create_kb(conn, name = "Knowledge", kb_id = "scope-1")
     project_source = rag_home / "project-source"
     project_source.mkdir()
     project_folder = folder_sync.create_folder(
@@ -325,6 +327,14 @@ def test_kb_only_scheduler_does_not_enqueue_or_claim_project_folders(rag_home):
         scope_id = "project-1",
         path = str(project_source),
         name = "Project docs",
+    )
+    orphan_source = rag_home / "orphan-kb-source"
+    orphan_source.mkdir()
+    orphan_kb_folder = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "missing-kb",
+        path = str(orphan_source),
+        name = "Orphan KB docs",
     )
 
     folder_sync._enqueue_periodic(knowledge_bases_only = True)
@@ -336,11 +346,13 @@ def test_kb_only_scheduler_does_not_enqueue_or_claim_project_folders(rag_home):
     assert scheduled_folder_ids == {kb_folder["id"]}
 
     project_job_id = folder_sync.request_sync(project_folder["id"])
+    orphan_job_id = folder_sync.request_sync(orphan_kb_folder["id"])
     claimed = folder_sync._next_job(knowledge_bases_only = True)
     try:
         assert claimed is not None
         assert claimed[1] == kb_folder["id"]
         assert folder_sync.get_job(project_job_id)["status"] == "pending"
+        assert folder_sync.get_job(orphan_job_id)["status"] == "pending"
     finally:
         if claimed is not None:
             job_leases.release(job_leases.FOLDER_SYNC, claimed[0])

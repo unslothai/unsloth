@@ -1638,10 +1638,16 @@ def _enqueue_periodic(*, knowledge_bases_only: bool = False) -> None:
     with closing(rag_db.get_connection()) as conn:
         now = _now()
         conn.execute("BEGIN IMMEDIATE")
-        scope_filter = " AND scope_type='knowledge_base'" if knowledge_bases_only else ""
+        scope_filter = (
+            " AND f.scope_type='knowledge_base' AND EXISTS ("
+            "SELECT 1 FROM knowledge_bases kb WHERE kb.id=f.scope_id "
+            "OR f.scope='kb_' || kb.id)"
+            if knowledge_bases_only
+            else ""
+        )
         rows = conn.execute(
-            "SELECT id FROM linked_folders WHERE auto_sync=1 AND status!='retired' "
-            f"AND delete_remove_index IS NULL{scope_filter}"
+            "SELECT f.id FROM linked_folders f WHERE f.auto_sync=1 AND f.status!='retired' "
+            f"AND f.delete_remove_index IS NULL{scope_filter}"
         ).fetchall()
         for row in rows:
             conn.execute(
@@ -1702,7 +1708,9 @@ def _next_job(*, knowledge_bases_only: bool = False) -> tuple[str, str] | None:
             "(j.status='pending' OR (j.status='running' AND NOT EXISTS "
             "(SELECT 1 FROM rag_job_leases l "
             "WHERE l.kind=? AND l.job_id=j.id AND l.expires_at>?))) "
-            "AND (?=0 OR f.scope_type='knowledge_base') "
+            "AND (?=0 OR (f.scope_type='knowledge_base' AND EXISTS ("
+            "SELECT 1 FROM knowledge_bases kb WHERE kb.id=f.scope_id "
+            "OR f.scope='kb_' || kb.id))) "
             "ORDER BY CASE j.status WHEN 'running' THEN 0 ELSE 1 END, j.created_at LIMIT 1",
             (job_leases.FOLDER_SYNC, _now(), int(knowledge_bases_only)),
         ).fetchone()

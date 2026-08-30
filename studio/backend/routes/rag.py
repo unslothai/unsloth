@@ -255,11 +255,30 @@ def _require_visible_document_id(document_id: str) -> None:
         conn.close()
 
 
+def _folder_knowledge_base_id(conn: sqlite3.Connection, folder: dict) -> str | None:
+    return store.document_knowledge_base_id(
+        conn,
+        {
+            "kb_id": folder.get("scope_id")
+            if folder.get("scope_type") == "knowledge_base"
+            else None,
+            "scope": folder.get("scope"),
+        },
+    )
+
+
 def _require_visible_folder(folder_id: str) -> None:
     if not chat_history_policy.disabled():
         return
     folder = folder_sync.get_folder(folder_id)
-    if folder is not None and folder.get("scope_type") != "knowledge_base":
+    if folder is None:
+        return
+    conn = _rag_connection()
+    try:
+        kb_id = _folder_knowledge_base_id(conn, folder)
+    finally:
+        conn.close()
+    if kb_id is None:
         raise HTTPException(status_code = 404, detail = "Linked folder not found")
 
 
@@ -702,6 +721,8 @@ def list_linked_folders(
             raise HTTPException(status_code = 400, detail = "Unsupported linked-folder scope")
         if scope_type == "project":
             chat_history_policy.require_enabled()
+        elif chat_history_policy.disabled():
+            _require_scope_owner("knowledge_base", scope_id)
         scope = (
             store.kb_scope(scope_id)
             if scope_type == "knowledge_base"
@@ -717,6 +738,7 @@ def list_linked_folders(
             if chat_history_policy.disabled():
                 scopes = [scope for scope in scopes if scope.startswith("kb_")]
             kb_names = {row["id"]: row["name"] for row in store.list_kbs(conn)}
+            kb_ids_by_scope = {store.kb_scope(kb_id): kb_id for kb_id in kb_names}
         finally:
             conn.close()
         project_names = {}
@@ -727,8 +749,16 @@ def list_linked_folders(
             }
         rows = [row for scope in scopes for row in folder_sync.list_folders(scope)]
         for row in rows:
-            names = kb_names if row["scope_type"] == "knowledge_base" else project_names
-            row["scope_name"] = names.get(row["scope_id"])
+            if chat_history_policy.disabled():
+                kb_id = (
+                    row["scope_id"]
+                    if row["scope_type"] == "knowledge_base" and row["scope_id"] in kb_names
+                    else kb_ids_by_scope.get(row["scope"])
+                )
+                row["scope_name"] = kb_names.get(kb_id)
+            else:
+                names = kb_names if row["scope_type"] == "knowledge_base" else project_names
+                row["scope_name"] = names.get(row["scope_id"])
         rows = [row for row in rows if row["scope_name"] is not None]
     return {"linkedFolders": [_folder_view(row) for row in rows]}
 

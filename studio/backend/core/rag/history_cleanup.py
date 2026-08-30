@@ -28,18 +28,19 @@ def _table_exists(conn, table: str) -> bool:
 def _managed_path(path: str | None) -> str | None:
     if not path:
         return None
-    root = os.path.realpath(str(rag_uploads_root()))
+    root = os.path.normcase(os.path.realpath(str(rag_uploads_root())))
     candidate = os.path.abspath(os.path.expanduser(path))
     try:
-        if os.path.normcase(os.path.realpath(os.path.dirname(candidate))) != os.path.normcase(root):
+        resolved = os.path.normcase(os.path.realpath(candidate))
+        if os.path.dirname(resolved) != root:
             return None
         if stat.S_ISLNK(os.lstat(candidate).st_mode):
             return None
     except FileNotFoundError:
-        return candidate
+        return resolved
     except OSError:
         return None
-    return candidate
+    return resolved
 
 
 def _remove_managed_path(path: str | None) -> None:
@@ -83,15 +84,17 @@ def clear_non_knowledge_base_data() -> int:
         conn.executemany("INSERT INTO no_chat_history_documents(id) VALUES(?)", hidden_document_ids)
 
         if _table_exists(conn, "linked_folders"):
-            folder_kb_scope_guard = (
-                "AND NOT EXISTS (SELECT 1 FROM knowledge_bases kb WHERE f.scope='kb_' || kb.id)"
+            folder_without_kb_owner = (
+                "NOT EXISTS (SELECT 1 FROM knowledge_bases kb WHERE "
+                "(f.scope_type='knowledge_base' AND f.scope_id=kb.id) "
+                "OR f.scope='kb_' || kb.id)"
                 if has_kbs
-                else ""
+                else "1=1"
             )
             conn.execute(
                 "INSERT INTO no_chat_history_folders(id) "
-                "SELECT f.id FROM linked_folders f WHERE f.scope_type!='knowledge_base' "
-                f"{folder_kb_scope_guard}"
+                "SELECT f.id FROM linked_folders f WHERE "
+                f"{folder_without_kb_owner}"
             )
 
         conn.execute(
