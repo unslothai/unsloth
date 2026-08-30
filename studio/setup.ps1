@@ -1052,7 +1052,11 @@ function Get-RocmPinStaleTags {
 # that answer. Mirrors install.ps1's copy.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+    # TimedOut separates "the interpreter never answered" from "it answered with a
+    # failure". Both leave Ok false, but only the first says nothing about whether the
+    # installation itself is sound, and callers that rescue a venv on the strength of its
+    # on-disk label need to know which one they are looking at.
+    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = ""; TimedOut = $false }
     if (-not $PythonExe -or -not $Code) { return $result }
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1070,6 +1074,7 @@ function Invoke-BoundedPythonProbe {
             # Synthesised, not read back: waiting on the reader tasks of a wedged child would
             # reintroduce the hang this helper exists to bound.
             $result.Error = "python did not answer within $TimeoutSec seconds"
+            $result.TimedOut = $true
             return $result
         }
         $result.Output = $outTask.GetAwaiter().GetResult()
@@ -4079,6 +4084,7 @@ $installedTorchTag = $null
 # installer-managed repair below raises it, yet only the block a fresh install never enters
 # assigns it.
 $script:PinChangedForceReinstall = $false
+$script:TorchImportDefinitivelyFailed = $false
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
@@ -4140,6 +4146,17 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = Get-VenvTorchCudaTag -VenvPath $VenvDir
             substep "PyTorch did not respond but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
             substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
+            # A probe that ANSWERED with an error is a different thing from one that never
+            # answered. A wedged driver is the case this rescue exists for and the venv is
+            # sound; a truncated or half-written torch also leaves a +cu* version.py behind,
+            # and keeping it would let the family-matched install below run with bare
+            # requirements and no reinstall flag, so the run could write a completion
+            # manifest over a torch that still cannot import. Keep the venv either way --
+            # deleting it does not fix a driver -- but force the reinstall in that case.
+            if ($_verProbe -and -not $_verProbe.TimedOut) {
+                $script:TorchImportDefinitivelyFailed = $true
+                substep "PyTorch failed to import rather than timing out -- reinstalling the same family in place." "Yellow"
+            }
         } else {
             $shouldRebuild = $true
         }
@@ -5343,7 +5360,9 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # requirement (PEP 440 ignores the +cuXXX tag), so without it a changed CUDA pin (cu126
     # -> cu128) never applies.
     $cudaForce = @()
-    if ($script:PinChangedForceReinstall) { $cudaForce = @("--force-reinstall") }
+    if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+        $cudaForce = @("--force-reinstall")
+    }
     # An unknown-leaf custom pin (/simple, /current) routes here with $CuTag as that leaf. Bound
     # the trio like the fresh custom-pin paths so a mirror can't pull an ABI-newer companion
     # against the capped torch. Known cu* leaves keep bare specs.

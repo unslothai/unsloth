@@ -3598,6 +3598,14 @@ def _ensure_rocm_torch() -> None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
                 gfx_arch, ("torch", "torchvision", "torchaudio")
             )
+            # Same win_arm64 exception the flavor repair and setup.ps1 apply: no
+            # torchaudio wheel exists there on any index, so asking for one makes the
+            # whole trio unresolvable. That matters most on the delegated path, where
+            # this failure is nonfatal and the CPU build it was meant to replace stays
+            # put, only for the family verification to fail the update afterwards.
+            _rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]
+            if _is_windows_arm64():
+                _rocm_trio = [_torch_pkg, _vision_pkg]
             # Nonfatal: a transient AMD-index failure must not abort the install.
             # --force-reinstall resolves before uninstalling, so a failed index keeps the
             # existing build intact; let the user retry.
@@ -3606,9 +3614,7 @@ def _ensure_rocm_torch() -> None:
                 "--force-reinstall",
                 "--index-url",
                 index_url,
-                _torch_pkg,
-                _vision_pkg,
-                _audio_pkg,
+                *_rocm_trio,
                 constrain = False,
             ):
                 _safe_print(

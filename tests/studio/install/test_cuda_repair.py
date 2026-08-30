@@ -1928,3 +1928,70 @@ class TestTheWindowsXpuTritonSwapReachesADirectRun:
         assert "_ensure_xpu_triton()" in block
         # After, for the reason step 13 puts it last: the swap keys off the +xpu label.
         assert block.index("_ensure_expected_torch_flavor") < block.index("_ensure_xpu_triton()")
+
+
+class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
+    """_ensure_rocm_torch's Windows branch asked for the full trio unconditionally.
+
+    No win_arm64 torchaudio wheel exists, so the whole trio is unresolvable there. On
+    the delegated path that failure is nonfatal, so the CPU build the repair was meant
+    to replace stays put and the family verification then fails the update -- a worse
+    outcome than the plain trio case, where the failure is at least immediate.
+    """
+
+    def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
+        source = inspect.getsource(stack_mod._ensure_rocm_torch)
+        block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        assert (
+            "_is_windows_arm64()" in block
+        ), "the delegated ROCm repair needs the same exception as the flavor repair"
+        assert "*_rocm_trio" in block, "the trio has to be built, not passed positionally"
+
+    def test_x64_windows_still_asks_for_all_three(self):
+        source = inspect.getsource(stack_mod._ensure_rocm_torch)
+        block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        assert "_rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]" in block
+
+
+class TestADefinitiveImportFailureIsNotADriverHang:
+    """setup.ps1's disk-label rescue treated both the same.
+
+    A wedged driver and a truncated torch both leave a +cu* version.py behind. Keeping
+    the venv is right in both cases -- deleting it does not fix a driver, which is the
+    whole point of the rescue (#8335, #7275) -- but only the first means the
+    installation is sound, and the family-matched install below runs with bare
+    requirements and no reinstall flag, so the second could write a completion manifest
+    over a torch that still cannot import.
+    """
+
+    _SOURCE = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+
+    def test_the_probe_distinguishes_a_timeout_from_an_answer(self):
+        assert "TimedOut = $false" in self._SOURCE
+        assert "$result.TimedOut = $true" in self._SOURCE
+
+    def test_the_cuda_rescue_forces_a_reinstall_on_a_definitive_failure(self):
+        block = self._SOURCE[self._SOURCE.index("Test-VenvTorchIsCuda -VenvPath $VenvDir") :][:2000]
+        assert "$_verProbe -and -not $_verProbe.TimedOut" in block
+        assert "$script:TorchImportDefinitivelyFailed = $true" in block
+
+    def test_the_venv_is_still_kept_either_way(self):
+        # The rescue exists because deleting a venv does not fix a driver, and a faulted
+        # HIP or display driver raises at DLL load rather than timing out. Restricting
+        # the rescue itself to timeouts would resurrect exactly that bug.
+        start = self._SOURCE.index("Test-VenvTorchIsCuda -VenvPath $VenvDir")
+        # The CUDA arm only, not the trailing else that handles "no family matched",
+        # which is the one branch that SHOULD still rebuild.
+        arm = self._SOURCE[start : self._SOURCE.index("} else {", start)]
+        # Comments stripped: this arm's own commentary explains what the chain used to
+        # fall through to, and naming it there is not the same as doing it.
+        code = "\n".join(line for line in arm.splitlines() if not line.strip().startswith("#"))
+        assert "$shouldRebuild" not in code
+        assert "$script:TorchImportDefinitivelyFailed = $true" in arm
+
+    def test_the_flag_reaches_the_cuda_install(self):
+        assert (
+            "if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {"
+            in self._SOURCE
+        )
+        assert "$script:TorchImportDefinitivelyFailed = $false" in self._SOURCE
