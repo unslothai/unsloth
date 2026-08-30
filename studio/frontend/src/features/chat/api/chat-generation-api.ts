@@ -370,10 +370,12 @@ async function* streamChatGenerationEvents(
  * How long a follower tolerates a run that makes no progress before it gives up. Progress,
  * not connectedness, ends a follow: every event and every change to the run row resets it.
  *
- * The client must be the more patient of the two. Prefill emits no events, the backend
- * allows 1200s for a first token (llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S), and the lease
- * sweeper then needs another interval, so anything under roughly 21 minutes would report
- * "interrupted" over a live generation on exactly the slow hardware that needs the budget.
+ * This is a deadline on SILENCE, not on duration, which is what lets it stay short while
+ * the backend tolerates far longer work. Model preparation and admission waits emit no
+ * events, but they renew the run's progress lease, and that moves `updatedAt`, which the
+ * snapshot poll below compares and treats as progress. So a two hour download rearms this
+ * deadline every time it is polled, and only a server that has genuinely gone quiet for
+ * half an hour trips it.
  */
 export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 

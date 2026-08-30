@@ -9,8 +9,12 @@ export const RUN_CHECKPOINT_INTERVAL_MS = 8_000;
 /**
  * How long one thread may be checkpointed before the schedule gives up on it. A run that
  * never reaches a terminal status would otherwise checkpoint for the life of the page.
- * Held at the follow deadline in chat-generation-api.ts, which the backend settles well
- * inside, so reaching the cap means something has already gone wrong.
+ *
+ * Measured from the start and never rearmed, unlike the follow deadline in
+ * chat-generation-api.ts, which rearms on progress. That difference is deliberate: this
+ * cap applies only to durable runs (see `isBounded`), and a durable run is persisted by
+ * the server, so stopping the client's periodic saves costs nothing but the saves. A
+ * subscriber-owned stream, whose only persistence IS these saves, is never capped.
  */
 export const RUN_CHECKPOINT_MAX_DURATION_MS = 30 * 60_000;
 
