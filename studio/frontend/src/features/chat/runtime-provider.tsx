@@ -46,6 +46,7 @@ import {
   cancelChatGenerationRun,
   type ChatGenerationRun,
   getActiveChatGenerationRuns,
+  ChatGenerationStalledError,
   followChatGenerationRun,
   isTerminalChatGenerationRun,
 } from "./api/chat-generation-api";
@@ -721,9 +722,13 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   // unmounts Send, so the reply the user cannot stop is the one they cannot reply past.
   // Ask whether the run is corroborated live, and otherwise show the partial as
   // interrupted, which keeps every character and offers the Continue bar.
+  // The gate is for unfinished runs only. A completed-but-unsettled run has a terminal
+  // status, so /chat-runs/active never lists it and it could never be corroborated; it
+  // still owns an unreplayed tail, and the follow that replays it returns on the first
+  // snapshot rather than holding the composer.
   const needsGenerationRecovery =
-    (generationUnfinished || generationUnsettled) &&
-    generationIsCorroboratedLive(custom, m.threadId);
+    generationUnsettled ||
+    (generationUnfinished && generationIsCorroboratedLive(custom, m.threadId));
   const restoredCustom =
     generationUnfinished &&
     !needsGenerationRecovery &&
@@ -917,113 +922,122 @@ function scheduleGenerationRecovery(
     try {
       let lastPublishedStatus = "";
       let identityValidated = false;
-      for await (const update of followChatGenerationRun(runId, {
-        replayFrom: cursor,
-      })) {
-        if (!identityValidated) {
-          if (
-            update.run.threadId !== threadId ||
-            update.run.assistantMessageId !== storedMessage.id
-          ) {
-            return;
-          }
-          if (cursor === 0 && raw.length === 0) {
-            const requestMessages = update.run.requestPayload.messages;
-            const lastRequestMessage = Array.isArray(requestMessages)
-              ? requestMessages.at(-1)
-              : undefined;
+      // The follower reports its no-progress deadline by throwing, and the settlement
+      // below is exactly what must happen when it does. Without this catch the throw
+      // reaches the outer no-op handler and leaves a message marked running forever.
+      let followStalled = false;
+      try {
+        for await (const update of followChatGenerationRun(runId, {
+          replayFrom: cursor,
+        })) {
+          if (!identityValidated) {
             if (
-              lastRequestMessage?.role === "assistant" &&
-              typeof lastRequestMessage.content === "string"
+              update.run.threadId !== threadId ||
+              update.run.assistantMessageId !== storedMessage.id
             ) {
-              // Continue sends the old partial as an assistant prefill. The
-              // server-owned placeholder is empty until the first client save,
-              // so a reload before that save must seed replay from the request.
-              raw = lastRequestMessage.content;
+              return;
             }
+            if (cursor === 0 && raw.length === 0) {
+              const requestMessages = update.run.requestPayload.messages;
+              const lastRequestMessage = Array.isArray(requestMessages)
+                ? requestMessages.at(-1)
+                : undefined;
+              if (
+                lastRequestMessage?.role === "assistant" &&
+                typeof lastRequestMessage.content === "string"
+              ) {
+                // Continue sends the old partial as an assistant prefill. The
+                // server-owned placeholder is empty until the first client save,
+                // so a reload before that save must seed replay from the request.
+                raw = lastRequestMessage.content;
+              }
+            }
+            identityValidated = true;
           }
-          identityValidated = true;
-        }
-        if (update.event && update.event.seq > cursor) {
-          cursor = update.event.seq;
-          if (update.event.type === "chunk") {
-            const chunk = update.event.payload as {
-              _reasoningDurationMs?: unknown;
-              usage?: {
-                prompt_tokens?: unknown;
-                completion_tokens?: unknown;
-                total_tokens?: unknown;
-                prompt_tokens_details?: { cached_tokens?: unknown };
-                cache_creation_input_tokens?: unknown;
-                cache_read_input_tokens?: unknown;
-              };
-              timings?: Record<string, unknown>;
-              choices?: Array<{
-                delta?: {
-                  content?: unknown;
-                  reasoning_content?: unknown;
+          if (update.event && update.event.seq > cursor) {
+            cursor = update.event.seq;
+            if (update.event.type === "chunk") {
+              const chunk = update.event.payload as {
+                _reasoningDurationMs?: unknown;
+                usage?: {
+                  prompt_tokens?: unknown;
+                  completion_tokens?: unknown;
+                  total_tokens?: unknown;
+                  prompt_tokens_details?: { cached_tokens?: unknown };
+                  cache_creation_input_tokens?: unknown;
+                  cache_read_input_tokens?: unknown;
                 };
-              }>;
-              context_truncated?: OpenAIChatChunk["context_truncated"];
-            };
-            if ("_reasoningDurationMs" in chunk) {
-              currentMetadata = recoveredReasoningSummaryMetadata(
-                currentMetadata,
-                chunk._reasoningDurationMs,
-              );
-              lastPublishedStatus = update.run.status;
-              await publish(update.run);
-              continue;
-            }
-            if (generationChunkCountsTowardTiming(chunk)) {
-              totalChunks += 1;
-            }
-            if (generationChunkHasSubstantiveDelta(chunk)) {
-              firstChunkAt ??= update.event.createdAt;
-            }
-            if (chunk.context_truncated) {
-              currentMetadata = {
-                ...currentMetadata,
-                contextTruncation: mergeContextTruncation(
-                  currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
-                  chunk.context_truncated,
-                ),
+                timings?: Record<string, unknown>;
+                choices?: Array<{
+                  delta?: {
+                    content?: unknown;
+                    reasoning_content?: unknown;
+                  };
+                }>;
+                context_truncated?: OpenAIChatChunk["context_truncated"];
               };
-            }
-            if (chunk.usage) recoveryUsage = chunk.usage;
-            if (chunk.timings) recoveryTimings = chunk.timings;
-            if (typeof chunk.usage?.completion_tokens === "number") {
-              completionTokens = chunk.usage.completion_tokens;
-            }
-            const deltaRecord = chunk.choices?.[0]?.delta;
-            const reasoning =
-              typeof deltaRecord?.reasoning_content === "string"
-                ? deltaRecord.reasoning_content
-                : "";
-            const delta = extractDeltaText(deltaRecord?.content).text;
-            if (reasoning) {
-              if (!reasoningOpen) raw += "<think>";
-              raw += reasoning;
-              reasoningOpen = true;
-            }
-            if (delta) {
-              if (reasoningOpen) raw += "</think>";
-              raw += delta;
-              reasoningOpen = false;
+              if ("_reasoningDurationMs" in chunk) {
+                currentMetadata = recoveredReasoningSummaryMetadata(
+                  currentMetadata,
+                  chunk._reasoningDurationMs,
+                );
+                lastPublishedStatus = update.run.status;
+                await publish(update.run);
+                continue;
+              }
+              if (generationChunkCountsTowardTiming(chunk)) {
+                totalChunks += 1;
+              }
+              if (generationChunkHasSubstantiveDelta(chunk)) {
+                firstChunkAt ??= update.event.createdAt;
+              }
+              if (chunk.context_truncated) {
+                currentMetadata = {
+                  ...currentMetadata,
+                  contextTruncation: mergeContextTruncation(
+                    currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+                    chunk.context_truncated,
+                  ),
+                };
+              }
+              if (chunk.usage) recoveryUsage = chunk.usage;
+              if (chunk.timings) recoveryTimings = chunk.timings;
+              if (typeof chunk.usage?.completion_tokens === "number") {
+                completionTokens = chunk.usage.completion_tokens;
+              }
+              const deltaRecord = chunk.choices?.[0]?.delta;
+              const reasoning =
+                typeof deltaRecord?.reasoning_content === "string"
+                  ? deltaRecord.reasoning_content
+                  : "";
+              const delta = extractDeltaText(deltaRecord?.content).text;
+              if (reasoning) {
+                if (!reasoningOpen) raw += "<think>";
+                raw += reasoning;
+                reasoningOpen = true;
+              }
+              if (delta) {
+                if (reasoningOpen) raw += "</think>";
+                raw += delta;
+                reasoningOpen = false;
+              }
             }
           }
+          const shouldPublish =
+            update.event?.type === "chunk" ||
+            update.run.status !== lastPublishedStatus ||
+            (["cancelled", "completed", "failed"].includes(update.run.status) &&
+              cursor >= update.run.lastEventSeq);
+          if (shouldPublish) {
+            lastPublishedStatus = update.run.status;
+            await publish(update.run);
+          }
         }
-        const shouldPublish =
-          update.event?.type === "chunk" ||
-          update.run.status !== lastPublishedStatus ||
-          (["cancelled", "completed", "failed"].includes(update.run.status) &&
-            cursor >= update.run.lastEventSeq);
-        if (shouldPublish) {
-          lastPublishedStatus = update.run.status;
-          await publish(update.run);
-        }
+      } catch (error) {
+        if (!(error instanceof ChatGenerationStalledError)) throw error;
+        followStalled = true;
       }
-      if (generationNeedsRecovery(currentMetadata)) {
+      if (followStalled || generationNeedsRecovery(currentMetadata)) {
         // The follow returned with the run still non-terminal, so its no-progress
         // deadline expired. Settle the reply here rather than leaving a message that
         // says "running" until the next reload, which is what keeps Send unmounted.
@@ -1781,6 +1795,7 @@ function useStudioRuntimeAdapters(
         // server is still generating on. Close that gap with one more lookup, and only
         // when a message actually names a run the first read missed.
         if (activeGenerationRunsLoaded) {
+          let answered = true;
           const known = new Set(activeGenerationRuns.map((run) => run.id));
           const missed = msgs.some((message) => {
             const custom = (message.metadata ?? {}) as Record<string, unknown>;
@@ -1801,13 +1816,18 @@ function useStudioRuntimeAdapters(
                 (run) => !isTerminalChatGenerationRun(run),
               );
             } catch {
-              // Leave the first read standing; it is still an answer for this thread.
+              // `missed` already proved the first list predates this run, so it is not
+              // an answer either. Leave the thread unanswered rather than promoting a
+              // list known to be stale.
+              answered = false;
             }
           }
-          syncServerActiveGenerationRuns(
-            remoteId,
-            activeGenerationRuns.map((run) => run.id),
-          );
+          if (answered) {
+            syncServerActiveGenerationRuns(
+              remoteId,
+              activeGenerationRuns.map((run) => run.id),
+            );
+          }
         }
         for (const run of activeGenerationRuns) {
           const assistant = msgs.find(

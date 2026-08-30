@@ -187,8 +187,9 @@ test("the reload path gates the running status on corroboration", () => {
   assert.ok(gate > 0, "toThreadMessage no longer asks whether the run is live");
   assert.match(
     provider,
-    /needsGenerationRecovery\s*=\s*\(generationUnfinished \|\| generationUnsettled\) &&\s*generationIsCorroboratedLive\(custom, m\.threadId\)/,
-    "the running status must require BOTH unfinished metadata and corroboration",
+    /needsGenerationRecovery\s*=\s*generationUnsettled \|\|\s*\(generationUnfinished &&\s*generationIsCorroboratedLive\(custom, m\.threadId\)\)/,
+    "an unfinished run needs corroboration; a completed-but-unsettled one must not, "
+      + "because /chat-runs/active never lists a terminal run and its tail would be lost",
   );
   assert.match(
     provider,
@@ -418,4 +419,40 @@ test("stopChatThread falls back to the server when the registries are empty", ()
     1,
     "an empty registry must no longer be a reason to give up",
   );
+});
+
+test("a failed second active-run read leaves the thread unanswered", () => {
+  // Source-pinned for the same reason as the gate above. `missed` proves the first list
+  // predates the run, so keeping it AND recording it as an answer would restore a live
+  // reply as interrupted and re-enable a conflicting send.
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  assert.match(provider, /let answered = true;/);
+  assert.match(
+    provider,
+    /catch \{[^}]*answered = false;/s,
+    "a failed retry must not be promoted into an authoritative empty list",
+  );
+  assert.match(
+    provider,
+    /if \(answered\) \{\s*syncServerActiveGenerationRuns\(/,
+    "the sync must be gated on the read having actually answered",
+  );
+});
+
+test("the recovery follower settles when the follow throws a stall", () => {
+  const provider = read("../src/features/chat/runtime-provider.tsx");
+  assert.match(
+    provider,
+    /catch \(error\) \{\s*if \(!\(error instanceof ChatGenerationStalledError\)\) throw error;\s*followStalled = true;\s*\}/,
+    "the deadline throw must reach the settlement block, not the outer no-op catch",
+  );
+  assert.match(
+    provider,
+    /if \(followStalled \|\| generationNeedsRecovery\(currentMetadata\)\) \{/,
+    "a stall settles the reply even when the metadata already looks settled",
+  );
+  const start = provider.indexOf("for await (const update of followChatGenerationRun(");
+  const settle = provider.indexOf("generationNeedsRecovery(currentMetadata)", start);
+  const caught = provider.indexOf("instanceof ChatGenerationStalledError", start);
+  assert.ok(start > 0 && caught > start && settle > caught, "the catch must precede the settle");
 });

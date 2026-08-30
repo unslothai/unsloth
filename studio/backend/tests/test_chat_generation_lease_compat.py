@@ -11,6 +11,7 @@ has to survive without ever reaping a live generation.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import sys
 import threading
@@ -352,3 +353,94 @@ def test_a_second_lifespan_restarts_the_sweeper(clock):
         await second.stop()
 
     asyncio.run(_drive())
+
+
+# ------------------------------------------------------- migration blocked by a writer
+
+
+@contextlib.contextmanager
+def _migration_blocked(monkeypatch):
+    """A pre-upgrade database whose ALTER always loses to a writer holding the lock.
+
+    _connect deliberately lets the call through so a history read cannot fail on
+    contention, which means every lease statement afterwards meets a table without the
+    columns. This is the window the degradations below have to survive.
+    """
+    _drop_lease_columns()
+    runs_db._schema_ready = False
+    real_get = runs_db.get_connection
+
+    class _Locked:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **k):
+            if sql.startswith("ALTER TABLE chat_generation_runs ADD COLUMN"):
+                raise sqlite3.OperationalError("database is locked")
+            return self._inner.execute(sql, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(runs_db, "get_connection", lambda: _Locked(real_get()))
+    try:
+        yield
+    finally:
+        monkeypatch.setattr(runs_db, "get_connection", real_get)
+        runs_db._schema_ready = False
+
+
+def test_streaming_survives_a_migration_still_blocked_by_a_writer(clock, monkeypatch):
+    token = _seed()
+    with _migration_blocked(monkeypatch):
+        assert "progress_at" not in _columns(), "the block did not take"
+        # The producer's own write path. Aborting here would kill a live generation
+        # purely because another process held the database when this one started.
+        runs_db.mark_running("run-1", token)
+        runs_db.append_events("run-1", token, [("chunk", {"delta": "hi"})])
+
+
+def test_get_progress_falls_back_when_the_columns_are_missing(clock, monkeypatch):
+    _seed()
+    with _migration_blocked(monkeypatch):
+        progress = runs_db.get_progress("run-1")
+    assert progress is not None
+    at, tokens = progress
+    assert at is not None, "started_at/created_at must still answer"
+    assert tokens == 0
+
+
+def test_the_sweep_still_runs_when_the_columns_are_missing(clock, monkeypatch):
+    _seed()
+    with _migration_blocked(monkeypatch):
+        # started_at is now, so nothing is stale yet: the sweep must run and find zero,
+        # not switch itself off with `no such column` for the life of the process.
+        assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+        clock.advance_ms(10 * _LEASE_MS)
+        settled = runs_db.reconcile_runs(stale_after_ms = _LEASE_MS)
+    assert settled == ["run-1"], "the fallback must still age a wedged run out"
+
+
+def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
+    """The degradations key on the lease columns by name, not on the error class.
+
+    A `no such column` naming anything else is a genuine schema fault and must surface.
+    """
+    _seed()
+    real_get = runs_db.get_connection
+
+    class _Boom:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **k):
+            if sql.lstrip().upper().startswith("SELECT COALESCE(PROGRESS_AT"):
+                raise sqlite3.OperationalError("no such column: some_other_column")
+            return self._inner.execute(sql, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(runs_db, "get_connection", lambda: _Boom(real_get()))
+    with pytest.raises(sqlite3.OperationalError, match = "some_other_column"):
+        runs_db.get_progress("run-1")

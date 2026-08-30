@@ -65,9 +65,10 @@ def _connect() -> sqlite3.Connection:
                 conn.commit()
                 _schema_ready = True
     except sqlite3.OperationalError:
-        # A writer is holding the database. These columns are additive and only the
-        # lease paths read them, so let this call through and migrate on a later one
-        # rather than turning contention into a failed history read.
+        # A writer is holding the database. These columns are additive, so let this call
+        # through and migrate on a later one rather than turning contention into a failed
+        # history read. The lease paths cannot assume the columns exist after this, which
+        # is what _without_lease_columns below is for.
         conn.rollback()
     except Exception:
         conn.close()
@@ -168,6 +169,20 @@ def _append_events_locked(
     return sequences
 
 
+def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
+    """Whether `exc` is this database still waiting on the progress-lease migration.
+
+    _connect lets a call through when contention blocks the ALTER, so every statement
+    naming progress_at or progress_tokens can meet a table that predates them. Degrading
+    to the pre-migration behaviour keeps that window harmless: without it a blocked
+    migration would abort a generation with `no such column` the moment the writer let go.
+    """
+    message = str(exc).lower()
+    return "no such column" in message and (
+        "progress_at" in message or "progress_tokens" in message
+    )
+
+
 def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -> None:
     """Stamp the progress lease for one flush of streamed output.
 
@@ -178,13 +193,19 @@ def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -
     delta, so the count of chunk events is the token count.
     """
     now = now_ms()
-    conn.execute(
-        """UPDATE chat_generation_runs
-           SET progress_at=MAX(COALESCE(progress_at, 0), ?),
-               progress_tokens=COALESCE(progress_tokens, 0) + ?
-           WHERE id=?""",
-        (now, max(0, int(tokens)), run_id),
-    )
+    try:
+        conn.execute(
+            """UPDATE chat_generation_runs
+               SET progress_at=MAX(COALESCE(progress_at, 0), ?),
+                   progress_tokens=COALESCE(progress_tokens, 0) + ?
+               WHERE id=?""",
+            (now, max(0, int(tokens)), run_id),
+        )
+    except sqlite3.OperationalError as exc:
+        # The migration has not landed yet. The run keeps streaming and simply ages out
+        # on started_at/created_at, which the sweep already falls back to.
+        if not _missing_lease_columns(exc):
+            raise
 
 
 def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
@@ -447,12 +468,22 @@ def get_progress(run_id: str) -> tuple[int | None, int] | None:
     """(last progress timestamp, tokens streamed) for one run, or None if unknown."""
     conn = _connect()
     try:
-        row = conn.execute(
-            """SELECT COALESCE(progress_at, started_at, created_at) AS progress_at,
-                      COALESCE(progress_tokens, 0) AS progress_tokens
-               FROM chat_generation_runs WHERE id=?""",
-            (run_id,),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                """SELECT COALESCE(progress_at, started_at, created_at) AS progress_at,
+                          COALESCE(progress_tokens, 0) AS progress_tokens
+                   FROM chat_generation_runs WHERE id=?""",
+                (run_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if not _missing_lease_columns(exc):
+                raise
+            row = conn.execute(
+                """SELECT COALESCE(started_at, created_at) AS progress_at,
+                          0 AS progress_tokens
+                   FROM chat_generation_runs WHERE id=?""",
+                (run_id,),
+            ).fetchone()
         if row is None:
             return None
         progress_at = row["progress_at"]
@@ -720,7 +751,22 @@ def reconcile_runs(
             # so a producer wedged before its first token still ages out.
             sql += " AND COALESCE(progress_at, started_at, created_at) <= ?"
             args = (completed - int(stale_after_ms),)
-        rows = conn.execute(sql + " ORDER BY created_at, id", args).fetchall()
+        try:
+            rows = conn.execute(sql + " ORDER BY created_at, id", args).fetchall()
+        except sqlite3.OperationalError as exc:
+            # Contention blocked the migration. Sweeping on started_at/created_at is
+            # strictly more conservative than the lease, so the sweep stays on rather
+            # than switching itself off for the life of the process.
+            if not _missing_lease_columns(exc):
+                raise
+            rows = conn.execute(
+                sql.replace(
+                    "COALESCE(progress_at, started_at, created_at)",
+                    "COALESCE(started_at, created_at)",
+                )
+                + " ORDER BY created_at, id",
+                args,
+            ).fetchall()
         for row in rows:
             run_id = row["id"]
             # A Stop that was already recorded outlives the restart. Reporting it as a
