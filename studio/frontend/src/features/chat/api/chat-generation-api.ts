@@ -326,6 +326,13 @@ async function* streamChatGenerationEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
+  /**
+   * Called for every byte the server sends, including the keep-alive comments this
+   * generator drops. The stream stays open across model preparation and admission waits
+   * and emits nothing else for their whole duration, so without this the consumer's loop
+   * never advances and the snapshot poll after it never runs.
+   */
+  onActivity?: () => void,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
     `/api/inference/chat-runs/${encodeURIComponent(id)}/events?after=${Math.max(0, after)}`,
@@ -340,6 +347,7 @@ async function* streamChatGenerationEvents(
   try {
     while (true) {
       const { done, value } = await reader.read();
+      if (value !== undefined && value.length > 0) onActivity?.();
       buffer += decoder.decode(value, { stream: !done });
       buffer = buffer.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -372,10 +380,14 @@ async function* streamChatGenerationEvents(
  *
  * This is a deadline on SILENCE, not on duration, which is what lets it stay short while
  * the backend tolerates far longer work. Model preparation and admission waits emit no
- * events, but they renew the run's progress lease, and that moves `updatedAt`, which the
- * snapshot poll below compares and treats as progress. So a two hour download rearms this
- * deadline every time it is polled, and only a server that has genuinely gone quiet for
- * half an hour trips it.
+ * events for their whole duration, but the event stream keeps sending keep-alive comments
+ * throughout, and those count: `streamChatGenerationEvents` reports every byte it reads,
+ * comments included. So a two hour download rearms this deadline every fifteen seconds,
+ * and only a server that has genuinely gone quiet for half an hour trips it.
+ *
+ * The `updatedAt` the lease renewals move is a second, weaker signal, reachable only once
+ * the stream closes and the snapshot poll runs. It cannot carry this on its own, because
+ * a stream that stays open is exactly the case that needs covering.
  */
 export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 
@@ -451,6 +463,7 @@ export async function* followChatGenerationRun(
           id,
           cursor,
           signal,
+          noteProgress,
         )) {
           if (event.seq <= cursor) continue;
           cursor = event.seq;

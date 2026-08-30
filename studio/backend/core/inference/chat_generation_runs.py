@@ -242,10 +242,19 @@ def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
     return sweeper
 
 
-# How often stream bytes that carry no event may renew the lease. Well inside the lease
-# and well above the admission keepalive cadence, so a queued run stays alive without one
-# database write per comment line.
-_KEEPALIVE_RENEW_SECONDS = 30.0
+def _renew_interval_seconds() -> float:
+    """How often a lease may be renewed by something other than streamed output.
+
+    Derived from the configured lease rather than fixed, because both are configurable and
+    a fixed 30 or 60 seconds is longer than a lease set below that: the first renewal would
+    then arrive after the sweep had already settled the run. A quarter of the lease gives
+    three renewals inside every window, and the floor keeps a very short lease from turning
+    into a write per second.
+    """
+    lease = _env_seconds("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS)
+    if lease <= 0.0:  # sweeping disabled, so cadence only controls write volume
+        return 30.0
+    return max(1.0, min(30.0, lease / 4.0))
 
 
 class ChatGenerationSupervisor:
@@ -390,21 +399,39 @@ class ChatGenerationSupervisor:
                 ", ".join(stuck),
             )
 
-    # Renewals while preparation runs, bounded. Unbounded would mean a preparation that
-    # never returns (an engine wedged inside a load) is kept alive forever, which is the
-    # failure this whole file exists to end. The bound is generous: it only has to
-    # outlast a real download, and after it the ordinary lease takes over.
-    _PREPARE_RENEW_INTERVAL_S = 60.0
-    _PREPARE_RENEW_MAX = 120  # two hours of preparation
+    # Total time renewals may cover, not a count: the interval is derived from the
+    # configured lease, so a fixed count would mean very different durations. Bounded at
+    # all because an unbounded heartbeat keeps a preparation that never returns alive
+    # forever, which is the failure this whole file exists to end. Generous enough to
+    # outlast a real download; after it the ordinary lease takes over.
+    _PREPARE_RENEW_MAX_SECONDS = 2 * 60 * 60
+
+    @contextlib.asynccontextmanager
+    async def _lease_heartbeat(self, run_id: str):
+        """Hold the progress lease open across work that produces no output.
+
+        Covers the lifecycle gate as well as model preparation. A run waiting on the gate
+        is still queued, so its lease ages from created_at with nothing renewing it, and a
+        slow preview swap on the other side of the gate could outlast the lease.
+
+        Cancelled on exit, including an early return, so this never overlaps the streaming
+        phase where real output is the lease.
+        """
+        task = asyncio.create_task(
+            self._renew_lease_while_preparing(run_id),
+            name = f"chat-generation-prepare-lease:{run_id}",
+        )
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def _renew_lease_while_preparing(self, run_id: str) -> None:
-        """Hold the progress lease open while the model is being prepared.
-
-        Cancelled by the caller the moment preparation returns, so this never overlaps
-        the streaming phase, where real output is the lease.
-        """
-        for _ in range(self._PREPARE_RENEW_MAX):
-            await asyncio.sleep(self._PREPARE_RENEW_INTERVAL_S)
+        interval = _renew_interval_seconds()
+        for _ in range(max(1, int(self._PREPARE_RENEW_MAX_SECONDS / interval))):
+            await asyncio.sleep(interval)
             try:
                 await asyncio.to_thread(db.touch_progress, run_id)
             except Exception:
@@ -449,58 +476,53 @@ class ChatGenerationSupervisor:
                     error = "Studio shut down during generation" if shutting_down else None,
                 )
                 return
-            await activity.start(cancel_event)
-            if cancel_event.is_set():
-                shutting_down = run_id in self._shutdown_runs
-                await asyncio.to_thread(
-                    db.finish_run,
-                    run_id,
-                    worker_token = worker_token,
-                    status = "failed" if shutting_down else "cancelled",
-                    finish_reason = "interrupted" if shutting_down else "cancelled",
-                    error = "Studio shut down during generation" if shutting_down else None,
-                )
-                return
-            if not await asyncio.to_thread(db.mark_running, run_id, worker_token):
-                return
-            worker_run = await asyncio.to_thread(db.get_worker_run, run_id, worker_token)
-            if worker_run is None:
-                return
-            run, owner, worker_token = worker_run
-            if run["status"] != "running" or run["cancelRequested"]:
-                await asyncio.to_thread(
-                    db.finish_run,
-                    run_id,
-                    worker_token = worker_token,
-                    status = "cancelled",
-                )
-                return
+            # Spans the lifecycle gate as well as preparation. A run waiting on the gate
+            # is still queued, so its lease ages from created_at with nothing renewing it,
+            # and a preview swap on the other side of the gate can outlast the lease.
+            async with self._lease_heartbeat(run_id):
+                await activity.start(cancel_event)
+                if cancel_event.is_set():
+                    shutting_down = run_id in self._shutdown_runs
+                    await asyncio.to_thread(
+                        db.finish_run,
+                        run_id,
+                        worker_token = worker_token,
+                        status = "failed" if shutting_down else "cancelled",
+                        finish_reason = "interrupted" if shutting_down else "cancelled",
+                        error = "Studio shut down during generation" if shutting_down else None,
+                    )
+                    return
+                if not await asyncio.to_thread(db.mark_running, run_id, worker_token):
+                    return
+                worker_run = await asyncio.to_thread(db.get_worker_run, run_id, worker_token)
+                if worker_run is None:
+                    return
+                run, owner, worker_token = worker_run
+                if run["status"] != "running" or run["cancelRequested"]:
+                    await asyncio.to_thread(
+                        db.finish_run,
+                        run_id,
+                        worker_token = worker_token,
+                        status = "cancelled",
+                    )
+                    return
 
-            from routes.inference import produce_openai_chat_completions
+                from routes.inference import produce_openai_chat_completions
 
-            payload = ChatCompletionRequest.model_validate(run["requestPayload"])
-            # Automatic switching, idle reload and auto-download all happen inside the
-            # call below, and llama.cpp's own first-token budget only starts after it,
-            # so a lease aged from mark_running would reap a legitimate preparation. One
-            # touch afterwards covers load-plus-prefill but not a single preparation that
-            # is itself longer than the lease, which a large GGUF over a slow link is.
-            preparing = asyncio.create_task(
-                self._renew_lease_while_preparing(run_id),
-                name = f"chat-generation-prepare-lease:{run_id}",
-            )
-            try:
+                payload = ChatCompletionRequest.model_validate(run["requestPayload"])
+                # Automatic switching, idle reload and auto-download all happen inside the
+                # call below, and llama.cpp's own first-token budget only starts after it,
+                # so a lease aged from mark_running would reap a legitimate preparation. One
+                # touch afterwards covers load-plus-prefill but not a single preparation that
+                # is itself longer than the lease, which a large GGUF over a slow link is.
                 response = await produce_openai_chat_completions(
                     payload,
                     _background_request(self.app, run_id, cancel_event),
                     owner,
                     cancel_on_disconnect = False,
                 )
-            finally:
-                preparing.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await preparing
-            # The load is behind us: the stream is open, so streamed output is the lease
-            # from here. Stamped once more so the handover carries no gap.
+                # The load is behind us: the stream is open, so streamed output is the lease
+                # from here. Stamped once more so the handover carries no gap.
             await asyncio.to_thread(db.touch_progress, run_id)
             if int(getattr(response, "status_code", 200)) >= 400:
                 raise RuntimeError(f"Local generation returned HTTP {response.status_code}")
@@ -548,7 +570,7 @@ class ChatGenerationSupervisor:
                 # renewed the lease and a normally functioning queue got the run reaped.
                 # Rate limited because chunk traffic already renews through append_events.
                 now_s = time.monotonic()
-                if now_s - last_keepalive >= _KEEPALIVE_RENEW_SECONDS:
+                if now_s - last_keepalive >= _renew_interval_seconds():
                     last_keepalive = now_s
                     await asyncio.to_thread(db.touch_progress, run_id)
                 for encoded in decoder.feed(text):

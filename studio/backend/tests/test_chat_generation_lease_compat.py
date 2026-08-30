@@ -412,15 +412,31 @@ def test_get_progress_falls_back_when_the_columns_are_missing(clock, monkeypatch
     assert tokens == 0
 
 
-def test_the_sweep_still_runs_when_the_columns_are_missing(clock, monkeypatch):
+def test_live_reaping_is_deferred_until_the_migration_lands(clock, monkeypatch):
+    """The fallback is NOT more conservative than the lease, it is the opposite.
+
+    started_at and created_at are older than progress_at by the whole life of the run, so
+    sweeping on them reaps a run whose total AGE passes the timeout even though it
+    appended a chunk moments ago. With no column to persist progress into there is no
+    honest way to tell those apart, so a live sweep does nothing until the migration
+    lands. Contention is transient; a wrongly killed generation is not.
+    """
     _seed()
     with _migration_blocked(monkeypatch):
-        # started_at is now, so nothing is stale yet: the sweep must run and find zero,
-        # not switch itself off with `no such column` for the life of the process.
+        clock.advance_ms(100 * _LEASE_MS)  # far past the timeout by age alone
         assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-        clock.advance_ms(10 * _LEASE_MS)
-        settled = runs_db.reconcile_runs(stale_after_ms = _LEASE_MS)
-    assert settled == ["run-1"], "the fallback must still age a wedged run out"
+    # Once the columns exist the sweep resumes and the genuinely stale run is settled.
+    clock.advance_ms(100 * _LEASE_MS)
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
+
+
+def test_boot_reconcile_still_works_without_the_lease_columns(clock, monkeypatch):
+    """Deferring the LIVE sweep must not disable startup recovery, which is the only
+    thing that repairs runs orphaned by the previous process. It passes no
+    stale_after_ms, because every active run is orphaned by definition at boot."""
+    _seed()
+    with _migration_blocked(monkeypatch):
+        assert runs_db.reconcile_orphaned_runs() == 1
 
 
 def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
@@ -518,9 +534,9 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
             await task
 
     asyncio.run(_run())
-    assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    ), "a preparation longer than the lease must not be reaped"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "a preparation longer than the lease must not be reaped"
+    )
 
 
 def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
@@ -528,11 +544,12 @@ def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeyp
     which is the failure this file exists to end."""
     _seed()
     sup = _supervisor()
-    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX", 3, raising = False)
+    interval = runs_mod._renew_interval_seconds()
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX_SECONDS", 3 * interval, raising = False)
     real_sleep = asyncio.sleep
 
-    async def _sleep(_seconds):
-        clock.advance_ms(60_000)
+    async def _sleep(seconds):
+        clock.advance_ms(int(seconds * 1000))
         await real_sleep(0)
 
     monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
@@ -600,16 +617,18 @@ def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
         return real_touch(run_id)
 
     monkeypatch.setattr(runs_db, "touch_progress", _flaky)
-    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX", 40, raising = False)
+    # Bounded by total time, so express the bound in the same terms the code uses.
+    interval = runs_mod._renew_interval_seconds()
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX_SECONDS", 40 * interval, raising = False)
     real_sleep = asyncio.sleep
 
-    async def _sleep(_seconds):
-        clock.advance_ms(_MINUTE_MS)
+    async def _sleep(seconds):
+        clock.advance_ms(int(seconds * 1000))
         await real_sleep(0)
 
     monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
     asyncio.run(sup._renew_lease_while_preparing("run-1"))
     assert calls["n"] == 40, "the loop must continue past a failed renewal"
-    assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    ), "one lost stamp must not cost the run its lease"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "one lost stamp must not cost the run its lease"
+    )

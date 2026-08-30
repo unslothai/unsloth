@@ -582,5 +582,5 @@ export function generationIsCorroboratedLive(
   }
   // No answer for THIS thread is not a "no". Stay with the persisted status until this
   // thread's own read has landed; the recovery follower settles it from there.
-  return threadId === undefined || !serverAnsweredThreads.has(threadId);
+  return threadId === undefined || !serverHasAnsweredActiveRuns(threadId);
 }

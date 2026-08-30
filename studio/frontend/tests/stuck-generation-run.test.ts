@@ -574,18 +574,24 @@ test("the lease is renewed while the model is being prepared", () => {
   assert.match(runs, /_renew_lease_while_preparing/);
   assert.match(
     runs,
-    /_PREPARE_RENEW_MAX = \d+/,
+    /_PREPARE_RENEW_MAX_SECONDS = /,
     "the renewal must be bounded, or a load that never returns is kept alive forever",
   );
-  const start = runs.indexOf("preparing = asyncio.create_task(");
-  const cancel = runs.indexOf("preparing.cancel()", start);
-  const produce = runs.indexOf("await produce_openai_chat_completions(", start);
+  assert.match(
+    runs,
+    /def _renew_interval_seconds\(\)/,
+    "the cadence must derive from the configured lease, not a constant that can exceed it",
+  );
+  // The heartbeat has to span the lifecycle gate too: a run waiting on it is still
+  // queued and ages from created_at with nothing renewing it.
+  const guard = runs.indexOf("async with self._lease_heartbeat(run_id):");
+  const gate = runs.indexOf("await activity.start(cancel_event)", guard);
+  const produce = runs.indexOf("await produce_openai_chat_completions(", guard);
   assert.ok(
-    start > 0 && produce > start && cancel > produce,
-    "the heartbeat must wrap the preparation await and stop when it returns",
+    guard > 0 && gate > guard && produce > gate,
+    "the heartbeat must open before the gate wait and still cover preparation",
   );
 });
-
 test("retracting an answer also drops that thread's stale run mappings", () => {
   resetServerActiveGenerationRuns();
   syncServerActiveGenerationRuns("t-5", ["run-f"]);
@@ -602,4 +608,59 @@ test("retracting an answer also drops that thread's stale run mappings", () => {
   assert.equal(generationIsCorroboratedLive(stalled, "t-5"), false);
   assert.equal(generationNeedsRecovery(stalled), false);
   assert.equal(threadHasDurableGenerationRun("t-5"), false);
+});
+
+test("keep-alive comments hold the follower open through a long preparation", async () => {
+  // The stream stays open and sends only comments for the whole of a model load. Before
+  // this, the loop never advanced, so the snapshot poll that would have seen the lease
+  // move never ran, and a healthy run was reported interrupted at the deadline.
+  const api = await import("../src/features/chat/api/chat-generation-api");
+  let push: ((chunk: Uint8Array) => void) | undefined;
+  let close: (() => void) | undefined;
+  const encoder = new TextEncoder();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        push = (chunk) => controller.enqueue(chunk);
+        close = () => controller.close();
+        init?.signal?.addEventListener("abort", () =>
+          controller.error(new DOMException("aborted", "AbortError")),
+        );
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const seen: string[] = [];
+    const run = { id: "r", status: "running", lastEventSeq: 0, updatedAt: 1 };
+    const follow = (async () => {
+      for await (const update of api.followChatGenerationRun("r", {
+        initialRun: run as never,
+        stallTimeoutMs: 200,
+      })) {
+        seen.push(update.source);
+        if (update.run.status !== "running") break;
+      }
+    })();
+    // Only comments, spaced so the deadline would have fired twice without them.
+    for (let i = 0; i < 4; i += 1) {
+      await new Promise((r) => setTimeout(r, 120));
+      push?.(encoder.encode(": keep-alive\n\n"));
+    }
+    push?.(
+      encoder.encode(
+        `data: ${JSON.stringify({ seq: 1, type: "chunk", payload: {}, run: { ...run, status: "completed", lastEventSeq: 1 } })}\n\n`,
+      ),
+    );
+    close?.();
+    await follow;
+    assert.ok(seen.length > 0, "the follower must have survived to see the event");
+  } finally {
+    globalThis.fetch = original;
+  }
 });

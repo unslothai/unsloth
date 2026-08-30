@@ -777,18 +777,21 @@ def reconcile_runs(
         try:
             rows = conn.execute(sql + " ORDER BY created_at, id", args).fetchall()
         except sqlite3.OperationalError as exc:
-            # Contention blocked the migration. Sweeping on started_at/created_at is
-            # strictly more conservative than the lease, so the sweep stays on rather
-            # than switching itself off for the life of the process.
             if not _missing_lease_columns(exc):
                 raise
+            # Contention blocked the migration, so no run can persist progress. Falling
+            # back to started_at/created_at is NOT more conservative, it is the opposite:
+            # those stamps are older than the lease by the whole life of the run, so a
+            # run that appended a chunk moments ago is reaped once its total AGE passes
+            # the timeout. A boot reconcile passes no stale_after_ms and is unaffected,
+            # because every active run is orphaned by definition at process start.
+            if stale_after_ms is not None:
+                conn.rollback()
+                return []
             rows = conn.execute(
-                sql.replace(
-                    "COALESCE(progress_at, started_at, created_at)",
-                    "COALESCE(started_at, created_at)",
-                )
+                sql.replace(" AND COALESCE(progress_at, started_at, created_at) <= ?", "")
                 + " ORDER BY created_at, id",
-                args,
+                (),
             ).fetchall()
         for row in rows:
             run_id = row["id"]
