@@ -3347,7 +3347,12 @@ export function HubModelPicker({
   const recommendedMeta = useMemo(() => {
     const map = new Map<
       string,
-      { meta: string | null; status: VramFitStatus | null; est: number }
+      {
+        meta: string | null;
+        /** GGUF rows carry the classifier's own verdict; curated torch rows carry "exceeds". */
+        status: GgufFitClass | VramFitStatus | null;
+        est: number;
+      }
     >();
     /** Size-based verdict for a row whose real footprint we know, against the budget that row
      *  actually loads into. Same split as the list's own fit filter, so the badge and the
@@ -3409,7 +3414,9 @@ export function HubModelPicker({
           (params ? estimateQuantBytes(params) : undefined);
         map.set(r.id, {
           meta,
-          status: exceedsSize(sizeBytes, inferenceGpu) ? "exceeds" : null,
+          // "oom", not "exceeds": this row is a GGUF, so llama-server offloads it rather than
+          // refusing it, and the mark has to say so. "exceeds" is the torch verdict below.
+          status: exceedsSize(sizeBytes, inferenceGpu) ? "oom" : null,
           est: sizeBytes ? Math.round(sizeBytes / 1024 ** 3) : 0,
         });
         continue;

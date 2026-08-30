@@ -225,6 +225,25 @@ test("each fit verdict is an info mark that explains itself", () => {
   );
 });
 
+test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
+  // This branch used to set "exceeds", the one verdict that says a model will not load. A GGUF is
+  // offloaded by llama-server rather than refused, so the row said the opposite of what happens,
+  // and it is the verdict shown on the Recommended list where most rows are over budget.
+  assert.ok(
+    PICKERS.includes(
+      'status: exceedsSize(sizeBytes, inferenceGpu) ? "oom" : null,',
+    ),
+  );
+  // Every surviving producer of "exceeds" is a curated torch pipeline, which has no --fit.
+  const producers = PICKERS.split("\n").filter(
+    (line) => line.includes('"exceeds"') && line.includes("status:"),
+  );
+  assert.equal(producers.length, 2, "curated rows only");
+  for (const line of producers) {
+    assert.match(line, /curatedFits \? null : "exceeds"/);
+  }
+});
+
 test("aligned meta slots spend their slack on the name", () => {
   // Centring a lone glyph splits the slack either side of it, reading as a gap on both sides.
   assert.ok(
