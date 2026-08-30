@@ -982,21 +982,26 @@ function stableStringify(value: unknown): string {
     .join(",")}}`;
 }
 
-/** Forget the rejected-payload markers for a thread (its ids can be reissued). */
-export function clearServerOwnedChatMessages(threadId: string): void {
-  rejectedChatMessagePayloads.delete(threadId);
+// Every entry, not just the deleted thread's. A 409 can mean the id already belongs to a
+// different thread, and that rejection is recorded under the thread we were writing TO, so
+// deleting the thread that actually owns the id frees it while leaving the stale entry
+// somewhere else in the map. The next attempt would then be skipped as a resend and the
+// message would never be persisted. Deleting a thread is rare and user-driven, so dropping
+// the whole cache costs at most one extra request per protected message.
+export function clearServerOwnedChatMessages(): void {
+  rejectedChatMessagePayloads.clear();
 }
 
 // Tombstoning a thread is the point its message ids stop mattering, so the two always
 // happen together: without this the map would only ever grow across a long-lived session.
 function forgetChatThread(threadId: string): void {
   markChatThreadDeleted(threadId);
-  clearServerOwnedChatMessages(threadId);
+  clearServerOwnedChatMessages();
 }
 
 function forgetChatThreads(threadIds: string[]): void {
   markChatThreadsDeleted(threadIds);
-  for (const threadId of threadIds) clearServerOwnedChatMessages(threadId);
+  clearServerOwnedChatMessages();
 }
 
 export async function saveStoredChatMessage(

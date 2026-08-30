@@ -18,7 +18,7 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Module = {
   saveStoredChatMessage: (message: Record<string, unknown>) => Promise<unknown>;
-  clearServerOwnedChatMessages: (threadId: string) => void;
+  clearServerOwnedChatMessages: () => void;
 };
 
 class FakeProtectedError extends Error {}
@@ -125,7 +125,7 @@ test("clearing lets a reissued id save again", async () => {
   const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
 
   await module.saveStoredChatMessage(message("m1"));
-  module.clearServerOwnedChatMessages("t1");
+  module.clearServerOwnedChatMessages();
   await module.saveStoredChatMessage(message("m1"));
 
   assert.equal(attempts.length, 2);
@@ -186,6 +186,29 @@ test("key order does not decide whether two payloads are the same", async () => 
   });
 
   assert.deepEqual(attempts, ["m1"], "same fields, same payload");
+});
+
+test("deleting a thread frees ids cached under every other thread", async () => {
+  // A 409 also means "this id already belongs to another thread". That rejection is
+  // recorded under the thread being written TO, so deleting the thread that actually owns
+  // the id makes the same payload valid while the stale entry sits elsewhere in the map.
+  // Clearing only the deleted thread's bucket would skip the now-valid write and the
+  // message would be gone after a reload.
+  const { module, attempts } = harness({ rejectIds: new Set(["m1", "m2"]) });
+
+  await module.saveStoredChatMessage(message("m1", "target"));
+  await module.saveStoredChatMessage(message("m2", "other"));
+  assert.deepEqual(attempts, ["m1", "m2"], "both are cached as refused");
+
+  module.clearServerOwnedChatMessages();
+  await module.saveStoredChatMessage(message("m1", "target"));
+  await module.saveStoredChatMessage(message("m2", "other"));
+
+  assert.deepEqual(
+    attempts,
+    ["m1", "m2", "m1", "m2"],
+    "the delete can free an id cached under any thread, so every entry goes",
+  );
 });
 
 test("an ordinary failure still propagates", async () => {
