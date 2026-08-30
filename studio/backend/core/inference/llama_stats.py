@@ -198,7 +198,9 @@ def _env_float(name, default, logger):
         return default
     if not math.isfinite(value):
         logger.warning(
-            "engine_stats_env_ignored", variable = name, value = raw,
+            "engine_stats_env_ignored",
+            variable = name,
+            value = raw,
             reason = "not a finite number",
         )
         return default
