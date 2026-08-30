@@ -5541,6 +5541,7 @@ def _complete_existing_llama_install(
     backend_request = None,
     runtime_asset = None,
     paired_runtime = True,
+    runnable = True,
 ):
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = (
@@ -5568,9 +5569,15 @@ def _complete_existing_llama_install(
             path.mkdir()
         elif path.name == "UNSLOTH_PREBUILT_INFO.json":
             path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
+        elif path.name.startswith("llama-"):
+            # A runnable stub, not an empty file: the kept-install check execs these now,
+            # and a zero-byte file that kept its mode bits is ENOEXEC, which is the
+            # corruption runnable = False exists to cover.
+            path.write_text("#!/bin/sh\nexit 0\n" if runnable else "", encoding = "utf-8")
+            # Match setup.sh's executable reuse gate.
+            os.chmod(path, 0o755 if executable else 0o644)
         else:
             path.write_text("", encoding = "utf-8")
-            # Match setup.sh's executable reuse gate.
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
@@ -5765,6 +5772,35 @@ def test_a_stored_backend_the_install_does_not_run_is_not_answered_with_it(tmp_p
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_BACKEND_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    ("windows", "host"),
+    [(True, _windows_host), (False, linux_host)],
+    ids = ["windows", "linux"],
+)
+def test_release_listing_failure_does_not_keep_a_corrupt_binary(
+    tmp_path, monkeypatch, windows, host
+):
+    """Executable is not the same as executABLE: the OS has to accept the image.
+
+    A truncated or zero-byte llama-server keeps its mode bits, so os.access says yes, and
+    ldd on a non-ELF only reports that it is not a dynamic executable, so the Linux
+    preflight finds nothing. On Windows neither preflight runs at all. execve is what
+    sees it: ENOEXEC.
+    """
+    _listing_failure(monkeypatch, host)
+    install_dir = _complete_existing_llama_install(
+        tmp_path, windows = windows, backend = "cuda" if windows else "cpu", runnable = False
+    )
+    ext = ".exe" if windows else ""
+    runtime = install_dir / "build" / "bin" / ("Release" if windows else "")
+    assert os.access(runtime / f"llama-server{ext}", os.X_OK), "the mode bits must survive"
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
 def test_release_listing_failure_does_not_keep_an_unloadable_install(tmp_path, monkeypatch):

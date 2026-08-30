@@ -6936,6 +6936,51 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
     return _runtime_payload_has(install_dir, host, [list(group) for group in sorted(shared)])
 
 
+# Signals that say the image itself is broken rather than that something intervened.
+# SIGKILL is deliberately absent: that is an OOM or an external kill, not a verdict.
+_BROKEN_IMAGE_SIGNALS = frozenset(
+    {signal.SIGSEGV, signal.SIGILL, signal.SIGFPE}
+    | ({signal.SIGBUS} if hasattr(signal, "SIGBUS") else set())
+)
+# Windows' "%1 is not a valid Win32 application", its answer to a corrupt image.
+_ERROR_BAD_EXE_FORMAT = 193
+
+
+def _binary_image_runs(path: Path, install_dir: Path, host: HostInfo) -> bool:
+    """Whether the OS will actually start ``path``.
+
+    ``os.access`` answers "may I execute this", not "is this an executable": a truncated
+    or zero-byte file keeps its mode bits, and ``ldd`` on a non-ELF reports only that it
+    is not a dynamic executable, so neither sees the corruption. ``execve`` does. Measured
+    on Linux: a zero-byte file and a non-ELF file both raise ENOEXEC, and an ELF cut short
+    starts and dies on SIGSEGV.
+
+    The exit code is not the verdict. llama-quantize answers ``--version`` by printing its
+    quantization table and exiting non-zero, which is why ``macos_dyld_load_issues`` reads
+    output rather than status. Only the kernel refusing the image counts, plus the signals
+    that say the image is broken. Everything else -- a timeout, a refusal to spawn, an
+    ordinary non-zero exit -- reads as healthy, because a false positive here spends a
+    source build on a working install.
+    """
+    try:
+        result = run_capture(
+            [str(path), "--version"],
+            timeout = 60,
+            env = binary_env(path, install_dir, host),
+        )
+    except OSError as exc:
+        if exc.errno == errno.ENOEXEC or getattr(exc, "winerror", None) == _ERROR_BAD_EXE_FORMAT:
+            log(f"kept install rejected: {path.name} is not an executable image ({exc})")
+            return False
+        return True
+    except Exception:
+        return True
+    if result.returncode < 0 and -result.returncode in _BROKEN_IMAGE_SIGNALS:
+        log(f"kept install rejected: {path.name} died on signal {-result.returncode}")
+        return False
+    return True
+
+
 def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     """Check whether the setup scripts could reuse and run this install."""
     if not _install_tree_is_usable(install_dir, host):
@@ -6953,7 +6998,9 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         preflight_macos_installed_binaries(binaries, install_dir, host)
     except Exception:
         return False
-    return True
+    # Last, because it is the only check that spawns anything: neither preflight runs on
+    # Windows, and on Linux ldd cannot see a file that is not an executable image at all.
+    return all(_binary_image_runs(binary, install_dir, host) for binary in binaries)
 
 
 def existing_install_matches_choice(
