@@ -153,6 +153,11 @@ export function ModelMemorySection() {
     settings.keepResident === true &&
     settings.noRamReserve === false &&
     settings.mlockActive === false;
+  const mlockUngoverned =
+    settings?.mlockSkipReason === "ungoverned" &&
+    settings.keepResident === true &&
+    settings.noRamReserve === false &&
+    settings.mlockActive === false;
   const error = saveError ?? loadError;
 
   return (
@@ -197,6 +202,11 @@ export function ModelMemorySection() {
           {mlockNotApplicable ? (
             <p className="pb-1 text-xs text-muted-foreground">
               {t("settings.resources.modelMemory.mlockNotApplicable")}
+            </p>
+          ) : null}
+          {mlockUngoverned ? (
+            <p className="pb-1 text-xs text-muted-foreground">
+              {t("settings.resources.modelMemory.mlockUngoverned")}
             </p>
           ) : null}
           {memlockCap !== null ? (

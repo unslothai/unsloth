@@ -1189,6 +1189,7 @@ export const fr = {
         noRamReserveHint: "Ne réserve pas de copie complète des poids en RAM. Conserve le chargement mappé en mémoire de llama.cpp et supprime --no-mmap et --mlock. Le mappage lui-même subsiste : les pages touchées par le chargeur restent comptées pour ce processus jusqu'à ce que le système les récupère.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         mlockNotApplicable: "Le modèle chargé est entièrement sur le GPU : il n'y a donc aucune copie en RAM à épingler et --mlock est ignoré. « Garder le modèle en mémoire GPU » s'applique toujours : le déchargement automatique en veille est désactivé.",
+        mlockUngoverned: "Le modèle chargé utilise un moteur que Mémoire du modèle ne contrôle pas. Ce réglage ne peut donc pas modifier le lancement actuel. Il reste enregistré et s'appliquera au prochain modèle llama.cpp chargé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
         loadError: "Impossible de charger les paramètres de mémoire du modèle",

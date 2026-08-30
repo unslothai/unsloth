@@ -1173,6 +1173,7 @@ export const ptBR = {
         noRamReserveHint: "Não reserva uma cópia completa dos pesos na RAM do sistema. Mantém o carregamento mapeado em memória do llama.cpp e remove --no-mmap e --mlock. O mapeamento em si permanece, então as páginas tocadas pelo carregador continuam contando para este processo até o sistema recuperá-las.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
         mlockNotApplicable: "O modelo carregado está inteiramente na GPU, portanto não há cópia na RAM para fixar e --mlock é ignorado. “Manter o modelo na memória da GPU” continua valendo: a descarga automática por inatividade está desativada.",
+        mlockUngoverned: "O modelo carregado usa um mecanismo que a Memória do modelo não controla, então esta configuração não pode afetar a inicialização atual. Ela permanece salva e será aplicada ao próximo modelo llama.cpp carregado.",
         memlockCapped: "Este sistema limita a memória bloqueada a {limit}. Um modelo maior não será totalmente fixado; aumente o limite com ulimit -l.",
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
         loadError: "Falha ao carregar as configurações de memória do modelo",
