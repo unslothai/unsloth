@@ -180,9 +180,7 @@ async def _sweep_in_daemon_thread(fn, /, *args, **kwargs):
         else:
             _settle(future.set_result, result)
 
-    threading.Thread(
-        target = _runner, name = "chat-lease-sweep", daemon = True
-    ).start()
+    threading.Thread(target = _runner, name = "chat-lease-sweep", daemon = True).start()
     return await future
 
 

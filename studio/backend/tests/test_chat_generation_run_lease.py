@@ -464,7 +464,7 @@ def test_start_lease_sweeper_is_idempotent(monkeypatch):
     asyncio.run(main())
 
 
-_ABANDONED_SWEEP_PROGRAM = '''
+_ABANDONED_SWEEP_PROGRAM = """
 import asyncio, sys, threading
 sys.path.insert(0, {backend!r})
 from types import SimpleNamespace
@@ -490,7 +490,7 @@ async def main():
     await sweeper.stop()
 
 asyncio.run(main())
-'''
+"""
 
 
 def test_an_abandoned_sweep_cannot_hold_the_process_open():
