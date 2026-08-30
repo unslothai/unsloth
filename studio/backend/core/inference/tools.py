@@ -1769,6 +1769,8 @@ def _sandbox_python_startup_bypasses_guard(
             environment_tainted or _segment_persistently_mutates_sandbox_python_env(segment)
         )
     return False
+
+
 # A find action is COMPLETE at its terminator: words after it are find's next
 # predicate, not CMD's. Reading past it took a following `-exec grep -e safe {} +`
 # for sed's script. `\;` is listed too, for the non-posix lexer.
