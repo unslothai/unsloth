@@ -152,6 +152,73 @@ def _infer_device_map_from_loaded_model(model):
     return device_map
 
 
+def _repair_tied_module_hooks(model):
+    """Give a dispatched module its hook back when accelerate skipped it.
+
+    `dispatch_model` leaves TIED weights unhooked: it moves the tensor but
+    installs no `AlignDevicesHook`, because a tied parameter is reached through
+    more than one name. On a `tie_word_embeddings` model the planner's own map
+    puts `model.embed_tokens` and `lm_head` on the second card, and those are
+    exactly the two names that get skipped -- so the one module deliberately
+    moved elsewhere is the one with nothing to move its input there.
+
+    Measured on 2x Tesla T4, `unsloth/Qwen3-0.6B` in 4bit, the map placing
+    `embed_tokens` and `lm_head` on cuda:1 and everything else on cuda:0: 395
+    modules carried a hook, `embed_tokens` did not, and the first embedding
+    lookup raised
+
+        RuntimeError: Expected all tensors to be on the same device, but got
+        index is on cuda:0, different from other tensors on cuda:1
+        (when checking argument in method wrapper_CUDA__index_select)
+
+    Repairs only what the model's OWN `hf_device_map` already names, so it
+    cannot move a module the load did not place, and it never touches a module
+    that already has a hook. A single-device map leaves nothing to repair.
+
+    Returns the number of modules repaired, for the caller's log line.
+    """
+    device_map = getattr(model, "hf_device_map", None)
+    if not device_map or len(set(device_map.values())) < 2:
+        return 0
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+
+    repaired = 0
+    for name, device in device_map.items():
+        if not name:
+            continue  # the root's own hook is dispatch_model's business
+        try:
+            module = model.get_submodule(name)
+        except AttributeError:
+            continue  # a name this build does not have; not ours to invent
+        if hasattr(module, "_hf_hook"):
+            continue
+        # CUDA entries come back as bare ints, which torch reads as a device
+        # index only when paired with a type.
+        execution_device = (
+            f"{DEVICE_TYPE_TORCH}:{device}"
+            if isinstance(device, int) and not isinstance(device, bool)
+            else device
+        )
+        if execution_device in ("cpu", "disk"):
+            continue  # offload is a different mechanism, and has its own hooks
+        try:
+            # `io_same_device = True`: the output goes back to where the input
+            # came from, so a module on the far card stays invisible to the
+            # caller. Without it the tensor is left on the far device and the
+            # mismatch simply moves one operation downstream.
+            add_hook_to_module(
+                module,
+                AlignDevicesHook(execution_device = execution_device, io_same_device = True),
+            )
+            repaired += 1
+        except Exception:
+            continue
+    return repaired
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -162,6 +229,15 @@ def _attach_bnb_multidevice_hooks(
     """
     if fast_inference:
         return
+    # Before the bnb gate: a dispatched model loses hooks on its tied weights
+    # whatever the quantization, and the load that placed them has already
+    # happened. Nothing to repair on a single-device map.
+    repaired = _repair_tied_module_hooks(model)
+    if repaired:
+        logger.info(
+            f"Unsloth: re-attached dispatch hooks to {repaired} tied module(s) "
+            "accelerate skipped, so a split model runs and trains."
+        )
     is_bnb = (
         load_in_4bit
         or load_in_8bit
