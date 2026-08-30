@@ -2282,6 +2282,8 @@ def test_the_crash_path_cpu_fallback_recomputes_the_memory_record():
     # recompute is in the arm and not merely somewhere later in load_model.
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
     assert "resolve_effective_memory_state(_last_spawn_cmd,env)" in arm
+    assert "requested_load_mode=load_mode" in arm
+    assert "requested_load_mode=_resolved_load_mode" not in arm
 
 
 def test_the_replayed_cpu_fallback_recomputes_the_memory_record():

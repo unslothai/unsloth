@@ -22532,13 +22532,13 @@ class LlamaCppBackend:
                         fallback_args,
                         supports_load_mode = bool(server_caps.get("supports_load_mode")),
                         weights_in_host_memory = True,
-                        requested_load_mode = _resolved_load_mode,
+                        requested_load_mode = load_mode,
                         model_memory_settings = _model_memory_settings,
                     )
                     fallback_policy_active = bool(
                         fallback_managed
                         or model_memory_suppresses_load_mode(
-                            _resolved_load_mode,
+                            load_mode,
                             supports_load_mode = bool(server_caps.get("supports_load_mode")),
                             weights_in_host_memory = True,
                             model_memory_settings = _model_memory_settings,
