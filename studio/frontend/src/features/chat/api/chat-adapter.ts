@@ -6967,10 +6967,7 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // A card the backend already closed takes no more fragments:
-                  // the next delta in its slot is the next round's call, whatever
-                  // its scan was left holding. A split call it withheld is closed
-                  // too, so no boundary has to be guessed at here.
+                  // Do not append a new round to a closed card.
                   const matched =
                     slotPart?.result === undefined ? slotPart : undefined;
 
@@ -6995,10 +6992,7 @@ export function createOpenAIStreamAdapter(
                     cuts.length > 0 && !stablePartId
                       ? toolCallArgumentSegments(scan.text(), cuts)
                       : [];
-                  // A name after a finished named call opens the next call.
-                  // A name with no id belongs to the first call in this slot
-                  // still waiting for one: a split leaves several unnamed when
-                  // the arguments arrived first, and the newest is the last.
+                  // Route an id-less name to the first unnamed call in its slot.
                   const namedIndex =
                     nameFragment && !stablePartId
                       ? findUnnamedToolCallPartIndex(toolCallParts, idx)
@@ -7009,9 +7003,7 @@ export function createOpenAIStreamAdapter(
                     Boolean(nameFragment) &&
                     Boolean(matched?.toolName) &&
                     namedIndex === -1 &&
-                    // A whole name resent as it grows is the same call. A second
-                    // call on that tool arrives with its own arguments and splits
-                    // at their boundary.
+                    // A resent growing name stays on the current call.
                     !nameFragment.startsWith(matched?.toolName ?? "") &&
                     scan.holdsOneCompleteDocument();
                   const existing = namedNextCall ? undefined : matched;
@@ -7060,9 +7052,7 @@ export function createOpenAIStreamAdapter(
                         argsText,
                         args: parseStreamedToolCallArgs(argsText),
                         textCursor: cumulativeText.length,
-                        // One signature belongs to one call. The backend puts it
-                        // on the last call the delta opened; replaying a copy on
-                        // each of them fails Gemini's signature validation.
+                        // Attach per-call metadata only to the last split call.
                         ...(call.extra_content !== undefined &&
                         position === segments.length - 1
                           ? { extra_content: call.extra_content }
@@ -7143,8 +7133,7 @@ export function createOpenAIStreamAdapter(
                       };
                     }
                     if (stablePartId && stablePartId !== existing.toolCallId) {
-                      // Move the scan and the split-tail marker with the renamed
-                      // part, else the cleanup below no longer finds its card.
+                      // Keep split state keyed to the renamed card.
                       toolArgumentBoundaries.delete(existing.toolCallId);
                       toolArgumentBoundaries.set(stablePartId, scan);
                       if (splitTailPartIds.delete(existing.toolCallId)) {
@@ -7183,9 +7172,7 @@ export function createOpenAIStreamAdapter(
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
-                    // A name-only fork starts with a fresh scan, and is a split
-                    // like any other: the backend withholds it too if its own
-                    // document never closes.
+                    // Track a name-only fork as a new split call.
                     toolArgumentBoundaries.set(
                       callId,
                       matched ? new ToolCallArgumentBoundaries() : scan,
@@ -7421,8 +7408,7 @@ export function createOpenAIStreamAdapter(
         closeReasoningContent();
         settleFirstTokenOk();
 
-        // A split call the backend withheld is closed by its own unrun card. This
-        // is the net for a stream that ends before that lands.
+        // Drop unfinished split calls if their closing event never arrives.
         for (let i = toolCallParts.length - 1; i >= 0; i -= 1) {
           const part = toolCallParts[i];
           if (

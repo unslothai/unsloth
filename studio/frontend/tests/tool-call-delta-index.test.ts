@@ -24,8 +24,7 @@ interface DeltaFragment {
   extra?: unknown;
 }
 
-/** The adapter's tool_start branch, which replaces argsText with the arguments
- * the backend parsed out of it. An unrun card carries `{}`. */
+/** A tool_start event mirrored from the adapter. */
 interface ToolStartEvent {
   toolStart: string;
   arguments?: unknown;
@@ -54,8 +53,7 @@ type AccumulatedPart = StreamedToolCallPart & {
   result?: unknown;
 };
 
-/** Accumulate `delta.tool_calls[]` fragments the way the chat adapter does.
- * `endOfStream` also runs the sweep the adapter runs once the stream closes. */
+/** Mirror the adapter's tool-call accumulator and optional final sweep. */
 function accumulate(
   fragments: StreamEvent[],
   endOfStream = false,
@@ -198,8 +196,7 @@ function accumulate(
       ...(fragment.index !== undefined ? { _delta_index: fragment.index } : {}),
     });
   }
-  // The backend withholds a split call whose JSON never closed, so its card
-  // has to go.
+  // Drop split calls that the backend withheld.
   if (endOfStream) {
     for (let i = parts.length - 1; i >= 0; i -= 1) {
       if (withheld(parts[i])) parts.splice(i, 1);
@@ -572,10 +569,7 @@ test("replayed arguments keep parsable text and fall back otherwise", () => {
   assert.equal(toolCallReplayArguments(undefined, undefined), "{}");
 });
 
-// Both rounds are id-less and reuse index 0, so the second round's arguments
-// are cut off the first round's. tool_start has by then replaced argsText with
-// the arguments the backend parsed, which is a character shorter than the raw
-// JSON, so a cut measured against argsText lands inside both documents.
+// Boundary offsets must survive tool_start rewriting argsText.
 test("a next round splits correctly after tool_start rewrites the arguments", () => {
   const parts = accumulate([
     { index: 0, name: "web_search", arguments: '{"query": "first"}' },
@@ -604,9 +598,7 @@ test("boundary offsets index the scan's own text, not the part's", () => {
   ]);
 });
 
-// The backend withholds a split call whose JSON never closed, so nothing ever
-// closes its card. A provider id stamped on that tail renames the part, and the
-// sweep has to follow the rename or the card spins for the rest of the response.
+// A late provider id must not hide an unfinished split tail from cleanup.
 test("a split tail renamed by a late id is still dropped when its JSON never closes", () => {
   const parts = accumulate(
     [
@@ -622,9 +614,7 @@ test("a split tail renamed by a late id is still dropped when its JSON never clo
   );
 });
 
-// A thought signature belongs to one function call. Replaying a copy of it on
-// every call a split opened fails Gemini's signature validation, and the
-// backend puts it on the last call the delta opened.
+// Per-call metadata belongs only to the last call opened by a split.
 test("split metadata rides only the last call the delta opened", () => {
   const parts = accumulate([
     {
@@ -641,9 +631,7 @@ test("split metadata rides only the last call the delta opened", () => {
   );
 });
 
-// The first round's arguments never parsed, so its scan is stuck invalid. The
-// call ran anyway under the coercion path and its card is closed, so the next
-// round's fragments must open their own call rather than append to it.
+// A closed malformed call must not absorb the next round.
 test("a finished malformed call does not swallow the next round", () => {
   const parts = accumulate([
     { index: 0, name: "web_search", arguments: "{bad}" },
@@ -661,8 +649,7 @@ test("a finished malformed call does not swallow the next round", () => {
   );
 });
 
-// The accumulator supports dialects that resend a whole name, so a resend after
-// the arguments closed is the same call, not a second one to run with {}.
+// A resent whole name stays on the completed call.
 test("a name resent after its arguments closed opens no second call", () => {
   const parts = accumulate([
     { index: 0, name: "web_search", arguments: '{"query":"first"}' },
@@ -691,9 +678,7 @@ test("a second call on the same tool still splits on its arguments", () => {
   );
 });
 
-// The name fork is a split like any other, so the backend withholds it when its
-// own document never closes. Without the marker the sweep cannot find its card
-// and it runs for the rest of the response.
+// Cleanup must include unfinished name-only forks.
 test("a name fork left unfinished is swept like any other split tail", () => {
   const parts = accumulate(
     [
@@ -710,9 +695,7 @@ test("a name fork left unfinished is swept like any other split tail", () => {
   );
 });
 
-// The backend withheld the tail and closed its card with an unrun pair, so the
-// next round opens its own call. Before that close existed the tail stayed a
-// live match and swallowed the next round's arguments, which the sweep deleted.
+// A closed split tail must not absorb the next round.
 test("a withheld split tail does not take the next round's arguments", () => {
   const parts = accumulate(
     [
@@ -726,8 +709,7 @@ test("a withheld split tail does not take the next round's arguments", () => {
     true,
   );
 
-  // tool_call_1 is the withheld tail. Its spelling stays spoken for, which is
-  // what keeps the next round on the tool_call_2 the backend mints for it.
+  // The closed tail keeps tool_call_1 reserved.
   assert.deepEqual(
     parts.map((part) => [part.toolCallId, part.argsText]),
     [
@@ -738,10 +720,7 @@ test("a withheld split tail does not take the next round's arguments", () => {
   );
 });
 
-// Two dialects the accumulator already supports, together: arguments ahead of
-// the name, then the whole name resent as it grows. Reading the second name as
-// a new call left the arguments on a "web" call nothing can run and executed
-// web_search with nothing.
+// Early arguments and a resent growing name must remain one call.
 test("a growing name after early arguments still names one call", () => {
   const parts = accumulate([
     { index: 0, arguments: '{"query":"first"}' },
@@ -755,10 +734,7 @@ test("a growing name after early arguments still names one call", () => {
   );
 });
 
-// Both documents arrive before either name, so the split leaves two calls
-// waiting. The newest slot is the last of them, so routing the names there put
-// the first name on the second call, dropped the unnamed first, and forked an
-// empty third on the name after it.
+// Late names fill unnamed split calls in order.
 test("late names fill the calls a split left waiting, in order", () => {
   const parts = accumulate([
     { index: 0, arguments: '{"a":1}{"b":2}' },

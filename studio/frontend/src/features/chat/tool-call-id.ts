@@ -33,18 +33,14 @@ export interface StreamedToolCallPart {
   _has_stable_id?: boolean;
 }
 
-/**
- * Find adjacent JSON documents without rescanning prior fragments.
- * Malformed arguments are left whole rather than split into more bad calls.
- */
+/** Find adjacent JSON documents incrementally, leaving malformed input whole. */
 export class ToolCallArgumentBoundaries {
   private depth = 0;
   private inString = false;
   private escaped = false;
   private closed = false;
   private invalid = false;
-  /** Everything fed so far. Tool events rewrite the part's own argsText, so
-   * the offsets `feed` returns can only index text this scan owns. */
+  /** Provider text used as the coordinate space for boundary offsets. */
   private raw = "";
   /** Current document text, retained only until it parses. */
   private open: string[] = [];
@@ -140,10 +136,7 @@ export function toolCallArgumentSegments(
   return edges.slice(0, -1).map((from, i) => text.slice(from, edges[i + 1]));
 }
 
-/**
- * Return `preferred` or the lowest free `tool_call_<n>`.
- * `reserved` contains provider ids that are not visible in the part ids.
- */
+/** Return `preferred` or the lowest unreserved `tool_call_<n>`. */
 export function mintStreamedToolCallId(
   parts: readonly StreamedToolCallPart[],
   preferred: string,
@@ -157,10 +150,7 @@ export function mintStreamedToolCallId(
   return `tool_call_${next}`;
 }
 
-/**
- * First part in `deltaIndex`'s slot still waiting for a name, or -1. Arguments
- * can arrive before their names, and a split then leaves several such calls.
- */
+/** Return the first unnamed part in `deltaIndex`'s slot, or -1. */
 export function findUnnamedToolCallPartIndex(
   parts: readonly StreamedToolCallPart[],
   deltaIndex: number | undefined,

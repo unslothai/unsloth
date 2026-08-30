@@ -275,10 +275,7 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
 
 
 class _ArgumentBoundaries:
-    """Find adjacent JSON documents without rescanning prior fragments.
-
-    Malformed arguments are left whole rather than split into more bad calls.
-    """
+    """Find adjacent JSON documents incrementally, leaving malformed input whole."""
 
     __slots__ = ("depth", "in_string", "escaped", "start", "closed", "invalid", "scanned")
 
@@ -635,9 +632,7 @@ class _Turn:
                 # leave several waiting: the name belongs to one of those.
                 and current["function"]["name"]
                 and self._unnamed_key(index) is None
-                # A whole name resent as it grows is the same call, read exactly
-                # the way the merge below reads it. A second call on that tool
-                # arrives with its own arguments and splits at their boundary.
+                # A resent growing name stays on the current call.
                 and not name_fragment.startswith(current["function"]["name"])
                 and scan.holds_one_complete_document()
             ):
@@ -680,9 +675,7 @@ class _Turn:
                 # Apply per-call metadata after splitting so it follows the new call.
                 current["extra_content"] = {**current.get("extra_content", {}), **extra}
             if name_fragment:
-                # Arguments can arrive before their names, and a split then leaves
-                # several calls here unnamed. The newest slot is the last of them,
-                # so route the name to the first one still waiting instead.
+                # Route late names to the first unnamed split call.
                 named = current
                 if not (isinstance(call_id, str) and call_id):
                     waiting = self._unnamed_key(index)
@@ -1276,10 +1269,7 @@ async def stream_with_studio_tools(
                 last_reprompt_text = visible_answer
                 stalled_hosted = turn.hosted_replay_text()
                 if stalled_hosted:
-                    # A hosted tool did run, the model just did not go on to ask
-                    # for a local one. The replay below never happens on this
-                    # path, so the reprompted request would be told to continue
-                    # from output it can no longer see.
+                    # Preserve hosted output for the reprompt.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
                         "content": (
@@ -1306,11 +1296,7 @@ async def stream_with_studio_tools(
             break
 
         round_id += 1
-        # A call this loop split off and will not run was still relayed to the
-        # client as part of the provider's own delta, so a card is already open
-        # for it. Close it the way every other unrun call is closed: nothing
-        # else ever names it again, and a client left to notice that on its own
-        # has to guess at the provider turn boundary to do it.
+        # Close cards for unfinished split calls that will not run.
         for withheld_call in turn.withheld():
             withheld_id = withheld_call.get("card_id")
             withheld_function = withheld_call.get("function")

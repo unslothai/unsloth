@@ -1647,10 +1647,7 @@ def test_a_provider_that_stops_mid_document_does_not_run_the_tail(executed):
     lines = _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}]
-    # The tail was relayed inside the provider's own delta, so a card is open for
-    # it. Closing it here is what frees the client from guessing where the
-    # provider turn ended in order to stop feeding the next round into it. It is
-    # closed before the round runs, so a cancel or a spent budget cannot skip it.
+    # Close the unfinished tail before the completed call runs.
     assert _event_ids(lines, "tool_start") == ["tool_call_1", "tool_call_0"]
     assert _event_ids(lines, "tool_end") == ["tool_call_1", "tool_call_0"]
     assert any(loop_mod._TOOL_UNFINISHED in line for line in lines)
