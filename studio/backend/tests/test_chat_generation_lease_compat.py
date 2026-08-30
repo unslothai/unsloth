@@ -846,9 +846,10 @@ def test_an_unusable_admission_cadence_does_not_poison_the_lease(monkeypatch, ra
     from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
 
     monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", raw)
-    assert runs_mod._minimum_lease_seconds() == max(
-        1.0, float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
-    ) * 3.0
+    assert (
+        runs_mod._minimum_lease_seconds()
+        == max(1.0, float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)) * 3.0
+    )
     applied = runs_mod._applied_lease_timeout(1200.0)
     # The conversion the sweep performs on every pass must survive it.
     assert int(applied * 1000) == 1_200_000

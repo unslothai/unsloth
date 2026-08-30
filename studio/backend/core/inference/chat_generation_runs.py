@@ -343,6 +343,7 @@ def _minimum_lease_seconds() -> float:
     healthy queued run.
     """
     from core.inference.llama_admission import DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
+
     try:
         from core.inference.llama_admission import llama_admission_config_from_env
         interval = float(llama_admission_config_from_env().keepalive_interval_s)
