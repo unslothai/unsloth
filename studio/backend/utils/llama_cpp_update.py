@@ -1166,6 +1166,17 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 if whisper_spec.get("repair")
                 else (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
             )
+        elif backend_request is None and llama_spec is not None and whisper_plan:
+            # Whisper looked up to date, but that was measured against the llama build
+            # about to be replaced. Re-check once the new one is in place instead of
+            # letting the next poll raise a second banner for whisper.cpp seconds after
+            # this job finishes. It reports a skip when there is nothing to do.
+            #
+            # Only when the probe produced a plan: an empty one means the piggyback is
+            # disabled or the probe failed, and re-importing the module there would undo
+            # the fail-open that keeps a broken whisper from touching a llama update.
+            from utils import whisper_cpp_update as _whisper
+            whisper_run = _whisper.run_chained_phase_after_llama
 
         phases = [
             {
@@ -1212,8 +1223,11 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         ]
         running = " + ".join(
             name
-            for name, spec in (("llama.cpp", llama_spec), ("whisper.cpp", whisper_spec))
-            if spec
+            for name, present in (
+                ("llama.cpp", llama_spec is not None),
+                ("whisper.cpp", whisper_run is not None),
+            )
+            if present
         )
         if backend_request is not None and llama_spec is not None:
             starting_message = f"Installing the {backend_request} llama.cpp build..."

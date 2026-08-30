@@ -594,6 +594,28 @@ def chained_phase_plan(
     return plan
 
 
+def run_chained_phase_after_llama(set_progress) -> dict:
+    """Re-plan whisper AFTER the llama phase, then install if it is now behind.
+
+    The job's phases are planned before any of them run, so whisper is judged against
+    the OLD llama. A llama update that first makes a newer whisper available, or that
+    first makes one pairable, is therefore invisible at planning time and surfaces
+    afterwards as a SECOND update banner for whisper.cpp, moments after the llama one.
+    Re-planning here keeps the pair in the single job the update item promises.
+
+    ``paired_llama_will_update`` is False because by now it already has, so the plan
+    consults the installer's resolver and skips cleanly when no compatible whisper
+    release exists rather than attempting an install that cannot succeed. Nothing to do
+    is reported as a skip carrying the plan's reason, so the phase breakdown reads the
+    same as it did when the decision was made before the job started.
+    """
+    plan = chained_phase_plan(force_refresh = True, paired_llama_will_update = False)
+    phase = plan.get("phase")
+    if not plan.get("update_available") or phase is None:
+        return {"skipped": True, "skip_reason": plan.get("skip_reason") or "up_to_date"}
+    return run_chained_phase(phase, set_progress)
+
+
 def run_chained_phase(phase: dict, set_progress) -> dict:
     """Run the whisper phase of a combined update (spec from chained_phase_plan):
     same unload/install/cache-refresh path as the standalone job, reporting

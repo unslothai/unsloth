@@ -737,3 +737,79 @@ def test_chained_progress_windows(monkeypatch, tmp_path):
     assert seen["at_whisper_start"] == pytest.approx(0.7)
     assert seen["mid_whisper"] == pytest.approx(0.7 + 0.5 * 0.3)
     assert job["progress"] == 1.0
+
+
+def test_whisper_is_rechecked_after_the_llama_phase(monkeypatch, tmp_path):
+    """A llama update can be what makes a whisper update visible in the first place.
+
+    The job plans every phase before any of them runs, so whisper is judged against the
+    llama build about to be replaced. Without a re-check the pair is discovered by the
+    next poll instead, which raises a second banner for whisper.cpp seconds after the
+    llama one: the two popups the single update item exists to avoid.
+    """
+    calls = {"plan": 0, "install": 0}
+
+    def plan(**kwargs):
+        calls["plan"] += 1
+        # Re-planned after the llama phase, so it must not still be claiming the
+        # llama update is pending.
+        assert kwargs.get("paired_llama_will_update") is False
+        assert kwargs.get("force_refresh") is True
+        return {"update_available": True, "skip_reason": None, "phase": {"install_dir": "d"}}
+
+    monkeypatch.setattr(wupd, "chained_phase_plan", plan)
+    monkeypatch.setattr(
+        wupd,
+        "run_chained_phase",
+        lambda phase, set_progress: calls.__setitem__("install", calls["install"] + 1)
+        or {"to_tag": "v1.9.2-unsloth.12"},
+    )
+
+    result = wupd.run_chained_phase_after_llama(lambda _f: None)
+
+    assert calls == {"plan": 1, "install": 1}
+    assert result["to_tag"] == "v1.9.2-unsloth.12"
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        {"update_available": False, "skip_reason": "up_to_date", "phase": None},
+        {"update_available": False, "skip_reason": "paired_llama_unavailable", "phase": None},
+        {"update_available": True, "skip_reason": None, "phase": None},
+    ],
+)
+def test_the_recheck_is_a_no_op_when_there_is_nothing_to_install(monkeypatch, plan):
+    """Including the case the old code could not reach: no compatible whisper release
+    for the llama that was just installed. Reported as a skip carrying the reason, so
+    the breakdown reads the same as a skip decided before the job started."""
+    monkeypatch.setattr(wupd, "chained_phase_plan", lambda **_kw: plan)
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("nothing to install, so the installer must not be called")
+
+    monkeypatch.setattr(wupd, "run_chained_phase", must_not_run)
+
+    result = wupd.run_chained_phase_after_llama(lambda _f: None)
+    assert result["skipped"] is True
+    assert result["skip_reason"] == (plan["skip_reason"] or "up_to_date")
+
+
+def test_the_recheck_is_not_scheduled_when_the_whisper_probe_failed(monkeypatch, tmp_path):
+    """The re-check must not resurrect a probe that already failed.
+
+    _whisper_chain_status returns None when the piggyback is unavailable, which the
+    planner flattens to an empty plan. Scheduling a re-check on that would re-import the
+    module the probe just failed on, undoing the fail-open that keeps a broken whisper
+    from taking a llama update down with it.
+    """
+    llama_dir = _setup_llama(monkeypatch, tmp_path)
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: None)
+    _patch_llama_installer(
+        monkeypatch, on_start = lambda cmd: _write_llama_install(llama_dir, "b9518")
+    )
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert job["phases"]["whisper"]["state"] == "skipped"
