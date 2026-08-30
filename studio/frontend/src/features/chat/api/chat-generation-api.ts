@@ -321,15 +321,20 @@ export async function cancelChatGenerationRun(
   );
 }
 
+/** The events stream's own comment. Pinned by a test against the route that emits it. */
+const KEEPALIVE_PREFIX = ": keep-alive";
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: SSE framing retains state across reader chunks.
 async function* streamChatGenerationEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
   /**
-   * Called for every byte the server sends, including the keep-alive comments this
-   * generator drops. The stream emits nothing else across preparation and admission
-   * waits, so without this the consumer's loop never advances.
+   * Called for real progress only: any event, or a keep-alive whose progress stamp has
+   * moved. NOT for every byte. The stream emits nothing but keep-alives across
+   * preparation and admission waits, and those keep coming for as long as the socket
+   * holds, so treating arrival as progress would make the caller's deadline unreachable
+   * on a wedged run.
    */
   onActivity?: () => void,
 ): AsyncGenerator<ChatGenerationEvent> {
@@ -343,10 +348,10 @@ async function* streamChatGenerationEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let lastKeepAliveStamp: string | null = null;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (value !== undefined && value.length > 0) onActivity?.();
       buffer += decoder.decode(value, { stream: !done });
       buffer = buffer.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -356,12 +361,24 @@ async function* streamChatGenerationEvents(
         const data: string[] = [];
         for (const line of block.split("\n")) {
           if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+          // Bytes alone are not progress: the server sends one of these every 15s for as
+          // long as the connection holds, so rearming on arrival would keep a follower
+          // alive forever on a wedged run. The stamp is the run's own, moved by the lease
+          // renewals, so it advances through a long preparation and freezes on a wedge.
+          else if (line.startsWith(KEEPALIVE_PREFIX)) {
+            const stamp = line.slice(KEEPALIVE_PREFIX.length).trim();
+            if (stamp !== "" && stamp !== lastKeepAliveStamp) {
+              lastKeepAliveStamp = stamp;
+              onActivity?.();
+            }
+          }
         }
         if (data.length > 0) {
           const event = JSON.parse(data.join("\n")) as ChatGenerationEvent;
           if (event.type === "chunk") {
             event.payload = normalizeChatGenerationChunkPayload(event.payload);
           }
+          onActivity?.();
           yield event;
         }
         boundary = buffer.indexOf("\n\n");
@@ -379,11 +396,11 @@ async function* streamChatGenerationEvents(
  *
  * A deadline on SILENCE rather than duration, which is what lets it stay short while the
  * backend tolerates far longer work. Preparation and admission waits emit no events, but
- * the stream keeps sending keep-alive comments and `streamChatGenerationEvents` reports
- * every byte, so a two hour download rearms this every fifteen seconds.
- *
- * The `updatedAt` lease renewals move is a weaker second signal, reachable only once the
- * stream closes, so it cannot carry this alone: an open stream is the case needing cover.
+ * the keep-alive comments carry the run's progress stamp, which the lease renewals move,
+ * so a two hour download rearms this while a wedged run does not. Bytes alone are
+ * deliberately NOT progress: keep-alives keep arriving for as long as the socket holds, so
+ * rearming on them would make this unreachable in exactly the case it exists for, a
+ * backend whose sweeper is disabled or broken.
  */
 export const CHAT_GENERATION_STALL_TIMEOUT_MS = 30 * 60_000;
 

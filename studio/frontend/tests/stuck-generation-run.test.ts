@@ -646,10 +646,15 @@ test("retracting an answer also drops that thread's stale run mappings", () => {
   assert.equal(threadHasDurableGenerationRun("t-5"), false);
 });
 
-test("keep-alive comments hold the follower open through a long preparation", async () => {
+test("advancing keep-alive stamps hold the follower open through a long preparation", async () => {
   // The stream stays open and sends only comments for the whole of a model load. Before
   // this, the loop never advanced, so the snapshot poll that would have seen the lease
   // move never ran, and a healthy run was reported interrupted at the deadline.
+  //
+  // The stamp is what makes them progress. This test used to send BARE keep-alives, which
+  // pinned the wrong rule: the server emits one every 15s for as long as the socket holds,
+  // so a follower that rearmed on arrival could never settle a wedged run. See the
+  // companion test below for that half.
   const api = await import("../src/features/chat/api/chat-generation-api");
   let push: ((chunk: Uint8Array) => void) | undefined;
   let close: (() => void) | undefined;
@@ -683,10 +688,11 @@ test("keep-alive comments hold the follower open through a long preparation", as
         if (update.run.status !== "running") break;
       }
     })();
-    // Only comments, spaced so the deadline would have fired twice without them.
+    // Only comments, spaced so the deadline would have fired twice without them. The
+    // stamp advances, which is what a renewing lease looks like on the wire.
     for (let i = 0; i < 4; i += 1) {
       await new Promise((r) => setTimeout(r, 120));
-      push?.(encoder.encode(": keep-alive\n\n"));
+      push?.(encoder.encode(`: keep-alive ${1000 + i}\n\n`));
     }
     push?.(
       encoder.encode(
@@ -744,4 +750,71 @@ test("releasing a provisional claim clears it rather than leaving it bounded", (
   claimLiveGenerationRun("run-2", "thread-2");
   assert.equal(threadHasDurableGenerationRun("thread-2"), true);
   releaseLiveGenerationRun("run-2");
+});
+
+
+test("a repeated keep-alive stamp does NOT hold the follower open", async () => {
+  // The other half of the rule above, and the case the whole frontend fallback exists for:
+  // a wedged producer with a healthy socket. The server keeps sending keep-alives, but the
+  // run's progress stamp is frozen, so the deadline must still fire.
+  const api = await import("../src/features/chat/api/chat-generation-api");
+  let push: ((chunk: Uint8Array) => void) | undefined;
+  const encoder = new TextEncoder();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        push = (chunk) => controller.enqueue(chunk);
+        init?.signal?.addEventListener("abort", () =>
+          controller.error(new DOMException("aborted", "AbortError")),
+        );
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const run = { id: "r", status: "running", lastEventSeq: 0, updatedAt: 1 };
+    let stalled = false;
+    const follow = (async () => {
+      try {
+        for await (const _u of api.followChatGenerationRun("r", {
+          initialRun: run as never,
+          stallTimeoutMs: 200,
+        })) {
+          // The run never progresses; only the deadline can end this.
+        }
+      } catch (error) {
+        stalled = error instanceof api.ChatGenerationStalledError;
+      }
+    })();
+    // The same stamp, forever, and STILL ARRIVING while we wait. Stopping the pushes
+    // would make this vacuous: the deadline fires on its own once the stream goes quiet,
+    // so a version that rearmed on every keep-alive would pass too. The pump only stops
+    // when the deadline aborts the stream and closes the controller.
+    const pump = setInterval(() => {
+      try {
+        push?.(encoder.encode(": keep-alive 1\n\n"));
+      } catch {
+        clearInterval(pump);
+      }
+    }, 40);
+    const timedOut = Symbol("timed out");
+    const outcome = await Promise.race([
+      follow.then(() => "settled"),
+      new Promise((r) => setTimeout(() => r(timedOut), 3_000)),
+    ]);
+    clearInterval(pump);
+    assert.notEqual(
+      outcome,
+      timedOut,
+      "the follower never gave up while keep-alives kept arriving",
+    );
+    assert.equal(stalled, true, "a frozen stamp must not keep the follower alive");
+  } finally {
+    globalThis.fetch = original;
+  }
 });

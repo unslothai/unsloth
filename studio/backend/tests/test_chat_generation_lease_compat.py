@@ -861,3 +861,23 @@ def test_a_reasonable_admission_cadence_still_raises_the_floor(monkeypatch):
     monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "20")
     assert runs_mod._minimum_lease_seconds() == 60.0
     assert runs_mod._applied_lease_timeout(5.0) == 60.0
+
+
+def test_the_events_keepalive_carries_the_progress_stamp():
+    """The follower rearms its no-progress deadline only when this value MOVES.
+
+    A bare keep-alive proves the connection is healthy and nothing more, and the route
+    emits one every wait timeout for as long as the socket holds, so a follower rearming
+    on arrival could never settle a wedged run: exactly the case that fallback exists for.
+    """
+    import inspect
+
+    from routes import chat_generation_runs as route
+
+    source = inspect.getsource(route.chat_generation_events)
+    keepalive = source.index(": keep-alive")
+    line_end = source.index("\n", keepalive)
+    line = source[source.rindex("\n", 0, keepalive) : line_end]
+    assert "updatedAt" in line, f"the keep-alive carries no progress stamp: {line.strip()}"
+    # And the stamp has to be the run's own, not a clock: a wall clock always moves.
+    assert "snapshot" in line, "the stamp must come from the run row, not from a clock"
