@@ -196,6 +196,24 @@ def _repair_dispatch_hooks(model):
     except ImportError:
         return 0
 
+    # Match what `dispatch_model` puts on a mapped block, so a repaired module
+    # behaves like one it never had to repair.
+    #
+    # `skip_keys`: dispatch passes the model's `_skip_keys_device_placement`
+    # (`["past_key_values"]` on every decoder checked). Those keys are the ones
+    # accelerate deliberately does NOT move with the inputs, so a hook without
+    # them would relocate a cache the model expects to stay put.
+    #
+    # `io_same_device`: dispatch sets it only on the ROOT, leaving activations
+    # on the block's own card to flow straight into the next block. Setting it
+    # on a submodule copies the whole result back to the incoming card, and the
+    # next hook copies it over again. Measured on the split repro: False gives
+    # byte-identical logits and still returns the output to the caller, because
+    # the root's own hook survives the embedding rebuild and does that. So it is
+    # True only when the root has NO hook and nothing else would.
+    skip_keys = getattr(model, "_skip_keys_device_placement", None)
+    io_same_device = not hasattr(model, "_hf_hook")
+
     # Every mapped module that lacks a hook, not only the ones on a far card.
     # This restores what `dispatch_model` did: it hooks each entry in the map,
     # which is why 395 modules carried one in the measured run and only the
@@ -220,21 +238,27 @@ def _repair_dispatch_hooks(model):
             if isinstance(device, int) and not isinstance(device, bool)
             else device
         )
-        # Compared as text, because a map may carry `torch.device("cpu")` rather
-        # than the string: `dispatch_model` takes `Union[str, int, torch.device]`
-        # and writes back whatever it was given. `torch.device("cpu") != "cpu"`,
-        # so an identity test here reads an offloaded module as an accelerator
-        # one and hooks it, which is the opposite of what this line is for.
-        if str(execution_device) in ("cpu", "disk"):
+        # Read through `.type`, because a map may carry `torch.device("cpu")`
+        # rather than the string: `dispatch_model` takes
+        # `Union[str, int, torch.device]` and writes back whatever it was given.
+        # `torch.device("cpu") != "cpu"`, so an identity test reads an offloaded
+        # module as an accelerator one and hooks it, the opposite of this line's
+        # purpose; and `str()` alone still misses `torch.device("cpu", 0)`.
+        device_kind = (
+            execution_device.type
+            if isinstance(execution_device, torch.device)
+            else str(execution_device)
+        )
+        if device_kind in ("cpu", "disk"):
             continue  # offload is a different mechanism, and has its own hooks
         try:
-            # `io_same_device = True`: the output goes back to where the input
-            # came from, so a module on the far card stays invisible to the
-            # caller. Without it the tensor is left on the far device and the
-            # mismatch simply moves one operation downstream.
             add_hook_to_module(
                 module,
-                AlignDevicesHook(execution_device = execution_device, io_same_device = True),
+                AlignDevicesHook(
+                    execution_device = execution_device,
+                    io_same_device = io_same_device,
+                    skip_keys = skip_keys,
+                ),
             )
         except Exception as exc:
             # Never silently: a repair that reports success while attaching
@@ -2108,6 +2132,26 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+
+        # LAST, for the reason the llama loader repairs last: the attach above
+        # runs during the load, and `patch_model_and_tokenizer` further down
+        # REPLACES the embedding and lm_head with freshly built modules, which
+        # carry the weights over but not the `_hf_hook`. A model this loader
+        # split across cards would otherwise still meet the original
+        # cross-device `index_select`. Idempotent, so the earlier attach stands.
+        if not fast_inference and not offload_embedding:
+            try:
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "the patching pass left unhooked, so the model trains."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks "
+                    f"({type(_exc).__name__}: {_exc})."
+                )
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod

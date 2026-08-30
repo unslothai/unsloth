@@ -387,3 +387,142 @@ def test_the_whole_sequence_against_real_accelerate():
     assert (
         input_grad.data_ptr() == output_grad.data_ptr()
     ), "the tied pair accumulated two separate gradients after the repair"
+
+
+def test_a_torch_device_with_an_index_is_still_read_as_cpu():
+    """`torch.device("cpu", 0)` is a legal spelling and its `.type` is "cpu".
+
+    Comparing `str()` gives "cpu:0", which matches neither guard entry, so the
+    offloaded module is hooked as if it were on an accelerator. Reading `.type`
+    is what makes every spelling of the same device land in the same branch.
+    """
+    model = _Model({"embed_tokens": torch.device("cpu", 0), "lm_head": FAR, "layer": NEAR})
+    assert _repair()(model) == 1, "only `lm_head` is repairable here"
+    assert "embed_tokens" not in _hooked(model)
+
+
+def test_the_repaired_hook_carries_the_models_skip_keys(monkeypatch):
+    """`dispatch_model` passes `_skip_keys_device_placement`; so must the repair.
+
+    Every decoder checked reports `["past_key_values"]`. Those are the keys
+    accelerate deliberately does NOT move alongside the inputs, so a hook
+    without them relocates a cache the model expects to stay where it is.
+    """
+    import accelerate.hooks as ah
+
+    seen = {}
+    monkeypatch.setattr(ah, "add_hook_to_module",
+                        lambda module, hook, **kw: (seen.__setitem__(id(module), hook), module)[1])
+    model = _Model({"embed_tokens": FAR, "layer": NEAR})
+    model._skip_keys_device_placement = ["past_key_values"]
+    _repair()(model)
+    assert seen[id(model.embed_tokens)].skip_keys == ["past_key_values"], (
+        "the repaired hook drops the skip keys, so it moves tensors dispatch_model excluded"
+    )
+
+
+def test_io_same_device_follows_the_root_hook(monkeypatch):
+    """Only the ROOT gets `io_same_device` from `dispatch_model`.
+
+    Setting it on a submodule copies that block's whole output back to the
+    incoming card, and the next block's hook copies it over again, so a run of
+    rebuilt blocks round-trips the hidden states at every layer. Measured on the
+    split repro, False gives byte-identical logits and the output still comes
+    back to the caller, because the root's hook does that and survives the
+    embedding rebuild.
+
+    It stays True in the one case where nothing else would return the output: a
+    model with no root hook at all.
+    """
+    import accelerate.hooks as ah
+
+    seen = {}
+    monkeypatch.setattr(ah, "add_hook_to_module",
+                        lambda module, hook, **kw: (seen.__setitem__(id(module), hook), module)[1])
+
+    with_root = _Model({"embed_tokens": FAR, "layer": NEAR})
+    add_hook_to_module(with_root, AlignDevicesHook(io_same_device = True))
+    _repair()(with_root)
+    assert seen[id(with_root.embed_tokens)].io_same_device is False, (
+        "the root already returns the output, so a submodule that does it too "
+        "sends every activation back and forth once more per layer"
+    )
+
+    seen.clear()
+    without_root = _Model({"embed_tokens": FAR, "layer": NEAR})
+    assert not hasattr(without_root, "_hf_hook"), "fixture is not the rootless case"
+    _repair()(without_root)
+    assert seen[id(without_root.embed_tokens)].io_same_device is True, (
+        "with no root hook nothing returns the far card's output, so the "
+        "mismatch just moves one operation downstream"
+    )
+
+
+def _repairs_last_in(func):
+    """Is `_repair_dispatch_hooks` called after the last module-replacing call?"""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    repair_lines = [
+        n.lineno for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_repair_dispatch_hooks"
+    ]
+    replacer_lines = [
+        n.lineno for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(getattr(n, "func", None), "attr", None)
+        in ("resize_token_embeddings", "set_input_embeddings", "set_output_embeddings")
+        or (isinstance(n, ast.Call) and getattr(n.func, "id", None) == "patch_model_and_tokenizer")
+    ]
+    return repair_lines, replacer_lines
+
+
+def test_the_vision_loader_repairs_after_its_own_patching_pass():
+    """`patch_model_and_tokenizer` runs inside `FastBaseModel.from_pretrained`.
+
+    It rebuilds the same two modules the load just hooked, so a repair that runs
+    only at the attach site is undone before the function returns and a split
+    VLM still meets the cross-device `index_select`.
+    """
+    from unsloth.models.vision import FastBaseModel
+
+    repair_lines, replacer_lines = _repairs_last_in(FastBaseModel.from_pretrained)
+    assert repair_lines, "the vision loader never repairs dispatch hooks"
+    assert replacer_lines, "no module-replacing call found; this guard has gone vacuous"
+    assert max(repair_lines) > max(replacer_lines), (
+        "the last repair runs before the last module replacement, so the hook it "
+        "attaches is thrown away by the rebuild that follows"
+    )
+
+
+def test_the_loader_repairs_after_resizing_the_vocabulary():
+    """`resize_token_embeddings` is the last module swap of all.
+
+    It runs in `loader.py` AFTER `from_pretrained` has returned and done its own
+    repair, and it builds a new embedding (and a new tied head) without carrying
+    the `_hf_hook` across.
+    """
+    import ast
+    import inspect
+
+    from unsloth.models import loader
+
+    tree = ast.parse(inspect.getsource(loader))
+    resize = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(getattr(n, "func", None), "attr", None) == "resize_token_embeddings"
+    ]
+    assert resize, "no resize_token_embeddings call; this guard has gone vacuous"
+
+    repairs = [
+        n.lineno for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_repair_dispatch_hooks"
+    ]
+    for call in resize:
+        assert any(call.lineno < line < call.lineno + 30 for line in repairs), (
+            f"the resize at line {call.lineno} is not followed by a repair, so the "
+            "new embedding sits on its mapped card with nothing sending it the ids"
+        )
