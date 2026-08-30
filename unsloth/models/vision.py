@@ -221,7 +221,7 @@ def _repair_dispatch_hooks(model):
     # already sits is a no-op move, so matching that behaviour is both simpler
     # and safer than guessing which device counts as "main" -- a guess that
     # inverts the moment the far side holds more entries than the near one.
-    targets = {name : device for name, device in device_map.items() if name}
+    targets = {name: device for name, device in device_map.items() if name}
 
     # A map does not have to NAME the modules the patching pass replaces. Every
     # map this loader builds itself is leaf-granular and lists both, but a
@@ -245,13 +245,13 @@ def _repair_dispatch_hooks(model):
         if replaced is None or hasattr(replaced, "_hf_hook"):
             continue
         name = next(
-            (n for n, m in model.named_modules() if m is replaced and n), None,
+            (n for n, m in model.named_modules() if m is replaced and n),
+            None,
         )
         if name is None or name in targets:
             continue
         covering = [
-            key for key in device_map
-            if not key or name == key or name.startswith(key + ".")
+            key for key in device_map if not key or name == key or name.startswith(key + ".")
         ]
         if covering:
             targets[name] = device_map[max(covering, key = len)]
