@@ -257,12 +257,21 @@ def test_an_oversized_finite_interval_is_clamped(monkeypatch, raw):
     assert [ev for ev, _ in cap.events] == ["engine_stats_env_clamped"]
 
 
-def test_the_clamped_interval_is_a_wait_this_platform_accepts():
-    """The end state, exercised rather than asserted about: the applied value must be a
-    timeout threading.Event can actually wait on."""
+def test_the_clamped_interval_is_a_wait_every_platform_accepts():
+    """The end state, exercised rather than asserted about.
+
+    A hand-picked constant got this wrong once: a one year cap waits fine on Linux, whose
+    threading.TIMEOUT_MAX is about 9.2e9 seconds, and raises OverflowError on Windows,
+    where the timeout becomes a DWORD of milliseconds and the ceiling is 49.7 days. Only
+    the Windows CI leg caught it, so the bound is checked here directly as well rather
+    than left to whichever runner happens to be strictest.
+    """
     import threading
 
+    assert ls._MAX_ENV_SECONDS <= threading.TIMEOUT_MAX
+    # The Windows ceiling, asserted on every platform so Linux cannot pass a cap Windows
+    # would reject.
+    assert ls._MAX_ENV_SECONDS <= (2**32 - 1) / 1000.0
     event = threading.Event()
     threading.Timer(0.05, event.set).start()
-    # Raises OverflowError if the cap is ever raised past what time_t can hold.
     assert event.wait(ls._MAX_ENV_SECONDS) is True

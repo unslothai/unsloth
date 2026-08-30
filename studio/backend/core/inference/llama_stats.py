@@ -180,8 +180,12 @@ class LlamaServerStatsLogger:
                 )
 
 
-# A year. Beyond this already means "never", and it keeps the timed wait itself legal.
-_MAX_ENV_SECONDS = 365.0 * 24.0 * 60.0 * 60.0
+# A week already means "never" for a poll interval or a stall timeout. Bounded by
+# threading.TIMEOUT_MAX as well, because the ceiling is platform specific and much lower
+# than it looks: Linux accepts ~9.2e9 seconds, Windows about 49.7 days, since the timeout
+# becomes a DWORD of milliseconds there. Picking a constant by hand got this wrong once
+# already, so let the platform state its own limit.
+_MAX_ENV_SECONDS = min(7.0 * 24.0 * 60.0 * 60.0, threading.TIMEOUT_MAX)
 
 
 def _env_float(name, default, logger):
