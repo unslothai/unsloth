@@ -12,7 +12,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -63,6 +62,7 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -73,7 +73,9 @@ import {
   type ModelMemorySource,
   useModelMemory,
 } from "@/hooks/use-model-memory";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
+import type { GgufFitClass } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -89,8 +91,8 @@ import {
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
-  InformationCircleIcon,
   Image03Icon,
+  InformationCircleIcon,
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -117,13 +119,13 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
-  audioPipelineTagFor,
   audioPickIsRoutable,
-  localAudioRowIsUndecodableGguf,
+  audioPipelineTagFor,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
+  localAudioRowIsUndecodableGguf,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -133,6 +135,8 @@ import {
   taskPickerRowMatches,
 } from "./audio-picker-policy";
 import { FolderBrowser } from "./folder-browser";
+import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import { localGgufKindFor } from "./local-gguf-policy";
 import {
   type ModelCapabilities,
   detectCapabilities,
@@ -142,6 +146,7 @@ import {
   type CatalogGroup,
   type DeviceBudget,
   artifactForRepoId,
+  classifyGgufFit,
   curatedArtifactFitsDevice,
   curatedCapabilitiesFor,
   curatedRowLabelFor,
@@ -149,8 +154,6 @@ import {
   curatedTotalParamsFor,
   groupForRepoId,
 } from "./model-catalog";
-import { curatedArtifactIsOfferable } from "./host-artifact-policy";
-import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -204,8 +207,8 @@ import type {
   DeletedModelRef,
   ExternalModelOption,
   LoraModelOption,
-  ModelOption,
   ModelDownloadFootprintResolver,
+  ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
 import { describeVariantListingError } from "./variant-listing-error";
@@ -512,9 +515,9 @@ const CAPABILITY_BADGES: {
  * where only some models carry a soundtrack. Context rather than a prop because every row in the
  * tree wants the same answer and it comes from the picker, not the row.
  */
-const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
-  null,
-);
+const CapabilityScope = createContext<
+  readonly (keyof ModelCapabilities)[] | null
+>(null);
 
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every
 // column after it lined up.
@@ -632,67 +635,72 @@ function DownloadedBadge() {
   );
 }
 
-/** What each fit verdict marks and says. Tight spills past VRAM into system RAM; oom clears
- *  neither budget, so it offloads further still. Both still run, so neither reads as an error:
- *  orange over red, and yellow one step below it. */
+interface FitVerdict {
+  label: string;
+  tone: string;
+  hint: string;
+}
+
 const AMBER = "!text-yellow-600 dark:!text-yellow-400";
 const ORANGE = "!text-orange-600 dark:!text-orange-300";
 
-/** Two vocabularies reach this badge and they do not mean the same thing.
- *
- *  A VARIANT row's verdict comes from the GGUF classifier: `tight` is a spill out of VRAM into
- *  system RAM, `exceeds` clears neither budget.
- *
- *  A MODEL row's comes from `checkVramFit`, where `tight` is 75-100% of VRAM, which still fits on
- *  the card entirely. Telling that row it spills into system RAM was simply false, and it is the
- *  common case on a normal GPU. */
-const VRAM_VERDICT = {
-  gguf: {
-    exceeds: {
-      label: "Does not fit",
-      tone: ORANGE,
-      hint: "Model may not fit but still works with offloading. Expect slower inference.",
-    },
-    tight: {
-      label: "Tight fit",
-      tone: AMBER,
-      hint: "Only fits by spilling into system RAM. Expect slower inference.",
-    },
+/** Over budget but still card-sized: it loads, and can fail when something else holds VRAM. */
+const MIGHT_FIT: FitVerdict = {
+  label: "Might fit",
+  tone: AMBER,
+  hint: "Only fits by using nearly all your VRAM. Loading can fail while other apps hold GPU memory.",
+};
+/** Past the card, inside VRAM plus RAM: llama-server's --fit puts the rest on CPU. */
+const OFFLOADS: FitVerdict = {
+  label: "Partial offload",
+  tone: ORANGE,
+  hint: "Model doesn't fit but can still work with offloading. Expect slower inference.",
+};
+/** Clears neither budget. The one verdict here that does not load. */
+const WONT_FIT: FitVerdict = {
+  label: "Does not fit",
+  tone: ORANGE,
+  hint: "Larger than your VRAM and system RAM together. This model will not load.",
+};
+
+/** What each fit verdict marks and says, keyed by the Hub's classes so one question has one
+ *  vocabulary. `tight` and `exceeds` are the training estimator's words for two of the same
+ *  states, mapped here rather than given a second set of colours and copy. */
+const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
+  fits: null,
+  marginal: MIGHT_FIT,
+  tight: MIGHT_FIT,
+  partial: OFFLOADS,
+  ram: {
+    label: "RAM fallback",
+    tone: ORANGE,
+    hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
   },
-  device: {
-    // A model row's `exceeds` is a GGUF repo whose smallest quant is over budget (llama-server
-    // offloads it) OR a curated pipeline that cannot offload at all. One string covers both only
-    // by promising nothing about which happens; the two are separated in the follow-up.
-    exceeds: {
-      label: "Does not fit",
-      tone: ORANGE,
-      hint: "Needs more memory than this device has.",
-    },
-    tight: {
-      label: "Tight fit",
-      tone: AMBER,
-      hint: "Uses nearly all your VRAM, with little headroom for anything else.",
-    },
-  },
-} as const;
+  oom: WONT_FIT,
+  exceeds: WONT_FIT,
+};
+
+/** The verdicts that read as over budget, which is what dims a row. `marginal` does not: it is
+ *  a full GPU load, just without much room to spare. */
+function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
+  return (
+    status === "partial" ||
+    status === "ram" ||
+    status === "oom" ||
+    status === "exceeds"
+  );
+}
 
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
 function VramBadge({
   status,
-  /** Which vocabulary `status` is spoken in. See VRAM_VERDICT: the same word means different
-   *  things on a model row and on a quant row. */
-  source,
   /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
   revealOnHover = false,
 }: {
-  status?: VramFitStatus | null;
-  source: "gguf" | "device";
+  status?: GgufFitClass | VramFitStatus | null;
   revealOnHover?: boolean;
 }) {
-  const verdict =
-    status === "exceeds" || status === "tight"
-      ? VRAM_VERDICT[source][status]
-      : null;
+  const verdict = status ? VRAM_VERDICT[status] : null;
   if (!verdict) return null;
   return (
     <Tooltip delayDuration={0}>
@@ -784,7 +792,11 @@ export function GgufDownloadFootprint({
         aria-hidden={true}
         className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70"
       >
-        <HugeiconsIcon icon={HelpCircleIcon} className="size-3" strokeWidth={1.8} />
+        <HugeiconsIcon
+          icon={HelpCircleIcon}
+          className="size-3"
+          strokeWidth={1.8}
+        />
       </span>
     </span>
   );
@@ -802,7 +814,8 @@ export function GgufDownloadFootprintExplanation({
     <>
       <span className="font-medium">Full required size</span>
       <span className="ml-1 text-muted-foreground">
-        {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)} required assets
+        {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)}{" "}
+        required assets
       </span>
     </>
   );
@@ -912,7 +925,7 @@ function ModelRow({
   /** Override badge state when authoritative runtime state is available. */
   loaded?: boolean;
   onClick: () => void;
-  vramStatus?: VramFitStatus | null;
+  vramStatus?: GgufFitClass | VramFitStatus | null;
   vramEst?: number;
   gpuGb?: number;
   tooltipText?: ReactNode;
@@ -947,14 +960,14 @@ function ModelRow({
   memory?: ModelMemorySource;
   className?: string;
 }) {
-  const exceeds = vramStatus === "exceeds";
+  const exceeds = isOverBudget(vramStatus);
   const showVramTooltip =
     vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
   const vramTooltipText =
     showVramTooltip && vramStatus
       ? exceeds
         ? `Needs ~${vramEst}GB VRAM (GPU: ${gpuGb}GB)`
-        : vramStatus === "tight"
+        : vramStatus === "tight" || vramStatus === "marginal"
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
           : `~${vramEst}GB VRAM`
       : null;
@@ -1129,10 +1142,10 @@ function ModelRow({
                 META_COLUMN.vram,
               )}
             >
-              <VramBadge status={vramStatus} source="device" revealOnHover={!selected} />
+              <VramBadge status={vramStatus} revealOnHover={!selected} />
             </span>
           ) : (
-            <VramBadge status={vramStatus} source="device" revealOnHover={!selected} />
+            <VramBadge status={vramStatus} revealOnHover={!selected} />
           )}
           {aligned ? (
             <span
@@ -1608,27 +1621,23 @@ function GgufVariantExpander({
     ],
   );
 
-  // GGUF fit classification matching llama-server's _select_gpus logic:
-  //   fits  = model <= 0.7 * total GPU memory
-  //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
-  //   oom   = model > 0.7 * GPU + 0.7 * system RAM
-  const gpuBudgetGb = (gpuGb ?? 0) * 0.7;
-  const totalBudgetGb = gpuBudgetGb + (systemRamGb ?? 0) * 0.7;
+  // The user's saved VRAM Budget, which is what the loader admits against. The picker used to
+  // ignore it, so moving the slider changed the Hub's verdicts and left chat's untouched.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
+  const anyBudgetGb = (gpuGb ?? 0) > 0 || (systemRamGb ?? 0) > 0;
 
   const getGgufFit = useCallback(
-    (sizeBytes: number): "fits" | "tight" | "oom" => {
-      // Preserve permissive behavior only when no budget was measured. A known
-      // zero Vulkan budget means every non-empty variant is OOM.
-      if (totalBudgetGb <= 0) return budgetKnown ? "oom" : "fits";
-      const gb = sizeBytes / 1024 ** 3;
-      if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
-      // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the tier
-      // collapses to fit-or-oom against system RAM.
-      if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
-      if (gb <= totalBudgetGb) return "tight";
-      return "oom";
+    (sizeBytes: number): GgufFitClass => {
+      // Permissive only when no budget was measured. A known zero Vulkan budget means every
+      // non-empty variant is OOM, which classifyGgufFit cannot tell apart from "not probed yet".
+      if (!anyBudgetGb) return budgetKnown ? "oom" : "fits";
+      return classifyGgufFit(sizeBytes, {
+        gpuGb: gpuGb ?? 0,
+        systemRamGb: systemRamGb ?? 0,
+        budgetFraction,
+      });
     },
-    [budgetKnown, gpuBudgetGb, totalBudgetGb],
+    [budgetKnown, anyBudgetGb, gpuGb, systemRamGb, budgetFraction],
   );
 
   const variantGroups = useMemo(
@@ -1646,7 +1655,7 @@ function GgufVariantExpander({
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
       const preferred = preferredByGroup.get(group.key) ?? null;
-      if (totalBudgetGb <= 0 && !budgetKnown) {
+      if (!anyBudgetGb && !budgetKnown) {
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
@@ -1667,7 +1676,7 @@ function GgufVariantExpander({
       if (smallest) recommended.set(group.key, smallest.quant);
     }
     return recommended;
-  }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
+  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
   // The same recommendations, reachable from a row. `effectiveRecommendedByGroup`
   // is keyed by PRESENTATION group ("quantizations", "text-frames",
   // "reference-media"); the footprint pass below buckets by the backend's
@@ -1943,7 +1952,6 @@ function GgufVariantExpander({
           effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
-        const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
         // This row's own dependency group, never the listing's: see the
         // footprintVariants comment above.
@@ -2001,10 +2009,7 @@ function GgufVariantExpander({
               ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              <VramBadge
-                status={oom ? "exceeds" : tight ? "tight" : null}
-                source="gguf"
-              />
+              <VramBadge status={fit} />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />
@@ -2422,7 +2427,9 @@ function localPathTooltip(
   return (
     <>
       <span className="block break-words">{name}</span>
-      {detail ? <span className="mt-0.5 block break-words">{detail}</span> : null}
+      {detail ? (
+        <span className="mt-0.5 block break-words">{detail}</span>
+      ) : null}
       <span className="block mt-1 text-ui-10 text-muted-foreground break-all">
         {path}
       </span>
@@ -3136,7 +3143,9 @@ export function HubModelPicker({
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   // What this picker's task filter has already established about every row it can show. The Images
   // and Video pages pass their generation tasks; chat passes none and keeps the full set.
-  const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
+  const capabilityScope = useMemo<
+    readonly (keyof ModelCapabilities)[] | null
+  >(() => {
     const tasks: readonly string[] = task
       ? typeof task === "string"
         ? [task]
@@ -3174,7 +3183,9 @@ export function HubModelPicker({
       // them, and hiding what is already on disk reads as Unsloth having lost the model.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
-      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
+      return hit
+        ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass)
+        : true;
     },
     [catalog, downloadedSet, hostClass],
   );
@@ -3202,7 +3213,9 @@ export function HubModelPicker({
         // Size from the catalog, not an id "<n>B" guess: the guess is missing for
         // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
         // and non-unsloth ids never get a listing row to correct it.
-        curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
+        curatedSizeBytes: catalog
+          ? curatedSizeBytesFor(id, catalog)
+          : undefined,
         // Same reason the size is curated: a seed the listing does not return has no
         // other source for its param chip, and most curated ids carry no "<n>B" token.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
@@ -3700,7 +3713,8 @@ export function HubModelPicker({
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
-              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              isCurated:
+                artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
               // Task and codec came from the filesystem classifier, so a renamed CSM file
               // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
@@ -3747,7 +3761,8 @@ export function HubModelPicker({
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
-              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              isCurated:
+                artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
               // Task and codec came from the filesystem classifier, so a renamed CSM file
               // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
@@ -3797,7 +3812,8 @@ export function HubModelPicker({
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
-              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              isCurated:
+                artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
               // Task and codec came from the filesystem classifier, so a renamed CSM file
               // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
@@ -3942,9 +3958,7 @@ export function HubModelPicker({
             isDirectGguf: m.isDirectGguf,
           }),
       )
-      .filter((m) =>
-        nativeAudioCheckpointIsLoadable(m.audioType, m.exportType),
-      )
+      .filter((m) => nativeAudioCheckpointIsLoadable(m.audioType, m.exportType))
       .filter((m) => {
         const text = normalizeForSearch(
           `${m.name} ${m.baseModel ?? ""} ${m.id}`,
@@ -6051,7 +6065,11 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                        ),
                                       );
                                     }
                                   }}
@@ -6092,7 +6110,11 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                        ),
                                       )
                                     }
                                   />
@@ -6106,7 +6128,9 @@ export function HubModelPicker({
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
-                                  resolveDownloadFootprint={resolveDownloadFootprint}
+                                  resolveDownloadFootprint={
+                                    resolveDownloadFootprint
+                                  }
                                   onConfigure={onConfigure}
                                   parentOptionKey={optionKey}
                                   onNavigatePastStart={() =>
@@ -6196,7 +6220,11 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                        ),
                                       );
                                     }
                                   }}
@@ -6237,7 +6265,11 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                        ),
                                       )
                                     }
                                   />
@@ -6249,7 +6281,9 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={
+                                  resolveDownloadFootprint
+                                }
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6328,7 +6362,11 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                        ),
                                       );
                                     }
                                   }}
@@ -6365,7 +6403,11 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                        ),
                                       )
                                     }
                                   />
@@ -6377,7 +6419,9 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                              resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={
+                                  resolveDownloadFootprint
+                                }
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6470,7 +6514,9 @@ export function HubModelPicker({
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={
+                                  resolveDownloadFootprint
+                                }
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
                                 parentOptionKey={optionKey}
@@ -6592,7 +6638,9 @@ export function HubModelPicker({
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                              resolveDownloadFootprint={
+                                resolveDownloadFootprint
+                              }
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
@@ -6705,7 +6753,9 @@ export function HubModelPicker({
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={
+                                  resolveDownloadFootprint
+                                }
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
                                 parentOptionKey={optionKey}

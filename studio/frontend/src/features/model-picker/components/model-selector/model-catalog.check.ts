@@ -23,6 +23,7 @@ import {
   curatedArtifactFitsDevice,
   curatedDisplayNameFor,
   curatedRowLabelFor,
+  ggufFitRuns,
   groupForRepoId,
   groupMatchesQuery,
   loadSpecFor,
@@ -33,8 +34,14 @@ import {
 
 // ── canonicalKeyFor: suffix stripping, owner preserved ─────────────────────────
 
-assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-GGUF"), "unsloth/qwen-image-2512");
-assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-FP8"), "unsloth/qwen-image-2512");
+assert.equal(
+  canonicalKeyFor("unsloth/Qwen-Image-2512-GGUF"),
+  "unsloth/qwen-image-2512",
+);
+assert.equal(
+  canonicalKeyFor("unsloth/Qwen-Image-2512-FP8"),
+  "unsloth/qwen-image-2512",
+);
 assert.equal(
   canonicalKeyFor("unsloth/Qwen-Image-2512-unsloth-bnb-4bit"),
   "unsloth/qwen-image-2512",
@@ -43,15 +50,36 @@ assert.equal(
   canonicalKeyFor("ideogram-ai/ideogram-4-nf4-diffusers"),
   "ideogram-ai/ideogram-4",
 );
-assert.equal(canonicalKeyFor("Wan-AI/Wan2.2-TI2V-5B-Diffusers"), "wan-ai/wan2.2-ti2v-5b");
+assert.equal(
+  canonicalKeyFor("Wan-AI/Wan2.2-TI2V-5B-Diffusers"),
+  "wan-ai/wan2.2-ti2v-5b",
+);
 assert.equal(canonicalKeyFor("lightricks/ltx-2.3-fp8"), "lightricks/ltx-2.3");
 // Prequant suffixes strip regardless of case: -GGUF/-FP8/-int8/-nvfp4 all route to the base name.
-assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-int8"), "unsloth/qwen-image-2512");
-assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-INT8"), "unsloth/qwen-image-2512");
-assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-nvfp4"), "unsloth/qwen-image-2512");
-assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-NVFP4"), "unsloth/qwen-image-2512");
-assert.equal(canonicalKeyFor("unsloth/qwen-image-2512-gguf"), "unsloth/qwen-image-2512");
-assert.equal(canonicalKeyFor("unsloth/qwen-image-2512-fp8"), "unsloth/qwen-image-2512");
+assert.equal(
+  canonicalKeyFor("unsloth/Qwen-Image-2512-int8"),
+  "unsloth/qwen-image-2512",
+);
+assert.equal(
+  canonicalKeyFor("unsloth/Qwen-Image-2512-INT8"),
+  "unsloth/qwen-image-2512",
+);
+assert.equal(
+  canonicalKeyFor("unsloth/Qwen-Image-2512-nvfp4"),
+  "unsloth/qwen-image-2512",
+);
+assert.equal(
+  canonicalKeyFor("unsloth/Qwen-Image-2512-NVFP4"),
+  "unsloth/qwen-image-2512",
+);
+assert.equal(
+  canonicalKeyFor("unsloth/qwen-image-2512-gguf"),
+  "unsloth/qwen-image-2512",
+);
+assert.equal(
+  canonicalKeyFor("unsloth/qwen-image-2512-fp8"),
+  "unsloth/qwen-image-2512",
+);
 
 // ── stripArtifactSuffixesForDisplay: case-preserving base name for row labels ──
 
@@ -103,14 +131,23 @@ for (const artifact of qwen2512.artifacts) {
 // Cross-owner aliases resolve only because they are declared.
 assert.equal(groupForRepoId("Qwen/Qwen-Image-2512", IMAGE_CATALOG), qwen2512);
 // Undeclared prequant variants (any case) route to the base group via the stripped key.
-assert.equal(groupForRepoId("unsloth/Qwen-Image-2512-INT8", IMAGE_CATALOG), qwen2512);
-assert.equal(groupForRepoId("unsloth/Qwen-Image-2512-NVFP4", IMAGE_CATALOG), qwen2512);
+assert.equal(
+  groupForRepoId("unsloth/Qwen-Image-2512-INT8", IMAGE_CATALOG),
+  qwen2512,
+);
+assert.equal(
+  groupForRepoId("unsloth/Qwen-Image-2512-NVFP4", IMAGE_CATALOG),
+  qwen2512,
+);
 assert.equal(
   groupForRepoId("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.canonicalId,
   "unsloth/Z-Image-Turbo",
 );
 // A sibling artifact of an aliased owner groups via the alias' stripped key.
-assert.equal(groupForRepoId("Qwen/Qwen-Image-2512-FP8", IMAGE_CATALOG), qwen2512);
+assert.equal(
+  groupForRepoId("Qwen/Qwen-Image-2512-FP8", IMAGE_CATALOG),
+  qwen2512,
+);
 // Unknown repos pass through ungrouped.
 assert.equal(groupForRepoId("someone/some-model-GGUF", IMAGE_CATALOG), null);
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", VIDEO_CATALOG), null);
@@ -145,7 +182,10 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
       const lowered = artifact.repoId.toLowerCase();
-      assert.ok(!seen.has(lowered), `duplicate artifact id: ${artifact.repoId}`);
+      assert.ok(
+        !seen.has(lowered),
+        `duplicate artifact id: ${artifact.repoId}`,
+      );
       seen.add(lowered);
       assert.equal(
         groupForRepoId(artifact.repoId, catalog),
@@ -153,7 +193,10 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
         `artifact ${artifact.repoId} resolves to a different group`,
       );
       if (artifact.loadKind === "single_file") {
-        assert.ok(artifact.filename, `single_file ${artifact.repoId} needs a filename`);
+        assert.ok(
+          artifact.filename,
+          `single_file ${artifact.repoId} needs a filename`,
+        );
       }
     }
     for (const alias of group.aliases ?? []) {
@@ -199,11 +242,16 @@ for (const id of OLD_PIPELINE_MODELS) {
   assert.equal(got.kind, "pipeline", id);
 }
 // GGUF artifacts report the gguf kind; unknown ids report null.
-assert.equal(loadSpecFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
+assert.equal(
+  loadSpecFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.kind,
+  "gguf",
+);
 assert.equal(loadSpecFor("someone/unknown", IMAGE_CATALOG), null);
 
 // Every old curated id is still present as an option (backwards compat).
-const imageOptionIds = new Set(catalogToModelOptions(IMAGE_CATALOG).map((o) => o.id));
+const imageOptionIds = new Set(
+  catalogToModelOptions(IMAGE_CATALOG).map((o) => o.id),
+);
 for (const id of [
   "unsloth/Z-Image-Turbo-GGUF",
   "unsloth/Z-Image-GGUF",
@@ -219,7 +267,9 @@ for (const id of [
 ]) {
   assert.ok(imageOptionIds.has(id), `image option missing: ${id}`);
 }
-const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
+const videoOptionIds = new Set(
+  catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id),
+);
 for (const id of [
   "unsloth/LTX-2.3-GGUF",
   "unsloth/MiniMax-H3-GGUF",
@@ -256,18 +306,24 @@ assert.deepEqual(curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG), {
   name: "MiniMax-H3-GGUF",
   tags: [],
 });
-assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG), {
-  name: "Z-Image-Turbo-GGUF",
-  tags: [],
-});
+assert.deepEqual(
+  curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG),
+  {
+    name: "Z-Image-Turbo-GGUF",
+    tags: [],
+  },
+);
 
 // ── host-aware rows ────────────────────────────────────────────────────────────
 // On a host that can place a diffusion pipeline, the two H3 rows say which is which. The gap is
 // roughly 10x, and the names alone gave the user nothing to choose on.
-assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"), {
-  name: "MiniMax H3 (Fast FP8)",
-  tags: ["BF16"],
-});
+assert.deepEqual(
+  curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "accelerated"),
+  {
+    name: "MiniMax H3 (Fast FP8)",
+    tags: ["BF16"],
+  },
+);
 assert.deepEqual(
   curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "accelerated"),
   { name: "MiniMax-H3-GGUF (Slow)", tags: [] },
@@ -284,7 +340,11 @@ assert.equal(
   "MiniMax H3 (Fast FP8)",
 );
 assert.equal(
-  curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "accelerated"),
+  curatedDisplayNameFor(
+    "unsloth/MiniMax-H3-GGUF",
+    VIDEO_CATALOG,
+    "accelerated",
+  ),
   "MiniMax-H3-GGUF (Slow)",
 );
 // No other model claims a speed nobody measured.
@@ -316,7 +376,9 @@ for (const [label, catalog] of [
   ["image", IMAGE_CATALOG],
   ["audio", AUDIO_CATALOG],
 ] as const) {
-  const offered = new Set(catalogToModelOptions(catalog, "gguf-only").map((o) => o.id));
+  const offered = new Set(
+    catalogToModelOptions(catalog, "gguf-only").map((o) => o.id),
+  );
   for (const group of catalog) {
     assert.ok(
       group.artifacts.some((artifact) => offered.has(artifact.repoId)),
@@ -335,7 +397,10 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
     for (const artifact of group.artifacts) {
       if (artifact.format !== "gguf") continue;
       const row = curatedRowLabelFor(artifact.repoId, catalog);
-      assert.ok(row?.name.endsWith("-GGUF"), `${artifact.repoId} row reads "${row?.name}"`);
+      assert.ok(
+        row?.name.endsWith("-GGUF"),
+        `${artifact.repoId} row reads "${row?.name}"`,
+      );
       assert.deepEqual(row?.tags, []);
     }
   }
@@ -364,7 +429,10 @@ assert.deepEqual(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG), {
   name: "LTX 2 (base)",
   tags: [],
 });
-assert.equal(curatedRowLabelFor("someone/not-in-the-catalog", VIDEO_CATALOG), null);
+assert.equal(
+  curatedRowLabelFor("someone/not-in-the-catalog", VIDEO_CATALOG),
+  null,
+);
 
 // No two rows of a group may render identically, or the picker offers the same thing twice.
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
@@ -374,7 +442,11 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
       const row = curatedRowLabelFor(artifact.repoId, catalog);
       assert.ok(row, `${artifact.repoId} is in the catalog it came from`);
       const key = `${row.name} | ${row.tags.join(",")}`;
-      assert.equal(seen.has(key), false, `${group.displayName}: two rows both read "${key}"`);
+      assert.equal(
+        seen.has(key),
+        false,
+        `${group.displayName}: two rows both read "${key}"`,
+      );
       seen.add(key);
     }
   }
@@ -464,14 +536,39 @@ assert.equal(
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 
 const GB = 1024 ** 3;
+// Delegated to lib/gguf-fit, the formula the Hub badge uses: 0.97 of the card (or the saved VRAM
+// Budget) against weights + KV, then RAM offload at 0.5. The rule here used to be 0.7 of each
+// against the raw file size, which matched neither the Hub nor the loader.
 assert.equal(classifyGgufFit(10 * GB, { gpuGb: 24, systemRamGb: 64 }), "fits");
-assert.equal(classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 64 }), "tight");
+// 20 GiB needs 24.0: past the 23.28 budget, still inside the 24 GiB card.
+assert.equal(
+  classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 64 }),
+  "marginal",
+);
+// 40 GiB needs 47.0: past the card, inside card + RAM offload.
+assert.equal(
+  classifyGgufFit(40 * GB, { gpuGb: 24, systemRamGb: 64 }),
+  "partial",
+);
 assert.equal(classifyGgufFit(100 * GB, { gpuGb: 24, systemRamGb: 64 }), "oom");
 // Unknown device: never scare with OOM.
 assert.equal(classifyGgufFit(100 * GB, { gpuGb: 0, systemRamGb: 0 }), "fits");
-// Unified-memory host (no GPU budget): fit-or-oom against RAM.
-assert.equal(classifyGgufFit(30 * GB, { gpuGb: 0, systemRamGb: 64 }), "fits");
+// No GPU at all: RAM alone, at the 0.5 offload share.
+assert.equal(classifyGgufFit(20 * GB, { gpuGb: 0, systemRamGb: 64 }), "ram");
 assert.equal(classifyGgufFit(60 * GB, { gpuGb: 0, systemRamGb: 64 }), "oom");
+// The saved VRAM Budget moves the line. The old rule ignored the setting entirely, so lowering it
+// changed the Hub's verdict and left the picker's untouched.
+assert.equal(
+  classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.97 }),
+  "fits",
+);
+assert.equal(
+  classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.8 }),
+  "marginal",
+);
+// Only oom fails to load; marginal and partial both run.
+assert.equal(ggufFitRuns("partial"), true);
+assert.equal(ggufFitRuns("oom"), false);
 
 // ── pickDefaultQuant ───────────────────────────────────────────────────────────
 
@@ -520,28 +617,40 @@ const notDownloaded = () => false;
 const qwenGroup = qwen2512;
 // 8 GB consumer GPU: nothing prequant fits (fp8 24 GB, bnb 14 GB) -> GGUF.
 assert.equal(
-  pickDefaultArtifact(qwenGroup, { gpuGb: 8, systemRamGb: 32, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(qwenGroup, {
+    gpuGb: 8,
+    systemRamGb: 32,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 // 24 GB: bnb-4bit (14 GB) fits the 16.8 GB budget.
 assert.equal(
-  pickDefaultArtifact(qwenGroup, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(qwenGroup, {
+    gpuGb: 24,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).format,
   "bnb-4bit",
 );
 // 48 GB: still bnb-4bit. The group has no fp8 artifact -- fp8 is family-denied for qwen-image
 // (it renders black), and the -FP8 repo ships prequant .pt checkpoints, not a single-file
 // safetensors, so the row that used to win here auto-routed to a download that 404s.
 assert.equal(
-  pickDefaultArtifact(qwenGroup, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(qwenGroup, {
+    gpuGb: 48,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).format,
   "bnb-4bit",
 );
 // Unknown device: GGUF (the backend plans offload itself).
 assert.equal(
-  pickDefaultArtifact(qwenGroup, { gpuGb: 0, systemRamGb: 0, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(qwenGroup, {
+    gpuGb: 0,
+    systemRamGb: 0,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 // Downloaded-first: a downloaded bnb-4bit beats everything undownloaded.
@@ -566,16 +675,22 @@ assert.equal(
 const ideogram = groupForRepoId("ideogram-ai/ideogram-4-fp8", IMAGE_CATALOG);
 assert.ok(ideogram);
 assert.equal(
-  pickDefaultArtifact(ideogram, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
-    .repoId,
+  pickDefaultArtifact(ideogram, {
+    gpuGb: 24,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).repoId,
   "ideogram-ai/ideogram-4-nf4-diffusers",
 );
 // A gated BF16 artifact (FLUX.1-dev) is NOT auto-routed when undownloaded even on a big GPU: the download would fail without license/token access.
 const fluxDevRoute = groupForRepoId("unsloth/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDevRoute);
 assert.equal(
-  pickDefaultArtifact(fluxDevRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(fluxDevRoute, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 // But an already-downloaded gated BF16 (the user clearly has access) is still returned.
@@ -588,11 +703,17 @@ assert.equal(
   "black-forest-labs/FLUX.1-dev",
 );
 // FLUX.1 Krea dev: gated BF16 skipped when undownloaded -> the open QuantStack GGUF, whose repo id also resolves to the group.
-const kreaDevRoute = groupForRepoId("black-forest-labs/FLUX.1-Krea-dev", IMAGE_CATALOG);
+const kreaDevRoute = groupForRepoId(
+  "black-forest-labs/FLUX.1-Krea-dev",
+  IMAGE_CATALOG,
+);
 assert.ok(kreaDevRoute);
 assert.equal(
-  pickDefaultArtifact(kreaDevRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .repoId,
+  pickDefaultArtifact(kreaDevRoute, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).repoId,
   "QuantStack/FLUX.1-Krea-dev-GGUF",
 );
 assert.equal(
@@ -603,11 +724,17 @@ assert.equal(
 const lumina = groupForRepoId("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG);
 assert.ok(lumina);
 assert.equal(
-  pickDefaultArtifact(lumina, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
-    .repoId,
+  pickDefaultArtifact(lumina, {
+    gpuGb: 24,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).repoId,
   "Alpha-VLLM/Lumina-Image-2.0",
 );
-assert.equal(loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind, "pipeline");
+assert.equal(
+  loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind,
+  "pipeline",
+);
 // HunyuanImage 2.1: the 50 GB bf16 pipeline misses a 24 GB card so a bare click routes to the QuantStack GGUF; on a large GPU bf16 wins. Both ids share one group.
 const hyimage = groupForRepoId(
   "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
@@ -618,36 +745,61 @@ assert.ok(hyimage);
 // from the Hub, so the group has no quant ladder left. 50 GB still fits a 24 GB card's 61.6 GB
 // budget, so this asserts the group did not silently vanish along with its GGUF.
 assert.equal(
-  pickDefaultArtifact(hyimage, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
-    .repoId,
+  pickDefaultArtifact(hyimage, {
+    gpuGb: 24,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).repoId,
   "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
 );
 assert.equal(
-  pickDefaultArtifact(hyimage, { gpuGb: 141, systemRamGb: 128, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(hyimage, {
+    gpuGb: 141,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).format,
   "bf16",
 );
 // HiDream I1: all three variants group together, a datacenter GPU auto-routes to the Full bf16 (catalog order wins among equal sizes), and 24 GB hides the group.
 const hidream = groupForRepoId("HiDream-ai/HiDream-I1-Full", IMAGE_CATALOG);
 assert.ok(hidream);
-assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG), hidream);
-assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG), hidream);
 assert.equal(
-  pickDefaultArtifact(hidream, { gpuGb: 141, systemRamGb: 128, isDownloaded: notDownloaded })
-    .repoId,
+  groupForRepoId("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG),
+  hidream,
+);
+assert.equal(
+  groupForRepoId("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG),
+  hidream,
+);
+assert.equal(
+  pickDefaultArtifact(hidream, {
+    gpuGb: 141,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).repoId,
   "HiDream-ai/HiDream-I1-Full",
 );
 assert.equal(
-  catalogGroupFitsDevice(hidream, { gpuGb: 24, systemRamGb: 32 }, notDownloaded),
+  catalogGroupFitsDevice(
+    hidream,
+    { gpuGb: 24, systemRamGb: 32 },
+    notDownloaded,
+  ),
   false,
 );
 // FLUX.1-schnell is Apache-2.0 but gated on the Hub, so a not-downloaded BF16 is skipped and the
 // open GGUF is auto-routed instead, even on a GPU that fits the pipeline.
-const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
+const fluxSchnellRoute = groupForRepoId(
+  "unsloth/FLUX.1-schnell",
+  IMAGE_CATALOG,
+);
 assert.ok(fluxSchnellRoute);
 assert.equal(
-  pickDefaultArtifact(fluxSchnellRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(fluxSchnellRoute, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 // HunyuanVideo on 80 GB: the highest-quality artifact that FITS (720p, 52 GB <= budget 56) wins.
@@ -657,14 +809,20 @@ const hunyuan = groupForRepoId(
 );
 assert.ok(hunyuan);
 assert.equal(
-  pickDefaultArtifact(hunyuan, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .label,
+  pickDefaultArtifact(hunyuan, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).label,
   "BF16 - 720p",
 );
 // Same-format artifacts keep declaration order, so 720p is listed first and the fit loop returns it; a budget of 42 skips it (52 > 42) and falls back to 480p (40).
 assert.equal(
-  pickDefaultArtifact(hunyuan, { gpuGb: 60, systemRamGb: 128, isDownloaded: notDownloaded })
-    .label,
+  pickDefaultArtifact(hunyuan, {
+    gpuGb: 60,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).label,
   "BF16 - 480p",
 );
 
@@ -672,28 +830,43 @@ assert.equal(
 const h3 = groupForRepoId("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG);
 assert.ok(h3);
 assert.equal(
-  pickDefaultArtifact(h3, { gpuGb: 48, systemRamGb: 256, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(h3, {
+    gpuGb: 48,
+    systemRamGb: 256,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 assert.equal(
-  pickDefaultArtifact(h3, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(h3, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 assert.equal(
-  pickDefaultArtifact(h3, { gpuGb: 80, systemRamGb: 192, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(h3, {
+    gpuGb: 80,
+    systemRamGb: 192,
+    isDownloaded: notDownloaded,
+  }).format,
   "bf16",
 );
 assert.equal(
-  pickDefaultArtifact(h3, { gpuGb: 122, systemRamGb: 96, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(h3, {
+    gpuGb: 122,
+    systemRamGb: 96,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 assert.equal(
-  pickDefaultArtifact(h3, { gpuGb: 123, systemRamGb: 96, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(h3, {
+    gpuGb: 123,
+    systemRamGb: 96,
+    isDownloaded: notDownloaded,
+  }).format,
   "bf16",
 );
 // The upper tier, in the units the picker is actually handed: 132 GiB of VRAM is 141.7 decimal
@@ -701,34 +874,49 @@ assert.equal(
 // 85 GiB of RAM is 91.3 GB. So this host fits, and a tier table written in decimal GB would
 // wrongly send it to GGUF.
 assert.equal(
-  pickDefaultArtifact(h3, { gpuGb: 132, systemRamGb: 85, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(h3, {
+    gpuGb: 132,
+    systemRamGb: 85,
+    isDownloaded: notDownloaded,
+  }).format,
   "bf16",
 );
 
 // ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────
 // Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget (bnb-4bit/fp8 win there, asserted above) but on an 80 GB GPU (budget 56) it fits and wins.
 assert.equal(
-  pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(qwenGroup, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).format,
   "bf16",
 );
 assert.equal(
-  pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .repoId,
+  pickDefaultArtifact(qwenGroup, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).repoId,
   "Qwen/Qwen-Image-2512",
 );
 // Z-Image-Turbo BF16 (30 GB) misses 24 GB (bnb-4bit wins) but fits a 48 GB GPU (budget 33.6) and wins.
 const zturbo = groupForRepoId("unsloth/Z-Image-Turbo", IMAGE_CATALOG);
 assert.ok(zturbo);
 assert.equal(
-  pickDefaultArtifact(zturbo, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(zturbo, {
+    gpuGb: 24,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).format,
   "bnb-4bit",
 );
 assert.equal(
-  pickDefaultArtifact(zturbo, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(zturbo, {
+    gpuGb: 48,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).format,
   "bf16",
 );
 // FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU but is GATED, so a bare click routes to the open GGUF unless it is already downloaded. Small GPU -> GGUF.
@@ -736,8 +924,11 @@ const fluxDev = groupForRepoId("black-forest-labs/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDev);
 assert.equal(fluxDev.canonicalId, "unsloth/FLUX.1-dev");
 assert.equal(
-  pickDefaultArtifact(fluxDev, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(fluxDev, {
+    gpuGb: 48,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 assert.equal(
@@ -749,8 +940,11 @@ assert.equal(
   "bf16",
 );
 assert.equal(
-  pickDefaultArtifact(fluxDev, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(fluxDev, {
+    gpuGb: 24,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 // LTX-2.3 video carries the official BF16 single file (no FP8: the loader refuses its scaled-fp8 one), which keeps the ~50 GB Gemma3 encoder resident, so B200-class only.
@@ -764,33 +958,54 @@ assert.equal(groupForRepoId("Lightricks/LTX-2.3", VIDEO_CATALOG), ltxGroup);
 // The retired id is not an artifact, so it can never be handed to a load as a repo to fetch.
 assert.equal(loadSpecFor("unsloth/LTX-2.3", VIDEO_CATALOG), null);
 assert.equal(
-  pickDefaultArtifact(ltxGroup, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(ltxGroup, {
+    gpuGb: 24,
+    systemRamGb: 64,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 assert.equal(
-  pickDefaultArtifact(ltxGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(ltxGroup, {
+    gpuGb: 80,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).format,
   "gguf",
 );
 assert.equal(
-  pickDefaultArtifact(ltxGroup, { gpuGb: 192, systemRamGb: 256, isDownloaded: notDownloaded })
-    .format,
+  pickDefaultArtifact(ltxGroup, {
+    gpuGb: 192,
+    systemRamGb: 256,
+    isDownloaded: notDownloaded,
+  }).format,
   "bf16",
 );
 // The LTX-2.3 official checkpoints load as single-file against the family base.
-assert.equal(loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.kind, "single_file");
+assert.equal(
+  loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.kind,
+  "single_file",
+);
 assert.equal(
   loadSpecFor("Lightricks/LTX-2.3", VIDEO_CATALOG)?.filename,
   "ltx-2.3-22b-distilled.safetensors",
 );
 // The official image BF16 pipelines load via from_pretrained (pipeline kind).
-assert.equal(loadSpecFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.kind, "pipeline");
-assert.equal(loadSpecFor("Qwen/Qwen-Image-2512", IMAGE_CATALOG)?.kind, "pipeline");
+assert.equal(
+  loadSpecFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.kind,
+  "pipeline",
+);
+assert.equal(
+  loadSpecFor("Qwen/Qwen-Image-2512", IMAGE_CATALOG)?.kind,
+  "pipeline",
+);
 
 // ── catalogGroupFitsDevice (the fit-on-device toggle for catalog rows) ─────────
 
-const wanA14b = groupForRepoId("Wan-AI/Wan2.2-T2V-A14B-Diffusers", VIDEO_CATALOG);
+const wanA14b = groupForRepoId(
+  "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+  VIDEO_CATALOG,
+);
 const ltxBase = groupForRepoId("Lightricks/LTX-2", VIDEO_CATALOG);
 const hunyuanFit = groupForRepoId(
   "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -805,7 +1020,11 @@ assert.equal(catalogGroupFitsDevice(ltxBase, consumer, notDownloaded), false); /
 assert.equal(catalogGroupFitsDevice(hunyuanFit, consumer, notDownloaded), true);
 // But on a tiny device even those are hidden.
 assert.equal(
-  catalogGroupFitsDevice(hunyuanFit, { gpuGb: 8, systemRamGb: 8 }, notDownloaded),
+  catalogGroupFitsDevice(
+    hunyuanFit,
+    { gpuGb: 8, systemRamGb: 8 },
+    notDownloaded,
+  ),
   false,
 );
 // A GGUF in the group is always runnable (its quant ladder self-fits + offloads), so LTX-2.3 stays visible on a tiny card despite its 90 GB BF16 sibling.
@@ -823,10 +1042,17 @@ assert.equal(
   true,
 );
 // Unknown device budget keeps everything (we cannot tell), even a 114 GB group.
-assert.equal(catalogGroupFitsDevice(wanA14b, { gpuGb: 0, systemRamGb: 0 }, notDownloaded), true);
+assert.equal(
+  catalogGroupFitsDevice(wanA14b, { gpuGb: 0, systemRamGb: 0 }, notDownloaded),
+  true,
+);
 // On a B200-class budget the large bf16 groups fit and stay visible.
 assert.equal(
-  catalogGroupFitsDevice(wanA14b, { gpuGb: 192, systemRamGb: 256 }, notDownloaded),
+  catalogGroupFitsDevice(
+    wanA14b,
+    { gpuGb: 192, systemRamGb: 256 },
+    notDownloaded,
+  ),
   true,
 );
 
@@ -834,12 +1060,19 @@ assert.equal(
 
 // Every audio group carries a task tag; the other catalogs carry none.
 for (const group of AUDIO_CATALOG) {
-  assert.ok(group.task === "tts" || group.task === "stt", `audio group ${group.canonicalId} needs a task`);
+  assert.ok(
+    group.task === "tts" || group.task === "stt",
+    `audio group ${group.canonicalId} needs a task`,
+  );
   assert.equal(group.scope, "audio");
 }
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
   for (const group of catalog) {
-    assert.equal(group.task, undefined, `non-audio group ${group.canonicalId} must not carry a task`);
+    assert.equal(
+      group.task,
+      undefined,
+      `non-audio group ${group.canonicalId} must not carry a task`,
+    );
   }
 }
 // The Orpheus GGUF groups with its safetensors base and reports the gguf load kind.
@@ -847,11 +1080,20 @@ const orpheus = groupForRepoId("unsloth/orpheus-3b-0.1-ft-GGUF", AUDIO_CATALOG);
 assert.ok(orpheus);
 assert.equal(orpheus.canonicalId, "unsloth/orpheus-3b-0.1-ft");
 assert.equal(orpheus.task, "tts");
-assert.equal(loadSpecFor("unsloth/orpheus-3b-0.1-ft-GGUF", AUDIO_CATALOG)?.kind, "gguf");
+assert.equal(
+  loadSpecFor("unsloth/orpheus-3b-0.1-ft-GGUF", AUDIO_CATALOG)?.kind,
+  "gguf",
+);
 assert.equal(loadSpecFor("unsloth/csm-1b", AUDIO_CATALOG)?.kind, "pipeline");
 // The whisper sidecar repos resolve as stt groups.
-assert.equal(groupForRepoId("unsloth/whisper-large-v3-turbo", AUDIO_CATALOG)?.task, "stt");
-assert.equal(groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.task, "stt");
+assert.equal(
+  groupForRepoId("unsloth/whisper-large-v3-turbo", AUDIO_CATALOG)?.task,
+  "stt",
+);
+assert.equal(
+  groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.task,
+  "stt",
+);
 // A chat model stays unknown to the audio catalog.
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", AUDIO_CATALOG), null);
 // MiniMax Music3 publishes a 67 GB repository, but its official BF16 modular loader
@@ -859,19 +1101,17 @@ assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", AUDIO_CATALOG), null);
 const minimaxMusic = groupForRepoId("MiniMaxAI/MiniMax-Music3", AUDIO_CATALOG);
 assert.ok(minimaxMusic);
 assert.equal(
-  curatedArtifactFitsDevice(
-    "MiniMaxAI/MiniMax-Music3",
-    AUDIO_CATALOG,
-    { gpuGb: 95, systemRamGb: 0 },
-  ),
+  curatedArtifactFitsDevice("MiniMaxAI/MiniMax-Music3", AUDIO_CATALOG, {
+    gpuGb: 95,
+    systemRamGb: 0,
+  }),
   true,
 );
 assert.equal(
-  curatedArtifactFitsDevice(
-    "MiniMaxAI/MiniMax-Music3",
-    AUDIO_CATALOG,
-    { gpuGb: 23, systemRamGb: 256 },
-  ),
+  curatedArtifactFitsDevice("MiniMaxAI/MiniMax-Music3", AUDIO_CATALOG, {
+    gpuGb: 23,
+    systemRamGb: 256,
+  }),
   false,
 );
 
@@ -946,20 +1186,28 @@ async function fetchWithRetry(
   let why = "unknown";
   for (let attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++) {
     if (Date.now() >= networkDeadlineAt) {
-      return { response: null, body: "", why: "the network check ran out of its overall budget" };
+      return {
+        response: null,
+        body: "",
+        why: "the network check ran out of its overall budget",
+      };
     }
     try {
       // A per-attempt deadline, or a peer that accepts the connection and then stalls has no
       // retry and no fail-open: fetch simply never settles, and the scheduled job dies on its own
       // 10-minute timeout as a RED run. Which is the one outcome this check promises not to
       // produce for a network blip.
-      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
+      const response = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+      });
       // Read the body HERE, under that same deadline. Headers can arrive promptly and the body
       // still stall, and the caller parses outside this function where an abort would surface as
       // "the Hub answered 200 with unreadable JSON" -- a catalog failure, for a stalled socket.
       // It also drains the 429/5xx responses we are about to retry, rather than leaking them.
       const body = init?.method === "HEAD" ? "" : await response.text();
-      if (response.status !== 429 && response.status < 500) return { response, body, why: "" };
+      if (response.status !== 429 && response.status < 500)
+        return { response, body, why: "" };
       why = `HTTP ${response.status}`;
     } catch (err) {
       why = String(err);
@@ -970,13 +1218,18 @@ async function fetchWithRetry(
 }
 
 /** Run `work` over `items`, a few at a time: ~35 repos, and the Hub does not need a thundering herd. */
-async function inBatches<T>(items: T[], work: (item: T) => Promise<void>): Promise<void> {
+async function inBatches<T>(
+  items: T[],
+  work: (item: T) => Promise<void>,
+): Promise<void> {
   for (let i = 0; i < items.length; i += NETWORK_BATCH) {
     await Promise.all(items.slice(i, i + NETWORK_BATCH).map(work));
   }
 }
 
-async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<string[]> {
+async function checkCatalogAgainstTheHub(
+  catalogs: CatalogGroup[][],
+): Promise<string[]> {
   networkDeadlineAt = Date.now() + NETWORK_DEADLINE_MS;
   const failures: string[] = [];
   const groups = catalogs.flat();
@@ -990,76 +1243,94 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
     }
   }
 
-  await inBatches([...artifactsByRepo.entries()], async ([repoId, artifacts]) => {
-    const { response, body, why } = await fetchWithRetry(`${HF_API}/${repoId}`);
-    if (response === null) {
-      console.warn(
-        `::warning::${repoId}: the Hub did not answer after ${NETWORK_ATTEMPTS} attempts (${why}). Not a verdict about the catalog.`,
+  await inBatches(
+    [...artifactsByRepo.entries()],
+    async ([repoId, artifacts]) => {
+      const { response, body, why } = await fetchWithRetry(
+        `${HF_API}/${repoId}`,
       );
-      return;
-    }
-    if (!response.ok) {
-      // 401 on the METADATA endpoint means private-or-absent (the Hub will not say which);
-      // a gated-but-public repo answers 200 with gated set, so this is never just "needs a licence".
-      failures.push(
-        `${repoId}: HTTP ${response.status} from ${HF_API}/${repoId} -- the repo is missing, renamed or private, so no user can download it`,
-      );
-      return;
-    }
-    let repo: HubRepo;
-    try {
-      repo = JSON.parse(body) as HubRepo;
-    } catch (err) {
-      // A 200 that is not JSON is a captive portal or a proxy, not a catalog problem. Reject the
-      // run rather than throwing out of Promise.all with a raw stack.
-      failures.push(`${repoId}: the Hub answered 200 with unreadable JSON (${err})`);
-      return;
-    }
-    const hubGated = Boolean(repo.gated);
-    for (const artifact of artifacts) {
-      const declaredGated = artifact.gated === true;
-      if (hubGated && !declaredGated) {
-        failures.push(
-          `${repoId}: the Hub reports gated=${JSON.stringify(repo.gated)} but the catalog entry has no \`gated: true\`, so an anonymous download 401s`,
-        );
-      } else if (!hubGated && declaredGated) {
-        failures.push(
-          `${repoId}: marked \`gated: true\` but the Hub reports it open -- the router skips it for no reason`,
-        );
-      }
-    }
-
-    const declaredFiles = [
-      ...new Set(artifacts.map((a) => a.filename).filter((f): f is string => Boolean(f))),
-    ];
-    if (declaredFiles.length === 0) return;
-    const listed = new Set((repo.siblings ?? []).map((s) => s.rfilename));
-    for (const filename of declaredFiles) {
-      if (!listed.has(filename)) {
-        failures.push(`${repoId}: declares '${filename}', which the repo does not contain`);
-        continue;
-      }
-      if (hubGated) continue; // resolve/ 401s without a token; the sibling list is the check.
-      // Listed is not the same as fetchable: resolve/ is the endpoint the download hits.
-      const head = await fetchWithRetry(`${HF_RESOLVE}/${repoId}/resolve/main/${filename}`, {
-        method: "HEAD",
-      });
-      if (head.response === null) {
+      if (response === null) {
         console.warn(
-          `::warning::${repoId}: could not HEAD '${filename}' (${head.why}). Not a verdict.`,
+          `::warning::${repoId}: the Hub did not answer after ${NETWORK_ATTEMPTS} attempts (${why}). Not a verdict about the catalog.`,
         );
-      } else if (!head.response.ok) {
-        failures.push(
-          `${repoId}: '${filename}' is listed but resolve/main returned HTTP ${head.response.status}`,
-        );
+        return;
       }
-    }
-  });
+      if (!response.ok) {
+        // 401 on the METADATA endpoint means private-or-absent (the Hub will not say which);
+        // a gated-but-public repo answers 200 with gated set, so this is never just "needs a licence".
+        failures.push(
+          `${repoId}: HTTP ${response.status} from ${HF_API}/${repoId} -- the repo is missing, renamed or private, so no user can download it`,
+        );
+        return;
+      }
+      let repo: HubRepo;
+      try {
+        repo = JSON.parse(body) as HubRepo;
+      } catch (err) {
+        // A 200 that is not JSON is a captive portal or a proxy, not a catalog problem. Reject the
+        // run rather than throwing out of Promise.all with a raw stack.
+        failures.push(
+          `${repoId}: the Hub answered 200 with unreadable JSON (${err})`,
+        );
+        return;
+      }
+      const hubGated = Boolean(repo.gated);
+      for (const artifact of artifacts) {
+        const declaredGated = artifact.gated === true;
+        if (hubGated && !declaredGated) {
+          failures.push(
+            `${repoId}: the Hub reports gated=${JSON.stringify(repo.gated)} but the catalog entry has no \`gated: true\`, so an anonymous download 401s`,
+          );
+        } else if (!hubGated && declaredGated) {
+          failures.push(
+            `${repoId}: marked \`gated: true\` but the Hub reports it open -- the router skips it for no reason`,
+          );
+        }
+      }
+
+      const declaredFiles = [
+        ...new Set(
+          artifacts
+            .map((a) => a.filename)
+            .filter((f): f is string => Boolean(f)),
+        ),
+      ];
+      if (declaredFiles.length === 0) return;
+      const listed = new Set((repo.siblings ?? []).map((s) => s.rfilename));
+      for (const filename of declaredFiles) {
+        if (!listed.has(filename)) {
+          failures.push(
+            `${repoId}: declares '${filename}', which the repo does not contain`,
+          );
+          continue;
+        }
+        if (hubGated) continue; // resolve/ 401s without a token; the sibling list is the check.
+        // Listed is not the same as fetchable: resolve/ is the endpoint the download hits.
+        const head = await fetchWithRetry(
+          `${HF_RESOLVE}/${repoId}/resolve/main/${filename}`,
+          {
+            method: "HEAD",
+          },
+        );
+        if (head.response === null) {
+          console.warn(
+            `::warning::${repoId}: could not HEAD '${filename}' (${head.why}). Not a verdict.`,
+          );
+        } else if (!head.response.ok) {
+          failures.push(
+            `${repoId}: '${filename}' is listed but resolve/main returned HTTP ${head.response.status}`,
+          );
+        }
+      }
+    },
+  );
 
   // Advisory only. A canonicalId is a display/grouping key, and 15 of them are deliberately not
   // repos; but one that is BOTH `unsloth/*`-shaped and dead clears every owner guard in the app,
   // so it is worth naming without failing a scheduled job over it.
-  const artifactIds = new Set([...artifactsByRepo.keys()].map((id) => id.toLowerCase()));
+  const artifactIds = new Set(
+    [...artifactsByRepo.keys()].map((id) => id.toLowerCase()),
+  );
   const orphans = groups
     .map((g) => g.canonicalId)
     .filter((id) => !artifactIds.has(id.toLowerCase()));
@@ -1077,12 +1348,19 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 }
 
 if (process.argv.includes("--network")) {
-  console.log("model-catalog check: --network, asking the Hub about every declared artifact...");
-  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG]);
+  console.log(
+    "model-catalog check: --network, asking the Hub about every declared artifact...",
+  );
+  const failures = await checkCatalogAgainstTheHub([
+    IMAGE_CATALOG,
+    VIDEO_CATALOG,
+  ]);
   if (failures.length > 0) {
     for (const failure of failures) console.error(`::error::${failure}`);
     console.error(`model-catalog network check: ${failures.length} problem(s)`);
     process.exit(1);
   }
-  console.log("model-catalog network check: every declared repo, file and gated flag agrees with the Hub");
+  console.log(
+    "model-catalog network check: every declared repo, file and gated flag agrees with the Hub",
+  );
 }

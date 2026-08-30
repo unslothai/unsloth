@@ -14,6 +14,12 @@ const PICKERS = read(
   "../src/features/model-picker/components/model-selector/pickers.tsx",
 );
 const MODELS_TABLE = read("../src/features/hub/catalog/models-table.tsx");
+const CATALOG = read(
+  "../src/features/model-picker/components/model-selector/model-catalog.ts",
+);
+const RECOMMENDED = read(
+  "../src/features/model-picker/components/model-selector/recommended-fit.ts",
+);
 const SIDEBAR = read("../src/components/app-sidebar.tsx");
 const CSS = read("../src/index.css");
 
@@ -58,10 +64,16 @@ test("a row's leading dot starts where its section label does", () => {
   // Section labels sit at px-2.5. The dot is centred in a 14px hover target, so its slot starts
   // at 10 - (14 - 5) / 2 = 5.5px for the dot to land on 10px. px-2 put it at 12.5px.
   assert.match(PICKERS, /py-1\.5 pl-\[5\.5px\] pr-2 text-left text-sm/);
-  const label = PICKERS.slice(PICKERS.indexOf("flex items-center justify-between gap-1 px-2.5"));
+  const label = PICKERS.slice(
+    PICKERS.indexOf("flex items-center justify-between gap-1 px-2.5"),
+  );
   assert.ok(label.startsWith("flex items-center justify-between gap-1 px-2.5"));
   // The 14px hover target is what makes 5.5 the right number; shrinking it would move the dot.
-  assert.ok(PICKERS.includes('className="flex size-[14px] shrink-0 items-center justify-center"'));
+  assert.ok(
+    PICKERS.includes(
+      'className="flex size-[14px] shrink-0 items-center justify-center"',
+    ),
+  );
 });
 
 test("the parameter and size columns are sized to the ink they hold", () => {
@@ -103,14 +115,16 @@ test("an over budget row dims instead of putting a pill on every line", () => {
 
 test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   // The quantization rows had their own copy and stayed red when the pill went orange.
-  assert.equal(PICKERS.split("VRAM_VERDICT = {").length - 1, 1, "one verdict table");
+  assert.equal(
+    PICKERS.split("const VRAM_VERDICT").length - 1,
+    1,
+    "one verdict table",
+  );
   assert.ok(!PICKERS.includes("!text-red-700"), "no red fit badge left");
   assert.ok(!PICKERS.includes(">\n        OOM\n"), "no OOM text pill left");
-  // Variant rows render the shared badge, in the GGUF vocabulary, and opt out of the hover reveal.
-  assert.match(
-    PICKERS,
-    /<VramBadge\n\s*status=\{oom \? "exceeds" : tight \? "tight" : null\}\n\s*source="gguf"\n\s*\/>/,
-  );
+  // Variant rows hand the classifier's verdict straight to the badge, with no second mapping
+  // between them to drift.
+  assert.ok(PICKERS.includes("<VramBadge status={fit} />"));
   assert.equal(
     PICKERS.split(
       '<VramBadge status={vramStatus} source="device" revealOnHover={!selected} />',
@@ -120,45 +134,65 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   );
 });
 
+test("chat and the Hub answer the fit question with one formula", () => {
+  // The picker carried its own rule: 0.7 of GPU plus 0.7 of RAM against the raw file size, with a
+  // comment claiming it matched _select_gpus. The loader admits against the saved VRAM Budget or
+  // 0.97, over weights PLUS estimated KV, so 0.7 matched neither the loader nor the Hub badge.
+  assert.ok(
+    CATALOG.includes("return classifyGgufFitForDevice(sizeBytes, budget);"),
+    "the catalog classifier delegates",
+  );
+  assert.ok(
+    RECOMMENDED.includes('from "../../../../lib/gguf-fit.ts"'),
+    "and so does the Recommended fit filter",
+  );
+  // No copy of the old budget survives in either GGUF path.
+  for (const [name, src] of [
+    ["pickers", PICKERS],
+    ["recommended-fit", RECOMMENDED],
+  ] as const) {
+    assert.ok(!src.includes("* 0.7"), `${name} has no 0.7 budget left`);
+  }
+  // The saved VRAM Budget now reaches chat. Moving the slider used to change the Hub's verdicts
+  // and leave the picker's untouched.
+  assert.ok(PICKERS.includes("useVramBudgetFraction()"));
+  assert.ok(PICKERS.includes("budgetFraction,"));
+});
+
 test("each fit verdict is an info mark that explains itself", () => {
-  // A pill shouted a three letter acronym; the mark says what it means on hover. Tight spills
-  // past VRAM into system RAM, oom clears neither budget, so the two hints differ.
+  // A pill shouted a three letter acronym; the mark says what it means on hover.
   assert.ok(PICKERS.includes("icon={InformationCircleIcon}"));
-  // A GGUF over budget still loads: llama-server hands it to --fit.
+  // Keyed by the Hub's five classes, which is how the picker gained the tier it was missing:
+  // over budget but still card-sized needs no system RAM, so it fires on unified memory too.
+  assert.ok(PICKERS.includes("marginal: MIGHT_FIT"));
+  assert.ok(PICKERS.includes("partial: OFFLOADS"));
+  assert.ok(PICKERS.includes("oom: WONT_FIT"));
+  // The training estimator's three words map onto those rather than carrying their own copy.
+  assert.ok(PICKERS.includes("tight: MIGHT_FIT"));
+  assert.ok(PICKERS.includes("exceeds: WONT_FIT"));
+  // Only oom fails to load, so only its hint says so; partial offloads and runs slower.
   assert.ok(
     PICKERS.includes(
-      "hint: \"Model may not fit but still works with offloading. Expect slower inference.\"",
-    ),
-  );
-  // A model row's `tight` comes from checkVramFit, which is 75-100% of VRAM: it fits on the card
-  // entirely, so telling that row it spills into system RAM was false. The two vocabularies now
-  // get their own copy, chosen at the call site.
-  assert.ok(
-    PICKERS.includes(
-      'hint: "Only fits by spilling into system RAM. Expect slower inference."',
+      'hint: "Model doesn\'t fit but can still work with offloading. Expect slower inference."',
     ),
   );
   assert.ok(
     PICKERS.includes(
-      'hint: "Uses nearly all your VRAM, with little headroom for anything else."',
+      'hint: "Larger than your VRAM and system RAM together. This model will not load."',
     ),
   );
-  // And a model row's `exceeds` no longer promises a slow load: it can be a curated pipeline whose
-  // loader refuses CPU offload outright.
-  assert.ok(
-    PICKERS.includes('hint: "Needs more memory than this device has."'),
-  );
-  assert.ok(PICKERS.includes('source="gguf"'));
-  assert.ok(PICKERS.includes('source="device"'));
-  // A selected over-budget row is exempt from dimming, so hiding its mark left it with no verdict
-  // at all until hovered, which is nothing at rest and nothing on touch.
-  assert.match(PICKERS, /exceeds &&\n\s*!selected &&/);
-  // And the mark suppresses the button it sits inside, so reading it cannot start a download.
-  assert.match(PICKERS, /onClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);/);
-  // Both marks are reachable by screen readers without the tooltip.
+  // Marks are reachable by screen readers without the tooltip.
+  assert.ok(PICKERS.includes('label: "Partial offload"'));
+  assert.ok(PICKERS.includes('label: "Might fit"'));
   assert.ok(PICKERS.includes('label: "Does not fit"'));
-  assert.ok(PICKERS.includes('label: "Tight fit"'));
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
+  // A marginal row is a full GPU load, so it is not dimmed with the over budget ones.
+  assert.ok(
+    PICKERS.includes(
+      'return status === "partial" || status === "ram" || status === "oom" || status === "exceeds";',
+    ) || /function isOverBudget[\s\S]{0,320}"exceeds"/.test(PICKERS),
+    "dimming covers the orange verdicts only",
+  );
 });
 
 test("aligned meta slots spend their slack on the name", () => {

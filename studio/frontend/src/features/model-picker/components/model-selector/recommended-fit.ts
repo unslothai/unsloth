@@ -4,6 +4,8 @@
 // Pure helpers for the Recommended list: which formats to surface and whether a
 // model fits the device. No React/DOM deps so they are easy to test.
 
+import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 const MLX_RE = /-MLX(?:$|-)/i;
 
@@ -66,7 +68,7 @@ const PARAM_RE = /(?:^|[-_/. ])[eE]?(\d+(?:\.\d+)?)\s*[bB](?=$|[-_./ ])/;
 export function paramsFromId(id: string): number | undefined {
   const match = PARAM_RE.exec(id);
   if (!match) return undefined;
-  const billions = parseFloat(match[1]);
+  const billions = Number.parseFloat(match[1]);
   return Number.isFinite(billions) && billions > 0 ? billions * 1e9 : undefined;
 }
 
@@ -79,36 +81,40 @@ export function estimateQuantBytes(params: number): number {
   return params * MIN_QUANT_BYTES_PER_PARAM;
 }
 
-/** A model fits when its on-disk size (or a precomputed VRAM estimate) is within
- * the device budget (0.7*GPU + 0.7*RAM). Unknown device means we cannot tell, so
- * treat it as fitting. Unknown size normally fits too, but Recommended passes
- * `requireKnown` so a model we cannot size (e.g. a huge GGUF with no metadata or
- * size token) is hidden rather than wrongly shown. */
+/** A model fits when it can run at all: `classifyGgufFit` short of `oom`, so a partial CPU
+ * offload counts, since that loads and merely runs slower. Shares the loader's formula with the
+ * Hub badge and the quant rows, because this predicate ALSO gates the "Fits on device" filter,
+ * and a filter that hides a row the quant list would badge as runnable is the same bug twice.
+ *
+ * Unknown device means we cannot tell, so treat it as fitting. Unknown size normally fits too,
+ * but Recommended passes `requireKnown` so a model we cannot size (e.g. a huge GGUF with no
+ * metadata or size token) is hidden rather than wrongly shown. */
 export function fitsDevice(opts: {
   sizeBytes?: number;
-  estimatedVramGb?: number;
   gpuGb?: number;
   systemRamGb?: number;
   budgetKnown?: boolean;
   requireKnown?: boolean;
+  budgetFraction?: number;
 }): boolean {
   const {
     sizeBytes,
-    estimatedVramGb,
     gpuGb,
     systemRamGb,
     budgetKnown,
     requireKnown,
+    budgetFraction,
   } = opts;
-  // Unified-memory hosts (Mac / no discrete GPU) report system RAM but no GPU,
-  // so the budget must include RAM. Only an entirely unknown budget fits freely.
-  const budgetGb = Math.max(0, gpuGb ?? 0) * 0.7 + Math.max(0, systemRamGb ?? 0) * 0.7;
-  if (budgetGb <= 0) return !budgetKnown;
+  // Unified-memory hosts (Mac / no discrete GPU) report system RAM but no GPU, so the budget must
+  // include RAM. Only an entirely unknown budget fits freely.
+  const anyBudget =
+    Math.max(0, gpuGb ?? 0) > 0 || Math.max(0, systemRamGb ?? 0) > 0;
+  if (!anyBudget) return !budgetKnown;
   if (sizeBytes && sizeBytes > 0) {
-    return sizeBytes / 1024 ** 3 <= budgetGb;
-  }
-  if (estimatedVramGb && estimatedVramGb > 0) {
-    return estimatedVramGb <= budgetGb;
+    return (
+      classifyGgufFit(sizeBytes, { gpuGb, systemRamGb, budgetFraction }) !==
+      "oom"
+    );
   }
   return requireKnown ? false : true;
 }
