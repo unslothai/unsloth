@@ -89,6 +89,7 @@ import {
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
+  InformationCircleIcon,
   Image03Icon,
   PinIcon,
   RemoveCircleIcon,
@@ -631,38 +632,57 @@ function DownloadedBadge() {
   );
 }
 
-/** VRAM verdict for Hub rows: over budget, or a tight fit. */
+/** What each fit verdict marks and says. Tight spills past VRAM into system RAM; oom clears
+ *  neither budget, so it pages further still. Orange over yellow: a step, not an error. */
+const VRAM_VERDICT = {
+  exceeds: {
+    label: "Does not fit",
+    tone: "!text-orange-600 dark:!text-orange-300",
+    hint: "Model doesn't fit. Expect much slower inference.",
+  },
+  tight: {
+    label: "Tight fit",
+    tone: "!text-yellow-600 dark:!text-yellow-400",
+    hint: "Model only fits by spilling into system RAM. Expect slower inference.",
+  },
+} as const;
+
+/** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
 function VramBadge({
   status,
-  /** Model rows hold the pill in the layout and paint it on hover; variant rows always show it. */
+  /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
   revealOnHover = false,
 }: {
   status?: VramFitStatus | null;
   revealOnHover?: boolean;
 }) {
-  if (status === "exceeds") {
-    return (
-      // Orange, not red: over budget is a fit verdict, not a failure.
-      <span
-        className={cn(
-          "whitespace-nowrap text-ui-9 font-medium !text-orange-700 !bg-orange-50 dark:!text-orange-300 dark:!bg-orange-500/15 px-1.5 py-0.5 rounded",
-          revealOnHover &&
-            "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
-        )}
-      >
-        OOM
-      </span>
-    );
-  }
-  if (status === "tight") {
-    return (
-      // Yellow, a step below the pill, so the two verdicts do not share a hue.
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-yellow-400">
-        TIGHT
-      </span>
-    );
-  }
-  return null;
+  const verdict =
+    status === "exceeds" || status === "tight" ? VRAM_VERDICT[status] : null;
+  if (!verdict) return null;
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          aria-label={verdict.label}
+          className={cn(
+            "flex size-[18px] shrink-0 items-center justify-center",
+            verdict.tone,
+            revealOnHover &&
+              "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+          )}
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            className="size-3.5"
+            strokeWidth={1.8}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {verdict.hint}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
@@ -799,8 +819,8 @@ const META_COLUMN = {
   badgeDevice: "min-w-min min-[560px]:w-[26px]",
   // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
   badgeWide: "min-w-min min-[560px]:w-[36px]",
-  // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
-  vram: "min-w-min min-[560px]:w-[4em]",
+  // The fit mark (Hub rows), one 18px glyph.
+  vram: "min-w-min min-[560px]:w-[18px]",
   // Device rows hug the chip. A column sized for "235B" spends 6.1px in front of a "30B", and that
   // leftover IS the gap to the modality mark; -ml-0.5 against the cluster's gap-1 makes it 2px. In
   // exchange a wider label pulls that row's name and quant chip left. Hub keeps its "2779.5B".

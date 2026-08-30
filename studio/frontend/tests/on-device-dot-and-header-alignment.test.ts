@@ -97,19 +97,15 @@ test("an over budget row dims instead of putting a pill on every line", () => {
       '"opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
     ),
   );
-  // The pill is hidden, not removed, and its slot keeps a width, so revealing it cannot reflow.
-  assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[4em]"'));
-  // TIGHT is rare enough to stay put; only the OOM pill hides.
-  const tight = PICKERS.slice(PICKERS.indexOf('if (status === "tight")'));
-  assert.ok(!tight.slice(0, 300).includes("opacity-0"));
+  // The mark is hidden, not removed, and its slot keeps a width, so revealing it cannot reflow.
+  assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[18px]"'));
 });
 
 test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   // The quantization rows had their own copy and stayed red when the pill went orange.
-  // Match on the text colour: "!bg-orange-50" is also a prefix of "!bg-orange-500/15".
-  assert.equal(PICKERS.split("!text-orange-700").length - 1, 1, "one OOM pill");
-  assert.equal(PICKERS.split("!text-yellow-400").length - 1, 1, "one TIGHT label");
+  assert.equal(PICKERS.split("VRAM_VERDICT = {").length - 1, 1, "one verdict table");
   assert.ok(!PICKERS.includes("!text-red-700"), "no red fit badge left");
+  assert.ok(!PICKERS.includes(">\n        OOM\n"), "no OOM text pill left");
   // Variant rows render the shared badge and opt out of the hover reveal.
   assert.ok(
     PICKERS.includes(
@@ -122,6 +118,26 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
     2,
     "both model row slots reveal on hover",
   );
+});
+
+test("each fit verdict is an info mark that explains itself", () => {
+  // A pill shouted a three letter acronym; the mark says what it means on hover. Tight spills
+  // past VRAM into system RAM, oom clears neither budget, so the two hints differ.
+  assert.ok(PICKERS.includes("icon={InformationCircleIcon}"));
+  assert.ok(
+    PICKERS.includes(
+      "hint: \"Model doesn't fit. Expect much slower inference.\"",
+    ),
+  );
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Model only fits by spilling into system RAM. Expect slower inference."',
+    ),
+  );
+  // Both marks are reachable by screen readers without the tooltip.
+  assert.ok(PICKERS.includes('label: "Does not fit"'));
+  assert.ok(PICKERS.includes('label: "Tight fit"'));
+  assert.ok(PICKERS.includes("aria-label={verdict.label}"));
 });
 
 test("aligned meta slots spend their slack on the name", () => {
