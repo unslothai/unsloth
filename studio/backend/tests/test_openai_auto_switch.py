@@ -2578,6 +2578,52 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
 
 
+def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch):
+    import routes.models as models_route
+    from storage import studio_db
+    from utils import hf_cache_settings
+    import utils.paths as paths
+
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    model.mkdir(parents = True)
+    (model / "model-Q4_K_M.gguf").write_bytes(b"x")
+    quant_dir = model / "Q8_0"
+    quant_dir.mkdir()
+    (quant_dir / "model-Q8_0.gguf").write_bytes(b"xx")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+    scan_models_dir = models_route._scan_models_dir
+    scan_lmstudio_dir = models_route._scan_lmstudio_dir
+
+    monkeypatch.setattr(
+        models_route,
+        "_scan_models_dir",
+        lambda path, **kwargs: scan_models_dir(path, **kwargs) if path in {root, quant_dir} else [],
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_scan_lmstudio_dir",
+        lambda path: scan_lmstudio_dir(path) if path in {root, quant_dir} else [],
+    )
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(
+        studio_db,
+        "list_scan_folders",
+        lambda: [{"path": str(root)}, {"path": str(quant_dir)}],
+    )
+
+    index = resolver._build_index()
+
+    assert {entry.load_path for entry in index.values()} == {str(model)}
+    assert {entry.variants for entry in index.values()} == {("Q4_K_M", "Q8_0")}
+
+
 def test_non_gguf_entries_skip_gguf_sibling_revision_scans(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

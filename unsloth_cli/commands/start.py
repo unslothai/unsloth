@@ -2588,13 +2588,10 @@ def _merge_codex_config(existing: str, base: str) -> str:
 # Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+_CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
 
 
-def _codex_supports_model_catalog() -> bool:
-    executable = _which_with_install_dirs("codex")
-    if executable is None:
-        # A --no-launch recipe may be copied to another machine; assume a current Codex.
-        return True
+def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
@@ -2604,11 +2601,27 @@ def _codex_supports_model_catalog() -> bool:
             env = _probe_env(),
         )
     except Exception:
-        return False
+        return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _CODEX_MODEL_CATALOG_MIN_VERSION
-    )
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _codex_supports_model_catalog() -> bool:
+    executable = _which_with_install_dirs("codex")
+    if executable is None:
+        # A --no-launch recipe may be copied to another machine; assume a current Codex.
+        return True
+    version = _codex_executable_version(executable)
+    return version is not None and version >= _CODEX_MODEL_CATALOG_MIN_VERSION
+
+
+def _codex_supports_patch_line_endings() -> bool:
+    executable = _which_with_install_dirs("codex")
+    if executable is None:
+        # A normal launch installs Codex after this check; no-launch may run elsewhere.
+        return True
+    version = _codex_executable_version(executable)
+    return version is not None and version >= _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION
 
 
 def _codex_model_catalog(model: dict) -> dict:
@@ -2631,7 +2644,7 @@ def _codex_model_catalog(model: dict) -> dict:
         "supports_reasoning_summary_parameter": False,
         "support_verbosity": False,
         "default_verbosity": None,
-        "apply_patch_tool_type": None,
+        "apply_patch_tool_type": "freeform",
         "truncation_policy": {"mode": "bytes", "limit": 10_000},
         "supports_parallel_tool_calls": False,
         "experimental_supported_tools": [],
@@ -2659,6 +2672,11 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         f'model_provider = "{_CODEX_PROFILE}"\n'
         f"model = {json.dumps(model['id'])}\n"
     )
+    if _codex_supports_patch_line_endings():
+        profile_text += (
+            "suppress_unstable_features_warning = true\n"
+            "features.apply_patch_preserve_line_endings = true\n"
+        )
     if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
         catalog = home / "model-catalog.json"
         catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
