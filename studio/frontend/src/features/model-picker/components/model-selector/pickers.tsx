@@ -635,16 +635,16 @@ function DownloadedBadge() {
 function VramBadge({ status }: { status?: VramFitStatus | null }) {
   if (status === "exceeds") {
     return (
-      // Held in the layout but painted only on the hovered row: on a list where most rows are over
-      // budget, one pill per row is a wall of red. The dimmed row carries the verdict until then.
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100">
+      // Orange, not red: over budget is a fit verdict, not a failure. Held in the layout but
+      // painted only on the hovered row, so a mostly over budget list is not a wall of colour.
+      <span className="whitespace-nowrap text-ui-9 font-medium !text-orange-700 !bg-orange-50 dark:!text-orange-300 dark:!bg-orange-500/15 px-1.5 py-0.5 rounded opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100">
         OOM
       </span>
     );
   }
   if (status === "tight") {
     return (
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-amber-400">
+      <span className="whitespace-nowrap text-ui-9 font-medium !text-yellow-400">
         TIGHT
       </span>
     );

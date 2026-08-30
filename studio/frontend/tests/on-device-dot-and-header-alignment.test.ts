@@ -84,8 +84,8 @@ test("the parameter chip hugs its label so the gap to the modality mark is the r
 });
 
 test("an over budget row dims instead of putting a pill on every line", () => {
-  // Recommended is mostly over budget on a normal GPU, so a pill per row was a wall of red. The
-  // row dims and the pill is painted only while that row is hovered or focused.
+  // Recommended is mostly over budget on a normal GPU, so a pill per row was a wall of colour.
+  // The row dims and the pill is painted only while that row is hovered or focused.
   assert.ok(PICKERS.includes("group/row flex w-full flex-col items-stretch"));
   assert.ok(
     PICKERS.includes(
