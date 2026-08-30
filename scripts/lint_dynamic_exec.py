@@ -3371,16 +3371,57 @@ def _walk_this_scope(node: ast.AST):
     here. A comprehension is not pruned either: its walrus target binds in the scope
     holding it, which is this one.
     """
-    pending = [node]
-    while pending:
-        current = pending.pop()
-        yield current
-        for child in ast.iter_child_nodes(current):
-            if isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                for header in _definition_time_expressions(child):
-                    pending.append(header)
-                continue
-            pending.append(child)
+    # Memoised onto the node. The answer depends only on the subtree below it, and no
+    # pass here rewrites a tree it is walking, so the walk for a given node is the same
+    # every time it is asked for. It was asked for 7 to 8 times per node on a large
+    # file - the alias pass, the locals pass, the class pass and the taint fixpoint each
+    # rewalk the same scope - which put 40 million calls and three fifths of the total
+    # runtime in this one function. Stored on the node rather than in a dict keyed by
+    # `id()`, so it cannot outlive the tree and cannot collide with a later file that
+    # reuses an address. `_fields` is untouched, so nothing that reads the AST as data,
+    # `ast.unparse` and the finding keys included, can see the difference.
+    cached = node.__dict__.get(_SCOPE_WALK_CACHE) if hasattr(node, "__dict__") else None
+    if cached is None:
+        cached = []
+        pending = [node]
+        # The children are read off `_fields` here rather than through
+        # `ast.iter_child_nodes`, which stacks two generators - itself over
+        # `ast.iter_fields` - per node visited. Same nodes in the same order; it is the
+        # generator machinery that is gone, and this is the one walk hot enough to
+        # notice it.
+        while pending:
+            current = pending.pop()
+            cached.append(current)
+            for field in current._fields:
+                value = getattr(current, field, None)
+                if isinstance(value, ast.AST):
+                    children = (value,)
+                elif type(value) is list:
+                    children = value
+                else:
+                    continue
+                for child in children:
+                    if not isinstance(child, ast.AST):
+                        continue
+                    if isinstance(
+                        child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    ):
+                        for header in _definition_time_expressions(child):
+                            pending.append(header)
+                        continue
+                    pending.append(child)
+        try:
+            setattr(node, _SCOPE_WALK_CACHE, cached)
+        except AttributeError:
+            # A node type that refuses attributes still gets the right answer.
+            pass
+    return iter(cached)
+
+
+# Where the memos live. Leading underscores and names no AST field uses, so they
+# cannot shadow a real field on any node type.
+_SCOPE_WALK_CACHE = "_lint_dynamic_exec_scope_walk"
+_DECLARED_LOCALS_CACHE = "_lint_dynamic_exec_declared_locals"
 
 
 def _definition_time_expressions(node: ast.AST):
@@ -4362,29 +4403,42 @@ class _Visitor(ast.NodeVisitor):
         the number of assignments bounds it; the cap is there so a resolver bug cannot
         spin.
         """
+        # The assignments are gathered ONCE and the rounds re-read that list. Walking
+        # every statement again per round re-tested every node in the body against three
+        # types to rediscover the same handful of assignments, eight times over.
+        # `_walk_this_scope` is the same walk the rest of the pass uses, so the answer
+        # is unchanged; only the rediscovery is gone.
+        assignments = []
+        for statement in body:
+            for child in _walk_this_scope(statement):
+                if isinstance(child, ast.Assign):
+                    targets = child.targets
+                elif isinstance(child, ast.AnnAssign) and child.value is not None:
+                    targets = [child.target]
+                elif isinstance(child, ast.AugAssign):
+                    # `payload += f"import {name}"` puts built source in the name as
+                    # plainly as `=` does, and a deferred body reads the cell after it.
+                    targets = [child.target]
+                else:
+                    continue
+                names = [t.id for t in targets if isinstance(t, ast.Name)]
+                if names:
+                    assignments.append((names, child.value))
         found: dict = {}
         for _round in range(_LATER_TAINT_ROUNDS):
             added = False
-            for statement in body:
-                for child in _walk_this_scope(statement):
-                    if isinstance(child, ast.Assign):
-                        targets = child.targets
-                    elif isinstance(child, ast.AnnAssign) and child.value is not None:
-                        targets = [child.target]
-                    elif isinstance(child, ast.AugAssign):
-                        # `payload += f"import {name}"` puts built source in the name as
-                        # plainly as `=` does, and a deferred body reads the cell after
-                        # it.
-                        targets = [child.target]
-                    else:
-                        continue
-                    reason = _is_interpolated(child.value, found.get)
-                    if reason is None or isinstance(reason, _LiteralText):
-                        continue
-                    for target in targets:
-                        if isinstance(target, ast.Name) and target.id not in found:
-                            found[target.id] = reason
-                            added = True
+            for names, value in assignments:
+                if all(name in found for name in names):
+                    # Every name it binds is already answered, and a name is never
+                    # revised once found, so re-reading the value cannot change it.
+                    continue
+                reason = _is_interpolated(value, found.get)
+                if reason is None or isinstance(reason, _LiteralText):
+                    continue
+                for name in names:
+                    if name not in found:
+                        found[name] = reason
+                        added = True
             if not added:
                 break
         return found
@@ -4397,6 +4451,12 @@ class _Visitor(ast.NodeVisitor):
         targets, imports and definitions - anything in THIS body, not in a nested one,
         since a nested scope binds in its own.
         """
+        # Memoised on the node, like the scope walk: the answer is a function of the
+        # subtree, and the same body is asked for its locals once per enclosing scope
+        # the taint pass steps through.
+        cached = node.__dict__.get(_DECLARED_LOCALS_CACHE) if hasattr(node, "__dict__") else None
+        if cached is not None:
+            return set(cached)
         names = set()
         arguments = getattr(node, "args", None)
         if isinstance(arguments, ast.arguments):
@@ -4409,6 +4469,14 @@ class _Visitor(ast.NodeVisitor):
             ):
                 if argument is not None:
                     names.add(argument.arg)
+        # A name the body declares `global` or `nonlocal` is NOT one of its locals,
+        # however many times the body assigns it: the assignment writes the enclosing
+        # cell. Counting it as local dropped the enclosing taint before the body was
+        # read, so `def f(): global payload; exec(payload); payload = "pass"` executed
+        # a payload built outside and reported nothing. Collected in the SAME pass that
+        # collects the locals, since a second pass re-walked every statement to find
+        # two statement types.
+        declared = set()
         for statement in getattr(node, "body", []) or []:
             for child in _walk_this_scope(statement):
                 if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
@@ -4429,17 +4497,13 @@ class _Visitor(ast.NodeVisitor):
                     names.add(child.name)
                 elif isinstance(child, ast.ExceptHandler) and child.name:
                     names.add(child.name)
-        # A name the body declares `global` or `nonlocal` is NOT one of its locals,
-        # however many times the body assigns it: the assignment writes the enclosing
-        # cell. Counting it as local dropped the enclosing taint before the body was
-        # read, so `def f(): global payload; exec(payload); payload = "pass"` executed
-        # a payload built outside and reported nothing.
-        declared = set()
-        for statement in getattr(node, "body", []) or []:
-            for child in _walk_this_scope(statement):
-                if isinstance(child, (ast.Global, ast.Nonlocal)):
+                elif isinstance(child, (ast.Global, ast.Nonlocal)):
                     declared.update(child.names)
         names -= declared
+        try:
+            setattr(node, _DECLARED_LOCALS_CACHE, frozenset(names))
+        except AttributeError:
+            pass
         return names
 
     def _enter(self, node):

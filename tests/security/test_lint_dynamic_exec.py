@@ -1120,3 +1120,116 @@ def test_a_shell_magic_cell_still_launches_python(tmp_path):
     )
     proc = _run("--paths", str(sample))
     assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
+
+
+def _loaded():
+    """The checker imported by path, so its internals can be called directly."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("lint_dynamic_exec_memo", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_MEMO_SAMPLE = '''
+import os
+
+
+def outer(name):
+    payload = f"import {name}"
+
+    def deferred(argument = os.getenv("X")):
+        exec(payload)
+
+    class Inner:
+        attribute = payload
+
+    for item in [1, 2]:
+        with open(item) as handle:
+            try:
+                del payload
+            except OSError as error:
+                global missing
+    return deferred
+'''
+
+
+def test_the_scope_walk_memo_answers_what_an_uncached_walk_answers():
+    """The memo is an optimisation, so it must be invisible in the result.
+
+    An uncached reference walk is written out here rather than reusing the checker's,
+    so a change to the real one cannot silently redefine what "correct" means.
+    """
+    import ast
+
+    module = _loaded()
+    tree = ast.parse(_MEMO_SAMPLE)
+
+    def reference(node):
+        walked, pending = [], [node]
+        while pending:
+            current = pending.pop()
+            walked.append(current)
+            for child in ast.iter_child_nodes(current):
+                if isinstance(
+                    child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    pending.extend(module._definition_time_expressions(child))
+                    continue
+                pending.append(child)
+        return walked
+
+    for node in ast.walk(tree):
+        expected = reference(node)
+        first = list(module._walk_this_scope(node))
+        second = list(module._walk_this_scope(node))
+        assert [id(n) for n in first] == [id(n) for n in expected], ast.dump(node)[:80]
+        assert [id(n) for n in second] == [id(n) for n in expected], "second call differs"
+
+
+def test_the_memo_does_not_carry_between_two_trees_of_the_same_source():
+    """Two parses are two trees. A memo keyed on identity must not answer for both."""
+    import ast
+
+    module = _loaded()
+    one, two = ast.parse(_MEMO_SAMPLE), ast.parse(_MEMO_SAMPLE)
+    walked_one = list(module._walk_this_scope(one))
+    walked_two = list(module._walk_this_scope(two))
+    assert len(walked_one) == len(walked_two)
+    assert not {id(n) for n in walked_one} & {id(n) for n in walked_two}, (
+        "the second tree was answered with nodes from the first"
+    )
+
+
+def test_the_declared_locals_memo_survives_a_caller_mutating_the_answer():
+    """It hands back a set; a caller is free to mutate it without poisoning the memo."""
+    import ast
+
+    module = _loaded()
+    tree = ast.parse(_MEMO_SAMPLE)
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "outer"
+    )
+    first = module._Visitor._declared_locals(function)
+    assert first, "the sample binds names, so this would be vacuous"
+    baseline = set(first)
+    first.add("injected-by-the-caller")
+    first.discard(next(iter(baseline)))
+    assert module._Visitor._declared_locals(function) == baseline
+
+
+def test_the_memo_is_not_visible_to_anything_that_reads_the_tree_as_data():
+    """The finding key is a digest of `ast.unparse`, so a stray field would rekey it."""
+    import ast
+
+    module = _loaded()
+    tree = ast.parse(_MEMO_SAMPLE)
+    before = ast.unparse(tree)
+    for node in ast.walk(tree):
+        list(module._walk_this_scope(node))
+    assert ast.unparse(tree) == before
+    assert all(
+        module._SCOPE_WALK_CACHE not in node._fields for node in ast.walk(tree)
+    ), "the memo must not appear as an AST field"
