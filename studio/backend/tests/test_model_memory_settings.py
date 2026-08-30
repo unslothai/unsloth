@@ -1114,6 +1114,54 @@ class TestHostMemoryGate:
     def test_a_discrete_full_offload_is_not_host_resident(self, monkeypatch):
         assert self._gate(monkeypatch, fully_gpu_offloaded = True) is False
 
+    def test_a_reserving_mode_promotes_full_offload_to_host_resident(self):
+        settings = (True, False)
+        managed, extras = apply_model_memory_policy(
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            model_memory_settings = settings,
+        )
+        preview_mode, preview_extras = apply_load_mode_policy(
+            extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            requested_load_mode = "none",
+            model_memory_settings = settings,
+        )
+        assert resolve_effective_memory_state(
+            [*managed, *preview_mode, *preview_extras], {}
+        ) == (False, True)
+
+        managed, extras = apply_model_memory_policy(
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            model_memory_settings = settings,
+        )
+        final_mode, final_extras = apply_load_mode_policy(
+            extras,
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            requested_load_mode = "none",
+            model_memory_settings = settings,
+        )
+        assert [*managed, *final_mode, *final_extras] == [
+            "--load-mode",
+            "mmap+mlock",
+        ]
+
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        start = source.index("_resolved_load_mode = load_mode or _fit_load_mode")
+        end = source.index("_load_mode_managed, _mem_extras", start)
+        block = source[start:end]
+        assert "resolve_effective_memory_state(" in block
+        assert "_mem_host_resident = True" in block
+        assert "apply_model_memory_policy(" in block
+
     def test_a_partial_offload_is_host_resident(self, monkeypatch):
         assert self._gate(monkeypatch, fully_gpu_offloaded = False) is True
 
@@ -1615,6 +1663,50 @@ class TestMlockApplicable:
         )
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         assert rs._model_memory_response().mlock_skip_reason == "full_gpu_offload"
+
+    def test_a_reserving_load_mode_keeps_full_offload_applicable(self, monkeypatch):
+        import routes.settings as rs
+
+        backend = _fake_backend(
+            is_active = True,
+            is_loaded = True,
+            _memory_state = (False, True),
+            _memory_mlock_applicable = False,
+        )
+        _install_backend(monkeypatch, backend, keep = True, no_res = False)
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is True
+        assert body.mlock_skip_reason is None
+        assert body.reload_required is True
+
+    def test_an_inactive_llama_backend_defers_to_the_gpu_owner(self, monkeypatch):
+        import core.inference.gpu_arbiter as arbiter
+        import core.inference.orchestrator as orchestrator
+        import routes.settings as rs
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        monkeypatch.setattr(arbiter, "current_owner", lambda: arbiter.DIFFUSION)
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is False
+        assert body.mlock_skip_reason == "ungoverned"
+        assert body.mlock_active is False
+
+    def test_an_active_transformers_backend_is_ungoverned(self, monkeypatch):
+        import core.inference.gpu_arbiter as arbiter
+        import core.inference.orchestrator as orchestrator
+        import routes.settings as rs
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        monkeypatch.setattr(arbiter, "current_owner", lambda: None)
+        monkeypatch.setattr(
+            orchestrator,
+            "peek_inference_backend",
+            lambda: type("_Orchestrator", (), {"active_model_name": "model", "loading_models": []})(),
+        )
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is False
+        assert body.mlock_skip_reason == "ungoverned"
 
 
 class TestModelMemoryResponseSnapshot:

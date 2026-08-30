@@ -21500,6 +21500,27 @@ class LlamaCppBackend:
                     )
                     _fit_load_mode = None
                 _resolved_load_mode = load_mode or _fit_load_mode
+                if not _mem_host_resident:
+                    _preview_load_mode, _preview_extras = apply_load_mode_policy(
+                        _mem_extras,
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        weights_in_host_memory = False,
+                        requested_load_mode = _resolved_load_mode,
+                        model_memory_settings = _model_memory_settings,
+                    )
+                    if resolve_effective_memory_state(
+                        [*_preview_load_mode, *_preview_extras],
+                        _fit_load_mode_env_view,
+                    )[1]:
+                        _mem_host_resident = True
+                        _mem_managed, _mem_extras = apply_model_memory_policy(
+                            extra_args,
+                            supports_load_mode = bool(
+                                server_caps.get("supports_load_mode")
+                            ),
+                            weights_in_host_memory = True,
+                            model_memory_settings = _model_memory_settings,
+                        )
                 _load_mode_managed, _mem_extras = apply_load_mode_policy(
                     _mem_extras,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),

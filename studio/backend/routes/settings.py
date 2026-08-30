@@ -933,11 +933,25 @@ def _active_launch_placement():
         backend = get_llama_cpp_backend()
         pending = bool(getattr(backend, "_memory_launch_pending", False))
         if not backend.is_active and not pending:
+            from core.inference.gpu_arbiter import current_owner
+            from core.inference.orchestrator import peek_inference_backend
+
+            orchestrator = peek_inference_backend()
+            if (
+                current_owner() is not None
+                or bool(getattr(orchestrator, "active_model_name", None))
+                or bool(getattr(orchestrator, "loading_models", None))
+            ):
+                return None, False, False
             return _NO_LAUNCH, False, True
+        state = getattr(backend, "_memory_state", None)
+        reserves_ram = bool(
+            isinstance(state, (tuple, list)) and len(state) >= 2 and state[1]
+        )
         return (
-            getattr(backend, "_memory_state", None),
+            state,
             bool(getattr(backend, "_memory_policy_active", False)),
-            bool(getattr(backend, "_memory_mlock_applicable", True)),
+            bool(getattr(backend, "_memory_mlock_applicable", True) or reserves_ram),
         )
     except Exception:
         return _NO_LAUNCH, False, True
