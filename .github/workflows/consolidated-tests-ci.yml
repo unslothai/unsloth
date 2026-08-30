@@ -7,7 +7,7 @@
 #
 # Why a separate workflow:
 #   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 17
+#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 21
 #     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
 #     historically excluded with their GPU siblings); pulling them out into
 #     a sibling job keeps the existing 760-passed baseline stable while we
@@ -41,6 +41,7 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
     paths:
@@ -50,6 +51,7 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
     inputs:
       unsloth_zoo_ref:
@@ -58,11 +60,11 @@ on:
         default: 'main'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -138,14 +140,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
-          # Without this, setup-python's default glob resolves to the repo's only
-          # requirements.txt, unsloth/kernels/moe/requirements.txt: five lines that have
-          # nothing to do with what this job installs. Every job in the repo therefore
-          # shared one cache slot keyed on an unrelated file, so a "hit" restored a few MB
-          # and the install still downloaded the whole tree. Key on what this job actually
-          # reads instead.
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: consolidated
+          key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
 
@@ -231,7 +232,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest==9.0.3 pytest-asyncio httpx \
+            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
@@ -406,7 +407,7 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
-        # The Studio file runs here rather than in studio-backend-ci, which
+        # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
         # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases
@@ -445,7 +446,8 @@ jobs:
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
             tests/test_raw_text_json_loading.py \
-            tests/test_map_eos_token.py
+            tests/test_map_eos_token.py \
+            tests/test_apertus_instruct_mapping.py
           # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
           # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
           # monkeypatches that name, so it no longer needs flash_attn on this runner.
@@ -464,10 +466,62 @@ jobs:
         # here unblocks unsloth CI until the loader fixture is fixed.
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
-          python -m pytest -q --tb=short tests/ \
+          # Two passes: everything in parallel, then the two files that cannot share a
+          # process with the rest of the suite.
+          #
+          # Measured on a staging runner across all three matrix cells, whole suite:
+          #
+          #     cell                      serial   -n 4 --dist loadfile
+          #     HF=latest + TRL=latest      580s                  253s
+          #     HF=4.57.6 + TRL<1           517s                  229s
+          #     HF=default + TRL=default    568s                  246s
+          #
+          # Across two runs of all three cells, four agreed exactly -- failure sets and
+          # skip sets both -- and two produced 14 failures serial does not: 8 in
+          # test_mlx_generate.py and 6 in test_moe_bnb4bit_per_expert_conversions.py.
+          #
+          # The same 14 every time, and NOT the same cell: the second run moved them from
+          # HF=default to HF=latest. So this is not a dependency combination, it is worker
+          # scheduling, and roughly one cell per run draws the losing order.
+          #
+          # Both files pass on their own, and pass under xdist on their own, so they are
+          # self-contained. What breaks them is another file running first in the same
+          # worker -- an ordering serial never produces, because serial is alphabetical.
+          # So the parallel speedup is real and the divergence is real, and the two are
+          # separable: run those two files in their own process, where they are reliable.
+          #
+          # This is a mitigation, not a cure. The suite has cross-file pollution that
+          # alphabetical ordering happens to hide, and the right fix is in unsloth_zoo,
+          # on whichever file leaks. Pinning here keeps CI honest meanwhile: what these
+          # two files prove is unchanged, because a fresh process is what they get today.
+          #
+          # test_hf_xet_fallback.py is here for a different reason, found the same way.
+          # It drives a stall detector against the real clock -- 27 sub-second sleeps,
+          # one of them commented "within the unmeasurable window" -- and under four
+          # workers on four cores it reported "Download appears stalled (xet transport)
+          # -- no progress for 0s". Nothing was stalled; the test was descheduled. No
+          # ordering fix helps a wall-clock margin, so it gets the quiet process too.
+          #
+          # It is the only file in the suite with that shape: two use sub-second sleeps
+          # and the other one (test_mlx_save_export_edge_cases.py) sleeps 0.01s to widen
+          # a race window without asserting on elapsed time.
+          #
+          # loadfile rather than the default `load`: 34 of the 236 files touch sys.modules
+          # or importlib.reload, so tests within a file must stay on one worker, in order.
+          python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
+            --ignore=tests/test_mlx_generate.py \
+            --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
+            --ignore=tests/test_hf_xet_fallback.py \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device \
             --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through
+
+          # The pair, serially, in a process of their own. Not optional: without this the
+          # ignores above delete 51 tests from CI and the job still goes green.
+          python -m pytest -q --tb=short \
+            tests/test_mlx_generate.py \
+            tests/test_moe_bnb4bit_per_expert_conversions.py \
+            tests/test_hf_xet_fallback.py
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
         # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,
@@ -2266,10 +2320,18 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
-          echo "  - 17 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 21 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
           echo "  - 168 dataset_num_proc worker-bound guards (#2693)"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   llama-cpp-smoke:
     # Standalone llama.cpp build + smoke. Earlier this lived inside every
@@ -2300,14 +2362,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
-          # Without this, setup-python's default glob resolves to the repo's only
-          # requirements.txt, unsloth/kernels/moe/requirements.txt: five lines that have
-          # nothing to do with what this job installs. Every job in the repo therefore
-          # shared one cache slot keyed on an unrelated file, so a "hit" restored a few MB
-          # and the install still downloaded the whole tree. Key on what this job actually
-          # reads instead.
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          name: llama-cpp-smoke
+          key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
 
@@ -2367,6 +2428,10 @@ jobs:
           pip show unsloth_zoo
 
       - name: llama.cpp install via unsloth_zoo.llama_cpp + CLI `--help` smoke
+        # Bounds the apt preamble below rather than leaving the job's 25m to do
+        # it: 2 x 300s of attempts plus a lock wait is 12m of the 22, and the
+        # llama.cpp build that follows has the rest.
+        timeout-minutes: 22
         # Exercise the canonical `unsloth_zoo.llama_cpp.install_llama_cpp`
         # flow that GGUF export uses at runtime: clone ggml-org/llama.cpp
         # into ~/.unsloth/llama.cpp, build the LLAMA_CPP_TARGETS list
@@ -2402,9 +2467,9 @@ jobs:
           # libssl-dev / libcurl4-openssl-dev are needed by llama.cpp's
           # cmake build for HTTPS support; install up-front so the
           # `install_llama_cpp` requirement-check is a no-op.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential cmake git curl \
-            libgomp1 libssl-dev libcurl4-openssl-dev
+          RETRY_ATTEMPTS=2 RETRY_ATTEMPT_TIMEOUT=300 \
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq build-essential cmake git curl libgomp1 libssl-dev libcurl4-openssl-dev; }'
           python <<'PY'
           import os, shutil, subprocess, sys, pathlib
           # Apply the same CPU spoof the pytest shims use BEFORE any
@@ -2505,3 +2570,12 @@ jobs:
               f"and llama-quantize at {quantizer}."
           )
           PY
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+

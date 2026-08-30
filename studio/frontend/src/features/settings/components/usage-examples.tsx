@@ -29,10 +29,21 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
+import {
+  buildAgentCommand,
+  isLoopbackHost,
+  normalizeHost,
+  psSingle,
+  shSingle,
+} from "./agent-command";
+import { keylessBaseEligible } from "./keyless-example-eligibility";
 
 type ExampleType =
   | "curl"
@@ -107,19 +118,16 @@ const DOC_LINKS = [
   { label: "Codex", href: "https://unsloth.ai/docs/basics/codex" },
   { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
   { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
-  { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
+  {
+    label: "Hermes Agent",
+    href: "https://unsloth.ai/docs/integrations/hermes-agent",
+  },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors
 // CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
 // (see ../api/coding-agents.ts).
-const DEFAULT_AGENTS = [
-  "claude",
-  "codex",
-  "openclaw",
-  "opencode",
-  "hermes",
-];
+const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes"];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
@@ -133,9 +141,6 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 const j = (s: string): string => JSON.stringify(s);
-// Inner escaping for a single-quoted argument (POSIX '\'' , PowerShell '').
-export const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
-export const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
 function bodyExtraLines(variant: Variant, indent: string): string[] {
@@ -285,9 +290,11 @@ function javascriptSnippet(
     options.push(`  top_k: ${ADV.top_k},`);
     options.push(`  min_p: ${ADV.min_p},`);
     options.push(`  repetition_penalty: ${ADV.repetition_penalty},`);
+    // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
     options.push(`  enable_thinking: true,`);
   }
   if (variant !== "plain") {
+    // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
     options.push(`  enable_tools: true,`);
     options.push(`  enabled_tools: [${toolsJson}],`);
   }
@@ -312,9 +319,11 @@ for await (const chunk of response) {
 }`;
 }
 
+// every variant but "plain" asks for the server-side tools, so it needs its own key
 function buildSnippets(
   base: string,
   key: string,
+  toolsKey: string,
   model: string,
   os: Os,
 ): Record<ExampleType, string> {
@@ -323,16 +332,18 @@ function buildSnippets(
     curl: curl(base, key, model, "plain"),
     python: pythonSnippet(base, key, model, "plain"),
     javascript: javascriptSnippet(base, key, model, "plain"),
-    curlTools: curl(base, key, model, "tools"),
-    pythonTools: pythonSnippet(base, key, model, "tools"),
-    javascriptTools: javascriptSnippet(base, key, model, "tools"),
-    curlAdvanced: curl(base, key, model, "advanced"),
-    pythonAdvanced: pythonSnippet(base, key, model, "advanced"),
-    javascriptAdvanced: javascriptSnippet(base, key, model, "advanced"),
+    curlTools: curl(base, toolsKey, model, "tools"),
+    pythonTools: pythonSnippet(base, toolsKey, model, "tools"),
+    javascriptTools: javascriptSnippet(base, toolsKey, model, "tools"),
+    curlAdvanced: curl(base, toolsKey, model, "advanced"),
+    pythonAdvanced: pythonSnippet(base, toolsKey, model, "advanced"),
+    javascriptAdvanced: javascriptSnippet(base, toolsKey, model, "advanced"),
   };
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
+// the openai sdks require some api_key, so name one rather than leave it blank
+const KEYLESS_KEY_PLACEHOLDER = "not-needed";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 // Slow retry while /v1 has nothing to name: a download or load moves no store state.
 const CATALOG_RETRY_MS = 15000;
@@ -373,22 +384,23 @@ function looksLikePath(id: string): boolean {
 // Same model, ignoring any ":quant" a caller pinned.
 function sameBaseModelId(a: string, b: string): boolean {
   const base = (id: string) => id.trim().toLowerCase().split(":")[0];
-  return a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b);
+  return (
+    a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b)
+  );
 }
 
 // The model the examples name: always an id /v1 resolves against, null when there is none.
-function useExampleModelName(): string | null {
+function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // null until /v1/models answers: "not asked yet" must not read as "holds nothing".
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
   // A downloaded but unloaded model is only runnable when switching is on.
   const [autoSwitch, setAutoSwitch] = useState(false);
-  // Idle-unload on its own (UNSLOTH_MODEL_IDLE_TTL, switching off) reloads exactly
-  // what it freed: the stored checkpoint only, never an arbitrary catalog entry.
-  const [idleReload, setIdleReload] = useState(false);
   const usableCheckpoint =
-    !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
+    !!checkpoint &&
+    !checkpoint.startsWith("external::") &&
+    !looksLikePath(checkpoint);
 
   // Always: a stored checkpoint can stop being servable without the store changing.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
@@ -403,17 +415,17 @@ function useExampleModelName(): string | null {
       void Promise.all([
         listOpenAIModels().catch(() => null),
         loadOpenAIAutoSwitchSettings()
-          .then((s) => [s.enabled, s.idleUnloadActive] as const)
+          .then((s) => s.enabled)
           .catch(() => null),
       ])
         .then(([models, settings]) => {
           if (cancelled) return true;
           if (models !== null) setCatalog(models);
           if (settings !== null) {
-            setAutoSwitch(settings[0]);
-            setIdleReload(settings[1]);
+            setAutoSwitch(settings);
           }
           // Resident only slows the polling; it never stops it.
+          // biome-ignore lint/complexity/useOptionalChain: keep the explicit failed-refresh branch
           return models !== null && models.some((m) => m.loaded);
         })
         .then((resolved) => {
@@ -436,7 +448,8 @@ function useExampleModelName(): string | null {
     // Name something held here, with its quant to pin the file on disk.
     const fromCatalog = (): string | null => {
       const pick =
-        catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined);
+        catalog?.find((m) => m.loaded) ??
+        (!keylessOnly && autoSwitch ? catalog?.[0] : undefined);
       if (!pick) {
         return null;
       }
@@ -450,7 +463,8 @@ function useExampleModelName(): string | null {
     // /v1/models has not answered, which is not evidence against it.
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed =
-      catalog === null || (!!entry && (entry.loaded || autoSwitch || idleReload));
+      (!keylessOnly && catalog === null) ||
+      (!!entry && (entry.loaded || (!keylessOnly && autoSwitch)));
     if (usableCheckpoint && checkpoint && backed) {
       if (checkpoint.includes(":")) {
         return checkpoint;
@@ -462,7 +476,14 @@ function useExampleModelName(): string | null {
       return quant ? `${checkpoint}:${quant}` : checkpoint;
     }
     return fromCatalog();
-  }, [autoSwitch, catalog, checkpoint, ggufVariant, idleReload, usableCheckpoint]);
+  }, [
+    autoSwitch,
+    catalog,
+    checkpoint,
+    ggufVariant,
+    keylessOnly,
+    usableCheckpoint,
+  ]);
 }
 
 // Backend PATH detection is only safe in the desktop app, where the UI owns
@@ -485,16 +506,21 @@ const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 function HighlightedCode({
   code,
   language,
+  redactFromReload,
 }: {
   code: string;
   language: string;
+  redactFromReload: boolean;
 }) {
   const markdown = useMemo(
     () => `\`\`\`${language}\n${code}\n\`\`\``,
     [code, language],
   );
   return (
-    <div className="max-w-full overflow-x-auto p-3 pr-16 text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11">
+    <div
+      className="max-w-full overflow-x-auto p-3 pr-16 text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
+      data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
+    >
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -507,7 +533,20 @@ function HighlightedCode({
   );
 }
 
-export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
+export function UsageExamples({
+  apiKey,
+  keylessScope = "off",
+  keylessTools = false,
+  keylessExposure = null,
+}: {
+  apiKey?: string | null;
+  /** which routes keyless api access serves, so a placeholder is only used where it works */
+  keylessScope?: KeylessApiAccessScope;
+  /** whether a keyless caller may drive the server-side tool loop */
+  keylessTools?: boolean;
+  /** public tunnels and Colab never accept the dummy bearer */
+  keylessExposure?: KeylessApiAccessExposure | null;
+}) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
@@ -521,7 +560,8 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [lang, setLang] = useState<ExampleType>(
-    storedPrefs.apiExampleLang && EXAMPLE_TYPE_IDS.has(storedPrefs.apiExampleLang)
+    storedPrefs.apiExampleLang &&
+      EXAMPLE_TYPE_IDS.has(storedPrefs.apiExampleLang)
       ? (storedPrefs.apiExampleLang as ExampleType)
       : "curl",
   );
@@ -603,7 +643,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     agentPickedByUserRef.current = false;
     setStoredAgent(null);
     setAgent(DEFAULT_AGENT);
-  }, [agent, agentsLoaded, availableAgents, localAgentDetection, setStoredAgent]);
+  }, [
+    agent,
+    agentsLoaded,
+    availableAgents,
+    localAgentDetection,
+    setStoredAgent,
+  ]);
 
   // Single source of truth for the auto-picked agent, re-derived whenever
   // the detected list or the loaded model's GGUF-ness changes -- in either
@@ -624,13 +670,17 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   // path a model can be GGUF through, matching the same is_gguf-or-equivalent
   // check hasGgufSource applies to a staged pick.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeNativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
     if (detectedAgents.length === 0) return;
     const isGguf =
-      activeGgufVariant != null || activeNativePathToken != null || ggufContextLength != null;
+      activeGgufVariant != null ||
+      activeNativePathToken != null ||
+      ggufContextLength != null;
     const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
     if (preferred) {
       setAgent(preferred);
@@ -641,20 +691,38 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
       // of leaving a codex command unsloth_cli will reject.
       setAgent(DEFAULT_AGENT);
     }
-  }, [agent, detectedAgents, activeGgufVariant, activeNativePathToken, ggufContextLength]);
+  }, [
+    agent,
+    detectedAgents,
+    activeGgufVariant,
+    activeNativePathToken,
+    ggufContextLength,
+  ]);
 
-  const model = useExampleModelName();
-  const key = apiKey || KEY_PLACEHOLDER;
+  const keylessBase =
+    !(useTunnel && cloudflareUrl) &&
+    keylessBaseEligible(base, keylessScope, keylessExposure);
+  const model = useExampleModelName(keylessBase && !apiKey);
+  // The approved SDK dummy is printed only for a transport the backend can admit.
+  const key =
+    apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  // a keyless caller gets no tools until the admin grants them, so this names a real key
+  const toolsKey =
+    apiKey ||
+    (keylessBase && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  // agent tools are client-side schemas sent through the admitted inference routes.
+  const agentKey =
+    apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
   // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(
-    () => (model ? buildSnippets(base, key, model, os) : null),
-    [base, key, model, os],
+    () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
+    [base, key, toolsKey, model, os],
   );
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
-    () => buildAgentCommand(base, key, os, agent),
-    [base, key, os, agent],
+    () => buildAgentCommand(base, agentKey, os, agent),
+    [base, agentKey, os, agent],
   );
 
   const osAware = OS_AWARE[lang];
@@ -838,6 +906,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               key={snippets[lang]}
               code={snippets[lang]}
               language={shikiLang}
+              redactFromReload={Boolean(apiKey)}
             />
           </div>
         ) : (
@@ -890,7 +959,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             })}
           </div>
           <div className="relative mt-0.5 min-w-0">
-            <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground">
+            <code
+              className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground"
+              data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+            >
               {agentCommand}
             </code>
             <button

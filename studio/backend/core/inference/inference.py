@@ -433,6 +433,8 @@ class InferenceBackend:
                         model, tokenizer = FastModel.from_pretrained(
                             config.path,
                             dtype = torch.float32,
+                            # Flash Attention cannot run float32
+                            attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
@@ -505,6 +507,8 @@ class InferenceBackend:
                         model, tokenizer = FastModel.from_pretrained(
                             llm_path,
                             dtype = torch.float32,
+                            # Flash Attention cannot run float32
+                            attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
@@ -1035,6 +1039,9 @@ class InferenceBackend:
             rag_scope = rag_scope,
             reasoning_prefilled = reasoning_prefilled,
             continue_final_message = continue_final_message,
+            # So a conversation search can be sized against what this model can hold.
+            context_length = _model_info.get("context_length"),
+            max_tokens = max_new_tokens,
         )
 
     def generate_chat_response(
@@ -2055,10 +2062,16 @@ class InferenceBackend:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        instructions: Optional[str] = None,
+        language: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         """Generate audio from text for TTS models.
         Returns (wav_bytes, sample_rate). Blocking — full audio before return.
         """
+        # Reserved for native audio architectures; codec-backed TTS models do
+        # not currently expose scene instructions or deterministic seeding.
+        del instructions, language, seed
         if not self.active_model_name:
             raise RuntimeError("No active model")
 

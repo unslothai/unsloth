@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from storage.studio_db import get_connection
 from hub.utils.paths import normalize_path
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
 )
@@ -125,8 +126,6 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("Path does not exist")
     if not os.path.isdir(normalized):
         raise ValueError("Path must be a directory, not a file")
-    if not os.access(normalized, os.R_OK | os.X_OK):
-        raise ValueError("Path is not readable")
     if is_local_filesystem_root(normalized):
         # A local fs root ("/", "C:\\") would expose denied system dirs via browse;
         # a UNC share root (\\server\share) has none under it and stays registerable.
@@ -141,6 +140,10 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             raise ValueError(f"Path under {prefix} is not allowed")
+
+    # Last, so a denied path is never opened. Mirrors studio_db.py.
+    if not is_readable_dir(normalized):
+        raise ValueError("Path is not readable")
 
     conn = get_connection()
     try:

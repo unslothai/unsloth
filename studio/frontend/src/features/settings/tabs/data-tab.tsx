@@ -24,6 +24,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type FineTuneFormat,
   archiveAllChatItems,
@@ -70,6 +71,8 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import { ArchivedMediaView } from "../components/archived-media-dialog";
+import { ManageChatsView } from "../components/manage-chats-view";
+import { DocumentsRagSection } from "../components/documents-rag-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
@@ -103,7 +106,7 @@ export function DataTab() {
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
-    "main" | "archived" | "archived-images" | "archived-videos" | "files"
+    "main" | "manage" | "archived" | "archived-images" | "archived-videos" | "files"
   >(archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main");
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -474,6 +477,35 @@ export function DataTab() {
     }
   };
 
+  if (subpage === "manage") {
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={t("settings.data.backToData")}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {t("settings.data.manageChats")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.data.manageChatsDescription")}
+          </p>
+        </div>
+        <ManageChatsView />
+      </div>
+    );
+  }
+
   if (subpage === "archived") {
     return (
       <div className="flex flex-col gap-6">
@@ -671,6 +703,19 @@ export function DataTab() {
         </SettingsRow>
 
         <SettingsRow
+          label={t("settings.data.manageChats")}
+          description={t("settings.data.manageChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("manage")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
           label={t("settings.data.archivedChats")}
           description={t("settings.data.archivedChatsDescription")}
         >
@@ -790,7 +835,7 @@ export function DataTab() {
                     {t(`settings.chat.${label}`)}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-56">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
                       <DropdownMenuItem
                         key={`${scope}-m-${fmt}`}
                         onSelect={() =>
@@ -900,6 +945,8 @@ export function DataTab() {
           </div>
         ) : null}
       </SettingsSection>
+
+      <DocumentsRagSection />
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">

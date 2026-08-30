@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 import shutil
 import tempfile
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 logger = get_logger(__name__)
@@ -40,7 +41,7 @@ def hf_env_offline() -> bool:
 
 
 def canonical_model_repo_id(model_name: str) -> str:
-    """Normalize a Hugging Face model repository ID selected in Studio."""
+    """Normalize a Hugging Face model repository ID selected in Unsloth."""
     return model_name.strip()
 
 
@@ -535,33 +536,118 @@ def _hf_cache_roots() -> list:
     return roots
 
 
-def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
-    """Active local snapshot dir for model_name's main revision, or None if not cached.
-    Reads refs/main then snapshots/<commit>; no network. Tries the ST alias for slashless names."""
+ST_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+
+
+def is_st_weight_name(basename: str) -> bool:
+    """Whether a filename is a checkpoint SentenceTransformer can load.
+
+    ``.bin`` is the loose one: ``tokenizer.bin`` shares the extension with real
+    weights. Shared so the resolver's plan and the loader's cache check cannot
+    disagree about what counts as a checkpoint."""
+    name = basename.lower()
+    for suffix in ST_WEIGHT_SUFFIXES:
+        if not name.endswith(suffix):
+            continue
+        if suffix == ".bin":
+            return name.startswith(("pytorch_model", "model", "adapter_model", "consolidated"))
+        return True
+    return False
+
+
+def cached_st_source(model_name: str) -> Optional[tuple]:
+    """``(repo id, snapshot dir)`` whose cache holds ST-loadable weights, complete.
+
+    Alias-aware, and it reports WHICH candidate matched: a slashless name caches
+    under ``sentence-transformers/``, so the literal id names a repo that usually
+    does not exist, and a stale literal cache entry is not the directory that
+    supplied the weights. Completeness comes from
+    ``hf_cache_snapshot_is_loadable`` on that same candidate: ST weights alone are
+    satisfied by the first finalized shard of a transfer still in flight.
+    """
+    for candidate in st_repo_id_candidates(model_name):
+        # Exactly this candidate: the alias-expanding lookup answers a literal
+        # slashless name with the namespaced snapshot, pairing a directory with a
+        # repo id that supplied nothing.
+        snapshot = hf_cache_snapshot_dir_for_repo(candidate)
+        if snapshot is None:
+            continue
+        try:
+            if not any(is_st_weight_name(p.name) and p.is_file() for p in snapshot.rglob("*")):
+                continue
+        except OSError:
+            continue
+        # This snapshot, not whatever the alias-expanding lookup would find: with
+        # several cache roots those differ, and a complete namespaced copy in one
+        # would vouch for the partial literal copy in another that gets loaded.
+        if snapshot_is_loadable(snapshot, candidate):
+            return (candidate, snapshot)
+    return None
+
+
+def cached_st_repo(model_name: str) -> Optional[str]:
+    """Repo id whose cached snapshot holds complete ST-loadable weights."""
+    source = cached_st_source(model_name)
+    return source[0] if source else None
+
+
+def snapshot_has_st_weights(model_name: str) -> bool:
+    """Whether ``model_name`` has a complete cached checkpoint ST can open.
+
+    ``hf_cache_snapshot_is_loadable`` counts ``.gguf``, which is right for the
+    llama backend and wrong wherever SentenceTransformer is the loader; this pairs
+    it with the ST-specific file family so both hold."""
+    return cached_st_source(model_name) is not None
+
+
+def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
+    """``repo_id``'s main-revision snapshot under exactly ``cache_root``, or None."""
     try:
         from huggingface_hub.file_download import repo_folder_name
     except Exception:
         repo_folder_name = None
+    try:
+        if repo_folder_name is not None:
+            folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
+        else:
+            folder = "models--" + repo_id.replace("/", "--")
+        repo_dir = cache_root / folder
+        ref = repo_dir / "refs" / "main"
+        if not ref.is_file():
+            return None
+        commit = ref.read_text(encoding = "utf-8").strip()
+        if not commit:
+            return None
+        snapshot = repo_dir / "snapshots" / commit
+        return snapshot if snapshot.is_dir() else None
+    # UnicodeDecodeError is a ValueError, not an OSError: a torn refs file must keep meaning "not cached here".
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def hf_cache_snapshot_dir_for_repo(repo_id: str) -> Optional[Path]:
+    """Snapshot dir for exactly ``repo_id``, with no alias expansion.
+
+    ``hf_cache_snapshot_dir`` answers "is this model cached anywhere", trying the
+    ST alias, so asking it about a literal slashless name can return the
+    namespaced snapshot. A caller that has to report WHICH repo supplied the
+    weights needs this one instead, or it pairs the alias's directory with the
+    literal id and sends verification at a repo that does not exist."""
+    for cache_root in _hf_cache_roots():
+        snapshot = _snapshot_in_root(cache_root, repo_id)
+        if snapshot is not None:
+            return snapshot
+    return None
+
+
+def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
+    """Active local snapshot dir for model_name's main revision, or None if not cached.
+    Reads refs/main then snapshots/<commit>; no network. Tries the ST alias for slashless names."""
     for cache_root in _hf_cache_roots():
         for repo_id in st_repo_id_candidates(model_name):
-            try:
-                if repo_folder_name is not None:
-                    folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
-                else:
-                    folder = "models--" + repo_id.replace("/", "--")
-                repo_dir = cache_root / folder
-                ref = repo_dir / "refs" / "main"
-                if not ref.is_file():
-                    continue
-                commit = ref.read_text(encoding = "utf-8").strip()
-                if not commit:
-                    continue
-                snapshot = repo_dir / "snapshots" / commit
-                if snapshot.is_dir():
-                    return snapshot
-            # UnicodeDecodeError is a ValueError, not an OSError: a torn refs file must keep meaning "not cached here".
-            except (OSError, UnicodeDecodeError):
-                continue
+            snapshot = _snapshot_in_root(cache_root, repo_id)
+            if snapshot is not None:
+                return snapshot
     return None
 
 
@@ -569,22 +655,136 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
 _LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
 
 
+def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
+    """Whether ``root`` holds a whole checkpoint, shards and declared modules alike.
+
+    Shared by the Hub-cache check and the local-path one so a directory is judged
+    the same way however it got there: a single shard of a two-shard family, or a
+    module ``modules.json`` declares and the directory does not have, is a torn
+    checkpoint that SentenceTransformer fails to open at the first index.
+
+    ``weights`` is the already-scanned weight list when the caller has one.
+    """
+    from hub.utils.inventory_scan import snapshot_holds_a_complete_payload
+
+    if weights is None:
+        weights = [
+            path
+            for path in root.rglob("*")
+            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES
+            and path.is_file()
+            and not is_appledouble_metadata(path)
+        ]
+    # SentenceTransformer modules may keep their own transformer checkpoint
+    # below 0_Transformer/. Validate every module subtree that carries weights;
+    # config-only modules such as Pooling need no weight family of their own.
+    if (root / "modules.json").is_file():
+        import json
+        from pathlib import PurePosixPath
+
+        try:
+            modules = json.loads((root / "modules.json").read_text(encoding = "utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return False
+        roots = []
+        for module in modules if isinstance(modules, list) else []:
+            value = module.get("path") if isinstance(module, dict) else None
+            if not isinstance(value, str) or "\\" in value:
+                continue
+            relative = PurePosixPath(value or ".")
+            if relative.is_absolute() or ".." in relative.parts:
+                continue
+            module_root = root.joinpath(*relative.parts)
+            # A declared module the directory does not have at all is a torn
+            # checkpoint, whatever the others hold: checking only roots that
+            # carry weights passed one missing 0_Transformer entirely.
+            # Existence is the whole test, since config-only modules such as
+            # Pooling have no weight family.
+            if module_root != root and not module_root.is_dir():
+                return False
+            if any(path == module_root or module_root in path.parents for path in weights):
+                roots.append(module_root)
+        if roots:
+            return all(snapshot_holds_a_complete_payload(r, quants = False) for r in roots)
+    return snapshot_holds_a_complete_payload(root, quants = False)
+
+
 def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
-    """True when model_name's snapshot is cached and loadable: a config (config.json or
-    modules.json) plus at least one weight file, not a metadata-only partial cache. No network."""
+    """True when the cached snapshot can satisfy a cache-only transformer load.
+
+    App-managed downloads are checked against their exact manifest. Imported or
+    legacy caches without one fall back to the same weight-family/index scanner
+    used by Hub inventory, so one shard of a cancelled checkpoint is not enough.
+    No network.
+    """
     snapshot = hf_cache_snapshot_dir(model_name)
     if snapshot is None:
         return False
+    return snapshot_is_loadable(snapshot, model_name)
+
+
+def snapshot_is_loadable(snapshot, model_name: str) -> bool:
+    """``hf_cache_snapshot_is_loadable`` for a snapshot the caller already has.
+
+    A caller that picked a specific directory has to have THAT one judged: the
+    lookup above expands the ST alias within each cache root while an exact
+    per-repo lookup walks the roots for one id, so with several roots configured
+    the two can land on different snapshots, and the verdict would then belong to
+    a directory nobody is going to load.
+    """
     try:
         has_config = (snapshot / "config.json").is_file() or (snapshot / "modules.json").is_file()
         if not has_config:
             return False
+
+        weights = []
         for path in snapshot.rglob("*"):
-            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES and path.is_file():
-                return True
+            if path.suffix.lower() not in _LOADABLE_WEIGHT_SUFFIXES or not path.is_file():
+                continue
+            if not is_appledouble_metadata(path):
+                weights.append(path)
+        if not weights:
+            return False
+
+        # A managed full-snapshot transfer records its exact expected files
+        # before downloading. A cancel marker or unfinished blob is conclusive
+        # even when config.json and the first finalized shard already exist.
+        repo_dir = snapshot.parent.parent
+        hub_cache = repo_dir.parent
+        repo_id = model_name
+        try:
+            from huggingface_hub.file_download import repo_folder_name
+            for candidate in st_repo_id_candidates(model_name):
+                if repo_folder_name(repo_id = candidate, repo_type = "model") == repo_dir.name:
+                    repo_id = candidate
+                    break
+        except Exception:
+            pass
+        from hub.utils import download_manifest
+        from hub.utils.hf_cache_state import snapshot_has_broken_symlinks
+
+        if download_manifest.has_cancel_marker("model", repo_id, None, hub_cache = hub_cache):
+            return False
+        manifest = download_manifest.read_manifest("model", repo_id, None, hub_cache = hub_cache)
+        if manifest is not None:
+            # This exact full-snapshot plan is stronger evidence than an
+            # unrelated .incomplete blob left under the repository by another
+            # revision or scoped GGUF job.
+            return download_manifest.verify_against_disk(manifest, snapshot).ok
+        # No manifest: every model on disk before this build is such a cache.
+        # Judge THIS snapshot's own links, not every blob in the cache directory it
+        # shares, or a stray .incomplete from another revision condemns a model
+        # that is fully present.
+        if snapshot_has_broken_symlinks(snapshot):
+            return False
+
+        return checkpoint_directory_is_complete(snapshot, weights)
     except OSError:
         return False
-    return False
+    except Exception:
+        # Completeness is a safety property here: an unprovable partial must keep
+        # the pending marker so the loader cannot silently reach the network.
+        return False
 
 
 # ── Client-safe error helpers ───────────────────────────────────
@@ -595,6 +795,18 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     """Map an exception to a generic, client-safe message (never raw
     ``str(error)``, which can leak paths). Log the real exception server-side.
     """
+    # A mid-stream llama-server failure carries a message that was written to be shown,
+    # so the leak this function guards against does not apply to it. Without this the
+    # non-streaming paths reduced it to the fallback while streaming clients got the
+    # cause, which is the same "reaches the user stripped of its reason" defect one layer
+    # further out. Imported lazily: utils is low level and must not depend on
+    # core.inference at import time.
+    try:
+        from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
+        if isinstance(error, LlamaStreamError) and error.friendly:
+            return error.friendly
+    except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
+        pass
     text = str(error).lower()
     if (
         isinstance(error, (ConnectionError, TimeoutError))
@@ -627,6 +839,7 @@ def log_and_http_error(
     *,
     event: str = "request_failed",
     log = None,
+    headers: Optional[dict] = None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose
     ``detail`` is only ``public_message`` -- never the raw exception text.
@@ -635,9 +848,15 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    # exc_info=error works for both structlog and stdlib loggers.
-    (log or logger).error(f"{event}: {error}", exc_info = error)
-    return HTTPException(status_code = status_code, detail = public_message)
+    # A 4xx is a normal outcome the caller handles, so one warning line and no traceback:
+    # at error with exc_info, one generation buried the log under 54 rejected saves. 5xx
+    # keeps the traceback, since that is a server bug. exc_info works for structlog too.
+    emitter = log or logger
+    if 400 <= status_code < 500:
+        emitter.warning(f"{event}: {error}")
+    else:
+        emitter.error(f"{event}: {error}", exc_info = error)
+    return HTTPException(status_code = status_code, detail = public_message, headers = headers)
 
 
 @contextmanager
