@@ -23,7 +23,11 @@ from pathlib import Path
 from typing import Any
 
 
-from appimage_test_support import assert_no_loader_errors
+from appimage_test_support import (
+    FIXTURE_BACKEND_VERSION,
+    assert_fixture_version_clears_floor,
+    assert_no_loader_errors,
+)
 
 
 REPO_ID = "unsloth/FLUX.2-klein-4B-GGUF"
@@ -91,14 +95,6 @@ def _wait_for(
             last = str(error)
         time.sleep(0.25)
     raise AssertionError(f"Timed out waiting for {description}; last result: {last!r}")
-
-
-def _minimum_backend_version() -> str:
-    source = (REPO_ROOT / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
-    match = re.search(r'MIN_DESKTOP_BACKEND_VERSION: &str = "([^"]+)"', source)
-    if not match:
-        raise RuntimeError("Could not read MIN_DESKTOP_BACKEND_VERSION")
-    return match.group(1)
 
 
 def _write_backend_fixture(home: Path, request_log: Path) -> None:
@@ -176,7 +172,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                         return self.send_json({{
                             "status": "alive",
                             "service": "Unsloth UI Backend",
-                            "version": {_minimum_backend_version()!r},
+                            "version": {FIXTURE_BACKEND_VERSION!r},
                             "desktop_protocol_version": 1,
                             "desktop_manageability_version": 2,
                             "supports_desktop_auth": True,
@@ -335,7 +331,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                   "supports_provision_desktop_auth": True,
                   "supports_desktop_backend_ownership": True,
                   "studio_install_ok": True,
-                  "version": _minimum_backend_version(),
+                  "version": FIXTURE_BACKEND_VERSION,
               }, separators = (",", ":"))}'
               exit 0
             fi
@@ -446,6 +442,7 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
 
 
 def main() -> None:
+    assert_fixture_version_clears_floor(REPO_ROOT)
     appimage_value = os.environ.get("APPIMAGE_PATH", "")
     if not appimage_value:
         raise SystemExit("APPIMAGE_PATH must name the AppImage under test")

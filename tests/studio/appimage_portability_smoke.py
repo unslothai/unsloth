@@ -16,45 +16,14 @@ import textwrap
 import time
 from pathlib import Path
 
-from appimage_test_support import assert_no_loader_errors
+from appimage_test_support import (
+    FIXTURE_BACKEND_VERSION,
+    assert_fixture_version_clears_floor,
+    assert_no_loader_errors,
+)
 
 ROOT_ID = "a" * 64
 DESKTOP_SECRET = "appimage-portability-secret"
-
-
-# What the fixture reports as the managed backend's version.
-#
-# It used to report MIN_DESKTOP_BACKEND_VERSION, read out of version.rs, and that
-# is only the right answer for a build this repo made. The floor is not the only
-# gate: managed_backend_version_stale_reason() compares against
-# expected_backend_version(), which is
-#
-#     option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
-#
-# and the release workflow STAMPS that from the same pypi_version as the updater
-# manifest. So a PR build, which leaves it unset, accepted the floor and passed,
-# while every published AppImage rejected it: v0.1.804-beta is pinned to backend
-# 2026.8.22, judged the fixture's 2026.8.4 `desktop_backend_version_outdated`,
-# and went off to run its bundled installer instead of authenticating. That is
-# the app behaving correctly, and it is why the nightly failed on all five
-# distros while the pull_request lane on the same commit passed.
-#
-# The fixture cannot know the stamped value, so it reports one no build can
-# consider outdated. Both comparisons are one-sided -- compatible is `>= floor`
-# and outdated is `< expected` -- so nothing above rejects a version for being
-# too new. If that ever changes it is a real contract change and this should
-# fail loudly rather than quietly report the floor again.
-FIXTURE_BACKEND_VERSION = "9999.12.31"
-
-
-def _minimum_backend_version(repo_root: Path) -> str:
-    source = (repo_root / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
-    marker = 'MIN_DESKTOP_BACKEND_VERSION: &str = "'
-    start = source.find(marker)
-    if start < 0:
-        raise RuntimeError("Could not read the minimum desktop backend version")
-    start += len(marker)
-    return source[start : source.index('"', start)]
 
 
 # The dispositions that mean the app gave up on the fixture and went to repair.
@@ -260,14 +229,7 @@ def main() -> None:
     install_id = home / ".unsloth/studio/share/studio_install_id"
     install_id.parent.mkdir(parents = True)
     install_id.write_text(ROOT_ID, encoding = "utf-8")
-    # Guard that the sentinel really is above the floor it has to clear, so a floor
-    # that ever reaches 9999 fails here by name instead of as an unexplained timeout.
-    # Compared on the leading component: a string compare would read "999" as above
-    # "9999", which is the one answer this must not get wrong.
-    floor = _minimum_backend_version(repo_root)
-    assert int(floor.split(".")[0]) < int(
-        FIXTURE_BACKEND_VERSION.split(".")[0]
-    ), f"fixture version {FIXTURE_BACKEND_VERSION} no longer clears the floor {floor}"
+    assert_fixture_version_clears_floor(repo_root)
     request_log = _write_fixture(art_dir, home, FIXTURE_BACKEND_VERSION)
 
     env = {
