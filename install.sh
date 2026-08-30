@@ -4559,6 +4559,16 @@ while [ -n "$_torch_index_leaf" ] && [ "${_torch_index_leaf%/}" != "$_torch_inde
 done
 _torch_index_leaf="${_torch_index_leaf##*/}"
 _torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]')
+# Whether the caller had already STATED a backend before the assignment below overwrites
+# it. setup.sh documents UNSLOTH_TORCH_BACKEND=cpu as the way to keep a deliberate CPU
+# install, and on a GPU-less host the resolved value is cpu as well, so without this the
+# user's own statement is indistinguishable from the automatic answer -- and the manifest
+# would record a deliberate choice as derived, or an automatic one as deliberate.
+if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ]; then
+    _torch_backend_was_stated=true
+else
+    _torch_backend_was_stated=false
+fi
 case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
@@ -4574,7 +4584,7 @@ esac
 # records which of the two it was, so mark this one as derived. Without it every ordinary
 # Linux CPU install is recorded as a deliberate choice, and a machine that later gains a
 # GPU is never offered the repair.
-if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ]; then
+if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] && [ "$_torch_backend_was_stated" != true ]; then
     export UNSLOTH_TORCH_BACKEND_SOURCE="resolved"
 else
     unset UNSLOTH_TORCH_BACKEND_SOURCE

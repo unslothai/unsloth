@@ -402,7 +402,22 @@ class TestManifestRecordsTheFlavor:
 
     def test_the_stack_carries_a_previous_record_forward(self):
         # A platform that never resolves a flavor must not erase the one already recorded.
-        assert "expected_torch_tag = torch_flavor_tag or _RECORDED_TORCH_TAG," in _STACK_SRC
+        assert "expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag)," in _STACK_SRC
+        helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
+        helper = helper[: helper.index("\ndef ", 1)]
+        assert "return _RECORDED_TORCH_TAG or \"\"" in helper
+
+    def test_a_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
+        # The wheel in the venv came from a mirror whose leaf names no family, so the
+        # previous record describes a venv that no longer exists. Writing it back, and
+        # marking it pinned because an explicit index is present, would hand a later
+        # unpinned run a flavor to "repair" the mirror's build back to.
+        helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
+        helper = helper[: helper.index("\ndef ", 1)]
+        assert "_explicit_unknown_family_torch_index_url() is not None" in helper
+        assert helper.index("_explicit_unknown_family_torch_index_url") < helper.index(
+            "_RECORDED_TORCH_TAG"
+        ), "the mirror check has to come before the carry-forward"
 
     def test_the_record_is_read_before_the_manifest_is_dropped(self):
         # install_python_stack() removes the manifest before its dependency pass, so a
@@ -420,3 +435,47 @@ class TestManifestRecordsTheFlavor:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+class TestTheFlavorProvenance:
+    """A recorded flavor is only a CHOICE when someone named it."""
+
+    def test_install_sh_marks_a_derived_backend_as_derived(self):
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        block = source[source.index('case "$_torch_index_leaf" in') :]
+        block = block[: block.index("_is_pip_rocm_family_leaf")]
+        assert "UNSLOTH_TORCH_BACKEND_SOURCE=\"resolved\"" in block, (
+            "install.sh derives the backend from the index it resolved -- cpu on any "
+            "GPU-less host -- so the manifest has to be told which it was"
+        )
+
+    def test_a_backend_the_caller_stated_is_not_marked_derived(self):
+        # setup.sh documents UNSLOTH_TORCH_BACKEND=cpu as the way to keep a deliberate
+        # CPU install, and on a GPU-less host the resolved value is cpu as well, so the
+        # two are indistinguishable unless install.sh checks BEFORE overwriting it.
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        assert "_torch_backend_was_stated" in source
+        check = source.index("_torch_backend_was_stated=true")
+        overwrite = source.index('case "$_torch_index_leaf" in')
+        assert check < overwrite, "the check has to run before the assignment"
+        mark = source.index("UNSLOTH_TORCH_BACKEND_SOURCE=\"resolved\"")
+        line_start = source.rindex("if ", 0, mark)
+        assert "_torch_backend_was_stated" in source[line_start:mark], (
+            "a stated backend must not be marked derived"
+        )
+
+    def test_the_stack_reads_that_marker(self):
+        pinned = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_was_pinned(") :]
+        pinned = pinned[: pinned.index("\ndef ", 1)]
+        assert "UNSLOTH_TORCH_BACKEND_SOURCE" in pinned
+        assert "resolved" in pinned
+
+    def test_an_untagged_xpu_runtime_counts_as_a_gpu_build(self):
+        # The probe reports torch.version.xpu, and _torch_build_is_gpu consults it: an
+        # untagged source or conda XPU build carries its runtime there and nowhere else,
+        # and calling it CPU-only fails the update outright while the backend's own
+        # classifier reads the same marker as a GPU build.
+        assert "getattr(_v, 'xpu', '')" in _STACK_SRC
+        verdict = _STACK_SRC[_STACK_SRC.index("def _torch_build_is_gpu(") :]
+        verdict = verdict[: verdict.index("\ndef ", 1)]
+        assert "_TORCH_RUNTIME_XPU" in verdict

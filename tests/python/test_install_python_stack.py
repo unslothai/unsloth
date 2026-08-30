@@ -2462,5 +2462,9 @@ class TestExpectedTorchFlavorResolution:
         # The manifest lives in the venv and is read back by verify-install; a token in a
         # pinned index URL must not follow it there.
         source = inspect.getsource(ips.install_python_stack)
-        assert "expected_torch_tag = torch_flavor_tag or _RECORDED_TORCH_TAG," in source
+        assert "expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag)," in source
         assert "torch_index_url" not in source
+        # And the helper that answers it records a FLAVOR, never a URL, for the same
+        # reason: it is reached with the pin still in the environment.
+        helper = inspect.getsource(ips._recordable_torch_flavor_tag)
+        assert "return" in helper and "_explicit_torch_index_url()" not in helper

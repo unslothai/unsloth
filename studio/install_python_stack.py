@@ -344,6 +344,9 @@ def _select_torchao_spec(torch_version: str | None) -> str:
 # pip_install_try(), the only things here that change what is installed. None means
 # "not probed yet".
 _TORCH_RUNTIME_PROBE: "tuple[bool, bool, str | None, str, str] | None" = None
+# torch.version.xpu from the same probe. Not in the tuple above: thirteen call sites
+# unpack that, and only the GPU-build verdict needs this one.
+_TORCH_RUNTIME_XPU: str = ""
 
 # Prefix on the probe's own stdout line. Import chatter can arrive before the answer, and
 # an atexit handler or a CUDA teardown notice can arrive after it, so "the last non-empty
@@ -402,7 +405,12 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str | None, str, str]":
                     "_v = getattr(torch, 'version', None); "
                     "h = getattr(_v, 'hip', '') or ''; "
                     "c = getattr(_v, 'cuda', '') or ''; "
-                    f"print('{_TORCH_PROBE_MARKER}' + '|'.join((v, h, c)))"
+                    # XPU too. An untagged source or conda XPU build carries its runtime
+                    # here and nowhere else, and without it such a wheel reads as having
+                    # no GPU support at all -- which is the one verdict that fails an
+                    # update outright.
+                    "x = getattr(_v, 'xpu', '') or ''; "
+                    f"print('{_TORCH_PROBE_MARKER}' + '|'.join((v, h, c, x)))"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -428,9 +436,13 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str | None, str, str]":
     ]
     version: "str | None" = None
     hip = cuda = ""
+    global _TORCH_RUNTIME_XPU
     if _marked:
         _fields = _marked[-1][len(_TORCH_PROBE_MARKER) :].split("|")
-        version, hip, cuda = (_fields + ["", ""])[:3]
+        version, hip, cuda = (_fields + ["", "", ""])[:3]
+        # Kept beside the tuple rather than in it: thirteen call sites unpack five
+        # values, and the marker is only interesting to the GPU-build verdict.
+        _TORCH_RUNTIME_XPU = (_fields + ["", "", "", ""])[3]
     _TORCH_RUNTIME_PROBE = (True, probe.returncode == 0, version, hip, cuda)
     return _TORCH_RUNTIME_PROBE
 
@@ -2922,7 +2934,18 @@ def _torch_build_is_gpu() -> bool:
     """
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if _ran and _importable and _version:
-        return _is_gpu_torch_label(_version.lower()) or bool(_hip) or bool(_cuda)
+        return (
+            _is_gpu_torch_label(_version.lower())
+            or bool(_hip)
+            or bool(_cuda)
+            # torch.version.xpu, for the same reason .cuda and .hip are here: an
+            # untagged source, conda or private-index XPU build carries its runtime
+            # there and nowhere else. Without it the installer called such a wheel
+            # CPU-only and failed the update, while the backend's own classifier reads
+            # the identical marker as a GPU build -- the two disagreeing about the same
+            # venv is worse than either answer.
+            or bool(_TORCH_RUNTIME_XPU)
+        )
     label = _installed_torch_label_on_disk()
     return (not label) or _is_gpu_torch_label(label)
 
@@ -3003,6 +3026,23 @@ def _expected_torch_flavor_is_explicit() -> bool:
     if _explicit_torch_index_url() is not None:
         return True
     return bool(_RECORDED_TORCH_TAG)
+
+
+def _recordable_torch_flavor_tag(resolved: str) -> str:
+    """The flavor worth writing to the manifest, or "" when nothing is.
+
+    Normally the flavor this run resolved, falling back to the previous install's so an
+    update does not erase a record it simply had no occasion to recompute. An explicit
+    pin whose leaf names no family (a corporate /simple mirror, /current) breaks that
+    fallback: the wheel now in the venv came from that mirror, the old record describes
+    a venv that no longer exists, and carrying it forward would hand a later unpinned run
+    a flavor to "repair" the mirror's build back to.
+    """
+    if resolved:
+        return resolved
+    if _explicit_unknown_family_torch_index_url() is not None:
+        return ""
+    return _RECORDED_TORCH_TAG or ""
 
 
 def _expected_torch_flavor_was_pinned() -> bool:
@@ -6404,9 +6444,16 @@ def install_python_stack() -> int:
             no_torch = NO_TORCH,
             # Falls back to what the previous install recorded, so a platform that never
             # resolves a flavor (every non-Windows path today) carries the record forward
-            # instead of erasing it on the next update.
-            expected_torch_tag = torch_flavor_tag or _RECORDED_TORCH_TAG,
-            expected_torch_tag_pinned = _expected_torch_flavor_was_pinned(),
+            # instead of erasing it on the next update. An unknown-family pin is the
+            # exception: this run installed from a mirror whose leaf names no family, so
+            # the previous record describes a venv that no longer exists. Writing it back
+            # -- and marking it pinned, since any explicit index counts -- would let a
+            # later unpinned run "repair" the mirror's wheel to a public one on the
+            # strength of a flavor nobody verified.
+            expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
+            expected_torch_tag_pinned = bool(
+                _recordable_torch_flavor_tag(torch_flavor_tag)
+            ) and _expected_torch_flavor_was_pinned(),
         )
         is None
     ):
