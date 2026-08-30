@@ -213,9 +213,9 @@ def test_residency_resolves_the_current_snapshot_each_call(monkeypatch):
     catalog = _catalog(1)
     assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is False
     snapshot["dir"] = "/models/m0/snapshots/new"  # a download moved the pointer
-    assert (
-        inf._servable_catalog_rows(catalog, 111.0)[0][3] is True
-    ), "the snapshot must be re-resolved per call, not cached with the scan"
+    assert inf._servable_catalog_rows(catalog, 111.0)[0][3] is True, (
+        "the snapshot must be re-resolved per call, not cached with the scan"
+    )
     assert seen == ["/models/m0/snapshots/old", "/models/m0/snapshots/new"]
 
 
@@ -385,19 +385,32 @@ def test_the_generation_key_names_all_three_signals():
     )
 
 
-def test_deleting_a_finetuned_model_invalidates_the_scan():
+def test_every_delete_branch_invalidates_the_scan():
     """An outputs/exports directory can be a registered scan folder, so a model deleted
-    through delete_finetuned_model may be one /v1/models is advertising. Nothing else on
-    that path invalidates, so the route has to do it itself."""
+    through delete_finetuned_model may be one /v1/models is advertising. Both successful
+    branches count: deleting a single GGUF variant returns earlier than the full-model
+    delete, and only the later one was covered at first."""
     import inspect
 
     from routes import models as models_route
 
-    source = inspect.getsource(models_route.delete_finetuned_model)
-    assert (
-        "invalidate_index()" in source
-    ), "the successful deletion branch must retire the cached servability rows"
-    prune = source.index("_prune_empty_parents(target_path, allowed_root)")
-    assert source.index("invalidate_index()", prune) < source.index(
-        'return {"status": "deleted"', prune
-    ), "the invalidation must happen before the route reports success"
+    lines = inspect.getsource(models_route.delete_finetuned_model).split("\n")
+    # The variant branch returns a multi-line dict, so match the status rather than a
+    # one-line prefix; a mid-function `return {` with no status is an error path.
+    successes = [
+        n
+        for n, line in enumerate(lines)
+        if '"status": "deleted"' in line or '"deleted"' in line and "status" in line
+    ]
+    invalidations = [n for n, line in enumerate(lines) if "_invalidate_local_scans()" in line]
+    assert len(successes) == 2, f"expected two success returns, found {len(successes)}"
+    assert len(invalidations) == 2, (
+        f"expected one invalidation per success branch, found {len(invalidations)}"
+    )
+    for at in successes:
+        before = [n for n in invalidations if n < at]
+        assert before, "a successful deletion branch reports success without invalidating"
+        # Belongs to THIS branch: nothing else returns between the two.
+        assert not [n for n in successes if before[-1] < n < at], (
+            "the invalidation must belong to this branch, not to one above it"
+        )

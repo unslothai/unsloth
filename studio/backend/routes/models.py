@@ -1306,6 +1306,17 @@ async def _shared_compat_local_inventory_scan(
     return await asyncio.to_thread(classify, superseded)
 
 
+def _invalidate_local_scans() -> None:
+    """Retire the cached local scans after something was deleted from disk.
+
+    Every successful deletion branch has to call this. The /v1/models servability scan is
+    cached against the resolver generation, so a branch that returns without bumping it
+    keeps advertising what was just removed until the catalog TTL expires.
+    """
+    from core.inference.local_model_resolver import invalidate_index
+    invalidate_index()
+
+
 @router.get("/local", response_model = LocalModelListResponse)
 async def list_local_models(
     models_dir: str = Query(
@@ -3345,6 +3356,7 @@ async def delete_finetuned_model(
                     _prune_empty_parents(target_path, allowed_root)
             except OSError:
                 pass
+            _invalidate_local_scans()
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
                 deleted_count,
@@ -3371,13 +3383,7 @@ async def delete_finetuned_model(
 
         _prune_empty_parents(target_path, allowed_root)
 
-        # An outputs/exports directory can be registered as a custom scan folder, so what
-        # was just removed may be a model /v1/models is advertising. Nothing else on this
-        # path invalidates, and the servability scan is cached against this generation.
-        from core.inference.local_model_resolver import invalidate_index
-
-        invalidate_index()
-
+        _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)
         return {"status": "deleted", "path": str(target_path)}
     except HTTPException:
