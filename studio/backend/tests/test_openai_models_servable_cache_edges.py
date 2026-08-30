@@ -427,9 +427,9 @@ def test_the_invalidation_helper_stays_off_the_event_loop():
 
     assert _asyncio.iscoroutinefunction(models_route._invalidate_local_scans)
     source = inspect.getsource(models_route._invalidate_local_scans)
-    assert "asyncio.to_thread(invalidate_index)" in source, (
-        "the invalidation must be offloaded, matching the other async sites in this file"
-    )
+    assert (
+        "asyncio.to_thread(invalidate_index)" in source
+    ), "the invalidation must be offloaded, matching the other async sites in this file"
     # And every call site must await it, or the coroutine is created and dropped.
     route = inspect.getsource(models_route.delete_finetuned_model)
     calls = route.count("_invalidate_local_scans()")
@@ -478,7 +478,7 @@ def test_a_generation_bump_while_waiting_for_the_lock_is_not_accepted(monkeypatc
 
     monkeypatch.setattr(inf, "_SERVABLE_SCAN_CACHE_LOCK", _LockThatLosesTheRace())
     rows = inf._servable_catalog_rows(catalog, 777.0)
-    assert rows != stale_rows, (
-        "the waiter accepted rows scanned before the delete instead of rescanning"
-    )
+    assert (
+        rows != stale_rows
+    ), "the waiter accepted rows scanned before the delete instead of rescanning"
     assert inf._SERVABLE_SCAN_CACHE["entry"][2] != generation_at_queue
