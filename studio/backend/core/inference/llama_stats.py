@@ -115,7 +115,7 @@ class LlamaServerStatsLogger:
             stalled_s = round(stalled_for, 1),
             n_decode_total = decode_calls,
             detail = "llama-server holds a slot but has not called llama_decode(); "
-                     "a wedged engine looks like this, and so does a long multimodal encode",
+            "a wedged engine looks like this, and so does a long multimodal encode",
         )
 
     def _run(self):
@@ -168,7 +168,7 @@ class LlamaServerStatsLogger:
                             missing = "n_decode_total",
                             held_s = round(stalled_for, 1),
                             detail = "cannot tell a wedged engine from a working one; "
-                                     "llama-server /metrics lacks the decode counter",
+                            "llama-server /metrics lacks the decode counter",
                         )
                 elif not self._stall_reported:
                     self._report_stall(running, waiting, stalled_for, decode_calls)

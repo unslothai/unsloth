@@ -41,7 +41,13 @@ class _Capture:
         pass
 
 
-def _drive(snaps, monkeypatch, *, tick_s = 10.0, stall_timeout_s = 600.0):
+def _drive(
+    snaps,
+    monkeypatch,
+    *,
+    tick_s = 10.0,
+    stall_timeout_s = 600.0,
+):
     cap = _Capture()
     clock = {"t": 1000.0}
     monkeypatch.setattr(ls.time, "monotonic", lambda: clock["t"])
@@ -84,7 +90,7 @@ def test_healthy_generation_is_never_flagged_on_any_platform(platform, backend, 
     snaps = [
         {
             "tokens_predicted_total": 4096.0,  # frozen until the slot is released
-            "prompt_tokens_total": 512.0,      # flushed once, at the first token
+            "prompt_tokens_total": 512.0,  # flushed once, at the first token
             "n_decode_total": 30000.0 + i,
             "requests_processing": 1.0,
             "requests_deferred": 0.0,
@@ -152,19 +158,13 @@ def test_scrape_handles_windows_line_endings(monkeypatch):
 
 
 def test_scrape_handles_scientific_notation_and_labels(monkeypatch):
-    body = (
-        'llamacpp:n_decode_total{model="a-b_c.d"} 1.5e3\n'
-        "llamacpp:requests_processing 2\n"
-    )
+    body = 'llamacpp:n_decode_total{model="a-b_c.d"} 1.5e3\nllamacpp:requests_processing 2\n'
     m = _scrape_body(body, monkeypatch)
     assert m["n_decode_total"] == 1500.0
 
 
 def test_scrape_survives_malformed_values(monkeypatch):
-    body = (
-        "llamacpp:n_decode_total NaNsense\n"
-        "llamacpp:requests_processing 1\n"
-    )
+    body = "llamacpp:n_decode_total NaNsense\nllamacpp:requests_processing 1\n"
     m = _scrape_body(body, monkeypatch)
     # The bad line is skipped, the good one still parses.
     assert m.get("requests_processing") == 1.0
@@ -243,9 +243,11 @@ def test_env_defaults_are_read(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", "42")
     monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", "7")
     started = {}
-    monkeypatch.setattr(LlamaServerStatsLogger, "start", lambda self: started.update(
-        timeout = self._stall_timeout, interval = self._interval
-    ))
+    monkeypatch.setattr(
+        LlamaServerStatsLogger,
+        "start",
+        lambda self: started.update(timeout = self._stall_timeout, interval = self._interval),
+    )
     ls.maybe_start_stats_logger("http://127.0.0.1:1", _Capture())
     assert started == {"timeout": 42.0, "interval": 7.0}
 
@@ -254,9 +256,11 @@ def test_garbage_env_falls_back_to_defaults(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STALL_TIMEOUT_S", "not-a-number")
     monkeypatch.setenv("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", "")
     started = {}
-    monkeypatch.setattr(LlamaServerStatsLogger, "start", lambda self: started.update(
-        timeout = self._stall_timeout, interval = self._interval
-    ))
+    monkeypatch.setattr(
+        LlamaServerStatsLogger,
+        "start",
+        lambda self: started.update(timeout = self._stall_timeout, interval = self._interval),
+    )
     ls.maybe_start_stats_logger("http://127.0.0.1:1", _Capture())
     assert started["timeout"] == 600.0
     assert started["interval"] >= 1.0

@@ -37,7 +37,13 @@ class _Capture:
         pass
 
 
-def _drive(snaps, monkeypatch, *, tick_s = 10.0, stall_timeout_s = 600.0):
+def _drive(
+    snaps,
+    monkeypatch,
+    *,
+    tick_s = 10.0,
+    stall_timeout_s = 600.0,
+):
     """Run _run() synchronously over `snaps` on a fake clock, then stop.
 
     Each scrape advances the clock by `tick_s`, mirroring the 10s poll interval
@@ -47,9 +53,7 @@ def _drive(snaps, monkeypatch, *, tick_s = 10.0, stall_timeout_s = 600.0):
     clock = {"t": 1000.0}
     monkeypatch.setattr(ls.time, "monotonic", lambda: clock["t"])
 
-    lg = LlamaServerStatsLogger(
-        "http://127.0.0.1:0", cap, stall_timeout_s = stall_timeout_s
-    )
+    lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap, stall_timeout_s = stall_timeout_s)
     lg._interval = 0.001  # bypass the 1s floor for a fast, synchronous run
     state = {"i": 0}
 
@@ -120,8 +124,8 @@ def test_a_healthy_long_decode_is_never_flagged(monkeypatch):
     snaps = [
         {
             "tokens_predicted_total": 4096.0,  # frozen for the whole generation
-            "prompt_tokens_total": 512.0,      # flushed once at first token
-            "n_decode_total": 10000.0 + i,     # the engine is working
+            "prompt_tokens_total": 512.0,  # flushed once at first token
+            "n_decode_total": 10000.0 + i,  # the engine is working
             "requests_processing": 1.0,
         }
         for i in range(120)
@@ -147,9 +151,7 @@ def test_a_healthy_long_prefill_is_never_flagged(monkeypatch):
 
 
 def test_idle_engine_is_never_flagged(monkeypatch):
-    snaps = [
-        {"n_decode_total": 9.0, "requests_processing": 0.0} for _ in range(120)
-    ]
+    snaps = [{"n_decode_total": 9.0, "requests_processing": 0.0} for _ in range(120)]
     cap = _drive(snaps, monkeypatch)
     assert not _stalls(cap)
 
@@ -157,10 +159,7 @@ def test_idle_engine_is_never_flagged(monkeypatch):
 def test_recovery_rearms_the_report(monkeypatch):
     snaps = (
         _wedged(80)
-        + [
-            {"n_decode_total": 9000.0 + i, "requests_processing": 1.0}
-            for i in range(5)
-        ]
+        + [{"n_decode_total": 9000.0 + i, "requests_processing": 1.0} for i in range(5)]
         + _wedged(80, decode = 20000.0)
     )
     cap = _drive(snaps, monkeypatch)
@@ -188,9 +187,7 @@ def test_absent_decode_counter_disables_reporting(monkeypatch):
     snaps = [{"requests_processing": 1.0} for _ in range(120)]
     cap = _drive(snaps, monkeypatch)
     assert not _stalls(cap)
-    unmeasurable = [
-        kw for ev, kw in cap.events if ev == "engine_progress_unmeasurable"
-    ]
+    unmeasurable = [kw for ev, kw in cap.events if ev == "engine_progress_unmeasurable"]
     assert len(unmeasurable) == 1
     assert unmeasurable[0]["missing"] == "n_decode_total"
 

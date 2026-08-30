@@ -210,9 +210,7 @@ def test_old_build_can_still_insert_after_migration(clock):
     # will INSERT without them. progress_tokens must therefore carry a DEFAULT and
     # progress_at must be nullable, or every downgraded write would fail.
     token = _seed("run-a")
-    runs_db.finish_run(
-        "run-a", worker_token = token, status = "completed", finish_reason = "stop"
-    )
+    runs_db.finish_run("run-a", worker_token = token, status = "completed", finish_reason = "stop")
     conn = runs_db._connect()
     cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()]
     legacy = [c for c in cols if c not in ("progress_at", "progress_tokens")]
@@ -275,18 +273,14 @@ def test_clock_jumping_forward_can_reap_and_is_recorded(clock):
     # step ages a live run instantly. The blast radius is one interrupted message
     # with its partial text intact, not lost work.
     token = _seed("run-fwd")
-    runs_db.append_events(
-        "run-fwd", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
-    )
+    runs_db.append_events("run-fwd", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})])
     clock.advance_ms(_LEASE_MS + _MINUTE_MS)
     assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-fwd"]
 
 
 def test_terminal_runs_are_never_reaped(clock):
     token = _seed("run-done")
-    runs_db.finish_run(
-        "run-done", worker_token = token, status = "completed", finish_reason = "stop"
-    )
+    runs_db.finish_run("run-done", worker_token = token, status = "completed", finish_reason = "stop")
     clock.advance_ms(10 * _LEASE_MS)
     assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
 
