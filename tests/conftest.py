@@ -41,15 +41,51 @@ for _up in _iso.parents:
 # not per RUN, so a test session leaves a directory that every later Python process on the
 # machine imports from, and two concurrent runs share one.
 #
-# Redirecting tempfile.tempdir moves it to a per-run location. tempfile.tempdir is the
-# documented override; TMPDIR/TEMP/TMP are read by gettempdir() once and then cached, so
-# setting those is unreliable once anything has resolved a temp path.
+# Moving it to a per-run location takes BOTH levers, because they cover different scopes:
 #
-# NOT cleaned up on exit, deliberately: a hard-killed worker cannot then leave residue in
-# the shared tempdir, which a `finally` unlink could not promise.
+#   tempfile.tempdir   this process. gettempdir() reads TMPDIR/TEMP/TMP once and then
+#                      caches the answer, so by the time this runs the environment alone
+#                      can no longer move it.
+#   TMPDIR/TEMP/TMP    child interpreters, which resolve their own temp root from the
+#                      environment they are handed. tempfile.tempdir is a module
+#                      attribute and does not survive exec, so setting it alone leaves
+#                      children on the shared root -- and a child that imports unsloth
+#                      re-runs the write from _gpu_init.py. `_run()` in
+#                      tests/test_broken_tf_does_not_break_import.py spawns exactly that.
+#
+# Removed at normal exit. pytest roots its tmp_path tree at gettempdir() and prunes only
+# the `pytest-*` siblings it finds beside it, so a fresh root per run means that pruning
+# never sees an earlier run and every run leaks its whole fixture tree. A hard-killed
+# process still leaves its root behind, which is harmless: it is an isolated directory,
+# not the shared sitecustomize path this channel is about. Pass --basetemp, or set
+# PYTEST_DEBUG_TEMPROOT, to keep a run's fixtures for post-mortem inspection.
+import atexit as _atexit  # noqa: E402
+import glob as _glob  # noqa: E402
+import os as _os  # noqa: E402
+import shutil as _shutil  # noqa: E402
 import tempfile as _tempfile  # noqa: E402
 
+# Captured before the redirect. The tests assert this session adds nothing to the shared
+# root -- not that the root is globally empty, which would fail on precisely the machines
+# #9586 describes, where a stray from before this fix is already sitting there.
+_SHARED_TEMPDIR = _tempfile.gettempdir()
+_PRE_EXISTING_FIX_DIRS = frozenset(
+    _glob.glob(_os.path.join(_SHARED_TEMPDIR, "unsloth_subprocess_import_fix*"))
+)
+
 _tempfile.tempdir = _tempfile.mkdtemp(prefix = "unsloth-tests-")
+_os.environ["TEMP"] = _tempfile.tempdir
+_os.environ["TMP"] = _tempfile.tempdir
+if _os.name == "nt":
+    # Removed, not set. gettempdir() reads TMPDIR before TEMP on every platform, so a
+    # TMPDIR the session happened to inherit would win over the TEMP set above and let a
+    # child resolve some other root; clearing it makes TEMP authoritative. Setting it
+    # instead would hand a Windows path to the POSIX spelling that install.sh and
+    # tests/sh read, which is not a trade worth making when clearing it suffices.
+    _os.environ.pop("TMPDIR", None)
+else:
+    _os.environ["TMPDIR"] = _tempfile.tempdir
+_atexit.register(_shutil.rmtree, _tempfile.tempdir, ignore_errors = True)
 # -----------------------------------------------------------------------------------
 
 # --- shared test helpers on sys.path -----------------------------------------------
@@ -82,6 +118,26 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     """
     from installer_venv_root import contain_installer_venv_root
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
+
+
+@pytest.fixture(scope = "session")
+def shared_tempdir_before_redirect() -> str:
+    """The machine-shared temp root, as it was before this conftest redirected away.
+
+    Read from the snapshot rather than from TMPDIR/TEMP/TMP, which now point at the
+    per-run root -- see the containment block at the top of this file.
+    """
+    return _SHARED_TEMPDIR
+
+
+@pytest.fixture(scope = "session")
+def pre_existing_fix_dirs() -> frozenset:
+    """Subprocess-fix directories already in the shared root when this session started.
+
+    A machine that ran an unsloth suite before this fix landed still carries one, and it
+    is not this session's to fail on. Tests assert nothing is ADDED to this set.
+    """
+    return _PRE_EXISTING_FIX_DIRS
 
 
 def _has_real_accelerator() -> bool:
