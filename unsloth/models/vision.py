@@ -221,10 +221,43 @@ def _repair_dispatch_hooks(model):
     # already sits is a no-op move, so matching that behaviour is both simpler
     # and safer than guessing which device counts as "main" -- a guess that
     # inverts the moment the far side holds more entries than the near one.
+    targets = {name : device for name, device in device_map.items() if name}
+
+    # A map does not have to NAME the modules the patching pass replaces. Every
+    # map this loader builds itself is leaf-granular and lists both, but a
+    # hand-written coarse one such as `{"model": 0, "lm_head": 1}` covers
+    # `model.embed_tokens` through an ANCESTOR. `dispatch_model` hooks it
+    # regardless, because it walks the subtree an entry covers -- measured: a
+    # `{"": 0, "model.layers.1": "cpu"}` map leaves `lm_head` hooked without
+    # `lm_head` being a key. Iterating keys alone would then repair nothing and
+    # leave exactly the crash this function exists for, arriving through the
+    # shape of the map rather than the shape of the model.
+    #
+    # Only the two modules the pass actually replaces are resolved this way,
+    # under the device of the longest entry covering them. Repairing every
+    # covered descendant instead would hook thousands of modules that never
+    # lost anything, which is a much larger claim than the bug supports.
+    for get in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            replaced = getattr(model, get, lambda: None)()
+        except Exception:
+            continue  # a model that cannot answer is not one to guess about
+        if replaced is None or hasattr(replaced, "_hf_hook"):
+            continue
+        name = next(
+            (n for n, m in model.named_modules() if m is replaced and n), None,
+        )
+        if name is None or name in targets:
+            continue
+        covering = [
+            key for key in device_map
+            if not key or name == key or name.startswith(key + ".")
+        ]
+        if covering:
+            targets[name] = device_map[max(covering, key = len)]
+
     repaired = 0
-    for name, device in device_map.items():
-        if not name:
-            continue  # the root's own hook is dispatch_model's business
+    for name, device in targets.items():
         try:
             module = model.get_submodule(name)
         except AttributeError:

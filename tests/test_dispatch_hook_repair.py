@@ -536,3 +536,80 @@ def test_the_loader_repairs_after_resizing_the_vocabulary():
             f"the resize at line {call.lineno} is not followed by a repair, so the "
             "new embedding sits on its mapped card with nothing sending it the ids"
         )
+
+
+class _CoarseModel(torch.nn.Module):
+    """A model whose embedding is covered by an ANCESTOR entry, not a key.
+
+    `dispatch_model` hooks such a module anyway, because it walks the subtree an
+    entry covers, so a repair that iterates map keys alone leaves exactly the
+    module the patching pass rebuilt without a hook.
+    """
+
+    def __init__(self, device_map):
+        super().__init__()
+        self.model = torch.nn.Module()
+        self.model.embed_tokens = torch.nn.Embedding(4, 2)
+        self.model.layer = torch.nn.Linear(2, 2)
+        self.lm_head = torch.nn.Linear(2, 4)
+        self.hf_device_map = dict(device_map)
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+
+def test_an_embedding_covered_only_by_an_ancestor_entry_is_repaired():
+    """`{"model": far, "lm_head": near}` never names `model.embed_tokens`."""
+    model = _CoarseModel({"model": FAR, "lm_head": NEAR})
+
+    _repair()(model)
+
+    assert "model.embed_tokens" in _hooked(model), (
+        "the rebuilt embedding is covered by the 'model' entry and was left "
+        "unhooked, so a coarse map still crashes at the first lookup"
+    )
+
+
+def test_a_root_entry_covers_both_rebuilt_modules():
+    """A `""` root key covers everything, and names nothing."""
+    model = _CoarseModel({"": FAR, "model.layer": NEAR})
+
+    _repair()(model)
+
+    assert {"model.embed_tokens", "lm_head"} <= _hooked(model)
+
+
+def test_the_map_wins_over_a_covering_ancestor():
+    """A module the map NAMES keeps its own device, not an ancestor's.
+
+    Resolution is a fallback for names the map omits. If it ever overrode a
+    real entry, a coarse ancestor would silently relocate a module the planner
+    placed deliberately.
+    """
+    model = _CoarseModel({"": NEAR, "model.embed_tokens": FAR})
+
+    _repair()(model)
+
+    hook = model.model.embed_tokens._hf_hook
+    assert str(hook.execution_device) == FAR, (
+        f"the embedding took {hook.execution_device} from the covering root "
+        f"entry instead of the {FAR} the map names for it"
+    )
+
+
+def test_a_model_that_cannot_answer_for_its_embeddings_is_not_guessed_at():
+    """`get_input_embeddings` raising must not take the whole repair down."""
+
+    class _Awkward(_CoarseModel):
+        def get_input_embeddings(self):
+            raise NotImplementedError("this architecture does not say")
+
+    model = _Awkward({"model": FAR, "lm_head": NEAR})
+
+    repaired = _repair()(model)
+
+    assert repaired >= 1, "one raising accessor aborted the whole repair"
+    assert "model" in _hooked(model)
