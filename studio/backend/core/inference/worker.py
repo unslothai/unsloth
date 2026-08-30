@@ -23,7 +23,7 @@ import time
 import traceback
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = get_logger(__name__)
 from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
@@ -611,6 +611,30 @@ def _drain_skip_generate(
     return True
 
 
+def _abandon_held_commands(held: list, resp_queue: Any) -> None:
+    """Answer the commands that were waiting for a batch that has gone."""
+    while held:
+        _abandon_one(held.pop(0), resp_queue)
+
+
+def _abandon_one(cmd: dict, resp_queue: Any) -> None:
+    """Answer one held command with the terminal response its reader waits for."""
+    logger.info(
+        "Abandoning held %s for request %s",
+        cmd.get("type", ""),
+        cmd.get("request_id", ""),
+    )
+    _send_response(
+        resp_queue,
+        {
+            "type": "gen_done",
+            "request_id": cmd.get("request_id", ""),
+            "cancelled": True,
+            "stats": None,
+        },
+    )
+
+
 def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> bool:
     """Clear stale cancellation and acknowledge when this TTS command owns the worker.
 
@@ -891,6 +915,206 @@ def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> 
                 "stack": traceback.format_exc(limit = 20),
             },
         )
+
+
+# Long enough for a queue put to become readable, short beside the generation it
+# decides the fate of. Measured: an immediate read misses most puts, this misses none.
+_HELD_COMMAND_GRACE = 0.05
+
+
+class _ResidentBatch:
+    """The replies an MLX worker is decoding at once."""
+
+    def __init__(self, backend, resp_queue: Any):
+        self.backend = backend
+        self.resp_queue = resp_queue
+        self.session = None
+        self._stats: dict[Any, Any] = {}
+        # request id -> the rows it is still waiting on. A handle carries a row
+        # number when its command asked for several replies and None when it asked
+        # for one, which is the whole difference in how the two are answered.
+        self._pending: dict[str, set] = {}
+
+    @property
+    def rows_in_flight(self) -> int:
+        return self.session.rows_in_flight if self.session is not None else 0
+
+    def unavailable_reason(self, cmd: dict) -> Optional[str]:
+        """Why this command cannot join the batch, or None if it can."""
+        if cmd.get("use_adapter") is not None:
+            return "the reply asks for a particular adapter state"
+        probe = getattr(self.backend, "resident_unavailable_reason", None)
+        if not callable(probe):
+            return "this backend has no batch a reply can join"
+        return probe(cmd)
+
+    def admit(self, cmd: dict, cancel_event) -> None:
+        """Take a command's replies into the batch, reporting what precedes them."""
+        request_id = cmd.get("request_id", "")
+        rows = cmd.get("rows") or []
+        shared = _generation_kwargs(self.backend, cmd, cancel_event)
+        shared.pop("cancel_event", None)
+        requests = [{**shared, **row} for row in rows] if rows else [shared]
+
+        if self.session is None:
+            self.session = self.backend.open_resident_text_batch(
+                width = max(1, int(cmd.get("parallel_slots") or 1), len(requests)),
+                record_stats = self._stats.__setitem__,
+            )
+        handles = [(request_id, row if rows else None) for row in range(len(requests))]
+        self._pending[request_id] = set(handles)
+        prefixes = []
+        try:
+            for request, handle in zip(requests, handles):
+                prefixes.append((handle, self.session.admit(request, handle)))
+        except BaseException as exc:
+            if self._forget(request_id, withdraw = True):
+                self._close_if_empty()
+            else:
+                self._fail_all(exc)
+            raise
+        logger.info(
+            "Admitted request_id=%s (%d replies) to a batch of %d",
+            request_id,
+            len(requests),
+            self.rows_in_flight,
+        )
+        for handle, prefix in prefixes:
+            if prefix:
+                self._send_token(handle, prefix)
+
+    def cancel(self, request_id: str) -> bool:
+        """Withdraw one request's replies, leaving every other reply decoding."""
+        pending = self._pending.get(request_id)
+        if not pending or self.session is None:
+            return False
+        logger.info("Cancelling request_id=%s in a batch of %d", request_id, self.rows_in_flight)
+        try:
+            for handle, snapshot in self.session.withdraw(sorted(pending, key = _handle_order)):
+                self._report(handle, snapshot)
+        except Exception as exc:
+            logger.error("Batched cancellation error: %s", exc, exc_info = True)
+            self._fail_all(exc)
+            return True
+        self._close_if_empty()
+        return True
+
+    def cancel_all(self) -> None:
+        for request_id in list(self._pending):
+            self.cancel(request_id)
+
+    def step(self) -> None:
+        """Decode one token for every reply, reporting what each produced."""
+        if self.session is None or not self.session.rows_in_flight:
+            return
+        try:
+            for handle, snapshot in self.session.step():
+                self._report(handle, snapshot)
+        except Exception as exc:
+            logger.error("Batched generation error: %s", exc, exc_info = True)
+            self._fail_all(exc)
+            return
+        self._close_if_empty()
+
+    def _fail_all(self, exc: BaseException) -> None:
+        """Give up on the batch: a session that cannot be stepped or withdrawn from"""
+        stack = traceback.format_exc(limit = 20)
+        for request_id in list(self._pending):
+            self._fail(request_id, exc, stack)
+        self.close()
+
+    def _close_if_empty(self) -> None:
+        """Let go of a batch with nothing left in it."""
+        if self.session is not None and not self.session.rows_in_flight:
+            self.close()
+
+    def close(self) -> None:
+        session, self.session = self.session, None
+        self._pending.clear()
+        self._stats.clear()
+        if session is None:
+            return
+        try:
+            session.close()
+        except Exception:
+            logger.error("Could not close the resident batch", exc_info = True)
+
+    def _report(self, handle, snapshot) -> None:
+        if snapshot is not None:
+            self._send_token(handle, snapshot)
+            return
+        request_id, row = handle
+        if row is not None:
+            _send_response(
+                self.resp_queue,
+                {
+                    "type": "row_done",
+                    "request_id": request_id,
+                    "row": row,
+                    "stats": self._stats.pop(handle, None),
+                },
+            )
+        pending = self._pending.get(request_id)
+        if pending is not None:
+            pending.discard(handle)
+            if not pending:
+                self._finish(request_id)
+
+    def _send_token(self, handle, text) -> None:
+        request_id, row = handle
+        event = {"type": "token", "request_id": request_id, "text": text}
+        if row is not None:
+            event["row"] = row
+        _send_response(self.resp_queue, event)
+
+    def _finish(self, request_id: str) -> None:
+        stats = self._stats.pop((request_id, None), None)
+        self._forget(request_id, withdraw = False)
+        _send_response(
+            self.resp_queue,
+            {
+                "type": "gen_done",
+                "request_id": request_id,
+                "stats": stats,
+            },
+        )
+        logger.info("Finished generation for request_id=%s", request_id)
+
+    def _fail(self, request_id: str, exc: BaseException, stack: str) -> None:
+        self._forget(request_id, withdraw = False)
+        _send_response(
+            self.resp_queue,
+            {
+                "type": "gen_error",
+                "request_id": request_id,
+                "error": str(exc),
+                "stack": stack,
+            },
+        )
+
+    def _forget(self, request_id: str, *, withdraw: bool) -> bool:
+        """Drop what the batch records for a request. False if rows it placed are
+        still the generator's, which nothing records any more."""
+        pending = self._pending.pop(request_id, None) or set()
+        taken_back = True
+        if withdraw and pending and self.session is not None:
+            try:
+                for _handle, _snapshot in self.session.withdraw(sorted(pending, key = _handle_order)):
+                    pass
+            except Exception:
+                logger.error("Could not withdraw rows for request_id=%s", request_id, exc_info = True)
+                taken_back = False
+        # After the withdrawal, which closes each reply out and records what it
+        # managed -- for a request that is no longer here to be told any of it.
+        for handle in pending:
+            self._stats.pop(handle, None)
+        return taken_back
+
+
+def _handle_order(handle):
+    """Rows in the order their command asked for them."""
+    _request_id, row = handle
+    return -1 if row is None else row
 
 
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1276,14 +1500,38 @@ def run_inference_process(
             )
             return
 
-        # Enter the same command loop as the GPU path.
         logger.info("MLX inference subprocess ready, entering command loop")
+        batch = _ResidentBatch(backend, resp_queue)
+        deferred: list[dict] = []
         while True:
+            batch.step()
+            # A command taken back off the held list is the one that waited longest,
+            # so it runs rather than queueing behind the siblings it left there.
+            from_deferred = False
             try:
-                cmd = cmd_queue.get(timeout = 1.0)
+                # Neither replies in the batch nor a command waiting for one to end
+                # can wait a second for something that may never be sent; an idle
+                # loop with nothing held has nothing else to do.
+                cmd = cmd_queue.get(timeout = 0.0 if (batch.rows_in_flight or deferred) else 1.0)
             except _queue.Empty:
-                continue
+                if not deferred or batch.rows_in_flight:
+                    continue
+                try:
+                    # Everything already sent has been handled to get here, which is
+                    # what makes this safe to run: a stop for it would have been one
+                    # of them. One more wait for a stop that has been sent but is not
+                    # readable yet -- a queue put is not readable the moment it
+                    # returns -- because the fallback path this runs on clears the
+                    # shared event going in and cannot be stopped out of afterwards.
+                    cmd = cmd_queue.get(timeout = _HELD_COMMAND_GRACE)
+                except _queue.Empty:
+                    cmd = deferred.pop(0)
+                    from_deferred = True
+                except (EOFError, OSError):
+                    batch.close()
+                    return
             except (EOFError, OSError):
+                batch.close()
                 return
             if cmd is None:
                 continue
@@ -1292,6 +1540,22 @@ def run_inference_process(
                 if cmd_type == "generate":
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
+                    if deferred and not from_deferred:
+                        deferred.append(cmd)
+                        continue
+                    reason = batch.unavailable_reason(cmd)
+                    if reason is None:
+                        batch.admit(cmd, None)
+                        continue
+                    if batch.rows_in_flight:
+                        logger.info(
+                            "Holding request_id=%s until the batch empties: %s",
+                            cmd.get("request_id", ""),
+                            reason,
+                        )
+                        deferred.append(cmd)
+                        continue
+                    batch.close()
                     cancel_event.clear()
                     # Re-check the drain after clearing: the parent sets drain_event
                     # then cancel_event for an unload, so if that pair landed between
@@ -1305,6 +1569,11 @@ def run_inference_process(
                     # Drain discipline as in "generate" (see that branch).
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
+                    if batch.rows_in_flight or (deferred and not from_deferred):
+                        # The batch holds the model, and audio does not join one.
+                        deferred.append(cmd)
+                        continue
+                    batch.close()
                     cancel_event.clear()
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
@@ -1334,15 +1603,42 @@ def run_inference_process(
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
+                    batch.cancel_all()
+                    batch.close()
+                    _abandon_held_commands(deferred, resp_queue)
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
                     _handle_load(backend, cmd, resp_queue)
                 elif cmd_type == "unload":
+                    batch.cancel_all()
+                    batch.close()
+                    _abandon_held_commands(deferred, resp_queue)
                     _handle_unload(backend, cmd, resp_queue)
                 elif cmd_type == "cancel":
-                    cancel_event.set()
+                    # A cancel that names its request stops that reply and leaves
+                    # every other one decoding.
+                    request_id = cmd.get("request_id")
+                    if request_id:
+                        if not batch.cancel(request_id):
+                            # Not decoding, so it may be waiting for the batch to
+                            # empty -- running it later would generate for a
+                            # caller that already stopped it.
+                            for cmd_held in [
+                                held for held in deferred if held.get("request_id") == request_id
+                            ]:
+                                deferred.remove(cmd_held)
+                                _abandon_one(cmd_held, resp_queue)
+                    else:
+                        batch.cancel_all()
+                        # A stop for everything is a stop for what is waiting too,
+                        # which this loop took off the queue and owes an answer.
+                        _abandon_held_commands(deferred, resp_queue)
+                        cancel_event.set()
                 elif cmd_type == "reset":
+                    batch.cancel_all()
+                    batch.close()
                     cancel_event.set()
+                    _abandon_held_commands(deferred, resp_queue)
                     backend.reset_generation_state()
                     _send_response(resp_queue, {"type": "reset_ack"})
                 elif cmd_type == "gpu_memory":
@@ -1368,6 +1664,7 @@ def run_inference_process(
                         },
                     )
                 elif cmd_type == "shutdown":
+                    batch.close()
                     return
                 else:
                     # As in the GPU loop: dropping a command silently costs the
@@ -1612,8 +1909,11 @@ def run_inference_process(
                 _handle_unload(backend, cmd, resp_queue)
 
             elif cmd_type == "cancel":
-                # Redundant with mp.Event but handle gracefully.
-                cancel_event.set()
+                # Nothing here decodes replies together, so there is no reply a
+                # name could pick out; the shared event carries a stop for the one
+                # generation this loop runs, and the parent signals it directly.
+                if not cmd.get("request_id"):
+                    cancel_event.set()
                 logger.info("Cancel command received")
 
             elif cmd_type == "reset":

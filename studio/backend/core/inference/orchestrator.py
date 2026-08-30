@@ -496,6 +496,14 @@ class InferenceOrchestrator:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
+    def _cancel_every_generation(self) -> None:
+        """Stop everything the worker is running, however it is running it."""
+        self._cancel_generation()
+        try:
+            self._send_cmd({"type": "cancel"})
+        except Exception:
+            logger.debug("Could not tell the worker to let go of its batch", exc_info = True)
+
     def is_worker_alive(self) -> bool:
         """True while the inference subprocess is running, even with no model
         active (a failed load can leave a live worker holding sidecar modules)."""
@@ -731,8 +739,9 @@ class InferenceOrchestrator:
         Ownership is scoped by cancel-event identity alone, so a consumer still blocked
         on its mailbox when the process was replaced stayed recorded as the executor. A
         generation on the fresh worker then failed _owns_worker and could not be stopped.
-        Mailboxes go too: nothing will ever route to them, and a stale one reads as
-        compare activity to the unload path.
+        A request left here would also have a fresh worker told to stop a name that worker
+        never heard of. Mailboxes go too: nothing will ever route to them, and a stale one
+        reads as compare activity to the unload path.
         """
         with self._active_cancel_lock:
             self._active_cancel_events.clear()
@@ -883,7 +892,11 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
-    def _direct_reader(self, request_id: str):
+    def _direct_reader(
+        self,
+        request_id: str,
+        cancel_event = None,
+    ):
         """Response reader for a _gen_lock generation, safe once compare exists.
 
         The dispatcher and this reader would otherwise both consume _resp_queue. A
@@ -898,6 +911,8 @@ class InferenceOrchestrator:
         mailbox: queue.Queue = queue.Queue()
         with self._mailbox_lock:
             self._direct_mailboxes[request_id] = mailbox
+            if cancel_event is not None:
+                self._request_cancel_events[request_id] = cancel_event
 
         def read_one(timeout: float = 1.0):
             try:
@@ -949,6 +964,8 @@ class InferenceOrchestrator:
         def release() -> None:
             with self._mailbox_lock:
                 self._direct_mailboxes.pop(request_id, None)
+                if cancel_event is not None:
+                    self._request_cancel_events.pop(request_id, None)
 
         return read_one, drain, release
 
@@ -1014,6 +1031,7 @@ class InferenceOrchestrator:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
             "logit_bias": logit_bias,
+            "parallel_slots": self.effective_parallel_slots,
         }
         if seed is not None:
             cmd["seed"] = seed
@@ -1041,6 +1059,7 @@ class InferenceOrchestrator:
         drain_on_cancel,
         *,
         crash_context: str,
+        request_id: str = "",
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         read_timeout: float = 30.0,
@@ -1152,9 +1171,16 @@ class InferenceOrchestrator:
                 # Once, for several replies: they go on reading afterwards, and a second
                 # Stop from a response read later could land after the worker had taken
                 # the next command. One reply returns here, so it cannot repeat.
-                if (rows is None or reading_on_until is None) and self._owns_worker(cancel_event):
-                    self._cancel_generation()
-                    if rows is not None:
+                if rows is None or reading_on_until is None:
+                    # A reply decoding beside others is stopped by name. The
+                    # one-at-a-time path has only the shared event, which speaks
+                    # for whatever the worker is running, so it stays behind the
+                    # same ownership rule reset_generation_state uses.
+                    stopped = self._stop_request(request_id)
+                    if self._owns_worker(cancel_event):
+                        self._cancel_generation()
+                        stopped = True
+                    if rows is not None and stopped:
                         reading_on_until = time.monotonic() + _CANCELLED_ROWS_GRACE
                 if rows is None:
                     drain_on_cancel()
@@ -1178,8 +1204,10 @@ class InferenceOrchestrator:
             elif rtype == "gen_done":
                 if stats_holder is not None and rows is None:
                     stats_holder["stats"] = resp.get("stats")
+                self._forget_request(request_id, cancel_event)
                 return
             elif rtype == "gen_error":
+                self._forget_request(request_id, cancel_event)
                 if reading_on_until is not None:
                     return
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
@@ -1448,6 +1476,7 @@ class InferenceOrchestrator:
                 read_mailbox,
                 lambda: self._drain_mailbox(mailbox, timeout = 5.0),
                 crash_context = "generation",
+                request_id = request_id,
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 read_timeout = _DISPATCH_READ_TIMEOUT,
@@ -1999,7 +2028,7 @@ class InferenceOrchestrator:
         if self._drain_event is not None:
             self._drain_event.set()
         try:
-            self._cancel_generation()
+            self._cancel_every_generation()
             acquired = self._gen_lock.acquire(timeout = _UNLOAD_GEN_LOCK_TIMEOUT)
             if not acquired:
                 logger.warning(
@@ -2513,11 +2542,12 @@ class InferenceOrchestrator:
                 rows = rows,
             )
 
-            # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the lock above, having
-            # generated nothing -- cannot reset the generation this is starting. Claiming after the send left the
-            # command running unclaimed. Released in the finally. Own mailbox: a compare request can start the
-            # dispatcher while this is streaming, and it would otherwise consume our responses and drop them.
-            read_one, drain, release_mailbox = self._direct_reader(request_id)
+            # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the
+            # lock above, having generated nothing -- cannot reset the generation this is starting.
+            # Claiming after the send left the command running unclaimed. Released in the finally.
+            # Own mailbox: a compare request can start the dispatcher while this is streaming,
+            # and it would otherwise consume our responses and drop them.
+            read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:
                 try:
                     with self._send_order_lock:
@@ -2531,6 +2561,7 @@ class InferenceOrchestrator:
                     read_one,
                     lambda: drain(timeout = 5.0),
                     crash_context = "generation",
+                    request_id = request_id,
                     cancel_event = cancel_event,
                     stats_holder = stats_holder,
                     rows = len(rows) if rows else None,
@@ -2542,7 +2573,7 @@ class InferenceOrchestrator:
     def _claim_worker(self, cancel_event) -> None:
         """Record this request as one the worker will run.
 
-        Admission only. The subprocess executes generations one at a time, so a
+        Admission only. The one-at-a-time path executes generations in turn, so a
         dispatched request sitting behind another in the command queue is claimed
         but not executing, and must not be able to signal the shared cancel event
         (that would end whichever request IS executing). _mark_worker_started
@@ -2554,8 +2585,12 @@ class InferenceOrchestrator:
     def _mark_worker_started(self, cancel_event) -> None:
         """Promote a claimed request to executing, on its first worker response.
 
-        Sole executor: the subprocess runs one generation at a time, so answering
-        this one means it has left the previous one behind.
+        Sole executor: the shared cancel event belongs to the one generation the
+        worker runs at a time, so answering this one means it has left the
+        previous one behind. Replies decoding together do displace each other
+        here, and whichever is recorded may signal the event. That decides
+        nothing: the batch does not read it, and each of those replies is stopped
+        by the name it was given.
         """
         if cancel_event is None:
             return
@@ -2590,18 +2625,80 @@ class InferenceOrchestrator:
             # claim is the executor; anyone else here is queued behind it.
             return self._active_cancel_events[0] is cancel_event
 
+    def _stop_request(self, request_id) -> bool:
+        """Tell the worker to stop one request, by name.
+
+        The worker decodes several replies at once, so "stop generating" is no
+        longer a thing that can be said: a stop has to name whose reply it ends.
+        """
+        if not request_id or not self._ensure_subprocess_alive():
+            return False
+        try:
+            self._send_cmd({"type": "cancel", "request_id": request_id})
+        except RuntimeError:
+            return False
+        return True
+
+    def _forget_request(self, request_id: str, cancel_event) -> None:
+        """Retire a reply the moment it ends, rather than when the stream object"""
+        if request_id:
+            with self._mailbox_lock:
+                self._request_cancel_events.pop(request_id, None)
+        self._release_worker(cancel_event)
+
+    def _request_of(self, cancel_event) -> Optional[str]:
+        """The request this cancel event belongs to, if it is still in flight."""
+        if cancel_event is None:
+            return None
+        with self._mailbox_lock:
+            for request_id, event in self._request_cancel_events.items():
+                if event is cancel_event:
+                    return request_id
+        return None
+
     def reset_generation_state(self, caller_cancel_event = None):
         """Cancel any ongoing generation and reset state.
 
-        ``caller_cancel_event`` scopes the reset to one request. The worker has a
-        single cancel event and generation is serialized on _gen_lock, so a chat
-        that is still queued has no generation of its own to reset: calling this
-        from its Stop handler would kill whichever chat currently holds the lock.
-        Pass the request's own event and the reset is dropped unless that request
-        is the one running. Omit it for genuinely global resets (unload, switch).
+        ``caller_cancel_event`` scopes the reset to one request, two ways, because
+        the worker stops a reply two ways. A reply decoding beside others is ended
+        by name, which reaches that reply and no other. A generation the worker
+        runs on its own is ended by the shared event, which means "stop
+        generating" and so may only be signalled by the request that is running:
+        a chat still queued has no generation of its own to reset, and resetting
+        from its Stop handler would kill whichever chat is running instead.
+
+        A stop that names a request the worker is not decoding is ignored there,
+        and the shared event is not set for a request that does not own it, so
+        each reply is ended once by whichever of the two applies to it.
+
+        Neither of those resets the worker, because resetting is a thing done to
+        everything the worker holds: it ends every reply decoding beside this one,
+        and on the MLX backend it clears the Metal cache under them as well.
+
+        A caller whose own request is no longer in flight is not stopping a reply
+        -- it is an error path recovering. With other requests in flight it does
+        nothing, because there is nothing of its own left to end and everything
+        else belongs to someone. With nothing in flight at all it resets: there is
+        no one to interrupt, and a caller about to retry needs the worker clean.
+
+        Omit ``caller_cancel_event`` for genuinely global resets (unload,
+        switch), which stop everything and reset the worker.
         """
-        if caller_cancel_event is not None and not self._owns_worker(caller_cancel_event):
+        if caller_cancel_event is not None:
+            request_id = self._request_of(caller_cancel_event)
+            if request_id is not None:
+                self._stop_request(request_id)
+                if self._owns_worker(caller_cancel_event):
+                    self._cancel_generation()
+                return
+            with self._send_order_lock:
+                if not self._owns_worker(caller_cancel_event):
+                    return
+                self._reset_worker()
             return
+        self._reset_worker()
+
+    def _reset_worker(self) -> None:
         self._cancel_generation()
         if not self._ensure_subprocess_alive():
             return
@@ -2703,7 +2800,7 @@ class InferenceOrchestrator:
                     cmd["seed"] = int(seed)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
-                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                read_one, _drain, release_mailbox = self._direct_reader(request_id, cancel_event)
                 try:
                     # Claim before enqueueing so request-scoped reset ownership follows the same discipline as text and
                     # audio-input generation
@@ -2923,7 +3020,8 @@ class InferenceOrchestrator:
             if stop:
                 cmd["stop"] = stop
 
-            read_one, drain, release_mailbox = self._direct_reader(request_id)
+            # Same shared-queue hazard as _generate_inner: see _direct_reader.
+            read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:
                 try:
                     # Claim under the send lock, like _generate_inner: unclaimed, a compare request queued behind this
@@ -2939,6 +3037,7 @@ class InferenceOrchestrator:
                     read_one,
                     lambda: drain(timeout = 5.0),
                     crash_context = "audio input generation",
+                    request_id = request_id,
                     cancel_event = cancel_event,
                     stats_holder = stats_holder,
                 )

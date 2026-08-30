@@ -10,7 +10,7 @@ import re
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import (
@@ -1652,16 +1652,7 @@ class _TextBatchRow:
 
 
 class _TextBatchSession:
-    """mlx-lm's batch with the reply set left open.
-
-    ``admit`` takes one reply and answers with what it has to say before its
-    first token; ``step`` reports what the batch produced; ``withdraw`` takes a
-    reply back; ``close`` ends it. Every event carries the handle its reply was
-    admitted with, so a caller serving several requests can tell them apart.
-
-    The caller holds the generation lock and the adapter state: one model has one
-    of each, and a batch cannot hold them per reply.
-    """
+    """mlx-lm's batch with the reply set left open."""
 
     def __init__(
         self,
@@ -1670,6 +1661,7 @@ class _TextBatchSession:
         width,
         record_stats,
         adapter_state = None,
+        owns_model = False,
     ):
         from mlx_lm.generate import BatchGenerator
 
@@ -1678,14 +1670,24 @@ class _TextBatchSession:
         self._adapter_state = adapter_state
         self._rows = {}
         self._by_uid = {}
-        self.generator = BatchGenerator(
-            backend._model,
-            stop_tokens = [
-                [token] for token in _mlx_stop_token_ids(backend._tokenizer, backend._model)
-            ],
-            completion_batch_size = width,
-            prefill_batch_size = width,
-        )
+        self._held = ExitStack()
+        try:
+            if owns_model:
+                self._held.enter_context(backend._generation_lock)
+                self._held.enter_context(
+                    _temporary_mlx_adapter_state(backend._model, adapter_state)
+                )
+            self.generator = BatchGenerator(
+                backend._model,
+                stop_tokens = [
+                    [token] for token in _mlx_stop_token_ids(backend._tokenizer, backend._model)
+                ],
+                completion_batch_size = width,
+                prefill_batch_size = width,
+            )
+        except BaseException:
+            self._held.close()
+            raise
 
     @property
     def rows_in_flight(self) -> int:
@@ -1865,6 +1867,7 @@ class _TextBatchSession:
         finally:
             self._rows.clear()
             self._by_uid.clear()
+            self._held.close()
 
 
 class _VLMRowPlan:
@@ -3224,6 +3227,37 @@ class MLXInferenceBackend:
         if self._is_vlm:
             return self._vlm_batch_unavailable_reason(requests)
         return None
+
+    def resident_unavailable_reason(self, request):
+        """Why this reply cannot join a batch that is already decoding, or None."""
+        if self._model is None:
+            return "no model is loaded"
+        if self._kv_quant_generate_kwargs():
+            return "quantized KV cache is enabled"
+        if self._is_vlm:
+            # Vision replies are prefilled from embeddings prepared per chunk, so
+            # a reply arriving later cannot join a decode already running.
+            return "this model was loaded as a vision model"
+        return None
+
+    def open_resident_text_batch(
+        self,
+        *,
+        width,
+        record_stats,
+        adapter_state = None,
+    ):
+        """A batch replies join and leave while it decodes."""
+        reason = self.resident_unavailable_reason({})
+        if reason is not None:
+            raise RuntimeError(f"MLX batched generation is unavailable: {reason}")
+        return _TextBatchSession(
+            self,
+            width = width,
+            record_stats = record_stats,
+            adapter_state = adapter_state,
+            owns_model = True,
+        )
 
     def _vlm_batch_unavailable_reason(self, requests):
         """Why these vision replies cannot share one decode, or None if they can."""

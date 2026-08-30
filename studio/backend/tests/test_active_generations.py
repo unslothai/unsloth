@@ -2571,6 +2571,9 @@ def _orchestrator_for_ownership():
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
+    orch._send_order_lock = threading.Lock()
+    orch._mailbox_lock = threading.Lock()
+    orch._request_cancel_events = {}
     orch._cancel_event = threading.Event()
     orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
     return orch

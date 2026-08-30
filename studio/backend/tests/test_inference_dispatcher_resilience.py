@@ -180,7 +180,12 @@ def test_rerouting_a_foreign_gen_done_retires_that_request():
     release()
 
 
-def _direct_reader_calls(o, request_id):
+def _direct_reader_calls(
+    o,
+    request_id,
+    cancel_event = None,
+):
     """_direct_reader wired to a scripted _read_resp (o._scripted, popped in order)."""
     o._read_resp = lambda timeout = 1.0: o._scripted.pop(0) if o._scripted else None
-    return o._direct_reader(request_id)
+    return o._direct_reader(request_id, cancel_event)
+

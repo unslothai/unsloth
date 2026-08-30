@@ -160,7 +160,13 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
     monkeypatch.setattr(orch_mod, "_UNLOAD_GEN_LOCK_TIMEOUT", 0.2)
     shutdown = []
     monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
-    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send unload when wedged"))
+    monkeypatch.setattr(
+        o,
+        "_send_cmd",
+        lambda cmd: pytest.fail("must not send unload when wedged")
+        if cmd.get("type") == "unload"
+        else None,
+    )
 
     # A wedged worker never releases _gen_lock, even after the cancel.
     o._gen_lock.acquire()
@@ -194,7 +200,11 @@ def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
     monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
     monkeypatch.setattr(
-        o, "_send_cmd", lambda cmd: pytest.fail("must not send unload with a wedged dispatcher")
+        o,
+        "_send_cmd",
+        lambda cmd: pytest.fail("must not send unload with a wedged dispatcher")
+        if cmd.get("type") == "unload"
+        else None,
     )
     monkeypatch.setattr(
         o,
@@ -421,7 +431,13 @@ def test_unload_clears_drain_event_even_on_wedged_teardown(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orch_mod, "_UNLOAD_GEN_LOCK_TIMEOUT", 0.2)
-    monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send when wedged"))
+    monkeypatch.setattr(
+        o,
+        "_send_cmd",
+        lambda cmd: pytest.fail("must not send when wedged")
+        if cmd.get("type") == "unload"
+        else None,
+    )
 
     # A wedged worker never releases _gen_lock; unload tears the subprocess down. The
     # real teardown nulls _drain_event, so emulate that so the finally exercises its guard.

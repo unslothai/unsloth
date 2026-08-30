@@ -221,7 +221,11 @@ def test_audio_response_cancellation_signals_worker_and_drains_terminal_response
     monkeypatch.setattr(
         orchestrator,
         "_direct_reader",
-        lambda _request_id: (read_one, lambda **_kwargs: None, lambda: released.append(True)),
+        lambda _request_id, _cancel_event = None: (
+            read_one,
+            lambda **_kwargs: None,
+            lambda: released.append(True),
+        ),
     )
 
     with pytest.raises(RuntimeError, match = "cancel"):
@@ -258,7 +262,7 @@ def test_audio_response_cancellation_bounds_an_unresponsive_worker(monkeypatch):
     monkeypatch.setattr(
         orchestrator,
         "_direct_reader",
-        lambda _request_id: (
+        lambda _request_id, _cancel_event = None: (
             read_one,
             lambda **_kwargs: pytest.fail("the cancellation drain window was already spent"),
             lambda: None,
@@ -310,7 +314,7 @@ def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkey
     monkeypatch.setattr(
         orchestrator,
         "_direct_reader",
-        lambda _request_id: (
+        lambda _request_id, _cancel_event = None: (
             read_one,
             lambda **_kwargs: pytest.fail("the cancellation drain window was already spent"),
             lambda: None,
@@ -372,7 +376,7 @@ def test_audio_worker_command_uses_the_model_token_budget(
     sent = []
     monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: sent.append(cmd))
 
-    def direct_reader(request_id):
+    def direct_reader(request_id, cancel_event = None):
         responses = queue.Queue()
         responses.put(
             {
@@ -556,7 +560,7 @@ def test_tts_waits_for_existing_compare_before_send(monkeypatch):
 
     responses = queue.Queue()
 
-    def direct_reader(request_id):
+    def direct_reader(request_id, cancel_event = None):
         responses.put({"type": "audio_started", "request_id": request_id})
         responses.put(
             {
