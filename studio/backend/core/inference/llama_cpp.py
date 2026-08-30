@@ -3409,28 +3409,21 @@ def _linux_math_core_count(
         native_count = len(online_cpus) if online_cpus else len(siblings)
 
         def hybrid_math_count(performance_cpus: set[int]) -> int:
-            result = 0
-            cpu = 0
-            saved_affinity: Optional[set[int]] = None
             should_probe = pinnable_cpus is None and (
                 cpu_root == Path("/sys/devices/system/cpu")
                 if probe_affinity is None
                 else probe_affinity
             )
-            if should_probe:
-                if not hasattr(os, "sched_getaffinity") or not hasattr(os, "sched_setaffinity"):
-                    return physical_count
-                try:
-                    saved_affinity = os.sched_getaffinity(0)
-                except OSError:
-                    return physical_count
-            try:
+
+            def count(pin_cpus: bool) -> int:
+                result = 0
+                cpu = 0
                 while cpu < native_count:
                     if online_cpus and cpu not in online_cpus:
                         return physical_count
                     if pinnable_cpus is not None and cpu not in pinnable_cpus:
                         return physical_count
-                    if saved_affinity is not None:
+                    if pin_cpus:
                         try:
                             os.sched_setaffinity(0, {cpu})
                         except OSError:
@@ -3441,12 +3434,34 @@ def _linux_math_core_count(
                     result += 1
                     cpu += 2
                 return result or physical_count
-            finally:
-                if saved_affinity is not None:
+
+            if not should_probe:
+                return count(False)
+            if not hasattr(os, "sched_getaffinity") or not hasattr(os, "sched_setaffinity"):
+                return physical_count
+
+            answer = [physical_count]
+
+            def probe() -> None:
+                try:
+                    saved_affinity = os.sched_getaffinity(0)
+                except OSError:
+                    return
+                try:
+                    answer[0] = count(True)
+                finally:
                     try:
                         os.sched_setaffinity(0, saved_affinity)
                     except OSError:
                         pass
+
+            worker = threading.Thread(target = probe)
+            try:
+                worker.start()
+                worker.join()
+            except RuntimeError:
+                return physical_count
+            return answer[0]
 
         core_mask = cpu_list(event_source_root / "cpu_core" / "cpus")
         atom_path = event_source_root / "cpu_atom"

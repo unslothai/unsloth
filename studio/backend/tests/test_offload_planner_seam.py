@@ -2068,7 +2068,7 @@ def test_linux_hybrid_affinity_probe_failure_matches_physical_fallback(tmp_path,
     )
 
 
-def test_linux_hybrid_affinity_restore_failure_does_not_escape(tmp_path, monkeypatch):
+def test_linux_hybrid_affinity_restore_failure_stays_in_worker(tmp_path, monkeypatch):
     import core.inference.llama_cpp as llama_mod
 
     cpu_root = tmp_path / "cpu"
@@ -2084,8 +2084,11 @@ def test_linux_hybrid_affinity_restore_failure_does_not_escape(tmp_path, monkeyp
     monkeypatch.setattr(
         llama_mod.os, "sched_getaffinity", lambda _pid: set(range(8)), raising = False
     )
+    caller_thread = llama_mod.threading.get_ident()
+    affinity_threads = []
 
     def restore_fails(_pid, cpus):
+        affinity_threads.append(llama_mod.threading.get_ident())
         if len(cpus) > 1:
             raise OSError("restore failed")
 
@@ -2099,6 +2102,8 @@ def test_linux_hybrid_affinity_restore_failure_does_not_escape(tmp_path, monkeyp
         )
         == 2
     )
+    assert affinity_threads
+    assert all(thread != caller_thread for thread in affinity_threads)
 
 
 def test_linux_hybrid_with_unreadable_core_mask_is_conservative(tmp_path):
