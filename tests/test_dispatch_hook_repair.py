@@ -411,14 +411,17 @@ def test_the_repaired_hook_carries_the_models_skip_keys(monkeypatch):
     import accelerate.hooks as ah
 
     seen = {}
-    monkeypatch.setattr(ah, "add_hook_to_module",
-                        lambda module, hook, **kw: (seen.__setitem__(id(module), hook), module)[1])
+    monkeypatch.setattr(
+        ah,
+        "add_hook_to_module",
+        lambda module, hook, **kw: (seen.__setitem__(id(module), hook), module)[1],
+    )
     model = _Model({"embed_tokens": FAR, "layer": NEAR})
     model._skip_keys_device_placement = ["past_key_values"]
     _repair()(model)
-    assert seen[id(model.embed_tokens)].skip_keys == ["past_key_values"], (
-        "the repaired hook drops the skip keys, so it moves tensors dispatch_model excluded"
-    )
+    assert seen[id(model.embed_tokens)].skip_keys == [
+        "past_key_values"
+    ], "the repaired hook drops the skip keys, so it moves tensors dispatch_model excluded"
 
 
 def test_io_same_device_follows_the_root_hook(monkeypatch):
@@ -437,8 +440,11 @@ def test_io_same_device_follows_the_root_hook(monkeypatch):
     import accelerate.hooks as ah
 
     seen = {}
-    monkeypatch.setattr(ah, "add_hook_to_module",
-                        lambda module, hook, **kw: (seen.__setitem__(id(module), hook), module)[1])
+    monkeypatch.setattr(
+        ah,
+        "add_hook_to_module",
+        lambda module, hook, **kw: (seen.__setitem__(id(module), hook), module)[1],
+    )
 
     with_root = _Model({"embed_tokens": FAR, "layer": NEAR})
     add_hook_to_module(with_root, AlignDevicesHook(io_same_device = True))
@@ -466,11 +472,13 @@ def _repairs_last_in(func):
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
     repair_lines = [
-        n.lineno for n in ast.walk(tree)
+        n.lineno
+        for n in ast.walk(tree)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_repair_dispatch_hooks"
     ]
     replacer_lines = [
-        n.lineno for n in ast.walk(tree)
+        n.lineno
+        for n in ast.walk(tree)
         if isinstance(n, ast.Call)
         and getattr(getattr(n, "func", None), "attr", None)
         in ("resize_token_embeddings", "set_input_embeddings", "set_output_embeddings")
@@ -511,14 +519,16 @@ def test_the_loader_repairs_after_resizing_the_vocabulary():
 
     tree = ast.parse(inspect.getsource(loader))
     resize = [
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.Call)
         and getattr(getattr(n, "func", None), "attr", None) == "resize_token_embeddings"
     ]
     assert resize, "no resize_token_embeddings call; this guard has gone vacuous"
 
     repairs = [
-        n.lineno for n in ast.walk(tree)
+        n.lineno
+        for n in ast.walk(tree)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_repair_dispatch_hooks"
     ]
     for call in resize:

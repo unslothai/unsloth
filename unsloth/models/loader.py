@@ -1083,7 +1083,6 @@ class FastLanguageModel(FastLlamaModel):
             # is no longer on and the load ends in `index_select`.
             try:
                 from unsloth.models.vision import _repair_dispatch_hooks
-
                 _repaired = _repair_dispatch_hooks(model)
                 if _repaired:
                     logger.info(
@@ -2155,7 +2154,6 @@ class FastModel(FastBaseModel):
             # is no longer on and the load ends in `index_select`.
             try:
                 from unsloth.models.vision import _repair_dispatch_hooks
-
                 _repaired = _repair_dispatch_hooks(model)
                 if _repaired:
                     logger.info(
