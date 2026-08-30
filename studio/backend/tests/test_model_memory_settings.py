@@ -205,6 +205,10 @@ class TestPersistence:
         assert mm.get_no_ram_reserve() is expected
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("resource") is None,
+    reason = "resource is unavailable on Windows",
+)
 class TestMemlockLimit:
     """mlock cannot exceed RLIMIT_MEMLOCK. Linux commonly defaults to 8 MB,
     where llama.cpp warns and carries on, so residency silently does nothing.
