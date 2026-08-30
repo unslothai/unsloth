@@ -632,18 +632,31 @@ function DownloadedBadge() {
 }
 
 /** VRAM verdict for Hub rows: over budget, or a tight fit. */
-function VramBadge({ status }: { status?: VramFitStatus | null }) {
+function VramBadge({
+  status,
+  /** Model rows hold the pill in the layout and paint it on hover; variant rows always show it. */
+  revealOnHover = false,
+}: {
+  status?: VramFitStatus | null;
+  revealOnHover?: boolean;
+}) {
   if (status === "exceeds") {
     return (
-      // Orange, not red: over budget is a fit verdict, not a failure. Held in the layout but
-      // painted only on the hovered row, so a mostly over budget list is not a wall of colour.
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-orange-700 !bg-orange-50 dark:!text-orange-300 dark:!bg-orange-500/15 px-1.5 py-0.5 rounded opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100">
+      // Orange, not red: over budget is a fit verdict, not a failure.
+      <span
+        className={cn(
+          "whitespace-nowrap text-ui-9 font-medium !text-orange-700 !bg-orange-50 dark:!text-orange-300 dark:!bg-orange-500/15 px-1.5 py-0.5 rounded",
+          revealOnHover &&
+            "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+        )}
+      >
         OOM
       </span>
     );
   }
   if (status === "tight") {
     return (
+      // Yellow, a step below the pill, so the two verdicts do not share a hue.
       <span className="whitespace-nowrap text-ui-9 font-medium !text-yellow-400">
         TIGHT
       </span>
@@ -1053,10 +1066,10 @@ function ModelRow({
                 META_COLUMN.vram,
               )}
             >
-              <VramBadge status={vramStatus} />
+              <VramBadge status={vramStatus} revealOnHover={true} />
             </span>
           ) : (
-            <VramBadge status={vramStatus} />
+            <VramBadge status={vramStatus} revealOnHover={true} />
           )}
           {aligned ? (
             <span
@@ -1925,16 +1938,7 @@ function GgufVariantExpander({
               ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              {oom && (
-                <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
-                  OOM
-                </span>
-              )}
-              {tight && (
-                <span className="text-ui-9 font-medium !text-amber-400">
-                  TIGHT
-                </span>
-              )}
+              <VramBadge status={oom ? "exceeds" : tight ? "tight" : null} />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />

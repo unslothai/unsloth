@@ -89,7 +89,7 @@ test("an over budget row dims instead of putting a pill on every line", () => {
   assert.ok(PICKERS.includes("group/row flex w-full flex-col items-stretch"));
   assert.ok(
     PICKERS.includes(
-      "rounded opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+      '"opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
     ),
   );
   assert.ok(
@@ -102,6 +102,26 @@ test("an over budget row dims instead of putting a pill on every line", () => {
   // TIGHT is rare enough to stay put; only the OOM pill hides.
   const tight = PICKERS.slice(PICKERS.indexOf('if (status === "tight")'));
   assert.ok(!tight.slice(0, 300).includes("opacity-0"));
+});
+
+test("one fit badge, so a colour or reveal change cannot miss a list", () => {
+  // The quantization rows had their own copy and stayed red when the pill went orange.
+  // Match on the text colour: "!bg-orange-50" is also a prefix of "!bg-orange-500/15".
+  assert.equal(PICKERS.split("!text-orange-700").length - 1, 1, "one OOM pill");
+  assert.equal(PICKERS.split("!text-yellow-400").length - 1, 1, "one TIGHT label");
+  assert.ok(!PICKERS.includes("!text-red-700"), "no red fit badge left");
+  // Variant rows render the shared badge and opt out of the hover reveal.
+  assert.ok(
+    PICKERS.includes(
+      '<VramBadge status={oom ? "exceeds" : tight ? "tight" : null} />',
+    ),
+  );
+  assert.equal(
+    PICKERS.split("<VramBadge status={vramStatus} revealOnHover={true} />")
+      .length - 1,
+    2,
+    "both model row slots reveal on hover",
+  );
 });
 
 test("aligned meta slots spend their slack on the name", () => {
