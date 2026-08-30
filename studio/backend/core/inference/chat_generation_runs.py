@@ -242,6 +242,12 @@ def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
     return sweeper
 
 
+# How often stream bytes that carry no event may renew the lease. Well inside the lease
+# and well above the admission keepalive cadence, so a queued run stays alive without one
+# database write per comment line.
+_KEEPALIVE_RENEW_SECONDS = 30.0
+
+
 class ChatGenerationSupervisor:
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -402,9 +408,12 @@ class ChatGenerationSupervisor:
             try:
                 await asyncio.to_thread(db.touch_progress, run_id)
             except Exception:
-                # A renewal that cannot be written is not worth failing the generation
-                # over; the run simply ages as it did before.
-                return
+                # Skip this renewal, do not abandon the rest. SQLite writes use a five
+                # second busy timeout while large history transactions may hold
+                # contention for longer, so one lost stamp is ordinary. Returning here
+                # disabled every remaining heartbeat and let a healthy long load be
+                # reaped once the last successful stamp aged out.
+                continue
 
     async def _produce(
         self,
@@ -499,6 +508,7 @@ class ChatGenerationSupervisor:
             if iterator is None:
                 raise RuntimeError("Local generation did not return an event stream")
             decoder = _SSEDecoder()
+            last_keepalive = time.monotonic()
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
                 timeout = (
@@ -532,6 +542,15 @@ class ChatGenerationSupervisor:
                     break
                 next_raw_task = asyncio.create_task(iterator.__anext__())
                 text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                # Bytes on the wire are progress even when they decode to no event. A run
+                # queued behind another generation waits in the admission stream, which
+                # emits `: admission-wait` comments that _SSEDecoder drops, so nothing
+                # renewed the lease and a normally functioning queue got the run reaped.
+                # Rate limited because chunk traffic already renews through append_events.
+                now_s = time.monotonic()
+                if now_s - last_keepalive >= _KEEPALIVE_RENEW_SECONDS:
+                    last_keepalive = now_s
+                    await asyncio.to_thread(db.touch_progress, run_id)
                 for encoded in decoder.feed(text):
                     if encoded == "[DONE]":
                         saw_done = True

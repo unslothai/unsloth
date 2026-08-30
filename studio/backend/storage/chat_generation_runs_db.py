@@ -191,15 +191,22 @@ def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -
     and progress_at takes MAX(stored, now) so a wall-clock step backwards (NTP, suspend)
     cannot age a live run into the sweep below. One chunk carries at most one token
     delta, so the count of chunk events is the token count.
+
+    updated_at moves with it, as it already does on every event append. That is what the
+    follower's snapshot poll compares, so a client watching a run through a long model
+    preparation or an admission wait, neither of which emits events, sees the server is
+    alive and rearms its own no-progress deadline instead of reporting an interruption
+    over healthy work.
     """
     now = now_ms()
     try:
         conn.execute(
             """UPDATE chat_generation_runs
                SET progress_at=MAX(COALESCE(progress_at, 0), ?),
+                   updated_at=MAX(COALESCE(updated_at, 0), ?),
                    progress_tokens=COALESCE(progress_tokens, 0) + ?
                WHERE id=?""",
-            (now, max(0, int(tokens)), run_id),
+            (now, now, max(0, int(tokens)), run_id),
         )
     except sqlite3.OperationalError as exc:
         # The migration has not landed yet. The run keeps streaming and simply ages out

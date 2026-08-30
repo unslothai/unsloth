@@ -522,6 +522,14 @@ export function serverHasAnsweredActiveRuns(threadId: string): boolean {
  */
 export function markServerActiveGenerationRunsUnknown(threadId: string): void {
   serverAnsweredThreads.delete(threadId);
+  // The run mappings go with it. They are the same stale answer in another shape, and
+  // isServerActiveGenerationRun is consulted BEFORE the local-interruption marker, so a
+  // leftover entry restores the message as running while generationNeedsRecovery still
+  // refuses to start a follower: a blocked composer with neither recovery nor a local
+  // Stop handle, which is the wedge this PR exists to remove.
+  for (const [runId, owner] of [...serverActiveGenerationRuns]) {
+    if (owner === threadId) serverActiveGenerationRuns.delete(runId);
+  }
 }
 
 /**

@@ -585,3 +585,21 @@ test("the lease is renewed while the model is being prepared", () => {
     "the heartbeat must wrap the preparation await and stop when it returns",
   );
 });
+
+test("retracting an answer also drops that thread's stale run mappings", () => {
+  resetServerActiveGenerationRuns();
+  syncServerActiveGenerationRuns("t-5", ["run-f"]);
+  const stalled = {
+    generationRunId: "run-f",
+    generationStatus: "running",
+    generationLocallyInterrupted: true,
+  };
+  // While the answer stands, the server's word wins and the message is live.
+  assert.equal(generationIsCorroboratedLive(stalled, "t-5"), true);
+  markServerActiveGenerationRunsUnknown("t-5");
+  // Once retracted it must not keep winning from the leftover mapping: that pairs a
+  // running message with generationNeedsRecovery=false, so nothing would ever settle it.
+  assert.equal(generationIsCorroboratedLive(stalled, "t-5"), false);
+  assert.equal(generationNeedsRecovery(stalled), false);
+  assert.equal(threadHasDurableGenerationRun("t-5"), false);
+});

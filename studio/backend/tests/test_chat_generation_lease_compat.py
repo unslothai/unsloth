@@ -518,9 +518,9 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
             await task
 
     asyncio.run(_run())
-    assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    ), "a preparation longer than the lease must not be reaped"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "a preparation longer than the lease must not be reaped"
+    )
 
 
 def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
@@ -555,3 +555,61 @@ def test_a_renewal_that_cannot_be_written_does_not_fail_the_generation(clock, mo
         runs_db, "touch_progress", lambda _id: (_ for _ in ()).throw(RuntimeError("gone"))
     )
     asyncio.run(sup._renew_lease_while_preparing("run-1"))  # must not raise
+
+
+# ------------------------------------------------- admission wait and heartbeat retry
+
+
+def test_touch_progress_moves_updated_at_so_a_follower_sees_liveness(clock):
+    """Neither model preparation nor an admission wait emits events, so the follower's
+    snapshot poll is the only thing that can tell it the server is alive. That poll
+    compares updatedAt, which every event append already moves."""
+    token = _seed()
+    run = runs_db.get_run("run-1")
+    before = int(run["updatedAt"])
+    clock.advance_ms(5 * _MINUTE_MS)
+    runs_db.touch_progress("run-1")
+    after = int(runs_db.get_run("run-1")["updatedAt"])
+    assert after > before, "a lease renewal must be visible to the follower"
+    assert token
+
+
+def test_updated_at_never_moves_backwards(clock):
+    _seed()
+    clock.advance_ms(10 * _MINUTE_MS)
+    runs_db.touch_progress("run-1")
+    peak = int(runs_db.get_run("run-1")["updatedAt"])
+    clock.now -= 5 * _MINUTE_MS  # NTP correction backwards
+    runs_db.touch_progress("run-1")
+    assert int(runs_db.get_run("run-1")["updatedAt"]) == peak
+
+
+def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
+    """SQLite writes use a five second busy timeout while large history transactions may
+    hold contention for longer, so a lost stamp is ordinary. Returning on the first one
+    let a healthy long load be reaped once the last good stamp aged out."""
+    _seed()
+    sup = _supervisor()
+    calls = {"n": 0}
+    real_touch = runs_db.touch_progress
+
+    def _flaky(run_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_touch(run_id)
+
+    monkeypatch.setattr(runs_db, "touch_progress", _flaky)
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX", 40, raising = False)
+    real_sleep = asyncio.sleep
+
+    async def _sleep(_seconds):
+        clock.advance_ms(_MINUTE_MS)
+        await real_sleep(0)
+
+    monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
+    asyncio.run(sup._renew_lease_while_preparing("run-1"))
+    assert calls["n"] == 40, "the loop must continue past a failed renewal"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "one lost stamp must not cost the run its lease"
+    )
