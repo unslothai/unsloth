@@ -518,9 +518,9 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
             await task
 
     asyncio.run(_run())
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
-        "a preparation longer than the lease must not be reaped"
-    )
+    assert (
+        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+    ), "a preparation longer than the lease must not be reaped"
 
 
 def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
@@ -610,6 +610,6 @@ def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
     monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
     asyncio.run(sup._renew_lease_while_preparing("run-1"))
     assert calls["n"] == 40, "the loop must continue past a failed renewal"
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
-        "one lost stamp must not cost the run its lease"
-    )
+    assert (
+        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+    ), "one lost stamp must not cost the run its lease"
