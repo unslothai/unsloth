@@ -22,6 +22,7 @@ between the three callers: each boots its server on its own port.
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 SEED = 3407
@@ -129,11 +130,16 @@ def check(label: str, first: list[str], second: list[str]) -> None:
     # Lower-cased substring checks, so formatting jitter is not a failure.
     joined = " ".join(first).lower()
     assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-    # Per turn, not over the joined transcript: turn 1 already contains "2", so a joined
-    # check would pass on a server that answered turn 2 with no history at all.
-    assert "2" in first[1], (
-        f"{label}: turn 2 must repeat turn 1's answer, so history reached the model. "
-        f"Got {first[1]!r}"
+    # Taken from turn 1's reply rather than hardcoded, and asserted per turn rather than
+    # over the joined transcript. A literal "2" would accept a turn 2 that CONTRADICTS
+    # turn 1 ("1 + 1 = 3" then "the answer was 2"), and is guessable by a model that never
+    # saw the history; a joined check would pass on turn 1's own text. The last number is
+    # the answer: "1 + 1 = 2" restates the operands first.
+    # The assertion above guarantees a digit, so this cannot come back empty.
+    answer = re.findall(r"\d+", first[0])[-1]
+    assert answer in first[1], (
+        f"{label}: turn 2 must carry turn 1's answer {answer!r}, so history reached the "
+        f"model. Got {first[1]!r}"
     )
     assert (
         "paris" in joined
