@@ -67,6 +67,7 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
+    canonical_arguments_text,
     mcp_display_parts,
     strip_result_for_model,
 )
@@ -600,13 +601,15 @@ def _unrun_call_card(
     first makes both cases end the same way, and keeps the invariant the loop is
     tested on, that every tool_end closes a tool_start.
     """
+    shown = arguments if isinstance(arguments, dict) else {}
     return [
         _sse(
             {
                 "type": "tool_start",
                 "tool_name": tool_name,
                 "tool_call_id": tool_call_id,
-                "arguments": arguments if isinstance(arguments, dict) else {},
+                "arguments": shown,
+                "arguments_text": canonical_arguments_text(shown),
                 "provenance": provenance,
             }
         ),

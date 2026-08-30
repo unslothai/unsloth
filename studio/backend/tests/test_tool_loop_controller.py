@@ -278,3 +278,34 @@ def test_strip_result_for_model_removes_frontend_image_sentinel():
     assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == "text"
     assert strip_result_for_model("text __IMAGES__:payload") == "text"
     assert strip_result_for_model("plain text") == "plain text"
+
+
+def test_the_card_text_keeps_digits_the_browser_would_round():
+    """An id past 2**53 survives as text, so the card cannot show one record and run another.
+
+    `JSON.parse` reads 9007199254740993 back as ...992, so a card that re-encodes the parsed
+    arguments in the browser disagrees with what the tool is run with.
+    """
+    exact = 9007199254740993
+    controller = ToolLoopController(tools = [_tool("del_rec")])
+    decision = controller.prepare_call(_call("del_rec", {"id": exact}))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"]["id"] == exact
+    assert payload["arguments_text"] == '{"id":9007199254740993}'
+    # The replay the model sees is encoded the same way, so the two cannot drift apart.
+    assert payload["arguments_text"] == decision.as_assistant_tool_call()["function"]["arguments"]
+
+
+def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
+    """The card shows the model's own text, so its `arguments_text` encodes that, not the
+    summary the replay substitutes."""
+    truncated = '{"path": "a.py", "edits"'
+    controller = ToolLoopController(tools = [_tool("edit_file")])
+    decision = controller.prepare_call(_call("edit_file", truncated))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"] == {"raw": truncated}
+    assert json.loads(payload["arguments_text"]) == {"raw": truncated}
+    # The replay substitutes a summary instead, so the two texts are meant to differ here.
+    assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]

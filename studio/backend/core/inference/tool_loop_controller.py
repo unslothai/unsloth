@@ -182,6 +182,11 @@ class CoercedArguments:
     healed: bool = False
 
 
+def canonical_arguments_text(arguments: Any) -> str:
+    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+
+
 @dataclass(frozen = True)
 class ToolCallDecision:
     """Decision made before any visible tool event is emitted."""
@@ -234,6 +239,10 @@ class ToolCallDecision:
             "tool_name": self.tool_name,
             "tool_call_id": self.tool_call_id,
             "arguments": arguments,
+            # The card renders this text rather than re-encoding `arguments` in the browser,
+            # where JSON.parse rounds an integer past 2**53 and would show a different record
+            # id than the one executed.
+            "arguments_text": canonical_arguments_text(arguments),
             "provenance": self.provenance,
         }
 
@@ -256,12 +265,7 @@ class ToolCallDecision:
                 # is not worth resending -- it is the content that overflowed the window.
                 "arguments": json.dumps(_unreadable_arguments_summary(fragment))
                 if fragment is not None
-                else json.dumps(
-                    self.arguments,
-                    ensure_ascii = False,
-                    sort_keys = True,
-                    separators = (",", ":"),
-                ),
+                else canonical_arguments_text(self.arguments),
             },
         }
         if self.tool_call_id:
