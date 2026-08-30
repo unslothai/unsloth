@@ -29,9 +29,16 @@ MAX_TOKENS = 80
 
 # Turn 2 cannot be answered without turn 1, and turn 4 without turn 3, so a server that
 # drops history fails here rather than returning something plausible.
+#
+# Turn 2 asks for the ANSWER rather than the question. "What did I ask before?" reads like
+# the stronger history probe but is not one: gemma-3-270m-it, the model this smoke runs,
+# replies "I am doing well! How can I help you today?" to it, with or without the history
+# attached. Nothing asserted that reply, so a server that dropped every turn before the
+# last still passed. Asking for the answer gets "The answer to your previous question was
+# 2.", which cannot be produced without turn 1 and is checked below.
 PROMPTS = [
     "What is 1+1?",
-    "What did I ask before?",
+    "What was the answer to my previous question?",
     "What is the capital of France?",
     "Repeat the city name",
 ]
@@ -118,10 +125,16 @@ def check(label: str, first: list[str], second: list[str]) -> None:
             f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
             f"  run1: {a!r}\n  run2: {b!r}"
         )
-    # Turn 2 should mention the earlier question and turn 4 the city turn 3 produced.
+    # Turn 2 should carry turn 1's answer and turn 4 the city turn 3 produced.
     # Lower-cased substring checks, so formatting jitter is not a failure.
     joined = " ".join(first).lower()
     assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
+    # Per turn, not over the joined transcript: turn 1 already contains "2", so a joined
+    # check would pass on a server that answered turn 2 with no history at all.
+    assert "2" in first[1], (
+        f"{label}: turn 2 must repeat turn 1's answer, so history reached the model. "
+        f"Got {first[1]!r}"
+    )
     assert (
         "paris" in joined
     ), f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
