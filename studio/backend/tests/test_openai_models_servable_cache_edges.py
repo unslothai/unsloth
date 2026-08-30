@@ -394,9 +394,9 @@ def test_deleting_a_finetuned_model_invalidates_the_scan():
     from routes import models as models_route
 
     source = inspect.getsource(models_route.delete_finetuned_model)
-    assert "invalidate_index()" in source, (
-        "the successful deletion branch must retire the cached servability rows"
-    )
+    assert (
+        "invalidate_index()" in source
+    ), "the successful deletion branch must retire the cached servability rows"
     prune = source.index("_prune_empty_parents(target_path, allowed_root)")
     assert source.index("invalidate_index()", prune) < source.index(
         'return {"status": "deleted"', prune
