@@ -161,9 +161,12 @@ class ChatGenerationLeaseSweeper:
         if self._task is not None or not self.enabled:
             return
         # A second lifespan reuses the instance parked on app.state, and stop() left the
-        # event set. Without this the new task's first wait returns immediately and the
-        # sweeper is silently dead for the whole of that lifespan.
-        self._stop_event.clear()
+        # event set. Recreated rather than cleared, because the second lifespan can also
+        # be a different event loop (repeated TestClient contexts, an embedded server
+        # restart), and an asyncio.Event stays bound to the loop it was made on: clearing
+        # it would leave the new task failing its first wait with "bound to a different
+        # event loop", silently disabling reaping for that whole lifespan.
+        self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name = "chat-generation-lease-sweeper")
 
     async def _run(self) -> None:
@@ -428,19 +431,27 @@ class ChatGenerationSupervisor:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
+    async def _try_touch_progress(self, run_id: str) -> None:
+        """Renew the lease, treating contention as a missed stamp rather than a failure.
+
+        Every renewal that is not streamed output goes through here. A history transaction
+        can hold SQLite's writer lock past the busy timeout, and letting that escape would
+        abort an otherwise healthy generation over a lock about to be released. Missing one
+        stamp costs one interval; the next renewal takes it.
+        """
+        try:
+            await asyncio.to_thread(db.touch_progress, run_id)
+        except Exception:
+            return
+
     async def _renew_lease_while_preparing(self, run_id: str) -> None:
         interval = _renew_interval_seconds()
         for _ in range(max(1, int(self._PREPARE_RENEW_MAX_SECONDS / interval))):
             await asyncio.sleep(interval)
-            try:
-                await asyncio.to_thread(db.touch_progress, run_id)
-            except Exception:
-                # Skip this renewal, do not abandon the rest. SQLite writes use a five
-                # second busy timeout while large history transactions may hold
-                # contention for longer, so one lost stamp is ordinary. Returning here
-                # disabled every remaining heartbeat and let a healthy long load be
-                # reaped once the last successful stamp aged out.
-                continue
+            # Skips a contended stamp rather than abandoning the rest: one lost stamp is
+            # ordinary, and giving up here would let a healthy long load be reaped once
+            # the last successful stamp aged out.
+            await self._try_touch_progress(run_id)
 
     async def _produce(
         self,
@@ -521,9 +532,9 @@ class ChatGenerationSupervisor:
                     owner,
                     cancel_on_disconnect = False,
                 )
-                # The load is behind us: the stream is open, so streamed output is the lease
-                # from here. Stamped once more so the handover carries no gap.
-            await asyncio.to_thread(db.touch_progress, run_id)
+            # The load is behind us: the stream is open, so streamed output is the
+            # lease from here. Stamped once more so the handover carries no gap.
+            await self._try_touch_progress(run_id)
             if int(getattr(response, "status_code", 200)) >= 400:
                 raise RuntimeError(f"Local generation returned HTTP {response.status_code}")
             iterator = getattr(response, "body_iterator", None)
@@ -572,7 +583,7 @@ class ChatGenerationSupervisor:
                 now_s = time.monotonic()
                 if now_s - last_keepalive >= _renew_interval_seconds():
                     last_keepalive = now_s
-                    await asyncio.to_thread(db.touch_progress, run_id)
+                    await self._try_touch_progress(run_id)
                 for encoded in decoder.feed(text):
                     if encoded == "[DONE]":
                         saw_done = True

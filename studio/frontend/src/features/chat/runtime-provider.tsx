@@ -1859,6 +1859,20 @@ function useStudioRuntimeAdapters(
             (message) => message.id === run.assistantMessageId,
           );
           if (!assistant) continue;
+          // The runs read happens first, so a run that finished between the two reads is
+          // still listed as running here while the message snapshot already carries its
+          // terminal status. `missed` does not catch it, because the id IS known. Writing
+          // the overlay anyway would push a completed reply back to running and unsettled
+          // and block the composer until some later read happened to succeed.
+          const knownStatus = (assistant.metadata as Record<string, unknown> | undefined)
+            ?.generationStatus;
+          if (
+            knownStatus === "completed" ||
+            knownStatus === "failed" ||
+            knownStatus === "cancelled"
+          ) {
+            continue;
+          }
           assistant.metadata = {
             ...(assistant.metadata ?? {}),
             generationRunId: run.id,

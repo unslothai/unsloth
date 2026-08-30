@@ -17,6 +17,7 @@ import sqlite3
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -534,9 +535,9 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
             await task
 
     asyncio.run(_run())
-    assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    ), "a preparation longer than the lease must not be reaped"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "a preparation longer than the lease must not be reaped"
+    )
 
 
 def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
@@ -629,6 +630,65 @@ def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
     monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
     asyncio.run(sup._renew_lease_while_preparing("run-1"))
     assert calls["n"] == 40, "the loop must continue past a failed renewal"
-    assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    ), "one lost stamp must not cost the run its lease"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "one lost stamp must not cost the run its lease"
+    )
+
+
+def test_a_contended_keepalive_renewal_does_not_abort_the_generation(clock, monkeypatch):
+    """A history transaction can hold SQLite's writer lock past the busy timeout. Letting
+    that escape would abort a healthy generation over a lock about to be released."""
+    _seed()
+    sup = _supervisor()
+
+    def _locked(_run_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(runs_db, "touch_progress", _locked)
+    asyncio.run(sup._try_touch_progress("run-1"))  # must not raise
+
+
+def test_every_non_output_renewal_goes_through_the_tolerant_path():
+    """Streamed output renews through append_events. Every OTHER renewal, the keep-alive,
+    the preparation heartbeat and the handoff stamp, must not be able to kill a run."""
+    import inspect
+
+    source = inspect.getsource(runs_mod)
+    direct = source.count("asyncio.to_thread(db.touch_progress")
+    assert direct == 1, (
+        f"{direct} direct touch_progress call(s); all but the one inside "
+        "_try_touch_progress must go through it"
+    )
+    helper = inspect.getsource(runs_mod.ChatGenerationSupervisor._try_touch_progress)
+    assert "asyncio.to_thread(db.touch_progress" in helper
+
+
+def test_the_sweeper_survives_a_second_lifespan_on_a_new_event_loop(clock):
+    """A repeated TestClient context or an embedded server restart enters the same app on
+    a different loop, and asyncio.Event binds to the loop that first awaits it.
+
+    The failure is silent, which is why it is asserted on liveness rather than on an
+    exception: _run wraps the wait in ensure_future, so the "bound to a different event
+    loop" RuntimeError lands on that inner waiter, asyncio.wait reports it merely as done,
+    and _run returns as if it had been asked to stop. Reaping is then off for the whole
+    lifespan with nothing logged.
+    """
+    app = SimpleNamespace(state = SimpleNamespace())
+    sweeper = runs_mod.ChatGenerationLeaseSweeper(app, interval_s = 30.0, timeout_s = 60.0)
+    alive = {}
+
+    async def _lifespan(label):
+        sweeper.start()
+        # Long enough for the task to reach _stop_event.wait(), which is what binds it.
+        for _ in range(50):
+            await asyncio.sleep(0)
+        alive[label] = not sweeper._task.done()
+        await sweeper.stop()
+
+    asyncio.run(_lifespan("first"))
+    asyncio.run(_lifespan("second"))  # a brand new loop
+
+    assert alive["first"], "the first lifespan's sweeper should be waiting, not finished"
+    assert alive["second"], (
+        "the second lifespan's sweeper returned immediately, so reaping is off for it"
+    )
