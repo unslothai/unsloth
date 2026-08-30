@@ -6930,11 +6930,14 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
         return True
     # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
+    source_label = (marker or {}).get("source")
     shared = set.intersection(
         *(
             {
                 tuple(group)
-                for group in runtime_payload_health_groups(kind, runtime_name = runtime_asset)
+                for group in runtime_payload_health_groups(
+                    kind, source_label = source_label, runtime_name = runtime_asset
+                )
             }
             for kind in kinds
         )

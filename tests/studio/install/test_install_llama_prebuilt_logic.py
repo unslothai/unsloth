@@ -3081,6 +3081,40 @@ def test_every_reuse_path_syncs_the_arch_coverage():
     assert 'patch["mapped_targets"] = targets' in patch
 
 
+@pytest.mark.parametrize("visual_server", [True, False], ids = ["present", "missing"])
+def test_a_published_bundle_owes_its_visual_server(tmp_path, monkeypatch, visual_server):
+    """The marker's source label decides, exactly as it does on the canonical reuse path.
+
+    runtime_payload_health_groups only adds llama-diffusion-gemma-visual-server for a
+    published bundle, so omitting the label let an incomplete published Vulkan tree read
+    as validated. setup.sh's source build has its own target for the binary, so exit 2 is
+    a recovery here rather than a detour.
+    """
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(
+        tmp_path, backend = "vulkan", source = "published", visual_server = visual_server
+    )
+
+    if visual_server:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    else:
+        with pytest.raises(SystemExit) as caught:
+            install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+        assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+def test_an_upstream_bundle_does_not_owe_a_visual_server(tmp_path, monkeypatch):
+    """Only "published" carries it; requiring it of an upstream tree would source build."""
+    _listing_failure(monkeypatch, linux_host)
+    install_dir = _complete_existing_llama_install(
+        tmp_path, backend = "vulkan", source = "upstream", visual_server = False
+    )
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert (install_dir / "llama-server").exists()
+
+
 def test_a_reused_install_backfills_the_paired_runtime_asset(tmp_path: Path):
     """An install predating runtime_asset only gains it on the reuse path.
 
@@ -5581,7 +5615,13 @@ _SHARED_PAYLOAD = {
     ],
     "windows": ["llama.dll"],
 }
-_BACKEND_PAYLOAD = {("windows", "cuda"): ["ggml-cuda.dll"]}
+_BACKEND_PAYLOAD = {
+    ("windows", "cuda"): ["ggml-cuda.dll"],
+    ("linux", "vulkan"): ["libggml-vulkan.so"],
+}
+# Only a published bundle owes this one, which is why the marker's source label has to
+# reach runtime_payload_health_groups.
+_PUBLISHED_PAYLOAD = {"linux": ["llama-diffusion-gemma-visual-server"]}
 
 
 def _complete_existing_llama_install(
@@ -5597,6 +5637,8 @@ def _complete_existing_llama_install(
     runnable = True,
     runnable_root = None,
     runtime_line = None,
+    source = None,
+    visual_server = True,
 ):
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = (
@@ -5613,6 +5655,8 @@ def _complete_existing_llama_install(
         marker["runtime_asset"] = runtime_asset
     if runtime_line is not None:
         marker["runtime_line"] = runtime_line
+    if source is not None:
+        marker["source"] = source
     for path in (
         install_dir / f"llama-server{ext}",
         install_dir / f"llama-quantize{ext}",
@@ -5649,6 +5693,9 @@ def _complete_existing_llama_install(
             (runtime_dir / name).write_text("", encoding = "utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
             (runtime_dir / name).write_text("", encoding = "utf-8")
+        if source == "published" and visual_server:
+            for name in _PUBLISHED_PAYLOAD[platform]:
+                (runtime_dir / name).write_text("", encoding = "utf-8")
         if runtime_asset is not None and paired_runtime:
             for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
                 (runtime_dir / name).write_text("", encoding = "utf-8")

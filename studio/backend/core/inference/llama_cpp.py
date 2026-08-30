@@ -621,12 +621,19 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 }
 
 
+# llama.h: #define LLAMA_DEFAULT_SEED 0xFFFFFFFF
+_LLAMA_RANDOM_SEED = 0xFFFFFFFF
+
+
 def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
     """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
     if seed is None:
         return
     payload["seed"] = seed
-    if seed != -1:
+    # llama.cpp reads the seed as uint32 and LLAMA_DEFAULT_SEED is 0xFFFFFFFF, so -1 and
+    # 4294967295 are the same "pick one at random" and both keep cache reuse. Compared in
+    # that domain rather than against the -1 literal, which the schemas also accept above.
+    if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
 
 
