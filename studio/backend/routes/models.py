@@ -1292,8 +1292,8 @@ async def _shared_compat_local_inventory_scan(
             return await hf_cache_scan.shared_scan(
                 _compat_local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: (
-                    collect(expected_epoch, folders, roots)
+                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: collect(
+                    expected_epoch, folders, roots
                 ),
             )
         except _CompatLocalCacheChanged as changed:
@@ -1304,6 +1304,22 @@ async def _shared_compat_local_inventory_scan(
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
     return await asyncio.to_thread(classify, superseded)
+
+
+async def _invalidate_local_scans() -> None:
+    """Retire the cached local scans after something was deleted from disk.
+
+    Every successful deletion branch has to call this. The /v1/models servability scan is
+    cached against the resolver generation, so a branch that returns without bumping it
+    keeps advertising what was just removed until the catalog TTL expires.
+
+    Off the loop, like the other async invalidation sites in this file: invalidate_index
+    takes the resolver lock, and _index() holds that across a full multi-root filesystem
+    scan, so calling it inline from an async route would stall unrelated requests and
+    in-flight inference streams behind a rebuild.
+    """
+    from core.inference.local_model_resolver import invalidate_index
+    await asyncio.to_thread(invalidate_index)
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -3345,6 +3361,7 @@ async def delete_finetuned_model(
                     _prune_empty_parents(target_path, allowed_root)
             except OSError:
                 pass
+            await _invalidate_local_scans()
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
                 deleted_count,
@@ -3371,6 +3388,7 @@ async def delete_finetuned_model(
 
         _prune_empty_parents(target_path, allowed_root)
 
+        await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)
         return {"status": "deleted", "path": str(target_path)}
     except HTTPException:
