@@ -129,7 +129,9 @@ def _env_seconds(name: str, default: float) -> float:
         return default
     if not math.isfinite(value):
         logger.warning(
-            "chat_generation_lease_env_ignored", variable = name, value = raw,
+            "chat_generation_lease_env_ignored",
+            variable = name,
+            value = raw,
             reason = "not a finite number",
         )
         return default
