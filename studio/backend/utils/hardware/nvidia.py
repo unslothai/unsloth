@@ -266,7 +266,14 @@ def _nvidia_smi_executable() -> str:
     return "nvidia-smi"
 
 
-def _query_gpu_inventory(caller: str) -> Optional[list[dict[str, Any]]]:
+# "nvidia-smi is not on this machine" is a conclusive answer, not a failed probe: it is
+# the normal state of every CPU-only, AMD and Intel host, and the installers read the
+# same absence as "no usable NVIDIA GPU". Distinct from None, which means a probe that
+# WAS found could not answer -- a hung driver, a permission fault, a non-zero exit.
+NVIDIA_SMI_ABSENT = object()
+
+
+def _query_gpu_inventory(caller: str) -> Any:
     """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
 
     ``None`` when the query could not be answered at all -- no nvidia-smi on PATH, a
@@ -301,7 +308,7 @@ def _query_gpu_inventory(caller: str) -> Optional[list[dict[str, Any]]]:
         # refresh reached from the health and system polls, so warning here would put a
         # line in production logs every minute on machines that are working correctly.
         logger.debug("nvidia-smi is not installed (%s): %s", caller, e)
-        return None
+        return NVIDIA_SMI_ABSENT
     except (OSError, subprocess.TimeoutExpired) as e:
         # Past this point an nvidia-smi WAS found, so a failure is worth saying loudly:
         # a hung driver or a permission problem is a real fault on an NVIDIA host.
@@ -344,18 +351,31 @@ def get_physical_gpu_inventory() -> dict[str, Any]:
     structured unavailable result, so this never raises out of an endpoint.
     """
     rows = _query_gpu_inventory("get_physical_gpu_inventory")
+    if rows is NVIDIA_SMI_ABSENT:
+        # An answer, and the caller must not read it as "some probe failed": an AMD-only
+        # host has no nvidia-smi by design, and marking its inventory unknown would keep
+        # a settled mismatch alive after the card that established it was unplugged.
+        return {
+            "available": False,
+            "source": "nvidia-smi",
+            "devices": [],
+            "error": "nvidia-smi is not installed",
+            "absent": True,
+        }
     if rows is None:
         return {
             "available": False,
             "source": "nvidia-smi",
             "devices": [],
             "error": "nvidia-smi did not answer",
+            "absent": False,
         }
     return {
         "available": bool(rows),
         "source": "nvidia-smi",
         "devices": [{**row, "vendor": "nvidia", "source": "nvidia-smi"} for row in rows],
         "error": None,
+        "absent": False,
     }
 
 
@@ -374,7 +394,7 @@ def get_backend_visible_gpu_info(
         }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
     rows = _query_gpu_inventory("get_backend_visible_gpu_info")
-    if rows is None:
+    if rows is None or rows is NVIDIA_SMI_ABSENT:
         return {
             "available": False,
             "backend_cuda_visible_devices": backend_cuda_visible_devices,

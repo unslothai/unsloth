@@ -402,7 +402,11 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         logger.debug("NVIDIA physical inventory probe failed: %s", e)
         unknown = True
     else:
-        if result.get("error"):
+        # An absent nvidia-smi is an answer, not a failure to answer. It is the normal
+        # state of every AMD, Intel and CPU-only host, and calling it unknown there kept
+        # a settled mismatch alive for good after the card that established it was
+        # removed, while /api/system had already dropped the device rows.
+        if result.get("error") and not result.get("absent"):
             unknown = True
         nvidia_devices = result.get("devices") or []
         if nvidia_devices:
@@ -809,7 +813,7 @@ def _mask_is_emptied(var: str) -> bool:
     return value is not None and value.strip() in ("", "-1")
 
 
-def _masks_hide_every_accelerator() -> bool:
+def _masks_hide_every_accelerator(*, block_inventory: bool = False) -> bool:
     """True when the masks account for every accelerator this host has.
 
     Then torch reporting none is the configuration working, not a broken install, and
@@ -822,28 +826,37 @@ def _masks_hide_every_accelerator() -> bool:
     An inventory that found nothing, or could not answer, stays conservative: a mask
     may well be hiding the only accelerator, and that is the case this existed for.
     """
-    masked = _vendors_masked_off()
+    masked = _vendors_masked_off(block_inventory = block_inventory)
     if not masked:
         return False
     try:
-        devices = get_physical_gpu_inventory(block = False).get("devices") or []
+        inventory = get_physical_gpu_inventory(block = block_inventory)
     except Exception:
-        devices = []
-    if not devices:
-        return True
-    return all(device.get("vendor") in masked for device in devices)
+        inventory = dict(_UNKNOWN_PHYSICAL_GPU_INVENTORY)
+    devices = inventory.get("devices") or []
+    if devices:
+        return all(device.get("vendor") in masked for device in devices)
+    # Nothing found. An inventory that could not ANSWER stays conservative -- a mask may
+    # well be hiding the only accelerator, which is the case this exists for -- and one
+    # that answered nothing has no card to hide either way. The distinction that matters
+    # is the caller's: a cold non-blocking read reports unknown before any probe has
+    # run, and an irrelevant empty mask (HIP_VISIBLE_DEVICES="" on an NVIDIA-only host)
+    # would then suppress the classification and cache "torch is fine" for a whole TTL,
+    # withholding the repair from a host nvidia-smi could describe moments later. So the
+    # measurement is taken with block_inventory = True on the path that caches it.
+    return True
 
 
-def _vendors_masked_off() -> set:
+def _vendors_masked_off(*, block_inventory: bool = False) -> set:
     """Vendors whose devices are all hidden by a mask that can take effect here."""
     masked: set = set()
-    for var in _relevant_visibility_masks():
+    for var in _relevant_visibility_masks(block_inventory = block_inventory):
         if _mask_is_emptied(var):
             masked |= _VISIBILITY_MASK_VENDORS.get(var, frozenset())
     return masked
 
 
-def _relevant_visibility_masks() -> tuple[str, ...]:
+def _relevant_visibility_masks(*, block_inventory: bool = False) -> tuple[str, ...]:
     """The visibility variables that can actually hide a GPU on THIS host.
 
     A mask that cannot take effect must not silence the mismatch. ROCR_VISIBLE_DEVICES
@@ -866,7 +879,7 @@ def _relevant_visibility_masks() -> tuple[str, ...]:
         # /api/health and /api/liveness both read. Nothing here is worth a subprocess on
         # the request path, and the stale answer is a fine basis for "can this variable
         # hide anything" -- a vendor set does not change between refreshes.
-        devices = get_physical_gpu_inventory(block = False).get("devices") or []
+        devices = get_physical_gpu_inventory(block = block_inventory).get("devices") or []
     except Exception:
         devices = []
     if not devices or any(d.get("vendor") == "amd" for d in devices):
@@ -922,7 +935,7 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     return isinstance(recorded, str) and recorded.strip().lower() == "cpu"
 
 
-def classify_torch_build() -> Optional[str]:
+def classify_torch_build(*, block_inventory: bool = False) -> Optional[str]:
     """Why this PyTorch exposes no accelerator, when the build itself is the reason.
 
     "torch_cpu_build"        -- a CPU-only wheel: ``2.11.0+cpu``, or an untagged build
@@ -946,7 +959,7 @@ def classify_torch_build() -> Optional[str]:
     # broken install -- but nothing is broken and nothing needs repairing, so it must
     # not be reported as a mismatch. Same rule the installers apply before touching a
     # wheel. A mask naming devices is not this: that host expects those to work.
-    if _masks_hide_every_accelerator():
+    if _masks_hide_every_accelerator(block_inventory = block_inventory):
         return None
     if _expected_cpu_flavor_was_chosen():
         # A CPU wheel is what this install ASKED for. Reporting it as a mismatch would
@@ -1256,7 +1269,10 @@ def _run_torch_build_snapshot() -> Dict[str, Any]:
     """One uncached pass over torch, cached on the way out. Never raises."""
     global _torch_build_snapshot_cache
     snapshot = {
-        "reason": classify_torch_build(),
+        # block_inventory: this pass runs on detection or on the background refresh
+        # thread, never on a request path, so the masks are compared against a MEASURED
+        # inventory rather than the cold unknown a non-blocking read would give them.
+        "reason": classify_torch_build(block_inventory = True),
         "usable": _torch_reports_a_usable_accelerator(),
         "unknown": False,
     }
