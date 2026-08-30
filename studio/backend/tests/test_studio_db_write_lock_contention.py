@@ -287,6 +287,173 @@ def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
         conn.close()
 
 
+def _legacy_unscoped_trigger(conn) -> None:
+    conn.execute("DROP TRIGGER IF EXISTS chat_attachment_inventory_dirty_update")
+    conn.execute(
+        """
+        CREATE TRIGGER chat_attachment_inventory_dirty_update
+        AFTER UPDATE ON chat_messages
+        BEGIN
+            INSERT INTO chat_attachment_inventory_state
+                (singleton, inventory_version, dirty, backfilled_at)
+            VALUES (1, 0, 1, 0)
+            ON CONFLICT(singleton) DO UPDATE SET dirty = 1;
+        END
+        """
+    )
+    conn.commit()
+
+
+def test_eight_processes_upgrading_at_once_all_succeed(db):
+    """Two Studio processes on one studio.db each carry their own `_schema_ready`.
+
+    DDL does not open a transaction under sqlite3's legacy transaction control -- only
+    INSERT/UPDATE/DELETE/REPLACE do -- so a bare DROP + CREATE pair runs in autocommit and
+    can interleave as drop/drop/create/create, where the second CREATE raises
+    "trigger already exists" straight out of get_connection. The forced sequence is in
+    test_a_lost_create_race_cannot_raise; this is the end-to-end shape of it.
+    """
+    setup = studio_db.get_connection()
+    try:
+        _legacy_unscoped_trigger(setup)
+    finally:
+        setup.close()
+
+    errors, seen = [], []
+    start = threading.Barrier(8)
+
+    def worker():
+        conn = sqlite3.connect(str(db), timeout = 10)
+        conn.row_factory = sqlite3.Row
+        try:
+            start.wait(timeout = 10)
+            studio_db._replace_inventory_update_trigger(conn)
+            seen.append(
+                conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = ?",
+                    ("chat_attachment_inventory_dirty_update",),
+                ).fetchone()["sql"]
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target = worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors, errors
+    assert len(seen) == 8
+    assert all("UPDATE OF attachments_json, content_json" in sql for sql in seen)
+
+
+def test_the_migration_is_skipped_once_the_scoped_trigger_is_installed(db):
+    """Every connection would otherwise re-drop and re-create it, taking the writer lock
+    on a hot path for nothing."""
+    conn = studio_db.get_connection()
+    try:
+        assert (
+            "UPDATE OF"
+            in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = ?",
+                ("chat_attachment_inventory_dirty_update",),
+            ).fetchone()["sql"]
+        )
+        held = sqlite3.connect(str(db), timeout = 0.2)
+        try:
+            _hold_writer_lock(held)
+            # No writer lock is taken, so this returns even while one is held elsewhere.
+            studio_db._replace_inventory_update_trigger(conn)
+        finally:
+            held.rollback()
+            held.close()
+    finally:
+        conn.close()
+
+
+def test_a_lost_create_race_cannot_raise(db):
+    """The interleave itself, forced rather than raced for.
+
+    Timing this out of two live threads does not work: every DDL statement takes the
+    writer lock, so the window between the drop committing and the create is far too
+    narrow to sample. Driving the four statements by hand is the same sequence with the
+    scheduler taken out, and it shows what each half does.
+    """
+    setup = studio_db.get_connection()
+    try:
+        _legacy_unscoped_trigger(setup)
+    finally:
+        setup.close()
+
+    first = sqlite3.connect(str(db), timeout = 10)
+    second = sqlite3.connect(str(db), timeout = 10)
+    try:
+        for conn in (first, second):
+            conn.execute("DROP TRIGGER IF EXISTS chat_attachment_inventory_dirty_update")
+            conn.commit()
+        first.execute(studio_db._INVENTORY_UPDATE_TRIGGER_SQL)
+        first.commit()
+
+        # Without IF NOT EXISTS this is the crash: it comes straight out of get_connection,
+        # so the second process fails to open the database at all.
+        unguarded = studio_db._INVENTORY_UPDATE_TRIGGER_SQL.replace("IF NOT EXISTS ", "")
+        with pytest.raises(sqlite3.OperationalError, match = "already exists"):
+            second.execute(unguarded)
+
+        second.execute(studio_db._INVENTORY_UPDATE_TRIGGER_SQL)
+        second.commit()
+    finally:
+        first.close()
+        second.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?",
+            ("chat_attachment_inventory_dirty_update",),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert "UPDATE OF attachments_json, content_json" in sql
+
+
+def test_the_drop_and_the_create_share_one_writer_lock():
+    """Held across both, so no opener ever sees the table without its trigger.
+
+    sqlite3.Connection is a C type and cannot be monkeypatched, so this uses a double and
+    asserts the statement order the fix depends on.
+    """
+
+    class Connection:
+        in_transaction = False
+
+        def __init__(self):
+            self.executed = []
+            self.committed = 0
+
+        def execute(self, sql, *args):
+            self.executed.append(" ".join(sql.split())[:40])
+            return type("Cursor", (), {"fetchone": lambda _self: None})()
+
+        def commit(self):
+            self.committed += 1
+
+        def rollback(self):
+            raise AssertionError("nothing here should roll back")
+
+    conn = Connection()
+    studio_db._replace_inventory_update_trigger(conn)
+
+    kinds = [sql.split()[0] for sql in conn.executed]
+    assert kinds == ["SELECT", "BEGIN", "DROP", "CREATE"], conn.executed
+    assert conn.executed[1].startswith("BEGIN IMMEDIATE"), conn.executed[1]
+    assert "IF NOT EXISTS" in conn.executed[3]
+    assert conn.committed == 1, "one commit, at the end of the pair"
+
+
 def test_downgrade_still_sees_attachment_changes(db):
     """An older Unsloth run against an upgraded database keeps the scoped trigger, since
     its CREATE TRIGGER IF NOT EXISTS finds the name taken. That is safe: the scoped

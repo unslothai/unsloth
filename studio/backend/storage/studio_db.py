@@ -266,6 +266,51 @@ def delete_chat_project_workspace(project: dict) -> None:
     delete_project_workspace(project)
 
 
+_INVENTORY_UPDATE_TRIGGER = "chat_attachment_inventory_dirty_update"
+
+_INVENTORY_UPDATE_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS {_INVENTORY_UPDATE_TRIGGER}
+    AFTER UPDATE OF attachments_json, content_json ON chat_messages
+    BEGIN
+        INSERT INTO chat_attachment_inventory_state
+            (singleton, inventory_version, dirty, backfilled_at)
+        VALUES (1, 0, 1, 0)
+        ON CONFLICT(singleton) DO UPDATE SET dirty = 1;
+    END
+"""
+
+
+def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
+    """Swap the unscoped trigger for the scoped one, safely for concurrent openers.
+
+    Two Studio processes on one studio.db each have their own `_schema_ready`, and DDL
+    does not open a transaction under sqlite3's legacy transaction control (only DML
+    does), so a bare DROP + CREATE pair can interleave as drop/drop/create/create and the
+    second CREATE raises "trigger already exists" out of `get_connection`. Three guards:
+    skip entirely when the scoped trigger is already installed, hold the writer lock
+    across the pair, and keep IF NOT EXISTS on the create so even a lost race cannot
+    raise.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        (_INVENTORY_UPDATE_TRIGGER,),
+    ).fetchone()
+    # row[0], not row["sql"]: _ensure_schema also runs on connections whose row_factory
+    # is still the default tuple.
+    if row is not None and "UPDATE OF" in (row[0] or ""):
+        return
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(f"DROP TRIGGER IF EXISTS {_INVENTORY_UPDATE_TRIGGER}")
+        conn.execute(_INVENTORY_UPDATE_TRIGGER_SQL)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create tables and indexes if they don't exist. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -610,19 +655,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # attachment in every thread while holding the writer lock inside BEGIN IMMEDIATE.
     # Dropped rather than IF NOT EXISTS: existing installs already carry the unscoped
     # trigger, and a create would silently keep it.
-    conn.execute("DROP TRIGGER IF EXISTS chat_attachment_inventory_dirty_update")
-    conn.execute(
-        """
-        CREATE TRIGGER chat_attachment_inventory_dirty_update
-        AFTER UPDATE OF attachments_json, content_json ON chat_messages
-        BEGIN
-            INSERT INTO chat_attachment_inventory_state
-                (singleton, inventory_version, dirty, backfilled_at)
-            VALUES (1, 0, 1, 0)
-            ON CONFLICT(singleton) DO UPDATE SET dirty = 1;
-        END
-        """
-    )
+    _replace_inventory_update_trigger(conn)
     conn.execute(
         """
         CREATE TRIGGER IF NOT EXISTS chat_attachment_inventory_dirty_delete
